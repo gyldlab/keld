@@ -521,10 +521,18 @@ fn bridge_admitted_id_is_never_a_positional_literal() {
     let session = "crates/keld-core/src/app_session.rs";
     let bridge = "crates/keld-wv/src/wkwebview/macos_bridge.rs";
     for (file, from, to) in [
+        // The initial renderer-owned HTML window and later facade-created
+        // windows bind the same channel through separate production branches.
+        // Mutate exactly one branch per scan; neither may mask the other.
         (
             session,
-            "renderer_outcomes_rx,\n            keld_ipc::channel_table::ECHO.wire_id(),",
-            "renderer_outcomes_rx,\n            1,",
+            "let renderer_endpoint = RendererBridgeEndpoint::new(\n            renderer_requests_tx,\n            renderer_outcomes_rx,\n            keld_ipc::channel_table::ECHO.wire_id(),",
+            "let renderer_endpoint = RendererBridgeEndpoint::new(\n            renderer_requests_tx,\n            renderer_outcomes_rx,\n            1,",
+        ),
+        (
+            session,
+            "let endpoint = RendererBridgeEndpoint::new(\n            renderer_requests_tx,\n            renderer_outcomes_rx,\n            keld_ipc::channel_table::ECHO.wire_id(),",
+            "let endpoint = RendererBridgeEndpoint::new(\n            renderer_requests_tx,\n            renderer_outcomes_rx,\n            1,",
         ),
         (
             bridge,

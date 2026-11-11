@@ -33,7 +33,8 @@ use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_
 
 use crate::boot::{ProjectOwnershipError, ensure_current_principal_owns};
 use crate::doctor::{
-    all_ok, facade_mode_for_project, renderer_load_message, renderer_path_problem, run_checks,
+    facade_mode_for_project, launch_check_ok, renderer_load_message, renderer_path_problem,
+    run_checks,
 };
 
 pub use crate::doctor::RENDERER_LOAD_CODE;
@@ -136,6 +137,8 @@ impl From<keld_core::HelloSessionError> for DevError {
         let rendered = value.to_string();
         match value {
             keld_core::HelloSessionError::WindowPhase { .. } => Self::WindowPhase(rendered),
+            keld_core::HelloSessionError::Manifest(_)
+            | keld_core::HelloSessionError::Profile(_) => Self::Doctor(rendered),
             keld_core::HelloSessionError::Io(_)
             | keld_core::HelloSessionError::Runtime(_)
             | keld_core::HelloSessionError::Timeout { .. }
@@ -247,33 +250,21 @@ fn doctor_or_err(project_root: &Path) -> Result<(), DevError> {
 
 fn report_checks(checks: impl Iterator<Item = crate::doctor::Check>) -> Result<(), DevError> {
     let checks: Vec<_> = checks.collect();
-    if all_ok(&checks) {
+    if checks.iter().all(launch_check_ok) {
         return Ok(());
     }
     let mut msg = String::from("KELD-CLI-032: environment checks failed:\n");
     for check in &checks {
-        let mark = if check.ok { "ok" } else { "FAIL" };
+        let mark = if check.ok {
+            "ok"
+        } else if launch_check_ok(check) {
+            "host admission required"
+        } else {
+            "FAIL"
+        };
         let _ = writeln!(msg, "  [{mark}] {} — {}", check.label, check.detail);
     }
     Err(DevError::Doctor(msg))
-}
-
-/// The preflight of a launch whose stage goes to the no-flag host. On Windows the host
-/// owns a schema-2 boot's admission (GH-1188 D2), so its `KELD-CORE-034`, not a second
-/// CLI verdict, answers that project here; `keld doctor` keeps its own refusal until the
-/// host admits the boot in every build (D15), which removes this exception.
-#[cfg(any(target_os = "macos", target_os = "linux", windows))]
-fn staged_host_doctor_or_err(project_root: &Path) -> Result<(), DevError> {
-    #[cfg(windows)]
-    let facade = facade_mode_for_project(project_root).map_err(DevError::Doctor)?;
-    #[cfg(not(windows))]
-    let facade = false;
-    let checks = run_checks(Some(project_root));
-    report_checks(
-        checks
-            .into_iter()
-            .filter(|check| !(facade && check.label == "renderer")),
-    )
 }
 
 fn staged_host_launch_error(
@@ -358,7 +349,7 @@ pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
-    staged_host_doctor_or_err(project_root)?;
+    doctor_or_err(project_root)?;
     let cli_executable = std::env::current_exe()?;
     let developer_host = cli_executable
         .parent()
@@ -860,10 +851,89 @@ pub fn start_dev_session_with_stdout_markers(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn valid_strict_request_reaches_host_admission_despite_static_doctor_unknown() {
+        let root = tempfile::tempdir().expect("owned strict project");
+        std::fs::create_dir(root.path().join("src")).expect("owned entry directory");
+        std::fs::write(root.path().join("src/main.ts"), "export {};\n").expect("entry");
+        std::fs::write(root.path().join("keld.config.ts"), "export default {};\n").expect("config");
+        std::fs::write(root.path().join("index.html"), "<!doctype html>").expect("renderer");
+        std::fs::write(
+            root.path().join("keld.permissions.jsonc"),
+            r#"{"profile":"strict"}"#,
+        )
+        .expect("explicit strict request");
+        let static_checks = crate::doctor::run_checks(Some(root.path()));
+        let profile = static_checks
+            .iter()
+            .find(|check| check.label == "security_profile")
+            .expect("static profile finding");
+        assert!(!profile.ok, "doctor still has no runtime proof");
+        assert_eq!(
+            profile.error.as_ref().expect("missing proof").code,
+            "KELD-GUARD011"
+        );
+        super::doctor_or_err(root.path())
+            .expect("actual host, not static doctor, owns Strict admission");
+        std::fs::write(
+            root.path().join("keld.permissions.jsonc"),
+            r#"{"profile":null}"#,
+        )
+        .expect("invalid source policy");
+        assert!(
+            super::doctor_or_err(root.path()).is_err(),
+            "invalid policy must still block launch"
+        );
+        std::fs::write(
+            root.path().join("keld.permissions.jsonc"),
+            r#"{"profile":"strict"}"#,
+        )
+        .expect("restore valid request");
+        std::fs::remove_file(root.path().join("index.html"))
+            .expect("break independent renderer input");
+        assert!(
+            super::doctor_or_err(root.path()).is_err(),
+            "missing renderer must still block launch"
+        );
+    }
+
     use super::*;
     use std::fs;
     #[cfg(windows)]
     use std::time::Instant;
+
+    #[test]
+    fn diagnostic_profile_errors_preserve_the_original_code_and_fix() {
+        let project = tempfile::tempdir().expect("owned diagnostic project");
+        for (policy, code) in [
+            (r#"{"profile":null}"#, "KELD-GUARD005"),
+            (r#"{"profile":"strict"}"#, "KELD-CORE-035"),
+            (r#"{"profile":"legacy"}"#, "KELD-CORE-035"),
+        ] {
+            fs::write(project.path().join("keld.permissions.jsonc"), policy)
+                .expect("test-owned source policy");
+            let source = HostOwnedHelloSession::start(
+                project.path(),
+                project.path().join("must-not-execute.ts"),
+                RestartPolicy::default(),
+            )
+            .expect_err("policy must refuse before opening a diagnostic child");
+            let expected = source.to_string();
+            assert!(expected.starts_with(code), "{expected}");
+            let converted = DevError::from(source);
+            assert!(
+                matches!(&converted, DevError::Doctor(_)),
+                "preflight failure must not become a window-phase failure: {converted:?}"
+            );
+            let actual = converted.to_string();
+            assert_eq!(
+                actual, expected,
+                "CLI must preserve the owning error verbatim"
+            );
+            assert!(!actual.contains("KELD-CLI-031"), "{actual}");
+            assert!(!actual.contains("Re-run `keld doctor`"), "{actual}");
+        }
+    }
 
     fn window_phase_failure() -> keld_core::HelloSessionError {
         keld_core::HelloSessionError::WindowPhase {
@@ -1140,19 +1210,19 @@ mod tests {
         );
     }
 
-    /// GH-1188 D15 at T1: the staged-host preflight leaves only a valid Windows schema-2
-    /// project's renderer verdict to the host. A renderer project's missing renderer and
-    /// an invalid `initialWindow` still fail here, and `keld doctor` keeps its refusal.
+    /// GH-1188 D15 at T2: staged-host preflight and doctor share the admitted
+    /// facade contract. Missing renderer and invalid `initialWindow` remain errors;
+    /// no separate CLI filter may suppress a doctor finding.
     #[cfg(windows)]
     #[test]
-    fn staged_host_preflight_defers_only_a_valid_windows_facade_renderer_verdict() {
+    fn staged_host_preflight_and_doctor_agree_on_windows_facade_admission() {
         let dir = tempfile::tempdir().expect("tempdir");
         fs::create_dir_all(dir.path().join("src")).expect("src");
         fs::write(dir.path().join("src/main.ts"), "export {}\n").expect("main");
         let config = dir.path().join("keld.config.ts");
 
         fs::write(&config, "export default {}\n").expect("renderer config");
-        let msg = staged_host_doctor_or_err(dir.path())
+        let msg = doctor_or_err(dir.path())
             .expect_err("a missing renderer must fail before staging")
             .to_string();
         assert!(msg.contains("[FAIL] renderer"), "{msg}");
@@ -1163,7 +1233,7 @@ mod tests {
             "export default { initialWindow: \"window\" } as const;\n",
         )
         .expect("invalid facade config");
-        let msg = staged_host_doctor_or_err(dir.path())
+        let msg = doctor_or_err(dir.path())
             .expect_err("an invalid initialWindow must fail before staging")
             .to_string();
         assert!(msg.contains("KELD-CLI-047"), "{msg}");
@@ -1173,7 +1243,7 @@ mod tests {
             "export default { entry: \"src/main.ts\", initialWindow: \"none\" } as const;\n",
         )
         .expect("facade config");
-        if let Err(error) = staged_host_doctor_or_err(dir.path()) {
+        if let Err(error) = doctor_or_err(dir.path()) {
             let msg = error.to_string();
             assert!(!msg.contains("renderer"), "{msg}");
         }
@@ -1182,11 +1252,14 @@ mod tests {
             .iter()
             .find(|check| check.label == "renderer")
             .expect("doctor renderer check");
-        assert!(!renderer.ok, "keld doctor keeps its T1 refusal");
         assert!(
-            renderer.detail.contains("KELD-CLI-047"),
-            "{}",
-            renderer.detail
+            renderer.ok,
+            "T2 admits the valid zero-renderer facade: {renderer:?}"
+        );
+        assert!(renderer.error.is_none());
+        assert!(
+            renderer.detail.contains("no initial renderer"),
+            "{renderer:?}"
         );
     }
 

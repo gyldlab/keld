@@ -6,12 +6,18 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 pub(crate) use census::app_top_level_windows;
-
-/// The per-PID top-level window census. Its consumers are the test-admitted facade
-/// cells until product admission (GH-1188 T2).
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+pub(crate) use observation::NativeWindowSnapshot;
+
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+#[path = "window/native_initial_focus.rs"]
+pub(crate) mod initial_focus;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+pub(crate) mod native_control;
+mod observation;
+
+/// The independent per-PID top-level census used by product facade acceptance.
 mod census {
     use windows_sys::Win32::Foundation::{HWND, LPARAM, TRUE};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -74,19 +80,62 @@ mod census {
         census.windows
     }
 
-    /// The top-level windows a live host owns with no application window: Tao's thread
-    /// event target, which `IsWindowVisible` reports visible, and the default IME window
-    /// (read on a zero-window host, Windows 11 26300, tao 0.35.3). Any other class counts
-    /// as an application window, visible or hidden.
-    const HOST_INFRASTRUCTURE_WINDOW_CLASSES: [&str; 2] = ["Tao Thread Event Target", "IME"];
+    /// Observed host infrastructure classes on Windows 11 26300.9711, Tao 0.35.3.
+    /// The thread event target and default IME exist without an application window.
+    /// `GetClassNameW` also reported "MSCTFIME UI" after the real `WebView2` focus transfer
+    /// (GH1188 c87629 native first-window receipt). This is an observed class filter,
+    /// not a cross-version OS guarantee. Unknown and hidden application classes count.
+    const HOST_INFRASTRUCTURE_WINDOW_CLASSES: [&str; 3] =
+        ["Tao Thread Event Target", "IME", "MSCTFIME UI"];
 
     /// [`top_level_windows`] without the host's own infrastructure windows: the census an
     /// application window, shown or hidden, must appear in.
     pub(crate) fn app_top_level_windows(pid: u32) -> Vec<TopLevelWindow> {
-        top_level_windows(pid)
+        application_windows(top_level_windows(pid))
+    }
+
+    fn application_windows(windows: Vec<TopLevelWindow>) -> Vec<TopLevelWindow> {
+        windows
             .into_iter()
             .filter(|window| !HOST_INFRASTRUCTURE_WINDOW_CLASSES.contains(&window.class.as_str()))
             .collect()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{TopLevelWindow, application_windows};
+
+        #[test]
+        fn census_keeps_hidden_apps_and_excludes_observed_input_helpers() {
+            // The first two entries are the actual native failure's class/visibility
+            // pair. The additional hidden and unknown classes prevent a visible-only
+            // or broad "known app class" filter from concealing native resources.
+            let windows = [
+                (1, "Window Class", true),
+                (2, "MSCTFIME UI", false),
+                (3, "Window Class", false),
+                (4, "Unknown native class", false),
+                (5, "Tao Thread Event Target", true),
+                (6, "IME", false),
+            ]
+            .into_iter()
+            .map(|(hwnd, class, visible)| TopLevelWindow {
+                hwnd,
+                class: class.to_owned(),
+                visible,
+            })
+            .collect();
+            let observed = application_windows(windows);
+            assert_eq!(
+                observed
+                    .iter()
+                    .map(|window| window.hwnd)
+                    .collect::<Vec<_>>(),
+                vec![1, 3, 4],
+                "the census must retain hidden/unknown application HWNDs and exclude only observed infrastructure",
+            );
+            assert!(!observed[1].visible && !observed[2].visible);
+        }
     }
 }
 
@@ -116,4 +165,20 @@ pub(crate) fn wait_for_host_window(pid: u32, deadline: Instant) -> Value {
         );
         thread::park_timeout(Duration::from_millis(20));
     }
+}
+
+/// The caption-close stimulus for an HWND just observed on the test-owned Host.
+pub(crate) fn post_close(hwnd: u64) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+    let hwnd = usize::try_from(hwnd).expect("observed HWND fits native pointer");
+    assert_ne!(hwnd, 0, "no close to a null HWND");
+    // SAFETY: the test retained the live Host and just observed this HWND. This
+    // posts the pointer-free caption-close message, never destroys a foreign window.
+    // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-postmessagew
+    assert_ne!(
+        unsafe { PostMessageW(hwnd as _, WM_CLOSE, 0, 0) },
+        0,
+        "post WM_CLOSE: {}",
+        std::io::Error::last_os_error()
+    );
 }

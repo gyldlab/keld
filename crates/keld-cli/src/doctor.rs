@@ -135,12 +135,73 @@ pub fn run_checks(project_root: Option<&Path>) -> Vec<Check> {
     let mut checks = vec![check_bun(), check_project_layout(project_root)];
     if let Some(root) = project_root {
         checks.push(check_renderer(root));
+        checks.push(check_security_profile(root));
     }
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
         checks.push(check_webview_hello());
     }
     checks
+}
+
+fn check_security_profile(root: &Path) -> Check {
+    use keld_guard::{DeclaredProfile, ManifestError};
+
+    let path = root.join("keld.permissions.jsonc");
+    let manifest = match keld_guard::load_manifest(&path) {
+        Ok(manifest) => manifest,
+        Err(ManifestError::NotFound { .. }) => keld_guard::PermissionsManifest::default(),
+        Err(source) => {
+            // Normalize only the displayed path, not the path read by the
+            // shared loader. CLI and MCP must expose the same finding on Windows.
+            let detail = source
+                .to_string()
+                .replace(&path.display().to_string(), &display_project_path(&path));
+            return Check {
+                label: "security_profile",
+                ok: false,
+                error: Some(KeldErrorObject::new(
+                    source.code(),
+                    &detail,
+                    "Correct the bounded permissions JSONC; root /profile accepts only strict or legacy, with no duplicate or misplaced declarations.",
+                )),
+                detail,
+            };
+        }
+    };
+    let (ok, detail, error) = match manifest.declared_profile() {
+        None => (
+            true,
+            "no profile selected; a default run would be unverified; runtime admission not performed".to_owned(),
+            None,
+        ),
+        Some(DeclaredProfile::Legacy) => (
+            true,
+            format!(
+                "declared legacy (configuration valid only); {}; runtime admission not performed; explicit primary launch is eligible on macOS and Windows development hosts",
+                keld_guard::LEGACY_PROFILE_FORFEIT
+            ),
+            None,
+        ),
+        Some(DeclaredProfile::Strict) => {
+            let detail = "requested strict; no exact artifact/profile proof was supplied; runtime admission not performed";
+            (
+                false,
+                detail.to_owned(),
+                Some(KeldErrorObject::new(
+                    "KELD-GUARD011",
+                    detail,
+                    "Supply the existing qualified artifact/platform/profile proof through the host admission path; configuration alone cannot verify Strict.",
+                )),
+            )
+        }
+    };
+    Check {
+        label: "security_profile",
+        ok,
+        detail,
+        error,
+    }
 }
 
 /// Same checks as [`run_checks`], as JSON-serializable findings.
@@ -165,6 +226,17 @@ pub fn findings_json(project_root: Option<&Path>) -> Result<String, serde_json::
 #[must_use]
 pub fn all_ok(checks: &[Check]) -> bool {
     checks.iter().all(|c| c.ok)
+}
+
+/// Static absence of a Strict proof is not invalid configuration. Only the
+/// actual host admission owns that decision; every other failed check blocks.
+pub(crate) fn launch_check_ok(check: &Check) -> bool {
+    check.ok
+        || (check.label == "security_profile"
+            && check
+                .error
+                .as_ref()
+                .is_some_and(|error| error.code == "KELD-GUARD011"))
 }
 
 /// Returns true when every finding passed.
@@ -241,10 +313,10 @@ fn check_project_layout(project_root: Option<&Path>) -> Check {
 fn check_renderer(root: &Path) -> Check {
     match facade_mode_for_project(root) {
         Ok(true) => {
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "macos", windows)))]
             {
                 let detail = String::from(
-                    "KELD-CLI-047: initialWindow: 'none' requires macOS facade boot support. Remove initialWindow for renderer boots on this platform.",
+                    "KELD-CLI-047: initialWindow: 'none' requires macOS or Windows facade boot support. Remove initialWindow for renderer boots on this platform.",
                 );
                 return Check {
                     label: "renderer",
@@ -260,7 +332,7 @@ fn check_renderer(root: &Path) -> Check {
                     ),
                 };
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             return Check {
                 label: "renderer",
                 ok: true,
@@ -342,6 +414,31 @@ fn check_webview_hello() -> Check {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn launch_defers_only_the_static_profile_proof_finding() {
+        let check = |label, code| Check {
+            label,
+            ok: false,
+            detail: "not an admission receipt".to_owned(),
+            error: Some(KeldErrorObject::new(
+                code,
+                "not observed",
+                "run the owning check",
+            )),
+        };
+        assert!(launch_check_ok(&check("security_profile", "KELD-GUARD011")));
+        assert!(!launch_check_ok(&check(
+            "security_profile",
+            "KELD-GUARD005"
+        )));
+        assert!(!launch_check_ok(&check(
+            "security_profile",
+            "KELD-GUARD008"
+        )));
+        assert!(!launch_check_ok(&check("renderer", "KELD-GUARD011")));
+        assert!(!all_ok(&[check("security_profile", "KELD-GUARD011")]));
+    }
+
     use super::*;
     use std::fs;
 
@@ -511,7 +608,7 @@ mod tests {
         )
         .expect("facade config");
         let facade = renderer_check(dir.path());
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             assert!(
                 facade.ok,
@@ -525,7 +622,7 @@ mod tests {
             assert!(renderer.ok, "{renderer:?}");
             assert!(renderer.error.is_none());
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             assert!(
                 !facade.ok,
@@ -570,10 +667,13 @@ mod tests {
         let project = project_check(Some(dir.path()));
         assert!(project.ok, "{project:?}");
         let renderer = renderer_check(dir.path());
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         assert!(renderer.ok, "{renderer:?}");
-        #[cfg(not(target_os = "macos"))]
-        assert!(!renderer.ok, "non-macOS facade unsupported: {renderer:?}");
+        #[cfg(not(any(target_os = "macos", windows)))]
+        assert!(
+            !renderer.ok,
+            "facade unsupported on this platform: {renderer:?}"
+        );
     }
 
     #[test]
@@ -632,6 +732,25 @@ mod tests {
             display_project_path(Path::new(r"\\?\C:\Users\runneradmin\app")),
             r"C:\Users\runneradmin\app"
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_facade_doctor_accepts_no_renderer_after_t2_release_integration() {
+        let dir = tempfile::tempdir().expect("doctor fixture");
+        fs::write(
+            dir.path().join("keld.config.ts"),
+            "export default { initialWindow: 'none', entry: 'main.ts' } as const;\n",
+        )
+        .expect("facade config");
+        fs::write(dir.path().join("main.ts"), "export {};\n").expect("entry");
+        assert!(!dir.path().join("index.html").exists());
+        let result = renderer_check(dir.path());
+        assert!(
+            result.ok,
+            "T2 Windows facade must not require a renderer: {result:?}"
+        );
+        assert!(result.error.is_none());
     }
 
     #[test]

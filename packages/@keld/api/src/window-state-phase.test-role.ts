@@ -12,7 +12,7 @@ import {
   stateMapGet,
   stateMapSet,
   nativeFacadeBootSelected,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 const mode = process.argv[2];
 let state: (bytes: Uint8Array) => void = () => {
   throw new Error("missing applier");
@@ -53,8 +53,8 @@ if (failing) bytes[0] = 0xff;
 let hits = 0;
 if (mode === "lifecycle-length") {
   const { mock } = await import("bun:test");
-  const canonical = await import("../../kipc/src/transport.ts");
-  mock.module("../../kipc/src/transport.ts", () => ({
+  const canonical = await import("@keld/kipc");
+  mock.module("@keld/kipc", () => ({
     ...canonical,
     WorkerLink: {
       open: async () => ({

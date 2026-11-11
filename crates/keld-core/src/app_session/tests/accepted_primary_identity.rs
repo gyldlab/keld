@@ -1,12 +1,15 @@
 //! KEL-97 authenticated identity proof; no OS-containment or grant claim.
 #[cfg(target_os = "macos")]
 use super::super::MacBoundStart;
+#[cfg(not(windows))]
 use super::super::{PrimaryCallerContext, dispatch_primary_echo};
 use super::*;
+#[cfg(windows)]
+use keld_runtime::primary::RolePrincipal;
 use keld_runtime::primary::{
     BoundPrimaryGeneration, PrimaryRoleConfig, PrimaryRoleSupervisor, RoleOwner,
 };
-use std::io::{BufRead as _, BufReader, Write as _};
+use std::io::{BufReader, Write as _};
 use std::net::{TcpListener, TcpStream};
 
 const BOUND: Duration = Duration::from_secs(20);
@@ -26,7 +29,10 @@ impl AcceptedRole {
             .join("src/app_session/tests/fixtures/accepted_primary_identity_role.ts");
         let config = match owner {
             RoleOwner::Primary => PrimaryRoleConfig::primary("bun"),
+            #[cfg(not(windows))]
             RoleOwner::AppBound => PrimaryRoleConfig::app_bound("bun"),
+            #[cfg(windows)]
+            RoleOwner::AppBound => panic!("app-bound fixture is unavailable on Windows"),
         };
         let supervisor = PrimaryRoleSupervisor::start_with_bound_generations(
             config
@@ -103,14 +109,12 @@ impl Drop for AcceptedRole {
 fn read_control(control: &mut BufReader<TcpStream>) -> String {
     let mut line = String::new();
     assert!(
-        control
-            .read_line(&mut line)
-            .expect("actual controlled role reply")
-            > 0
+        std::io::BufRead::read_line(control, &mut line).expect("actual controlled role reply") > 0
     );
     line.trim_end().to_owned()
 }
 
+#[cfg(not(windows))]
 #[test]
 fn accepted_app_bound_identity_is_refused_by_primary_admission() {
     let mut role = AcceptedRole::start(RoleOwner::AppBound);
@@ -126,11 +130,15 @@ fn accepted_app_bound_identity_is_refused_by_primary_admission() {
         PlatformPrimaryOwnerHandle { command_tx: owner },
         SessionShutdownState::new(),
         None,
+        #[cfg(windows)]
+        keld_wv::webview2::AppReadyTrigger::NavigationReady,
         #[cfg(target_os = "macos")]
         MacBoundStart {
             auth_configuration: AuthConfiguration::new(),
             presentation: None,
             facade_windows: false,
+            original_selection: None,
+            renderer_outcomes: None,
         },
     );
     let Err(error) = result else {
@@ -149,6 +157,7 @@ fn accepted_app_bound_identity_is_refused_by_primary_admission() {
     );
 }
 
+#[cfg(not(windows))]
 #[test]
 fn accepted_primary_identity_fences_caller_context_before_healthy_echo() {
     let mut primary = AcceptedRole::start(RoleOwner::Primary);
@@ -169,11 +178,15 @@ fn accepted_primary_identity_fences_caller_context_before_healthy_echo() {
         PlatformPrimaryOwnerHandle { command_tx: owner },
         SessionShutdownState::new(),
         None,
+        #[cfg(windows)]
+        keld_wv::webview2::AppReadyTrigger::NavigationReady,
         #[cfg(target_os = "macos")]
         MacBoundStart {
             auth_configuration: AuthConfiguration::new(),
             presentation: None,
             facade_windows: false,
+            original_selection: None,
+            renderer_outcomes: None,
         },
     )
     .expect("actual authenticated primary router");
@@ -239,4 +252,148 @@ fn accepted_primary_identity_fences_caller_context_before_healthy_echo() {
             "actual Runtime child and bootstrap cleanup"
         );
     }
+}
+
+#[cfg(windows)]
+fn assert_same_content_admission_is_not_current(
+    handle: &PrimaryRouterHandle,
+    snapshot: &GuardSnapshot,
+    path: &Path,
+    digest: [u8; 32],
+    admitted: keld_guard::ProfileState,
+    attempt: u32,
+    principal: RolePrincipal,
+) {
+    let other_verified = load_verified_manifest(
+        File::open(path).expect("second retained file"),
+        path.to_owned(),
+        digest,
+    )
+    .expect("same verified policy bytes");
+    let other_snapshot = GuardSnapshot::prepare_uncontained(other_verified, admitted)
+        .expect("separately prepared guard snapshot");
+    assert!(!Arc::ptr_eq(&snapshot.fs, &other_snapshot.fs));
+    assert!(handle.is_current(attempt), "original admission is current");
+    let original_binding = {
+        let mut current = handle.current.lock().expect("active generation");
+        current
+            .as_mut()
+            .expect("bound generation")
+            .profile_binding
+            .replace(Arc::clone(&other_snapshot.fs))
+            .expect("original admitted binding")
+    };
+    assert_eq!(
+        handle.observed_profile_binding(attempt, principal),
+        Some((keld_guard::ProfileState::Legacy, digest)),
+        "equal profile and digest do not establish object identity"
+    );
+    assert!(!handle.is_current(attempt), "different admission is stale");
+    handle
+        .current
+        .lock()
+        .expect("active generation")
+        .as_mut()
+        .expect("bound generation")
+        .profile_binding = Some(original_binding);
+    assert!(
+        handle.is_current(attempt),
+        "original admission is current again"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_authenticated_generations_bind_retained_admission_to_the_current_principal() {
+    use sha2::{Digest as _, Sha256};
+
+    let _custody = keld_runtime::windows_job::install_host_death_job()
+        .expect("install process-lifetime custody before starting any role");
+    let root = tempfile::tempdir().expect("owned policy root");
+    let path = root.path().join("policy.jsonc");
+    let bytes = br#"{"profile":"legacy"}"#;
+    std::fs::write(&path, bytes).expect("initial policy");
+    let digest: [u8; 32] = Sha256::digest(bytes).into();
+    let verified = load_verified_manifest(
+        File::open(&path).expect("retained file"),
+        path.clone(),
+        digest,
+    )
+    .expect("verified policy");
+    let admitted = super::super::profile_preflight::validate_profile(3, &verified, false)
+        .expect("actual uncontained admission");
+    let snapshot =
+        GuardSnapshot::prepare_uncontained(verified, admitted).expect("retained guard snapshot");
+    let mut role = AcceptedRole::start(RoleOwner::Primary);
+    let (g1, mut control) = role.bind();
+    let p1 = g1.principal();
+    let a1 = g1.attempt();
+    let (owner, _commands) = mpsc::channel();
+    let (window, _events) = mpsc::channel();
+    let router = PrimaryRouter::start_bound(
+        g1,
+        window,
+        PlatformPrimaryOwnerHandle { command_tx: owner },
+        SessionShutdownState::new(),
+        Some(&snapshot),
+        keld_wv::webview2::AppReadyTrigger::NavigationReady,
+    )
+    .expect("authenticated initial generation");
+    let handle = router.handle();
+    assert_eq!(
+        handle.observed_profile_binding(a1, p1),
+        Some((keld_guard::ProfileState::Legacy, digest))
+    );
+    assert_same_content_admission_is_not_current(
+        &handle, &snapshot, &path, digest, admitted, a1, p1,
+    );
+    // An external custody probe may hold this exact test process after the
+    // real bound publication. The marker conveys phase only, not authority.
+    if std::env::var_os("KELD_W6_CUSTODY_HOLD").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        println!("KELD_W6_BOUND");
+        std::io::stdout()
+            .flush()
+            .expect("flush custody phase marker");
+        let mut line = String::new();
+        std::io::stdin()
+            .read_line(&mut line)
+            .expect("wait for custody probe");
+    }
+    std::fs::write(&path, br#"{"profile":"strict"}"#).expect("replace path policy after capture");
+    control
+        .get_mut()
+        .write_all(b"CRASH\n")
+        .expect("crash first role");
+    control.get_mut().flush().expect("flush crash");
+    let (g2, _control2) = role.bind();
+    let p2 = g2.principal();
+    let a2 = g2.attempt();
+    assert_ne!(p1, p2, "fresh host-minted principal");
+    assert_ne!(a1, a2, "fresh coordinator attempt");
+    handle
+        .retire_generation(a1)
+        .expect("retire first generation");
+    assert_eq!(handle.observed_profile_binding(a1, p1), None);
+    handle
+        .install_generation_with_identity(a2, g2.into_stream(), PrimaryLinkIdentity::Role(p2))
+        .expect("publish authenticated successor");
+    assert_eq!(
+        handle.observed_profile_binding(a2, p2),
+        Some((keld_guard::ProfileState::Legacy, digest))
+    );
+    assert_eq!(
+        handle.observed_profile_binding(a2, p1),
+        None,
+        "stale principal must not qualify successor"
+    );
+    assert_eq!(
+        handle.observed_profile_binding(a1, p2),
+        None,
+        "stale attempt must not qualify successor"
+    );
+    router.shutdown().expect("router cleanup");
+    assert!(matches!(
+        role.finish(),
+        Some(keld_runtime::SupervisorOutcome::Stopped)
+    ));
 }

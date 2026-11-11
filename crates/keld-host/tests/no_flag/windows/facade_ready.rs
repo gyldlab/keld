@@ -1,16 +1,18 @@
-//! Real Windows schema-two boots (GH-1188 T1). The product refusal below runs in every
-//! build. The facade cells launch through D2's debug test admission, so they compile
-//! only under `profile-test-hooks` debug and use ephemeral stages; T2's product
-//! admission removes the env they set.
+//! Real Windows schema-two product boots (GH1188 T2/T3). Readiness, release and
+//! managed construction use the engine's derived support. The pre-create native
+//! census proves Ready still occurs with zero managed windows.
 
+use crate::dev_stage_command;
 use crate::support::product::ProductFixture;
-use crate::{PRODUCT_DEADLINE, dev_stage_command};
 use std::fs;
 use std::io::Write as _;
 use std::path::Path;
-use std::process::{Output, Stdio};
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+use std::process::Output;
+use std::process::Stdio;
 use std::time::Instant;
 
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 pub(crate) const SCHEMA_TWO_CONFIG: &str = "export default { name: \"KELD Windows facade\", entry: \"src/main.ts\", initialWindow: \"none\" } as const;\n";
 
 pub(crate) fn stage_boot(project: &Path) -> keld_cli::boot::DevBootStage {
@@ -19,6 +21,7 @@ pub(crate) fn stage_boot(project: &Path) -> keld_cli::boot::DevBootStage {
 }
 
 /// A refused boot: exited with a failure before any Bun child could report.
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 fn refused_output(command: &mut std::process::Command) -> Output {
     let mut host = crate::support::signed_process::SignedStateProcessGuard::new(
         command
@@ -39,7 +42,7 @@ fn refused_output(command: &mut std::process::Command) -> Output {
             .take()
             .expect("captured host stderr"),
     );
-    let status = host.wait(Instant::now() + PRODUCT_DEADLINE);
+    let status = host.wait(Instant::now() + crate::PRODUCT_DEADLINE);
     let mut output = Output {
         status,
         stdout: Vec::new(),
@@ -51,26 +54,7 @@ fn refused_output(command: &mut std::process::Command) -> Output {
     output
 }
 
-fn assert_product_refusal(
-    stage: &keld_cli::boot::DevBootStage,
-    marker: &Path,
-    env: &[(&str, &str)],
-) {
-    let output = refused_output(
-        dev_stage_command(stage.root(), stage.host())
-            .envs(env.iter().copied())
-            .env("KELD_T1_ENTRY_MARKER", marker),
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "a schema-2 boot ran: {output:?}");
-    assert!(stderr.contains("KELD-CORE-034"), "{stderr}");
-    assert!(
-        stderr.contains("schema 2 is supported on macOS only"),
-        "{stderr}"
-    );
-    assert!(!marker.exists(), "the entry ran before the refusal");
-}
-
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 fn marker_fixture() -> (ProductFixture, std::path::PathBuf) {
     let fixture = ProductFixture::new();
     fs::write(fixture.project.join("keld.config.ts"), SCHEMA_TWO_CONFIG)
@@ -85,39 +69,65 @@ fn marker_fixture() -> (ProductFixture, std::path::PathBuf) {
     (fixture, marker)
 }
 
-/// AC3/AC23: at T1 a stage the CLI now produces stays refused by the host, whose
-/// `KELD-CORE-034` replaces the CLI's staging error (D15), until the release proof.
+/// AC3/AC23 now require product admission. The retired test switch selects
+/// nothing: absent, false and true all run the same validated zero-window boot.
 #[test]
-fn windows_schema_two_stage_is_refused_without_the_test_admission() {
-    let (fixture, marker) = marker_fixture();
-    let stage = stage_boot(&fixture.project);
-    let descriptor: serde_json::Value = serde_json::from_slice(
-        &fs::read(stage.root().join("keld.boot.json")).expect("staged descriptor"),
-    )
-    .expect("strict descriptor JSON");
-    assert_eq!(descriptor["schema"], 2, "the CLI stages a schema-2 boot");
-    assert!(descriptor.get("renderer").is_none(), "{descriptor}");
-    assert!(!stage.root().join("index.html").exists());
-    assert_product_refusal(&stage, &marker, &[]);
+fn windows_schema_two_product_boots_without_a_test_admission() {
+    for retired_value in [None, Some("0"), Some("1")] {
+        product_facade_cycle(retired_value);
+    }
 }
 
-/// D2: without `profile-test-hooks` debug the env selects nothing and its name is not
-/// even in the image: the admission is compiled out of a product build.
-#[cfg(not(all(feature = "profile-test-hooks", debug_assertions)))]
-#[test]
-fn windows_test_admission_is_compiled_out_of_a_product_build() {
-    let (fixture, marker) = marker_fixture();
+fn product_facade_cycle(retired_value: Option<&str>) {
+    use crate::support::control::{accept_ready_generation, read_control_line};
+    use crate::support::signed_process::SignedStateProcessGuard;
+    let fixture = ProductFixture::schema_two();
     let stage = stage_boot(&fixture.project);
-    assert_product_refusal(
-        &stage,
-        &marker,
-        &[("KELD_TEST_WINDOWS_ADMIT_FACADE_BOOT", "1")],
+    let descriptor: serde_json::Value =
+        serde_json::from_slice(&fs::read(stage.root().join("keld.boot.json")).expect("descriptor"))
+            .expect("strict descriptor JSON");
+    assert_eq!(descriptor["schema"], 2);
+    assert!(descriptor.get("renderer").is_none());
+    assert!(!stage.root().join("index.html").exists());
+    let control = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("product control");
+    let mut command = dev_stage_command(stage.root(), stage.host());
+    command
+        .env(
+            "KELD_T1B_CONTROL",
+            control
+                .local_addr()
+                .expect("control address")
+                .port()
+                .to_string(),
+        )
+        .env_remove("KELD_TEST_WINDOWS_ADMIT_FACADE_BOOT")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(value) = retired_value {
+        command.env("KELD_TEST_WINDOWS_ADMIT_FACADE_BOOT", value);
+    }
+    let mut host = SignedStateProcessGuard::new(command.spawn().expect("product facade host"));
+    let (mut reader, mut writer, bun, _) = accept_ready_generation(&control, host.child_mut());
+    host.observe_bun(bun);
+    assert_eq!(
+        crate::support::window::app_top_level_windows(host.host_pid()),
+        []
     );
-    let image = fs::read(env!("CARGO_BIN_EXE_keld-host")).expect("read the built host");
+    writer.write_all(b"QUIT\n").expect("product Quit");
+    writer.flush().expect("flush Quit");
+    assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
+    assert_eq!(read_control_line(&mut reader), "LINK_EOF");
+    let status = host.wait(Instant::now() + crate::ui_end_kill_switch());
+    assert!(status.success(), "product facade release failed: {status}");
+}
+
+#[test]
+fn retired_facade_admission_switch_is_absent_from_every_host_image() {
+    let image = fs::read(env!("CARGO_BIN_EXE_keld-host")).expect("built host image");
     let name = b"KELD_TEST_WINDOWS_ADMIT_FACADE_BOOT";
     assert!(
         !image.windows(name.len()).any(|window| window == name),
-        "the test admission reached a product image"
+        "the retired environment admission must not exist, including debug-hook Hosts"
     );
 }
 
@@ -162,7 +172,8 @@ fn windows_primary_rechecks_the_stage_for_every_generation() {
 
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 mod admitted {
-    use super::{SCHEMA_TWO_CONFIG, assert_product_refusal, refused_output, stage_boot};
+    use super::{SCHEMA_TWO_CONFIG, refused_output, stage_boot};
+    use crate::facade_window::fixture::{ephemeral_profile_dir, retained_descendants};
     use crate::support::control::{
         accept_control_or_host_failure, accept_ready_generation, parse_hello, read_control_line,
         read_control_line_or_host_failure,
@@ -170,8 +181,11 @@ mod admitted {
     use crate::support::facade_fixture::{
         LATE_PACKAGE_ROLE, junction, stage_capture_order, stage_public_packages,
     };
-    use crate::support::process::{PipeText, pipe_text_by, process_exists, read_pipe_on_thread};
+    use crate::support::process::{
+        PipeText, assert_process_signaled, pipe_text_by, process_exists, read_pipe_on_thread,
+    };
     use crate::support::product::{ProductFixture, StageFixture};
+    use crate::support::profile_run::{ProfileTestRoot, assert_profile_test_root_feature};
     use crate::support::signed_process::SignedStateProcessGuard;
     use crate::support::window::{app_top_level_windows, wait_for_host_window};
     use crate::{PRODUCT_DEADLINE, dev_stage_command, ui_end_kill_switch};
@@ -184,8 +198,6 @@ mod admitted {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    const ADMISSION: &str = "KELD_TEST_WINDOWS_ADMIT_FACADE_BOOT";
-
     fn listener() -> (TcpListener, String) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind facade control");
         let port = listener
@@ -196,12 +208,11 @@ mod admitted {
         (listener, port)
     }
 
-    /// The Windows host launched for one test-admitted boot of `stage`. Every inherited
+    /// The Windows host launched for one product-admitted boot of `stage`. Every inherited
     /// value a cell does not name is removed, so the launcher's own env cannot decide.
-    fn admitted_command(stage: &keld_cli::boot::DevBootStage, port: &str) -> Command {
+    fn product_command(stage: &keld_cli::boot::DevBootStage, port: &str) -> Command {
         let mut command = dev_stage_command(stage.root(), stage.host());
         command
-            .env(ADMISSION, "1")
             .env("KELD_T1B_CONTROL", port)
             .env_remove("KELD_NATIVE_WINDOW_FACADE")
             .env_remove("BUN_OPTIONS");
@@ -270,7 +281,7 @@ mod admitted {
         assert!(descriptor.get("renderer").is_none());
 
         let (control, port) = listener();
-        let mut host = spawn_host(&mut admitted_command(&stage, &port));
+        let mut host = spawn_host(&mut product_command(&stage, &port));
         let host_pid = host.host_pid();
         let (mut reader, mut writer, bun_pid, _) =
             accept_ready_generation(&control, host.child_mut());
@@ -312,7 +323,7 @@ mod admitted {
         // The child can arm its watch before the parent resumes after spawn.
         let started = Instant::now();
         let mut host =
-            spawn_host(admitted_command(stage, &port).env("KELD_T1B_STALL_BEFORE_INIT", "1"));
+            spawn_host(product_command(stage, &port).env("KELD_T1B_STALL_BEFORE_INIT", "1"));
         let stdout = read_pipe_on_thread(host.child_mut().stdout.take().expect("captured stdout"));
         let stderr = read_pipe_on_thread(host.child_mut().stderr.take().expect("captured stderr"));
         let stream = accept_control_or_host_failure(
@@ -403,6 +414,7 @@ mod admitted {
     /// so no preload: the first thing this entry does is delete the live environment,
     /// and only the launch define can still select the facade barrier.
     #[test]
+    #[allow(clippy::too_many_lines)] // Keep zero-Ready, transport and native cleanup in the same staged boot.
     fn windows_direct_entry_boot_mode_survives_environment_deletion() {
         for inherited in [None, Some("0"), Some("1"), Some("unknown-caller-value")] {
             let fixture = ProductFixture::new();
@@ -413,8 +425,14 @@ mod admitted {
             fs::remove_file(fixture.project.join("index.html")).expect("no renderer source");
             let stage = stage_boot(&fixture.project);
             stage_public_packages(&stage);
+            let profiles = ProfileTestRoot::new();
+            assert_profile_test_root_feature(stage.host(), profiles.path());
             let (control, port) = listener();
-            let mut command = admitted_command(&stage, &port);
+            let mut command = product_command(&stage, &port);
+            command
+                .env("KELD_PROFILE_TEST_ROOT", profiles.path())
+                .env("TEMP", profiles.path().parent().expect("owned temp parent"))
+                .env("TMP", profiles.path().parent().expect("owned temp parent"));
             if let Some(value) = inherited {
                 command.env("KELD_NATIVE_WINDOW_FACADE", value);
             }
@@ -429,7 +447,6 @@ mod admitted {
             .expect("launch-mode JSON");
             host.observe_bun(u32::try_from(mode["pid"].as_u64().expect("Bun pid")).expect("pid"));
             assert_eq!(mode["hint"], "1", "inherited={inherited:?}");
-            assert_eq!(mode["admission"], Value::Null, "the admission is scrubbed");
             assert_eq!(mode["bunOptions"], Value::Null, "BUN_OPTIONS is removed");
             let mut next = |label: &str, host: &mut SignedStateProcessGuard| {
                 read_control_line_or_host_failure(&mut reader, host.child_mut(), label)
@@ -443,31 +460,78 @@ mod admitted {
             assert_zero_app_windows(host_pid);
             assert_eq!(next("PREQUIT", &mut host), "PREQUIT KELD-COMPAT-012");
             assert_eq!(next("READY", &mut host), "READY");
+            // The fixture waits for this command: zero Ready is independently
+            // observable before the supported constructor can create an HWND.
+            assert_zero_app_windows(host_pid);
+            command_line(&mut writer, "CREATE");
             assert_eq!(
                 next("POST_READY", &mut host),
-                "POST_READY KELD-CORE-042 frames=1 windows=0",
-                "D1: the session answers Subscribe and refuses Create until managed windows"
+                "POST_READY returned frames=1 windows=1",
+                "D1/AC6: the same product admission now reaches the managed native builder"
+            );
+            let windows = crate::support::window::app_top_level_windows(host_pid);
+            assert_eq!(windows.len(), 1, "public constructor has no native HWND");
+            let native = crate::support::window::NativeWindowSnapshot::capture(
+                u64::try_from(windows[0].hwnd).expect("observed HWND"),
+                host_pid,
+            )
+            .expect("native facade/controller observation");
+            assert!(
+                !native.children.is_empty(),
+                "public facade has no controller hosting windows"
+            );
+            let descendants = retained_descendants(host.child_mut());
+            assert!(
+                !descendants.is_empty(),
+                "late-package process census is empty"
+            );
+            let profile = ephemeral_profile_dir(profiles.path());
+            command_line(&mut writer, "DESTROY");
+            assert_eq!(
+                next("POST_DESTROY", &mut host),
+                "POST_DESTROY windows=0 closed=1 contents=1"
+            );
+            assert!(
+                native.live_handles().is_empty(),
+                "Destroy answered before native retirement"
             );
             assert_zero_app_windows(host_pid);
             command_line(&mut writer, "QUIT");
             assert_eq!(next("QUIT_ACCEPTED", &mut host), "QUIT_ACCEPTED");
             let status = host.wait(Instant::now() + ui_end_kill_switch());
             assert!(status.success(), "facade host exited with {status}");
+            for (pid, process) in descendants {
+                assert_process_signaled(&process, &format!("late-package descendant {pid}"));
+            }
+            assert_zero_app_windows(host_pid);
+            assert!(
+                !profile.exists(),
+                "late-package managed profile survived native retirement"
+            );
+            profiles.remove();
         }
     }
 
     /// AC5 NC 1b and AC20: `--preload` for every boot kind whose stage has the sidecar,
     /// so the transport captures its intrinsics before the app's first module.
     #[test]
+    #[allow(clippy::too_many_lines)] // Compare transport capture on both boots with their explicit cleanup.
     fn windows_primary_preloads_the_staged_transport_before_the_first_module() {
         for facade in [true, false] {
             let fixture = StageFixture::legacy_api_ready();
             let stage = stage_capture_order(&fixture, facade);
+            let profiles = ProfileTestRoot::new();
+            assert_profile_test_root_feature(stage.host(), profiles.path());
             let (control, port) = listener();
-            let mut command = admitted_command(&stage, &port);
-            command.env("KELD_NATIVE_WINDOW_FACADE", "1");
+            let mut command = product_command(&stage, &port);
+            command
+                .env("KELD_NATIVE_WINDOW_FACADE", "1")
+                .env("KELD_PROFILE_TEST_ROOT", profiles.path())
+                .env("TEMP", profiles.path().parent().expect("owned temp parent"))
+                .env("TMP", profiles.path().parent().expect("owned temp parent"));
             let mut host = spawn_host(&mut command);
-            let (mut reader, _writer) = accept_control(&control, &mut host);
+            let host_pid = host.host_pid();
+            let (mut reader, mut writer) = accept_control(&control, &mut host);
             let bound = read_control_line_or_host_failure(&mut reader, host.child_mut(), "BOUND");
             let bun_pid = bound
                 .strip_prefix("BOUND ")
@@ -485,15 +549,75 @@ mod admitted {
                 },
                 "AC20: the renderer child observes \"0\" under an inherited \"1\""
             );
+            assert_eq!(
+                read_control_line_or_host_failure(&mut reader, host.child_mut(), "READY"),
+                "READY",
+            );
+            if facade {
+                assert_zero_app_windows(host.host_pid());
+            }
+            command_line(&mut writer, "CALL");
             let capture =
                 read_control_line_or_host_failure(&mut reader, host.child_mut(), "CAPTURE");
             assert_eq!(capture, "CAPTURE 0", "facade={facade}");
-            if !facade {
+            let descendants = if facade {
+                assert_eq!(
+                    read_control_line_or_host_failure(
+                        &mut reader,
+                        host.child_mut(),
+                        "PUBLIC_CREATED"
+                    ),
+                    "PUBLIC_CREATED 1",
+                );
+                let windows = crate::support::window::app_top_level_windows(host.host_pid());
+                assert_eq!(
+                    windows.len(),
+                    1,
+                    "capture-order constructor has no native HWND"
+                );
+                let native = crate::support::window::NativeWindowSnapshot::capture(
+                    u64::try_from(windows[0].hwnd).expect("observed HWND"),
+                    host.host_pid(),
+                )
+                .expect("capture-order controller observation");
+                assert_ne!(native.children, Vec::<usize>::new());
+                let descendants = retained_descendants(host.child_mut());
+                command_line(&mut writer, "DESTROY");
+                assert_eq!(
+                    read_control_line_or_host_failure(
+                        &mut reader,
+                        host.child_mut(),
+                        "PUBLIC_DESTROYED"
+                    ),
+                    "PUBLIC_DESTROYED closed=1 contents=1",
+                );
+                assert!(
+                    native.live_handles().is_empty(),
+                    "capture-order native resources survived Destroy"
+                );
+                assert_zero_app_windows(host.host_pid());
+                descendants
+            } else {
                 let window =
                     wait_for_host_window(host.host_pid(), Instant::now() + PRODUCT_DEADLINE);
                 assert_ne!(window["handle"].as_u64(), Some(0), "{window}");
-            }
+                retained_descendants(host.child_mut())
+            };
+            assert!(
+                !descendants.is_empty(),
+                "capture-order process census is empty"
+            );
+            let profile = ephemeral_profile_dir(profiles.path());
             retire(host);
+            for (pid, process) in descendants {
+                assert_process_signaled(&process, &format!("capture-order descendant {pid}"));
+            }
+            assert_zero_app_windows(host_pid);
+            assert!(
+                !profile.exists(),
+                "capture-order profile survived native retirement"
+            );
+            profiles.remove();
         }
     }
 
@@ -526,7 +650,7 @@ mod admitted {
     ) {
         let (_control, port) = listener();
         let output =
-            refused_output(admitted_command(stage, &port).env("KELD_T1_ENTRY_MARKER", marker));
+            refused_output(product_command(stage, &port).env("KELD_T1_ENTRY_MARKER", marker));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!output.status.success(), "{label} launched: {output:?}");
         assert!(stderr.contains("KELD-CORE-037"), "{label}: {stderr}");
@@ -652,7 +776,7 @@ mod admitted {
 
         let stage = stage_boot(&fixture.project);
         let (control, port) = listener();
-        let mut command = admitted_command(&stage, &port);
+        let mut command = product_command(&stage, &port);
         command
             .env("BUN_OPTIONS", &preload)
             .env("KELD_T1_ATTACKER_MARKER", &marker);
@@ -663,7 +787,7 @@ mod admitted {
         retire(host);
     }
 
-    /// AC3 *NC*: the test admission changes no descriptor rule.
+    /// AC3 negative control: product admission changes no descriptor rule.
     #[test]
     fn windows_schema_two_descriptor_with_a_renderer_is_refused_under_the_admission() {
         let (fixture, marker) = super::marker_fixture();
@@ -687,20 +811,10 @@ mod admitted {
         .expect("tampered descriptor");
         let (_control, port) = listener();
         let output =
-            refused_output(admitted_command(&stage, &port).env("KELD_T1_ENTRY_MARKER", &marker));
+            refused_output(product_command(&stage, &port).env("KELD_T1_ENTRY_MARKER", &marker));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!output.status.success(), "{output:?}");
         assert!(stderr.contains("KELD-CORE-035"), "{stderr}");
         assert!(!marker.exists(), "the entry ran under a refused descriptor");
-    }
-
-    /// D2: the env's value is the admission, not its presence.
-    #[test]
-    fn windows_test_admission_requires_the_exact_value() {
-        let (fixture, marker) = super::marker_fixture();
-        let stage = stage_boot(&fixture.project);
-        for value in ["0", "", "true"] {
-            assert_product_refusal(&stage, &marker, &[(ADMISSION, value)]);
-        }
     }
 }

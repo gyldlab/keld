@@ -50,9 +50,13 @@ pub(in crate::app_session) fn initial_ready_router_with_window_loop() -> (
     let handle = PrimaryRouterHandle {
         current: Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
             identity: PrimaryLinkIdentity::Fixture,
+            #[cfg(windows)]
+            profile_binding: None,
             attempt: 1,
             writer: server,
             reader_stop: Arc::new(AtomicBool::new(false)),
+            #[cfg(target_os = "macos")]
+            dialog_nonce_high_water: 0,
             pending_quit: None,
         }))),
         readers: Arc::new(Mutex::new(HashMap::new())),
@@ -77,6 +81,12 @@ pub(in crate::app_session) fn initial_ready_router_with_window_loop() -> (
         auth: None,
         #[cfg(target_os = "macos")]
         auth_commands: None,
+        #[cfg(target_os = "macos")]
+        dialog: None,
+        #[cfg(target_os = "macos")]
+        menu: None,
+        #[cfg(target_os = "macos")]
+        compat: None,
         guardian: PlatformPrimaryOwnerHandle { command_tx },
         window_commands: window_tx,
         #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -285,9 +295,13 @@ fn failed_bound_restart_rejects_unowned_or_terminal_transitions() {
                 let (writer, _peer) = primary_test_stream_pair();
                 *handle.current.lock().expect("generation lock") = Some(ActivePrimaryGeneration {
                     identity: PrimaryLinkIdentity::Fixture,
+                    #[cfg(windows)]
+                    profile_binding: None,
                     attempt: if case == "successor" { 3 } else { 1 },
                     writer,
                     reader_stop: Arc::new(AtomicBool::new(false)),
+                    #[cfg(target_os = "macos")]
+                    dialog_nonce_high_water: 0,
                     pending_quit: None,
                 });
                 if case != "successor" {
@@ -490,9 +504,8 @@ fn failed_owner_shutdown_after_accepted_quit_wakes_ui_on_every_os() {
             "cause {cause}: {error}"
         );
         if wakes_ui {
-            assert_eq!(
-                window_rx.try_recv(),
-                Ok(AppWindowCommand::Fatal),
+            assert!(
+                matches!(window_rx.try_recv(), Ok(AppWindowCommand::Fatal)),
                 "a failed owner shutdown after an accepted Quit must wake the UI"
             );
         }

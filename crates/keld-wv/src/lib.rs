@@ -12,10 +12,15 @@
 #[cfg(all(feature = "profile-test-hooks", not(debug_assertions)))]
 compile_error!("KEL-135 profile test hooks are available only in debug builds");
 
+#[cfg(target_os = "windows")]
+extern crate tao_windows as tao;
+
 mod engine;
 mod error;
 mod hello;
 mod media;
+#[cfg(any(target_os = "macos", windows))]
+mod native_window;
 pub mod profile;
 #[cfg(target_os = "macos")]
 mod startup;
@@ -108,10 +113,16 @@ pub mod wkwebview;
 #[doc(hidden)]
 pub mod wv_link;
 
+#[cfg(target_os = "macos")]
+pub use engine::{AppDesktopDisplay, AppDesktopFacts, AppDesktopRect};
 pub use engine::{
-    AppWindowCommand, AppWindowEvent, BuildStage, DevtoolsAction, LogicalSize, NavTarget, Rect,
-    WebEngine, WebKitGtkEngineExt, WebView2EngineExt, WebviewSpec, WindowSnapshot,
-    WkWebViewEngineExt,
+    AppWindowCommand, AppWindowEvent, ApplicationNameForUserAgent, BuildStage, DevtoolsAction,
+    LogicalSize, NavTarget, Rect, WebEngine, WebKitGtkEngineExt, WebView2EngineExt, WebviewSpec,
+    WindowSnapshot, WkWebViewEngineExt,
+};
+#[cfg(target_os = "macos")]
+pub use engine::{
+    MacOriginalNavigationFact, NativeNavigationContext, NativeNavigationRefusal, OriginalEntryQuery,
 };
 pub use error::WvError;
 pub use hello::{DEFAULT_HTML as HELLO_HTML, run as run_hello_window};
@@ -119,14 +130,18 @@ pub use media::{
     MediaPermission, WEB_CAMERA, WEB_MEDIA_ORIGIN, WEB_MICROPHONE, media_permission_allowed,
 };
 pub use profile::{ProfileError, ProfileErrorKind, ProfileIdentity, WebProfileSelection};
+#[cfg(all(feature = "profile-test-hooks", target_os = "windows"))]
+pub use webview2::TEST_WINDOWS_BARRIER_GRACE_EXPIRY_ENV;
 #[cfg(all(
     feature = "profile-test-hooks",
     debug_assertions,
     target_os = "windows"
 ))]
-pub use webview2::TEST_STALL_BEFORE_INIT_ENV;
-#[cfg(all(feature = "profile-test-hooks", target_os = "windows"))]
-pub use webview2::TEST_WINDOWS_BARRIER_GRACE_EXPIRY_ENV;
+pub use webview2::{
+    TEST_STALL_BEFORE_INIT_ENV, TEST_WINDOWS_FAIL_BUILD_ENV, TEST_WINDOWS_NATIVE_HOLD_ENV,
+    TEST_WINDOWS_PAGE_READBACK_ENV, TEST_WINDOWS_T2_OBSERVE_ENV,
+    TEST_WINDOWS_WITHHOLD_LATER_GENERATION_RECEIPT_ENV,
+};
 
 /// Identifies a webview instance owned by the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

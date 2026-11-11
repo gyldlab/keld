@@ -5,6 +5,7 @@
 //! does not implement a second restart loop: spawn, backoff, crash-loop
 //! breaking, output capture, shutdown and reap stay in the generic supervisor.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -364,6 +365,46 @@ impl RolePrincipal {
     }
 }
 
+/// Runtime-owned proof that an exact old Bun process and registered group are gone.
+///
+/// Only the native group-clear owner constructs this after read-only absence
+/// observations. Logical revocation, a stream EOF, reader join and a successful
+/// kill signal cannot create this value. It carries no OS authority or readiness.
+///
+/// ```compile_fail
+/// use keld_runtime::primary::{RolePrincipal, RoleProcessDrained};
+/// fn forge(principal: RolePrincipal) -> RoleProcessDrained {
+///     RoleProcessDrained { principal, attempt: 1 }
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleProcessDrained {
+    principal: RolePrincipal,
+    attempt: u32,
+}
+
+impl RoleProcessDrained {
+    /// Original Host-minted principal whose process/ring owner is physically gone.
+    #[must_use]
+    pub const fn principal(&self) -> RolePrincipal {
+        self.principal
+    }
+
+    /// Exact old supervisor attempt; never decoded from an app frame.
+    #[must_use]
+    pub const fn attempt(&self) -> u32 {
+        self.attempt
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) const fn after_attested_group_absence(
+        principal: RolePrincipal,
+        attempt: u32,
+    ) -> Self {
+        Self { principal, attempt }
+    }
+}
+
 /// One authenticated role generation handed to its host-side stream owner.
 ///
 /// The generation and attempt are host metadata. The stream has already
@@ -373,6 +414,7 @@ pub struct BoundRoleGeneration {
     principal: RolePrincipal,
     attempt: u32,
     stream: BootstrapStream,
+    runtime_versions: Option<BTreeMap<String, String>>,
 }
 
 impl BoundRoleGeneration {
@@ -395,6 +437,16 @@ impl BoundRoleGeneration {
     #[must_use]
     pub const fn attempt(&self) -> u32 {
         self.attempt
+    }
+
+    /// Actual runtime version strings captured by the qualified pre-app preload.
+    ///
+    /// Present only when the Host required the authenticated bootstrap facts.
+    /// These strings describe this generation; they grant no OS authority and
+    /// do not imply that the native UI Init/Ready barrier has completed.
+    #[must_use]
+    pub const fn runtime_versions(&self) -> Option<&BTreeMap<String, String>> {
+        self.runtime_versions.as_ref()
     }
 
     /// Transfers the authenticated stream to the host router.
@@ -483,6 +535,14 @@ pub enum RoleEvent {
         /// Stable error code only; no endpoint, token, or raw parser detail.
         code: &'static str,
     },
+    /// Actual native process/group absence after logical retirement.
+    ///
+    /// Emitted only by the macOS native clear owner, before successor release.
+    /// This physical fact cannot publish Ready or settle native consumer credit.
+    ProcessDrained {
+        /// Immutable exact-old-generation Runtime witness.
+        retirement: RoleProcessDrained,
+    },
     /// The generation was revoked before successor provisioning.
     Revoked {
         /// Revoked generation.
@@ -504,8 +564,11 @@ pub struct RoleConfig {
     env_remove: Vec<OsString>,
     current_dir: Option<PathBuf>,
     staged_bun_launch: Option<(PathBuf, bool)>,
+    #[cfg(windows)]
+    windows_primary_families: Option<crate::windows_job::WindowsPrimaryFamilies>,
     restart_policy: RestartPolicy,
     admission_timeout: Duration,
+    require_runtime_process_facts: bool,
     #[cfg(target_os = "linux")]
     linux_strict: Option<LinuxStrictProfile>,
     // Debug-only host observer, never an environment key for a strict child.
@@ -549,8 +612,11 @@ impl RoleConfig {
             env_remove: Vec::new(),
             current_dir: None,
             staged_bun_launch: None,
+            #[cfg(windows)]
+            windows_primary_families: None,
             restart_policy: RestartPolicy::default(),
             admission_timeout: DEFAULT_ADMISSION_TIMEOUT,
+            require_runtime_process_facts: false,
             #[cfg(target_os = "linux")]
             linux_strict: None,
             #[cfg(all(target_os = "linux", debug_assertions))]
@@ -559,6 +625,20 @@ impl RoleConfig {
             #[cfg(unix)]
             probe_tx: None,
         }
+    }
+
+    /// Attaches the session's retained Windows primary-generation family owner.
+    ///
+    /// Every spawn reserves membership before launch and binds its retained child
+    /// before authenticated admission. The host must retain a clone through release.
+    #[cfg(windows)]
+    #[must_use]
+    pub fn windows_primary_families(
+        mut self,
+        families: crate::windows_job::WindowsPrimaryFamilies,
+    ) -> Self {
+        self.windows_primary_families = Some(families);
+        self
     }
 
     /// Lifecycle owner this command will run as.
@@ -596,6 +676,17 @@ impl RoleConfig {
     #[must_use]
     pub fn env_remove(mut self, key: impl Into<OsString>) -> Self {
         self.env_remove.push(key.into());
+        self
+    }
+
+    /// Requires pre-app runtime-process facts before this generation is handed off.
+    ///
+    /// Select only with the qualified canonical preload which publishes and
+    /// awaits the Init acknowledgment before evaluating the application entry.
+    /// This is metadata admission, independent of native UI readiness or grants.
+    #[must_use]
+    pub const fn require_runtime_process_facts(mut self) -> Self {
+        self.require_runtime_process_facts = true;
         self
     }
 
@@ -734,7 +825,7 @@ impl RoleSupervisor {
     ) -> Result<Self, RuntimeError> {
         let (events_tx, events_rx) = mpsc::channel();
         let policy = config.restart_policy;
-        let generation_owner = RoleGenerationOwner::new(
+        let mut generation_owner = RoleGenerationOwner::new(
             config.owner,
             config.admission_timeout,
             events_tx,
@@ -743,6 +834,9 @@ impl RoleSupervisor {
             #[cfg(unix)]
             config.probe_tx.clone(),
         );
+        if config.require_runtime_process_facts {
+            generation_owner.require_runtime_process_facts();
+        }
         let preparer = RolePreparer {
             config,
             generation_owner,
@@ -892,7 +986,24 @@ impl ChildPreparer for RolePreparer {
             .as_ref()
             .map(|(root, native_facade)| staged_bun_launch_args(root, *native_facade))
             .transpose()?;
+        #[cfg(windows)]
+        let enrollment = self
+            .config
+            .windows_primary_families
+            .as_ref()
+            .map(crate::windows_job::WindowsPrimaryFamilies::begin_generation)
+            .transpose()
+            .map_err(|source| RuntimeError::Lifecycle {
+                phase: "Windows primary family reservation",
+                source: std::io::Error::other(source),
+            })?;
         let provisioned = self.generation_owner.provision(attempt)?;
+        #[cfg(windows)]
+        let provisioned = {
+            let mut provisioned = provisioned;
+            provisioned.lease.windows_enrollment = enrollment;
+            provisioned
+        };
         #[cfg(target_os = "linux")]
         if let Some(profile) = &self.config.linux_strict {
             return prepare_linux_strict(&self.config, profile, provisioned);
@@ -1011,6 +1122,7 @@ fn await_recovery_decision(
 pub(crate) struct RoleGenerationOwner {
     owner: RoleOwner,
     next_generation: u64,
+    require_runtime_process_facts: bool,
     last_endpoint: Option<String>,
     last_token: Option<SessionToken>,
     admission_timeout: Duration,
@@ -1034,6 +1146,7 @@ impl RoleGenerationOwner {
         Self {
             owner,
             next_generation: 1,
+            require_runtime_process_facts: false,
             last_endpoint: None,
             last_token: None,
             admission_timeout,
@@ -1043,6 +1156,10 @@ impl RoleGenerationOwner {
             #[cfg(unix)]
             probe_tx,
         }
+    }
+
+    pub(crate) const fn require_runtime_process_facts(&mut self) {
+        self.require_runtime_process_facts = true;
     }
 
     pub(crate) fn provision(
@@ -1085,12 +1202,15 @@ impl RoleGenerationOwner {
                 generation,
                 attempt,
                 admission_timeout: self.admission_timeout,
+                require_runtime_process_facts: self.require_runtime_process_facts,
                 listener: Some(listener),
                 cancellation,
                 admission_tx: Some(admission_tx),
                 admission_rx,
                 admission_thread: None,
                 admission_done: false,
+                #[cfg(windows)]
+                windows_enrollment: None,
                 link: Arc::new(Mutex::new(None)),
                 events_tx: self.events_tx.clone(),
                 bound_tx: self.bound_tx.clone(),
@@ -1146,12 +1266,15 @@ pub(crate) struct RoleGenerationLease {
     generation: RoleGeneration,
     attempt: u32,
     admission_timeout: Duration,
+    require_runtime_process_facts: bool,
     listener: Option<BootstrapListener>,
     cancellation: BootstrapCancellation,
     admission_tx: Option<Sender<AdmissionResult>>,
     admission_rx: Receiver<AdmissionResult>,
     admission_thread: Option<JoinHandle<()>>,
     admission_done: bool,
+    #[cfg(windows)]
+    windows_enrollment: Option<crate::windows_job::WindowsGenerationEnrollment>,
     link: Arc<Mutex<Option<BootstrapStream>>>,
     events_tx: Sender<RoleEvent>,
     bound_tx: Option<Sender<BoundRoleGeneration>>,
@@ -1161,6 +1284,19 @@ pub(crate) struct RoleGenerationLease {
 }
 
 impl GenerationLease for RoleGenerationLease {
+    #[cfg(windows)]
+    fn bind_child(&mut self, child: &std::process::Child) -> Result<(), RuntimeError> {
+        if let Some(enrollment) = self.windows_enrollment.as_mut() {
+            enrollment
+                .bind_child(child)
+                .map_err(|source| RuntimeError::Lifecycle {
+                    phase: "Windows primary family binding",
+                    source: std::io::Error::other(source),
+                })?;
+        }
+        Ok(())
+    }
+
     fn child_spawned(&mut self, pid: u32, attempt: u32) -> Result<(), RuntimeError> {
         let listener = self
             .listener
@@ -1180,6 +1316,9 @@ impl GenerationLease for RoleGenerationLease {
             .checked_add(self.admission_timeout)
             .unwrap_or_else(Instant::now);
         let owner = self.owner;
+        let require_runtime_process_facts = self.require_runtime_process_facts;
+        let retained_link = Arc::clone(&self.link);
+        let admission_cancellation = self.cancellation.clone();
         let observer = RoleBootstrapObserver {
             generation: self.generation,
             attempt: self.attempt,
@@ -1192,7 +1331,14 @@ impl GenerationLease for RoleGenerationLease {
                 .spawn(move || {
                     let result = match listener.accept_authenticated_until(deadline, &observer) {
                         Ok(BootstrapAdmission::Authenticated(stream)) => {
-                            AdmissionResult::Bound(stream)
+                            AdmissionResult::from_authenticated(
+                                stream,
+                                require_runtime_process_facts,
+                                deadline,
+                                &retained_link,
+                                &admission_cancellation,
+                                owner,
+                            )
                         }
                         Ok(BootstrapAdmission::Cancelled) => AdmissionResult::Cancelled,
                         Ok(BootstrapAdmission::DeadlineElapsed) => AdmissionResult::DeadlineElapsed,
@@ -1227,6 +1373,16 @@ impl GenerationLease for RoleGenerationLease {
 
     fn revoke(mut self, cause: RevocationCause) -> Result<(), RuntimeError> {
         let _ = self.cancellation.cancel();
+        // The authenticated Init reader uses the same retained app-link owner.
+        // Closing before join interrupts a missing/partial Init during shutdown.
+        if let Some(stream) = self
+            .link
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
+            let _ = stream.shutdown_app_link();
+        }
         let mut first_error = self.poll_admission();
         if let Some(thread) = self.admission_thread.take()
             && thread.join().is_err()
@@ -1258,12 +1414,17 @@ impl GenerationLease for RoleGenerationLease {
 }
 
 impl RoleGenerationLease {
+    #[cfg(target_os = "macos")]
+    pub(crate) const fn principal(&self) -> RolePrincipal {
+        RolePrincipal::new(self.owner, self.generation)
+    }
+
     fn poll_admission(&mut self) -> Result<(), RuntimeError> {
         if self.admission_done {
             return Ok(());
         }
         match self.admission_rx.try_recv() {
-            Ok(AdmissionResult::Bound(stream)) => {
+            Ok(AdmissionResult::Bound(stream, runtime_versions)) => {
                 let bound =
                     self.retain_and_clone_bound_stream(stream, BootstrapStream::try_clone)?;
                 if let (Some(bound_tx), Some(stream)) = (&self.bound_tx, bound) {
@@ -1272,6 +1433,7 @@ impl RoleGenerationLease {
                             principal: RolePrincipal::new(self.owner, self.generation),
                             attempt: self.attempt,
                             stream,
+                            runtime_versions,
                         })
                         .map_err(|_| RuntimeError::Lifecycle {
                             phase: self.owner.bootstrap_admission_phase(),
@@ -1344,10 +1506,55 @@ impl RoleGenerationLease {
 }
 
 enum AdmissionResult {
-    Bound(BootstrapStream),
+    Bound(BootstrapStream, Option<BTreeMap<String, String>>),
     Cancelled,
     DeadlineElapsed,
     Failed(RuntimeError),
+}
+
+impl AdmissionResult {
+    fn from_authenticated(
+        mut stream: BootstrapStream,
+        require_runtime_process_facts: bool,
+        deadline: Instant,
+        retained_link: &Mutex<Option<BootstrapStream>>,
+        cancellation: &BootstrapCancellation,
+        owner: RoleOwner,
+    ) -> Self {
+        if !require_runtime_process_facts {
+            return Self::Bound(stream, None);
+        }
+        let admitted = (|| {
+            // Revoke and this handoff share both the existing cancellation
+            // latch and retained-link lock; cancellation cannot miss the gap.
+            let mut retained = retained_link.lock().unwrap_or_else(PoisonError::into_inner);
+            if cancellation.is_cancelled() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "runtime-facts admission was cancelled",
+                ));
+            }
+            *retained = Some(stream.try_clone()?);
+            drop(retained);
+            keld_ipc::lifecycle::accept_runtime_process_facts_until(&mut stream, deadline).map_err(
+                |source| {
+                    let kind = if matches!(source, keld_ipc::IpcError::Timeout) {
+                        std::io::ErrorKind::TimedOut
+                    } else {
+                        std::io::ErrorKind::InvalidData
+                    };
+                    std::io::Error::new(kind, source)
+                },
+            )
+        })();
+        match admitted {
+            Ok(versions) => Self::Bound(stream, Some(versions)),
+            Err(source) => Self::Failed(RuntimeError::Lifecycle {
+                phase: owner.bootstrap_admission_phase(),
+                source,
+            }),
+        }
+    }
 }
 
 struct RoleBootstrapObserver {
@@ -1891,6 +2098,67 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn cancelled_runtime_facts_admission_never_binds_or_waits_for_peer_bytes() {
+        let listener = BootstrapListener::bind().expect("bootstrap owner");
+        let cancellation = listener.cancellation();
+        cancellation.cancel().expect("latched cancellation");
+        let retained = Mutex::new(None);
+        let (stream, _silent_peer) = connected_stream_pair();
+        let result = AdmissionResult::from_authenticated(
+            stream,
+            true,
+            Instant::now() + Duration::from_secs(10),
+            &retained,
+            &cancellation,
+            RoleOwner::Primary,
+        );
+        assert!(
+            matches!(result, AdmissionResult::Failed(RuntimeError::Lifecycle { source, .. })
+            if source.kind() == std::io::ErrorKind::Interrupted)
+        );
+        assert!(retained.lock().expect("retained owner").is_none());
+    }
+
+    #[test]
+    fn bound_runtime_versions_are_optional_owned_generation_metadata() {
+        for runtime_versions in [
+            None,
+            Some(BTreeMap::from([(
+                String::from("bun"),
+                String::from("captured-before-app"),
+            )])),
+        ] {
+            let (events_tx, _events_rx) = mpsc::channel();
+            let (bound_tx, bound_rx) = mpsc::channel();
+            let mut owner = RoleGenerationOwner::new(
+                RoleOwner::Primary,
+                DEFAULT_ADMISSION_TIMEOUT,
+                events_tx,
+                Some(bound_tx),
+                #[cfg(test)]
+                #[cfg(unix)]
+                None,
+            );
+            let mut provisioned = owner.provision(1).expect("host generation");
+            let (stream, _peer) = connected_stream_pair();
+            provisioned
+                .lease
+                .admission_tx
+                .as_ref()
+                .expect("admission sender")
+                .send(AdmissionResult::Bound(stream, runtime_versions.clone()))
+                .expect("admitted result");
+            provisioned.lease.poll_admission().expect("handoff");
+            let bound = bound_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("bound generation");
+            assert_eq!(bound.runtime_versions(), runtime_versions.as_ref());
+            assert_eq!(bound.principal().owner(), RoleOwner::Primary);
+            assert_eq!(bound.attempt(), 1);
+        }
+    }
+
+    #[test]
     fn bound_stream_clone_failure_is_latched_and_not_masked_during_revoke() {
         let listener = BootstrapListener::bind().expect("bootstrap listener");
         let cancellation = listener.cancellation();
@@ -1902,12 +2170,15 @@ mod lifecycle_tests {
             generation: RoleGeneration(1),
             attempt: 1,
             admission_timeout: DEFAULT_ADMISSION_TIMEOUT,
+            require_runtime_process_facts: false,
             listener: Some(listener),
             cancellation,
             admission_tx: None,
             admission_rx,
             admission_thread: None,
             admission_done: false,
+            #[cfg(windows)]
+            windows_enrollment: None,
             link: Arc::new(Mutex::new(None)),
             events_tx,
             bound_tx: Some(bound_tx),

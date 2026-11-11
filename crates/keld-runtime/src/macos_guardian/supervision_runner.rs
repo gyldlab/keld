@@ -294,20 +294,23 @@ pub(super) fn write_group_registration(
 /// The authenticated guardian-registration stream becomes a bounded private
 /// generation-control channel. The host remains the endpoint/token/stream
 /// owner; the guardian remains the only Bun child, process-group, restart and
-/// reap owner. Public kipc frame bytes are unchanged.
+/// reap owner. Public kipc frame bytes are unchanged. `select` runs once after
+/// authenticated bootstrap and the pre-generation shutdown check. The returned
+/// command factory owns its fixed selection across every generation.
 ///
 /// # Errors
 ///
 /// Returns [`RuntimeError`] when either private bootstrap is invalid, the host
 /// rejects a generation transition, the supervisor reaches a terminal
 /// failure, or an unrequested status-zero termination stops supervision.
-pub fn run_guarded_primary<R, C, A>(
+pub fn run_guarded_primary<R, S, C, A>(
     mut liveness: R,
-    command_factory: C,
+    select: S,
     mut quit_ack: A,
 ) -> Result<CapturedOutput, RuntimeError>
 where
     R: Read + AsFd,
+    S: FnOnce() -> Result<C, RuntimeError>,
     C: FnMut(&str) -> Result<Command, RuntimeError> + Send + 'static,
     A: Write,
 {
@@ -333,6 +336,7 @@ where
     }
     #[cfg(test)]
     super::tests::bootstrap_shutdown_race::hold_guardian_after_idle_probe()?;
+    let command_factory = select()?;
     let host_unavailable = Arc::new(AtomicBool::new(false));
     let preparation_cancelled = Arc::new(AtomicBool::new(false));
     let initial_prepared = Arc::new(AtomicBool::new(false));

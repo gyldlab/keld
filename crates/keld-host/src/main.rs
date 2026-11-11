@@ -59,10 +59,7 @@ fn main() {
         return;
     }
     if args.iter().any(|a| a == "--hello") {
-        if let Err(error) = keld_core::prepare_webview_process() {
-            eprintln!("{error}");
-            process::exit(1);
-        }
+        prepare_webview_or_exit();
         if let Some(flag) = keld_core::host_hello_unknown_arg(&args) {
             eprintln!(
                 "KELD-CLI-044: unknown hello flag `{flag}`. \
@@ -95,7 +92,7 @@ fn main() {
 
     // Keep the Job until exit (KEL-53 §4); S6c owns the committed release_for_exit call.
     #[cfg(windows)]
-    let _host_death_job = match keld_runtime::windows_job::install_host_death_job() {
+    let host_death_job = match keld_runtime::windows_job::install_host_death_job() {
         Ok(host_death_job) => host_death_job,
         Err(error) => {
             eprintln!("{error}");
@@ -103,14 +100,14 @@ fn main() {
         }
     };
 
-    if let Err(error) = keld_core::prepare_webview_process() {
-        eprintln!("{error}");
-        process::exit(1);
-    }
+    prepare_webview_or_exit();
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let dev_stage_cleanup = dev_stage_cleanup_root();
-    let result = run_validated_no_flag();
+    let result = run_validated_no_flag(
+        #[cfg(windows)]
+        &host_death_job,
+    );
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let retains_main_custody = result
         .as_ref()
@@ -143,12 +140,26 @@ fn main() {
     }
 }
 
-fn run_validated_no_flag() -> Result<(), keld_core::app_session::HostRunFailure> {
+fn prepare_webview_or_exit() {
+    if let Err(error) = keld_core::prepare_webview_process() {
+        eprintln!("{error}");
+        process::exit(1);
+    }
+}
+
+fn run_validated_no_flag(
+    #[cfg(windows)] host_death_job: &keld_runtime::windows_job::WindowsHostDeathJob,
+) -> Result<(), keld_core::app_session::HostRunFailure> {
     let boot = keld_core::app_session::ValidatedBootSelection::from_current_exe_unprivileged()
         .map_err(keld_core::app_session::HostRunFailure::from)?;
     #[cfg(any(target_os = "macos", windows))]
     {
-        keld_core::app_session::run_guarded(boot, pre_init_terminal)
+        keld_core::app_session::run_guarded(
+            boot,
+            pre_init_terminal,
+            #[cfg(windows)]
+            host_death_job,
+        )
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
@@ -267,7 +278,7 @@ fn handle_profile_test_root_probe(args: &[std::ffi::OsString]) -> bool {
             process::exit(2);
         };
         println!("KELD_PROFILE_TEST_ROOT_FEATURE {}", root.to_string_lossy());
-        return true;
+        true
     }
     #[cfg(not(feature = "kel135-profile-test-root"))]
     {
@@ -337,6 +348,12 @@ fn run_windows_dev_stage_cleanup(args: &[std::ffi::OsString]) -> Result<(), Stri
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn dev_stage_cleanup_root() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    if keld_core::app_session::macos_local_app_candidate().ok()? {
+        // Even a malformed installed candidate has no development-stage delete
+        // capability. Full admission happens separately and must fail closed.
+        return None;
+    }
     let executable = env::current_exe().ok()?;
     let lease = env::var_os("KELD_DEV_LEASE");
     dev_stage_cleanup_root_for(&executable, lease.as_deref())
@@ -372,7 +389,7 @@ fn dev_stage_cleanup_root_for(
 
 #[cfg(target_os = "macos")]
 fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
-    let native_facade = parse_guardian_boot_mode(args)?;
+    let (native_facade, local_launch) = parse_guardian_launch_arguments(args)?;
     let root = PathBuf::from(&args[2]);
     let entry = PathBuf::from(&args[3]);
     let expected_dev = args[4]
@@ -384,20 +401,53 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
     // The guardian is the last process executing from the staged directory:
     // the host parent exits when its CLI lease closes. Re-derive the exact
     // nonce from this executable rather than trusting the role argument.
-    let cleanup_root = guardian_stage_cleanup_root(&root);
+    let cleanup_root = match keld_core::app_session::macos_local_app_candidate() {
+        Ok(true) => Ok(None),
+        Ok(false) => guardian_stage_cleanup_root(&root).map(Some),
+        Err(error) => Err(error.to_string()),
+    };
     let cleanup_validation = cleanup_root.clone();
+    let mut local_facts: Option<keld_core::app_session::MacLocalGuardianFacts> = None;
     let report = keld_runtime::macos_guardian::run_guarded_primary(
         std::io::stdin(),
-        move |app_link| {
-            guardian_bun_command(
-                &cleanup_validation,
-                &root,
-                &entry,
-                expected_dev,
-                expected_ino,
-                native_facade,
-                app_link,
-            )
+        move || {
+            Ok(move |app_link: &str| {
+                let owned_stage = cleanup_validation
+                    .as_ref()
+                    .map_err(|error| guardian_entry_error(error.clone()))?;
+                if let Some(stage) = owned_stage {
+                    if local_launch.is_some() {
+                        return Err(guardian_entry_error(
+                            "a development-stage Guardian cannot consume installed bundle pins",
+                        ));
+                    }
+                    guardian_bun_command(
+                        &Ok(stage.clone()),
+                        &root,
+                        &entry,
+                        expected_dev,
+                        expected_ino,
+                        native_facade,
+                        app_link,
+                    )
+                } else {
+                    let handoff = local_launch.as_ref().ok_or_else(|| {
+                        guardian_entry_error("installed Guardian requires exact parent bundle pins")
+                    })?;
+                    // Runtime authenticates registration and liveness before it
+                    // invokes this per-generation factory. Expected pins are data,
+                    // never authority to select another installed bundle.
+                    local_guardian_bun_command(
+                        &mut local_facts,
+                        &root,
+                        &entry,
+                        (expected_dev, expected_ino),
+                        handoff,
+                        native_facade,
+                        app_link,
+                    )
+                }
+            })
         },
         std::io::stdout(),
     );
@@ -405,20 +455,24 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
     // AppKit is still blocked before Init. Its parent Host alone can prove
     // native release and delete the stage on ordinary return. This flag is
     // overwritten by that Host on the authenticated Guardian spawn.
-    let cleanup = if env::var_os("KELD_HOST_OWNS_FACADE_STAGE_CLEANUP")
-        == Some(std::ffi::OsString::from("1"))
-    {
-        cleanup_root.map(|_| ())
-    } else {
-        cleanup_root.and_then(|cleanup_root| match fs::remove_dir_all(&cleanup_root) {
+    let cleanup = cleanup_root.and_then(|owned_stage| {
+        let Some(cleanup_root) = owned_stage else {
+            return Ok(());
+        };
+        if env::var_os("KELD_HOST_OWNS_FACADE_STAGE_CLEANUP")
+            == Some(std::ffi::OsString::from("1"))
+        {
+            return Ok(());
+        }
+        match fs::remove_dir_all(&cleanup_root) {
             Ok(()) => Ok(()),
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(source) => Err(format!(
                 "KELD-CORE-037: dev-stage cleanup failed for `{}` — {source}. Remove that owner-private nonce directory before relaunching.",
                 cleanup_root.display()
             )),
-        })
-    };
+        }
+    });
     let report = report.map_err(|error| {
         format!(
             "KELD-CORE-037: supervised Bun guardian failed — {error}. Fix the Bun app failure and relaunch the no-flag host."
@@ -439,6 +493,140 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct LocalGuardianLaunch {
+    pins: keld_core::app_session::MacLocalIntegrityPins,
+    // Opaque until Runtime has authenticated the one-use registration and
+    // retained the Host liveness owner. Core then independently validates it.
+    host_facts: Option<String>,
+}
+
+#[cfg(target_os = "macos")]
+fn local_guardian_bun_command(
+    retained: &mut Option<keld_core::app_session::MacLocalGuardianFacts>,
+    root: &Path,
+    entry: &Path,
+    expected_entry: (u64, u64),
+    handoff: &LocalGuardianLaunch,
+    native_facade: bool,
+    app_link: &str,
+) -> Result<Command, keld_runtime::RuntimeError> {
+    if retained.is_none() {
+        let admitted = match handoff.host_facts.as_deref() {
+            Some(text) => {
+                keld_core::app_session::MacLocalGuardianFacts::from_current_exe_with_host_facts(
+                    text,
+                )
+            }
+            None => keld_core::app_session::MacLocalGuardianFacts::from_current_exe(),
+        };
+        *retained = Some(admitted.map_err(|error| guardian_entry_error(error.to_string()))?);
+    }
+    let facts = retained.as_ref().ok_or_else(|| {
+        guardian_entry_error("installed Guardian lost its validated bundle owner")
+    })?;
+    facts
+        .verify_parent_entry(root, entry, expected_entry.0, expected_entry.1)
+        .and_then(|()| facts.verify_parent_integrity(handoff.pins))
+        .and_then(|()| facts.revalidate_generation())
+        .map_err(|error| guardian_entry_error(error.to_string()))?;
+    if facts.native_facade() != native_facade
+        || facts.original_graph() != handoff.host_facts.is_some()
+    {
+        return Err(guardian_entry_error(
+            "parent window mode differs from the sealed installed boot",
+        ));
+    }
+    let mut command = Command::new(facts.bun_path());
+    keld_runtime::primary::configure_local_macos_bun_startup(&mut command);
+    command
+        .arg(
+            facts
+                .launch_facts_bun_argument()
+                .map_err(|error| guardian_entry_error(error.to_string()))?,
+        )
+        .arg(format!(
+            "--preload={}",
+            facts.launch_facts_preload_path().display()
+        ));
+    let runtime_preload = facts
+        .runtime_preload_path()
+        .map_err(|error| guardian_entry_error(error.to_string()))?;
+    let runtime_entry = facts
+        .runtime_entry_bootstrap_path()
+        .map_err(|error| guardian_entry_error(error.to_string()))?;
+    let selected_bootstrap = configure_installed_runtime_bootstrap(
+        &mut command,
+        facts.app_root(),
+        facts.native_facade(),
+        runtime_preload.as_deref(),
+        runtime_entry.as_deref(),
+    )?;
+    command.arg("run");
+    if let Some(bootstrap) = selected_bootstrap {
+        // This exact source leaf was compiled into the Host, copied by Pack,
+        // verified by Core and rechecked by Guardian for this generation.
+        // The original entry remains the separately pinned boot/graph member.
+        command.arg(bootstrap);
+    }
+    command
+        .arg(facts.app_root().join(facts.entry_relative()))
+        .current_dir(facts.app_root())
+        .env("KELD_APP_LINK", app_link)
+        .stdin(Stdio::null());
+    Ok(command)
+}
+
+/// Selects only admitted installed source roles. Immutable launch-facts preload
+/// is already first. An original graph must have both its independently
+/// verified provider wrapper AND the fixed Core-compiled app-root bootstrap.
+/// Bun then runs the bootstrap as its main entry, not an isolated API CLI
+/// preload, followed by the retained original entry. Non-graph roles preserve
+/// their established sidecar and direct-entry behavior.
+///
+/// The original entry now observes different import.meta.main/Bun.main/argv.
+/// This source path is NOT release-ready until exact native original-app
+/// compatibility and CODEOWNERS/security review are completed.
+#[cfg(target_os = "macos")]
+fn configure_installed_runtime_bootstrap(
+    command: &mut Command,
+    root: &Path,
+    native_facade: bool,
+    admitted_runtime_preload: Option<&Path>,
+    admitted_bootstrap: Option<&Path>,
+) -> Result<Option<PathBuf>, keld_runtime::RuntimeError> {
+    match (admitted_runtime_preload, admitted_bootstrap) {
+        (Some(_), Some(bootstrap)) => {
+            if !native_facade
+                || bootstrap != root.join(keld_core::app_session::MACOS_LOCAL_RUNTIME_ENTRY_PATH)
+            {
+                return Err(guardian_entry_error(
+                    "an original runtime bootstrap requires the exact compiled owner member",
+                ));
+            }
+            command
+                .arg("--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\"")
+                .arg("--define=__KELD_RUNTIME_PROCESS_FACTS__:true");
+            Ok(Some(bootstrap.to_path_buf()))
+        }
+        (None, None) => {
+            // Non-graph installed callers retain their optional sidecar,
+            // unchanged direct-entry identity and existing process semantics.
+            command
+                .arg("--define=__KELD_RUNTIME_PROCESS_FACTS__:false")
+                .args(keld_runtime::primary::staged_bun_launch_args(
+                    root,
+                    native_facade,
+                )?);
+            Ok(None)
+        }
+        _ => Err(guardian_entry_error(
+            "original graph wrapper and fixed Host bootstrap must agree",
+        )),
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn parse_guardian_boot_mode(args: &[String]) -> Result<bool, String> {
     if args.len() == 7 {
         match args[6].as_str() {
@@ -449,6 +637,50 @@ fn parse_guardian_boot_mode(args: &[String]) -> Result<bool, String> {
     }
     Err(String::from(
         "KELD-CORE-037: private guardian invocation is malformed. Launch it only through the validated no-flag host.",
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn parse_guardian_launch_arguments(
+    args: &[String],
+) -> Result<(bool, Option<LocalGuardianLaunch>), String> {
+    if args.len() == 7 {
+        return parse_guardian_boot_mode(args).map(|mode| (mode, None));
+    }
+    if args.len() == 11 && args[7] == "local-bundle-v1" {
+        let mode = parse_guardian_boot_mode(&args[..7])?;
+        let pins = keld_core::app_session::MacLocalIntegrityPins::from_encoded(
+            &args[8], &args[9], &args[10],
+        )
+        .map_err(|error| error.to_string())?;
+        return Ok((
+            mode,
+            Some(LocalGuardianLaunch {
+                pins,
+                host_facts: None,
+            }),
+        ));
+    }
+    if args.len() == 12
+        && args[6] == "2"
+        && args[7] == "local-bundle-v2"
+        && !args[11].is_empty()
+        && args[11].len() <= 16_384
+    {
+        let pins = keld_core::app_session::MacLocalIntegrityPins::from_encoded(
+            &args[8], &args[9], &args[10],
+        )
+        .map_err(|error| error.to_string())?;
+        return Ok((
+            true,
+            Some(LocalGuardianLaunch {
+                pins,
+                host_facts: Some(args[11].clone()),
+            }),
+        ));
+    }
+    Err(String::from(
+        "KELD-CORE-037: private Guardian requires the exact development, local-bundle-v1 or local-bundle-v2 argument shape. Launch only through the validated Host.",
     ))
 }
 
@@ -483,6 +715,9 @@ fn guardian_bun_command(
             root,
             native_facade,
         )?)
+        // Absence is also fixed by the Host; an application global cannot
+        // fabricate the private constant on the historical development path.
+        .arg("--define=__KELD_HOST_LAUNCH_FACTS__:undefined")
         .arg("run")
         .arg(root.join(entry))
         .current_dir(root)
@@ -565,7 +800,7 @@ mod tests {
 
     use super::{
         dev_stage_cleanup_root_for, guardian_bun_command, parse_guardian_boot_mode,
-        reconcile_guardian_result, reopen_validated_entry,
+        parse_guardian_launch_arguments, reconcile_guardian_result, reopen_validated_entry,
     };
 
     #[test]
@@ -624,6 +859,7 @@ mod tests {
             command.get_args().collect::<Vec<_>>(),
             [
                 "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\"".as_ref(),
+                "--define=__KELD_HOST_LAUNCH_FACTS__:undefined".as_ref(),
                 "run".as_ref(),
                 entry.as_os_str()
             ]
@@ -648,8 +884,10 @@ mod tests {
             "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\""
         );
         assert_eq!(args[1], format!("--preload={}", sidecar.display()).as_str());
-        assert_eq!(args[2], "run");
-        assert_eq!(args[3], entry.as_os_str());
+        assert_eq!(args[2], "--define=__KELD_HOST_LAUNCH_FACTS__:undefined");
+        assert_eq!(args[3], "run");
+        assert_eq!(args[4], entry.as_os_str());
+        assert_eq!(args.len(), 5);
         assert_eq!(command.get_current_dir(), Some(temp.path()));
         // Bun config can replace a CLI preload. Qualify every generation,
         // including recovery after a previously absent config appears.
@@ -703,6 +941,7 @@ mod tests {
                 if with_sidecar {
                     expected.push(format!("--preload={}", sidecar.display()).into());
                 }
+                expected.push("--define=__KELD_HOST_LAUNCH_FACTS__:undefined".into());
                 expected.extend(["run".into(), entry.as_os_str().to_owned()]);
                 assert_eq!(command.get_args().collect::<Vec<_>>(), expected);
             }
@@ -737,6 +976,162 @@ mod tests {
                 "extra arguments cannot be ignored"
             );
             args.truncate(6);
+        }
+    }
+
+    #[test]
+    fn local_guardian_suffix_is_closed_and_does_not_change_development_arguments() {
+        let base: Vec<String> = ["host", "guardian", "root", "entry", "1", "2", "1"]
+            .map(String::from)
+            .into();
+        let (mode, pins) = parse_guardian_launch_arguments(&base).expect("existing dev shape");
+        assert!(mode);
+        assert!(pins.is_none());
+
+        let mut local = base.clone();
+        local.extend([
+            "local-bundle-v1".to_owned(),
+            "ab".repeat(32),
+            "cd".repeat(32),
+            "ef".repeat(32),
+        ]);
+        let (mode, pins) = parse_guardian_launch_arguments(&local).expect("closed local inputs");
+        assert!(mode);
+        let local_launch = pins.expect("local expected pins");
+        assert!(local_launch.host_facts.is_none());
+        let pins = local_launch.pins;
+        assert_eq!(pins.bun_sha256(), &[0xab; 32]);
+        assert_eq!(pins.boot_sha256(), &[0xcd; 32]);
+        assert_eq!(pins.permissions_sha256(), &[0xef; 32]);
+        for length in [8, 9, 10] {
+            assert!(parse_guardian_launch_arguments(&local[..length]).is_err());
+        }
+        for (index, value) in [
+            (6, "true".to_owned()),
+            (7, "local-bundle-v2".to_owned()),
+            (8, "AB".repeat(32)),
+            (9, "cd".repeat(31)),
+            (10, "not-a-digest".to_owned()),
+        ] {
+            let mut mutated = local.clone();
+            mutated[index] = value;
+            assert!(parse_guardian_launch_arguments(&mutated).is_err());
+        }
+        local.push("ignored-extra".to_owned());
+        assert!(parse_guardian_launch_arguments(&local).is_err());
+    }
+
+    #[test]
+    fn original_local_guardian_accepts_only_a_bounded_versioned_handoff() {
+        let mut args: Vec<String> = [
+            "host",
+            "guardian",
+            "root",
+            "entry",
+            "1",
+            "2",
+            "2",
+            "local-bundle-v2",
+        ]
+        .map(String::from)
+        .into();
+        args.extend(["ab".repeat(32), "cd".repeat(32), "ef".repeat(32)]);
+        // The outer dispatcher may bound this value, but must not decode native
+        // data before Runtime authenticates and retains the Host registration.
+        args.push("not-yet-authenticated-json".to_owned());
+        let (facade, local) = parse_guardian_launch_arguments(&args)
+            .expect("closed role-v2 carries opaque bounded data until authentication");
+        assert!(facade);
+        assert!(local.is_some());
+        for (index, value) in [
+            (6, "0".to_owned()),
+            (6, "1".to_owned()),
+            (6, "02".to_owned()),
+            (7, "local-bundle-v1".to_owned()),
+            (8, "AB".repeat(32)),
+            (11, String::new()),
+            (11, "x".repeat(16_385)),
+        ] {
+            let mut changed = args.clone();
+            changed[index] = value;
+            assert!(parse_guardian_launch_arguments(&changed).is_err());
+        }
+        assert!(parse_guardian_launch_arguments(&args[..11]).is_err());
+        args.push("extra".to_owned());
+        assert!(parse_guardian_launch_arguments(&args).is_err());
+        args.pop();
+        args[11] = "x".repeat(16_384);
+        assert!(parse_guardian_launch_arguments(&args).is_ok());
+    }
+
+    #[test]
+    fn installed_original_selects_verified_root_bootstrap_before_the_application() {
+        let root = std::path::Path::new("/Applications/Example.app/Contents/Resources/app");
+        let wrapper = root.join("node_modules/@keld/api/runtime-preload.js");
+        let bootstrap = root.join("keld-installed-runtime-entry.mjs");
+        let wrong_same_root = root.join("unverified-same-root.mjs");
+        let mut command = std::process::Command::new("/verified/bun");
+        command.arg("--preload=/verified/immutable-facts.ts");
+        let selected = super::configure_installed_runtime_bootstrap(
+            &mut command,
+            root,
+            true,
+            Some(&wrapper),
+            Some(&bootstrap),
+        )
+        .expect("both independently admitted graph members");
+        assert_eq!(selected, Some(bootstrap.clone()));
+        command
+            .arg("run")
+            .arg(bootstrap.clone())
+            .arg(root.join("main.js"));
+        let observed = command
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed,
+            vec![
+                "--preload=/verified/immutable-facts.ts".to_owned(),
+                "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\"".to_owned(),
+                "--define=__KELD_RUNTIME_PROCESS_FACTS__:true".to_owned(),
+                "run".to_owned(),
+                bootstrap.display().to_string(),
+                root.join("main.js").display().to_string(),
+            ]
+        );
+        for (facade, wrapper, bootstrap) in [
+            (false, Some(wrapper.as_path()), Some(bootstrap.as_path())),
+            (true, None, Some(bootstrap.as_path())),
+            (true, Some(wrapper.as_path()), None),
+            (
+                true,
+                Some(wrapper.as_path()),
+                Some(std::path::Path::new("/unverified/bootstrap.mjs")),
+            ),
+            (
+                true,
+                Some(wrapper.as_path()),
+                Some(wrong_same_root.as_path()),
+            ),
+        ] {
+            let mut refused = std::process::Command::new("/verified/bun");
+            assert!(
+                super::configure_installed_runtime_bootstrap(
+                    &mut refused,
+                    root,
+                    facade,
+                    wrapper,
+                    bootstrap,
+                )
+                .is_err(),
+                "mismatched source or facade must fail closed"
+            );
+            assert_eq!(
+                refused.get_args().count(),
+                0,
+                "refusal must precede command mutation"
+            );
         }
     }
 

@@ -8,7 +8,11 @@
 
 /// Authentication contracts; the guarded runtime broker is being implemented.
 pub mod auth;
+/// Typed, bounded native dialog wire contracts.
+pub mod dialog;
 pub mod fs;
+/// Bounded native application menu projection contracts.
+pub mod menu;
 
 #[cfg(test)]
 #[path = "../build.rs"]

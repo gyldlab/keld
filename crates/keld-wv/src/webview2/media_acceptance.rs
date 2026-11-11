@@ -1,12 +1,16 @@
 //! Opt-in Windows fixture. This module is absent from default shipping builds.
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub(super) mod adopted_close_control;
+pub(super) mod exit_wake_control;
+pub(super) mod host_window_probe;
+pub(super) mod release_receipt_control;
+
 use std::cell::{Cell, RefCell};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -68,14 +72,146 @@ struct Evidence {
 thread_local! {
     static EVIDENCE: RefCell<Evidence> = RefCell::new(Evidence::default());
     static COM_LIFETIME_PHASES: Cell<bool> = const { Cell::new(false) };
+    static COM_PHASE_CLOCK: Cell<Option<Instant>> = const { Cell::new(None) };
+    static COM_PUMP_COUNTS: Cell<(u64, u64, u64)> = const { Cell::new((0, 0, 0)) };
+    static COM_BROWSER_LOG: RefCell<Option<std::path::PathBuf>> = const { RefCell::new(None) };
+}
+
+#[derive(Default)]
+struct ControllerCustodyEvidence {
+    active: bool,
+    expire_after_call: Option<Instant>,
+    calls: u32,
+    returns: u32,
+    callbacks: u32,
+    completions: Vec<(i32, bool, u32)>,
+    close_results: Vec<i32>,
+    retained: Option<super::ICoreWebView2Controller>,
+    browser_exits: Vec<(u32, bool)>,
+}
+
+thread_local! {
+    static CONTROLLER_CUSTODY_EVIDENCE: RefCell<ControllerCustodyEvidence> =
+        RefCell::new(ControllerCustodyEvidence::default());
+}
+
+fn observe_controller_phase(stage: &'static str) {
+    let expire = CONTROLLER_CUSTODY_EVIDENCE.with_borrow_mut(|facts| {
+        if !facts.active {
+            return None;
+        }
+        match stage {
+            "controller-call-enter" => facts.calls += 1,
+            "controller-call-returned" => {
+                facts.returns += 1;
+                return facts.expire_after_call.take();
+            }
+            "controller-callback-enter" => facts.callbacks += 1,
+            _ => {}
+        }
+        None
+    });
+    if let Some(deadline) = expire {
+        // Deliberate deadline-expiry stimulus, not a sleep or an estimate of
+        // callback progress. Do not pump: the production wait must abandon
+        // an accepted native request before its completion is dispatched.
+        while Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+    }
+}
+
+pub(super) fn observe_controller_completion(
+    status: &windows::core::Result<()>,
+    controller: Option<&super::ICoreWebView2Controller>,
+) {
+    CONTROLLER_CUSTODY_EVIDENCE.with_borrow_mut(|facts| {
+        if facts.active {
+            // SAFETY: read-only current-thread identity; no handle is opened.
+            let thread = unsafe { GetCurrentThreadId() };
+            facts.completions.push((
+                status.as_ref().err().map_or(0, |error| error.code().0),
+                controller.is_some(),
+                thread,
+            ));
+            // Keep an independent reference so final COM release cannot mask
+            // an omitted explicit Close in the unclaimed-controller owner.
+            facts.retained = controller.cloned();
+        }
+    });
+}
+
+pub(super) fn observe_controller_close_result(result: &windows::core::Result<()>) {
+    CONTROLLER_CUSTODY_EVIDENCE.with_borrow_mut(|facts| {
+        if facts.active {
+            facts
+                .close_results
+                .push(result.as_ref().err().map_or(0, |error| error.code().0));
+        }
+    });
 }
 
 /// Flush each phase before the fixture watchdog can terminate the process.
 pub(super) fn observe_com_phase(stage: &'static str) {
+    observe_controller_phase(stage);
     COM_LIFETIME_PHASES.with(|enabled| {
         if enabled.get() {
-            println!("KELD_COM_PHASE stage={stage}");
+            let elapsed = COM_PHASE_CLOCK.with(|clock| {
+                let start = clock.get().unwrap_or_else(|| {
+                    let now = Instant::now();
+                    clock.set(Some(now));
+                    now
+                });
+                start.elapsed()
+            });
+            let (waits, timeouts, posted) = COM_PUMP_COUNTS.with(Cell::get);
+            println!(
+                "KELD_COM_PHASE stage={stage} elapsed_ms={} waits={waits} timeouts={timeouts} posted={posted}",
+                elapsed.as_millis()
+            );
             let _ = std::io::Write::flush(&mut std::io::stdout());
+            if stage == "launch-deadline-expired" {
+                COM_BROWSER_LOG.with_borrow(|path| {
+                    if let Some(path) = path {
+                        use std::io::{Read as _, Seek as _, SeekFrom};
+                        let output = (|| -> std::io::Result<Vec<u8>> {
+                            let mut file = std::fs::File::open(path)?;
+                            let start = file.metadata()?.len().saturating_sub(65_536);
+                            file.seek(SeekFrom::Start(start))?;
+                            let mut bytes = Vec::new();
+                            file.take(65_536).read_to_end(&mut bytes)?;
+                            Ok(bytes)
+                        })();
+                        match output {
+                            Ok(bytes) => eprintln!(
+                                "KELD_COM_BROWSER_LOG_BEGIN path={}\n{}\nKELD_COM_BROWSER_LOG_END",
+                                path.display(),
+                                String::from_utf8_lossy(&bytes)
+                            ),
+                            Err(error) => eprintln!(
+                                "KELD_COM_BROWSER_LOG_UNAVAILABLE path={} error={error}",
+                                path.display()
+                            ),
+                        }
+                    }
+                });
+            }
+        }
+    });
+}
+
+/// Diagnostic counters only: never participates in the production wait decision.
+pub(super) fn observe_com_pump(timed_out: bool, posted: bool) {
+    COM_LIFETIME_PHASES.with(|enabled| {
+        if enabled.get() {
+            COM_PUMP_COUNTS.with(|counts| {
+                let (waits, timeouts, messages) = counts.get();
+                counts.set((
+                    waits + 1,
+                    timeouts + u64::from(timed_out),
+                    messages + u64::from(posted),
+                ));
+            });
         }
     });
 }
@@ -142,7 +278,20 @@ pub(super) fn observe_production_effect(
     });
 }
 
-pub(super) fn observe_browser_exit(actual: u32, expected: u32, normal: bool) {
+pub(super) fn observe_browser_exit(
+    site: super::ReleaseSite,
+    actual: u32,
+    current: super::BrowserInstance,
+    normal: bool,
+) {
+    // Raw SDK callback facts precede the production receipt filter and send.
+    adopted_close_control::observe_browser_exit(site, actual, current, normal);
+    let expected = current.pid;
+    CONTROLLER_CUSTODY_EVIDENCE.with_borrow_mut(|facts| {
+        if facts.active {
+            facts.browser_exits.push((actual, normal));
+        }
+    });
     println!("KELD_MEDIA_BROWSER_EXIT pid={actual} expected={expected} normal={normal}");
 }
 
@@ -485,17 +634,17 @@ fn run_case(
     // a dedicated UI/message thread; every COM object and callback remains on
     // this same fixture thread.
     event_loop.with_any_thread(true);
-    let event_loop = event_loop.build();
+    let event_loop = super::activation_observer::EngineEventLoop::build(&mut event_loop);
     // This fixture retains environment/observer clones after dropping its
     // engine; its own COM reference must outlive those clones as well.
     let _com = super::initialize_com_sta()?;
     // SAFETY: thread ID query is unconditional.
     let tid = unsafe { GetCurrentThreadId() };
     let environment = fixture_environment(directory)?;
-    let expected_browser_pid = Arc::new(AtomicU32::new(0));
+    let browser_binding = Arc::new(super::BrowserBinding::new());
     let browser_exit = super::observe_profile_browser_exit(
         &environment,
-        Arc::clone(&expected_browser_pid),
+        Arc::clone(&browser_binding),
         None,
         super::ReleaseSite::Host,
     )?;
@@ -539,7 +688,7 @@ fn run_case(
         "KELD_MEDIA_VIEW id={} browser_pid={browser_pid}",
         media_id.0
     );
-    expected_browser_pid.store(browser_pid, Ordering::Release);
+    browser_binding.bind_once(browser_pid)?;
     let registration = EVIDENCE.with_borrow(|e| e.registration);
     let Some((identity, token)) = registration else {
         return Err(failure("production constructor did not register media"));
@@ -562,7 +711,12 @@ fn run_case(
     engine.destroy(media_id)?;
     println!("KELD_MEDIA_CLOSED waiting_for={browser_pid}");
     drop(engine);
-    wait_with_pump(browser_exit.receiver).map_err(failure)??;
+    let receipt = wait_with_pump(browser_exit.receiver).map_err(failure)?;
+    if receipt != super::BrowserExitReceipt::Normal(browser_binding.load()) {
+        return Err(failure(
+            "the media browser did not deliver its bound normal exit receipt",
+        ));
+    }
     super::remove_browser_exit_observer(&browser_exit.environment, browser_exit.token)?;
     drop(browser_exit.environment);
     drop(environment);
@@ -1011,8 +1165,21 @@ fn serve_page_requests(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::webview2::PROFILE_LAUNCH_DEADLINE;
 
+    mod adopted_controller_close_native;
+    mod build_identity;
+    mod controller_custody_native;
+    mod exit_wake_retirement;
     mod first_navigation;
+    mod profile_release;
+    mod release_receipts;
+    mod saved_permission_deadline;
+    mod startup_retirement;
+    mod view_focus;
+    mod view_host;
+    mod view_position;
+    mod view_retry;
 
     /// The renderer-boot loop of every fixture here: Ready is the navigation milestone,
     /// so loop entry arms no Init watch.
@@ -1026,6 +1193,7 @@ mod tests {
             events,
             crate::webview2::AppReadyTrigger::NavigationReady,
             || {},
+            |_| Ok::<(), std::convert::Infallible>(()),
         )
     }
 
@@ -1150,11 +1318,17 @@ mod tests {
         root: &Path,
         selection: crate::profile::WebProfileSelection,
     ) -> Result<WebView2Engine, WvError> {
-        profile_fixture_engine_with_options(
-            root,
-            selection,
-            CoreWebView2EnvironmentOptions::default(),
-        )
+        let options = CoreWebView2EnvironmentOptions::default();
+        if COM_LIFETIME_PHASES.with(Cell::get) {
+            let plan = super::super::windows_profile_plan(root, selection)?;
+            COM_BROWSER_LOG.with_borrow_mut(|path| {
+                *path = Some(plan.user_data_dir.join("chrome_debug.log"));
+            });
+            // Preserve production-default browser options in the acceptance case.
+            // A runtime may emit a diagnostic log on failure; reading it is optional
+            // evidence and never a prerequisite for success or permission admission.
+        }
+        profile_fixture_engine_with_options(root, selection, options)
     }
 
     fn profile_fixture_engine_with_options(
@@ -1166,7 +1340,7 @@ mod tests {
         let (com, profile) = super::super::prepare_profile_before_event_loop(root, selection)?;
         let mut builder = EventLoopBuilder::<WindowsLoopEvent>::with_user_event();
         builder.with_any_thread(true).with_dpi_aware(false);
-        let event_loop = builder.build();
+        let event_loop = super::super::activation_observer::EngineEventLoop::build(&mut builder);
         let environment =
             super::super::create_environment_for_profile_with_options(&profile, options)?;
         WebView2Engine::from_selected_environment(com, event_loop, environment, profile)
@@ -1187,7 +1361,10 @@ mod tests {
         origin: &str,
         expected: COREWEBVIEW2_PERMISSION_STATE,
     ) -> Result<(), WvError> {
-        let settings = super::super::profile_permission_settings(profile)?;
+        let settings = super::super::profile_permission_settings(
+            profile,
+            Instant::now() + PROFILE_LAUNCH_DEADLINE,
+        )?;
         for kind in [
             COREWEBVIEW2_PERMISSION_KIND_CAMERA,
             COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
@@ -1208,18 +1385,19 @@ mod tests {
         profile: &super::super::ICoreWebView2Profile4,
         origin: &str,
     ) -> Result<(), WvError> {
-        if super::super::profile_permission_settings(profile)?
-            .iter()
-            .any(|setting| {
-                setting.origin == origin
-                    && matches!(
-                        setting.kind,
-                        COREWEBVIEW2_PERMISSION_KIND_CAMERA
-                            | COREWEBVIEW2_PERMISSION_KIND_MICROPHONE
-                    )
-                    && setting.state == COREWEBVIEW2_PERMISSION_STATE_ALLOW
-            })
-        {
+        if super::super::profile_permission_settings(
+            profile,
+            Instant::now() + PROFILE_LAUNCH_DEADLINE,
+        )?
+        .iter()
+        .any(|setting| {
+            setting.origin == origin
+                && matches!(
+                    setting.kind,
+                    COREWEBVIEW2_PERMISSION_KIND_CAMERA | COREWEBVIEW2_PERMISSION_KIND_MICROPHONE
+                )
+                && setting.state == COREWEBVIEW2_PERMISSION_STATE_ALLOW
+        }) {
             Err(failure("saved media Allow survived profile restart"))
         } else {
             Ok(())
@@ -1232,7 +1410,10 @@ mod tests {
         kind: COREWEBVIEW2_PERMISSION_KIND,
         expected: COREWEBVIEW2_PERMISSION_STATE,
     ) -> Result<(), WvError> {
-        let settings = super::super::profile_permission_settings(profile)?;
+        let settings = super::super::profile_permission_settings(
+            profile,
+            Instant::now() + PROFILE_LAUNCH_DEADLINE,
+        )?;
         if settings.iter().any(|setting| {
             setting.kind == kind && setting.origin == origin && setting.state == expected
         }) {
@@ -1250,9 +1431,12 @@ mod tests {
         origin: &str,
         kind: COREWEBVIEW2_PERMISSION_KIND,
     ) -> Result<(), WvError> {
-        if super::super::profile_permission_settings(profile)?
-            .iter()
-            .any(|setting| setting.kind == kind && setting.origin == origin)
+        if super::super::profile_permission_settings(
+            profile,
+            Instant::now() + PROFILE_LAUNCH_DEADLINE,
+        )?
+        .iter()
+        .any(|setting| setting.kind == kind && setting.origin == origin)
         {
             Err(failure("control unexpectedly inherited a saved permission"))
         } else {
@@ -1404,6 +1588,25 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
         permission: super::super::SavedPermission,
     }
 
+    impl PreparedSavedGrant {
+        /// Restore and independently read back the native Allow used by the next
+        /// cross-process saved-grant control; both operations keep their own budget.
+        fn restore_allow(&self) -> Result<(), WvError> {
+            super::super::set_profile_permission_state(
+                &self.profile,
+                &self.permission,
+                COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+                Instant::now() + PROFILE_LAUNCH_DEADLINE,
+            )?;
+            assert_saved_permission_state(
+                &self.profile,
+                &self.permission.origin,
+                self.permission.kind,
+                COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+            )
+        }
+    }
+
     fn prepare_saved_grant_permission(
         engine: &WebView2Engine,
         view_id: crate::WebviewId,
@@ -1431,6 +1634,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
                 &profile,
                 &permission,
                 COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+                Instant::now() + PROFILE_LAUNCH_DEADLINE,
             )?;
         }
         if let Some(expected) = expected {
@@ -1523,17 +1727,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             )));
         }
         if case.phase == "deny" {
-            super::super::set_profile_permission_state(
-                &prepared.profile,
-                &prepared.permission,
-                COREWEBVIEW2_PERMISSION_STATE_ALLOW,
-            )?;
-            assert_saved_permission_state(
-                &prepared.profile,
-                &origin,
-                case.kind,
-                COREWEBVIEW2_PERMISSION_STATE_ALLOW,
-            )?;
+            prepared.restore_allow()?;
         }
         println!(
             "KELD_PROFILE_SAVED_RESULT kind={} phase={} origin={origin} result={result}",
@@ -1566,6 +1760,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
 
             COM_LIFETIME_PHASES.with(|enabled| enabled.set(true));
             observe_com_phase("initial-engine-start");
+            println!("KELD_COM_RUNTIME version={}", runtime_version()?);
             let apartment = || {
                 let mut kind = APTTYPE::default();
                 let mut qualifier = APTTYPEQUALIFIER::default();
@@ -1801,6 +1996,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
                         origin: origin.to_owned(),
                     },
                     COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+                    Instant::now() + PROFILE_LAUNCH_DEADLINE,
                 )?;
             }
             assert_saved_media_state(&profile, origin, COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
@@ -1817,7 +2013,10 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
                 profile_fixture_engine(&root, WebProfileSelection::Persistent(identity))?;
             let second = engine.create(&blank_spec())?;
             let reconciled = super::super::webview_profile(&engine.view(second)?.webview)?;
-            for setting in super::super::profile_permission_settings(&reconciled)? {
+            for setting in super::super::profile_permission_settings(
+                &reconciled,
+                Instant::now() + PROFILE_LAUNCH_DEADLINE,
+            )? {
                 println!(
                     "KELD_PROFILE_SAVED_MEDIA observed kind={} state={} origin={}",
                     setting.kind.0, setting.state.0, setting.origin
@@ -1838,6 +2037,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
                         origin: origin.to_owned(),
                     },
                     COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+                    Instant::now() + PROFILE_LAUNCH_DEADLINE,
                 )?;
             }
             assert_saved_media_state(&reconciled, origin, COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
@@ -1924,7 +2124,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
     /// Child role: the engine's own `BrowserProcessExited` is swallowed after
     /// the browser really exits. The release must fail `KELD-WV-009`, name the
     /// host post-exit grace, and do so at that grace measured from its own
-    /// arming instant — never before it, never at an unrelated wall-clock
+    /// arming instant â€” never before it, never at an unrelated wall-clock
     /// bound, and never by hanging until the watchdog. The ceiling is twice
     /// the grace: a kill-switch-sized bound on the loop's wake and the
     /// engine's teardown after the fault, derived from the constant so a

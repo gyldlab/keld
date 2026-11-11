@@ -26,9 +26,24 @@
 
 mod admit;
 mod jsonc;
+mod manifest_profile;
 mod probe;
+mod renderer_channels;
 mod unique_json;
 pub mod verified_manifest;
+mod window_csp;
+
+/// Decode data with the existing duplicate-key-refusing JSON owner.
+///
+/// This parser grants no permission or package authority. Callers must apply
+/// their byte bound before decoding, then validate their own closed data schema.
+///
+/// # Errors
+/// Rejects malformed JSON, duplicate object keys at any depth and trailing input.
+#[cfg(target_os = "macos")]
+pub fn parse_unique_json(text: &str) -> Result<serde_json::Value, serde_json::Error> {
+    unique_json::parse(text)
+}
 #[cfg(windows)]
 mod windows_authenticode;
 #[cfg(windows)]
@@ -52,6 +67,10 @@ pub mod capability {
     pub const AUTH_BEGIN: &str = "auth.begin";
     /// Exact declared issuer for token acquisition (`app.auth.token`).
     pub const AUTH_TOKEN: &str = "auth.token";
+    /// Exact resource-less native dialog admission (`app.system` list).
+    pub const DIALOG: &str = "system.dialog";
+    /// Exact resource-less native menu admission (`app.system` list).
+    pub const MENU: &str = "system.menu";
 }
 
 #[cfg(windows)]
@@ -82,6 +101,7 @@ pub use windows_owner_private::{
     windows_owner_private_directory_security, windows_owner_private_file_security,
 };
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, Read};
@@ -98,9 +118,15 @@ pub use admit::{
     AdmissionError, AdmissionRequest, ArchiveId, ArtifactDigest, CURRENT_POLICY_GENERATION,
     HostFacts, HostOs, MismatchField, OS_CONTAINMENT_PROBES, ProbeLayer, ProbeOracle, ProbeRecord,
     ProbeVerdict, ProfileDigest, ProfileState, ProofArchive, ProofIdentity, RoleInstance, admit,
-    expected_layer_for,
+    admit_uncontained, expected_layer_for,
 };
+pub use manifest_profile::{DeclaredProfile, LEGACY_PROFILE_FORFEIT};
 pub use probe::{ProbeReport, run_synthetic_probes};
+pub use renderer_channels::{
+    BorrowedHostWindowGrants, GuardQuery, NativeCapabilityQuery, RendererChannelPermit,
+    RendererChannelQuery, evaluate_query,
+};
+pub use window_csp::{ResolvedWindowCsp, WindowCspProfile};
 
 /// Canonical Windows installation-state protection profiles owned by `keld-guard`.
 ///
@@ -164,9 +190,9 @@ impl Principal {
 
 /// The outcome of a guard check.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Decision {
-    /// Operation may proceed under the first matching manifest grant.
-    Allow(ScopePermit),
+pub enum Decision<Permit = ScopePermit> {
+    /// Operation may proceed under the selected query's opaque permit.
+    Allow(Permit),
     /// Operation is denied; the reason is safe to surface to developers.
     Deny(DenyReason),
 }
@@ -619,17 +645,71 @@ impl std::error::Error for ManifestError {}
 
 /// Parsed `keld.permissions.jsonc`.
 ///
-/// Unknown top-level keys (`$schema`, `windows`, `audit`) are ignored. v0
-/// evaluate reads `app.<group>.<action>` string arrays as path/host scopes.
-#[derive(Debug, Clone, Default, Deserialize)]
+/// The optional root `profile` declares strict or legacy; it grants no capability.
+/// Unrelated unknown keys stay ignored. Reserved window `web` metadata accepts
+/// only the closed named CSP selector; unknown web capabilities are refused.
+/// v0 evaluate reads
+/// `app.<group>.<action>` string arrays as path/host scopes.
+///
+/// Direct Serde deserialization constructs data only; it is not the validated
+/// authoring boundary. Use [`parse_manifest`] or [`load_manifest`] for bounded,
+/// unique-key JSONC and reserved-location checks. Runtime admission consumes
+/// [`verified_manifest::VerifiedManifest`] from the retained, digest-checked
+/// loader, never an arbitrary deserialized value.
+#[derive(Clone, Default, Deserialize)]
 pub struct PermissionsManifest {
     #[serde(default)]
     app: Map<String, Value>,
+    #[serde(default, deserialize_with = "manifest_profile::deserialize_present")]
+    profile: Option<DeclaredProfile>,
+    #[serde(default)]
+    windows: BTreeMap<String, window_csp::WindowPolicy>,
+}
+
+impl fmt::Debug for PermissionsManifest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Preserve existing profile-free policy diagnostics, including the
+        // media boundary's empty-policy observation. Show an explicit request.
+        let mut output = formatter.debug_struct("PermissionsManifest");
+        output.field("app", &self.app);
+        if let Some(profile) = self.profile {
+            output.field("profile", &profile);
+        }
+        if !self.windows.is_empty() {
+            output.field("windows", &self.windows);
+        }
+        output.finish()
+    }
+}
+
+impl PermissionsManifest {
+    /// Returns the requested profile data, or `None` when it is absent.
+    ///
+    /// For a validated manifest this came from the unique root declaration.
+    /// This accessor does not validate raw Serde data, perform admission, or
+    /// prove OS containment.
+    #[must_use]
+    pub const fn declared_profile(&self) -> Option<DeclaredProfile> {
+        self.profile
+    }
+
+    /// Whether this manifest declares any named window response policy.
+    ///
+    /// This is authoring data, not verified provenance or permission to
+    /// install native window handlers. The Host still requires the qualified
+    /// graph/CSP composition and one digest-verified window selection.
+    #[must_use]
+    pub fn declares_window_csp(&self) -> bool {
+        self.windows.values().any(|window| window.web.csp.is_some())
+    }
 }
 
 /// JSON pointer under `app` for a dotted capability (`fs.read` → `/app/fs/read`).
 #[must_use]
 pub fn json_pointer_for(capability: &str) -> String {
+    if matches!(capability, capability::DIALOG | capability::MENU) {
+        return "/app/system".to_owned();
+    }
     if capability.is_empty() {
         return "/app".to_owned();
     }
@@ -647,7 +727,8 @@ pub fn json_pointer_for(capability: &str) -> String {
 ///
 /// Returns [`ManifestError::TooLarge`] when `text` exceeds 64 KiB, or
 /// [`ManifestError::Parse`] when the comment-stripped text is ambiguous,
-/// malformed, or not a JSON object. Returns [`ManifestError::InvalidAuthScope`]
+/// malformed, not a JSON object, or contains an invalid/misplaced explicit
+/// security-profile declaration. Returns [`ManifestError::InvalidAuthScope`]
 /// for auth issuer grants containing `**` or C0/DEL/C1 controls.
 pub fn parse_manifest(text: &str) -> Result<PermissionsManifest, ManifestError> {
     ensure_manifest_size(text.len(), None)?;
@@ -730,11 +811,23 @@ fn parse_manifest_at(
         path: path.map(Path::to_path_buf),
         detail: e.to_string(),
     })?;
+    manifest_profile::validate_root(&value).map_err(|detail| ManifestError::Parse {
+        path: path.map(Path::to_path_buf),
+        detail: detail.to_owned(),
+    })?;
+    window_csp::validate_structure(&value).map_err(|detail| ManifestError::Parse {
+        path: path.map(Path::to_path_buf),
+        detail: detail.to_owned(),
+    })?;
     let manifest: PermissionsManifest =
         serde_json::from_value(value).map_err(|e| ManifestError::Parse {
             path: path.map(Path::to_path_buf),
             detail: e.to_string(),
         })?;
+    window_csp::validate_keys(&manifest.windows).map_err(|detail| ManifestError::Parse {
+        path: path.map(Path::to_path_buf),
+        detail,
+    })?;
     for capability in [capability::AUTH_BEGIN, capability::AUTH_TOKEN] {
         let Some(scopes) = grant_node(&manifest, capability).and_then(Value::as_array) else {
             continue;
@@ -789,6 +882,41 @@ pub fn evaluate(
 ) -> Decision {
     if principal != Principal::AppProcess {
         return Decision::Deny(DenyReason::NotAppProcess { principal });
+    }
+    if matches!(operation, capability::DIALOG | capability::MENU) {
+        let literal = if operation == capability::DIALOG {
+            "dialog"
+        } else {
+            "menu"
+        };
+        let Some(items) = manifest.app.get("system").and_then(Value::as_array) else {
+            return deny_not_granted(operation, path);
+        };
+        // The approved original menu/dialog grant is a resource-less,
+        // deduplicated exact-literal list. Malformed or mixed inputs cannot
+        // become wildcards or a generic native capability namespace.
+        if items.is_empty() || items.len() > 2 || path != literal {
+            return deny_not_granted(operation, path);
+        }
+        for (index, item) in items.iter().enumerate() {
+            let Some(value) = item.as_str() else {
+                return deny_not_granted(operation, path);
+            };
+            if !matches!(value, "dialog" | "menu")
+                || items[..index]
+                    .iter()
+                    .any(|prior| prior.as_str() == Some(value))
+            {
+                return deny_not_granted(operation, path);
+            }
+        }
+        return items
+            .iter()
+            .position(|item| item.as_str() == Some(literal))
+            .map_or_else(
+                || deny_not_granted(operation, path),
+                |grant_index| Decision::Allow(ScopePermit { grant_index }),
+            );
     }
     let Some(node) = grant_node(manifest, operation) else {
         return deny_not_granted(operation, path);
@@ -957,6 +1085,107 @@ pub fn validate_windows_package_component(component: &str) -> Result<(), String>
     Ok(())
 }
 
+#[cfg(windows)]
+fn utf16(text: &str) -> Result<Vec<u16>, String> {
+    let count = text.encode_utf16().count();
+    let mut encoded = Vec::new();
+    encoded
+        .try_reserve_exact(count)
+        .map_err(|_| "cannot allocate Windows package path buffer".to_owned())?;
+    encoded.extend(text.encode_utf16());
+    Ok(encoded)
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)] // The existing NLS operation and buffer proofs remain unchanged.
+fn ensure_nfc(component: &str) -> Result<(), String> {
+    use windows_sys::Win32::Globalization::{NormalizationC, NormalizeString};
+
+    let source = utf16(component)?;
+    let source_len = i32::try_from(source.len())
+        .map_err(|_| "Windows package component is too long".to_owned())?;
+    // SAFETY: source is a live, initialized UTF-16 buffer and source_len is
+    // its checked code-unit length. A null destination with zero capacity is
+    // the documented size query; no pointer is retained by Win32.
+    let required = unsafe {
+        NormalizeString(
+            NormalizationC,
+            source.as_ptr(),
+            source_len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if required <= 0 {
+        return Err("Windows NormalizationC check failed".to_owned());
+    }
+    let required_units = usize::try_from(required)
+        .map_err(|_| "Windows normalization size is out of range".to_owned())?;
+    let mut normalized = Vec::new();
+    normalized
+        .try_reserve_exact(required_units)
+        .map_err(|_| "cannot allocate Windows normalization buffer".to_owned())?;
+    normalized.resize(required_units, 0);
+    // SAFETY: normalized is initialized and has exactly the checked capacity
+    // requested by NormalizeString; both buffers remain live for this call.
+    let written = unsafe {
+        NormalizeString(
+            NormalizationC,
+            source.as_ptr(),
+            source_len,
+            normalized.as_mut_ptr(),
+            required,
+        )
+    };
+    if written <= 0 || written > required {
+        return Err("Windows NormalizationC check failed".to_owned());
+    }
+    let written_units = usize::try_from(written)
+        .map_err(|_| "Windows normalized size is out of range".to_owned())?;
+    if normalized[..written_units] != source {
+        return Err("Windows package component is not in NormalizationC form".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)] // The existing ordinal NLS operation and buffer proof remain unchanged.
+fn ordinal_order(left: &[u16], right: &[u16]) -> Result<std::cmp::Ordering, ()> {
+    use std::cmp::Ordering;
+    use windows_sys::Win32::Globalization::{
+        CSTR_EQUAL, CSTR_GREATER_THAN, CSTR_LESS_THAN, CompareStringOrdinal,
+    };
+    let left_len = i32::try_from(left.len()).map_err(|_| ())?;
+    let right_len = i32::try_from(right.len()).map_err(|_| ())?;
+    // SAFETY: both pointers refer to live UTF-16 buffers for the checked
+    // lengths, and TRUE requests the specified ordinal case-insensitive form.
+    match unsafe { CompareStringOrdinal(left.as_ptr(), left_len, right.as_ptr(), right_len, 1) } {
+        CSTR_LESS_THAN => Ok(Ordering::Less),
+        CSTR_EQUAL => Ok(Ordering::Equal),
+        CSTR_GREATER_THAN => Ok(Ordering::Greater),
+        _ => Err(()),
+    }
+}
+
+/// Compares validated NFC Windows filename components with ordinal ignore-case semantics.
+///
+/// This is a lexical comparison, not evidence of filesystem object identity.
+///
+/// # Errors
+/// Refuses invalid or non-NFC components and Windows NLS failures.
+#[cfg(windows)]
+pub fn windows_package_components_equal(left: &str, right: &str) -> Result<bool, String> {
+    for component in [left, right] {
+        validate_windows_package_component(component)?;
+        ensure_nfc(component)?;
+    }
+    let left = utf16(left)?;
+    let right = utf16(right)?;
+    ordinal_order(&left, &right)
+        .map(|order| order == std::cmp::Ordering::Equal)
+        .map_err(|()| "Windows ordinal package path comparison failed".to_owned())
+}
+
 /// Validates the namespace of a Windows v0 package archive.
 ///
 /// Every slash-separated component must pass [`validate_windows_package_component`]
@@ -971,87 +1200,8 @@ pub fn validate_windows_package_component(component: &str) -> Result<(), String>
 /// Returns a refusal for an invalid path, non-NFC component, case-insensitive
 /// path collision, or Windows API/allocation failure.
 #[cfg(windows)]
-#[allow(unsafe_code)] // SAFETY: FFI is limited to checked Win32 NLS calls on owned buffers below.
 pub fn validate_windows_package_paths(paths: &[&str]) -> Result<(), String> {
     use std::cmp::Ordering;
-    use windows_sys::Win32::Globalization::{
-        CSTR_EQUAL, CSTR_GREATER_THAN, CSTR_LESS_THAN, CompareStringOrdinal,
-    };
-
-    fn utf16(text: &str) -> Result<Vec<u16>, String> {
-        let count = text.encode_utf16().count();
-        let mut encoded = Vec::new();
-        encoded
-            .try_reserve_exact(count)
-            .map_err(|_| "cannot allocate Windows package path buffer".to_owned())?;
-        encoded.extend(text.encode_utf16());
-        Ok(encoded)
-    }
-
-    fn ensure_nfc(component: &str) -> Result<(), String> {
-        use windows_sys::Win32::Globalization::{NormalizationC, NormalizeString};
-
-        let source = utf16(component)?;
-        let source_len = i32::try_from(source.len())
-            .map_err(|_| "Windows package component is too long".to_owned())?;
-        // SAFETY: source is a live, initialized UTF-16 buffer and source_len is
-        // its checked code-unit length. A null destination with zero capacity is
-        // the documented size query; no pointer is retained by Win32.
-        let required = unsafe {
-            NormalizeString(
-                NormalizationC,
-                source.as_ptr(),
-                source_len,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        if required <= 0 {
-            return Err("Windows NormalizationC check failed".to_owned());
-        }
-        let required_units = usize::try_from(required)
-            .map_err(|_| "Windows normalization size is out of range".to_owned())?;
-        let mut normalized = Vec::new();
-        normalized
-            .try_reserve_exact(required_units)
-            .map_err(|_| "cannot allocate Windows normalization buffer".to_owned())?;
-        normalized.resize(required_units, 0);
-        // SAFETY: normalized is initialized and has exactly the checked capacity
-        // requested by NormalizeString; both buffers remain live for this call.
-        let written = unsafe {
-            NormalizeString(
-                NormalizationC,
-                source.as_ptr(),
-                source_len,
-                normalized.as_mut_ptr(),
-                required,
-            )
-        };
-        if written <= 0 || written > required {
-            return Err("Windows NormalizationC check failed".to_owned());
-        }
-        let written_units = usize::try_from(written)
-            .map_err(|_| "Windows normalized size is out of range".to_owned())?;
-        if normalized[..written_units] != source {
-            return Err("Windows package component is not in NormalizationC form".to_owned());
-        }
-        Ok(())
-    }
-
-    fn ordinal_order(left: &[u16], right: &[u16]) -> Result<Ordering, ()> {
-        let left_len = i32::try_from(left.len()).map_err(|_| ())?;
-        let right_len = i32::try_from(right.len()).map_err(|_| ())?;
-        // SAFETY: both pointers refer to live UTF-16 buffers for the checked
-        // lengths, and TRUE requests the specified ordinal case-insensitive form.
-        match unsafe { CompareStringOrdinal(left.as_ptr(), left_len, right.as_ptr(), right_len, 1) }
-        {
-            CSTR_LESS_THAN => Ok(Ordering::Less),
-            CSTR_EQUAL => Ok(Ordering::Equal),
-            CSTR_GREATER_THAN => Ok(Ordering::Greater),
-            _ => Err(()),
-        }
-    }
-
     let mut encoded_paths = Vec::new();
     encoded_paths
         .try_reserve_exact(paths.len())
@@ -1510,6 +1660,32 @@ mod tests {
                 "Windows package component {component:?} is outside the forbidden set"
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_component_comparison_uses_existing_nfc_and_ordinal_owner() {
+        assert_eq!(
+            windows_package_components_equal("INDEX.HTML", "index.html"),
+            Ok(true)
+        );
+        assert_eq!(
+            windows_package_components_equal("index.html", "other.html"),
+            Ok(false)
+        );
+        assert!(windows_package_components_equal("cafe\u{0301}", "caf\u{00e9}").is_err());
+        assert!(windows_package_components_equal("name.", "name").is_err());
+        assert!(windows_package_components_equal("name ", "name").is_err());
+        let long = "a".repeat(101);
+        assert_eq!(windows_package_components_equal(&long, &long), Ok(true));
+        // The existing Windows path set is the NLS owner for this non-ASCII case;
+        // the device-specific NTFS outcome remains a separate native oracle.
+        let dotless = windows_package_components_equal("index.html", "\u{0131}ndex.html")
+            .expect("ordinal comparison");
+        assert_eq!(
+            dotless,
+            validate_windows_package_paths(&["index.html", "\u{0131}ndex.html"]).is_err()
+        );
     }
 
     #[cfg(windows)]
