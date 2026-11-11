@@ -327,7 +327,7 @@ include!("tests/filesystem_guard_and_recovery.rs");
 include!("tests/guarded_router_and_quit.rs");
 // The existing macOS declaration stays with its historical selector. Linux
 // reuses the same real Runtime/HELLO identity proof without any GUI claim.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 #[path = "tests/accepted_primary_identity.rs"]
 mod accepted_primary_identity_linux;
 include!("tests/linux_strict_test_flags.rs");

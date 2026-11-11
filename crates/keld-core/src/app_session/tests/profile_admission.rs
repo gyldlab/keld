@@ -239,3 +239,29 @@ fn facade_profile_preflight_preserves_exact_schema_and_manifest_presence() {
         );
     }
 }
+
+#[cfg(windows)]
+#[test]
+fn windows_snapshot_retains_the_actual_admission_and_verified_digest() {
+    use sha2::{Digest as _, Sha256};
+    let root = tempfile::tempdir().expect("policy root");
+    let path = root.path().join("policy.jsonc");
+    let original = br#"{"profile":"legacy"}"#;
+    fs::write(&path, original).expect("policy");
+    let digest: [u8; 32] = Sha256::digest(original).into();
+    let verified = load_verified_manifest(File::open(&path).expect("open"), path.clone(), digest)
+        .expect("verify");
+    let admitted = super::profile_preflight::validate_profile(3, &verified, false)
+        .expect("admit actual request");
+    let snapshot = GuardSnapshot::prepare_uncontained(verified, admitted).expect("prepare session");
+    fs::write(path, br#"{"profile":"strict"}"#).expect("change path");
+    assert_eq!(
+        snapshot.fs.admitted_profile,
+        Some(keld_guard::ProfileState::Legacy)
+    );
+    assert_eq!(snapshot.fs.verified.verified_sha256(), digest);
+    assert_eq!(
+        snapshot.fs.verified.manifest().declared_profile(),
+        Some(keld_guard::DeclaredProfile::Legacy)
+    );
+}

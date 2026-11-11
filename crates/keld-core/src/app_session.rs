@@ -454,9 +454,33 @@ struct GuardSnapshot {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 impl GuardSnapshot {
+    #[cfg(any(not(windows), test))]
     fn prepare(verified: VerifiedManifest) -> Result<Self, FsPrepareError> {
+        Self::prepare_inner(
+            verified,
+            #[cfg(windows)]
+            None,
+        )
+    }
+
+    #[cfg(windows)]
+    fn prepare_uncontained(
+        verified: VerifiedManifest,
+        admitted: keld_guard::ProfileState,
+    ) -> Result<Self, FsPrepareError> {
+        Self::prepare_inner(verified, Some(admitted))
+    }
+
+    fn prepare_inner(
+        verified: VerifiedManifest,
+        #[cfg(windows)] admitted: Option<keld_guard::ProfileState>,
+    ) -> Result<Self, FsPrepareError> {
         let broker = FsBroker::prepare(&verified)?;
-        let fs = Arc::new(FsDispatchSession::new(verified.clone()));
+        let fs = Arc::new(FsDispatchSession::new(
+            verified.clone(),
+            #[cfg(windows)]
+            admitted,
+        ));
         Ok(Self {
             verified,
             fs,
@@ -532,6 +556,9 @@ struct PendingFsCall {
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct FsDispatchSession {
     verified: VerifiedManifest,
+    // The actual host admission result belongs to this immutable verified policy.
+    #[cfg(windows)]
+    admitted_profile: Option<keld_guard::ProfileState>,
     state: Mutex<FsDispatchState>,
     handler_transition: Mutex<()>,
     drained: Condvar,
@@ -559,9 +586,14 @@ impl FsDispatchState {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 impl FsDispatchSession {
-    fn new(verified: VerifiedManifest) -> Self {
+    fn new(
+        verified: VerifiedManifest,
+        #[cfg(windows)] admitted_profile: Option<keld_guard::ProfileState>,
+    ) -> Self {
         Self {
             verified,
+            #[cfg(windows)]
+            admitted_profile,
             state: Mutex::new(FsDispatchState::initial()),
             handler_transition: Mutex::new(()),
             drained: Condvar::new(),
@@ -2039,8 +2071,8 @@ pub fn run_guarded(
             return Err(HostAppError::new("KELD-CORE-034", "installed profile", "Legacy is unavailable for direct installed boot", "Use an explicitly declared development profile or a qualified installed Strict profile.").into());
         }
         profile_preflight::disclose_profile(profile, false)?;
-        let guard_snapshot =
-            GuardSnapshot::prepare(verified).map_err(|source| HostAppError::fs_prepare(&source))?;
+        let guard_snapshot = GuardSnapshot::prepare_uncontained(verified, profile)
+            .map_err(|source| HostAppError::fs_prepare(&source))?;
         run_app_direct(app, Some(&guard_snapshot), pre_init_terminal).map_err(HostRunFailure::from)
     }
     #[cfg(target_os = "macos")]
@@ -6236,6 +6268,9 @@ struct PrimaryCallerContext {
 struct ActivePrimaryGeneration {
     attempt: u32,
     identity: PrimaryLinkIdentity,
+    // The same retained admission/policy object, associated only at real bind.
+    #[cfg(windows)]
+    profile_binding: Option<Arc<FsDispatchSession>>,
     writer: BootstrapStream,
     reader_stop: Arc<AtomicBool>,
     /// Correlation id of this generation's accepted-but-unanswered `Quit`
@@ -7581,8 +7616,16 @@ impl PrimaryRouterHandle {
                 )
                 .into());
             }
+            #[cfg(windows)]
+            let mut profile_binding = None;
             if let Some(session) = self.fs.as_ref().and_then(Weak::upgrade) {
                 session.install_prepared_attempt(attempt)?;
+                #[cfg(windows)]
+                if matches!(identity, PrimaryLinkIdentity::Role(_))
+                    && session.admitted_profile.is_some()
+                {
+                    profile_binding = Some(Arc::clone(&session));
+                }
             } else if self.fs.is_some() {
                 return Err(app_detail(
                     "primary session generation",
@@ -7594,6 +7637,8 @@ impl PrimaryRouterHandle {
             *current = Some(ActivePrimaryGeneration {
                 attempt,
                 identity,
+                #[cfg(windows)]
+                profile_binding,
                 writer: writer_stream,
                 reader_stop: Arc::clone(&reader_stop),
                 pending_quit: None,
@@ -7695,10 +7740,38 @@ impl PrimaryRouterHandle {
 
     fn is_current(&self, attempt: u32) -> bool {
         self.current.lock().map_or(true, |current| {
-            current
-                .as_ref()
-                .is_some_and(|active| active.attempt == attempt)
+            current.as_ref().is_some_and(|active| {
+                #[cfg(windows)]
+                let binding_is_owned = active.profile_binding.as_ref().is_none_or(|binding| {
+                    self.fs
+                        .as_ref()
+                        .and_then(Weak::upgrade)
+                        .is_some_and(|session| Arc::ptr_eq(binding, &session))
+                });
+                #[cfg(not(windows))]
+                let binding_is_owned = true;
+                active.attempt == attempt && binding_is_owned
+            })
         })
+    }
+
+    /// Test-only view of the actual active generation, never an external receipt.
+    #[cfg(all(test, windows))]
+    fn observed_profile_binding(
+        &self,
+        attempt: u32,
+        principal: RolePrincipal,
+    ) -> Option<(keld_guard::ProfileState, [u8; 32])> {
+        let current = self.current.lock().ok()?;
+        let active = current.as_ref()?;
+        if active.attempt != attempt || active.identity != PrimaryLinkIdentity::Role(principal) {
+            return None;
+        }
+        let binding = active.profile_binding.as_ref()?;
+        Some((
+            binding.admitted_profile?,
+            binding.verified.verified_sha256(),
+        ))
     }
 
     fn finish_tail(&self, phase: &'static str) -> Result<(), HostAppError> {
