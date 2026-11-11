@@ -107,6 +107,8 @@ mod navigation_deadline_tests {
 #[cfg(any(target_os = "macos", windows))]
 pub(crate) mod native_document;
 #[cfg(any(target_os = "macos", windows))]
+pub(crate) mod original_binding;
+#[cfg(any(target_os = "macos", windows))]
 pub(crate) mod original_call;
 #[cfg(any(target_os = "macos", windows))]
 pub(crate) mod original_event;
