@@ -451,10 +451,15 @@ path fails, compare a dedicated apartment with W2. Record the new handle and cra
 - **Impact:** a standalone panel cannot establish product admission, parent identity, or role teardown.
 - **Check:** before T-1's integrated qualification, the W2/Core/W6 owners hand back accepted committed interface inputs:
   W2 parent retention/generation and retirement; Core admission/custody, cancellation delivery and original settlement;
-  W6 verified role/profile admission. Name each owning path, commit and acceptance record, including the test-only bridge scope.
+  authenticated role admission with its profile state and refusal behavior disclosed. Name each owning path, commit and
+  acceptance record, including the test-only bridge scope.
+  For T-1, the admission may be an owner-accepted committed test-only interface: it preserves authenticated identity,
+  the actual Guard and custody path, and explicit refusals; it does not fabricate a Strict/Legacy qualification receipt.
+  This test-only admission does not satisfy the W6 production admission/qualification required by T-2 and product claims.
   Uncommitted/private candidates are not reproducible inputs and cannot satisfy this handback.
   This handback is independent of W5's later integrated native PASS and does not require T-2 production implementation.
-  Reconfirm the same accepted interfaces before T-2; a changed dispatch or lifetime edge requires fresh integrated qualification.
+  Before T-2, accept the production W2/Core/W6 interfaces and profile artifacts. A changed admission, dispatch or lifetime
+  edge requires fresh integrated qualification; unchanged test-only evidence alone cannot approve production admission.
 
 ### B-5: native safety and operator scope
 
