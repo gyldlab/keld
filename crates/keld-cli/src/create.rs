@@ -281,6 +281,38 @@ mod tests {
         );
     }
 
+    fn stage_git_sentinel(caller: &Path, fixture_environment: [(&str, &PathBuf); 2]) -> PathBuf {
+        let initialized = formatter_fixture_command("git")
+            .args(["init", "-q"])
+            .envs(fixture_environment)
+            .current_dir(caller)
+            .output()
+            .expect("initialize disposable caller");
+        assert!(initialized.status.success(), "{initialized:?}");
+        let git_dir = caller.join(".git");
+        assert_disposable_directory(&git_dir, &caller.canonicalize().expect("caller identity"));
+        fs::write(caller.join("sentinel.txt"), b"caller source must survive\n")
+            .expect("caller source sentinel");
+        let ignored = formatter_fixture_command("git")
+            .args(["check-ignore", "--quiet", "sentinel.txt"])
+            .envs(fixture_environment)
+            .current_dir(caller)
+            .output()
+            .expect("observe disposable global ignore");
+        assert!(
+            ignored.status.success(),
+            "global ignore must match sentinel: {ignored:?}"
+        );
+        let staged = formatter_fixture_command("git")
+            .args(["add", "-f", "--", "sentinel.txt"])
+            .envs(fixture_environment)
+            .current_dir(caller)
+            .output()
+            .expect("stage disposable caller sentinel");
+        assert!(staged.status.success(), "{staged:?}");
+        git_dir
+    }
+
     fn assert_formatter_preserves_inherited_git_target(config_only: bool) {
         const FORMATTER_TEST: &str =
             "create::tests::created_app_native_formatter_checks_repairs_and_is_idempotent";
@@ -309,34 +341,7 @@ mod tests {
         .expect("disposable global Git config");
         fs::write(&global_excludes, b"sentinel.txt\n").expect("disposable global ignore");
         let fixture_environment = [("HOME", &git_home), ("USERPROFILE", &git_home)];
-        let initialized = formatter_fixture_command("git")
-            .args(["init", "-q"])
-            .envs(fixture_environment)
-            .current_dir(&caller)
-            .output()
-            .expect("initialize disposable caller");
-        assert!(initialized.status.success(), "{initialized:?}");
-        let git_dir = caller.join(".git");
-        assert_disposable_directory(&git_dir, &caller.canonicalize().expect("caller identity"));
-        fs::write(caller.join("sentinel.txt"), b"caller source must survive\n")
-            .expect("caller source sentinel");
-        let ignored = formatter_fixture_command("git")
-            .args(["check-ignore", "--quiet", "sentinel.txt"])
-            .envs(fixture_environment)
-            .current_dir(&caller)
-            .output()
-            .expect("observe disposable global ignore");
-        assert!(
-            ignored.status.success(),
-            "global ignore must match sentinel: {ignored:?}"
-        );
-        let staged = formatter_fixture_command("git")
-            .args(["add", "-f", "--", "sentinel.txt"])
-            .envs(fixture_environment)
-            .current_dir(&caller)
-            .output()
-            .expect("stage disposable caller sentinel");
-        assert!(staged.status.success(), "{staged:?}");
+        let git_dir = stage_git_sentinel(&caller, fixture_environment);
         let config_sentinel = fixture.path().join("sentinel.config");
         fs::write(&config_sentinel, b"[fixture]\n\tmarker = preserve\n").expect("config sentinel");
         let protected = [
