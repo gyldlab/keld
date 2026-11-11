@@ -9,7 +9,9 @@ use crate::support::process::{
 };
 use crate::support::product::ProductFixture;
 use crate::support::product_cycle::run_product_cycle;
-use crate::support::renderer::{expect_renderer_beacon, spawn_renderer_beacon};
+use crate::support::renderer::{
+    BeaconFailureObservation, RendererBeacon, expect_renderer_beacon, spawn_renderer_beacon,
+};
 use crate::support::window::wait_for_host_window;
 use crate::{
     DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, prepare_keld_dev_helper, ui_end_kill_switch,
@@ -214,6 +216,47 @@ exit $p.ExitCode
     Ok(stdout)
 }
 
+pub(crate) fn catch_console_failure<T>(
+    beacon: &mut Option<RendererBeacon>,
+    run: impl FnOnce(&mut Option<RendererBeacon>) -> T,
+) -> (std::thread::Result<T>, Option<BeaconFailureObservation>) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(beacon)));
+    let observation = if result.is_err() {
+        beacon.take().map(RendererBeacon::observe_on_failure)
+    } else {
+        None
+    };
+    (result, observation)
+}
+
+pub(crate) fn write_console_beacon_failure(
+    sink: &mut impl Write,
+    observation: BeaconFailureObservation,
+) -> std::io::Result<()> {
+    writeln!(sink, "KELD-BEACON-ON-FAILURE: {}", observation.message())
+}
+
+pub(crate) fn finish_console_failure<W: Write>(
+    failure: Box<dyn std::any::Any + Send>,
+    beacon: Option<BeaconFailureObservation>,
+    cleanup: impl FnOnce(),
+    open_sink: impl FnOnce() -> W,
+) -> ! {
+    cleanup();
+    if let Some(beacon) = beacon
+        && let Err(_report_error) = write_console_beacon_failure(&mut open_sink(), beacon)
+    {
+        // A broken diagnostic sink cannot deliver its own error. Cleanup is
+        // complete and the original panic remains the primary failure.
+    }
+    std::panic::resume_unwind(failure);
+}
+
+fn cleanup_console_cli(cli: &mut std::process::Child) {
+    let _ = cli.kill();
+    let _ = cli.wait();
+}
+
 pub(crate) fn run_console_ctrl_c_case() {
     // SAFETY: this disposable console observer may inherit nextest's Ctrl+C
     // ignore attribute. Establish the ordinary terminal disposition before the
@@ -223,7 +266,7 @@ pub(crate) fn run_console_ctrl_c_case() {
     let control = TcpListener::bind(("127.0.0.1", 0)).expect("console control");
     let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("console beacon");
     let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
-    let beacon = spawn_renderer_beacon(beacon_listener);
+    let mut beacon = Some(spawn_renderer_beacon(beacon_listener));
     fs::write(fixture.project.join("index.html"), format!(
         "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
     )).expect("console renderer");
@@ -244,13 +287,16 @@ pub(crate) fn run_console_ctrl_c_case() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("console CLI");
-    let observation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let (observation, beacon_failure) = catch_console_failure(&mut beacon, |beacon| {
         let host_pid =
             wait_for_child_process(&mut cli, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
         let sentinel_pid = wait_for_cleanup_sentinel(&mut cli, Instant::now() + PRODUCT_DEADLINE);
         let (reader, _writer, bun_pid, _, descendant_pid) =
             accept_ready_generation_with_descendant(&control, &mut cli);
-        expect_renderer_beacon(beacon, "console rendered state");
+        expect_renderer_beacon(
+            beacon.take().expect("console beacon"),
+            "console rendered state",
+        );
         let _window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
         let host = open_process_for_wait(host_pid, false);
         let bun = open_process_for_wait(bun_pid, false);
@@ -315,13 +361,16 @@ pub(crate) fn run_console_ctrl_c_case() {
             "KELD_WINDOWS_CTRL_C_RELAUNCH host={} bun={}",
             relaunched.host_pid, relaunched.bun_pid
         );
-    }));
+    });
     if let Err(failure) = observation {
         // Keep precondition failures from orphaning the terminal-facing helper.
         // Killing this exact fixture child closes the existing host lease.
-        let _ = cli.kill();
-        let _ = cli.wait();
-        std::panic::resume_unwind(failure);
+        finish_console_failure(
+            failure,
+            beacon_failure,
+            || cleanup_console_cli(&mut cli),
+            std::io::stderr,
+        );
     }
 }
 

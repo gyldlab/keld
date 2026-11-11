@@ -22,6 +22,39 @@ pub(crate) struct RendererBeacon {
     activate_deadline: mpsc::Sender<Instant>,
 }
 
+/// A nonblocking snapshot taken only when the surrounding startup has failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BeaconFailureObservation {
+    Pending,
+    Succeeded,
+    Failed,
+    Disconnected,
+}
+
+impl BeaconFailureObservation {
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            Self::Pending => "renderer beacon worker result not yet published",
+            Self::Succeeded => "renderer beacon worker reported success",
+            Self::Failed => "renderer beacon worker reported an error (details withheld)",
+            Self::Disconnected => "renderer beacon worker ended without a result",
+        }
+    }
+}
+
+impl RendererBeacon {
+    /// Inspect only an already-published result; dropping preserves the original
+    /// failure cleanup and does not activate a deadline or join the worker.
+    pub(crate) fn observe_on_failure(self) -> BeaconFailureObservation {
+        match self.observed.try_recv() {
+            Ok(Ok(())) => BeaconFailureObservation::Succeeded,
+            Ok(Err(_)) => BeaconFailureObservation::Failed,
+            Err(mpsc::TryRecvError::Empty) => BeaconFailureObservation::Pending,
+            Err(mpsc::TryRecvError::Disconnected) => BeaconFailureObservation::Disconnected,
+        }
+    }
+}
+
 pub(crate) fn spawn_renderer_beacon(listener: TcpListener) -> RendererBeacon {
     let (observed_tx, observed) = mpsc::channel();
     let (activate_deadline, deadline_rx) = mpsc::channel();
@@ -296,3 +329,7 @@ impl HeldRendererRequest {
         self.worker.join().expect("held renderer worker joins");
     }
 }
+
+#[cfg(test)]
+#[path = "renderer/failure_observation_tests.rs"]
+mod failure_observation_tests;
