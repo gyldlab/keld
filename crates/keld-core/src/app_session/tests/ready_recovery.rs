@@ -710,7 +710,8 @@ fn revoked_before_router_attachment_preserves_pre_ready_error() {
         keld_runtime::primary::PrimaryRoleConfig::primary("/bin/sh").args(["-c", "exit 19"]);
     #[cfg(windows)]
     let config =
-        keld_runtime::primary::PrimaryRoleConfig::primary(test_windows_command_interpreter()).args(["/C", "exit 19"]);
+        keld_runtime::primary::PrimaryRoleConfig::primary(test_windows_command_interpreter())
+            .args(["/C", "exit 19"]);
     let (supervisor, recovery) =
         keld_runtime::primary::PrimaryRoleSupervisor::start_with_bound_generations_gated(
             config.admission_timeout(Duration::from_secs(2)),
@@ -752,7 +753,8 @@ fn caller_sees_pre_ready_owner_cause_when_attachment_loses_the_race() {
         keld_runtime::primary::PrimaryRoleConfig::primary("/bin/sh").args(["-c", "exit 19"]);
     #[cfg(windows)]
     let config =
-        keld_runtime::primary::PrimaryRoleConfig::primary(test_windows_command_interpreter()).args(["/C", "exit 19"]);
+        keld_runtime::primary::PrimaryRoleConfig::primary(test_windows_command_interpreter())
+            .args(["/C", "exit 19"]);
     let (supervisor, recovery) =
         keld_runtime::primary::PrimaryRoleSupervisor::start_with_bound_generations_gated(
             config.admission_timeout(Duration::from_secs(2)),
@@ -803,8 +805,9 @@ fn pre_ready_owner_terminal_error(shutdown: SessionShutdownState, code: u8) -> H
     let config = keld_runtime::primary::PrimaryRoleConfig::primary("/bin/sh")
         .args(["-c".to_owned(), format!("exit {code}")]);
     #[cfg(windows)]
-    let config = keld_runtime::primary::PrimaryRoleConfig::primary(test_windows_command_interpreter())
-        .args(["/C".to_owned(), format!("exit {code}")]);
+    let config =
+        keld_runtime::primary::PrimaryRoleConfig::primary(test_windows_command_interpreter())
+            .args(["/C".to_owned(), format!("exit {code}")]);
     let (supervisor, recovery) =
         keld_runtime::primary::PrimaryRoleSupervisor::start_with_bound_generations_gated(
             config.admission_timeout(Duration::from_secs(2)),
