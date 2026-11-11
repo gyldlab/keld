@@ -91,11 +91,12 @@ a matching compiler/host pair from an integrated revision.
   starts. Native regression tests additionally pin a reported live descendant
   and observe its signaled exit after retirement. This is process-family
   cleanup, not LPAC token isolation or installed-app Strict qualification.
-  An unqualified named `bun` can be resolved from developer PATH only when
-  the explicit staged-development selector is present, before native process
-  launch. All other role commands require an absolute image path. The
-  developer selector is mutable developer input, never installed image
-  authentication or an implicit fallback for a release executable.
+  The Windows development Host resolves mutable developer Bun selection to
+  an absolute image before handing it to Runtime. The native supervisor
+  never searches PATH: all Windows Bun role inputs must name an absolute
+  executable. Developer selection is not installed image authentication;
+  release packaging must supply an independently verified bundled image
+  identity and must not fall back to the development resolver.
   Accepted shutdown also closes successor admission without killing the
   current child before its correlated reply.
   The host clears inheritance and starts watching the stdin-v1 lease before the

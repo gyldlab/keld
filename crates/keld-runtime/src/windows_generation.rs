@@ -28,11 +28,14 @@ pub(crate) struct WindowsRoleCommand {
 impl WindowsRoleCommand {
     /// Materializes std Command's inherited environment and its explicit edits.
     /// The native process launcher consumes a complete UTF-16 environment block.
-    pub(crate) fn from_command(
-        command: &Command,
-        allow_dev_bun_selector: bool,
-    ) -> io::Result<Self> {
-        let requested_program = PathBuf::from(command.get_program());
+    pub(crate) fn from_command(command: &Command) -> io::Result<Self> {
+        let program = PathBuf::from(command.get_program());
+        if !program.is_absolute() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Windows Bun roles require an absolute executable image path",
+            ));
+        }
         let current_dir = match command.get_current_dir() {
             Some(path) => path.to_path_buf(),
             None => std::env::current_dir()?,
@@ -56,50 +59,6 @@ impl WindowsRoleCommand {
                 environment.push((key.to_os_string(), value.to_os_string()));
             }
         }
-
-        let program = if requested_program.is_absolute() {
-            requested_program
-        } else {
-            // The existing developer bootstrap supplies "bun" by name. Resolve
-            // only that exact executable to an absolute .exe before the
-            // suspended native launch; never permit arbitrary relative images,
-            // shell/batch wrappers or an alternate hidden fallback. This is
-            // developer selection, NOT installed-image identity verification.
-            let bare = requested_program.to_str().is_some_and(|name| {
-                name.eq_ignore_ascii_case("bun") || name.eq_ignore_ascii_case("bun.exe")
-            });
-            if !bare || !allow_dev_bun_selector {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Windows Bun role requires an absolute image or the explicit developer Bun selector",
-                ));
-            }
-            let path = environment
-                .iter()
-                .find(|(key, _)| key.to_string_lossy().eq_ignore_ascii_case("PATH"))
-                .map(|(_, value)| value)
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::NotFound,
-                        "Windows developer Bun PATH is unavailable",
-                    )
-                })?;
-            std::env::split_paths(path)
-                .map(|directory| directory.join("bun.exe"))
-                .find_map(|candidate| {
-                    if candidate.is_file() {
-                        std::fs::canonicalize(candidate).ok()
-                    } else {
-                        None
-                    }
-                })
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::NotFound,
-                        "Windows developer Bun executable could not be located on PATH",
-                    )
-                })?
-        };
         Ok(Self {
             program,
             args: command.get_args().map(OsString::from).collect(),
@@ -325,7 +284,7 @@ mod tests {
             command.env_remove(EXIT_MODE);
         }
         WindowsSupervisedChild::spawn_role(
-            &WindowsRoleCommand::from_command(&command, false).expect("absolute native inputs"),
+            &WindowsRoleCommand::from_command(&command).expect("absolute native inputs"),
         )
         .expect("suspended role launch and exact Job membership")
     }
@@ -440,7 +399,7 @@ mod tests {
             .env("PATH", "second")
             .env("BUN_OPTIONS", "--preload=untrusted")
             .env_remove("bun_options");
-        let inputs = WindowsRoleCommand::from_command(&command, false).expect("native role input");
+        let inputs = WindowsRoleCommand::from_command(&command).expect("native role input");
         let path_values = inputs
             .environment
             .iter()
@@ -458,24 +417,12 @@ mod tests {
 
         let developer_bun = Command::new("bun");
         assert!(
-            WindowsRoleCommand::from_command(&developer_bun, false).is_err(),
-            "only explicit developer staging may select Bun from PATH"
-        );
-        let resolved = WindowsRoleCommand::from_command(&developer_bun, true)
-            .expect("the development Bun selector resolves to an absolute executable");
-        assert!(resolved.program.is_absolute());
-        assert_eq!(
-            resolved
-                .program
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .to_ascii_lowercase(),
-            "bun.exe",
+            WindowsRoleCommand::from_command(&developer_bun).is_err(),
+            "native supervisor never searches PATH for a Bun executable"
         );
         let unrelated_relative = Command::new("cmd.exe");
         assert!(
-            WindowsRoleCommand::from_command(&unrelated_relative, true).is_err(),
+            WindowsRoleCommand::from_command(&unrelated_relative).is_err(),
             "native roles must not resolve arbitrary executables from PATH"
         );
     }

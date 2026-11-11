@@ -995,10 +995,8 @@ impl ChildPreparer for RolePreparer {
             // Installed and development Bun roles share one suspended-launch
             // owner. Every generation joins a private non-breakaway Job
             // before its initial thread resumes; no Command::spawn fallback.
-            let native = match crate::windows_generation::WindowsRoleCommand::from_command(
-                &command,
-                self.config.staged_bun_launch.is_some(),
-            ) {
+            let native = match crate::windows_generation::WindowsRoleCommand::from_command(&command)
+            {
                 Ok(native) => native,
                 Err(source) => {
                     provisioned.lease.revoke(RevocationCause::SpawnFailed)?;
