@@ -178,7 +178,7 @@ fn check_security_profile(root: &Path) -> Check {
         Some(DeclaredProfile::Legacy) => (
             true,
             format!(
-                "declared legacy (configuration valid only); {}; runtime admission not performed; explicit primary launch is supported on macOS and Windows development hosts",
+                "declared legacy (configuration valid only); {}; runtime admission not performed; explicit primary launch is eligible on macOS and Windows development hosts",
                 keld_guard::LEGACY_PROFILE_FORFEIT
             ),
             None,
