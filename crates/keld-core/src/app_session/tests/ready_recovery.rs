@@ -685,6 +685,20 @@ fn direct_link_failure_restarts_before_router_attach_and_rejects_stale_attempts(
     assert!(!super::direct_link_failure_restarts(Some(&handle), 2));
 }
 
+/// Test-only native command interpreter. Windows production Bun admission
+/// requires an absolute image and never resolves a PATH-only process name.
+#[cfg(windows)]
+fn test_windows_command_interpreter() -> std::path::PathBuf {
+    let executable = std::env::var_os("ComSpec")
+        .map(std::path::PathBuf::from)
+        .expect("Windows native tests require ComSpec");
+    assert!(
+        executable.is_absolute() && executable.is_file(),
+        "ComSpec must name an existing absolute command interpreter"
+    );
+    executable
+}
+
 /// The real role supervisor queues a pre-Ready revocation while the direct
 /// owner has no router yet. Its typed startup error must not depend on whether
 /// `AttachRouter` was processed before the revocation channel.
@@ -696,7 +710,7 @@ fn revoked_before_router_attachment_preserves_pre_ready_error() {
         keld_runtime::primary::PrimaryRoleConfig::primary("/bin/sh").args(["-c", "exit 19"]);
     #[cfg(windows)]
     let config =
-        keld_runtime::primary::PrimaryRoleConfig::primary("cmd.exe").args(["/C", "exit 19"]);
+        keld_runtime::primary::PrimaryRoleConfig::primary(test_windows_command_interpreter()).args(["/C", "exit 19"]);
     let (supervisor, recovery) =
         keld_runtime::primary::PrimaryRoleSupervisor::start_with_bound_generations_gated(
             config.admission_timeout(Duration::from_secs(2)),
@@ -738,7 +752,7 @@ fn caller_sees_pre_ready_owner_cause_when_attachment_loses_the_race() {
         keld_runtime::primary::PrimaryRoleConfig::primary("/bin/sh").args(["-c", "exit 19"]);
     #[cfg(windows)]
     let config =
-        keld_runtime::primary::PrimaryRoleConfig::primary("cmd.exe").args(["/C", "exit 19"]);
+        keld_runtime::primary::PrimaryRoleConfig::primary(test_windows_command_interpreter()).args(["/C", "exit 19"]);
     let (supervisor, recovery) =
         keld_runtime::primary::PrimaryRoleSupervisor::start_with_bound_generations_gated(
             config.admission_timeout(Duration::from_secs(2)),
@@ -789,7 +803,7 @@ fn pre_ready_owner_terminal_error(shutdown: SessionShutdownState, code: u8) -> H
     let config = keld_runtime::primary::PrimaryRoleConfig::primary("/bin/sh")
         .args(["-c".to_owned(), format!("exit {code}")]);
     #[cfg(windows)]
-    let config = keld_runtime::primary::PrimaryRoleConfig::primary("cmd.exe")
+    let config = keld_runtime::primary::PrimaryRoleConfig::primary(test_windows_command_interpreter())
         .args(["/C".to_owned(), format!("exit {code}")]);
     let (supervisor, recovery) =
         keld_runtime::primary::PrimaryRoleSupervisor::start_with_bound_generations_gated(
