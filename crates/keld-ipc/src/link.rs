@@ -660,6 +660,35 @@ pub fn read_quit_drain_frame_with_privileged_calls<S: Read>(
     )
 }
 
+/// First qualified post-HELLO Init, under the original generation deadline.
+/// Canonical lifecycle semantics and the smaller metadata cap run pre-allocation.
+pub(crate) fn read_runtime_process_facts_init_until<S: Read>(
+    stream: &mut S,
+    deadline: Instant,
+) -> Result<(ValidatedFrameHeader, Vec<u8>), IpcError> {
+    let stop = AtomicBool::new(false);
+    read_frame_interruptible_validated_with(
+        stream,
+        &stop,
+        Some(deadline),
+        None,
+        APP_LINK_IO_DEADLINE,
+        |header| {
+            let validated = validate_received_header(&ReceivePolicy::lifecycle_receiver(), header)?;
+            if validated.kind() != FrameKind::Call || validated.corr() != CorrelationId(1) {
+                return Err(IpcError::Protocol {
+                    detail: "qualified runtime Init must be the first lifecycle CALL with correlation 1",
+                });
+            }
+            if usize::try_from(validated.len()).map_err(|_| IpcError::PayloadTooLarge)?
+                > crate::lifecycle::MAX_RUNTIME_PROCESS_FACTS_PAYLOAD {
+                return Err(IpcError::PayloadTooLarge);
+            }
+            Ok(validated)
+        },
+    )?.ok_or(IpcError::Timeout)
+}
+
 /// [`read_validated_frame_interruptible`] additionally capped by an absolute
 /// admission/session deadline that byte trickle cannot renew (spec kel133 §4
 /// deadline model).
@@ -1441,7 +1470,9 @@ mod tests {
         });
         // Observe the Rust read boundary before starting the shutdown clock.
         // This witnesses reader startup, not kernel entry or a blocked syscall.
-        let entry = entry_rx.recv_timeout(Duration::from_secs(2));
+        entry_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("read_frame startup witness missing");
         let shutdown = writer.shutdown_app_link();
         // Preserve the two-second result deadline after the API returns.
         let result = done_rx.recv_timeout(Duration::from_secs(2));
@@ -1451,7 +1482,6 @@ mod tests {
         let joined = worker.join();
         shutdown.expect("shutdown both directions");
         let result = result.expect("shutdown reader result was not published within two seconds");
-        entry.expect("read_frame startup witness missing");
         joined.expect("reader thread panicked");
         let err = result.expect_err("shutdown is not a frame");
         assert!(
@@ -1863,3 +1893,63 @@ mod validated_read_tests;
 
 #[cfg(test)]
 mod deadline_contract_tests;
+
+#[cfg(test)]
+mod runtime_process_facts_frame_tests {
+    use super::*;
+    #[test]
+    fn invalid_init_envelope_is_rejected_before_body_consumption() {
+        let valid = FrameHeader {
+            kind: FrameKind::Call,
+            flags: 0,
+            channel: crate::lifecycle::LIFECYCLE_CHANNEL,
+            corr: CorrelationId(1),
+            len: 1,
+        };
+        let headers = [
+            FrameHeader {
+                kind: FrameKind::Ping,
+                len: 0,
+                ..valid
+            },
+            FrameHeader {
+                kind: FrameKind::Reply,
+                ..valid
+            },
+            FrameHeader {
+                flags: crate::frame::FLAG_RAW,
+                ..valid
+            },
+            FrameHeader {
+                channel: crate::ECHO_CHANNEL,
+                ..valid
+            },
+            FrameHeader {
+                corr: CorrelationId(2),
+                ..valid
+            },
+            FrameHeader {
+                len: u32::try_from(crate::lifecycle::MAX_RUNTIME_PROCESS_FACTS_PAYLOAD + 1)
+                    .expect("small bound"),
+                ..valid
+            },
+        ];
+        for header in headers {
+            let mut bytes = header.encode().to_vec();
+            bytes.extend_from_slice(b"must stay unread");
+            let mut reader = std::io::Cursor::new(bytes);
+            assert!(
+                read_runtime_process_facts_init_until(
+                    &mut reader,
+                    Instant::now() + Duration::from_secs(1)
+                )
+                .is_err(),
+                "bad envelope {header:?}"
+            );
+            assert_eq!(
+                reader.position(),
+                u64::try_from(HEADER_LEN).expect("fixed header")
+            );
+        }
+    }
+}

@@ -24,6 +24,9 @@ repository = "https://github.com/gyldlab/keld"
 authors = ["GYLDLAB"]
 
 [workspace.dependencies]
+# GH-1404 reuses GH473's owned macOS reader-queue shutdown join. This exact
+# safe wrapper is already locked via Tao; no version upgrade or public queue.
+dispatch2 = { version = "=0.3.1", default-features = false, features = ["std"] }
 keld-core = { path = "crates/keld-core" }
 keld-wv = { path = "crates/keld-wv" }
 keld-ipc = { path = "crates/keld-ipc" }
@@ -71,7 +74,7 @@ semver = "=1.0.28"
 zstd = { version = "=0.14.3", default-features = false }
 
 # --- Dependency review (KEL-42 / AGENTS.md gate) ---
-# Name: rmcp =3.1.2 (official modelcontextprotocol/rust-sdk)
+# Name: rmcp =3.9.0 (official modelcontextprotocol/rust-sdk)
 # Purpose: MCP 2026-07-28 wire (server/discover, dual-version negotiation,
 #   SEP-2549 cache hints, JSON Schema tool schemas) for `keld mcp serve`.
 # Alternatives rejected: (a) hand-rolled JSON-RPC/stdio — own conformance across
@@ -79,7 +82,7 @@ zstd = { version = "=0.14.3", default-features = false }
 #   binary; (c) community crates — not official, no 2026-07-28 confirmed.
 # Features: server + macros + transport-io (stdio) ONLY — no
 #   transport-streamable-http*, no reqwest/auth. Exact pin: wire churn post-GA.
-rmcp = { version = "=3.1.2", default-features = false, features = [
+rmcp = { version = "=3.9.0", default-features = false, features = [
     "server",
     "macros",
     "transport-io",

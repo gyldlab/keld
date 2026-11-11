@@ -335,6 +335,112 @@ test("actual workflow passes parsed security admission", () => {
   expect(() => checkWorkflowSecurity(source)).not.toThrow();
 });
 
+test("Rust test SDK links use frozen lockfiles with no install scripts", () => {
+  const clean = fixture();
+  const steps = clean.jobs.check!.steps;
+  const selected = step(
+    clean,
+    "check",
+    "Install SDK links for Rust test oracles",
+  );
+  expect(selected.shell).toBe("bash");
+  expect(selected.run).toBe(
+    "set -euo pipefail\n" +
+      "for package in packages/@keld/kipc packages/@keld/api packages/@keld/electron; do\n" +
+      '  (cd "$package" && bun install --frozen-lockfile --ignore-scripts)\n' +
+      "done\n",
+  );
+  expect(steps.indexOf(selected)).toBeLessThan(
+    steps.indexOf(step(clean, "check", "clippy (warnings deny)")),
+  );
+  for (const mutation of [
+    "removed",
+    "changed",
+    "conditional",
+    "reordered",
+  ] as const) {
+    const f = fixture();
+    const selected = step(
+      f,
+      "check",
+      "Install SDK links for Rust test oracles",
+    );
+    if (mutation === "removed") {
+      f.jobs.check!.steps.splice(f.jobs.check!.steps.indexOf(selected), 1);
+    } else if (mutation === "changed") {
+      selected.run = String(selected.run).replace(
+        "--ignore-scripts",
+        "--force",
+      );
+    } else if (mutation === "conditional") {
+      selected.if = false;
+    } else {
+      f.jobs.check!.steps.splice(f.jobs.check!.steps.indexOf(selected), 1);
+      f.jobs.check!.steps.push(selected);
+    }
+    expect(() => check(f), mutation).toThrow();
+  }
+});
+
+test("GH-502 Node 26 setup is uniquely pinned, ordered, and fail-closed", () => {
+  const clean = fixture();
+  const steps = clean.jobs["bun-test"]!.steps;
+  const setup = steps[2]!;
+  expect(setup.uses).toBe(
+    "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1",
+  );
+  expect(setup.with).toEqual({
+    "node-version": "26.10.0",
+    "check-latest": false,
+    "package-manager-cache": false,
+  });
+  for (const mutation of [
+    "removed",
+    "duplicate",
+    "moved",
+    "unreviewed-sha",
+    "wrong-version",
+    "cache-enabled",
+    "latest-enabled",
+    "skipped",
+    "tolerate-failure",
+  ] as const) {
+    const f = fixture();
+    const ts = f.jobs["bun-test"]!.steps;
+    const node = ts[2]!;
+    switch (mutation) {
+      case "removed":
+        ts.splice(2, 1);
+        break;
+      case "duplicate":
+        ts.splice(3, 0, { ...node });
+        break;
+      case "moved":
+        ts.splice(4, 0, ...ts.splice(2, 1));
+        break;
+      case "unreviewed-sha":
+        node.uses = "actions/setup-node@" + "0".repeat(40);
+        break;
+      case "wrong-version":
+        (node.with as Step)["node-version"] = "24.22.2";
+        break;
+      case "cache-enabled":
+        (node.with as Step)["package-manager-cache"] = true;
+        break;
+      case "latest-enabled":
+        (node.with as Step)["check-latest"] = true;
+        break;
+      case "skipped":
+        node.if = false;
+        break;
+      case "tolerate-failure":
+        node["continue-on-error"] = true;
+        break;
+    }
+    expect(() => check(f), mutation).toThrow();
+  }
+});
+
 test("Linux and Windows native acceptance tests print cargo failure output", () => {
   const f = fixture();
   const bash =

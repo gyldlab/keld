@@ -1,23 +1,10 @@
 # keld-native invariants
+Owner/load: native/always; path crates/keld-native.
 
-Owner/load: native/always. Trigger: crates/keld-native. Extends root AGENTS.md.
-
-- KEL-89 production unsafe is limited to these paths/operations:
-  - `src/auth/macos_http.rs`: typed AuthHttpDelegate NSObject class/ABI,
-    NSObjectProtocol/NSURLSession{,Task,Data}Delegate conformances, NSObject
-    super-init and sessionWithConfiguration_delegate_delegateQueue.
-  - `src/auth/macos_session.rs`: typed MainThreadOnly PresentationProvider
-    NSObject class/ABI, NSObjectProtocol and
-    ASWebAuthenticationPresentationContextProviding conformances; super-init;
-    method_id presentationAnchorForWebAuthenticationSession (+0 NSWindow return);
-    callbackWithCustomScheme and initWithURL_callback_completionHandler with
-    RcBlock::as_ptr; setPresentationContextProvider(Some/None), start and cancel
-    on the owned main-thread session; invocation-local nullable SDK NSURL/NSError
-    borrows and ASWebAuthenticationSessionErrorDomain symbol read.
-  No manual Send/Sync, unchecked pointer adoption/casts, trust overrides or other
-  production unsafe. AS session/provider/anchor stay on main; callback borrows never escape.
-- Test-only unsafe: `tests/support/windows_handle_census.rs` MAY call
-  GetCurrentProcess/GetProcessHandleCount with the current-process pseudo
-  handle and local count; never close that handle.
-- `src/fs.rs` cfg(test) MAY call WaitForSingleObject only on a retained Child.
-  Keep the bounded wait. Retire these allowances if the probes move.
+- Unsafe only (NSObject ABI/super-init + NSObjectProtocol):
+  - KEL-89 `src/auth/macos_http.rs`: AuthHttpDelegate; NSURLSession{,Task,Data}Delegate; sessionWithConfiguration_delegate_delegateQueue.
+  - KEL-89 `src/auth/macos_session.rs`: MainThreadOnly PresentationProvider/ASWebAuthenticationPresentationContextProviding; method_id presentationAnchorForWebAuthenticationSession (+0 NSWindow); callbackWithCustomScheme, initWithURL_callback_completionHandler/RcBlock::as_ptr; setPresentationContextProvider(Some/None), start/cancel (main); local nullable NSURL/NSError borrows; ASWebAuthenticationSessionErrorDomain read.
+  - GH478 `src/dialog/macos_file/delegate.rs`: MainThreadOnly NSOpenSavePanelDelegate; panel:shouldEnableURL:, panel:validateURL:error:_; weak setDelegate(Some/None), retain through callback+physical drain; clear before drop.
+  - GH480 `src/menu/macos/target.rs`: MainThreadOnly MenuTarget/activate:(NSMenuItem*); weak setTarget/Action(Some/None), retain until cleared; tryToPerform_with only undo:/redo:/cut:/copy:/paste:/pasteAndMatchStyle:/selectAll:.
+- No other unsafe, manual Send/Sync, unchecked pointer adoption/casts or trust overrides. Auth session/provider/anchor: main; callback borrows never escape.
+- Test unsafe: `tests/support/windows_handle_census.rs` GetCurrentProcess/GetProcessHandleCount; self pseudo-handle, never close. `src/fs.rs` cfg(test): WaitForSingleObject on retained Child only; bounded, retire if moved.

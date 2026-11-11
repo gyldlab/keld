@@ -112,12 +112,12 @@ fn one_router_carries_ready_two_echo_calls_and_ordered_quit() {
     let mut byte = [0_u8; 1];
     assert_eq!(client.read(&mut byte).expect("link EOF"), 0);
     eof_tx.send(()).expect("record EOF");
-    assert_eq!(
+    assert!(matches!(
         window_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("UI Quit wake"),
         AppWindowCommand::Quit
-    );
+    ));
     assert!(
         guardian_finished.load(Ordering::Acquire),
         "UI Quit must follow guardian reap acknowledgement"
@@ -203,11 +203,13 @@ fn accepted_quit_with_failed_owner_shutdown_still_ends_the_ui_loop_as_fatal() {
     guardian_thread.join().expect("owner fixture joins");
 
     // Kill switch only: the receipt is the condition awaited.
-    assert_eq!(
-        window_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("failed Quit tail must still wake the UI loop"),
-        AppWindowCommand::Fatal,
+    assert!(
+        matches!(
+            window_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("failed Quit tail must still wake the UI loop"),
+            AppWindowCommand::Fatal
+        ),
         "a failed owner shutdown must not report a successful Quit"
     );
     assert!(

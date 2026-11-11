@@ -7,7 +7,7 @@ import {
   encodeVarint,
   encodePostcardString,
   kipcError,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 
 export type FsRequest =
   | { variant: "Read"; path: string }

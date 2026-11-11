@@ -20,12 +20,9 @@ use super::{
 
 fn assert_failed_stage_is_empty(project: &Path) {
     let root = project.join(".keld/dev");
-    assert_eq!(
-        fs::read_dir(root)
-            .expect("stage parent survives failed launch")
-            .count(),
-        0,
-        "policy failure leaked the partial launch directory"
+    assert!(
+        matches!(fs::symlink_metadata(root), Err(error) if error.kind() == io::ErrorKind::NotFound),
+        "policy capture/admission now precedes staging: even a partial stage parent is forbidden"
     );
 }
 
@@ -76,7 +73,7 @@ fn project_policy_bytes_and_digest_are_staged_verbatim() {
 }
 
 #[test]
-fn empty_invalid_and_exact_ceiling_policy_are_captured_without_a_cli_parser() {
+fn raw_capture_keeps_invalid_bytes_but_compiled_profile_preflight_refuses_them() {
     for bytes in [
         Vec::new(),
         vec![0xff, 0x00, b'{'],
@@ -84,20 +81,39 @@ fn empty_invalid_and_exact_ceiling_policy_are_captured_without_a_cli_parser() {
     ] {
         let (_temp, project, host) = fixture();
         fs::write(project.join(PERMISSIONS_FILE), &bytes).expect("unparsed project input");
-        let stage = stage_dev_boot(&project, &host).expect("capture precedes host parsing");
-        assert_eq!(
-            fs::read(stage.root().join(PERMISSIONS_FILE)).expect("capture"),
-            bytes
-        );
-        let descriptor: serde_json::Value = serde_json::from_slice(
-            &fs::read(stage.root().join("keld.boot.json")).expect("descriptor"),
-        )
-        .expect("descriptor JSON");
-        assert_eq!(
-            descriptor["permissions"]["content_sha256"],
-            format!("sha256:{:x}", Sha256::digest(&bytes))
+        let captured = ProjectPermissionsSource::open(&project)
+            .expect("retain exact source")
+            .capture()
+            .expect("raw capture does not parse or reencode");
+        assert_eq!(captured, bytes);
+        let error = stage_dev_boot(&project, &host)
+            .expect_err("schema selection now requires valid policy through the shared parser");
+        assert!(error.to_string().contains("permissions profile"), "{error}");
+        assert!(
+            !project.join(".keld/dev").exists(),
+            "invalid compiled policy must fail before stage creation"
         );
     }
+}
+
+#[test]
+fn valid_exact_ceiling_policy_keeps_raw_bytes_and_digest_after_profile_selection() {
+    let mut bytes = b"{}".to_vec();
+    bytes.resize(manifest_ceiling(), b' ');
+    let (_temp, project, host) = fixture();
+    fs::write(project.join(PERMISSIONS_FILE), &bytes).expect("valid exact-ceiling policy");
+    let stage = stage_dev_boot(&project, &host).expect("valid bounded policy stages");
+    assert_eq!(
+        fs::read(stage.root().join(PERMISSIONS_FILE)).expect("capture"),
+        bytes
+    );
+    let descriptor: serde_json::Value =
+        serde_json::from_slice(&fs::read(stage.root().join("keld.boot.json")).expect("descriptor"))
+            .expect("descriptor JSON");
+    assert_eq!(
+        descriptor["permissions"]["content_sha256"],
+        format!("sha256:{:x}", Sha256::digest(&bytes))
+    );
 }
 
 #[test]

@@ -1,9 +1,5 @@
 /** Host-owned auth over the application's one canonical link (macOS T3). */
-import {
-  kipcError,
-  linkError,
-  requireDeadline,
-} from "../../kipc/src/transport.ts";
+import { kipcError, linkError, requireDeadline } from "@keld/kipc";
 import { invokeAuth } from "./app.ts";
 import {
   AUTH_BEGIN_CALL_DEADLINE_MS,

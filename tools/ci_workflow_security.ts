@@ -1138,6 +1138,9 @@ const reviewedWorkflowActionRefs = new Set([
   "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
   "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
   "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+  // GH-502 requires Node 26 for the installed alias oracle in bun-test.
+  // Reviewed immutable SHA; the invocation is also validated below.
+  "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1",
   "taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91",
   `github/codeql-action/init@${approvedCodeqlActionSha}`,
   `github/codeql-action/analyze@${approvedCodeqlActionSha}`,
@@ -1216,6 +1219,7 @@ export function checkWorkflowSecurity(source: string): void {
   );
   const stepsByJob = new Map<string, Mapping[]>();
   let checkouts = 0;
+  let nodeSetups = 0;
   for (const [jobName, value] of Object.entries(jobs)) {
     const job = mapping(value, `jobs.${jobName}`);
     refuseInheritedCustomShell(job, `jobs.${jobName}`);
@@ -1292,6 +1296,25 @@ export function checkWorkflowSecurity(source: string): void {
           );
         }
       }
+      if (identity === "actions/setup-node") {
+        // Do not turn the newly approved action into arbitrary executable
+        // CI code or permit it on another lane/at another execution point.
+        if (jobName !== "bun-test" || index !== 2)
+          fail(
+            `${label} Node setup is approved only after Bun setup in bun-test.`,
+          );
+        nodeSetups++;
+        exactKeys(step, ["uses", "with"], label + " Node 26 setup");
+        inputsMatch(
+          mapping(step.with, label + ".with"),
+          {
+            "node-version": "26.10.0",
+            "check-latest": "false",
+            "package-manager-cache": "false",
+          },
+          label + " reviewed Node 26 inputs",
+        );
+      }
       if (identity === "taiki-e/install-action") {
         // An approved action SHA alone cannot protect its binary trust policy:
         // checksum:false or fallback:cargo-install bypasses reviewed defaults.
@@ -1319,6 +1342,8 @@ export function checkWorkflowSecurity(source: string): void {
   }
   if (checkouts === 0)
     fail("workflow must contain its audited checkout steps.");
+  if (nodeSetups !== 1)
+    fail("bun-test must install exactly one reviewed Node 26 toolchain.");
   // The output references above are trustworthy only when their sole
   // producer remains the real, event-bound classifier. A second step with
   // id: classify or an echoed GITHUB_OUTPUT can forge native lane selection.
@@ -1872,7 +1897,9 @@ export function checkWorkflowSecurity(source: string): void {
     fmt: "5021013ee751a651b110df9c3f45d96425b8a51ca5f6b7e13ce107c4a0042ea9",
     "windows-media":
       "f4c3b6794e4f21428201253a5cf0af3ceb3fc1abf7e47a008c96682c4cf2f68f",
-    check: "5036a881d6e2cb4f1801926ff49520c3fc483368d810974029ec45dc94514817",
+    // Re-reviewed check lane: a frozen/no-scripts SDK install before Clippy
+    // supplies the actual test oracles without changing the allowed check set.
+    check: "b98d6e8d56da9631920e242cbd79a88918d4aee33e0871704ae6d6b7f9623f4b",
     "codeql-rust":
       "8f4dd53774b6cc05b37eab2a04b65da5580d0ff8f352be0aae481dcc8e8f2889",
     "codeql-javascript-typescript":
