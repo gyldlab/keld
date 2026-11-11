@@ -281,7 +281,7 @@ test("actual packed API wrapper captures and ACKs over its same stamped installe
           `keld-${name}-${version}.tgz`,
           "--strip-components=1",
           "-C",
-          join("node_modules", "@keld", name),
+          `node_modules/@keld/${name}`,
         ],
         { cwd: stage, stdout: "pipe", stderr: "pipe" },
       );
