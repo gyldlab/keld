@@ -4,6 +4,8 @@ use super::super::MacBoundStart;
 #[cfg(not(windows))]
 use super::super::{PrimaryCallerContext, dispatch_primary_echo};
 use super::*;
+#[cfg(windows)]
+use keld_runtime::primary::RolePrincipal;
 use keld_runtime::primary::{
     BoundPrimaryGeneration, PrimaryRoleConfig, PrimaryRoleSupervisor, RoleOwner,
 };
@@ -253,6 +255,54 @@ fn accepted_primary_identity_fences_caller_context_before_healthy_echo() {
 }
 
 #[cfg(windows)]
+fn assert_same_content_admission_is_not_current(
+    handle: &PrimaryRouterHandle,
+    snapshot: &GuardSnapshot,
+    path: &Path,
+    digest: [u8; 32],
+    admitted: keld_guard::ProfileState,
+    attempt: u32,
+    principal: RolePrincipal,
+) {
+    let other_verified = load_verified_manifest(
+        File::open(path).expect("second retained file"),
+        path.to_owned(),
+        digest,
+    )
+    .expect("same verified policy bytes");
+    let other_snapshot = GuardSnapshot::prepare_uncontained(other_verified, admitted)
+        .expect("separately prepared guard snapshot");
+    assert!(!Arc::ptr_eq(&snapshot.fs, &other_snapshot.fs));
+    assert!(handle.is_current(attempt), "original admission is current");
+    let original_binding = {
+        let mut current = handle.current.lock().expect("active generation");
+        current
+            .as_mut()
+            .expect("bound generation")
+            .profile_binding
+            .replace(Arc::clone(&other_snapshot.fs))
+            .expect("original admitted binding")
+    };
+    assert_eq!(
+        handle.observed_profile_binding(attempt, principal),
+        Some((keld_guard::ProfileState::Legacy, digest)),
+        "equal profile and digest do not establish object identity"
+    );
+    assert!(!handle.is_current(attempt), "different admission is stale");
+    handle
+        .current
+        .lock()
+        .expect("active generation")
+        .as_mut()
+        .expect("bound generation")
+        .profile_binding = Some(original_binding);
+    assert!(
+        handle.is_current(attempt),
+        "original admission is current again"
+    );
+}
+
+#[cfg(windows)]
 #[test]
 fn windows_authenticated_generations_bind_retained_admission_to_the_current_principal() {
     use sha2::{Digest as _, Sha256};
@@ -293,6 +343,9 @@ fn windows_authenticated_generations_bind_retained_admission_to_the_current_prin
     assert_eq!(
         handle.observed_profile_binding(a1, p1),
         Some((keld_guard::ProfileState::Legacy, digest))
+    );
+    assert_same_content_admission_is_not_current(
+        &handle, &snapshot, &path, digest, admitted, a1, p1,
     );
     // An external custody probe may hold this exact test process after the
     // real bound publication. The marker conveys phase only, not authority.

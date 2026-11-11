@@ -203,6 +203,8 @@ fn windows_crash_loop_keeps_core033_as_the_outer_host_error() {
 
 #[test]
 fn windows_explicit_legacy_recovery_retains_captured_policy() {
+    let _custody = keld_runtime::windows_job::install_host_death_job()
+        .expect("install test-process custody before the shipping Host starts");
     run_same_window_recovery("CRASH", true);
 }
 
