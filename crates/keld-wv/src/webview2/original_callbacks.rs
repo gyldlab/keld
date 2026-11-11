@@ -1,4 +1,4 @@
-//! Actual WebView2 navigation events feed the sole checked document owner.
+//! Actual `WebView2` navigation events feed the sole checked document owner.
 //! All callbacks are STA-owned; no native handle or pointer crosses to a worker.
 #![deny(unsafe_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -23,7 +23,9 @@ use super::original_navigation::{HOST_ATTEMPT_HEADER, OriginalNavigation};
 use crate::engine::OriginalNavigationFact;
 use crate::native_document::NativeAttempt;
 use crate::renderer_contract::{NativeAttemptObservation, NativeDocumentStamp};
-use crate::resource_intake::{ORIGINAL_WEBAPP_LIMITS, RetainedByteCredit, pending_metadata_charge};
+use crate::resource_intake::{
+    MAX_PENDING_METADATA_BYTES, ORIGINAL_WEBAPP_LIMITS, RetainedByteCredit,
+};
 use crate::resource_source::NativeNavigationUrl;
 
 type Observation = Rc<dyn Fn(OriginalNavigationFact)>;
@@ -301,7 +303,7 @@ fn checked_sender(
     Ok(sender)
 }
 
-fn callback_credit(
+pub(super) fn callback_credit(
     state: &Rc<RefCell<OriginalNavigation>>,
 ) -> windows::core::Result<RetainedByteCredit> {
     let source = state
@@ -309,20 +311,15 @@ fn callback_credit(
         .map_err(|_| E_UNEXPECTED)?
         .source()
         .clone();
-    let charge = pending_metadata_charge(
-        2 * ORIGINAL_WEBAPP_LIMITS.max_url_utf16_units,
-        0,
-        256,
-        128,
-        ORIGINAL_WEBAPP_LIMITS,
-    )
-    .map_err(|_| E_INVALIDARG)?;
+    // The existing ceiling includes the bounded URI, sole-parser descriptor
+    // capacity and transient NLS scratch, not just the UTF8 string itself.
+    let charge = MAX_PENDING_METADATA_BYTES;
     RetainedByteCredit::reserve(&source.retained_credit_account(), charge)
         .map_err(|_| E_INVALIDARG.into())
 }
 
 #[allow(unsafe_code)] // Exact native source getter on the callback's retained STA view.
-fn source_uri(view: &ICoreWebView2) -> windows::core::Result<String> {
+pub(super) fn source_uri(view: &ICoreWebView2) -> windows::core::Result<String> {
     // SAFETY: view is the identity-checked actual sender. The bounded helper
     // owns/frees its returned COM task allocation and rejects invalid UTF16.
     read_task_text(
