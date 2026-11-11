@@ -23,6 +23,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::WebviewId;
 use crate::error::WvError;
+use crate::original_binding::{OriginalBinding, OriginalCredentialSlot};
 use crate::original_call::active::{ActiveOriginalCall, PendingOriginalSend};
 use crate::original_call::{LocalCallBudget, original_call_channel};
 use crate::original_event::PendingOriginalEvent;
@@ -587,14 +588,8 @@ impl MacRendererBridge {
         } = original;
         std::rc::Rc::new(std::cell::RefCell::new(AppNativeState {
             document,
-            stamp: None,
-            prepared: None,
+            binding: OriginalBinding::default(),
             bootstrap_scripts: Vec::new(),
-            app_credential: None,
-            trusted_credential: None,
-            registered: false,
-            registration_notice: None,
-            route_role: None,
             pending_call: None,
             active_call: None,
             local_calls: VecDeque::new(),
@@ -604,7 +599,6 @@ impl MacRendererBridge {
             evaluations: 0,
             retiring_at: None,
             control_fault: false,
-            last_message: 0,
             wake,
             requests,
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -729,19 +723,23 @@ impl MacRendererBridge {
             }
             Self::replace_bootstrap(&controller, &app, &replacements)?;
             let mut state = app.borrow_mut();
-            state.prepared = Some(PreparedAppBinding {
+            let document = state.document.clone();
+            let prepared = state.binding.prepare_attempt(
+                &document.borrow(),
                 attempt,
-                app: app_token,
-                trusted: trusted_token,
-            });
+                app_token,
+                trusted_token,
+            );
+            // Native replacement already succeeded. Retain those exact objects
+            // and clear/cancel old bindings even if reentry invalidated the attempt.
             state.bootstrap_scripts = replacements;
-            state.stamp = None;
-            state.app_credential = None;
-            state.trusted_credential = None;
-            state.registered = false;
+            if prepared.is_err() {
+                state.binding.invalidate_prepared();
+            }
+            state.binding.clear_for_attempt();
             state.cancel_queued_originals();
             state.flush_controls();
-            Ok(())
+            prepared.map_err(bridge_error)
         }))
     }
 
@@ -837,9 +835,14 @@ impl MacRendererBridge {
             let app_bind = if boot_diagnostic::enabled() {
                 let token = {
                     let state = app.borrow();
-                    serde_json::to_string(state.app_credential.as_ref().ok_or_else(|| {
-                        bridge_error("boot diagnostic has no current native app binding")
-                    })?)
+                    serde_json::to_string(
+                        state
+                            .binding
+                            .credential(OriginalCredentialSlot::App)
+                            .ok_or_else(|| {
+                                bridge_error("boot diagnostic has no current native app binding")
+                            })?,
+                    )
                     .map_err(|_| bridge_error("boot diagnostic binding serialization refused"))?
                 };
                 std::borrow::Cow::Owned(format!(
@@ -903,9 +906,7 @@ impl MacRendererBridge {
             state
                 .retiring_at
                 .get_or_insert_with(std::time::Instant::now);
-            state.app_credential = None;
-            state.trusted_credential = None;
-            state.registered = false;
+            state.binding.clear_credentials();
             state.cancel_queued_originals();
             state.flush_controls();
         }
@@ -1050,7 +1051,7 @@ impl MacRendererBridge {
             || request == 0
             || channel.len() > 256
             || payload.len() > 4096
-            || !state.registered
+            || !state.binding.registered()
         {
             return Err(bridge_error(
                 "addressed event cannot enter bounded native delivery",
@@ -1067,8 +1068,9 @@ impl MacRendererBridge {
             .map(super::MacNativeDocumentLease)
             .ok_or_else(|| bridge_error("addressed event native lease revoked"))?;
         let token = state
-            .app_credential
-            .clone()
+            .binding
+            .credential(OriginalCredentialSlot::App)
+            .map(str::to_owned)
             .ok_or_else(|| bridge_error("addressed event has no current app binding"))?;
         let json=serde_json::to_string(&serde_json::json!({"v":2,"kind":"event","document":token,"delivery":request,"channel":channel,"payload":payload})).map_err(|_|bridge_error("addressed event serialization failed"))?;
         let event =
@@ -1112,9 +1114,12 @@ impl MacRendererBridge {
                     return Ok(());
                 };
                 if send.lease().is_current() && state.retiring_at.is_none() {
-                    let token = state.app_credential.as_ref().ok_or_else(|| {
-                        bridge_error("terminal result has no current app binding")
-                    })?;
+                    let token = state
+                        .binding
+                        .credential(OriginalCredentialSlot::App)
+                        .ok_or_else(|| {
+                            bridge_error("terminal result has no current app binding")
+                        })?;
                     let json=serde_json::to_string(&serde_json::json!({"v":2,"kind":"send-result","document":token,"message":request,"disposition":disposition})).map_err(|_|bridge_error("private terminal serialization failed"))?;
                     drop(state);
                     evaluate_owned(
@@ -1131,34 +1136,25 @@ impl MacRendererBridge {
                 state.release_event(navigation, request)
             }
             RendererBridgeOutcome::RouteState { ready, role, .. } => {
-                if state
-                    .current()
-                    .is_none_or(|stamp| u64::from(stamp.generation.get()) != navigation)
-                    || state.retiring_at.is_some()
+                if state.retiring_at.is_some() {
+                    return Ok(());
+                }
+                let document = state.document.clone();
+                if !state
+                    .binding
+                    .observe_route(&document.borrow(), navigation, ready, role)
                 {
                     return Ok(());
                 }
-                if ready {
-                    if !role.is_live() {
-                        return Ok(());
-                    }
-                    state.route_role = Some(role);
-                } else {
-                    // Late retirement of A must not retire an observed successor B.
-                    if !state
-                        .route_role
-                        .as_ref()
-                        .is_some_and(|current| current.same_role(&role))
-                    {
-                        return Ok(());
-                    }
-                    state.route_role = None;
-                }
-                let token =
-                    serde_json::to_string(state.app_credential.as_ref().ok_or_else(|| {
-                        bridge_error("route state has no current private binding")
-                    })?)
-                    .map_err(|_| bridge_error("route state serialization failed"))?;
+                let token = serde_json::to_string(
+                    state
+                        .binding
+                        .credential(OriginalCredentialSlot::App)
+                        .ok_or_else(|| {
+                            bridge_error("route state has no current private binding")
+                        })?,
+                )
+                .map_err(|_| bridge_error("route state serialization failed"))?;
                 if !ready && let Some(pending) = state.pending_call.as_mut() {
                     pending.admission = AppCallAdmission::Cancelled;
                 }
@@ -1205,8 +1201,8 @@ impl MacRendererBridge {
         if let Some(app) = &self.app {
             let state = app.borrow();
             let token = state
-                .trusted_credential
-                .as_ref()
+                .binding
+                .credential(OriginalCredentialSlot::Trusted)
                 .ok_or_else(|| bridge_error("numeric result has no current trusted binding"))?;
             let result = if payload.ok {
                 serde_json::json!({"status":"reply","payload":payload.payload})
@@ -1795,14 +1791,10 @@ enum HandlerRole {
 type SharedAppState = std::rc::Rc<std::cell::RefCell<AppNativeState>>;
 struct AppNativeState {
     document: std::rc::Rc<std::cell::RefCell<super::macos_document::NativeDocumentOwner>>,
-    stamp: Option<super::macos_document::NativeCommittedStamp>,
-    prepared: Option<PreparedAppBinding>,
+    // Pure binding metadata drops as one group. Native script installation,
+    // retirement and source-image custody remain in this platform adapter.
+    binding: OriginalBinding,
     bootstrap_scripts: Vec<Retained<WKUserScript>>,
-    app_credential: Option<String>,
-    trusted_credential: Option<String>,
-    registered: bool,
-    registration_notice: Option<super::MacNativeDocumentLease>,
-    route_role: Option<RendererRoleWitness>,
     pending_call: Option<PendingAppCall>,
     active_call: Option<ActiveOriginalCall>,
     local_calls: VecDeque<QueuedLocalCall>,
@@ -1812,59 +1804,38 @@ struct AppNativeState {
     evaluations: usize,
     retiring_at: Option<std::time::Instant>,
     control_fault: bool,
-    last_message: u32,
     wake: tao::event_loop::EventLoopProxy<super::WkUserEvent>,
     requests: SyncSender<RendererBridgeRequest>,
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
     fixture: PreloadFixtureState,
 }
 
-struct PreparedAppBinding {
-    attempt: super::MacNativeAttempt,
-    app: String,
-    trusted: String,
-}
-
 impl AppNativeState {
     fn current(&self) -> Option<super::macos_document::NativeCommittedStamp> {
-        let current = self.document.borrow().current_stamp()?;
-        (Some(current) == self.stamp).then_some(current)
+        self.binding.current(&self.document.borrow())
     }
     fn synchronize_commit(&mut self) -> Result<(), WvError> {
-        let stamp = self
-            .document
-            .borrow()
-            .current_stamp()
-            .ok_or_else(|| bridge_error("no qualified committed application document"))?;
-        if self.stamp == Some(stamp) {
+        let candidate = self
+            .binding
+            .take_matching_commit(&self.document.borrow())
+            .map_err(bridge_error)?;
+        let Some(candidate) = candidate else {
             return Ok(());
-        }
-        let prepared = self
-            .prepared
-            .take()
-            .filter(|prepared| prepared.attempt.0 == stamp.attempt)
-            .ok_or_else(|| {
-                bridge_error("actual commit has no matching native-prepared bootstrap")
-            })?;
+        };
+        // The owner borrow ended before existing cancellation. Finish rechecks
+        // the exact same checked lease/source after that work.
         self.cancel_queued_originals();
-        self.stamp = Some(stamp);
-        self.app_credential = Some(prepared.app);
-        self.trusted_credential = Some(prepared.trusted);
-        self.registered = false;
-        self.registration_notice = None;
-        self.route_role = None;
-        self.last_message = 0;
-        Ok(())
+        self.binding
+            .finish_commit(&self.document.borrow(), candidate)
+            .map_err(bridge_error)
     }
     fn authentic(&self, supplied: &str, role: HandlerRole) -> bool {
-        if self.current().is_none() {
-            return false;
-        }
-        let stored = match role {
-            HandlerRole::App => &self.app_credential,
-            HandlerRole::Trusted => &self.trusted_credential,
+        let slot = match role {
+            HandlerRole::App => OriginalCredentialSlot::App,
+            HandlerRole::Trusted => OriginalCredentialSlot::Trusted,
         };
-        stored.as_ref().is_some_and(|value| value == supplied)
+        self.binding
+            .authentic(&self.document.borrow(), supplied, slot)
     }
 }
 
@@ -1936,7 +1907,7 @@ fn handle_app_call(
     }
 
     if state.retiring_at.is_some()
-        || !state.registered
+        || !state.binding.registered()
         || !state.authentic(&call.document, HandlerRole::App)
     {
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -2055,8 +2026,8 @@ fn queue_original(
     let role_witness = if channel.is_some() {
         Some(
             state
-                .route_role
-                .as_ref()
+                .binding
+                .route_role()
                 .filter(|role| role.is_live())
                 .ok_or_else(|| bridge_error("original effect has no live authenticated role"))?
                 .clone(),
@@ -2149,30 +2120,21 @@ fn handle_app_control(
             pump_original_call(webview, &ivars.world, app)?;
         }
         AppWvLinkEnvelope::Registered { document, .. } => {
-            if !state.authentic(&document, HandlerRole::App)
-                || state.retiring_at.is_some()
-                || state.registered
-            {
+            if state.retiring_at.is_some() {
                 return Err(bridge_error(
                     "private registry binding is stale or duplicate",
                 ));
             }
-            let stamp = state
-                .current()
-                .ok_or_else(|| bridge_error("registry notice lost actual native commit"))?;
-            let lease = state
-                .document
-                .borrow()
-                .lease_for(stamp)
-                .map(super::MacNativeDocumentLease)
-                .ok_or_else(|| bridge_error("registry notice has no current native lease"))?;
-            state.registered = true;
-            state.registration_notice = Some(lease);
+            let owner = state.document.clone();
+            state
+                .binding
+                .register(&owner.borrow(), &document)
+                .map_err(bridge_error)?;
             state.flush_controls();
             let token = serde_json::to_string(
                 state
-                    .app_credential
-                    .as_ref()
+                    .binding
+                    .credential(OriginalCredentialSlot::App)
                     .ok_or_else(|| bridge_error("registration has no current private binding"))?,
             )
             .map_err(|_| bridge_error("registration token serialization failed"))?;
@@ -2296,12 +2258,16 @@ fn bind_compat_document(
     let mut state = app.borrow_mut();
     state.synchronize_commit()?;
     let slot = match ivars.role {
-        HandlerRole::App => &mut state.app_credential,
-        HandlerRole::Trusted => &mut state.trusted_credential,
+        HandlerRole::App => OriginalCredentialSlot::App,
+        HandlerRole::Trusted => OriginalCredentialSlot::Trusted,
     };
-    let token = slot.clone().ok_or_else(|| {
-        bridge_error("real committed document has no native-prepared world credential")
-    })?;
+    let token = state
+        .binding
+        .credential(slot)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            bridge_error("real committed document has no native-prepared world credential")
+        })?;
     let bound=serde_json::to_string(&serde_json::json!({"v":2,"kind":"bound","document":token,"limits":{"payload_bytes":4096,"channel_utf8_bytes":256,"send_records":1,"event_records":1},"ready":false})).map_err(|_|bridge_error("private binding serialization failed"))?;
     let script = if ivars.role == HandlerRole::App {
         format!("globalThis.__keldAppNativeBind({bound});")
@@ -2354,28 +2320,23 @@ fn send_compat_message(
     let mut state = app.borrow_mut();
     if !state.authentic(document, HandlerRole::App)
         || state.retiring_at.is_some()
-        || !state.registered
+        || !state.binding.registered()
     {
         return Err(bridge_error(
             "app send is not current and privately registered",
         ));
     }
-    if message.get()
-        != state
-            .last_message
-            .checked_add(1)
-            .ok_or_else(|| bridge_error("app send sequence exhausted"))?
-    {
-        return Err(bridge_error("duplicate, skipped or replayed app message"));
-    }
-    state.last_message = message.get();
+    state
+        .binding
+        .accept_message_sequence(message.get())
+        .map_err(bridge_error)?;
     let active = state
         .active_call
         .as_ref()
         .filter(|active| {
             active.send_eligible(
                 &state.document.borrow(),
-                state.route_role.as_ref(),
+                state.binding.route_role(),
                 document,
                 &channel,
             )
@@ -2604,16 +2565,10 @@ impl AppNativeState {
         Ok(())
     }
     fn original_current(&self, lease: &super::MacNativeDocumentLease, credential: &str) -> bool {
-        if self.retiring_at.is_some()
-            || !self.registered
-            || !lease.is_current()
-            || !self.authentic(credential, HandlerRole::App)
-        {
-            return false;
-        }
-        let owner = self.document.borrow();
-        let stamp = lease.0.stamp();
-        self.stamp == Some(stamp) && lease.belongs_to_owner(&owner)
+        self.retiring_at.is_none()
+            && self
+                .binding
+                .original_current(&self.document.borrow(), lease, credential)
     }
     fn release_local(&mut self, bytes: usize) {
         if self.local_budget.release(bytes).is_err() {
@@ -2621,11 +2576,7 @@ impl AppNativeState {
         }
     }
     fn role_current(&self, role: &RendererRoleWitness) -> bool {
-        role.is_live()
-            && self
-                .route_role
-                .as_ref()
-                .is_some_and(|current| current.is_live() && current.same_role(role))
+        self.binding.role_current(role)
     }
     fn queued_call_current(&self, call: &QueuedLocalCall) -> bool {
         !call.cancelled
@@ -2958,7 +2909,7 @@ impl AppNativeState {
                 }
             }
         }
-        if let Some(lease) = self.registration_notice.as_ref() {
+        if let Some(lease) = self.binding.registration_notice().cloned() {
             if lease.is_current() {
                 let request = request_for_lease(
                     lease.clone(),
@@ -2966,11 +2917,13 @@ impl AppNativeState {
                     RendererBridgeOperation::Registered,
                     Vec::new(),
                 );
-                if self.enqueue_control(request) {
-                    self.registration_notice = None;
+                if self.enqueue_control(request)
+                    && self.binding.registration_handed_off(&lease).is_err()
+                {
+                    self.control_fault = true;
                 }
             } else {
-                self.registration_notice = None;
+                self.binding.discard_revoked_registration();
             }
         }
     }
@@ -3282,7 +3235,8 @@ fn fixture_origin_probe(
         // The existing actual frame/source/credential/current-lease checks above
         // authenticate this metadata. Only fixed redacted fields reach logs.
         let mut record = boot_diagnostic::record(boot, current.view.0, current.generation.get())?;
-        record["registry_registered_at_probe"] = serde_json::Value::Bool(state.registered);
+        record["registry_registered_at_probe"] =
+            serde_json::Value::Bool(state.binding.registered());
         eprintln!("KELD_BOOT_DIAGNOSTIC {record}");
     }
     state.fixture.origin_probe = Some(
@@ -3310,7 +3264,9 @@ impl MacRendererBridge {
             .map_or(0, |app| app.borrow().fixture.held_bindings.len())
     }
     pub(super) fn fixture_registered(&self) -> bool {
-        self.app.as_ref().is_some_and(|app| app.borrow().registered)
+        self.app
+            .as_ref()
+            .is_some_and(|app| app.borrow().binding.registered())
     }
     pub(super) fn fixture_evaluations_idle(&self) -> bool {
         self.app
@@ -3370,8 +3326,8 @@ impl MacRendererBridge {
         };
         let state = app.borrow();
         serde_json::json!({
-            "app_runtime":true,"current_owner":state.current().is_some(),"prepared_attempt":state.prepared.is_some(),
-            "app_bound":state.app_credential.is_some(),"trusted_bound":state.trusted_credential.is_some(),"registered":state.registered,"registration_notice_pending":state.registration_notice.is_some(),
+            "app_runtime":true,"current_owner":state.current().is_some(),"prepared_attempt":state.binding.has_prepared_attempt(),
+            "app_bound":state.binding.credential(OriginalCredentialSlot::App).is_some(),"trusted_bound":state.binding.credential(OriginalCredentialSlot::Trusted).is_some(),"registered":state.binding.registered(),"registration_notice_pending":state.binding.registration_notice().is_some(),
             "retiring":state.retiring_at.is_some(),"control_fault":state.control_fault,"evaluations":state.evaluations,
             "call_ingress":state.fixture.call_ingress,"last_call_cut":state.fixture.last_call_cut,
             "held_call":state.fixture.held_call.is_some(),"held_bindings":state.fixture.held_bindings.len(),
@@ -3411,8 +3367,11 @@ impl MacRendererBridge {
         self.app.as_ref().is_some_and(|app| {
             let state = app.borrow();
             state.current().is_some()
-                && state.registered
-                && state.app_credential.is_some()
+                && state.binding.registered()
+                && state
+                    .binding
+                    .credential(OriginalCredentialSlot::App)
+                    .is_some()
                 && state.active_call.is_none()
                 && state.pending_call.is_none()
                 && state.local_calls.is_empty()
@@ -3500,8 +3459,8 @@ impl MacRendererBridge {
             .ok_or_else(|| bridge_error("no fixture app state"))?;
         let state = app.borrow();
         let token = state
-            .app_credential
-            .as_ref()
+            .binding
+            .credential(OriginalCredentialSlot::App)
             .ok_or_else(|| bridge_error("no current origin probe binding"))?;
         let token = serde_json::to_string(token)
             .map_err(|_| bridge_error("private probe binding serialization refused"))?;
