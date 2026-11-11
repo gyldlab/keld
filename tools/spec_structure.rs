@@ -3772,10 +3772,19 @@ struct Definition {
     open: Option<bool>,
 }
 
+/// Admitted task dependencies share one representation for syntax and reference checks.
+struct TaskReferences {
+    file: String,
+    line: usize,
+    end: usize,
+    statements: Vec<String>,
+}
+
 /// Definitions and field checks across every document of one spec.
 fn check_definitions(
     docs: &[&Doc],
     report: &mut Report,
+    task_references: &mut Vec<TaskReferences>,
 ) -> BTreeMap<(&'static str, u32), Definition> {
     let mut defined: BTreeMap<(&'static str, u32), Definition> = BTreeMap::new();
     for doc in docs.iter().copied() {
@@ -3880,6 +3889,22 @@ fn check_definitions(
                         field.line + 1,
                         format!("T-{number} `{TASK_BLOCKERS_FIELD}:` must be none or stable IDs"),
                     );
+                } else {
+                    // Match field_statements' nesting boundary. Only admitted field text
+                    // replaces physical-line reference scanning; ordinary examples do not.
+                    let own = doc.line(field.line).column();
+                    let end = (field.line + 1..body)
+                        .find(|index| {
+                            let line = doc.line(*index);
+                            !line.is_blank() && line.column() <= own
+                        })
+                        .unwrap_or(body);
+                    task_references.push(TaskReferences {
+                        file: doc.rel.clone(),
+                        line: field.line,
+                        end,
+                        statements: field.statements.clone(),
+                    });
                 }
             }
             defined.insert(
@@ -3968,12 +3993,32 @@ fn check_fences(docs: &[&Doc], report: &mut Report) {
 fn check_references(
     docs: &[&Doc],
     defined: &BTreeMap<(&'static str, u32), Definition>,
+    task_references: &[TaskReferences],
     report: &mut Report,
 ) {
     for doc in docs {
-        for (index, line) in doc.lines().iter().enumerate() {
-            let Some(line) = line.prose() else { continue };
-            for token in id_tokens(&line.text) {
+        let fields: Vec<&TaskReferences> = task_references
+            .iter()
+            .filter(|field| field.file == doc.rel)
+            .collect();
+        let prose = doc.lines().iter().enumerate().filter_map(|(index, line)| {
+            if fields
+                .iter()
+                .any(|field| (field.line..field.end).contains(&index))
+            {
+                None
+            } else {
+                line.prose().map(|line| (index, line.text.as_str()))
+            }
+        });
+        let dependencies = fields.iter().flat_map(|field| {
+            field
+                .statements
+                .iter()
+                .map(move |statement| (field.line, statement.as_str()))
+        });
+        for (index, text) in prose.chain(dependencies) {
+            for token in id_tokens(text) {
                 if token.foreign {
                     continue;
                 }
@@ -4238,8 +4283,9 @@ fn check_structure(
     check_titles(&docs, report);
     check_restated_header(index, parts, report);
     check_entities(&docs, report);
-    let defined = check_definitions(&docs, report);
-    check_references(&docs, &defined, report);
+    let mut task_references = Vec::new();
+    let defined = check_definitions(&docs, report, &mut task_references);
+    check_references(&docs, &defined, &task_references, report);
     check_fences(&docs, report);
     for kind in ["AC", "T"] {
         if !defined

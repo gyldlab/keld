@@ -5740,3 +5740,44 @@ fn a_text_checkout_symlink_still_fails_the_link_owner_independently() {
     assert_eq!(linked.findings[0].rule, Rule::LinkCode);
     assert_eq!(fixture.rules(), BTreeSet::from(["LINK-CODE", "UNREADABLE"]));
 }
+
+#[test]
+fn task_dependencies_resolve_the_admitted_statement() {
+    let path = format!("{DIR}/delivery.md");
+    for value in [
+        "- **Blocked by:** B-999\n",
+        "- **Blocked by:**\n  - B-999\n",
+        "- **Blocked by:**\n  ```text\n  B-999\n  ```\n",
+    ] {
+        let fixture = Fixture::new();
+        fixture.replace(&path, "- **Blocked by:** B-1\n", value);
+        assert_only(&fixture, Rule::IdDangling, value);
+        let report = fixture.run();
+        assert_eq!(
+            report
+                .findings
+                .iter()
+                .filter(|finding| finding.rule == Rule::IdDangling)
+                .count(),
+            1,
+            "{value}"
+        );
+    }
+    for value in [
+        "- **Blocked by:**\n  ```text\n  B-1\n  ```\n",
+        "- **Blocked by:**\n  - KEL-53 B-4\n",
+        "- **Blocked by:**\n  ```text\n  KEL-53 B-4\n  ```\n",
+        "- **Blocked by:** KEL-53\n  B-4\n",
+    ] {
+        let fixture = Fixture::new();
+        fixture.replace(&path, "- **Blocked by:** B-1\n", value);
+        assert!(fixture.rules().is_empty(), "{value}: {:?}", fixture.rules());
+    }
+    let fixture = Fixture::new();
+    fixture.replace(
+        &path,
+        "- **Blocked by:** B-1\n",
+        "- **Blocked by:**\n  ```text\n  B-1 and later\n  ```\n",
+    );
+    assert_only(&fixture, Rule::TaskFields, "malformed fenced dependency");
+}
