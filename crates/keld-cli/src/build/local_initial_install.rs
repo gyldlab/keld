@@ -120,6 +120,7 @@ pub(super) fn run_observed(candidate:&LocalArchiveCandidate<'_>,input_path:&Path
 pub(super) fn run_create_scaffold(candidate:&LocalArchiveCandidate<'_>,input_path:&Path,signed:Option<&super::local_manifest_session::SignedManifest<'_, '_>>)->Result<(),BuildError> {
     run_with_mode(candidate,input_path,InvocationKind::Observed(ScaffoldChoice::CreateNew),signed)
 }
+#[expect(clippy::needless_pass_by_value, reason = "Keep the candidate and its retained handles owned until installation returns.")]
 fn run_with_mode(candidate:&LocalArchiveCandidate<'_>,input_path:&Path,kind:InvocationKind,signed:Option<&super::local_manifest_session::SignedManifest<'_, '_>>)->Result<(),BuildError> {
     if let Some(signed)=signed {signed.require_candidate(candidate)?;}
     let pair=candidate.signed_pair()?;

@@ -228,8 +228,8 @@ impl PreparationBudget {
     fn check(&self)->Result<(),BuildError> {self.remaining(Duration::MAX).map(|_|())}
 }
 
-/// git(1) GIT_ALTERNATE_OBJECT_DIRECTORIES: a path-list entry beginning with
-/// double quote is C-style quoted, so Windows ';' remains inside ONE entry.
+/// git(1) `GIT_ALTERNATE_OBJECT_DIRECTORIES`: a path-list entry beginning with
+/// double quote is C-style quoted, so `Windows` ';' remains inside ONE entry.
 /// Non-Unicode/control paths refuse rather than lossy encoding or list splitting.
 fn git_alternate_value(path:&Path)->Result<OsString,BuildError> {
     let path=path.to_str().ok_or_else(||failure("Git alternate path","non-Unicode path unsupported"))?;

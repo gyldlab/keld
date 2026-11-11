@@ -25,6 +25,7 @@ pub(super) struct LocalArchiveCandidate<'images> {
     _directories: Vec<File>,
 }
 impl LocalArchiveCandidate<'_> {
+    #[expect(clippy::used_underscore_binding, reason = "The retained image owner is read only by the installation path.")]
     pub(super) fn signed_pair(&self) -> Result<&PreparedLocalPair, BuildError> {
         self._images.ok_or_else(|| refuse("synthetic candidate cannot invoke installation"))
     }

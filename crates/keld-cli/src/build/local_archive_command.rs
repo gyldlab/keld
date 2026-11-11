@@ -73,6 +73,7 @@ pub(super) fn run_product(images:local_images::ImageRequest,compiler:CompilerReq
     validate_stamp(published_at)?;
     execute(images,compiler,modules,Some(published_at),None,true)
 }
+#[expect(clippy::needless_pass_by_value, reason = "Keep compiler inputs owned for this complete build transaction.")]
 fn execute(images:local_images::ImageRequest,tools:CompilerRequest,modules:&[String],published_at:Option<&str>,initial_install:Option<(&Path,InitialInstallMode)>,signing_session:bool)->Result<(),BuildError> {
     let compiler=CapturedCompilerToolchain::capture(&tools.typescript_root,&tools.bun,&tools.bun_sha256,&tools.tsc,&tools.tsc_sha256)?;
     let channel=images.channel.clone();let selected_commit=images.source.commit.clone();

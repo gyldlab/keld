@@ -51,6 +51,7 @@ pub(super) struct CapturedModules {
     _directories: Vec<File>,
 }
 impl CapturedModules {
+    #[expect(clippy::case_sensitive_file_extension_comparisons, reason = "Captured module names require exact canonical lowercase suffixes.")]
     pub(super) fn open(root: &Path, names: &[String], entry: &str, app_name: &str, sources: &local_source::ObservedCompilerSources<'_>) -> Result<Self, BuildError> {
         if names.is_empty() || names.len() > 4096 || !names.iter().any(|n| n == entry) {
             return Err(refusal(
