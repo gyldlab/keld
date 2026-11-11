@@ -205,6 +205,51 @@ struct ValidFull {
     content_blake3: [u8; 32],
 }
 
+/// Verifies only the detached signature of these literal bytes under this key.
+///
+/// This does not parse a manifest or establish app identity, authorization,
+/// provenance, qualification, installation or launch readiness. The caller must
+/// obtain its expected key from its existing trusted context; a key from the
+/// signed document is not authority. Installed paths still use their semantic
+/// manifest verifier. No private key is accepted or generated here.
+///
+/// # Errors
+/// Refuses invalid/weak keys, noncanonical signatures, oversized inputs or a
+/// signature that does not authenticate the exact bytes.
+pub fn verify_literal_release_signature(
+    public_key: [u8; 32],
+    bytes: &[u8],
+    signature: &[u8],
+) -> Result<(), UpdateError> {
+    if bytes.is_empty() || bytes.len() > 1024 * 1024 || signature.len() > 89 {
+        return Err(UpdateError::ManifestAuthentication {
+            detail: "literal signature input exceeds bounds".to_owned(),
+        });
+    }
+    let key = VerifyingKey::from_bytes(&public_key).map_err(|error| {
+        UpdateError::ManifestAuthentication {
+            detail: format!("invalid literal signature key: {error}"),
+        }
+    })?;
+    if key.is_weak() {
+        return Err(UpdateError::ManifestAuthentication {
+            detail: "weak literal signature key".to_owned(),
+        });
+    }
+    verify_literal_with_key(&key, bytes, signature)
+}
+fn verify_literal_with_key(
+    key: &VerifyingKey,
+    bytes: &[u8],
+    signature: &[u8],
+) -> Result<(), UpdateError> {
+    let signature = parse_signature(signature)?;
+    key.verify_strict(bytes, &signature)
+        .map_err(|error| UpdateError::ManifestAuthentication {
+            detail: format!("signature does not match literal manifest bytes: {error}"),
+        })
+}
+
 fn parse_signature(bytes: &[u8]) -> Result<Signature, UpdateError> {
     let encoded = bytes.strip_suffix(b"\n").unwrap_or(bytes);
     if encoded.is_empty()
@@ -424,4 +469,39 @@ const fn hex_nibble(byte: u8) -> Option<u8> {
 
 fn invalid(detail: String) -> UpdateError {
     UpdateError::ManifestInvalid { detail }
+}
+
+#[cfg(test)]
+mod literal_signature_tests {
+    use super::*;
+    const PUBLIC: [u8; 32] = [
+        234, 74, 108, 99, 226, 156, 82, 10, 190, 245, 80, 123, 19, 46, 197, 249, 149, 71, 118, 174,
+        190, 190, 123, 146, 66, 30, 234, 105, 20, 70, 210, 44,
+    ];
+    const BYTES:&[u8]=b"{\"schema\":1,\"channel\":\"stable\",\"target\":\"windows-x64\",\"app\":{\"id\":\"dev.keld.fixture\"},\"releases\":[{\"version\":\"1.0.0\",\"publishedAt\":\"2026-09-20T00:00:00Z\",\"full\":{\"url\":\"1.0.0/full.zst\",\"size\":1,\"blake3\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"contentSize\":1024,\"contentBlake3\":\"0101010101010101010101010101010101010101010101010101010101010101\"},\"deltas\":[]}]}";
+    const SIGNATURE: &[u8] =
+        b"Wo6PAwIhBqPDI5wAW5JKv0v8BnxOIZrOKKo2JQODnZe3M5/BQZax2UVCM2SNqOxVNkBYoA1W4bzaWXbvDJ/LBw==";
+    #[test]
+    fn literal_signature_reuses_exact_public_fixture_and_refuses_changes() {
+        verify_literal_release_signature(PUBLIC, BYTES, SIGNATURE).unwrap();
+        let mut changed = BYTES.to_vec();
+        changed[0] ^= 1;
+        assert!(verify_literal_release_signature(PUBLIC, &changed, SIGNATURE).is_err());
+        let mut wrong = PUBLIC;
+        wrong[0] ^= 1;
+        assert!(verify_literal_release_signature(wrong, BYTES, SIGNATURE).is_err());
+        assert!(verify_literal_release_signature([0; 32], BYTES, SIGNATURE).is_err());
+        assert!(verify_literal_release_signature(PUBLIC, BYTES, b"not base64").is_err());
+        let mut extra = SIGNATURE.to_vec();
+        extra.push(b'\n');
+        verify_literal_release_signature(PUBLIC, BYTES, &extra).unwrap();
+        extra.push(b'\n');
+        assert!(verify_literal_release_signature(PUBLIC, BYTES, &extra).is_err());
+        let mut crlf = SIGNATURE.to_vec();
+        crlf.extend_from_slice(b"\r\n");
+        assert!(verify_literal_release_signature(PUBLIC, BYTES, &crlf).is_err());
+        assert!(
+            verify_literal_release_signature(PUBLIC, &vec![0; 1024 * 1024 + 1], SIGNATURE).is_err()
+        );
+    }
 }
