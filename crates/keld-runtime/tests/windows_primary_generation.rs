@@ -126,8 +126,15 @@ fn run_clean_successor_cycle(fixture: &PrimaryFixture) {
 }
 
 fn start_primary(fixture: &PrimaryFixture) -> PrimaryRoleSupervisor {
+    // Native generation admission needs an absolute executable. The fixture
+    // resolves Bun only here, never inside an installed Host's trust boundary.
+    let path = std::env::var_os("PATH").expect("native Bun integration prerequisite PATH");
+    let bun = std::env::split_paths(&path)
+        .map(|directory| directory.join("bun.exe"))
+        .find_map(|candidate| std::fs::canonicalize(candidate).ok())
+        .expect("native Bun integration prerequisite executable on PATH");
     PrimaryRoleSupervisor::start_with_bound_generations(
-        PrimaryRoleConfig::new("bun")
+        PrimaryRoleConfig::new(bun)
             .arg(PrimaryFixture::script_path())
             .arg(fixture.control_port().to_string())
             .current_dir(fixture.dir())

@@ -12,7 +12,9 @@ use std::io::Write as _;
 use std::os::fd::OwnedFd;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
-use std::process::{Child, Command, Stdio};
+#[cfg(any(not(windows), test))]
+use std::process::Child;
+use std::process::{Command, Stdio};
 #[cfg(all(unix, test))]
 use std::sync::atomic::AtomicU8;
 #[cfg(windows)]
@@ -41,9 +43,15 @@ mod role;
 #[cfg(unix)]
 mod virtual_port;
 #[cfg(windows)]
+mod windows_generation;
+#[cfg(windows)]
 pub mod windows_job;
 #[cfg(windows)]
 pub mod windows_lpac;
+#[cfg(windows)]
+use windows_generation::WindowsSupervisedChild as SupervisedChild;
+#[cfg(not(windows))]
+type SupervisedChild = Child;
 
 /// How often the supervisor thread polls a running child for exit, and the
 /// granularity at which `shutdown()` is observed.
@@ -655,7 +663,7 @@ pub(crate) trait GenerationLease: Send + 'static {
     fn revoke_with_child(
         self,
         cause: RevocationCause,
-        _child: &mut Child,
+        _child: &mut SupervisedChild,
     ) -> Result<(), RuntimeError>
     where
         Self: Sized,
@@ -674,6 +682,8 @@ pub(crate) struct PreparedChild<L> {
 
 pub(crate) enum PreparedCommand {
     Direct(Command),
+    #[cfg(windows)]
+    WindowsRole(crate::windows_generation::WindowsRoleCommand),
     #[cfg(target_os = "linux")]
     LinuxStrict(crate::linux_strict::LinuxStrictCommand),
 }
@@ -1286,7 +1296,7 @@ impl Drop for Supervisor {
     }
 }
 
-fn spawn_prepared<L>(prepared: PreparedChild<L>) -> Result<(Child, L), RuntimeError>
+fn spawn_prepared<L>(prepared: PreparedChild<L>) -> Result<(SupervisedChild, L), RuntimeError>
 where
     L: GenerationLease,
 {
@@ -1294,7 +1304,22 @@ where
     let spawned = match command {
         PreparedCommand::Direct(mut command) => {
             command.stdout(Stdio::piped()).stderr(Stdio::piped());
+            #[cfg(windows)]
+            {
+                command
+                    .spawn()
+                    .map(SupervisedChild::from_standard)
+                    .map_err(RuntimeError::Spawn)
+            }
+            #[cfg(not(windows))]
             command.spawn().map_err(RuntimeError::Spawn)
+        }
+        #[cfg(windows)]
+        PreparedCommand::WindowsRole(command) => {
+            SupervisedChild::spawn_role(&command).map_err(|source| RuntimeError::Lifecycle {
+                phase: "Windows Bun generation Job launch",
+                source,
+            })
         }
         #[cfg(target_os = "linux")]
         PreparedCommand::LinuxStrict(command) => command
@@ -1330,7 +1355,7 @@ fn cleanup_error_by_priority(
 fn supervise<P>(
     policy: RestartPolicy,
     mut preparer: P,
-    mut child: Child,
+    mut child: SupervisedChild,
     mut lease: P::Lease,
     events_tx: &Sender<SupervisorEvent>,
     output: &Arc<Mutex<CaptureState>>,
@@ -1763,7 +1788,7 @@ struct CaptureStartError {
 
 #[allow(clippy::too_many_lines)] // one transaction must return every partial thread/handle/budget when the second capture spawn fails
 fn start_capture_threads(
-    child: &mut Child,
+    child: &mut SupervisedChild,
     output: &Arc<Mutex<CaptureState>>,
 ) -> Result<CaptureThreads, CaptureStartError> {
     #[cfg(windows)]
@@ -2092,7 +2117,7 @@ enum WaitResult {
 }
 
 fn wait_or_shutdown<L>(
-    child: &mut Child,
+    child: &mut SupervisedChild,
     lease: &mut L,
     shutdown: &Arc<AtomicBool>,
     restart_attempt: &Arc<AtomicU32>,
@@ -2157,7 +2182,7 @@ const SELF_TERMINATION_GRACE: Duration = Duration::from_millis(250);
 ///
 /// `Some(status)` means the child ended itself and the host must account for it;
 /// `None` means it was still running, so the host's own kill is what ends it.
-fn wait_for_self_termination(child: &mut Child) -> Option<std::process::ExitStatus> {
+fn wait_for_self_termination(child: &mut SupervisedChild) -> Option<std::process::ExitStatus> {
     let deadline = Instant::now() + SELF_TERMINATION_GRACE;
     loop {
         match child.try_wait() {

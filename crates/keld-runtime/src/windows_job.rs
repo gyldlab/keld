@@ -1256,7 +1256,75 @@ pub struct WindowsJobMembership {
     creation_time: u64,
 }
 
+/// Pins a known live member for native regression tests without trusting its PID
+/// after the initial open. Production never exposes this process handle.
+#[cfg(test)]
+pub(crate) struct WindowsTestFamilyMember {
+    process: OwnedHandle,
+}
+
+#[cfg(test)]
+impl WindowsTestFamilyMember {
+    pub(crate) fn has_exited(&self) -> Result<bool, WindowsHostJobError> {
+        self.wait_until_exited(Duration::ZERO)
+    }
+
+    pub(crate) fn wait_until_exited(&self, timeout: Duration) -> Result<bool, WindowsHostJobError> {
+        // SAFETY: the retained handle identifies one exact process object.
+        match unsafe {
+            WaitForSingleObject(
+                self.process.as_raw_handle().cast(),
+                finite_wait_millis(timeout),
+            )
+        } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            _ => Err(WindowsHostJobError::new("test family member wait")),
+        }
+    }
+}
+
 impl WindowsProcessJob {
+    /// Test-only retained identity proof for a live, exact descendant in this Job.
+    #[cfg(test)]
+    pub(crate) fn pin_test_live_member(
+        &self,
+        pid: u32,
+    ) -> Result<WindowsTestFamilyMember, WindowsHostJobError> {
+        // SAFETY: opening by PID is only for the test's freshly reported child.
+        // The resulting retained handle, not that PID, pins later observations.
+        let raw = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                0,
+                pid,
+            )
+        };
+        if raw.is_null() {
+            return Err(WindowsHostJobError::new("test descendant process open"));
+        }
+        // SAFETY: OpenProcess returned a fresh live process handle.
+        let process = unsafe { OwnedHandle::from_raw_handle(raw.cast()) };
+        if !process_in_job(
+            raw,
+            self.handle.as_raw_handle().cast(),
+            "test exact descendant Job membership",
+        )? {
+            return Err(WindowsHostJobError::contract(
+                "test exact descendant Job membership",
+                "reported descendant was outside the generation Job",
+            ));
+        }
+        let witness = WindowsTestFamilyMember { process };
+        if witness.has_exited()? {
+            return Err(WindowsHostJobError::contract(
+                "test exact descendant liveness",
+                "reported descendant exited before the test observed it",
+            ));
+        }
+        Ok(witness)
+    }
+
     /// Creates an unnamed, non-inheritable Job with kill-on-last-handle-close.
     ///
     /// # Errors
