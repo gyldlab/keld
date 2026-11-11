@@ -23,6 +23,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::WebviewId;
 use crate::error::WvError;
+use crate::original_call::{LocalCallBudget, original_call_channel};
 use crate::wv_link::{AppPageCall, AppWvLinkEnvelope, decode_app_wv_link};
 use crate::wv_link::{
     WvConsumerDisposition, WvLinkEnvelope, WvLinkMode, WvLinkRejectReason, decode_wv_link,
@@ -1787,8 +1788,6 @@ mod tests {
 
 const APP_HANDLER_NAME: &str = "__keld_app_world";
 const PRELOAD_RUNTIME: &str = include_str!("macos_preload_runtime.generated.js");
-const MAX_LOCAL_CALL_RECORDS: usize = 64;
-const MAX_LOCAL_CALL_BYTES: usize = 524_288;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HandlerRole {
@@ -1920,10 +1919,6 @@ fn render_original_scripts(image: &AppPreloadImage) -> Result<(String, String), 
     Ok((page, app))
 }
 
-fn local_action(value: &serde_json::Value) -> Option<&str> {
-    value.as_str()
-}
-
 fn handle_app_call(
     handler: &KeldScriptMessageHandler,
     webview: &WKWebView,
@@ -2024,25 +2019,6 @@ fn handle_app_call(
     queue_original(&mut state, call, lease, channel, facts)?;
     drop(state);
     pump_original_call(webview, &ivars.world, app)
-}
-
-fn original_call_channel(call: &AppPageCall) -> Result<Option<String>, WvError> {
-    let channel = match call.method.as_str() {
-        "request" => Some(String::from("rendererReq")),
-        "sendMessage" => {
-            let topic = call
-                .args
-                .first()
-                .and_then(local_action)
-                .ok_or_else(|| bridge_error("sendMessage needs a copied literal action"))?;
-            if topic.len() > 256 {
-                return Err(bridge_error("named action exceeds 256 bytes"));
-            }
-            Some(topic.to_owned())
-        }
-        _ => None,
-    };
-    Ok(channel)
 }
 
 struct PreparedOriginalInvocation {
@@ -2569,41 +2545,6 @@ mod original_image_tests {
     }
 }
 
-#[derive(Default)]
-struct LocalCallBudget {
-    records: usize,
-    bytes: usize,
-}
-impl LocalCallBudget {
-    fn reserve(&mut self, bytes: usize) -> Result<(), WvError> {
-        let records = self
-            .records
-            .checked_add(1)
-            .filter(|value| *value <= MAX_LOCAL_CALL_RECORDS)
-            .ok_or_else(|| bridge_error("post-bind local call record limit (64) exhausted"))?;
-        let total = self
-            .bytes
-            .checked_add(bytes)
-            .filter(|value| *value <= MAX_LOCAL_CALL_BYTES)
-            .ok_or_else(|| bridge_error("post-bind local call byte limit (524288) exhausted"))?;
-        self.records = records;
-        self.bytes = total;
-        Ok(())
-    }
-    fn release(&mut self, bytes: usize) -> Result<(), WvError> {
-        let records = self
-            .records
-            .checked_sub(1)
-            .ok_or_else(|| bridge_error("local call record release underflow"))?;
-        let total = self
-            .bytes
-            .checked_sub(bytes)
-            .ok_or_else(|| bridge_error("local call byte release underflow"))?;
-        self.records = records;
-        self.bytes = total;
-        Ok(())
-    }
-}
 struct QueuedLocalCall {
     invocation: PreparedOriginalInvocation,
     credential: String,
@@ -2614,51 +2555,6 @@ struct QueuedLocalCall {
     cancelled: bool,
 }
 
-#[cfg(test)]
-mod postbind_queue_limits {
-    use super::{LocalCallBudget, MAX_LOCAL_CALL_BYTES, MAX_LOCAL_CALL_RECORDS};
-
-    #[test]
-    fn postbind_record_max_plus_one_refuses_without_changing_custody() {
-        let mut budget = LocalCallBudget::default();
-        for _ in 0..MAX_LOCAL_CALL_RECORDS {
-            budget.reserve(1).expect("within bounded record census");
-        }
-        assert!(budget.reserve(1).is_err());
-        assert_eq!((budget.records, budget.bytes), (64, 64));
-        budget.release(1).expect("one actual record release");
-        budget
-            .reserve(1)
-            .expect("released capacity permits successor");
-        for _ in 0..MAX_LOCAL_CALL_RECORDS {
-            budget
-                .release(1)
-                .expect("each original record released once");
-        }
-        assert_eq!((budget.records, budget.bytes), (0, 0));
-        assert!(budget.release(1).is_err());
-        assert_eq!((budget.records, budget.bytes), (0, 0));
-    }
-
-    #[test]
-    fn postbind_byte_max_plus_one_and_overflow_refuse_atomically() {
-        let mut budget = LocalCallBudget::default();
-        assert!(budget.reserve(MAX_LOCAL_CALL_BYTES + 1).is_err());
-        assert_eq!((budget.records, budget.bytes), (0, 0));
-        budget
-            .reserve(MAX_LOCAL_CALL_BYTES)
-            .expect("exact byte maximum");
-        assert!(budget.reserve(1).is_err());
-        assert!(budget.reserve(usize::MAX).is_err());
-        assert_eq!((budget.records, budget.bytes), (1, MAX_LOCAL_CALL_BYTES));
-        assert!(budget.release(MAX_LOCAL_CALL_BYTES + 1).is_err());
-        assert_eq!((budget.records, budget.bytes), (1, MAX_LOCAL_CALL_BYTES));
-        budget
-            .release(MAX_LOCAL_CALL_BYTES)
-            .expect("actual charged bytes released");
-        assert_eq!((budget.records, budget.bytes), (0, 0));
-    }
-}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AppCallAdmission {
     Waiting,
