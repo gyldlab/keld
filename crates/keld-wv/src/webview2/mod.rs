@@ -57,6 +57,7 @@ pub(crate) mod media_acceptance;
 mod native_text;
 mod navigation_diagnostics;
 mod original_bootstrap;
+mod original_bridge;
 mod original_callbacks;
 mod original_navigation;
 mod original_resource;
