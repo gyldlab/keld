@@ -31,7 +31,7 @@ fn complete_discovery_eof_includes_lf_crlf_batched_and_split_reads() {
     for chunk_size in [7, 4096] {
         for input in [
             DISCOVER.to_owned(),
-            DISCOVER.replace("\n", "\r\n"),
+            DISCOVER.replace('\n', "\r\n"),
             format!("\r\n{DISCOVER}\n{DISCOVER}\r\n"),
         ] {
             assert!(serve_bytes(input.into_bytes(), false, false, chunk_size).is_ok());
