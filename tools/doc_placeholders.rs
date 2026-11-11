@@ -11,6 +11,8 @@
 //! generator variable is unlisted by construction, and adding a real template slot stays
 //! a deliberate one-line act.
 
+#![forbid(unsafe_code)]
+
 #[path = "markdown_contract.rs"]
 #[allow(
     dead_code,
@@ -195,7 +197,10 @@ fn collect_markdown(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<(
             entry.map_err(|error| format!("DOC-PLACEHOLDERS: cannot read `{dir:?}`: {error}"))?;
         let path = entry.path();
         if path.is_dir() {
-            let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
             if should_skip_dir(name) {
                 continue;
             }
@@ -362,13 +367,21 @@ mod tests {
     #[test]
     fn inline_code_is_scanned_because_that_is_where_the_defect_landed() {
         let (findings, _) = scan("docs/x.md", "see `{BS}` there", &known());
-        assert_eq!(findings.len(), 1, "inline code must not be exempt: {findings:?}");
+        assert_eq!(
+            findings.len(),
+            1,
+            "inline code must not be exempt: {findings:?}"
+        );
     }
 
     /// `{}` and format specs are not template slots and are none of this gate's business.
     #[test]
     fn non_identifier_braces_are_ignored() {
-        let (findings, _) = scan("docs/x.md", "use {} and {:?} and { spaced } freely", &known());
+        let (findings, _) = scan(
+            "docs/x.md",
+            "use {} and {:?} and { spaced } freely",
+            &known(),
+        );
         assert!(findings.is_empty(), "{findings:?}");
     }
 
@@ -387,7 +400,13 @@ mod tests {
         ] {
             assert!(should_skip_dir(name), "`{name}` must not be scanned");
         }
-        for name in ["architecture", "agents", "engineering", "onboarding", "specs"] {
+        for name in [
+            "architecture",
+            "agents",
+            "engineering",
+            "onboarding",
+            "specs",
+        ] {
             assert!(!should_skip_dir(name), "`{name}` must be scanned");
         }
     }
@@ -406,7 +425,10 @@ mod tests {
         );
         assert!(findings.is_empty(), "{findings:?}");
         // A brace merely following a `u` is still a slot: only the escape is exempt.
-        assert_eq!(placeholders("menu{unknown}"), vec![("unknown".to_owned(), 4)]);
+        assert_eq!(
+            placeholders("menu{unknown}"),
+            vec![("unknown".to_owned(), 4)]
+        );
     }
 
     #[test]

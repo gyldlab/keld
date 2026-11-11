@@ -10,6 +10,8 @@
 //! Error text states the fix. Codes are not `KELD-*` (same as `ci_hygiene.rs`)
 //! so this standalone tool does not collide with the product error registry.
 
+#![forbid(unsafe_code)]
+
 use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -589,7 +591,9 @@ branch = "dev"
     #[test]
     fn rejects_absolute_path_override() {
         let mut repo = sample_repos().remove(0);
-        repo.path_override = Some("/tmp/evil".into());
+        // Use an absolute path on the runner OS: `/tmp` is not a Windows root.
+        let absolute = std::env::current_dir().expect("cwd").join("evil");
+        repo.path_override = Some(absolute.to_string_lossy().into_owned());
         let err = resolve_path(Path::new("/tmp/keld"), &repo).expect_err("abs");
         assert!(err.contains("absolute"), "{err}");
     }
