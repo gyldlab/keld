@@ -15,7 +15,7 @@
 
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString, c_void};
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
@@ -44,6 +44,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES,
     FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, READ_CONTROL, WRITE_DAC,
 };
+use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
     EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetExitCodeProcess,
@@ -631,6 +632,37 @@ fn create_suspended_process(
         detached: false,
         launch,
     })
+}
+
+/// Creates a private, non-inheritable Win32 pipe pair for the native role's
+/// explicit standard-handle list. The launch owner alone makes child copies.
+pub(crate) fn create_private_pipe() -> io::Result<(File, File)> {
+    let mut read = std::ptr::null_mut();
+    let mut write = std::ptr::null_mut();
+    // SAFETY: both output pointers are writable and CreatePipe returns each
+    // fresh non-null handle to exactly one File owner below. Null security
+    // attributes create non-inheritable handles; the native child-launch
+    // owner duplicates only selected standard handles for its handle list.
+    if unsafe { CreatePipe(&raw mut read, &raw mut write, std::ptr::null(), 0) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if read.is_null() || write.is_null() {
+        // The Win32 successful contract requires both handles; this branch
+        // is unreachable on valid OS behavior and avoids adopting null.
+        if !read.is_null() {
+            // SAFETY: non-null fresh result; File takes ownership and closes on drop.
+            drop(unsafe { File::from_raw_handle(read.cast()) });
+        }
+        if !write.is_null() {
+            // SAFETY: non-null fresh result; File takes ownership and closes on drop.
+            drop(unsafe { File::from_raw_handle(write.cast()) });
+        }
+        return Err(io::Error::other("CreatePipe returned a null handle"));
+    }
+    // SAFETY: successful CreatePipe returned two fresh owned handles, adopted once.
+    Ok((unsafe { File::from_raw_handle(read.cast()) }, unsafe {
+        File::from_raw_handle(write.cast())
+    }))
 }
 
 /// The exact standard handles admitted to one suspended child.

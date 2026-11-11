@@ -131,7 +131,7 @@ fn verified_profile_preflight_checks_both_version_and_entry_before_admission() {
                         "KELD-CORE-035",
                         "{name}/{schema}/{diagnostic}"
                     );
-                } else if !cfg!(target_os = "macos") && (explicit || facade) {
+                } else if !cfg!(target_os = "macos") && explicit {
                     assert_eq!(
                         result
                             .expect_err("unsupported target/mode stays refused")

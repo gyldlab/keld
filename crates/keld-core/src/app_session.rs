@@ -3802,12 +3802,93 @@ impl HandoverClock {
     }
 }
 
+/// Resolves the mutable Windows developer Bun selector at the Host composition
+/// boundary. Runtime never receives a relative executable or a PATH selector.
+/// This path is NOT an installed-application identity or signature proof.
+#[cfg(windows)]
+fn resolve_windows_dev_bun() -> Result<PathBuf, HostAppError> {
+    let path = std::env::var_os("PATH")
+        .ok_or_else(|| app_detail("Windows development Bun", "PATH is not set"))?;
+    resolve_windows_dev_bun_from_path(&path)
+}
+
+#[cfg(windows)]
+fn resolve_windows_dev_bun_from_path(path: &std::ffi::OsStr) -> Result<PathBuf, HostAppError> {
+    for directory in std::env::split_paths(path) {
+        if !directory.is_absolute() {
+            continue;
+        }
+        let candidate = directory.join("bun.exe");
+        let Ok(metadata) = fs::symlink_metadata(&candidate) else {
+            continue;
+        };
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(app_detail(
+                "Windows development Bun",
+                "the first Bun candidate is not a regular non-symlink executable",
+            ));
+        }
+        return candidate
+            .canonicalize()
+            .map_err(|source| app_io("Windows development Bun", &source));
+    }
+    Err(app_detail(
+        "Windows development Bun",
+        "no regular bun.exe exists in an absolute PATH directory",
+    ))
+}
+
 /// The Bun primary command of one Windows application session. `native_facade` is the
 /// validated boot kind: it selects the facade subscription barrier for every Bun
 /// generation, through the environment and the one staged launch rule, so an inherited
 /// hint selects nothing. Test-only variables never reach the child: the lease-census
 /// seam hands over the host lease handle only under a live dev lease, and the
 /// session-loop seams and the keld-wv fault fixtures are removed from the child.
+#[cfg(all(test, windows))]
+#[test]
+fn windows_dev_bun_resolver_uses_absolute_only_and_refuses_a_shadowing_directory() {
+    let temp = tempfile::tempdir().expect("fixture directory");
+    let good_dir = temp.path().join("good");
+    let bad_dir = temp.path().join("bad");
+    std::fs::create_dir_all(&good_dir).expect("good fixture directory");
+    std::fs::create_dir_all(bad_dir.join("bun.exe")).expect("hostile folder named bun.exe");
+    let image = good_dir.join("bun.exe");
+    std::fs::write(&image, b"developer Bun selection fixture").expect("fixture file");
+    let path =
+        std::env::join_paths([Path::new("."), good_dir.as_path()]).expect("fixture PATH string");
+    let resolved = resolve_windows_dev_bun_from_path(&path).expect("absolute Bun location");
+    assert_eq!(
+        resolved,
+        image.canonicalize().expect("canonical fixture image"),
+    );
+    let shadowed =
+        std::env::join_paths([bad_dir.as_path(), good_dir.as_path()]).expect("shadowed PATH");
+    assert!(
+        resolve_windows_dev_bun_from_path(&shadowed).is_err(),
+        "a shadowing non-executable must not silently fall through",
+    );
+    assert!(
+        resolve_windows_dev_bun_from_path(std::ffi::OsStr::new(".")).is_err(),
+        "relative PATH entries must not select a native process image",
+    );
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn windows_installed_primary_never_uses_developer_bun_without_a_valid_lease() {
+    let error = windows_primary_config(
+        Path::new(r"C:	est-installed-root"),
+        Path::new("src/main.ts"),
+        false,
+        None,
+    )
+    .expect_err("an installed primary must refuse developer PATH before Bun spawn");
+    assert!(
+        error.to_string().contains("Windows installed Bun launch"),
+        "the installed launch refusal must be typed and actionable",
+    );
+}
+
 #[cfg(windows)]
 fn windows_primary_config(
     root: &Path,
@@ -3815,7 +3896,16 @@ fn windows_primary_config(
     native_facade: bool,
     dev_lease: Option<&WindowsDevLeaseMonitor>,
 ) -> Result<PrimaryRoleConfig, HostAppError> {
-    let config = PrimaryRoleConfig::new("bun")
+    // An installed session has no developer lease. It must never select Bun
+    // from mutable PATH while the authenticated bundled-image launch is pending.
+    if dev_lease.is_none() {
+        return Err(app_detail(
+            "Windows installed Bun launch",
+            "no authenticated installed Bun image owner is available; refusing developer PATH fallback",
+        ));
+    }
+    let bun = resolve_windows_dev_bun()?;
+    let config = PrimaryRoleConfig::new(bun)
         .staged_bun_launch(root, native_facade)
         .arg("run")
         .arg(root.join(entry_path))

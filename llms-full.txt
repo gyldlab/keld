@@ -2841,9 +2841,22 @@ a matching compiler/host pair from an integrated revision.
   that same supervisor rather than creating a core-side process loop. Retired
   capture readers receive a direct-child stop signal, drain bytes already
   buffered via `PeekNamedPipe`, and join without waiting for descendant EOF;
-  this preserves crash-ledger ordering while KEL-78 still owns descendant
-  termination. Accepted shutdown also closes successor
-  admission without killing the current child before its correlated reply.
+  this preserves crash-ledger ordering. Each Windows Bun role generation uses
+  the native same-token suspended-child launcher and an unnamed non-breakaway,
+  kill-on-close Job. Exact Job membership is read back before the first resume.
+  On a natural exit, forced restart or shutdown, that generation Job is
+  terminated and its active process count must reach zero before a successor
+  starts. Native regression tests additionally pin a reported live descendant
+  and observe its signaled exit after retirement. This is process-family
+  cleanup, not LPAC token isolation or installed-app Strict qualification.
+  The Windows development Host resolves mutable developer Bun selection to
+  an absolute image before handing it to Runtime. The native supervisor
+  never searches PATH: all Windows Bun role inputs must name an absolute
+  executable. Developer selection is not installed image authentication;
+  release packaging must supply an independently verified bundled image
+  identity and must not fall back to the development resolver.
+  Accepted shutdown also closes successor admission without killing the
+  current child before its correlated reply.
   The host clears inheritance and starts watching the stdin-v1 lease before the
   first app resource; a locked `PeekNamedPipe` preflight rejects already-observed
   EOF before listener/child or WebView startup. It preserves lease-read/tail
@@ -2967,6 +2980,15 @@ sole exact-path/operation production `unsafe` allowlist (root AGENTS.md); this s
 adds no sanction and owns only rationale, resource and native-proof details.
 
 **Windows Job Win32 FFI and KEL-270 scope.** The exact file list and KEL-270 Win32 API whitelist live only in the crate AGENTS.md; change them there with independent `unsafe` gate evidence.
+
+**Windows generation stream custody.** The existing `windows_lpac.rs` native-process
+owner constructs non-inheritable anonymous stdout/stderr pipes through
+`CreatePipe`, then duplicates only the admitted standard handles into
+`STARTUPINFOEX`'s explicit handle list. The safe `windows_generation.rs`
+owner holds the native suspended child and the independently bounded generation
+Job; it contains no second process-creation FFI, elevated authority or LPAC
+token assertion. Failed admission drops the suspended child and kill-on-close
+Job without executing Bun.
 
 **macOS Guardian pre-exec/host-retention seam.** `macos_guardian/spawn_admission.rs` only. Before fork, the parent creates the pipes, owns their exact descriptor identities and starts the reporter; the pre-exec closure may use only fixed-stack `close`, `getpid`, `write`, `poll`, `read` and `_exit` with no heap allocation, Rust locks or general I/O. The child closes every inherited parent-only permit writer **before** waiting, and runs no Bun code without an authenticated host-retention response. Reporter registration errors send explicit denial, never a release byte. Guard with real macOS/Bun crash-and-denial tests, exact test discovery, and warning-denied Clippy. This is not proof of cleanup for a SIGSTOP-suspended pre-exec child or detached descendants; those require a separately owned containment design.
 

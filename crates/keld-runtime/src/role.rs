@@ -20,7 +20,7 @@ use keld_ipc::{
     BootstrapRejection, BootstrapRejectionObserver, BootstrapStream, SessionToken, parse_app_link,
 };
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use crate::PreparedCommand;
 #[cfg(target_os = "linux")]
 use crate::linux_strict::LinuxStrictProfile;
@@ -990,6 +990,28 @@ impl ChildPreparer for RolePreparer {
         command
             .env("KELD_APP_LINK", &provisioned.app_link)
             .stdin(Stdio::null());
+        #[cfg(windows)]
+        {
+            // Installed and development Bun roles share one suspended-launch
+            // owner. Every generation joins a private non-breakaway Job
+            // before its initial thread resumes; no Command::spawn fallback.
+            let native = match crate::windows_generation::WindowsRoleCommand::from_command(&command)
+            {
+                Ok(native) => native,
+                Err(source) => {
+                    provisioned.lease.revoke(RevocationCause::SpawnFailed)?;
+                    return Err(RuntimeError::Lifecycle {
+                        phase: "Windows Bun role native launch admission",
+                        source,
+                    });
+                }
+            };
+            Ok(PreparedChild {
+                command: PreparedCommand::WindowsRole(native),
+                lease: provisioned.lease,
+            })
+        }
+        #[cfg(not(windows))]
         Ok(PreparedChild {
             command: command.into(),
             lease: provisioned.lease,
