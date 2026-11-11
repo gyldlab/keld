@@ -1,6 +1,38 @@
 // Source contracts only; injected selection/Source data is not Host/native qualification.
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+test("spawned Bun fixtures use native paths, including URL-escaped names", () => {
+  const directory = mkdtempSync(join(tmpdir(), "keld-electron-url-path-"));
+  try {
+    const script = join(directory, "fixture space %.ts");
+    writeFileSync(script, 'console.log("FIXTURE_PATH_OK");\n');
+    const scriptURL = pathToFileURL(script);
+    const run = (filename: string) =>
+      Bun.spawnSync({
+        cmd: [process.execPath, "--no-install", "--no-env-file", filename],
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 4000,
+      });
+    const valid = run(fileURLToPath(scriptURL));
+    expect(valid.exitCode, valid.stderr.toString()).toBe(0);
+    expect(valid.stdout.toString()).toBe("FIXTURE_PATH_OK\n");
+
+    // The legacy URL pathname is not a native path on Windows and leaves URL
+    // escapes in the filename on POSIX. A missing file must also fail closed.
+    const malformed = run(scriptURL.pathname);
+    expect(malformed.exitCode).not.toBe(0);
+    expect(malformed.stdout.toString()).not.toContain("FIXTURE_PATH_OK");
+    const missing = run(fileURLToPath(new URL("./missing.ts", scriptURL)));
+    expect(missing.exitCode).not.toBe(0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 const developmentFacts = {
   schema: 5,
@@ -81,8 +113,9 @@ for (const { facts, mode } of cases) {
         "--no-env-file",
         `--define=__KELD_HOST_LAUNCH_FACTS__:${JSON.stringify(selected)}`,
         `--define=__KELD_RUNTIME_PROCESS_FACTS__:${mode !== "runtime-disabled"}`,
-        new URL("../fixtures/native_quit_requested.ts", import.meta.url)
-          .pathname,
+        fileURLToPath(
+          new URL("../fixtures/native_quit_requested.ts", import.meta.url),
+        ),
         mode,
       ],
       env: {
