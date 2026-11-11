@@ -278,3 +278,116 @@ $acl.AddAccessRule($worldRule)
     assert!(stderr.contains("KELD-CORE-036"), "{stderr}");
     assert!(stderr.contains("expected one access rule"), "{stderr}");
 }
+
+#[test]
+fn windows_explicit_profile_staging_preserves_digest_and_strict_refuses_before_entry() {
+    let fixture = StageFixture::new();
+    let bytes = br#"{"profile":"strict"}"#;
+    fs::write(fixture.project.join("keld.permissions.jsonc"), bytes).expect("explicit source");
+    let stage = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("stage explicit profile");
+    let descriptor: serde_json::Value =
+        serde_json::from_slice(&fs::read(stage.root().join("keld.boot.json")).expect("descriptor"))
+            .expect("json");
+    assert_eq!(descriptor["schema"], 3);
+    assert_eq!(
+        descriptor["permissions"]["content_sha256"],
+        "sha256:8243d7d1139eb0ad94a55de124df2fd09b5a520fd69077224a24b828a2c66715"
+    );
+    assert_eq!(
+        fs::read(stage.root().join("keld.permissions.jsonc"))
+            .expect("staged bytes")
+            .as_slice(),
+        bytes
+    );
+    let output = dev_stage_command(stage.root(), stage.host())
+        .output()
+        .expect("launch strict host");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("stderr");
+    assert!(stderr.contains("KELD-GUARD008"), "{stderr}");
+    assert!(stderr.contains("listener=0 child=0 window=0"), "{stderr}");
+}
+
+#[test]
+fn windows_changed_staged_policy_fails_digest_before_entry() {
+    let fixture = StageFixture::new();
+    fs::write(
+        fixture.project.join("keld.permissions.jsonc"),
+        br#"{"profile":"legacy"}"#,
+    )
+    .expect("legacy source");
+    let stage = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("stage explicit profile");
+    fs::write(
+        stage.root().join("keld.permissions.jsonc"),
+        br#"{"profile":"strict"}"#,
+    )
+    .expect("mutate policy");
+    let output = dev_stage_command(stage.root(), stage.host())
+        .output()
+        .expect("launch changed host");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("stderr");
+    assert!(stderr.contains("listener=0 child=0 window=0"), "{stderr}");
+    assert!(stderr.contains("KELD-GUARD016"), "{stderr}");
+}
+
+#[test]
+fn windows_profile_free_stage_keeps_existing_default_policy() {
+    let fixture = StageFixture::new();
+    fs::write(
+        fixture.project.join("keld.permissions.jsonc"),
+        br#"{"app":{"fs":{"read":["/tmp/**"]}}}"#,
+    )
+    .expect("profile-free policy");
+    let stage = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("default stage");
+    let descriptor: serde_json::Value =
+        serde_json::from_slice(&fs::read(stage.root().join("keld.boot.json")).expect("descriptor"))
+            .expect("json");
+    assert_eq!(descriptor["schema"], 1);
+    assert_eq!(
+        fs::read(stage.root().join("keld.permissions.jsonc"))
+            .expect("fixed policy")
+            .as_slice(),
+        b"{}\n"
+    );
+}
+
+#[test]
+fn windows_explicit_legacy_facade_stage_uses_closed_schema_four() {
+    let fixture = StageFixture::new();
+    fs::write(fixture.project.join("keld.config.ts"), "export default { name: 'Fixture', entry: 'src/main.ts', initialWindow: 'none' } as const;\n").expect("facade config");
+    fs::write(
+        fixture.project.join("keld.permissions.jsonc"),
+        br#"{"profile":"legacy"}"#,
+    )
+    .expect("legacy policy");
+    let stage = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("stage facade");
+    let descriptor: serde_json::Value =
+        serde_json::from_slice(&fs::read(stage.root().join("keld.boot.json")).expect("descriptor"))
+            .expect("json");
+    assert_eq!(descriptor["schema"], 4);
+    assert!(descriptor.get("renderer").is_none());
+    assert!(descriptor.get("auth").is_none());
+    assert_eq!(
+        fs::read(stage.root().join("keld.permissions.jsonc"))
+            .expect("policy")
+            .as_slice(),
+        br#"{"profile":"legacy"}"#
+    );
+}

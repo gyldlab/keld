@@ -76,7 +76,7 @@ pub(super) fn validate_profile(
     }
     // Called only by the validated no-flag primary host, never by an addon or
     // secondary-role launcher. State values are not launch capabilities.
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         // Existing platform facade admission remains its separate owner. This
         // shared schema preflight must not veto the already-admitted Windows
@@ -93,7 +93,7 @@ pub(super) fn validate_profile(
         // declared Strict receipt from platform choice.
         Ok(ProfileState::Unverified)
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         let requested = manifest
             .declared_profile()
@@ -102,7 +102,7 @@ pub(super) fn validate_profile(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub(super) fn disclose_profile(profile: ProfileState, bound: bool) -> Result<(), HostAppError> {
     use std::io::Write as _;
 

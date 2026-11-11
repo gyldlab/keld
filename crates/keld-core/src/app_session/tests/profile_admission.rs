@@ -131,7 +131,7 @@ fn verified_profile_preflight_checks_both_version_and_entry_before_admission() {
                         "KELD-CORE-035",
                         "{name}/{schema}/{diagnostic}"
                     );
-                } else if !cfg!(target_os = "macos") && explicit {
+                } else if !cfg!(any(target_os = "macos", windows)) && explicit {
                     // The shared preflight refuses unqualified explicit profiles.
                     // Facade availability is checked by the platform boot gate
                     // (see windows_boot_files_refuse_a_schema_2_facade_boot),
@@ -187,7 +187,7 @@ fn selected_profile_preflight_never_reopens_a_replaced_policy_path() {
         <[u8; 32]>::from(Sha256::digest(bytes))
     );
     let result = super::profile_preflight::validate_profile(3, &verified, false);
-    if cfg!(target_os = "macos") {
+    if cfg!(any(target_os = "macos", windows)) {
         assert_eq!(
             result.expect("retained selection"),
             keld_guard::ProfileState::Legacy
@@ -287,4 +287,30 @@ fn installed_graph_profile_admission_cannot_be_used_by_dev_or_diagnostic_boots()
             "development graph schema stays outside installed admission"
         );
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_snapshot_retains_the_actual_admission_and_verified_digest() {
+    use sha2::{Digest as _, Sha256};
+    let root = tempfile::tempdir().expect("policy root");
+    let path = root.path().join("policy.jsonc");
+    let original = br#"{"profile":"legacy"}"#;
+    fs::write(&path, original).expect("policy");
+    let digest: [u8; 32] = Sha256::digest(original).into();
+    let verified = load_verified_manifest(File::open(&path).expect("open"), path.clone(), digest)
+        .expect("verify");
+    let admitted = super::profile_preflight::validate_profile(3, &verified, false)
+        .expect("admit actual request");
+    let snapshot = GuardSnapshot::prepare_uncontained(verified, admitted).expect("prepare session");
+    fs::write(path, br#"{"profile":"strict"}"#).expect("change path");
+    assert_eq!(
+        snapshot.fs.admitted_profile,
+        Some(keld_guard::ProfileState::Legacy)
+    );
+    assert_eq!(snapshot.fs.verified.verified_sha256(), digest);
+    assert_eq!(
+        snapshot.fs.verified.manifest().declared_profile(),
+        Some(keld_guard::DeclaredProfile::Legacy)
+    );
 }

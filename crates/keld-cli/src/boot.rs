@@ -1007,6 +1007,42 @@ mod packaging_boot_tests {
     }
 }
 
+#[cfg(windows)]
+fn capture_windows_permissions(root: &Path) -> Result<Vec<u8>, BootCompileError> {
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+    let _root_guard = open_windows_launch_guard(root)?;
+    let path = root.join(PERMISSIONS_FILE);
+    let file = match OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(PERMISSIONS_BYTES.to_vec());
+        }
+        Err(error) => {
+            return Err(BootCompileError::new(
+                "permissions source",
+                error.to_string(),
+            ));
+        }
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|e| BootCompileError::new("permissions source", e.to_string()))?;
+    if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(BootCompileError::new(
+            "permissions source",
+            "policy must be a regular non-reparse file",
+        ));
+    }
+    ensure_current_principal_owns(&path)?;
+    keld_guard::read_manifest_bytes(file, &path)
+        .map_err(|e| BootCompileError::new("permissions source", e.to_string()))
+}
+
 /// Compiles one fresh, non-release owner-private platform boot stage.
 ///
 /// This is a tooling surface: it creates the bytes consumed by the exact
@@ -1094,16 +1130,22 @@ where
 
     #[cfg(target_os = "macos")]
     let permissions_snapshot = ProjectPermissionsSource::open(&project_root)?.capture()?;
-    #[cfg(target_os = "macos")]
-    let permissions_bytes = permissions_snapshot.as_slice();
-    // The historical fixed policy remains the output on these platforms,
-    // but it must never silently erase an explicit project request.
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    let permissions_snapshot = capture_windows_permissions(&project_root)?;
+    #[cfg(windows)]
+    let declared_profile = {
+        let source = std::str::from_utf8(permissions_snapshot.as_slice())
+            .map_err(|source| BootCompileError::new("permissions profile", source.to_string()))?;
+        keld_guard::parse_manifest(source)
+            .map_err(|source| BootCompileError::new("permissions profile", source.to_string()))?
+            .declared_profile()
+    };
+    #[cfg(target_os = "linux")]
     match keld_guard::load_manifest(&project_root.join(PERMISSIONS_FILE)) {
         Ok(manifest) if manifest.declared_profile().is_some() => {
             return Err(BootCompileError::new(
                 "permissions profile",
-                "explicit security profiles are qualified only for macOS primary boots; preserve the request and use a supporting target",
+                "explicit security profiles are not qualified on this target; preserve the request and use a supporting target",
             ));
         }
         Ok(_) | Err(keld_guard::ManifestError::NotFound { .. }) => (),
@@ -1114,7 +1156,15 @@ where
             ));
         }
     };
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "macos")]
+    let permissions_bytes = permissions_snapshot.as_slice();
+    #[cfg(windows)]
+    let permissions_bytes = if declared_profile.is_some() {
+        permissions_snapshot.as_slice()
+    } else {
+        PERMISSIONS_BYTES
+    };
+    #[cfg(target_os = "linux")]
     let permissions_bytes = PERMISSIONS_BYTES;
     let compiled_boot = compile_boot_descriptor_bytes(
         &config,
@@ -2246,3 +2296,27 @@ mod tests {
 #[allow(clippy::expect_used, clippy::panic)]
 // test fixture failures are assertion oracles, as in the sibling unit-test module
 mod permissions_tests;
+
+#[cfg(all(test, windows))]
+#[allow(clippy::expect_used, clippy::panic)] // test-owned temporary fixtures
+mod windows_profile_capture_tests {
+    use super::*;
+    #[test]
+    fn captures_exact_legacy_bytes_and_rejects_invalid_policy() {
+        let root = tempfile::tempdir().expect("owned root");
+        let bytes = br#"{ "profile": "legacy", "app": {"fs":{"read":["/tmp/**"]}} }"#;
+        fs::write(root.path().join(PERMISSIONS_FILE), bytes).expect("policy");
+        let captured = capture_windows_permissions(root.path()).expect("capture");
+        assert_eq!(captured.as_slice(), bytes);
+        assert_eq!(
+            keld_guard::parse_manifest(std::str::from_utf8(&captured).expect("utf8"))
+                .expect("valid")
+                .declared_profile(),
+            Some(keld_guard::DeclaredProfile::Legacy)
+        );
+        fs::write(root.path().join(PERMISSIONS_FILE), br#"{"profile":null}"#)
+            .expect("invalid fixture");
+        let invalid = capture_windows_permissions(root.path()).expect("capture invalid bytes");
+        assert!(keld_guard::parse_manifest(std::str::from_utf8(&invalid).expect("utf8")).is_err());
+    }
+}

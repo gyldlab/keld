@@ -24,12 +24,12 @@ use crate::{
 
 #[test]
 fn windows_no_flag_host_recovers_bun_in_the_same_native_window() {
-    run_same_window_recovery("CRASH");
+    run_same_window_recovery("CRASH", false);
 }
 
 #[test]
 fn windows_link_only_failure_uses_the_supervisor_owned_restart_path() {
-    run_same_window_recovery("CLOSE_LINK");
+    run_same_window_recovery("CLOSE_LINK", false);
 }
 
 #[test]
@@ -201,8 +201,20 @@ fn windows_crash_loop_keeps_core033_as_the_outer_host_error() {
     assert!(stderr.contains("KELD-RUNTIME-002"), "{stderr}");
 }
 
-fn run_same_window_recovery(failure_command: &str) {
+#[test]
+fn windows_explicit_legacy_recovery_retains_captured_policy() {
+    run_same_window_recovery("CRASH", true);
+}
+
+fn run_same_window_recovery(failure_command: &str, legacy: bool) {
     let fixture = ProductFixture::new();
+    if legacy {
+        fs::write(
+            fixture.project.join("keld.permissions.jsonc"),
+            br#"{"profile":"legacy"}"#,
+        )
+        .expect("legacy policy");
+    }
     let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind recovery control");
     let control_port = control_listener
         .local_addr()
@@ -235,6 +247,24 @@ fn run_same_window_recovery(failure_command: &str) {
         accept_ready_generation(&control_listener, &mut child);
     expect_renderer_beacon(beacon, "initial renderer beacon");
     let g1_window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
+    if legacy {
+        fs::write(
+            fixture.project.join("keld.permissions.jsonc"),
+            br#"{"profile":"strict"}"#,
+        )
+        .expect("change source after capture");
+        assert_eq!(
+            fs::read(stage.root().join("keld.permissions.jsonc"))
+                .expect("retained stage")
+                .as_slice(),
+            br#"{"profile":"legacy"}"#
+        );
+        fs::write(
+            stage.root().join("keld.permissions.jsonc"),
+            br#"{"profile":"strict"}"#,
+        )
+        .expect("change staged policy after verified capture");
+    }
     writeln!(g1_writer, "{failure_command}").expect("fail g1 app link or process");
     g1_writer.flush().expect("flush g1 failure command");
     let mut closed = String::new();
@@ -259,6 +289,19 @@ fn run_same_window_recovery(failure_command: &str) {
     assert!(status.success(), "recovery host exited with {status}");
     assert!(!process_exists(g1_pid), "retired g1 Bun survived");
     assert!(!process_exists(g2_pid), "g2 Bun survived Quit");
+    if legacy {
+        let mut stderr = String::new();
+        child
+            .stderr
+            .take()
+            .expect("stderr")
+            .read_to_string(&mut stderr)
+            .expect("read stderr");
+        assert!(
+            stderr.contains("legacy — zero-authority claim forfeited"),
+            "{stderr}"
+        );
+    }
 }
 
 #[test]
