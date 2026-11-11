@@ -297,7 +297,7 @@ impl WindowSession {
             && self.subscribed == Some(owner)
             && self.registry.rebind_recovered_renderer_documents(owner)
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     pub(super) fn admitted_dialog_view(
         &mut self,
         owner: WindowOwner,
@@ -1939,6 +1939,10 @@ impl PrimaryRouterHandle {
         teardown: super::window_registry::Teardown,
         phase: &'static str,
     ) -> Result<(), HostAppError> {
+        #[cfg(windows)]
+        if let Some(dialog) = &self.dialog {
+            dialog.parent_retiring(teardown.view)?;
+        }
         self.window_commands
             .send(AppWindowCommand::DestroyWindow {
                 view: teardown.view,
@@ -2191,8 +2195,8 @@ impl PrimaryRouterHandle {
                     "the first host Init milestone belongs only to the lifecycle coordinator",
                 ));
             }
-            #[cfg(target_os = "macos")]
-            AppWindowEvent::MacDialogFinished { .. } => {
+            #[cfg(any(target_os = "macos", windows))]
+            AppWindowEvent::DialogFinished { .. } => {
                 return Err(app_detail(
                     "window native event",
                     "dialog completion must be dispatched by the event coordinator",

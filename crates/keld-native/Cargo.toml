@@ -26,6 +26,13 @@ sha2 = { workspace = true }
 [dev-dependencies]
 serde_json.workspace = true
 
+# GH1189 production dialogs use the exact Microsoft bindings already locked
+# by the WebView2 backend (MIT OR Apache-2.0; MSRV 1.74). No new package
+# version. Shell owns file selection; Controls owns TaskDialog; the existing
+# STA supplies parent preflight and cancellation during the native modal call.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }
+
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { workspace = true }
 

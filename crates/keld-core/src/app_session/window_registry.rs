@@ -817,7 +817,7 @@ impl WindowRegistry {
     /// The same checked owner/ready/incarnation resolver as native setters,
     /// but without consuming the adoption mark. Busy/nonce refusal cannot
     /// alter existing window state just by inspecting its potential parent.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     pub(super) fn admitted_dialog_view(
         &self,
         owner: WindowOwner,

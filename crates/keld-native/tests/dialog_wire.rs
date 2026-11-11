@@ -12,6 +12,76 @@ fn file_filter() -> keld_native::dialog::FileDialogFilter {
     }
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_selected_paths_use_the_shared_result_boundary() {
+    use keld_native::dialog::validate_dialog_reply;
+
+    for path in [
+        r"C:\",
+        r"C:\diagrams\space name.drawio",
+        "C:\\diagrams\\設計.drawio",
+        "C:/diagrams/file.drawio",
+        r"\\server\share",
+        r"\\server\share\folder\diagram.drawio",
+    ] {
+        let selected = DialogReplyV1::Save {
+            canceled: false,
+            file_path: path.to_owned(),
+        };
+        validate_dialog_reply(&selected).expect("declared absolute Windows path data");
+        assert_eq!(
+            decode::<DialogReplyV1>(&encode(&selected).expect("wire")).expect("decode"),
+            selected
+        );
+        assert!(
+            validate_dialog_reply(&DialogReplyV1::Open {
+                canceled: false,
+                file_paths: vec![path.to_owned()],
+            })
+            .is_ok()
+        );
+        assert!(
+            validate_dialog_reply(&DialogReplyV1::Save {
+                canceled: true,
+                file_path: path.to_owned(),
+            })
+            .is_err(),
+            "Cancel must not leak a previous Windows selection"
+        );
+    }
+    for path in [
+        r"C:relative.drawio",
+        r"\root-relative.drawio",
+        r"\\?\C:\escape",
+        r"\\.\pipe\app",
+        r"\??\C:\escape",
+        r"\\server",
+        "\\\\server\\",
+        r"C:\dir\..\escape",
+        r"C:\dir/../escape",
+        r"\\server\share\..\escape",
+        r"C:\dir\file.txt:stream",
+        "C:\\dir\\a\0b",
+        r"C:\dir\*.drawio",
+        r"\\server\..\file",
+        r"C:\dir\.\file",
+        r"C:\dir\\file",
+        r"C:\dir\file.",
+        r"C:\dir\file ",
+        r"\\server\share\file:stream",
+    ] {
+        assert!(
+            validate_dialog_reply(&DialogReplyV1::Save {
+                canceled: false,
+                file_path: path.to_owned(),
+            })
+            .is_err(),
+            "ambiguous or unsupported Windows namespace: {path:?}"
+        );
+    }
+}
+
 #[test]
 fn open_and_save_append_after_original_message_and_cancel_bytes() {
     use keld_native::dialog::{OpenDialogOptions, OpenProperty, SaveDialogOptions};
@@ -138,15 +208,25 @@ fn file_dialog_options_reject_unsafe_filter_grammar_and_bookmark_authority() {
 #[test]
 fn file_result_paths_reject_nonabsolute_or_unsafe_native_values_and_cancel_with_files() {
     use keld_native::dialog::validate_dialog_reply;
+    let paths = if cfg!(windows) {
+        [r"C:\tmp\one.drawio", r"C:\tmp\two.xml"]
+    } else {
+        ["/tmp/one.drawio", "/tmp/two.xml"]
+    };
+    let foreign_path = if cfg!(windows) {
+        "/tmp/file"
+    } else {
+        r"C:\Windows"
+    };
     let positive = DialogReplyV1::Open {
         canceled: false,
-        file_paths: vec!["/tmp/one.drawio".into(), "/tmp/two.xml".into()],
+        file_paths: paths.iter().map(|path| (*path).to_owned()).collect(),
     };
-    validate_dialog_reply(&positive).expect("two real absolute POSIX paths");
+    validate_dialog_reply(&positive).expect("two absolute paths for this host");
     for path in [
         "",
         "./relative.drawio",
-        "C:\\Windows",
+        foreign_path,
         "../escape",
         "/tmp/x\0y",
         "/tmp/dir\\file",
@@ -185,7 +265,7 @@ fn file_result_paths_reject_nonabsolute_or_unsafe_native_values_and_cancel_with_
     assert!(
         validate_dialog_reply(&DialogReplyV1::Open {
             canceled: false,
-            file_paths: vec!["/tmp/valid".into(); 33],
+            file_paths: vec![paths[0].into(); 33],
         })
         .is_err(),
         "returned paths bounded at 32 before the wire"

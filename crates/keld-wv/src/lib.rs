@@ -113,6 +113,8 @@ pub mod wkwebview;
 #[doc(hidden)]
 pub mod wv_link;
 
+#[cfg(any(target_os = "macos", windows))]
+pub use engine::DialogUiOutcome;
 #[cfg(target_os = "macos")]
 pub use engine::{AppDesktopDisplay, AppDesktopFacts, AppDesktopRect};
 pub use engine::{

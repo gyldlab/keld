@@ -279,18 +279,18 @@ pub enum AppWindowCommand {
     /// Wake the existing macOS main-owned authentication presentation service.
     #[cfg(target_os = "macos")]
     MacAuthWake,
-    /// Wake the existing macOS Tao main service for a guarded native dialog.
+    /// Wake the existing UI service for a guarded native dialog.
     /// The actual bounded request/cancel custody stays in Core/Native; the
     /// command contains no caller-minted window pointer or payload.
-    #[cfg(target_os = "macos")]
-    MacDialogWake,
+    #[cfg(any(target_os = "macos", windows))]
+    DialogWake,
 }
 
-/// Physical `AppKit` Message outcome observed on the macOS UI owner. The
+/// Physical native dialog outcome observed on its UI owner. The
 /// original request's authenticated correlation and nonce remain Core-owned.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MacDialogUiOutcome {
+pub enum DialogUiOutcome {
     /// A real native button click and observed checkbox state.
     Selected {
         /// Actual zero-based clicked native button.
@@ -307,6 +307,10 @@ pub enum MacDialogUiOutcome {
     /// The native presentation or callback did not meet its owner contract.
     Failed,
 }
+
+/// Existing macOS spelling for the shared dialog outcome.
+#[cfg(target_os = "macos")]
+pub type MacDialogUiOutcome = DialogUiOutcome;
 
 /// Observable UI-owned milestone delivered to the host session coordinator.
 #[derive(Debug, PartialEq)]
@@ -410,17 +414,17 @@ pub enum AppWindowEvent {
         /// Actual native observation for that operation.
         fact: MacOriginalNavigationFact,
     },
-    /// `AppKit` reported a physically drained Message sheet (or a refused
+    /// The native adapter reported a physically drained dialog (or a refused
     /// presentation that never created one). The Core custody owner decides
     /// whether the original correlation is still live and which reply to send.
-    #[cfg(target_os = "macos")]
-    MacDialogFinished {
+    #[cfg(any(target_os = "macos", windows))]
+    DialogFinished {
         /// Original authenticated Host generation attempt.
         attempt: u32,
         /// Original nonzero nonce, not a new authority handle.
         nonce: u64,
-        /// `AppKit`-owned primitive outcome after its callback/physical drain.
-        outcome: MacDialogUiOutcome,
+        /// OS-owned primitive outcome after its callback/physical drain.
+        outcome: DialogUiOutcome,
     },
 }
 

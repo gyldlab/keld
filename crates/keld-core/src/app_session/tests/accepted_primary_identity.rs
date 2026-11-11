@@ -336,7 +336,7 @@ fn windows_authenticated_generations_bind_retained_admission_to_the_current_prin
         PlatformPrimaryOwnerHandle { command_tx: owner },
         SessionShutdownState::new(),
         Some(&snapshot),
-        keld_wv::webview2::AppReadyTrigger::NavigationReady,
+        None, // No managed window registry in this primary-identity fixture.
     )
     .expect("authenticated initial generation");
     let handle = router.handle();
