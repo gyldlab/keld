@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, isAbsolute, join, sep } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 type Run = (
   command: string[],
@@ -129,11 +129,16 @@ export function assertInstalledTypeFilesWithinRoots(
       parent = next;
     }
     assert(contained, "Compiler escaped the installed graph: " + physical);
-    const slashPath = physical.split(sep).join("/");
-    assert(
-      !slashPath.includes("/bun-types/") && !slashPath.includes("/@types/bun/"),
-      "Compiler loaded Bun declarations: " + physical,
-    );
+    // A junction can hide a forbidden segment in the physical path; also
+    // inspect the original path named by the compiler before resolving it.
+    for (const candidate of [file, physical]) {
+      const slashPath = candidate.replaceAll("\\", "/").toLowerCase();
+      assert(
+        !slashPath.includes("/bun-types/") &&
+          !slashPath.includes("/@types/bun/"),
+        "Compiler loaded Bun declarations: " + candidate,
+      );
+    }
   }
 }
 
