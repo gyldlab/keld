@@ -61,6 +61,7 @@ struct BoundedPayload {
 }
 
 impl<'de> Deserialize<'de> for BoundedPayload {
+    /// Deserialize a byte array while keeping retained payload storage bounded.
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -74,6 +75,7 @@ impl<'de> Deserialize<'de> for BoundedPayload {
                 formatter.write_str("an array of at most 4096 bytes")
             }
 
+            /// Consume every element, retaining at most the allowed bytes and recording overflow.
             fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
             where
                 A: SeqAccess<'de>,
