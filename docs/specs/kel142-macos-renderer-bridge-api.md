@@ -8,6 +8,17 @@
 
 {"schema":"keld.kel142-approval/v1","decision":"approved","approved_content_head":"2e8da1b7ba19783eceb671093620419664537415","linear_comment_id":"53510bc6-66e0-441c-8992-010b6a8719e6","source":"active-user-voice-session-2026-09-30"}
 
+> **Approved navigation companion, unmerged (GH #541).** The approval JSON,
+> content head and digest above remain the historical KEL-142 approval. The
+> [companion amendment](gh541-channel-grants-navigation.md) records the explicitly
+> marked qualifications in sections 5.2, 6, AC5 and AC6 below. Its separate delegated
+> approval is KEL-102 comment `8fa29b34-bdb6-470f-9f97-9cdf0aa1d0eb`, decision SHA-256
+> `2da2c23a53848d618f08612a1106d53283b7488601be7fd3eaa5ed95038df5af`, technical content
+> `7e0c1b89c4767f2e6625cd2bfc4d36d86b30fc26`. The earlier approval is unchanged.
+> GH #542 retains its own approved implementation-spec and native-evidence gates;
+> this contract decision does not authorize implementation or merge. KEL-142's
+> historical Done status does not qualify the new navigation implementation.
+
 ## 1. Goal
 
 Ship the smallest real macOS renderer-to-app slice required by KEL-139:
@@ -251,6 +262,17 @@ Each main-frame document performs an internal bind through the isolated world:
 6. provisional/new navigation invalidates the previous nonce before the new
    document may dispatch.
 
+**Approved GH #541 contract qualification (unimplemented):** replace item 6's broad
+provisional-navigation rule with revocation at a native cross-document commit,
+including reload or same-URL document replacement. A trusted host full-document
+load/reload revokes earlier, before engine invocation, and blocks old-document
+rebind until a qualified commit. Failed/cancelled host loads never restore old
+authority. Renderer provisional navigation that is cancelled without replacement
+commit preserves the current nonce and generation; same-document navigation does
+not rotate either. The companion amendment owns the checked generation and
+trusted document-eligibility rules. These approved requirements still need native
+implementation and qualification; the historical approval remains unchanged.
+
 The page-world `invoke` payload contains only channel + application payload.
 It never supplies the document nonce or any app authority.
 
@@ -319,6 +341,14 @@ Rules:
 - no automatic replay occurs after reconnect/recovery;
 - Quit/quiesce prevents new renderer dispatch before link teardown;
 - no UI thread blocks on Bun, app-link I/O, or handler completion.
+
+**Approved GH #541 contract qualification (unimplemented):** for the amended slice,
+"navigation" in the invalidation rules above means a committed cross-document
+replacement or earlier trusted host full-document load/reload. Close still revokes
+immediately. Same-document navigation and cancelled renderer provisional navigation
+preserve valid pending work. Host-load failure does not roll revocation back. A
+queued request must retain its original document and Bun-session identity; recovery
+must not retarget old work to the successor link. Bun recovery remains KEL-143-owned.
 
 KEL-143 owns successor-generation recovery and a successful post-recovery
 second guarded call. KEL-142 only makes the renderer/app call retirement
@@ -452,6 +482,13 @@ Each independently proves zero application-handler effect:
 - subframe/native-handler attempt;
 - message after view destruction.
 
+**Approved GH #541 AC5 contract qualification (unimplemented):** replace the broad "old nonce
+after navigation begins" case with independent zero-dispatch cases after
+cross-document commit and after the earlier host full-document-load invalidation.
+Add paired positive controls proving that same-document navigation and a cancelled
+renderer provisional navigation preserve the original valid document identity.
+These tests still require real native observations; no pass is claimed here.
+
 ### AC6 — slow consumer and disconnect
 
 - Hold the one admitted Bun handler pending.
@@ -461,6 +498,12 @@ Each independently proves zero application-handler effect:
   once with a terminal error.
 - A late old reply cannot settle it again or reach the new document.
 - A fresh ordinary call succeeds on a fresh non-recovery session afterward.
+
+**Approved GH #541 AC6 contract qualification (unimplemented):** apply the same event
+classification as section 6. Preserve the pending call across same-document or
+cancelled renderer provisional navigation, and retire it at replacement commit,
+early host full-document-load invalidation, destruction or app-link loss. Do not
+replay or rebind work admitted under the old Bun session to a successor session.
 
 ### AC7 — fuzz boundary
 
