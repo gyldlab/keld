@@ -16,7 +16,7 @@ use crate::boot;
 
 const AUTHORING_LIMIT: u64 = 64 * 1024;
 
-struct CapturedInputs {
+pub(super) struct CapturedInputs {
     _ancestors: Vec<File>,
     config: File,
     permissions: File,
@@ -48,7 +48,7 @@ pub(super) fn pin_input_root(root: &Path) -> Result<Vec<File>, BuildError> {
 }
 
 impl CapturedInputs {
-    fn open(root: &Path) -> Result<Self, BuildError> {
+    pub(super) fn open(root: &Path) -> Result<Self, BuildError> {
         let ancestors = pin_input_root(root)?;
         boot::ensure_current_principal_owns(root)
             .map_err(|error| BuildError::input("Windows project owner", error))?;
@@ -61,7 +61,12 @@ impl CapturedInputs {
         })
     }
 
-    fn check(mut self, root: &Path) -> Result<config::AppConfig, BuildError> {
+    pub(super) fn check(self, root: &Path) -> Result<config::AppConfig, BuildError> {
+        Ok(self.capture(root)?.app)
+    }
+
+    /// Retain literal authoring bytes and their Windows namespace witnesses.
+    pub(super) fn capture(mut self, root: &Path) -> Result<CapturedAuthoring, BuildError> {
         let mut source = Vec::new();
         (&mut self.config)
             .take(AUTHORING_LIMIT + 1)
@@ -73,6 +78,7 @@ impl CapturedInputs {
         let source = std::str::from_utf8(&source)
             .map_err(|error| BuildError::input("keld.config.ts", error))?;
         let app = config::parse_app(source)?;
+        require_windows_authoring_paths(&app.entry,app.renderer.as_deref())?;
         if app.renderer.is_none() {
             return Err(BuildError::input(
                 "Windows application cell",
@@ -104,7 +110,58 @@ impl CapturedInputs {
             &policy,
         )
         .map_err(|error| BuildError::input("Windows boot input compiler", error))?;
-        Ok(app)
+        Ok(CapturedAuthoring {
+            config_source: source.to_owned(),
+            permissions: policy,
+            app,
+            _inputs: self,
+        })
+    }
+}
+
+/// No module-graph, Bun or runtime qualification is implied by this value.
+/// The admission handles remain alive while boot bytes and package members are
+/// assembled; consumer code must not reopen either source path.
+pub(super) struct CapturedAuthoring {
+    pub(super) app: config::AppConfig,
+    config_source: String,
+    permissions: Vec<u8>,
+    _inputs: CapturedInputs,
+}
+
+impl CapturedAuthoring {
+    /// Stage only the two framework-owned authoring outputs. The caller must
+    /// separately supply and admit the complete module/Bun/image inventory.
+    pub(super) fn archive_members(
+        &self,
+    ) -> Result<Vec<super::windows_archive::Member>, BuildError> {
+        use super::windows_archive::{Content, Member};
+        // The same captured declared entry is compiled by the closed graph owner
+        // into fixed code/main.js. This descriptor does not rename source imports.
+        if self.app.renderer.as_deref() != Some("index.html") {
+            return Err(BuildError::input(
+                "Windows archive renderer",
+                "this proposed archive cell requires root index.html",
+            ));
+        }
+        let descriptor = boot::compile_boot_descriptor_bytes(
+            &self.config_source,
+            &self.app.name,
+            "code/main.js",
+            Some("renderer/index.html"),
+            &self.permissions,
+        )
+        .map_err(|error| BuildError::input("Windows archive boot", error))?;
+        Ok(vec![
+            Member {
+                name: "keld.boot.json".into(),
+                content: Some(Content::Generated(descriptor)),
+            },
+            Member {
+                name: "keld.permissions.jsonc".into(),
+                content: Some(Content::Generated(self.permissions.clone())),
+            },
+        ])
     }
 }
 
@@ -151,6 +208,7 @@ pub(super) fn run() -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -194,6 +252,82 @@ mod tests {
             fs::read_to_string(fixture.0.join("keld.config.ts")).expect("read"),
             APP
         );
+    }
+
+    #[test]
+    fn retained_authoring_binds_exact_policy_to_archive_boot() {
+        use super::super::windows_archive::Content;
+        let fixture = Fixture::new();
+        let literal = b"{ \"profile\": \"strict\" }\n";
+        fs::write(fixture.0.join("keld.permissions.jsonc"), literal).unwrap();
+        let captured = CapturedInputs::open(&fixture.0)
+            .unwrap()
+            .capture(&fixture.0)
+            .unwrap();
+        // Retaining the authoring value must retain write/delete share denial.
+        assert!(
+            OpenOptions::new()
+                .write(true)
+                .open(fixture.0.join("keld.permissions.jsonc"))
+                .is_err()
+        );
+        let members = captured.archive_members().unwrap();
+        let Some(Content::Generated(policy)) = &members[1].content else {
+            panic!("literal policy");
+        };
+        assert_eq!(policy, literal);
+        let Some(Content::Generated(boot)) = &members[0].content else {
+            panic!("compiled boot");
+        };
+        let boot: serde_json::Value = serde_json::from_slice(boot).unwrap();
+        assert_eq!(boot["entry"], "code/main.js");
+        assert_eq!(boot["renderer"], "renderer/index.html");
+        assert_eq!(
+            boot["permissions"]["content_sha256"],
+            format!("sha256:{:x}", Sha256::digest(literal))
+        );
+        assert_eq!(
+            boot["schema"],
+            keld_core::app_session::boot_schema(false, Some(keld_guard::DeclaredProfile::Strict))
+        );
+        drop(captured);
+        assert!(
+            OpenOptions::new()
+                .write(true)
+                .open(fixture.0.join("keld.permissions.jsonc"))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn archive_descriptor_keeps_fixed_output_for_declared_nested_source() {
+        let fixture = Fixture::new();
+        fs::write(
+            fixture.0.join("keld.config.ts"),
+            APP.replace("main.js", "src/main.js"),
+        )
+        .unwrap();
+        let captured = CapturedInputs::open(&fixture.0)
+            .unwrap()
+            .capture(&fixture.0)
+            .unwrap();
+        assert_eq!(captured.app.entry, "src/main.js");
+        assert!(captured.archive_members().is_ok()); // Actual graph capture/compile is separately required.
+    }
+
+    #[test]
+    fn archive_cell_refuses_unwitnessed_renderer_relocation() {
+        let fixture = Fixture::new();
+        fs::write(
+            fixture.0.join("keld.config.ts"),
+            APP.replace("index.html", "ui/home.html"),
+        )
+        .unwrap();
+        let captured = CapturedInputs::open(&fixture.0)
+            .unwrap()
+            .capture(&fixture.0)
+            .unwrap();
+        assert!(captured.archive_members().is_err());
     }
 
     #[test]
@@ -304,5 +438,24 @@ mod tests {
         fs::remove_file(fixture.0.join("keld.config.ts")).expect("remove config");
         fs::create_dir(fixture.0.join("keld.config.ts")).expect("directory");
         assert!(fixture.check().is_err());
+    }
+}
+
+
+fn require_windows_authoring_paths(entry:&str,renderer:Option<&str>)->Result<(),BuildError> {
+    let mut paths=vec![entry];if let Some(renderer)=renderer {paths.push(renderer);}
+    keld_guard::validate_windows_package_paths(&paths)
+        .map_err(|error|BuildError::input("Windows authoring paths",error))
+}
+#[cfg(test)]
+mod windows_authoring_path_tests {
+    use super::*;
+    #[test] fn actual_windows_grammar_rejects_device_and_normalization_aliases() {
+        require_windows_authoring_paths("main.js",Some("index.html")).unwrap();
+        for bad in ["CON","NUL.txt","aux.js","main.js.","main.js ","dir/../main.js","dir/file:stream"] {
+            assert!(require_windows_authoring_paths(bad,Some("index.html")).is_err(),"entry {bad}");
+            assert!(require_windows_authoring_paths("main.js",Some(bad)).is_err(),"renderer {bad}");
+        }
+        assert!(require_windows_authoring_paths("Main.js",Some("main.js")).is_err());
     }
 }
