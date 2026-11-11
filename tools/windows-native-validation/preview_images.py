@@ -1,7 +1,7 @@
 """Pinned ordinary image source in-memory preview. No writes or subprocesses."""
 import hashlib,json,os,stat,sys
 from pathlib import Path
-PLAN_SHA='c4573b3338b40da43617ca091704962c995fa4ab71320a8713067fee627580b9'
+PLAN_SHA='17880fc6a37bedc0c94857e4569b301299c230d0e801bcb7879edddd1ec73dea'
 def read(path,limit):
     for p in (path,*path.parents):
         s=p.lstat()
