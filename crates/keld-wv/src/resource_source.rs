@@ -75,11 +75,11 @@ pub struct AdmittedWebAppSource {
     #[cfg(windows)]
     pub(crate) root_identity: (u64, u64),
     #[cfg(windows)]
-    pub(crate) root_path: PathBuf,
+    pub(crate) root_path: Arc<PathBuf>,
     #[cfg(windows)]
-    pub(crate) root_url: keld_guard::AdmittedRootUrl,
+    pub(crate) root_url: Arc<keld_guard::AdmittedRootUrl>,
     #[cfg(windows)]
-    pub(crate) entry_components: keld_guard::RootRelativeComponents,
+    pub(crate) entry_components: Arc<keld_guard::RootRelativeComponents>,
     pub(crate) source: VerifiedSourceId,
     pub(crate) scheme: String,
     #[cfg(target_os = "macos")]
@@ -88,10 +88,15 @@ pub struct AdmittedWebAppSource {
     pub(crate) policy: VerifiedResourceResponsePolicy,
     #[cfg(all(target_os = "macos", feature = "profile-test-hooks", debug_assertions))]
     pub(crate) fixture_response_override: std::sync::OnceLock<String>,
+    #[cfg(not(windows))]
     pub(crate) assets: BTreeMap<String, VerifiedWebAsset>,
+    #[cfg(windows)]
+    pub(crate) assets: Arc<BTreeMap<String, VerifiedWebAsset>>,
+    #[cfg(windows)]
+    pub(crate) _window_policy_credit: Option<crate::resource_intake::RetainedByteCredit>,
     /// Resource results already queued into Tao can outlive one native View.
     /// One owner-wide account prevents two successive windows from each
-    /// admitting a full 256 MiB while old pending results are retained.
+    /// admitting separate full platform budgets while old results remain retained.
     pub(crate) retained_bytes: Arc<AtomicUsize>,
 }
 
