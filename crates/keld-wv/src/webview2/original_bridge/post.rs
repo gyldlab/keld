@@ -70,6 +70,17 @@ impl PostPhase {
             Self::Returned => Some(PostResult::AlreadyReturned),
         }
     }
+
+    fn finish_admission(&mut self, admitted: bool) -> Option<PostResult> {
+        match (admitted, *self) {
+            (true, Self::Posting) => None,
+            (false, Self::Prepared) => Some(PostResult::NotAdmitted),
+            _ => {
+                *self = Self::OutcomeUnknown;
+                Some(PostResult::OutcomeUnknown)
+            }
+        }
+    }
 }
 
 impl PreparedControl {
@@ -157,12 +168,8 @@ impl PreparedControl {
                 permit.try_admit_route_unavailable(document, &mut admit)
             }
         };
-        if !admitted {
-            if self.phase == PostPhase::Posting {
-                self.phase = PostPhase::OutcomeUnknown;
-                return PostResult::OutcomeUnknown;
-            }
-            return PostResult::NotAdmitted;
+        if let Some(result) = self.phase.finish_admission(admitted) {
+            return result;
         }
         // SAFETY: retained creating-STA view; bounded immutable NUL-terminated
         // UTF16 backing lives through return. All QI/getters/source parsing ran

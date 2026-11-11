@@ -244,3 +244,26 @@ fn retry_classification_never_turns_an_entered_call_into_never_written() {
         Some(PostResult::AlreadyReturned)
     ));
 }
+
+#[test]
+fn native_post_requires_a_consistent_canonical_admission_and_local_entry() {
+    let mut prepared = PostPhase::Prepared;
+    assert!(matches!(
+        prepared.finish_admission(false),
+        Some(PostResult::NotAdmitted)
+    ));
+    assert_eq!(prepared, PostPhase::Prepared);
+    let mut posting = PostPhase::Posting;
+    assert!(posting.finish_admission(true).is_none());
+    for (admitted, mut phase) in [
+        (true, PostPhase::Prepared),
+        (false, PostPhase::Posting),
+        (true, PostPhase::OutcomeUnknown),
+    ] {
+        assert!(matches!(
+            phase.finish_admission(admitted),
+            Some(PostResult::OutcomeUnknown)
+        ));
+        assert_eq!(phase, PostPhase::OutcomeUnknown);
+    }
+}
