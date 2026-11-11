@@ -339,6 +339,17 @@ jobs:
       - name: Worktree cache tool provenance test
         shell: bash
         run: bash tools/cache_tool_provenance_test.sh
+      # The committed Bun-oracle corpora spawn `bun --no-install`, which also
+      # disables local workspace `link:` resolution. `just ci` satisfies that
+      # through the `typescript` recipe; this job runs the same frozen installs
+      # so a selected keld-compat cannot fail only because CI skipped them.
+      - name: Install JS workspace links for Bun oracles
+        shell: bash
+        run: |
+          set -euo pipefail
+          for package in kipc api electron; do
+            (cd "packages/@keld/$package" && bun install --frozen-lockfile)
+          done
       - name: test
         shell: bash
         env:
@@ -679,6 +690,15 @@ jobs:
         with:
           bun-version: "1.4.4"
           no-cache: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
+      # GH-502's real installed-package oracle requires Node 26. The hosted
+      # runner's ambient Node 24 must not silently substitute for that test.
+      # The official action and exact Node version are SHA/version pinned;
+      # PR-controlled package-manager caching is disabled.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26.10.0"
+          check-latest: false
+          package-manager-cache: false
       - name: frozen install, typecheck, and bun test
         shell: bash
         env:
