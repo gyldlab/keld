@@ -26,9 +26,24 @@
 
 mod admit;
 mod jsonc;
+mod manifest_profile;
 mod probe;
+mod renderer_channels;
 mod unique_json;
 pub mod verified_manifest;
+mod window_csp;
+
+/// Decode data with the existing duplicate-key-refusing JSON owner.
+///
+/// This parser grants no permission or package authority. Callers must apply
+/// their byte bound before decoding, then validate their own closed data schema.
+///
+/// # Errors
+/// Rejects malformed JSON, duplicate object keys at any depth and trailing input.
+#[cfg(target_os = "macos")]
+pub fn parse_unique_json(text: &str) -> Result<serde_json::Value, serde_json::Error> {
+    unique_json::parse(text)
+}
 #[cfg(windows)]
 mod windows_authenticode;
 #[cfg(windows)]
@@ -52,6 +67,10 @@ pub mod capability {
     pub const AUTH_BEGIN: &str = "auth.begin";
     /// Exact declared issuer for token acquisition (`app.auth.token`).
     pub const AUTH_TOKEN: &str = "auth.token";
+    /// Exact resource-less native dialog admission (`app.system` list).
+    pub const DIALOG: &str = "system.dialog";
+    /// Exact resource-less native menu admission (`app.system` list).
+    pub const MENU: &str = "system.menu";
 }
 
 #[cfg(windows)]
@@ -82,6 +101,7 @@ pub use windows_owner_private::{
     windows_owner_private_directory_security, windows_owner_private_file_security,
 };
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, Read};
@@ -98,9 +118,15 @@ pub use admit::{
     AdmissionError, AdmissionRequest, ArchiveId, ArtifactDigest, CURRENT_POLICY_GENERATION,
     HostFacts, HostOs, MismatchField, OS_CONTAINMENT_PROBES, ProbeLayer, ProbeOracle, ProbeRecord,
     ProbeVerdict, ProfileDigest, ProfileState, ProofArchive, ProofIdentity, RoleInstance, admit,
-    expected_layer_for,
+    admit_uncontained, expected_layer_for,
 };
+pub use manifest_profile::{DeclaredProfile, LEGACY_PROFILE_FORFEIT};
 pub use probe::{ProbeReport, run_synthetic_probes};
+pub use renderer_channels::{
+    BorrowedHostWindowGrants, GuardQuery, NativeCapabilityQuery, RendererChannelPermit,
+    RendererChannelQuery, evaluate_query,
+};
+pub use window_csp::{ResolvedWindowCsp, WindowCspProfile};
 
 /// Canonical Windows installation-state protection profiles owned by `keld-guard`.
 ///
@@ -164,9 +190,9 @@ impl Principal {
 
 /// The outcome of a guard check.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Decision {
-    /// Operation may proceed under the first matching manifest grant.
-    Allow(ScopePermit),
+pub enum Decision<Permit = ScopePermit> {
+    /// Operation may proceed under the selected query's opaque permit.
+    Allow(Permit),
     /// Operation is denied; the reason is safe to surface to developers.
     Deny(DenyReason),
 }
@@ -619,17 +645,71 @@ impl std::error::Error for ManifestError {}
 
 /// Parsed `keld.permissions.jsonc`.
 ///
-/// Unknown top-level keys (`$schema`, `windows`, `audit`) are ignored. v0
-/// evaluate reads `app.<group>.<action>` string arrays as path/host scopes.
-#[derive(Debug, Clone, Default, Deserialize)]
+/// The optional root `profile` declares strict or legacy; it grants no capability.
+/// Unrelated unknown keys stay ignored. Reserved window `web` metadata accepts
+/// only the closed named CSP selector; unknown web capabilities are refused.
+/// v0 evaluate reads
+/// `app.<group>.<action>` string arrays as path/host scopes.
+///
+/// Direct Serde deserialization constructs data only; it is not the validated
+/// authoring boundary. Use [`parse_manifest`] or [`load_manifest`] for bounded,
+/// unique-key JSONC and reserved-location checks. Runtime admission consumes
+/// [`verified_manifest::VerifiedManifest`] from the retained, digest-checked
+/// loader, never an arbitrary deserialized value.
+#[derive(Clone, Default, Deserialize)]
 pub struct PermissionsManifest {
     #[serde(default)]
     app: Map<String, Value>,
+    #[serde(default, deserialize_with = "manifest_profile::deserialize_present")]
+    profile: Option<DeclaredProfile>,
+    #[serde(default)]
+    windows: BTreeMap<String, window_csp::WindowPolicy>,
+}
+
+impl fmt::Debug for PermissionsManifest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Preserve existing profile-free policy diagnostics, including the
+        // media boundary's empty-policy observation. Show an explicit request.
+        let mut output = formatter.debug_struct("PermissionsManifest");
+        output.field("app", &self.app);
+        if let Some(profile) = self.profile {
+            output.field("profile", &profile);
+        }
+        if !self.windows.is_empty() {
+            output.field("windows", &self.windows);
+        }
+        output.finish()
+    }
+}
+
+impl PermissionsManifest {
+    /// Returns the requested profile data, or `None` when it is absent.
+    ///
+    /// For a validated manifest this came from the unique root declaration.
+    /// This accessor does not validate raw Serde data, perform admission, or
+    /// prove OS containment.
+    #[must_use]
+    pub const fn declared_profile(&self) -> Option<DeclaredProfile> {
+        self.profile
+    }
+
+    /// Whether this manifest declares any named window response policy.
+    ///
+    /// This is authoring data, not verified provenance or permission to
+    /// install native window handlers. The Host still requires the qualified
+    /// graph/CSP composition and one digest-verified window selection.
+    #[must_use]
+    pub fn declares_window_csp(&self) -> bool {
+        self.windows.values().any(|window| window.web.csp.is_some())
+    }
 }
 
 /// JSON pointer under `app` for a dotted capability (`fs.read` → `/app/fs/read`).
 #[must_use]
 pub fn json_pointer_for(capability: &str) -> String {
+    if matches!(capability, capability::DIALOG | capability::MENU) {
+        return "/app/system".to_owned();
+    }
     if capability.is_empty() {
         return "/app".to_owned();
     }
@@ -647,7 +727,8 @@ pub fn json_pointer_for(capability: &str) -> String {
 ///
 /// Returns [`ManifestError::TooLarge`] when `text` exceeds 64 KiB, or
 /// [`ManifestError::Parse`] when the comment-stripped text is ambiguous,
-/// malformed, or not a JSON object. Returns [`ManifestError::InvalidAuthScope`]
+/// malformed, not a JSON object, or contains an invalid/misplaced explicit
+/// security-profile declaration. Returns [`ManifestError::InvalidAuthScope`]
 /// for auth issuer grants containing `**` or C0/DEL/C1 controls.
 pub fn parse_manifest(text: &str) -> Result<PermissionsManifest, ManifestError> {
     ensure_manifest_size(text.len(), None)?;
@@ -730,11 +811,23 @@ fn parse_manifest_at(
         path: path.map(Path::to_path_buf),
         detail: e.to_string(),
     })?;
+    manifest_profile::validate_root(&value).map_err(|detail| ManifestError::Parse {
+        path: path.map(Path::to_path_buf),
+        detail: detail.to_owned(),
+    })?;
+    window_csp::validate_structure(&value).map_err(|detail| ManifestError::Parse {
+        path: path.map(Path::to_path_buf),
+        detail: detail.to_owned(),
+    })?;
     let manifest: PermissionsManifest =
         serde_json::from_value(value).map_err(|e| ManifestError::Parse {
             path: path.map(Path::to_path_buf),
             detail: e.to_string(),
         })?;
+    window_csp::validate_keys(&manifest.windows).map_err(|detail| ManifestError::Parse {
+        path: path.map(Path::to_path_buf),
+        detail,
+    })?;
     for capability in [capability::AUTH_BEGIN, capability::AUTH_TOKEN] {
         let Some(scopes) = grant_node(&manifest, capability).and_then(Value::as_array) else {
             continue;
@@ -789,6 +882,41 @@ pub fn evaluate(
 ) -> Decision {
     if principal != Principal::AppProcess {
         return Decision::Deny(DenyReason::NotAppProcess { principal });
+    }
+    if matches!(operation, capability::DIALOG | capability::MENU) {
+        let literal = if operation == capability::DIALOG {
+            "dialog"
+        } else {
+            "menu"
+        };
+        let Some(items) = manifest.app.get("system").and_then(Value::as_array) else {
+            return deny_not_granted(operation, path);
+        };
+        // The approved original menu/dialog grant is a resource-less,
+        // deduplicated exact-literal list. Malformed or mixed inputs cannot
+        // become wildcards or a generic native capability namespace.
+        if items.is_empty() || items.len() > 2 || path != literal {
+            return deny_not_granted(operation, path);
+        }
+        for (index, item) in items.iter().enumerate() {
+            let Some(value) = item.as_str() else {
+                return deny_not_granted(operation, path);
+            };
+            if !matches!(value, "dialog" | "menu")
+                || items[..index]
+                    .iter()
+                    .any(|prior| prior.as_str() == Some(value))
+            {
+                return deny_not_granted(operation, path);
+            }
+        }
+        return items
+            .iter()
+            .position(|item| item.as_str() == Some(literal))
+            .map_or_else(
+                || deny_not_granted(operation, path),
+                |grant_index| Decision::Allow(ScopePermit { grant_index }),
+            );
     }
     let Some(node) = grant_node(manifest, operation) else {
         return deny_not_granted(operation, path);

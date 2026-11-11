@@ -32,6 +32,7 @@ pub(super) mod retained_ack;
 
 mod active_generation_shutdown;
 mod guarded_primary_shutdown;
+mod startup_selection;
 mod worker_outcome;
 
 pub(super) mod bootstrap_shutdown_race;

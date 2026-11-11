@@ -134,6 +134,7 @@ fn successor_drain_test_router(
             attempt: 1,
             writer: g1_server,
             reader_stop: Arc::new(AtomicBool::new(false)),
+            dialog_nonce_high_water: 0,
             pending_quit: None,
         }))),
         readers: Arc::new(Mutex::new(HashMap::new())),
@@ -154,6 +155,12 @@ fn successor_drain_test_router(
         auth: None,
         #[cfg(target_os = "macos")]
         auth_commands: None,
+        #[cfg(target_os = "macos")]
+        dialog: None,
+        #[cfg(target_os = "macos")]
+        menu: None,
+        #[cfg(target_os = "macos")]
+        compat: None,
         guardian: GuardianOwnerHandle {
             command_tx: guardian_tx,
         },
@@ -170,6 +177,8 @@ fn successor_drain_test_router(
         ),
         1,
         None,
+        None,
+        #[cfg(target_os = "macos")]
         None,
         #[cfg(target_os = "macos")]
         None,

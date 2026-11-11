@@ -1,25 +1,23 @@
 # keld-core invariants
 
-Extends root `AGENTS.md`; this file owns the shipping host-session composition.
+Extends root `AGENTS.md`; owns shipping host-session composition.
 
-- `app_session.rs` is the one no-flag lifecycle/router owner. It composes
-  runtime and webview primitives; it MUST NOT duplicate generation, Job, LPAC,
-  ACL, guard, or wire policy.
-- Windows production `unsafe` is limited to reviewed lease pipe state/flag and
-  cleanup-sentinel process acquire/image/wait in `app_session.rs`; KEL-135
-  Authenticode FFI is `keld-guard`'s (KEL-270 D4). Every call needs a local
-  `// SAFETY:` proof and independent unsafe/security review.
-- macOS KEL-135/T3 Core `unsafe` is limited to `SecCodeCopySelf` →
-  `SecRequirementCreateWithString` → `SecCodeCheckValidity` → `SecCodeCopyStaticCode` →
-  `SecCodeCopySigningInformation` and owned CF-reference conversion in
-  `src/macos_profile_identity.rs`. It accepts current-process code; identity
-  fields follow Apple-chain validation.
-  API or missing-fact failure is `KELD-WV-009`; no arbitrary code/path or
-  blanket `unsafe`. Every block needs a local `// SAFETY:` proof.
-- Startup remains resource-free until validated boot and immutable guard
-  preflight pass. Revocation, link close, child reap, window exit, and cleanup
-  errors remain ordered and independently observable.
-- Recovery and shutdown gates fail closed: a pre-attach revocation, accepted
-  shutdown, stale generation, or missing owner MUST NOT provision a successor.
-  Real platform tests and a mutation/negative control are required for changes
-  to these transitions.
+- `app_session.rs` owns no-flag lifecycle/routing. Reuse runtime/WebView owners;
+  no duplicate generation, Job, LPAC, ACL, guard or wire policy.
+- Windows unsafe: reviewed lease-pipe flags/state and cleanup-sentinel
+  acquire/image/wait in `app_session.rs`. Authenticode FFI stays in Guard
+  (KEL-270 D4). Require local SAFETY and independent unsafe/security review.
+- macOS unsafe: only `src/macos_profile_identity.rs`, current-process
+  `SecCodeCopySelf`, `SecRequirementCreateWithString`, `SecCodeCheckValidity`,
+  `SecCodeCopyStaticCode`, `SecCodeCopySigningInformation`, `SecCodeCopyPath`,
+  `SecStaticCodeCheckValidityWithErrors` and owned typed CF conversions.
+  KEL-135 identity requires Apple-chain validation; failure is KELD-WV-009.
+  GH-1404 local facts require dynamic/full static validation, ad-hoc origin
+  and sealed metadata. No caller-selected code/path or blanket unsafe.
+  Every block needs local SAFETY; independently review the exact final diff.
+- Boot and immutable Guard preflight precede resources. Preserve observable order:
+  revoke, link close, child reap, window exit, cleanup; errors stay independently
+  observable. Never delete installed apps.
+- Recovery/shutdown fail closed: pre-attach revocation, accepted shutdown, stale
+  generation or missing owner cannot provision a successor. Transition changes
+  require real-platform tests plus mutation/negative controls.

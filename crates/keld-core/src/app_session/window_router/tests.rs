@@ -20,6 +20,8 @@ use std::time::Duration;
 
 mod close_failures;
 mod close_policy;
+#[cfg(target_os = "macos")]
+mod desktop;
 
 #[cfg(any(target_os = "linux", windows))]
 use super::super::DirectPrimaryOwnerCommand as OwnerCommand;
@@ -155,6 +157,7 @@ impl Fixture {
             height,
             x,
             y,
+            ..
         } = self.commands.recv_timeout(Duration::from_secs(3))?
         else {
             return Err(std::io::Error::other("Create command expected").into());
@@ -226,7 +229,7 @@ fn reply(fixture: &mut Fixture, correlation: u32, expected: WindowResponse) -> T
     assert_eq!(decode::<WindowResponse>(&bytes)?, expected);
     Ok(())
 }
-fn fact(fixture: &mut Fixture, expected: WindowEvent) -> TestResult {
+fn fact(fixture: &mut Fixture, expected: &WindowEvent) -> TestResult {
     let (header, bytes) = read_frame(&mut fixture.peer)?;
     assert_eq!(
         (header.kind, header.channel, header.corr),
@@ -236,7 +239,7 @@ fn fact(fixture: &mut Fixture, expected: WindowEvent) -> TestResult {
             CorrelationId(0)
         )
     );
-    assert_eq!(decode::<WindowEvent>(&bytes)?, expected);
+    assert_eq!(&decode::<WindowEvent>(&bytes)?, expected);
     Ok(())
 }
 fn verdict(
@@ -405,7 +408,7 @@ fn window_router_native_snapshot_identity_and_setter_wire_are_actual() -> TestRe
         },
         23,
     )?;
-    assert_eq!(
+    assert!(matches!(
         fixture
             .commands
             .recv_timeout(Duration::from_secs(3))
@@ -414,7 +417,7 @@ fn window_router_native_snapshot_identity_and_setter_wire_are_actual() -> TestRe
             view: WebviewId(7),
             maximized: true
         }
-    );
+    ));
     let (header, bytes) = read_frame(&mut fixture.peer).expect("accepted response");
     assert_eq!(
         (header.kind, header.corr),
@@ -652,13 +655,13 @@ fn window_router_terminal_cut_precedes_release_and_is_idempotent() -> TestResult
             .end_window_session_guarded()
             .expect("idempotent second service drive");
     }
-    assert_eq!(
+    assert!(matches!(
         fixture
             .commands
             .recv_timeout(Duration::from_secs(3))
             .expect("sole teardown"),
         AppWindowCommand::DestroyWindow { view: WebviewId(7) }
-    );
+    ));
     assert!(fixture.commands.try_recv().is_err());
     fixture
         .handle
@@ -833,13 +836,13 @@ fn window_router_duplicate_live_correlation_closes_link_before_second_effect() -
             snapshot: snapshot(),
         })
         .expect("late build still physically cleaned up");
-    assert_eq!(
+    assert!(matches!(
         fixture
             .commands
             .recv_timeout(Duration::from_secs(3))
             .expect("late cleanup"),
         AppWindowCommand::DestroyWindow { view: WebviewId(7) }
-    );
+    ));
     Ok(())
 }
 
@@ -961,8 +964,14 @@ fn window_router_maximum_created_fact_fits_the_fixed_writer_storage() -> TestRes
     let mut failed = None;
     {
         let mut guard = fixture.handle.current.lock().expect("current writer");
-        event(guard.as_mut().expect("active writer"), fact, &mut failed)
-            .expect("maximum fact encodes into caller storage");
+        let mut scratch = vec![0_u8; keld_ipc::window::NAVIGATION_EVENT_STORAGE_BYTES];
+        event(
+            guard.as_mut().expect("active writer"),
+            &fact,
+            &mut scratch,
+            &mut failed,
+        )
+        .expect("maximum fact encodes into caller storage");
     }
     let (header, bytes) = read_frame(&mut fixture.peer).expect("actual maximum fact frame");
     assert_eq!(
@@ -998,20 +1007,20 @@ fn window_router_successor_has_no_stale_legacy_last_window_replay() -> TestResul
         .expect("native close request");
     fact(
         &mut fixture,
-        WindowEvent::CloseRequested {
+        &WindowEvent::CloseRequested {
             window: first,
             close_seq: 1,
         },
     )?;
     verdict(&fixture, first, 1, CloseVerdict::Allow, 3)?;
     reply(&mut fixture, 3, WindowResponse::ReplyApplied)?;
-    assert_eq!(
+    assert!(matches!(
         fixture
             .commands
             .recv_timeout(Duration::from_secs(3))
             .expect("sole Destroy"),
         AppWindowCommand::DestroyWindow { view: WebviewId(7) }
-    );
+    ));
     fixture
         .handle
         .window_native_event(AppWindowEvent::WindowReleased { view: WebviewId(7) })
@@ -1318,10 +1327,10 @@ fn window_router_failed_quit_reply_still_ends_managed_windows() -> TestResult {
         !serviceable,
         "an accepted Quit reply failure must end managed windows before reader return"
     );
-    assert_eq!(
+    assert!(matches!(
         teardown.expect("managed teardown was enqueued before reader return"),
         AppWindowCommand::DestroyWindow { view: WebviewId(7) }
-    );
+    ));
     Ok(())
 }
 
@@ -1330,3 +1339,167 @@ fn window_router_failed_quit_reply_still_ends_managed_windows() -> TestResult {
 #[cfg(target_os = "linux")]
 #[path = "authenticated_tests.rs"]
 mod authenticated_tests;
+
+#[cfg(target_os = "macos")]
+mod original_load;
+
+#[cfg(all(target_os = "macos", debug_assertions))]
+mod original_document_destroy;
+
+#[cfg(all(target_os = "macos", debug_assertions))]
+impl WindowSession {
+    pub(in crate::app_session) fn fixture_original_recovery_document(
+        &mut self,
+        owner: WindowOwner,
+    ) -> TestResult<(
+        tempfile::TempDir,
+        keld_wv::wkwebview::MacNativeDocumentFixture,
+        WindowRef,
+        keld_wv::NativeNavigationContext,
+    )> {
+        self.registry
+            .fixture_original_document(owner, WebviewId(700), Some(false), true)
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn original_menu_quit_selection_reuses_exact_bootstrap_source_and_subscribed_owner() -> TestResult {
+    let fixture = Fixture::new(Some(true))?;
+    let caller = fixture.caller()?;
+    let owner = WindowOwner::new(caller.identity, caller.attempt);
+    let mut session = WindowSession::new(true);
+    assert!(!session.original_menu_quit_selected(owner));
+    session.subscribed = Some(owner);
+    assert!(
+        !session.original_menu_quit_selected(owner),
+        "a subscribed current caller cannot invent the original source selection"
+    );
+    session.subscribed = None;
+    let (_retained_stage, selection) =
+        crate::app_session::tests::gh499_graph::original_quit_selection();
+    session.install_original_selection(selection)?;
+    assert!(
+        !session.original_menu_quit_selected(owner),
+        "bootstrap metadata alone is not subscribed admission"
+    );
+    session.subscribed = Some(owner);
+    assert!(
+        session.original_menu_quit_selected(owner),
+        "zero-window intent uses the same original bootstrap selection"
+    );
+    session.native_supported = false;
+    assert!(!session.original_menu_quit_selected(owner));
+    session.native_supported = true;
+    session.subscribed = None;
+    assert!(
+        !session.original_menu_quit_selected(owner),
+        "retired source cannot qualify"
+    );
+    Ok(())
+}
+
+/// The actual socket/error owner and inherited stderr are independent observers.
+/// Fixture identities are component inputs, not Runtime/native authentication.
+#[test]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn window_refusal_diagnostic_matches_actual_reply_without_private_message() -> TestResult {
+    use crate::app_session::tests::ReapedRouterProbe;
+    use std::io::{Read as _, Seek as _};
+    const CHILD: &str = "KELD_WINDOW_REFUSAL_DIAGNOSTIC_CHILD";
+    const PRIVATE: &str = "WINDOW_DIAGNOSTIC_PRIVATE_ARGUMENT";
+    if std::env::var_os(CHILD).is_some() {
+        let mut fixture = Fixture::new(Some(true))?;
+        let caller = fixture.caller()?;
+        for (code, correlation) in [("KELD-CORE-051", 71), ("KELD-CORE-045", 72)] {
+            let message = format!(
+                "{PRIVATE}: file:///DO_NOT_LOG_SELECTOR token=not-a-real-token KELD-IPC-003"
+            );
+            let mut failed = None;
+            crate::app_session::with_primary_caller_locked(
+                &fixture.handle.current,
+                &fixture.handle.shutdown,
+                &caller,
+                |current| {
+                    let active = current.as_mut().ok_or_else(|| {
+                        crate::app_session::app_detail(
+                            "window diagnostic fixture",
+                            "current owner missing",
+                        )
+                    })?;
+                    super::call_error(
+                        active,
+                        CorrelationId(correlation),
+                        code,
+                        message.clone(),
+                        &mut failed,
+                    )
+                },
+            )?;
+            let (header, bytes) = read_frame(&mut fixture.peer)?;
+            assert_eq!(
+                (header.kind, header.channel, header.corr),
+                (
+                    FrameKind::Err,
+                    keld_ipc::channel_table::WINDOW.id(),
+                    CorrelationId(correlation)
+                )
+            );
+            let error = decode::<CallError>(&bytes)?;
+            assert_eq!(error.code, code);
+            assert_eq!(
+                error.message, message,
+                "wire keeps the actual typed error body"
+            );
+            assert!(
+                failed.is_none(),
+                "successful error reply does not retire its caller"
+            );
+            assert!(
+                fixture.commands.try_recv().is_err(),
+                "error publication creates no native work"
+            );
+        }
+        return Ok(());
+    }
+    let mut stderr_file = tempfile::tempfile()?;
+    let mut child = ReapedRouterProbe::new(std::process::Command::new(std::env::current_exe()?)
+        .args(["--exact", "app_session::window_router::tests::window_refusal_diagnostic_matches_actual_reply_without_private_message", "--nocapture"])
+        .env(CHILD, "1").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::from(stderr_file.try_clone()?)).spawn()?);
+    let status = child.wait_bounded_stderr(&stderr_file, 1024)?;
+    assert!(
+        status.success(),
+        "isolated window diagnostic contract failed: {status:?}"
+    );
+    assert!(
+        stderr_file.metadata()?.len() < 1024,
+        "window diagnostics exceeded fixed-field bound"
+    );
+    stderr_file.rewind()?;
+    let mut stderr = String::new();
+    (&mut stderr_file).take(1024).read_to_string(&mut stderr)?;
+    let records: Vec<_> = stderr
+        .lines()
+        .filter(|line| line.contains("phase=window-request"))
+        .collect();
+    assert_eq!(
+        records,
+        [
+            "KELD-CORE-051 phase=window-request correlation=71",
+            "KELD-CORE-045 phase=window-request correlation=72",
+        ],
+        "one bounded record per actual correlated error, in reply order"
+    );
+    assert!(
+        stderr.len() < 1024,
+        "window diagnostics printed a body instead of fixed fields"
+    );
+    for private in [PRIVATE, "file://", "token=", "KELD-IPC-003"] {
+        assert!(
+            !stderr.contains(private),
+            "window diagnostic leaked untrusted error content"
+        );
+    }
+    Ok(())
+}

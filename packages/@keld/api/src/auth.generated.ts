@@ -9,7 +9,7 @@ import {
   encodePostcardString,
   decodePostcardStringAt,
   kipcError,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 
 export type AuthRequest =
   | {
