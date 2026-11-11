@@ -57,7 +57,13 @@ export class CompatCodecError extends Error {
     super(
       `${CODE[kind]}: ${kind}: ${reason}. Fix the endpoint value before sending it.`,
     );
-    this.name = "CompatCodecError";
+    // A caller trap can poison Error.prototype.name before normalization.
+    defineProperty(this, "name", {
+      value: "CompatCodecError",
+      configurable: true,
+      enumerable: true,
+      writable: true,
+    });
     this.kind = kind;
     this.code = CODE[kind];
   }
@@ -103,7 +109,6 @@ const getBigInt64 = DataView.prototype.getBigInt64;
 const setFloat64 = DataView.prototype.setFloat64;
 const setBigInt64 = DataView.prototype.setBigInt64;
 const byteSet = Uint8Array.prototype.set;
-const typedSubarray = Uint8Array.prototype.subarray;
 const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
 const byteLength = ownDescriptor(typedArrayPrototype, "byteLength")!.get!;
 const byteOffset = ownDescriptor(typedArrayPrototype, "byteOffset")!.get!;
@@ -396,9 +401,10 @@ class ValueWriter {
 
   finish(): Uint8Array {
     const result = new NativeUint8Array(this.length);
-    apply(byteSet, result, [
-      apply(typedSubarray, this.storage, [0, this.length]),
-    ]);
+    // subarray consults mutable constructor/@@species even when captured.
+    // Copy private indexed bytes without invoking a caller-controlled hook.
+    for (let index = 0; index < this.length; index++)
+      result[index] = this.storage[index];
     return result;
   }
 
