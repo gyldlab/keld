@@ -20,7 +20,8 @@ Save, dirty-close Discard, Cleanup and Fresh relaunch. Desktop pin:
 Non-goals: isolated preload secrets; preload-only authority; Strict containment;
 release publisher authentication; remote or non-entry documents; extra windows for
 VSDX/import/export; automatic route-D classification/attestation; new manifest keys,
-window selector, parser, codec, ledger, transport, or parallel Host writer.
+window selector, parser, endpoint-value codec, ledger, transport, or parallel Host writer.
+A closed Windows Host-message carrier serializer is explicitly new wire work in §4.
 
 ## 2. Spec refs
 
@@ -152,11 +153,37 @@ registration completion before navigating, and run its top-frame guard before an
 source. First-inline presence is required; IPC remains not-ready until native binding.
 Use existing v2 bind/send/consumed and original runtime registration shapes through the
 sole `wv_link` decoders. Never forward a raw string to Bun without native admission.
-Host outcome serialization remains in the same Wv codec owner: finite tagged messages
-for bound, event, send-result, route-state and existing registration/call/control outcomes;
-reuse current fields and value codecs rather than serializing executable JavaScript.
-The Windows carrier's golden byte/shape tests are a wire review gate; KIPC ids/frames stay
-unchanged. Unsupported tags/fields and over-bound payloads refuse before allocation/effect.
+Current source has no shared closed outbound serializer: `macos_bridge.rs::deliver_event`
+and `deliver_app_other` build `serde_json` objects inline and embed them in private-world
+function calls; `RendererBridgeOutcome` is a Rust enum, not a wire codec. The new Windows
+carrier therefore needs one proposed `HostRendererMessage` serializer in the existing
+`wv_link` owner and its strict TS counterpart in the existing runtime. This is new carrier
+encoding, not an already implemented contract or a second endpoint-value codec/parser.
+Its closed JSON union is below; every message has `v:2`, `kind` and `document` (the exact
+32-lowercase-hex current epoch), plus only the listed fields. No null/extra fields:
+
+| kind | Additional fields / existing semantic owner |
+|---|---|
+| bound | `ready:boolean`; existing native current binding and route state |
+| event | `delivery:nonzero-u32`, `channel:string`, `payload:u8[]`; existing GH540 event/endpoint bytes |
+| send-result | `message:nonzero-u32`, `disposition:WvTerminalDisposition`; existing serialized closed disposition |
+| route-state | `ready:boolean`; existing RendererRoleWitness stays Host-only |
+| app-registered | none; existing native registration acknowledgement |
+| app-refused | `call:nonzero-u32`; existing failed local-call admission |
+| app-call | `call:nonzero-u32`, `method`, `args`; existing AppPageCall method/Local grammar and bounds |
+| reply | `request:nonzero-u32`, `ok:true`, `payload:u8[]`; existing numeric bridge reply |
+| reply | `request:nonzero-u32`, `ok:false`, `code:string`, `detail:string`; existing sanitized numeric error |
+
+Data remains opaque endpoint bytes; Local values reuse AppPageCall, not another value
+encoding. Native-only Preflight, EventReleased and ControlCapacity are never serialized:
+they select/retire the existing operation; successful preflight may subsequently produce
+app-call. `app-call` retains MAX_APP_WV_LINK_ENVELOPE_LEN; event/value reply retains
+MAX_WV_LINK_ENVELOPE_LEN and MAX_RENDERER_PAYLOAD_LEN; the other control variants retain
+4,096 encoded bytes. Charge encoding/UTF-16 storage through the existing reserved bucket
+before allocation. Golden bytes plus missing/extra/null/duplicate/oversize cases bind both
+sides. Numeric invokes remain only the already declared Echo channel1. KIPC ids/frames
+and all existing page→Host decoder shapes stay unchanged. These new outward tags cannot
+be admitted as inbound commands by selecting an arbitrary decoder or role.
 
 Tokenless bind carries no authority. It can cause at most one initial bound post; one
 additional bound post at native DOMContentLoaded is allowed if no current registration
@@ -164,9 +191,13 @@ receipt arrived. Both target the current qualified document, carry its existing 
 and consume the existing CONTROL reservation; neither remints identity nor replenishes
 budget. Existing `{document, methods}` registration acts as the bounded startup receipt;
 only the exact current nonce and existing four-method shape settle startup. Duplicate,
-stale or malformed registration does not settle it. The existing five-second startup
-bound begins at qualification and ends at receipt, not PostWebMessageAsString S_OK;
-absence closes admission through typed failure. This is availability accounting, not
+stale or malformed registration does not settle it. A **new proposed Windows-only five-second
+startup receipt bound**, owned by this adapter, begins at the successful native
+qualification transition and ends at receipt, not PostWebMessageAsString S_OK. It is
+absolute and never extended by duplicate bind/registration. Current Mac source's
+`retirement_deadline`/`retirement_drained` five seconds instead bound retirement
+quiescence; those are not a startup timer and remain unchanged. Absence of the Windows
+receipt closes admission through typed failure. This is availability accounting, not
 proof that trusted preload executed. Preload integrity is the separate source atom.
 
 All Host→page control/data uses PostWebMessageAsString, never ExecuteScript/CDP eval.
@@ -175,7 +206,33 @@ state immediately before post. Reuse GH540's separate native and consumer releas
 S_OK proves native API acceptance only, not delivery/consumption. Page `consumed` is
 untrusted and cannot release another key, exceed a charged record or authorize effects.
 Hold during pending top-level navigation; cancel-without-commit can release to A;
-commit/failure/retirement discards A work. The adapter remains independent of W3's
+commit/failure/retirement discards A work.
+
+The native posting cut is one synchronous UI-owner turn: prepare/encode/reserve first;
+observe all native getters first; then revalidate the retained native owner, source,
+epoch and role under the canonical retirement fence; set the charged operation to
+Posting; immediately invoke PostWebMessageAsString on that retained view. Between final
+validation and API entry there is no other COM call, user callback, wait, await, nested
+message pump or modal dialog. Native navigation callbacks mark Pending/revoke before
+any callback-producing native operation. Host navigation is scheduled after this turn
+and cannot run inline inside a post. Release Rust interior borrows before the COM call;
+a posting sentinel prevents recursively initiating another post or navigation.
+
+The intended native linearization is acceptance of this API call, followed by the
+platform's asynchronous navigation-discard behavior. Microsoft documents same-STA,
+serial non-reentrant WebView2 callbacks and forbids nested message-loop reentrancy:
+[threading model](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/threading-model).
+That is not a general proof of every COM implementation. If a navigation/commit callback
+actually re-enters inside the native post, revoke immediately, retain the in-flight
+charge, report outcome-unknown and fail this qualification cell; merely checking again
+after S_OK cannot undo a leaked payload. Mandatory native controls order A-post and
+B-navigation on both sides of API entry, record callback nesting, and count B's raw
+messages. A synthetic callback seam separately forces reentry before API entry and must
+suppress the call. No claim that an atomic boolean, STA label or post-return check alone
+prevents A→B disclosure is accepted. Unexpected in-call reentry or B receiving A bytes
+blocks this adapter pending a supported native targeting/ordering correction.
+
+The adapter remains independent of W3's
 single pending app-evaluation slot, allowing a posted event to settle that Promise.
 
 W1's eventual implementation writer owns the shared Core CompatLedger/primary writer
