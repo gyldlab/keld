@@ -24,10 +24,10 @@ use sha2::{Digest as _, Sha256};
 use crate::WebviewId;
 use crate::error::WvError;
 use crate::original_call::{LocalCallBudget, original_call_channel};
+use crate::original_event::PendingOriginalEvent;
 use crate::wv_link::{AppPageCall, AppWvLinkEnvelope, decode_app_wv_link};
 use crate::wv_link::{
-    WvConsumerDisposition, WvLinkEnvelope, WvLinkMode, WvLinkRejectReason, decode_wv_link,
-    decode_wv_link_for_mode,
+    WvLinkEnvelope, WvLinkMode, WvLinkRejectReason, decode_wv_link, decode_wv_link_for_mode,
 };
 
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -1070,15 +1070,10 @@ impl MacRendererBridge {
             .clone()
             .ok_or_else(|| bridge_error("addressed event has no current app binding"))?;
         let json=serde_json::to_string(&serde_json::json!({"v":2,"kind":"event","document":token,"delivery":request,"channel":channel,"payload":payload})).map_err(|_|bridge_error("addressed event serialization failed"))?;
-        state.pending_event = Some(PendingAppEvent {
-            id: request,
-            lease: lease.clone(),
-            credential: token,
-            disposition: None,
-            consumed_sent: false,
-            quiesced: None,
-            quiesced_sent: false,
-        });
+        let event =
+            PendingOriginalEvent::begin(&state.document.borrow(), request, lease.clone(), token)
+                .map_err(bridge_error)?;
+        state.pending_event = Some(event);
         drop(state);
         evaluate_owned(
             webview,
@@ -1811,7 +1806,7 @@ struct AppNativeState {
     local_calls: VecDeque<QueuedLocalCall>,
     local_budget: LocalCallBudget,
     pending_send: Option<PendingAppSend>,
-    pending_event: Option<PendingAppEvent>,
+    pending_event: Option<PendingOriginalEvent>,
     evaluations: usize,
     retiring_at: Option<std::time::Instant>,
     control_fault: bool,
@@ -2240,19 +2235,12 @@ fn handle_compat_envelope(
             let mut state = app.borrow_mut();
             // Terminal cleanup authenticates against the retained ORIGINAL event
             // record even after logical revocation; it grants no new delivery.
-            let event = state
+            state
                 .pending_event
                 .as_mut()
-                .filter(|event| {
-                    event.id == delivery.get()
-                        && event.credential == document
-                        && !event.consumed_sent
-                        && event.disposition.is_none()
-                })
-                .ok_or_else(|| {
-                    bridge_error("stale, unsolicited or duplicate consumer completion")
-                })?;
-            event.disposition = Some(disposition);
+                .ok_or_else(|| bridge_error("stale, unsolicited or duplicate consumer completion"))?
+                .observe_consumed(delivery.get(), &document, disposition)
+                .map_err(bridge_error)?;
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
             {
                 state.fixture.consumed_receipts += 1;
@@ -2581,15 +2569,6 @@ struct PendingAppSend {
     id: u32,
     lease: super::MacNativeDocumentLease,
 }
-struct PendingAppEvent {
-    id: u32,
-    lease: super::MacNativeDocumentLease,
-    credential: String,
-    disposition: Option<WvConsumerDisposition>,
-    consumed_sent: bool,
-    quiesced: Option<bool>,
-    quiesced_sent: bool,
-}
 #[derive(Clone)]
 enum EvaluationPurpose {
     Control,
@@ -2631,18 +2610,15 @@ fn request_for_lease(
 
 impl AppNativeState {
     fn release_event(&mut self, navigation: u64, request: u32) -> Result<(), WvError> {
-        let Some(event) = self.pending_event.as_ref().filter(|event| {
-            event.id == request
-                && u64::from(event.lease.stamp().observed_generation()) == navigation
-        }) else {
+        let Some(event) = self.pending_event.as_ref() else {
             return Ok(());
         };
-        if event.quiesced.is_none() || !event.quiesced_sent {
-            return Err(bridge_error(
-                "Core attempted event release before actual WK quiescence",
-            ));
+        if event
+            .can_release(navigation, request)
+            .map_err(bridge_error)?
+        {
+            self.pending_event = None;
         }
-        self.pending_event = None;
         Ok(())
     }
     fn original_current(&self, lease: &super::MacNativeDocumentLease, credential: &str) -> bool {
@@ -2944,35 +2920,35 @@ impl AppNativeState {
     fn flush_controls(&mut self) {
         self.reconcile_queued_originals();
         if let Some(event) = self.pending_event.as_ref()
-            && !event.consumed_sent
-            && let Some(disposition) = event.disposition.clone()
+            && let Some(disposition) = event.pending_consumed().cloned()
         {
             let request = request_for_lease(
-                event.lease.clone(),
-                event.id,
+                event.lease().clone(),
+                event.id(),
                 RendererBridgeOperation::Consumed { disposition },
                 Vec::new(),
             );
             if self.enqueue_control(request)
                 && let Some(event) = self.pending_event.as_mut()
+                && event.consumed_handed_off().is_err()
             {
-                event.consumed_sent = true;
+                self.control_fault = true;
             }
         }
         if let Some(event) = self.pending_event.as_ref()
-            && !event.quiesced_sent
-            && let Some(completed) = event.quiesced
+            && let Some(completed) = event.pending_quiescence()
         {
             let request = request_for_lease(
-                event.lease.clone(),
-                event.id,
+                event.lease().clone(),
+                event.id(),
                 RendererBridgeOperation::EventQuiesced { completed },
                 Vec::new(),
             );
             if self.enqueue_control(request)
                 && let Some(event) = self.pending_event.as_mut()
+                && event.quiescence_handed_off().is_err()
             {
-                event.quiesced_sent = true;
+                self.control_fault = true;
             }
         }
         if let Some(call) = self.active_call.as_ref()
@@ -3035,9 +3011,10 @@ impl AppNativeState {
         }
     }
     fn evaluations_drained(&self) -> bool {
-        let controls = self.pending_event.as_ref().is_none_or(|event| {
-            event.quiesced_sent && (event.consumed_sent || !event.lease.is_current())
-        });
+        let controls = self
+            .pending_event
+            .as_ref()
+            .is_none_or(PendingOriginalEvent::retirement_controls_quiesced);
         self.evaluations == 0
             && self.pending_call.is_none()
             && self.active_call.is_none()
@@ -3250,12 +3227,8 @@ fn complete_evaluation(app: &SharedAppState, receipt: NativeEvaluationReceipt) {
             }
         }
         EvaluationPurpose::Event { id, lease } => {
-            if let Some(event) = state
-                .pending_event
-                .as_mut()
-                .filter(|event| event.id == id && event.lease.same_binding(&lease))
-            {
-                event.quiesced = Some(receipt.completed);
+            if let Some(event) = state.pending_event.as_mut() {
+                event.observe_native_quiescence(id, &lease, receipt.completed);
             }
         }
     }
@@ -3455,7 +3428,7 @@ impl MacRendererBridge {
             "pending_call":state.pending_call.as_ref().map(|call|serde_json::json!({"id":call.queued.invocation.id,"lease_current":call.queued.invocation.lease.is_current(),"locals_before":call.locals_before,"admission":format!("{:?}",call.admission)})),
             "active_call":state.active_call.as_ref().map(|call|serde_json::json!({"id":call.id,"lease_current":call.lease.is_current(),"function_finished":call.function_finished,"evaluation_finished":call.evaluation_finished,"send_forwarded":call.send_forwarded})),
             "pending_send":state.pending_send.as_ref().map(|send|serde_json::json!({"id":send.id,"lease_current":send.lease.is_current()})),
-            "pending_event":state.pending_event.as_ref().map(|event|serde_json::json!({"id":event.id,"lease_current":event.lease.is_current(),"consumed_sent":event.consumed_sent,"quiesced":event.quiesced,"quiesced_sent":event.quiesced_sent}))
+            "pending_event":state.pending_event.as_ref().map(|event|serde_json::json!({"id":event.id(),"lease_current":event.lease().is_current(),"consumed_sent":event.consumed_sent(),"quiesced":event.native_quiescence(),"quiesced_sent":event.quiescence_sent()}))
         })
     }
     pub(super) fn fixture_throw_control(&self, view: &WKWebView) -> Result<(), WvError> {
