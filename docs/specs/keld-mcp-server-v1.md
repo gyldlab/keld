@@ -16,8 +16,17 @@ negotiate that revision through `initialize`. Legacy `initialize` requests,
 including ones requesting 2026-07-28, negotiate 2025-11-25. The integration corpus
 tests both paths and rejects missing required modern metadata.
 
-Keld still calls `serve(stdio())` and enables only rmcp's server, macros and
-transport-io features. In the [pinned SDK](https://github.com/modelcontextprotocol/rust-sdk/blob/5596a8a0bba2a1ec5519cc855cdadf23e4dcecdc/crates/rmcp/Cargo.toml),
+Keld retains rmcp's stdio transport and `serve` lifecycle, with a typed transport
+observer for discovery-only EOF. After a matching `DiscoverResult` has been sent
+successfully and stdin reaches actual EOF, the SDK's bootstrap
+`ConnectionClosed` becomes a normal CLI exit. Input and send faults, rejected
+bootstrap requests and other SDK errors remain failures. Framing, JSON, metadata
+validation and malformed-input recovery stay owned by rmcp. Its transport drops
+an unterminated final frame, so discovery without a final newline cannot establish
+successful discovery. The integration corpus closes stdin immediately after the
+discovery reply, without an additional request.
+
+Keld enables only rmcp's server, macros and transport-io features. In the [pinned SDK](https://github.com/modelcontextprotocol/rust-sdk/blob/5596a8a0bba2a1ec5519cc855cdadf23e4dcecdc/crates/rmcp/Cargo.toml),
 transport-io transitively enables `tokio/net` for optional pipe support. This does
 not add an HTTP/auth transport or a network listener to Keld's stdio server.
 The original statement that the resolved Tokio features contain only `rt` and
