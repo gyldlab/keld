@@ -1,6 +1,11 @@
 //! Shared Core/native renderer endpoint data and bounded channel ownership.
 //! Native platform adapters construct admitted requests; pages cannot mint them.
 
+#[cfg(windows)]
+mod control;
+#[cfg(windows)]
+pub use control::{NativeControlCharge, NativeControlReservation, RendererControlOwner};
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
@@ -42,17 +47,96 @@ pub enum RendererBridgeOperation {
     },
 }
 
+/// The canonical Core generation owner supplies the final native admission cut.
+/// Implementations must acquire shutdown -> current role/link, validate the exact
+/// authenticated caller, then invoke `admit` at most once while that fence is held.
+/// The callback may only validate and commit local native admission state: no
+/// allocation, COM, application callback, wait or I/O is permitted inside it.
+///
+/// Returning true fixes the operation to its already retained original target and
+/// charge. Retirement ordered afterward may revoke future admission, but cannot
+/// redirect this accepted operation to a successor or release it before completion.
+pub trait RendererRoleFence: Send + Sync {
+    /// Attempt an irreversible local admission under the existing Core owner.
+    /// False means the callback was not accepted; it conveys no delivery receipt.
+    fn try_admit_native(&self, admit: &mut dyn FnMut() -> bool) -> bool;
+}
+
 /// Native-only observation of the existing authenticated role's stop witness.
 /// This retains the Core-owned identity; it mints no principal or wire token.
-#[derive(Clone, Debug)]
+/// Windows native publication additionally requires its canonical Core fence.
+#[derive(Clone)]
 pub struct RendererRoleWitness {
     stopped: Arc<AtomicBool>,
+    fence: Option<Arc<dyn RendererRoleFence>>,
+    #[cfg(windows)]
+    controls: Option<Arc<dyn RendererControlOwner>>,
+}
+impl std::fmt::Debug for RendererRoleWitness {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RendererRoleWitness")
+            .field("stopped", &self.stopped)
+            .field("has_canonical_fence", &self.fence.is_some())
+            .finish()
+    }
 }
 impl RendererRoleWitness {
     /// Capture the actual primary caller's existing stop flag, never page data.
+    /// This preserves the existing macOS observation API. It does not qualify a
+    /// Windows native publication: `try_admit_native` refuses without a fence.
     #[must_use]
     pub const fn new(stopped: Arc<AtomicBool>) -> Self {
-        Self { stopped }
+        Self {
+            stopped,
+            fence: None,
+            #[cfg(windows)]
+            controls: None,
+        }
+    }
+    /// Retain the same actual caller together with its canonical Core owner.
+    /// The fence must validate this exact stop allocation, identity and attempt;
+    /// an independently copied Boolean is not an implementation of that contract.
+    #[must_use]
+    pub fn with_fence(stopped: Arc<AtomicBool>, fence: Arc<dyn RendererRoleFence>) -> Self {
+        Self {
+            stopped,
+            fence: Some(fence),
+            #[cfg(windows)]
+            controls: None,
+        }
+    }
+    /// Attach the same Core session's existing four CONTROL reservations.
+    /// This is storage accounting only; final native publication still requires
+    /// the canonical role fence and an independently checked native document.
+    #[cfg(windows)]
+    #[must_use]
+    pub fn with_controls(mut self, owner: Arc<dyn RendererControlOwner>) -> Self {
+        self.controls = Some(owner);
+        self
+    }
+    /// Reserve exact native CONTROL storage before JSON/UTF-16 allocation.
+    /// `accounted_bytes` includes all simultaneous representations and the
+    /// existing 1024-byte record charge. No capacity is replenished by restart.
+    #[cfg(windows)]
+    #[must_use]
+    pub fn try_reserve_native_control(
+        &self,
+        encoded_bytes: usize,
+        accounted_bytes: usize,
+    ) -> Option<NativeControlReservation> {
+        self.controls
+            .as_ref()?
+            .try_reserve_native_control(encoded_bytes, accounted_bytes)
+    }
+    /// Commit only local native admission under Core's actual retirement fence.
+    /// Call the native API on the retained original target only after this method
+    /// returns true and every Core/native interior guard has been released.
+    #[must_use]
+    pub fn try_admit_native(&self, admit: &mut dyn FnMut() -> bool) -> bool {
+        self.fence
+            .as_ref()
+            .is_some_and(|fence| fence.try_admit_native(admit))
     }
     /// Whether the captured role has not been retired by its owner.
     #[must_use]
@@ -68,6 +152,78 @@ impl RendererRoleWitness {
     #[must_use]
     pub fn same_role(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.stopped, &other.stopped)
+    }
+}
+
+/// The canonical Core owner of one fixed route-unavailable control.
+/// This is separate from a live role fence: retirement may already have stopped
+/// that role. Implementations retain the exact old Registry owner and document,
+/// acquire shutdown -> current -> Registry, and refuse if the Entry has been
+/// adopted by a successor. The callback has the same local-only restrictions as
+/// [`RendererRoleFence::try_admit_native`]. No other message may use this fence.
+#[cfg(windows)]
+pub trait RendererRouteRetirementFence: Send + Sync {
+    /// Reserve only this fixed ready:false operation's storage using the same
+    /// captured Registry owner, including when its live caller has stopped.
+    fn try_reserve_route_unavailable(
+        &self,
+        document: &crate::renderer_contract::CheckedNativeDocumentLease,
+        encoded_bytes: usize,
+        accounted_bytes: usize,
+    ) -> Option<NativeControlReservation>;
+
+    /// Admit only ready:false for the captured original native document.
+    fn try_admit_route_unavailable(
+        &self,
+        document: &crate::renderer_contract::CheckedNativeDocumentLease,
+        admit: &mut dyn FnMut() -> bool,
+    ) -> bool;
+}
+
+/// Opaque custody of the already ordered retirement of one registered route.
+/// Only the canonical Core Registry owner supplies this operation permit. It
+/// cannot authorize ready:true, data, replies, or settlement of another record.
+#[cfg(windows)]
+#[derive(Clone)]
+pub struct RouteRetirementPermit {
+    fence: Arc<dyn RendererRouteRetirementFence>,
+}
+#[cfg(windows)]
+impl std::fmt::Debug for RouteRetirementPermit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RouteRetirementPermit")
+            .finish_non_exhaustive()
+    }
+}
+#[cfg(windows)]
+impl RouteRetirementPermit {
+    /// Retain the actual Core retirement owner, never an atomic observation.
+    #[must_use]
+    pub fn from_owner(fence: Arc<dyn RendererRouteRetirementFence>) -> Self {
+        Self { fence }
+    }
+    /// Charge only the captured ready:false operation before encoding. This
+    /// capacity lease cannot substitute for the final retirement admission.
+    #[must_use]
+    pub fn try_reserve_route_unavailable(
+        &self,
+        document: &crate::renderer_contract::CheckedNativeDocumentLease,
+        encoded_bytes: usize,
+        accounted_bytes: usize,
+    ) -> Option<NativeControlReservation> {
+        self.fence
+            .try_reserve_route_unavailable(document, encoded_bytes, accounted_bytes)
+    }
+    /// Admit only the fixed ready:false control, then release every Core guard
+    /// before calling the native API on the already retained original view.
+    #[must_use]
+    pub fn try_admit_route_unavailable(
+        &self,
+        document: &crate::renderer_contract::CheckedNativeDocumentLease,
+        admit: &mut dyn FnMut() -> bool,
+    ) -> bool {
+        self.fence.try_admit_route_unavailable(document, admit)
     }
 }
 
@@ -182,6 +338,9 @@ pub enum RendererBridgeOutcome {
         request: u32,
         /// Exact canonical terminal result after actual transport release.
         disposition: crate::wv_link::WvTerminalDisposition,
+        /// The same Core CONTROL slot, retained through actual native completion.
+        #[cfg(windows)]
+        control: Option<NativeControlReservation>,
     },
     /// Core completed the actual canonical event-release receipt.
     EventReleased {
@@ -215,6 +374,13 @@ pub enum RendererBridgeOutcome {
         ready: bool,
         /// The existing authenticated role owner; never exposed to JavaScript.
         role: RendererRoleWitness,
+        /// Only ready:false may use the captured original Registry retirement.
+        /// A live-role fence remains mandatory for ready:true and all data.
+        #[cfg(windows)]
+        retirement: Option<RouteRetirementPermit>,
+        /// Existing session CONTROL storage; never a second native reservation.
+        #[cfg(windows)]
+        control: Option<NativeControlReservation>,
     },
     /// Successful application reply for one renderer-local request.
     Reply {
@@ -239,6 +405,9 @@ pub enum RendererBridgeOutcome {
         code: String,
         /// Sanitized detail with no endpoint/token/authority material.
         detail: String,
+        /// Reserved before retaining this terminal outcome and its native copies.
+        #[cfg(windows)]
+        control: Option<NativeControlReservation>,
     },
 }
 
