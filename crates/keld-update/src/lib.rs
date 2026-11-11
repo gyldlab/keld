@@ -88,7 +88,13 @@ pub use windows_baseline::{
     select_windows_active_package,
 };
 #[cfg(windows)]
-pub use windows_extraction::{CompletedWindowsStage, ExtractedWindowsStage, WindowsExtractionRoot};
+pub use windows_extraction::{
+    CompletedWindowsStage, ExtractedWindowsStage, WindowsExtractionRoot, WindowsGraphChildKind,
+    WindowsGraphMetadata, graph_locator_metadata, open_retained_graph_child,
+    retained_graph_metadata,
+};
+#[cfg(windows)]
+pub use windows_fs::strict_graph_directory_names;
 
 /// Release channels supported by update feeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

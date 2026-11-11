@@ -1,22 +1,24 @@
-//! Installed-only boot-6 selection. Decoding data grants no resource authority.
-//! The current-process bundle and retained graph owners perform admission.
+//! Closed selected-graph boot data. Decoding grants no resource authority.
+//! Platform origin, lease, manifest and retained graph owners perform admission.
 
 use serde::{Deserialize, Deserializer};
 
 use super::{
     AuthConfiguration, HostAppError, InitialWindow, PERMISSIONS_FILE, ParsedBoot,
-    PermissionsDocument, boot_error, decode_digest, deserialize_object, parse_development_shape,
-    probe_boot_bytes, validate_relative_path,
+    PermissionsDocument, boot_error, decode_digest, deserialize_object, validate_relative_path,
 };
-use crate::app_session::graph_contract::GRAPH_FILE;
+use crate::app_session::graph_document::GRAPH_FILE;
 use crate::app_session::graph_selection::SelectedRendererSource;
 use crate::hello::SingleInstanceDeclaration;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct InstalledDocument {
+struct SelectedGraphDocument {
     schema: u8,
     name: String,
+    #[cfg(windows)]
+    #[serde(default, deserialize_with = "deserialize_optional_version")]
+    version: Option<String>,
     entry: String,
     #[serde(deserialize_with = "deserialize_object")]
     permissions: PermissionsDocument,
@@ -38,6 +40,16 @@ struct InstalledDocument {
         deserialize_with = "deserialize_optional_application_name_for_user_agent"
     )]
     application_name_for_user_agent: Option<keld_wv::ApplicationNameForUserAgent>,
+}
+
+#[cfg(windows)]
+fn deserialize_optional_version<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    // A declared value cannot disappear. Windows runtime version consumption
+    // remains unavailable, so every present string is refused below.
+    String::deserialize(deserializer).map(Some)
 }
 
 fn deserialize_optional_single_instance<'de, D>(
@@ -80,36 +92,56 @@ struct PreloadDocument {
 /// Closed, syntax-checked selection; only the retained graph validator mints
 /// access to its selected resource tree or preload bytes.
 #[derive(Debug)]
-pub(in crate::app_session) struct InstalledGraphBoot {
+pub(in crate::app_session) struct SelectedGraphBoot {
     pub(in crate::app_session) graph_sha256: [u8; 32],
     pub(in crate::app_session) source: SelectedRendererSource,
+    #[cfg(target_os = "macos")]
     pub(in crate::app_session) single_instance: Option<SingleInstanceDeclaration>,
+    #[cfg(target_os = "macos")]
     pub(in crate::app_session) application_name_for_user_agent:
         Option<keld_wv::ApplicationNameForUserAgent>,
 }
 
+#[cfg(target_os = "macos")]
 pub(in crate::app_session) fn parse_installed_boot_bytes(
     bytes: &[u8],
 ) -> Result<ParsedBoot, HostAppError> {
-    let (text, probe) = probe_boot_bytes(bytes)?;
+    let (text, probe) = super::probe_boot_bytes(bytes)?;
     if probe.schema != 6 {
-        return parse_development_shape(text, probe);
+        return super::parse_development_shape(text, probe);
     }
-    let document: InstalledDocument = serde_json::from_str(text).map_err(|error| {
+    parse_selected_graph_shape(text, 6)
+}
+
+pub(super) fn parse_selected_graph_shape(
+    text: &str,
+    expected_schema: u8,
+) -> Result<ParsedBoot, HostAppError> {
+    let document: SelectedGraphDocument = serde_json::from_str(text).map_err(|error| {
         boot_error(
-            format!("closed installed graph boot was rejected: {error}"),
-            "Use the exact installed boot-6 compiler; do not add renderer, auth, profile, duplicate or unknown fields.",
+            format!("closed selected-graph boot was rejected: {error}"),
+            "Use the exact graph boot compiler; do not add renderer, auth, profile, duplicate or unknown fields.",
         )
     })?;
-    if document.schema != 6
+    if document.schema != expected_schema
         || document.name.is_empty()
         || document.name.contains('\0')
         || document.permissions.file != PERMISSIONS_FILE
         || document.graph.file != GRAPH_FILE
     {
         return Err(boot_error(
-            "installed graph boot requires schema 6, a nonempty name and the fixed graph/permissions filenames",
-            "Rebuild the signed application with the supported installed graph compiler.",
+            "selected-graph boot requires its exact schema, a nonempty name and the fixed graph/permissions filenames",
+            "Rebuild the application with the supported graph boot compiler.",
+        ));
+    }
+    #[cfg(windows)]
+    if document.version.is_some()
+        || document.single_instance.is_some()
+        || document.application_name_for_user_agent.is_some()
+    {
+        return Err(boot_error(
+            "selected-graph native runtime metadata is unavailable on Windows",
+            "A declared version, singleInstance or applicationNameForUserAgent requires its qualified Windows runtime owner.",
         ));
     }
     let source = SelectedRendererSource::new(
@@ -118,24 +150,30 @@ pub(in crate::app_session) fn parse_installed_boot_bytes(
         &document.preload.path,
         decode_digest(&document.preload.content_sha256)?,
     )?;
-    super::super::graph_contract::validate_graph_relative_path(&document.entry)?;
+    super::super::validate_graph_relative_path(&document.entry)?;
     Ok(ParsedBoot {
-        schema: 6,
+        schema: expected_schema,
         name: document.name,
         entry: validate_relative_path("entry", &document.entry)?,
         initial: InitialWindow::None,
         permissions_digest: decode_digest(&document.permissions.content_sha256)?,
         auth_configuration: AuthConfiguration::default(),
-        installed_graph: Some(InstalledGraphBoot {
+        #[cfg(target_os = "macos")]
+        installed_graph: Some(SelectedGraphBoot {
             graph_sha256: decode_digest(&document.graph.content_sha256)?,
             source,
             single_instance: document.single_instance,
             application_name_for_user_agent: document.application_name_for_user_agent,
         }),
+        #[cfg(windows)]
+        development_graph: Some(SelectedGraphBoot {
+            graph_sha256: decode_digest(&document.graph.content_sha256)?,
+            source,
+        }),
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::parse_installed_boot_bytes;
     use crate::app_session::boot_contract::{InitialWindow, parse_boot_bytes};

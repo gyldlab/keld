@@ -1,4 +1,4 @@
-//! GH499's macOS first-proof data-only graph admission.
+//! The shared GH499 data-only graph admission with retained platform adapters.
 //!
 //! The graph never evaluates source, runs a package manager, or creates a grant.
 //! The caller supplies independently selected GH502 package receipts before
@@ -7,58 +7,80 @@
 //! A developer's self-consistent graph is not publisher authentication.
 
 use std::collections::BTreeSet;
-use std::fs::{self, File};
+#[cfg(target_os = "macos")]
+use std::fs;
+use std::fs::File;
 use std::io::Read as _;
+#[cfg(target_os = "macos")]
 use std::os::fd::AsFd as _;
-use std::os::fd::OwnedFd;
+#[cfg(target_os = "macos")]
+use std::os::fd::OwnedFd as RetainedRoot;
+#[cfg(target_os = "macos")]
 use std::os::unix::fs::MetadataExt as _;
-use std::path::{Component, Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::path::Component;
+use std::path::{Path, PathBuf};
 
+use super::graph_document::{
+    GRAPH_FILE, GRAPH_SCHEMA, GraphDocument, GraphFile, MAX_ENTRIES, MAX_FILES, MAX_GRAPH_BYTES,
+    MAX_SELECTED_PRELOAD_BYTES, excluded, parse_sha, validate_graph_files, validate_graph_shape,
+    verify_selected_rows,
+};
+#[cfg(target_os = "macos")]
 pub(super) use super::graph_selection::validate_graph_relative_path;
 use super::graph_selection::{
     MAX_COMPONENTS, MAX_PATH_BYTES, SelectedRendererSource, relative_path,
 };
 
-use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::{HostAppError, open_relative_file, read_bounded, target_error};
+#[cfg(target_os = "macos")]
+use super::open_relative_file;
+use super::{HostAppError, read_bounded, target_error};
+#[cfg(target_os = "macos")]
+type ObjectMetadata = std::fs::Metadata;
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows::{
+    ObjectMetadata, RetainedRoot, borrow_retained_root, census_directory, file_metadata,
+    missing_configuration_reference, open_relative_file, path_metadata, root_identity,
+    same_identity, sorted_census_children,
+};
 
-/// Fixed graph leaf selected by the installed boot descriptor.
-pub const GRAPH_FILE: &str = "keld.stage-graph.json";
-/// Maximum admitted serialized graph length.
-pub const MAX_GRAPH_BYTES: usize = 8 * 1024 * 1024;
+#[cfg(target_os = "macos")]
+fn file_metadata(file: &File) -> std::io::Result<ObjectMetadata> {
+    file.metadata()
+}
+#[cfg(target_os = "macos")]
+fn path_metadata(path: impl AsRef<Path>) -> std::io::Result<ObjectMetadata> {
+    fs::symlink_metadata(path)
+}
+fn clone_root(root: &RetainedRoot) -> Result<RetainedRoot, HostAppError> {
+    #[cfg(target_os = "macos")]
+    {
+        root.as_fd()
+            .try_clone_to_owned()
+            .map_err(|source| graph_error("retained root clone", source))
+    }
+    #[cfg(windows)]
+    {
+        root.try_clone()
+            .map_err(|source| graph_error("retained root clone", source))
+    }
+}
+
 const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
-const MAX_FILES: usize = 32_768;
-const MAX_ENTRIES: usize = 65_536;
 const BUFFER_BYTES: usize = 64 * 1024;
 
 #[cfg(test)]
 mod installed_tests;
-const MAX_SELECTED_PRELOAD_BYTES: usize = 512 * 1024;
-const GRAPH_SCHEMA: &str = "keld.stage.graph/v1";
 
 const PACKAGES: [(&str, &str); 3] = [
     ("node_modules/electron", "@keld/electron"),
     ("node_modules/@keld/api", "@keld/api"),
     ("node_modules/@keld/kipc", "@keld/kipc"),
 ];
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct GraphDocument {
-    schema: String,
-    entry: String,
-    files: Vec<GraphFile>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct GraphFile {
-    path: String,
-    size: u64,
-    sha256: String,
-}
 
 /// Independently pinned input to the explicit GH589 first-proof staging caller.
 /// Its values must be obtained from reviewed source/lock and the actual
@@ -75,7 +97,7 @@ pub struct ApprovedGraphCaptureInput {
     pub expected_package_trees: [[u8; 32]; 3],
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod selected_source_tests {
     use super::*;
 
@@ -201,10 +223,7 @@ mod selected_source_tests {
         let identity = root_identity(&root, &live).expect("original identity");
         fs::rename(&root, &moved).expect("move old root while handle is live");
         fs::create_dir(&root).expect("counterfeit same path");
-        assert_ne!(
-            fs::symlink_metadata(&root).expect("replacement").ino(),
-            identity.1
-        );
+        assert_ne!(path_metadata(&root).expect("replacement").ino(), identity.1);
         assert!(borrow_retained_root(&root, &retained).is_err());
         assert!(root_identity(&root, &live).is_err());
     }
@@ -269,7 +288,7 @@ mod selected_source_tests {
 #[derive(Debug)]
 pub struct AdmittedStageGraph {
     root: PathBuf,
-    retained_root: OwnedFd,
+    retained_root: RetainedRoot,
     graph_bytes: Vec<u8>,
     graph_sha256: [u8; 32],
     graph: GraphDocument,
@@ -278,7 +297,7 @@ pub struct AdmittedStageGraph {
     selected_source: Option<SelectedRendererSource>,
     /// A byte-identical replacement of either selected leaf must fail while
     /// this admitted graph lives; full copied-tree identity belongs to Pack.
-    selected_file_identities: Option<(fs::Metadata, fs::Metadata)>,
+    selected_file_identities: Option<(ObjectMetadata, ObjectMetadata)>,
 }
 
 fn graph_error(phase: &'static str, detail: impl std::fmt::Display) -> HostAppError {
@@ -300,42 +319,13 @@ fn sha_text(digest: &[u8; 32]) -> String {
     result
 }
 
-fn parse_sha(value: &str) -> Result<[u8; 32], HostAppError> {
-    let hex = value
-        .strip_prefix("sha256:")
-        .ok_or_else(|| graph_error("digest", "missing sha256: prefix"))?;
-    if hex.len() != 64
-        || !hex
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return Err(graph_error(
-            "digest",
-            "expected 64 lowercase hexadecimal digits",
-        ));
-    }
-    let mut result = [0_u8; 32];
-    for (index, pair) in hex.as_bytes().as_chunks::<2>().0.iter().enumerate() {
-        let text = std::str::from_utf8(pair).map_err(|source| graph_error("digest", source))?;
-        result[index] =
-            u8::from_str_radix(text, 16).map_err(|source| graph_error("digest", source))?;
-    }
-    Ok(result)
-}
-
-fn excluded(relative: &str) -> bool {
-    matches!(
-        relative,
-        "keld-host" | "keld.boot.json" | "keld.permissions.jsonc" | GRAPH_FILE
-    )
-}
-
 struct ObservedFile {
     path: String,
-    metadata: fs::Metadata,
+    metadata: ObjectMetadata,
 }
 
-fn same_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+#[cfg(target_os = "macos")]
+fn same_identity(left: &ObjectMetadata, right: &ObjectMetadata) -> bool {
     left.dev() == right.dev()
         && left.ino() == right.ino()
         && left.mode() == right.mode()
@@ -346,7 +336,8 @@ fn same_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
         && left.ctime_nsec() == right.ctime_nsec()
 }
 
-fn census_directory(root: &OwnedFd, relative: &str) -> Result<File, HostAppError> {
+#[cfg(target_os = "macos")]
+fn census_directory(root: &RetainedRoot, relative: &str) -> Result<File, HostAppError> {
     use nix::fcntl::{OFlag, openat};
     use nix::sys::stat::Mode;
 
@@ -377,13 +368,12 @@ fn census_directory(root: &OwnedFd, relative: &str) -> Result<File, HostAppError
 fn check_census_directory(
     directory: &Path,
     selected: &File,
-    expected: &fs::Metadata,
+    expected: &ObjectMetadata,
 ) -> Result<(), HostAppError> {
-    let from_fd = selected
-        .metadata()
-        .map_err(|source| graph_error("directory census", source))?;
-    let from_path = fs::symlink_metadata(directory)
-        .map_err(|source| graph_error("directory census", source))?;
+    let from_fd =
+        file_metadata(selected).map_err(|source| graph_error("directory census", source))?;
+    let from_path =
+        path_metadata(directory).map_err(|source| graph_error("directory census", source))?;
     if !from_fd.is_dir()
         || !from_path.is_dir()
         || !same_identity(&from_fd, expected)
@@ -397,18 +387,47 @@ fn check_census_directory(
     Ok(())
 }
 
-fn sorted_census_children(directory: &Path) -> Result<Vec<fs::DirEntry>, HostAppError> {
+#[cfg(target_os = "macos")]
+fn sorted_census_children(
+    directory: &Path,
+    _held: &File,
+    remaining: usize,
+) -> Result<Vec<(String, ObjectMetadata)>, HostAppError> {
     let mut children = fs::read_dir(directory)
         .map_err(|source| graph_error("directory census", source))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|source| graph_error("directory census", source))?;
+    if children.len() > remaining {
+        return Err(graph_error("census", "more than 65536 filesystem entries"));
+    }
     children.sort_by_key(fs::DirEntry::file_name);
-    Ok(children)
+    children
+        .into_iter()
+        .map(|child| {
+            let name = child
+                .file_name()
+                .into_string()
+                .map_err(|_| graph_error("path", "non UTF-8 source path"))?;
+            let metadata =
+                path_metadata(child.path()).map_err(|source| graph_error("source type", source))?;
+            if metadata.file_type().is_symlink() {
+                return Err(graph_error("symlink", name));
+            }
+            Ok((name, metadata))
+        })
+        .collect()
 }
 
-fn census(root: &Path, retained: &OwnedFd) -> Result<Vec<ObservedFile>, HostAppError> {
-    let root_meta = census_directory(retained, "")?
-        .metadata()
+fn census(root: &Path, retained: &RetainedRoot) -> Result<Vec<ObservedFile>, HostAppError> {
+    census_subtree(root, retained, None)
+}
+
+fn census_subtree(
+    root: &Path,
+    retained: &RetainedRoot,
+    namespace_prefix: Option<&str>,
+) -> Result<Vec<ObservedFile>, HostAppError> {
+    let root_meta = file_metadata(&census_directory(retained, "")?)
         .map_err(|source| graph_error("directory census", source))?;
     let mut pending = vec![(root.to_owned(), String::new(), root_meta)];
     let mut files = Vec::new();
@@ -417,43 +436,36 @@ fn census(root: &Path, retained: &OwnedFd) -> Result<Vec<ObservedFile>, HostAppE
     while let Some((directory, prefix, expected_dir)) = pending.pop() {
         let held = census_directory(retained, &prefix)?;
         check_census_directory(&directory, &held, &expected_dir)?;
-        let children = sorted_census_children(&directory)?;
-        for child in children {
+        let children = sorted_census_children(&directory, &held, MAX_ENTRIES - entries)?;
+        for (name, metadata) in children {
             entries = entries
                 .checked_add(1)
                 .ok_or_else(|| graph_error("census", "entry overflow"))?;
             if entries > MAX_ENTRIES {
                 return Err(graph_error("census", "more than 65536 filesystem entries"));
             }
-            let name = child
-                .file_name()
-                .into_string()
-                .map_err(|_| graph_error("path", "non UTF-8 source path"))?;
             let relative = if prefix.is_empty() {
                 name
             } else {
                 format!("{prefix}/{name}")
             };
             relative_path(&relative)?;
-            if relative == "keld.config.ts"
-                || relative == ".git"
-                || relative == ".keld"
-                || relative.starts_with(".git/")
-                || relative.starts_with(".keld/")
+            let logical = namespace_prefix
+                .map_or_else(|| relative.clone(), |prefix| format!("{prefix}/{relative}"));
+            relative_path(&logical)?;
+            if logical == "keld.config.ts"
+                || logical == ".git"
+                || logical == ".keld"
+                || logical.starts_with(".git/")
+                || logical.starts_with(".keld/")
             {
                 return Err(graph_error("forbidden input", relative));
             }
-            let metadata = fs::symlink_metadata(child.path())
-                .map_err(|source| graph_error("source type", source))?;
-            let ty = metadata.file_type();
-            if ty.is_symlink() {
-                return Err(graph_error("symlink", relative));
-            }
-            if ty.is_dir() {
+            if metadata.is_dir() {
                 directories.push(relative.clone());
-                pending.push((child.path(), relative, metadata));
-            } else if ty.is_file() {
-                if !excluded(&relative) {
+                pending.push((root.join(&relative), relative, metadata));
+            } else if metadata.is_file() {
+                if !excluded(&logical) {
                     files.push(ObservedFile {
                         path: relative,
                         metadata,
@@ -495,55 +507,6 @@ fn census(root: &Path, retained: &OwnedFd) -> Result<Vec<ObservedFile>, HostAppE
     Ok(files)
 }
 
-fn validate_graph_shape(bytes: &[u8]) -> Result<GraphDocument, HostAppError> {
-    if bytes.len() > MAX_GRAPH_BYTES {
-        return Err(graph_error(
-            "graph size",
-            "8 MiB exact graph limit exceeded",
-        ));
-    }
-    let doc: GraphDocument =
-        serde_json::from_slice(bytes).map_err(|source| graph_error("closed graph JSON", source))?;
-    if doc.schema != GRAPH_SCHEMA {
-        return Err(graph_error("graph schema", "expected keld.stage.graph/v1"));
-    }
-    relative_path(&doc.entry)?;
-    if doc.files.len() > MAX_FILES || doc.files.is_empty() {
-        return Err(graph_error("census", "empty or more than 32768 files"));
-    }
-    let mut previous = None::<String>;
-    let mut folded = BTreeSet::new();
-    for row in &doc.files {
-        relative_path(&row.path)?;
-        if excluded(&row.path) {
-            return Err(graph_error("reserved file", &row.path));
-        }
-        if previous
-            .as_deref()
-            .is_some_and(|prev| prev >= row.path.as_str())
-        {
-            return Err(graph_error("graph ordering", "unsorted or duplicate paths"));
-        }
-        if !folded.insert(row.path.to_lowercase()) {
-            return Err(graph_error("graph ordering", "case-colliding paths"));
-        }
-        parse_sha(&row.sha256)?;
-        previous = Some(row.path.clone());
-    }
-    if !doc.files.iter().any(|row| row.path == doc.entry) {
-        return Err(graph_error(
-            "graph entry",
-            "entry is absent from captured files",
-        ));
-    }
-    for required in ["package.json", "package-lock.json"] {
-        if !doc.files.iter().any(|row| row.path == required) {
-            return Err(graph_error("graph input", format!("missing {required}")));
-        }
-    }
-    Ok(doc)
-}
-
 fn read_hash(mut file: File) -> Result<([u8; 32], u64), HostAppError> {
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; BUFFER_BYTES].into_boxed_slice();
@@ -563,7 +526,7 @@ fn read_hash(mut file: File) -> Result<([u8; 32], u64), HostAppError> {
     Ok((hasher.finalize().into(), bytes))
 }
 
-fn check_files(root: &Path, dir: &OwnedFd, doc: &GraphDocument) -> Result<(), HostAppError> {
+fn check_files(root: &Path, dir: &RetainedRoot, doc: &GraphDocument) -> Result<(), HostAppError> {
     let actual = census(root, dir)?;
     let selected: Vec<_> = doc.files.iter().map(|row| row.path.as_str()).collect();
     let present: Vec<_> = actual.iter().map(|row| row.path.as_str()).collect();
@@ -577,10 +540,9 @@ fn check_files(root: &Path, dir: &OwnedFd, doc: &GraphDocument) -> Result<(), Ho
     }
     for (row, observed) in doc.files.iter().zip(&actual) {
         let file = open_relative_file(dir, &relative_path(&row.path)?, "graph file")?;
-        let metadata = file
-            .metadata()
-            .map_err(|source| graph_error("file metadata", source))?;
-        let from_path = fs::symlink_metadata(root.join(&row.path))
+        let metadata =
+            file_metadata(&file).map_err(|source| graph_error("file metadata", source))?;
+        let from_path = path_metadata(root.join(&row.path))
             .map_err(|source| graph_error("file metadata", source))?;
         if !same_identity(&metadata, &observed.metadata)
             || !same_identity(&from_path, &observed.metadata)
@@ -597,10 +559,9 @@ fn check_files(root: &Path, dir: &OwnedFd, doc: &GraphDocument) -> Result<(), Ho
         if count != row.size || actual_sha != parse_sha(&row.sha256)? {
             return Err(graph_error("file digest", &row.path));
         }
-        let after_fd = held
-            .metadata()
-            .map_err(|source| graph_error("file metadata", source))?;
-        let after_path = fs::symlink_metadata(root.join(&row.path))
+        let after_fd =
+            file_metadata(&held).map_err(|source| graph_error("file metadata", source))?;
+        let after_path = path_metadata(root.join(&row.path))
             .map_err(|source| graph_error("file metadata", source))?;
         if !same_identity(&after_fd, &observed.metadata)
             || !same_identity(&after_path, &observed.metadata)
@@ -624,7 +585,7 @@ fn check_files(root: &Path, dir: &OwnedFd, doc: &GraphDocument) -> Result<(), Ho
     Ok(())
 }
 
-fn read_json(dir: &OwnedFd, file: &str) -> Result<serde_json::Value, HostAppError> {
+fn read_json(dir: &RetainedRoot, file: &str) -> Result<serde_json::Value, HostAppError> {
     let selected = open_relative_file(dir, &relative_path(file)?, "graph package JSON")?;
     let data = read_bounded(selected, MAX_JSON_BYTES, "graph package JSON")?;
     let text =
@@ -810,7 +771,8 @@ fn configuration_reference(file: &str, reference: &str) -> Result<String, HostAp
 // Exact census spelling is not proof of physical absence on a filesystem
 // with case/normalization aliases. Reuse the nofollow directory owner and
 // accept only the kernel's typed missing-leaf result, never an I/O fault.
-fn missing_configuration_reference(dir: &OwnedFd, selected: &str) -> Result<(), HostAppError> {
+#[cfg(target_os = "macos")]
+fn missing_configuration_reference(dir: &RetainedRoot, selected: &str) -> Result<(), HostAppError> {
     let path = Path::new(selected);
     let parent = path
         .parent()
@@ -835,7 +797,7 @@ fn missing_configuration_reference(dir: &OwnedFd, selected: &str) -> Result<(), 
 }
 
 fn validate_configuration(
-    dir: &OwnedFd,
+    dir: &RetainedRoot,
     doc: &GraphDocument,
     file: &str,
     active: &mut BTreeSet<String>,
@@ -913,7 +875,7 @@ fn validate_configuration(
 }
 
 fn validate_package_scopes(
-    dir: &OwnedFd,
+    dir: &RetainedRoot,
     doc: &GraphDocument,
     packages: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), HostAppError> {
@@ -987,7 +949,7 @@ fn validate_package_scopes(
 }
 
 fn validate_updater_package(
-    dir: &OwnedFd,
+    dir: &RetainedRoot,
     root_dependencies: &serde_json::Map<String, serde_json::Value>,
     locked_root: &serde_json::Map<String, serde_json::Value>,
     packages: &serde_json::Map<String, serde_json::Value>,
@@ -1043,7 +1005,7 @@ fn validate_updater_package(
     Ok(())
 }
 
-fn validate_package_data(dir: &OwnedFd, doc: &GraphDocument) -> Result<(), HostAppError> {
+fn validate_package_data(dir: &RetainedRoot, doc: &GraphDocument) -> Result<(), HostAppError> {
     let package = read_json(dir, "package.json")?;
     let lock = read_json(dir, "package-lock.json")?;
     if lock
@@ -1141,18 +1103,16 @@ fn validate_package_data(dir: &OwnedFd, doc: &GraphDocument) -> Result<(), HostA
     Ok(())
 }
 
-fn root_identity(path: &Path, opened: &OwnedFd) -> Result<(u64, u64), HostAppError> {
+#[cfg(target_os = "macos")]
+fn root_identity(path: &Path, opened: &RetainedRoot) -> Result<(u64, u64), HostAppError> {
     let retained = File::from(
         opened
             .as_fd()
             .try_clone_to_owned()
             .map_err(|source| graph_error("retained stage", source))?,
     );
-    let held = retained
-        .metadata()
-        .map_err(|source| graph_error("retained stage", source))?;
-    let current =
-        fs::symlink_metadata(path).map_err(|source| graph_error("retained stage", source))?;
+    let held = file_metadata(&retained).map_err(|source| graph_error("retained stage", source))?;
+    let current = path_metadata(path).map_err(|source| graph_error("retained stage", source))?;
     if !current.is_dir() || current.dev() != held.dev() || current.ino() != held.ino() {
         return Err(graph_error("retained stage", "root was substituted"));
     }
@@ -1162,10 +1122,10 @@ fn root_identity(path: &Path, opened: &OwnedFd) -> Result<(u64, u64), HostAppErr
 /// Clone only the caller's retained directory handle after checking that its
 /// trusted path still resolves to that same physical non-symlink directory.
 /// This avoids reopening the selected root through a second path reader.
-fn borrow_retained_root(path: &Path, retained: &File) -> Result<OwnedFd, HostAppError> {
+#[cfg(target_os = "macos")]
+fn borrow_retained_root(path: &Path, retained: &File) -> Result<RetainedRoot, HostAppError> {
     if !path.is_absolute()
-        || !retained
-            .metadata()
+        || !file_metadata(&retained)
             .map_err(|source| graph_error("retained root", source))?
             .is_dir()
     {
@@ -1184,7 +1144,7 @@ fn borrow_retained_root(path: &Path, retained: &File) -> Result<OwnedFd, HostApp
 
 fn validate_document(
     root: &Path,
-    opened: &OwnedFd,
+    opened: &RetainedRoot,
     document: &GraphDocument,
 ) -> Result<(), HostAppError> {
     check_files(root, opened, document)?;
@@ -1194,7 +1154,7 @@ fn validate_document(
 
 fn admit_graph_against_expected(
     root: &Path,
-    retained_root: OwnedFd,
+    retained_root: RetainedRoot,
     leaf_bytes: &[u8],
     expected: &ApprovedGraphCaptureInput,
 ) -> Result<AdmittedStageGraph, HostAppError> {
@@ -1214,7 +1174,8 @@ fn admit_graph_against_expected(
         ));
     }
     for (index, (prefix, _)) in PACKAGES.iter().enumerate() {
-        if package_tree_fingerprint(&graph, prefix)? != expected.expected_package_trees[index] {
+        if package_tree_fingerprint(&graph.files, prefix)? != expected.expected_package_trees[index]
+        {
             return Err(graph_error(
                 "approved package artifact",
                 format!("{prefix}: external provider identity differs"),
@@ -1243,7 +1204,7 @@ fn admit_graph_against_expected(
 /// directory already used to read the descriptor or private graph leaf.
 fn validate_bound_graph(
     root: &Path,
-    selected_root: &OwnedFd,
+    selected_root: &RetainedRoot,
     leaf_bytes: &[u8],
     expected_graph_sha256: [u8; 32],
     selected_entry: &Path,
@@ -1269,10 +1230,7 @@ fn validate_bound_graph(
     }
     let identity = root_identity(root, selected_root)?;
     validate_document(root, selected_root, &graph)?;
-    let retained_root = selected_root
-        .as_fd()
-        .try_clone_to_owned()
-        .map_err(|source| graph_error("retained stage root clone", source))?;
+    let retained_root = clone_root(selected_root)?;
     let result = AdmittedStageGraph {
         root: root.to_owned(),
         retained_root,
@@ -1289,37 +1247,65 @@ fn validate_bound_graph(
     Ok(result)
 }
 
-fn make_graph_leaf_on_retained_root(
+fn capture_graph_rows(
     root_path: &Path,
-    root_fd: &OwnedFd,
-    main_entry: &str,
-) -> Result<Vec<u8>, HostAppError> {
-    relative_path(main_entry)?;
-    let identity = root_identity(root_path, root_fd)?;
-    let rows = census(root_path, root_fd)?
-        .into_iter()
+    root_fd: &RetainedRoot,
+    namespace_prefix: Option<&str>,
+) -> Result<Vec<GraphFile>, HostAppError> {
+    let before = census_subtree(root_path, root_fd, namespace_prefix)?;
+    let rows = before
+        .iter()
         .map(|observed| {
-            let path = observed.path;
-            let file = open_relative_file(root_fd, &relative_path(&path)?, "graph source")?;
-            let metadata = file
-                .metadata()
-                .map_err(|source| graph_error("graph source", source))?;
+            let path = &observed.path;
+            let file = open_relative_file(root_fd, &relative_path(path)?, "graph source")?;
+            let metadata =
+                file_metadata(&file).map_err(|source| graph_error("graph source", source))?;
             if !same_identity(&metadata, &observed.metadata) {
-                return Err(graph_error("graph source census", &path));
+                return Err(graph_error("graph source census", path));
             }
-            let (digest, size) = read_hash(file)?;
-            let current = fs::symlink_metadata(root_path.join(&path))
+            let held = file
+                .try_clone()
                 .map_err(|source| graph_error("graph source", source))?;
-            if !same_identity(&current, &observed.metadata) {
-                return Err(graph_error("graph source census", &path));
+            let (digest, size) = read_hash(file)?;
+            let after =
+                file_metadata(&held).map_err(|source| graph_error("graph source", source))?;
+            let current = path_metadata(root_path.join(path))
+                .map_err(|source| graph_error("graph source", source))?;
+            if !same_identity(&current, &observed.metadata)
+                || !same_identity(&after, &observed.metadata)
+            {
+                return Err(graph_error("graph source census", path));
             }
             Ok(GraphFile {
-                path,
+                path: namespace_prefix
+                    .map_or_else(|| path.clone(), |prefix| format!("{prefix}/{path}")),
                 size,
                 sha256: sha_text(&digest),
             })
         })
         .collect::<Result<Vec<_>, HostAppError>>()?;
+    let after = census_subtree(root_path, root_fd, namespace_prefix)?;
+    if after.len() != before.len()
+        || !after.iter().zip(&before).all(|(after, before)| {
+            after.path == before.path && same_identity(&after.metadata, &before.metadata)
+        })
+    {
+        return Err(graph_error(
+            "graph source census",
+            "inventory changed during capture",
+        ));
+    }
+    Ok(rows)
+}
+
+fn make_graph_leaf_on_retained_root(
+    root_path: &Path,
+    root_fd: &RetainedRoot,
+    main_entry: &str,
+) -> Result<Vec<u8>, HostAppError> {
+    relative_path(main_entry)?;
+    let identity = root_identity(root_path, root_fd)?;
+    let rows = capture_graph_rows(root_path, root_fd, None)?;
     let graph = GraphDocument {
         schema: GRAPH_SCHEMA.to_owned(),
         entry: main_entry.to_owned(),
@@ -1333,44 +1319,6 @@ fn make_graph_leaf_on_retained_root(
         ));
     }
     Ok(bytes)
-}
-
-fn verify_selected_rows(
-    graph: &GraphDocument,
-    selected: &SelectedRendererSource,
-) -> Result<(), HostAppError> {
-    let selected_entry = selected.full_entry();
-    let entry = selected_entry
-        .to_str()
-        .ok_or_else(|| graph_error("selected entry", "non UTF-8 selected path"))?;
-    if graph
-        .files
-        .binary_search_by(|row| row.path.as_str().cmp(entry))
-        .is_err()
-    {
-        return Err(graph_error(
-            "selected entry",
-            "closed boot-selected resource entry is missing from the graph",
-        ));
-    }
-    let preload = selected
-        .preload_path
-        .to_str()
-        .ok_or_else(|| graph_error("selected preload", "non UTF-8 selected path"))?;
-    let preload_index = graph
-        .files
-        .binary_search_by(|row| row.path.as_str().cmp(preload))
-        .map_err(|_| graph_error("selected preload", "pinned member missing from the graph"))?;
-    let row = &graph.files[preload_index];
-    if row.size > MAX_SELECTED_PRELOAD_BYTES as u64
-        || parse_sha(&row.sha256)? != selected.preload_sha256
-    {
-        return Err(graph_error(
-            "selected preload",
-            "size or pinned digest differs from the closed boot",
-        ));
-    }
-    Ok(())
 }
 
 /// Compile the existing closed graph-v1 over Pack's *already copied* app
@@ -1402,6 +1350,55 @@ pub fn make_graph_leaf_from_retained_root(
         ));
     }
     Ok(bytes)
+}
+
+/// Verify the three canonical provider trees before a development stage exists.
+///
+/// The caller supplies independently qualified framework receipts. This operation
+/// reads only the fixed provider subtrees through the retained project root and
+/// grants no source, stage, policy, or native authority. The copied stage must
+/// still pass the complete graph compiler before launch.
+///
+/// # Errors
+/// Refuses absent or substituted providers, namespace/census drift, unserviceable
+/// files, or any provider digest that differs from its independent receipt.
+pub fn verify_provider_trees_from_retained_root(
+    root_path: &Path,
+    root_fd: &File,
+    expected: &[[u8; 32]; 3],
+) -> Result<(), HostAppError> {
+    let retained = borrow_retained_root(root_path, root_fd)?;
+    let identity = root_identity(root_path, &retained)?;
+    let mut rows = Vec::new();
+    for (prefix, _) in PACKAGES {
+        let directory = census_directory(&retained, prefix)?;
+        let provider_root = root_path.join(prefix);
+        let provider = borrow_retained_root(&provider_root, &directory)?;
+        rows.extend(capture_graph_rows(&provider_root, &provider, Some(prefix))?);
+        if rows.len() > MAX_FILES {
+            return Err(graph_error(
+                "approved package artifact",
+                "provider census exceeds graph limit",
+            ));
+        }
+    }
+    rows.sort_by(|left, right| left.path.cmp(&right.path));
+    validate_graph_files(&rows)?;
+    for (index, (prefix, _)) in PACKAGES.iter().enumerate() {
+        if package_tree_fingerprint(&rows, prefix)? != expected[index] {
+            return Err(graph_error(
+                "approved package artifact",
+                format!("{prefix}: external provider identity differs"),
+            ));
+        }
+    }
+    if root_identity(root_path, &retained)? != identity {
+        return Err(graph_error(
+            "approved package artifact",
+            "retained project root changed",
+        ));
+    }
+    Ok(())
 }
 
 /// Bind the one closed installed boot-6 graph digest and its selected resource
@@ -1453,7 +1450,7 @@ enum InstalledPreloadMember {
 /// Only an installed graph with a closed boot-6 selection can construct it.
 #[derive(Debug)]
 pub(super) struct VerifiedWebAppSource {
-    code_root: OwnedFd,
+    code_root: RetainedRoot,
     assets: Vec<VerifiedResourceAsset>,
     selected_app_root: PathBuf,
     selected_entry: PathBuf,
@@ -1462,7 +1459,7 @@ pub(super) struct VerifiedWebAppSource {
 impl VerifiedWebAppSource {
     /// Transfer native source custody, selected app root and entry as one
     /// graph-bound value; the `WebKit` owner still enforces its document and CSP.
-    pub(super) fn into_parts(self) -> (OwnedFd, Vec<VerifiedResourceAsset>, PathBuf, PathBuf) {
+    pub(super) fn into_parts(self) -> (RetainedRoot, Vec<VerifiedResourceAsset>, PathBuf, PathBuf) {
         (
             self.code_root,
             self.assets,
@@ -1482,12 +1479,11 @@ impl AdmittedStageGraph {
     fn checked_selected_member_identity(
         &self,
         relative: &Path,
-    ) -> Result<fs::Metadata, HostAppError> {
+    ) -> Result<ObjectMetadata, HostAppError> {
         let file = open_relative_file(&self.retained_root, relative, "selected graph member")?;
-        let opened = file
-            .metadata()
-            .map_err(|source| graph_error("selected graph member", source))?;
-        let named = fs::symlink_metadata(self.root.join(relative))
+        let opened =
+            file_metadata(&file).map_err(|source| graph_error("selected graph member", source))?;
+        let named = path_metadata(self.root.join(relative))
             .map_err(|source| graph_error("selected graph member", source))?;
         if !opened.is_file() || !same_identity(&opened, &named) {
             return Err(graph_error(
@@ -1507,7 +1503,7 @@ impl AdmittedStageGraph {
         }
         verify_selected_rows(&self.graph, selected)?;
         let entry_identity = self.checked_selected_member_identity(&selected.full_entry())?;
-        let preload_identity = self.checked_selected_member_identity(&selected.preload_path)?;
+        let preload_identity = self.checked_selected_member_identity(selected.preload_path())?;
         self.selected_file_identities = Some((entry_identity, preload_identity));
         self.selected_source = Some(selected.clone());
         Ok(())
@@ -1525,7 +1521,7 @@ impl AdmittedStageGraph {
             ));
         };
         let now_entry = self.checked_selected_member_identity(&selected.full_entry())?;
-        let now_preload = self.checked_selected_member_identity(&selected.preload_path)?;
+        let now_preload = self.checked_selected_member_identity(selected.preload_path())?;
         if !same_identity(&now_entry, entry_identity)
             || !same_identity(&now_preload, preload_identity)
         {
@@ -1554,13 +1550,14 @@ impl AdmittedStageGraph {
             .ok_or_else(|| graph_error("preload selector", "non UTF-8 selector"))?;
         if selected.len() > 2_048
             || !absolute_selector.is_absolute()
-            || selected.contains('\\')
+            || cfg!(target_os = "macos") && selected.contains('\\')
             || selected.contains('\0')
-            || selected
-                .split('/')
-                .skip(1)
-                .any(|part| part.is_empty() || part == "." || part == "..")
-            || absolute_selector != self.root.join(&selected_source.preload_path)
+            || cfg!(target_os = "macos")
+                && selected
+                    .split('/')
+                    .skip(1)
+                    .any(|part| part.is_empty() || part == "." || part == "..")
+            || absolute_selector != self.root.join(selected_source.preload_path())
         {
             return Err(graph_error(
                 "preload selector",
@@ -1569,7 +1566,7 @@ impl AdmittedStageGraph {
         }
         self.recheck()?;
         let preload_path = selected_source
-            .preload_path
+            .preload_path()
             .to_str()
             .ok_or_else(|| graph_error("preload member", "non UTF-8 preload"))?;
         let row = self
@@ -1579,7 +1576,7 @@ impl AdmittedStageGraph {
             .map(|index| &self.graph.files[index])
             .map_err(|_| graph_error("preload member", "not in the bound graph"))?;
         if row.size > MAX_SELECTED_PRELOAD_BYTES as u64
-            || parse_sha(&row.sha256)? != selected_source.preload_sha256
+            || parse_sha(&row.sha256)? != selected_source.preload_sha256()
         {
             return Err(graph_error(
                 "preload member",
@@ -1588,12 +1585,11 @@ impl AdmittedStageGraph {
         }
         let file = open_relative_file(
             &self.retained_root,
-            &selected_source.preload_path,
+            selected_source.preload_path(),
             "selected preload",
         )?;
-        let before = file
-            .metadata()
-            .map_err(|source| graph_error("preload metadata", source))?;
+        let before =
+            file_metadata(&file).map_err(|source| graph_error("preload metadata", source))?;
         if !before.is_file() || before.len() != row.size {
             return Err(graph_error(
                 "preload metadata",
@@ -1604,14 +1600,13 @@ impl AdmittedStageGraph {
             .try_clone()
             .map_err(|source| graph_error("preload identity", source))?;
         let bytes = read_bounded(file, MAX_SELECTED_PRELOAD_BYTES, "selected preload")?;
-        let after = retained_file
-            .metadata()
+        let after = file_metadata(&retained_file)
             .map_err(|source| graph_error("preload identity", source))?;
-        let from_path = fs::symlink_metadata(self.root.join(&selected_source.preload_path))
+        let from_path = path_metadata(self.root.join(selected_source.preload_path()))
             .map_err(|source| graph_error("preload identity", source))?;
         let digest: [u8; 32] = Sha256::digest(&bytes).into();
         if bytes.len() as u64 != row.size
-            || digest != selected_source.preload_sha256
+            || digest != selected_source.preload_sha256()
             || !same_identity(&before, &after)
             || !same_identity(&before, &from_path)
         {
@@ -1695,12 +1690,13 @@ impl AdmittedStageGraph {
     /// Retain an *independent* no-follow code-root directory handle for the
     /// GH542/GH473 native resource owner; the graph and Stage still own theirs.
     /// No descriptor is sent through an `AppWindowCommand` or page-facing field.
-    fn clone_code_root(&self) -> Result<OwnedFd, HostAppError> {
+    #[cfg(target_os = "macos")]
+    fn clone_code_root(&self) -> Result<RetainedRoot, HostAppError> {
         use nix::fcntl::{OFlag, openat};
         use nix::sys::stat::Mode;
         let selected = self.selected_source()?;
-        let mut parent: Option<OwnedFd> = None;
-        for component in selected.root.components() {
+        let mut parent: Option<RetainedRoot> = None;
+        for component in selected.root().components() {
             let Component::Normal(component) = component else {
                 return Err(graph_error("resource root", "noncanonical root component"));
             };
@@ -1725,10 +1721,9 @@ impl AdmittedStageGraph {
                 .try_clone_to_owned()
                 .map_err(|source| graph_error("resource root", source))?,
         );
-        let from_fd = held
-            .metadata()
-            .map_err(|source| graph_error("resource root", source))?;
-        let from_path = fs::symlink_metadata(self.root.join(&selected.root))
+        let from_fd =
+            file_metadata(&held).map_err(|source| graph_error("resource root", source))?;
+        let from_path = path_metadata(self.root.join(selected.root()))
             .map_err(|source| graph_error("resource root", source))?;
         if !from_fd.is_dir() || !from_path.is_dir() || !same_identity(&from_fd, &from_path) {
             return Err(graph_error(
@@ -1737,6 +1732,27 @@ impl AdmittedStageGraph {
             ));
         }
         Ok(code_root)
+    }
+
+    #[cfg(windows)]
+    fn clone_code_root(&self) -> Result<RetainedRoot, HostAppError> {
+        let selected = self.selected_source()?;
+        let relative = selected
+            .root()
+            .to_str()
+            .ok_or_else(|| graph_error("resource root", "non UTF-8 root"))?;
+        let held = census_directory(&self.retained_root, relative)?;
+        let from_fd =
+            file_metadata(&held).map_err(|source| graph_error("resource root", source))?;
+        let from_path = path_metadata(self.root.join(selected.root()))
+            .map_err(|source| graph_error("resource root", source))?;
+        if !from_fd.is_dir() || !same_identity(&from_fd, &from_path) {
+            return Err(graph_error(
+                "resource root",
+                "selected directory changed or was substituted",
+            ));
+        }
+        Ok(held)
     }
 
     pub(super) fn selected_source(&self) -> Result<&SelectedRendererSource, HostAppError> {
@@ -1748,7 +1764,7 @@ impl AdmittedStageGraph {
     fn resource_assets(&self) -> Result<Vec<VerifiedResourceAsset>, HostAppError> {
         let selected = self.selected_source()?;
         let prefix = selected
-            .root
+            .root()
             .to_str()
             .ok_or_else(|| graph_error("resource root", "non UTF-8 selected directory"))?;
         let mut assets = Vec::new();
@@ -1765,7 +1781,10 @@ impl AdmittedStageGraph {
                 });
             }
         }
-        if !assets.iter().any(|entry| entry.path == selected.entry) {
+        if !assets
+            .iter()
+            .any(|entry| entry.path.as_path() == selected.entry())
+        {
             return Err(graph_error(
                 "resource assets",
                 "selected entry missing from verified source assets",
@@ -1797,10 +1816,10 @@ impl AdmittedStageGraph {
     }
 }
 
-fn package_tree_fingerprint(doc: &GraphDocument, prefix: &str) -> Result<[u8; 32], HostAppError> {
+fn package_tree_fingerprint(files: &[GraphFile], prefix: &str) -> Result<[u8; 32], HostAppError> {
     let mut hasher = Sha256::new();
     let mut matched = 0_usize;
-    for row in &doc.files {
+    for row in files {
         let Some(relative) = row
             .path
             .strip_prefix(prefix)

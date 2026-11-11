@@ -13,10 +13,11 @@ use keld_wv::wkwebview::AppPreloadBudget;
 use sha2::{Digest as _, Sha256};
 
 use super::super::graph_contract::{
-    ApprovedGraphCaptureInput, GRAPH_FILE, SelectedRendererSource,
-    make_graph_leaf_from_retained_root, read_bound_graph_leaf_from_retained_root,
+    ApprovedGraphCaptureInput, make_graph_leaf_from_retained_root,
+    read_bound_graph_leaf_from_retained_root,
 };
 use super::super::original_webapp::{OriginalLoadSelection, PreparedOriginalSource};
+use super::super::{GRAPH_FILE, SelectedRendererSource};
 
 const MAIN: &str = "import { app } from 'electron'; /* never execute */\n";
 const ROOT_PACKAGE: &str = concat!(

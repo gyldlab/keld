@@ -131,7 +131,7 @@ fn accepted_app_bound_identity_is_refused_by_primary_admission() {
         SessionShutdownState::new(),
         None,
         #[cfg(windows)]
-        keld_wv::webview2::AppReadyTrigger::NavigationReady,
+        None,
         #[cfg(target_os = "macos")]
         MacBoundStart {
             auth_configuration: AuthConfiguration::new(),
@@ -179,7 +179,7 @@ fn accepted_primary_identity_fences_caller_context_before_healthy_echo() {
         SessionShutdownState::new(),
         None,
         #[cfg(windows)]
-        keld_wv::webview2::AppReadyTrigger::NavigationReady,
+        None,
         #[cfg(target_os = "macos")]
         MacBoundStart {
             auth_configuration: AuthConfiguration::new(),
@@ -336,7 +336,7 @@ fn windows_authenticated_generations_bind_retained_admission_to_the_current_prin
         PlatformPrimaryOwnerHandle { command_tx: owner },
         SessionShutdownState::new(),
         Some(&snapshot),
-        keld_wv::webview2::AppReadyTrigger::NavigationReady,
+        None,
     )
     .expect("authenticated initial generation");
     let handle = router.handle();

@@ -94,7 +94,6 @@ impl SelectedRendererSource {
         self.preload_sha256
     }
 
-    #[cfg(target_os = "macos")]
     pub(super) fn full_entry(&self) -> PathBuf {
         self.root.join(&self.entry)
     }

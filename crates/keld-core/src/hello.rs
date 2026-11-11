@@ -619,9 +619,10 @@ mod tests {
 mod auth_config;
 pub use self::auth_config::{
     ApplicationNameForUserAgentConfigError, AuthConfigError, InitialWindowConfigError,
-    LiteralConfigValue, SingleInstanceConfigError, SingleInstanceDeclaration, StaticConfigError,
-    application_name_for_user_agent_from_config_ts, auth_configuration_from_config_ts,
-    initial_window_from_config_ts, literal_config_from_ts, single_instance_from_config_ts,
+    LiteralConfigValue, RendererSourceConfigError, SingleInstanceConfigError,
+    SingleInstanceDeclaration, StaticConfigError, application_name_for_user_agent_from_config_ts,
+    auth_configuration_from_config_ts, initial_window_from_config_ts, literal_config_from_ts,
+    renderer_source_declared_from_config_ts, single_instance_from_config_ts,
 };
 
 #[cfg(test)]

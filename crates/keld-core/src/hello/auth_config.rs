@@ -167,6 +167,35 @@ pub fn application_name_for_user_agent_from_config_ts(
         .map_err(|error| invalid(error.to_string()))
 }
 
+/// An ambiguous exported-root renderer source selection.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RendererSourceConfigError;
+
+impl std::fmt::Display for RendererSourceConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "KELD-CORE-035: invalid rendererSource selection. Declare one literal root property without computed keys, accessors or spreads."
+        )
+    }
+}
+
+impl std::error::Error for RendererSourceConfigError {}
+
+/// Detects an explicit exported-root `rendererSource` without evaluating code.
+///
+/// This selects a typed source-reading path; it grants no filesystem authority.
+///
+/// # Errors
+/// Refuses ambiguous exported-root syntax, computed keys or duplicate selection.
+pub fn renderer_source_declared_from_config_ts(
+    source: &str,
+) -> Result<bool, RendererSourceConfigError> {
+    root_facade_property_slice(source, "rendererSource")
+        .map(|value| value.is_some())
+        .map_err(|_| RendererSourceConfigError)
+}
+
 /// Whether the exported root selects an app-owned first window.
 ///
 /// Missing config retains the renderer-declared schema-1 boot. A present root

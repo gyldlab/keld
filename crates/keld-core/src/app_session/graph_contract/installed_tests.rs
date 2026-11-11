@@ -4,7 +4,8 @@
 use crate::app_session::graph_selection::SelectedRendererSource;
 
 use std::fs::{self, File};
-use std::os::unix::fs::{MetadataExt as _, symlink};
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest as _, Sha256};
@@ -68,6 +69,34 @@ fn approved() -> ApprovedGraphCaptureInput {
     }
 }
 
+fn retained_directory(path: &Path) -> File {
+    #[cfg(target_os = "macos")]
+    {
+        File::open(path).expect("retained fixture directory")
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+            FILE_SHARE_WRITE,
+        };
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .expect("retained fixture directory")
+    }
+}
+
+fn untrusted_alias(source: &Path, target: &Path) {
+    #[cfg(target_os = "macos")]
+    std::os::unix::fs::symlink(source, target).expect("untrusted symlink alias");
+    #[cfg(windows)]
+    fs::hard_link(source, target).expect("untrusted hardlink alias");
+}
+
 struct Fixture {
     _owned: tempfile::TempDir,
     root: PathBuf,
@@ -113,7 +142,7 @@ impl Fixture {
         ] {
             Self::write(&root, name, bytes);
         }
-        let held = File::open(&root).expect("retained root");
+        let held = retained_directory(&root);
         let selected = SelectedRendererSource::new(
             "client/assets",
             "nested/editor.html",
@@ -194,10 +223,9 @@ fn retained_installed_graph_compiles_and_binds_an_unrelated_nested_editor() {
         .into_parts();
     assert_eq!(root, fixture.root);
     assert_eq!(entry, Path::new("client/assets/nested/editor.html"));
-    let retained = File::from(code_root)
-        .metadata()
-        .expect("actual retained code root");
-    let selected = fs::metadata(root.join("client/assets")).expect("selected source directory");
+    let retained = super::file_metadata(&File::from(code_root)).expect("actual retained code root");
+    let selected =
+        super::path_metadata(root.join("client/assets")).expect("selected source directory");
     assert_eq!(
         (retained.dev(), retained.ino()),
         (selected.dev(), selected.ino())
@@ -301,11 +329,11 @@ fn retained_graph_binding_rejects_wrong_graph_main_and_selected_preload() {
 }
 
 #[test]
-fn retained_graph_refuses_unlisted_files_empty_directories_and_symlinks() {
+fn retained_graph_refuses_unlisted_files_empty_directories_and_aliases() {
     for mutation in [
         "file",
         "empty-dir",
-        "symlink",
+        "alias",
         "changed-resource",
         "changed-bootstrap",
     ] {
@@ -316,8 +344,7 @@ fn retained_graph_refuses_unlisted_files_empty_directories_and_symlinks() {
             "empty-dir" => {
                 fs::create_dir(fixture.root.join("unlisted-directory")).expect("empty directory");
             }
-            "symlink" => symlink(fixture.root.join(MAIN), fixture.root.join("alias.mjs"))
-                .expect("untrusted alias"),
+            "alias" => untrusted_alias(&fixture.root.join(MAIN), &fixture.root.join("alias.mjs")),
             "changed-resource" => fs::write(
                 fixture.root.join("client/assets/styles.css"),
                 b"body{display:none}\n",
@@ -374,4 +401,103 @@ fn retained_graph_parser_is_closed_and_does_not_normalize_duplicate_or_unsorted_
             .is_err()
         );
     }
+}
+
+#[test]
+fn graph_census_excludes_only_the_platform_host_and_fixed_boot_sidecars() {
+    let fixture = Fixture::new();
+    #[cfg(windows)]
+    let host = "keld-host.exe";
+    #[cfg(target_os = "macos")]
+    let host = "keld-host";
+    for leaf in [host, "keld.boot.json", "keld.permissions.jsonc"] {
+        fs::write(fixture.root.join(leaf), b"fixed external owner").expect("host sidecar");
+    }
+    let bytes = fixture
+        .compile()
+        .expect("host sidecars excluded from source graph");
+    let document: serde_json::Value = serde_json::from_slice(&bytes).expect("graph");
+    let rows = document["files"].as_array().expect("file rows");
+    for leaf in [host, "keld.boot.json", "keld.permissions.jsonc"] {
+        assert!(!rows.iter().any(|row| row["path"] == leaf), "{leaf}");
+    }
+    fixture
+        .admitted()
+        .recheck()
+        .expect("sidecars do not expand the source grant");
+}
+
+#[test]
+fn selected_preload_replacement_with_identical_bytes_refuses_graph_recheck() {
+    let fixture = Fixture::new();
+    let graph = fixture.admitted();
+    graph.recheck().expect("original selected identity");
+    let replacement = fixture._owned.path().join("new-preload");
+    fs::write(&replacement, PRELOAD_BYTES).expect("independently allocated identical bytes");
+    fs::rename(&replacement, fixture.root.join(PRELOAD)).expect("replace selected inode");
+    assert!(
+        graph.recheck().is_err(),
+        "digest equality does not authorize a substituted selected file"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn retained_graph_root_identity_rejects_an_unrelated_locator() {
+    let fixture = Fixture::new();
+    let other = fixture._owned.path().join("other-root");
+    fs::create_dir(&other).expect("unrelated real directory");
+    assert!(super::borrow_retained_root(&other, &fixture.held).is_err());
+    assert!(super::borrow_retained_root(&fixture.root, &fixture.held).is_ok());
+}
+
+#[test]
+fn provider_preflight_uses_independent_receipts_before_any_stage_exists() {
+    let fixture = Fixture::new();
+    let expected = approved().expected_package_trees;
+    super::verify_provider_trees_from_retained_root(&fixture.root, &fixture.held, &expected)
+        .expect("fixed independent provider receipts");
+    for changed in 0..3 {
+        let mut wrong = expected;
+        wrong[changed][0] ^= 1;
+        assert!(
+            super::verify_provider_trees_from_retained_root(&fixture.root, &fixture.held, &wrong,)
+                .is_err(),
+            "provider {changed}"
+        );
+    }
+    assert!(
+        !fixture.root.join(".keld").exists(),
+        "preflight creates no stage"
+    );
+    fs::write(
+        fixture.root.join("node_modules/electron/keld.boot.json"),
+        b"extra provider file",
+    )
+    .expect("provider member resembling a root-only sidecar");
+    assert!(
+        super::verify_provider_trees_from_retained_root(&fixture.root, &fixture.held, &expected,)
+            .is_err(),
+        "root-only exclusions must never hide provider files"
+    );
+}
+
+#[test]
+fn provider_preflight_ignores_unrelated_project_inputs_and_refuses_changed_provider_bytes() {
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join("keld.config.ts"), b"never evaluate").expect("project config");
+    fs::create_dir(fixture.root.join(".git")).expect("unrelated project metadata");
+    let expected = approved().expected_package_trees;
+    super::verify_provider_trees_from_retained_root(&fixture.root, &fixture.held, &expected)
+        .expect("only the canonical providers are preflight inputs");
+    fs::write(
+        fixture.root.join("node_modules/electron/dist/index.js"),
+        b"changed provider",
+    )
+    .expect("provider mutation");
+    assert!(
+        super::verify_provider_trees_from_retained_root(&fixture.root, &fixture.held, &expected,)
+            .is_err()
+    );
+    assert!(!fixture.root.join(".keld").exists());
 }

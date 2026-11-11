@@ -7,10 +7,12 @@ use serde::{Deserialize, Deserializer};
 
 use super::{AuthConfiguration, DIGEST_PREFIX, HostAppError, MAX_BOOT_BYTES, PERMISSIONS_FILE};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod installed_graph;
+#[cfg(any(target_os = "macos", windows))]
+use installed_graph::SelectedGraphBoot;
 #[cfg(target_os = "macos")]
-pub(super) use installed_graph::{InstalledGraphBoot, parse_installed_boot_bytes};
+pub(super) use installed_graph::parse_installed_boot_bytes;
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 #[derive(Deserialize)]
@@ -65,7 +67,9 @@ pub(super) struct ParsedBoot {
     pub(super) permissions_digest: [u8; 32],
     pub(super) auth_configuration: AuthConfiguration,
     #[cfg(target_os = "macos")]
-    pub(super) installed_graph: Option<InstalledGraphBoot>,
+    pub(super) installed_graph: Option<SelectedGraphBoot>,
+    #[cfg(windows)]
+    pub(super) development_graph: Option<SelectedGraphBoot>,
 }
 
 /// Selects the exact compiled contract from window ownership and the sole manifest declaration.
@@ -112,6 +116,10 @@ pub(super) enum InitialWindow {
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError> {
     let (text, probe) = probe_boot_bytes(bytes)?;
+    #[cfg(windows)]
+    if probe.schema == 8 {
+        return installed_graph::parse_selected_graph_shape(text, 8);
+    }
     parse_development_shape(text, probe)
 }
 
@@ -217,6 +225,8 @@ fn parse_development_shape(text: &str, probe: SchemaProbe) -> Result<ParsedBoot,
         auth_configuration,
         #[cfg(target_os = "macos")]
         installed_graph: None,
+        #[cfg(windows)]
+        development_graph: None,
     })
 }
 
@@ -299,4 +309,80 @@ pub(super) fn decode_digest(value: &str) -> Result<[u8; 32], HostAppError> {
         })?;
     }
     Ok(digest)
+}
+
+#[cfg(all(test, windows))]
+#[allow(clippy::expect_used, clippy::panic)] // Literal assertions are parser-contract oracles.
+mod development_graph_tests {
+    use super::parse_boot_bytes;
+
+    fn document() -> serde_json::Value {
+        serde_json::json!({
+            "schema": 8, "name": "Editor", "entry": "main/entry.mjs",
+            "permissions": {"file":"keld.permissions.jsonc", "content_sha256":format!("sha256:{}", "11".repeat(32))},
+            "graph": {"file":"keld.stage-graph.json", "content_sha256":format!("sha256:{}", "22".repeat(32))},
+            "rendererSource": {"root":"client/assets", "entry":"nested/editor.html"},
+            "preload": {"path":"runtime/preload.cjs", "content_sha256":format!("sha256:{}", "33".repeat(32))}
+        })
+    }
+
+    #[test]
+    fn boot8_is_closed_pending_data_without_installed_schema_or_authority() {
+        let value = document();
+        let parsed =
+            parse_boot_bytes(value.to_string().as_bytes()).expect("closed development graph data");
+        assert_eq!(parsed.schema, 8);
+        let pending = parsed.development_graph.expect("pending graph data");
+        assert_eq!(pending.graph_sha256, [0x22; 32]);
+        assert_eq!(pending.source.entry().to_str(), Some("nested/editor.html"));
+        for key in ["graph", "rendererSource", "preload", "permissions"] {
+            let mut missing = document();
+            missing.as_object_mut().expect("object").remove(key);
+            assert!(
+                parse_boot_bytes(missing.to_string().as_bytes()).is_err(),
+                "{key}"
+            );
+        }
+        for key in ["version", "auth", "profile", "renderer", "unknown"] {
+            let mut extra = document();
+            extra[key] = serde_json::json!(null);
+            assert!(
+                parse_boot_bytes(extra.to_string().as_bytes()).is_err(),
+                "{key}"
+            );
+        }
+        let mut malformed = document();
+        malformed["rendererSource"]["extra"] = serde_json::json!(true);
+        assert!(parse_boot_bytes(malformed.to_string().as_bytes()).is_err());
+        let mut unsupported_version = document();
+        unsupported_version["version"] = serde_json::json!("1.2.3");
+        let version_refusal = parse_boot_bytes(unsupported_version.to_string().as_bytes())
+            .err()
+            .expect("declared version requires its runtime owner");
+        assert!(
+            version_refusal
+                .to_string()
+                .contains("native runtime metadata is unavailable")
+        );
+        let mut unsupported_instance = document();
+        unsupported_instance["singleInstance"] = serde_json::json!({"id":"dev.example.editor"});
+        assert!(parse_boot_bytes(unsupported_instance.to_string().as_bytes()).is_err());
+        let mut unsupported_user_agent = document();
+        unsupported_user_agent["applicationNameForUserAgent"] = serde_json::json!("Example/1");
+        assert!(parse_boot_bytes(unsupported_user_agent.to_string().as_bytes()).is_err());
+        let mut null_metadata = document();
+        null_metadata["singleInstance"] = serde_json::json!(null);
+        assert!(parse_boot_bytes(null_metadata.to_string().as_bytes()).is_err());
+        let mut invalid_digest = document();
+        invalid_digest["graph"]["content_sha256"] =
+            serde_json::json!(format!("sha256:{}", "AA".repeat(32)));
+        assert!(parse_boot_bytes(invalid_digest.to_string().as_bytes()).is_err());
+        let mut installed = document();
+        installed["schema"] = serde_json::json!(6);
+        assert!(parse_boot_bytes(installed.to_string().as_bytes()).is_err());
+        let duplicate = value
+            .to_string()
+            .replacen("\"schema\":8", "\"schema\":8,\"schema\":8", 1);
+        assert!(parse_boot_bytes(duplicate.as_bytes()).is_err());
+    }
 }

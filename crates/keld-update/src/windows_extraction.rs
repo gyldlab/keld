@@ -676,6 +676,174 @@ pub(crate) fn open_source(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// Physical metadata read from one retained Windows graph object.
+///
+/// This value records an observation; it grants no filesystem authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowsGraphMetadata {
+    device: u64,
+    inode: u64,
+    size: u64,
+    links: u64,
+    attributes: u32,
+    created: u64,
+    modified: u64,
+    directory: bool,
+    regular: bool,
+}
+
+impl WindowsGraphMetadata {
+    /// Volume identifier observed through the retained handle.
+    #[must_use]
+    pub const fn dev(&self) -> u64 {
+        self.device
+    }
+    /// File identifier observed through the retained handle.
+    #[must_use]
+    pub const fn ino(&self) -> u64 {
+        self.inode
+    }
+    /// Whether this observation is of a non-reparse directory.
+    #[must_use]
+    pub const fn is_dir(&self) -> bool {
+        self.directory
+    }
+    /// Whether this observation is of a non-reparse regular file with one link.
+    #[must_use]
+    pub const fn is_file(&self) -> bool {
+        self.regular
+    }
+    /// Exact observed byte length.
+    #[must_use]
+    pub const fn len(&self) -> u64 {
+        self.size
+    }
+    /// Whether the observed byte length is zero.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.size == 0
+    }
+}
+
+/// Observes identity and mutation-sensitive metadata through a retained handle.
+///
+/// # Errors
+/// Refuses reparse points, unsupported kinds, multiply linked regular files,
+/// and metadata or handle-duplication failures. No ambient path is resolved.
+pub fn retained_graph_metadata(file: &StdFile) -> io::Result<WindowsGraphMetadata> {
+    let metadata = File::from_std(file.try_clone()?).metadata()?;
+    let directory = metadata.is_dir();
+    if directory {
+        ensure_directory(&metadata)?;
+    } else {
+        ensure_regular(&metadata)?;
+    }
+    Ok(WindowsGraphMetadata {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        size: metadata.len(),
+        links: metadata.nlink(),
+        attributes: metadata.file_attributes(),
+        created: metadata.creation_time(),
+        modified: metadata.last_write_time(),
+        directory,
+        regular: metadata.is_file(),
+    })
+}
+
+/// Checks a trusted graph locator without turning it into source authority.
+///
+/// The caller must compare this observation with its retained object. The
+/// returned metadata never replaces that handle or an admitted ancestor chain.
+///
+/// # Errors
+/// Refuses reparse leaves, unsupported kinds, multiply linked files, or I/O errors.
+pub fn graph_locator_metadata(path: &Path) -> io::Result<WindowsGraphMetadata> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_WRITE,
+    };
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    retained_graph_metadata(&file)
+}
+
+/// The expected kind of one child opened from a retained graph directory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowsGraphChildKind {
+    /// A non-reparse directory on the parent's volume.
+    Directory,
+    /// A non-reparse regular file with exactly one link on the parent's volume.
+    RegularFile,
+    /// A census entry whose directory or regular-file kind is observed from the opened handle.
+    DirectoryOrRegular,
+}
+
+/// Opens one graph child relative to a borrowed retained directory handle.
+///
+/// This returns a retained handle, not graph or resource authority. The caller
+/// must independently admit the parent, compare graph identities and hold every
+/// required ancestor for the source lifetime. No ambient path is reopened.
+///
+/// # Errors
+/// Refuses invalid Windows components, reparse points, kind or volume mismatch,
+/// multiply linked files, and any open or metadata failure.
+pub fn open_retained_graph_child(
+    parent: &StdFile,
+    name: &str,
+    kind: WindowsGraphChildKind,
+) -> io::Result<StdFile> {
+    use cap_fs_ext::{
+        DirExt as _, FollowSymlinks, OpenOptionsFollowExt as _, OpenOptionsMaybeDirExt as _,
+    };
+    use cap_std::fs::{OpenOptions, OpenOptionsExt as _};
+
+    if name.contains('/') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected one graph component",
+        ));
+    }
+    keld_guard::validate_windows_graph_namespace(&[name])
+        .map_err(|detail| io::Error::new(io::ErrorKind::InvalidInput, detail))?;
+    let parent = Dir::from_std_file(parent.try_clone()?);
+    let parent_metadata = parent.dir_metadata()?;
+    ensure_directory(&parent_metadata)?;
+    match kind {
+        WindowsGraphChildKind::Directory => {
+            let child = parent.open_dir_nofollow(name)?;
+            let metadata = child.dir_metadata()?;
+            ensure_directory(&metadata)?;
+            if metadata.dev() != parent_metadata.dev() {
+                return Err(refusal("graph directory crosses its parent volume"));
+            }
+            Ok(child.into_std_file())
+        }
+        WindowsGraphChildKind::RegularFile | WindowsGraphChildKind::DirectoryOrRegular => {
+            let mut options = OpenOptions::new();
+            options
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .follow(FollowSymlinks::No)
+                .maybe_dir(kind == WindowsGraphChildKind::DirectoryOrRegular);
+            let child = parent.open_with(name, &options)?;
+            let metadata = child.metadata()?;
+            if kind == WindowsGraphChildKind::DirectoryOrRegular && metadata.is_dir() {
+                ensure_directory(&metadata)?;
+            } else {
+                ensure_regular(&metadata)?;
+            }
+            if metadata.dev() != parent_metadata.dev() {
+                return Err(refusal("graph file crosses its parent volume"));
+            }
+            Ok(child.into_std())
+        }
+    }
+}
+
 pub(crate) fn ensure_directory(metadata: &Metadata) -> io::Result<()> {
     if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(refusal("expected a non-reparse directory"));

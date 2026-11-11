@@ -748,6 +748,57 @@ pub(crate) fn child_names(directory: &File) -> io::Result<Vec<String>> {
         .collect())
 }
 
+/// Enumerates strict UTF-8 child names through an already retained directory handle.
+///
+/// This returns data only; it neither admits a graph nor establishes authority for
+/// a caller. The caller must open and validate the retained handle without
+/// following reparse points, and bind its ancestor and object identities; handle
+/// metadata cannot prove how the handle was opened. `remaining_entries` and
+/// `remaining_name_bytes` are global remaining budgets across visited directories.
+///
+/// # Errors
+/// Refuses non-directory or reparse handles, invalid UTF-16 names, budget
+/// exhaustion, and any enumeration failure without returning partial data.
+pub fn strict_graph_directory_names(
+    directory: &File,
+    remaining_entries: usize,
+    remaining_name_bytes: usize,
+) -> io::Result<Vec<String>> {
+    use std::os::windows::fs::MetadataExt as _;
+    let metadata = directory.metadata()?;
+    if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a retained non-reparse directory",
+        ));
+    }
+    strict_graph_names(
+        directory_children_with_limit(directory, Some(remaining_entries))?,
+        remaining_name_bytes,
+    )
+}
+
+fn strict_graph_names(
+    children: Vec<DirectoryChild>,
+    remaining_name_bytes: usize,
+) -> io::Result<Vec<String>> {
+    let mut used = 0_usize;
+    let mut names = Vec::new();
+    for child in children {
+        let name = String::from_utf16(&child.name).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "directory name is not UTF-16")
+        })?;
+        used = used
+            .checked_add(name.len())
+            .ok_or_else(|| io::Error::other("graph name budget overflow"))?;
+        if used > remaining_name_bytes {
+            return Err(io::Error::other("graph name byte budget exceeded"));
+        }
+        names.push(name);
+    }
+    Ok(names)
+}
+
 fn open_units_for_delete(
     parent: &File,
     name: Vec<u16>,
@@ -872,6 +923,13 @@ const DIRECTORY_BUFFER_WORDS: usize = 8 * 1024;
 /// Lists the children of an open directory through its handle, omitting `.` and `..`.
 /// Without list rights on that handle the OS call fails and the error is returned.
 fn directory_children(directory: &File) -> io::Result<Vec<DirectoryChild>> {
+    directory_children_with_limit(directory, None)
+}
+
+fn directory_children_with_limit(
+    directory: &File,
+    limit: Option<usize>,
+) -> io::Result<Vec<DirectoryChild>> {
     let mut buffer = vec![0_u64; DIRECTORY_BUFFER_WORDS];
     let size = u32::try_from(buffer.len() * size_of::<u64>()).map_err(io::Error::other)?;
     let mut children = Vec::new();
@@ -899,7 +957,15 @@ fn directory_children(directory: &File) -> io::Result<Vec<DirectoryChild>> {
             return Err(error);
         }
         let bytes: Vec<u8> = buffer.iter().flat_map(|word| word.to_ne_bytes()).collect();
-        children.extend(parse_directory_entries(&bytes)?);
+        let batch = parse_directory_entries(&bytes)?;
+        let count = children
+            .len()
+            .checked_add(batch.len())
+            .ok_or_else(|| io::Error::other("directory entry count overflow"))?;
+        if limit.is_some_and(|maximum| count > maximum) {
+            return Err(io::Error::other("graph directory entry budget exceeded"));
+        }
+        children.extend(batch);
         class = FileIdBothDirectoryInfo;
     }
 }

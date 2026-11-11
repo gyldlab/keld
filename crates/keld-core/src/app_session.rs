@@ -34,18 +34,22 @@ use self::boot_contract::decode_digest;
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 use self::boot_contract::{InitialWindow, boot_error, parse_boot_bytes, target_error};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod graph_contract;
+#[cfg(any(target_os = "macos", windows))]
+mod graph_document;
+#[cfg(any(target_os = "macos", windows))]
+pub use self::graph_document::{GRAPH_FILE, MAX_GRAPH_BYTES, validate_stage_graph_shape};
 #[cfg(any(target_os = "macos", windows))]
 mod graph_selection;
 #[cfg(any(target_os = "macos", windows))]
 pub use self::graph_selection::{SelectedRendererSource, validate_graph_relative_path};
 #[cfg(target_os = "macos")]
 mod launch_facts;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub use self::graph_contract::{
-    AdmittedStageGraph, ApprovedGraphCaptureInput, GRAPH_FILE, MAX_GRAPH_BYTES,
-    make_graph_leaf_from_retained_root, read_bound_graph_leaf_from_retained_root,
+    AdmittedStageGraph, ApprovedGraphCaptureInput, make_graph_leaf_from_retained_root,
+    read_bound_graph_leaf_from_retained_root, verify_provider_trees_from_retained_root,
 };
 #[cfg(target_os = "macos")]
 pub use self::launch_facts::{
@@ -1610,6 +1614,37 @@ fn validate_windows_boot_files(
     let boot_file = open_relative_file_windows(&root, Path::new(BOOT_FILE), "boot descriptor")?;
     let boot_bytes = read_bounded(boot_file, MAX_BOOT_BYTES, "boot descriptor")?;
     let parsed = parse_boot_bytes(&boot_bytes)?;
+    if let Some(pending) = parsed.development_graph.as_ref() {
+        use sha2::Digest as _;
+        if matches!(&mode, WindowsBootMode::Installed { .. }) {
+            return Err(boot_error(
+                "development graph boot is unavailable for installed packages",
+                "Use a qualified development stage under its live CLI lease.",
+            ));
+        }
+        // These bounded reads check only untrusted descriptor consistency; the
+        // retained graph owner must still admit physical source and policy.
+        let graph_file = open_relative_file_windows(&root, Path::new(GRAPH_FILE), "graph leaf")?;
+        let graph_bytes = read_bounded(graph_file, MAX_GRAPH_BYTES, "graph leaf")?;
+        if <[u8; 32]>::from(sha2::Sha256::digest(&graph_bytes)) != pending.graph_sha256 {
+            return Err(boot_error(
+                "development graph digest does not match the boot descriptor",
+                "Recreate the owner-private stage from the captured graph.",
+            ));
+        }
+        let graph = graph_document::validate_graph_shape(&graph_bytes)?;
+        if Path::new(&graph.entry) != parsed.entry.as_path() {
+            return Err(boot_error(
+                "development graph entry differs from the boot descriptor",
+                "Recreate the stage from one captured entry and graph.",
+            ));
+        }
+        graph_document::verify_selected_rows(&graph, &pending.source)?;
+        return Err(boot_error(
+            "development graph metadata has not been bound to a retained source",
+            "Use a qualified development distribution and retry after retained graph admission is available.",
+        ));
+    }
     let entry_file = open_relative_file_windows(&root, &parsed.entry, "entry")?;
     let initial_window = match parsed.initial {
         InitialWindow::Renderer(renderer) => {

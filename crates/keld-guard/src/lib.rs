@@ -40,7 +40,6 @@ mod window_csp;
 ///
 /// # Errors
 /// Rejects malformed JSON, duplicate object keys at any depth and trailing input.
-#[cfg(target_os = "macos")]
 pub fn parse_unique_json(text: &str) -> Result<serde_json::Value, serde_json::Error> {
     unique_json::parse(text)
 }
@@ -1201,13 +1200,36 @@ pub fn windows_package_components_equal(left: &str, right: &str) -> Result<bool,
 /// path collision, or Windows API/allocation failure.
 #[cfg(windows)]
 pub fn validate_windows_package_paths(paths: &[&str]) -> Result<(), String> {
+    validate_windows_namespace(paths, Some(100), false)
+}
+
+/// Validates Windows graph-path components and ordinal namespace uniqueness.
+///
+/// The graph owner must first enforce its own path, component-count, file-count,
+/// and byte bounds. This operation does not establish filesystem identity.
+///
+/// # Errors
+/// Refuses invalid or non-NFC components, ordinal collisions, or NLS failures.
+#[cfg(windows)]
+pub fn validate_windows_graph_namespace(paths: &[&str]) -> Result<(), String> {
+    validate_windows_namespace(paths, None, true)
+}
+
+#[cfg(windows)]
+fn validate_windows_namespace(
+    paths: &[&str],
+    archive_limit: Option<usize>,
+    reject_prefix_aliases: bool,
+) -> Result<(), String> {
     use std::cmp::Ordering;
     let mut encoded_paths = Vec::new();
     encoded_paths
         .try_reserve_exact(paths.len())
         .map_err(|_| "cannot allocate Windows package path set".to_owned())?;
     for path in paths {
-        if path.is_empty() || path.len() > 100 || path.starts_with('/') || path.ends_with('/') {
+        if archive_limit.is_some_and(|maximum| {
+            path.is_empty() || path.len() > maximum || path.starts_with('/') || path.ends_with('/')
+        }) {
             return Err("Windows package path is empty, absolute, or exceeds 100 bytes".to_owned());
         }
         for component in path.split('/') {
@@ -1230,8 +1252,27 @@ pub fn validate_windows_package_paths(paths: &[&str]) -> Result<(), String> {
         return Err("Windows ordinal package path comparison failed".to_owned());
     }
     for pair in encoded_paths.windows(2) {
-        if ordinal_order(&pair[0], &pair[1]) == Ok(Ordering::Equal) {
+        if ordinal_order(&pair[0], &pair[1])
+            .map_err(|()| "Windows ordinal package path comparison failed".to_owned())?
+            == Ordering::Equal
+        {
             return Err("Windows package paths collide ordinally".to_owned());
+        }
+        if reject_prefix_aliases {
+            let separator = u16::from(b'/');
+            for (left, right) in pair[0]
+                .split(|unit| *unit == separator)
+                .zip(pair[1].split(|unit| *unit == separator))
+            {
+                let order = ordinal_order(left, right)
+                    .map_err(|()| "Windows ordinal package path comparison failed".to_owned())?;
+                if order != Ordering::Equal {
+                    break;
+                }
+                if left != right {
+                    return Err("Windows graph path components collide ordinally".to_owned());
+                }
+            }
         }
     }
     Ok(())
@@ -1686,6 +1727,25 @@ mod tests {
             dotless,
             validate_windows_package_paths(&["index.html", "\u{0131}ndex.html"]).is_err()
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_graph_namespace_uses_ordinal_without_archive_length_limit() {
+        let long_path = format!("{}/file.js", "a".repeat(101));
+        assert!(validate_windows_package_paths(&[&long_path]).is_err());
+        assert!(validate_windows_graph_namespace(&[&long_path]).is_ok());
+        assert!(validate_windows_graph_namespace(&["A/file.js", "a/FILE.JS"]).is_err());
+        assert!(validate_windows_graph_namespace(&["A/x.js", "a/y.js"]).is_err());
+        assert!(validate_windows_package_paths(&["A/x.js", "a/y.js"]).is_ok());
+        assert!(validate_windows_graph_namespace(&["a/cafe\u{0301}"]).is_err());
+        for invalid in ["", "/absolute", "trailing/"] {
+            assert!(
+                validate_windows_graph_namespace(&[invalid]).is_err(),
+                "{invalid}"
+            );
+        }
+        assert!(validate_windows_graph_namespace(&["a/file.js", "a/other.js"]).is_ok());
     }
 
     #[cfg(windows)]
