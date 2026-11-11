@@ -317,3 +317,31 @@ fn windows_profile_free_stage_keeps_existing_default_policy() {
         b"{}\n"
     );
 }
+
+#[test]
+fn windows_explicit_legacy_facade_stage_uses_closed_schema_four() {
+    let fixture = StageFixture::new();
+    fs::write(fixture.project.join("keld.config.ts"), "export default { name: 'Fixture', entry: 'src/main.ts', initialWindow: 'none' } as const;\n").expect("facade config");
+    fs::write(
+        fixture.project.join("keld.permissions.jsonc"),
+        br#"{"profile":"legacy"}"#,
+    )
+    .expect("legacy policy");
+    let stage = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("stage facade");
+    let descriptor: serde_json::Value =
+        serde_json::from_slice(&fs::read(stage.root().join("keld.boot.json")).expect("descriptor"))
+            .expect("json");
+    assert_eq!(descriptor["schema"], 4);
+    assert!(descriptor.get("renderer").is_none());
+    assert!(descriptor.get("auth").is_none());
+    assert_eq!(
+        fs::read(stage.root().join("keld.permissions.jsonc"))
+            .expect("policy")
+            .as_slice(),
+        br#"{"profile":"legacy"}"#
+    );
+}
