@@ -53,6 +53,9 @@ mod managed_windows;
 #[cfg(all(feature = "media-acceptance", test))]
 pub(crate) mod media_acceptance;
 mod navigation_diagnostics;
+mod native_text;
+mod original_callbacks;
+mod original_navigation;
 mod startup_retirement;
 mod view_build;
 mod view_host;

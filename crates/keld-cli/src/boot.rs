@@ -38,6 +38,11 @@ const KIPC_TRANSPORT_REL: &str = "src/kipc-transport.ts";
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
 
+#[cfg(windows)]
+mod graph_capture;
+#[cfg(windows)]
+mod windows_graph;
+
 /// One completed owner-private non-release app stage.
 #[derive(Debug)]
 pub struct DevBootStage {
@@ -1088,6 +1093,59 @@ fn stage_dev_boot_platform(
 fn stage_dev_boot_platform_with_owner_check<F>(
     project_root: &Path,
     developer_host: &Path,
+    owner_check: F,
+) -> Result<DevBootStage, BootCompileError>
+where
+    F: FnMut(&Path) -> Result<(), ProjectOwnershipError>,
+{
+    stage_dev_boot_platform_with_owner_check_and_graph(
+        project_root,
+        developer_host,
+        #[cfg(windows)]
+        None,
+        owner_check,
+    )
+}
+
+/// Ordinary developer entry selects graph8 only after the canonical captured
+/// authoring and independent compiled framework tuple have matched.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+pub(crate) fn stage_dev_boot_for_project(
+    project_root: &Path,
+    developer_host: &Path,
+) -> Result<DevBootStage, BootCompileError> {
+    #[cfg(windows)]
+    {
+        windows_graph::stage_for_project(project_root, developer_host)
+    }
+    #[cfg(not(windows))]
+    {
+        stage_dev_boot(project_root, developer_host)
+    }
+}
+
+/// The historical graph seam now takes the already qualified captured input.
+/// No serialized/project/runtime-env value can construct this carrier.
+#[cfg(windows)]
+fn stage_dev_boot_with_approved_graph(
+    project_root: &Path,
+    developer_host: &Path,
+    captured: &windows_graph::CapturedGraphInput,
+) -> Result<DevBootStage, BootCompileError> {
+    stage_dev_boot_platform_with_owner_check_and_graph(
+        project_root,
+        developer_host,
+        Some(captured),
+        ensure_current_principal_owns,
+    )
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+#[allow(clippy::too_many_lines)] // the one StageGuard transaction owns rollback and publication
+fn stage_dev_boot_platform_with_owner_check_and_graph<F>(
+    project_root: &Path,
+    developer_host: &Path,
+    #[cfg(windows)] graph: Option<&windows_graph::CapturedGraphInput>,
     mut owner_check: F,
 ) -> Result<DevBootStage, BootCompileError>
 where
@@ -1102,12 +1160,23 @@ where
     owner_check(&project_root)?;
     let config_path = project_root.join("keld.config.ts");
     owner_check(&config_path)?;
+    #[cfg(windows)]
+    let config = match graph.as_ref() {
+        Some(input) => input.config.clone(),
+        None => fs::read_to_string(config_path)
+            .map_err(|source| BootCompileError::new("project config", source.to_string()))?,
+    };
+    #[cfg(not(windows))]
     let config = fs::read_to_string(config_path)
         .map_err(|source| BootCompileError::new("project config", source.to_string()))?;
     let name = keld_core::title_from_config_ts(&config)
         .unwrap_or_else(|| keld_core::DEFAULT_HELLO_TITLE.to_owned());
     let entry = keld_core::entry_from_config_ts(&config)
         .unwrap_or_else(|| keld_core::DEFAULT_ENTRY.to_owned());
+    #[cfg(windows)]
+    let (name, entry) = graph.as_ref().map_or((name, entry), |input| {
+        (input.app.name.clone(), input.app.entry.clone())
+    });
     let facade = keld_core::initial_window_from_config_ts(&config)
         .map_err(|source| BootCompileError::new("project config", source.to_string()))?;
     // Linux must refuse an unsupported declaration before staging a bootable
@@ -1131,10 +1200,20 @@ where
     #[cfg(target_os = "macos")]
     let permissions_snapshot = ProjectPermissionsSource::open(&project_root)?.capture()?;
     #[cfg(windows)]
-    let permissions_snapshot = capture_windows_permissions(&project_root)?;
+    let ordinary_permissions = if graph.is_none() {
+        Some(capture_windows_permissions(&project_root)?)
+    } else {
+        None
+    };
+    #[cfg(windows)]
+    let permissions_snapshot = graph
+        .as_ref()
+        .map(|input| input.permissions.as_slice())
+        .or(ordinary_permissions.as_deref())
+        .ok_or_else(|| BootCompileError::new("permissions source", "captured bytes are absent"))?;
     #[cfg(windows)]
     let declared_profile = {
-        let source = std::str::from_utf8(permissions_snapshot.as_slice())
+        let source = std::str::from_utf8(permissions_snapshot)
             .map_err(|source| BootCompileError::new("permissions profile", source.to_string()))?;
         keld_guard::parse_manifest(source)
             .map_err(|source| BootCompileError::new("permissions profile", source.to_string()))?
@@ -1160,19 +1239,27 @@ where
     let permissions_bytes = permissions_snapshot.as_slice();
     #[cfg(windows)]
     let permissions_bytes = if declared_profile.is_some() {
-        permissions_snapshot.as_slice()
+        permissions_snapshot
     } else {
         PERMISSIONS_BYTES
     };
     #[cfg(target_os = "linux")]
     let permissions_bytes = PERMISSIONS_BYTES;
-    let compiled_boot = compile_boot_descriptor_bytes(
-        &config,
-        &name,
-        &entry,
-        renderer.as_deref(),
-        permissions_bytes,
-    )?;
+    #[cfg(windows)]
+    let selected_graph = graph.is_some();
+    #[cfg(not(windows))]
+    let selected_graph = false;
+    let compiled_boot = if selected_graph {
+        Vec::new() // The copied graph must be admitted before compiling boot8.
+    } else {
+        compile_boot_descriptor_bytes(
+            &config,
+            &name,
+            &entry,
+            renderer.as_deref(),
+            permissions_bytes,
+        )?
+    };
 
     let entry_source = contained_source(&project_root, &entry, "entry")?;
     let renderer_source = renderer
@@ -1183,6 +1270,21 @@ where
     if let Some(source) = &renderer_source {
         owner_check(source)?;
     }
+    #[cfg(windows)]
+    let (developer_host_path, mut host_source, host_source_metadata) = match graph.as_ref() {
+        Some(input) => {
+            let source = input
+                .host
+                .try_clone()
+                .map_err(|error| BootCompileError::new("qualified Host", error.to_string()))?;
+            let metadata = source
+                .metadata()
+                .map_err(|error| BootCompileError::new("qualified Host", error.to_string()))?;
+            (developer_host.to_path_buf(), source, metadata)
+        }
+        None => open_developer_executable(developer_host, "developer host")?,
+    };
+    #[cfg(not(windows))]
     let (developer_host_path, mut host_source, host_source_metadata) =
         open_developer_executable(developer_host, "developer host")?;
     #[cfg(not(target_os = "linux"))]
@@ -1243,35 +1345,60 @@ where
         "launcher",
     )?;
 
-    stage_project_file(&root, &entry, &entry_source, "entry")?;
-    if let (Some(renderer), Some(source)) = (&renderer, &renderer_source) {
-        stage_project_file(&root, renderer, source, "renderer")?;
+    #[cfg(windows)]
+    let _captured_tree = if let Some(input) = graph.as_ref() {
+        if source_digest != input.expected_host_sha256 {
+            return Err(BootCompileError::new(
+                "qualified Host",
+                "copied Host differs from the independent tuple",
+            ));
+        }
+        Some(graph_capture::capture_complete_tree(
+            &project_root,
+            &input.root,
+            &root,
+            guard
+                .launch_guards
+                .last()
+                .ok_or_else(|| BootCompileError::new("retained stage", "root guard is absent"))?,
+            &mut owner_check,
+        )?)
+    } else {
+        None
+    };
+    if !selected_graph {
+        stage_project_file(&root, &entry, &entry_source, "entry")?;
+        if let (Some(renderer), Some(source)) = (&renderer, &renderer_source) {
+            stage_project_file(&root, renderer, source, "renderer")?;
+        }
     }
     // Probe with two Path components. `join("src/kipc-transport.ts")` then
     // `.is_file()` can miss a real sidecar on Windows (`/` is not the OS
     // separator); `contained_source` still uses the same relative string as
     // `entry` (`src/main.ts`), which `canonicalize` already accepts.
-    match fs::metadata(project_root.join("src").join("kipc-transport.ts")) {
-        Ok(metadata) if metadata.is_file() => {
-            let transport_source =
-                contained_source(&project_root, KIPC_TRANSPORT_REL, "kipc transport")?;
-            owner_check(&transport_source)?;
-            stage_project_file(
-                &root,
-                KIPC_TRANSPORT_REL,
-                &transport_source,
-                "kipc transport",
-            )?;
-        }
-        Ok(_) => {
-            return Err(BootCompileError::new(
-                "kipc transport",
-                "target is not a regular file",
-            ));
-        }
-        Err(source) if source.kind() == io::ErrorKind::NotFound => {}
-        Err(source) => {
-            return Err(BootCompileError::new("kipc transport", source.to_string()));
+    if !selected_graph {
+        match fs::metadata(project_root.join("src").join("kipc-transport.ts")) {
+            Ok(metadata) if metadata.is_file() => {
+                let transport_source =
+                    contained_source(&project_root, KIPC_TRANSPORT_REL, "kipc transport")?;
+                owner_check(&transport_source)?;
+                stage_project_file(
+                    &root,
+                    KIPC_TRANSPORT_REL,
+                    &transport_source,
+                    "kipc transport",
+                )?;
+            }
+            Ok(_) => {
+                return Err(BootCompileError::new(
+                    "kipc transport",
+                    "target is not a regular file",
+                ));
+            }
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(BootCompileError::new("kipc transport", source.to_string()));
+            }
         }
     }
     write_new_file(
@@ -1280,6 +1407,31 @@ where
         0o400,
         "permissions",
     )?;
+    #[cfg(windows)]
+    let compiled_boot = if let Some(input) = graph.as_ref() {
+        input.recheck()?;
+        let graph_bytes = keld_core::app_session::make_graph_leaf_from_retained_root(
+            &root,
+            guard
+                .launch_guards
+                .last()
+                .ok_or_else(|| BootCompileError::new("retained stage", "root guard is absent"))?,
+            &input.approved,
+            &input.selected,
+            &entry,
+        )
+        .map_err(|error| BootCompileError::new("copied graph admission", error.to_string()))?;
+        input.recheck()?;
+        write_new_file(
+            &root.join(keld_core::app_session::GRAPH_FILE),
+            &graph_bytes,
+            0o400,
+            "graph leaf",
+        )?;
+        input.compile(&graph_bytes)?
+    } else {
+        compiled_boot
+    };
     write_new_file(
         &root.join("keld.boot.json"),
         &compiled_boot,

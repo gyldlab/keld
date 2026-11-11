@@ -4,8 +4,8 @@
 //! permissions, the existing boot compiler owns the sealed descriptor, and
 //! Pack owns resource capture, code signing, image verification and publication.
 
-#[cfg(any(target_os = "macos", test))]
-mod config;
+#[cfg(any(target_os = "macos", windows, test))]
+pub(crate) mod config;
 
 use std::fmt;
 
@@ -32,13 +32,13 @@ use crate::boot::{
 /// Typed local build failure. No developer-stage fallback follows a refusal.
 #[derive(Debug)]
 pub struct BuildError {
-    phase: &'static str,
-    detail: String,
+    pub(crate) phase: &'static str,
+    pub(crate) detail: String,
     usage: bool,
 }
 
 impl BuildError {
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", windows, test))]
     fn input(phase: &'static str, detail: impl fmt::Display) -> Self {
         Self {
             phase,

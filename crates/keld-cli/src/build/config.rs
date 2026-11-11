@@ -1,6 +1,7 @@
 //! Closed, inert authoring data for the first native local macOS build.
 
 use std::collections::BTreeMap;
+#[cfg(any(target_os = "macos", test))]
 use std::path::PathBuf;
 
 use keld_core::{LiteralConfigValue, literal_config_from_ts};
@@ -9,65 +10,88 @@ use super::BuildError;
 
 /// Values captured once from the application's shared authoring source.
 #[derive(Debug)]
-pub(super) struct AppConfig {
-    pub(super) id: String,
-    pub(super) name: String,
-    pub(super) version: String,
-    pub(super) entry: String,
-    pub(super) renderer: Option<String>,
+pub(crate) struct AppConfig {
+    #[cfg_attr(
+        all(windows, not(test)),
+        expect(
+            dead_code,
+            reason = "Windows dev reuses canonical app validation; packaging retains this field"
+        )
+    )]
+    pub(crate) id: String,
+    pub(crate) name: String,
+    #[cfg_attr(
+        all(windows, not(test)),
+        expect(
+            dead_code,
+            reason = "Windows dev reuses canonical app validation; packaging retains this field"
+        )
+    )]
+    pub(crate) version: String,
+    pub(crate) entry: String,
+    #[cfg_attr(
+        all(windows, not(test)),
+        expect(
+            dead_code,
+            reason = "Windows dev reuses canonical app validation; packaging retains this field"
+        )
+    )]
+    pub(crate) renderer: Option<String>,
     /// Optional closed source selection for one explicitly Legacy facade.
-    #[cfg(target_os = "macos")]
-    pub(super) renderer_source: Option<RendererSourceConfig>,
+    #[cfg(any(target_os = "macos", windows))]
+    pub(crate) renderer_source: Option<RendererSourceConfig>,
 }
 
 /// Application-selected paths, never a source or native permission grant.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[derive(Debug)]
-pub(super) struct RendererSourceConfig {
-    pub(super) root: String,
-    pub(super) entry: String,
+pub(crate) struct RendererSourceConfig {
+    pub(crate) root: String,
+    pub(crate) entry: String,
 }
 
 /// Data-only expected provider and original preload identities.
 /// A KELD-qualified original release still needs separate source receipts.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[derive(Debug)]
-pub(super) struct GraphSourceConfig {
-    pub(super) package_sha256: [u8; 32],
-    pub(super) lock_sha256: [u8; 32],
+pub(crate) struct GraphSourceConfig {
+    pub(crate) package_sha256: [u8; 32],
+    pub(crate) lock_sha256: [u8; 32],
     /// Canonical GH499 order: electron, @keld/api, @keld/kipc.
-    pub(super) provider_trees: [[u8; 32]; 3],
-    pub(super) preload: PreloadPin,
+    pub(crate) provider_trees: [[u8; 32]; 3],
+    pub(crate) preload: PreloadPin,
 }
 
 /// An exact app-relative preload path and build-selected expected digest.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[derive(Debug)]
-pub(super) struct PreloadPin {
-    pub(super) path: String,
-    pub(super) sha256: [u8; 32],
+pub(crate) struct PreloadPin {
+    pub(crate) path: String,
+    pub(crate) sha256: [u8; 32],
 }
 
 /// Input qualification pin. Strings here cannot mint publisher authority.
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug)]
-pub(super) struct ExecutablePin {
-    pub(super) path: PathBuf,
-    pub(super) sha256: [u8; 32],
-    pub(super) version: String,
+pub(crate) struct ExecutablePin {
+    pub(crate) path: PathBuf,
+    pub(crate) sha256: [u8; 32],
+    pub(crate) version: String,
 }
 
 /// Exact local package selection. No paths are opened during parsing.
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug)]
-pub(super) struct LocalBuildConfig {
-    pub(super) bundle_version: String,
-    pub(super) minimum_system_version: String,
-    pub(super) icon: Option<String>,
-    pub(super) resources: Vec<String>,
-    pub(super) host: ExecutablePin,
-    pub(super) bun: ExecutablePin,
-    #[cfg(target_os = "macos")]
-    pub(super) graph_source: Option<GraphSourceConfig>,
-    pub(super) out_dir: PathBuf,
+pub(crate) struct LocalBuildConfig {
+    pub(crate) bundle_version: String,
+    pub(crate) minimum_system_version: String,
+    pub(crate) icon: Option<String>,
+    pub(crate) resources: Vec<String>,
+    pub(crate) host: ExecutablePin,
+    pub(crate) bun: ExecutablePin,
+    #[cfg(any(target_os = "macos", windows))]
+    pub(crate) graph_source: Option<GraphSourceConfig>,
+    pub(crate) out_dir: PathBuf,
 }
 
 type Fields = BTreeMap<String, LiteralConfigValue>;
@@ -109,6 +133,7 @@ fn optional_text(
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn required_string_array(
     source: &mut Fields,
     field: &'static str,
@@ -133,7 +158,7 @@ fn closed(source: &Fields, phase: &'static str) -> Result<(), BuildError> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn optional_object(
     source: &mut Fields,
     field: &'static str,
@@ -149,7 +174,7 @@ fn optional_object(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn required_digest(
     source: &mut Fields,
     field: &'static str,
@@ -164,14 +189,14 @@ fn required_digest(
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn validate_graph_path(path: &str, phase: &'static str) -> Result<(), BuildError> {
     // Core is the only GH499 path grammar owner; no cross-platform clone.
     keld_core::app_session::validate_graph_relative_path(path)
         .map_err(|error| invalid(phase, error.to_string()))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn parse_renderer_source(source: &mut Fields) -> Result<Option<RendererSourceConfig>, BuildError> {
     let phase = "keld.config.ts rendererSource";
     let Some(mut source) = optional_object(source, "rendererSource", phase)? else {
@@ -185,7 +210,7 @@ fn parse_renderer_source(source: &mut Fields) -> Result<Option<RendererSourceCon
     Ok(Some(RendererSourceConfig { root, entry }))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn parse_graph_source(source: &mut Fields) -> Result<Option<GraphSourceConfig>, BuildError> {
     let phase = "keld.build.ts graphSource";
     let Some(mut graph) = optional_object(source, "graphSource", phase)? else {
@@ -221,7 +246,12 @@ fn parse_graph_source(source: &mut Fields) -> Result<Option<GraphSourceConfig>, 
 }
 
 /// Reads only supported application root fields, without evaluating TypeScript.
-pub(super) fn parse_app(source: &str) -> Result<AppConfig, BuildError> {
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn parse_app(source: &str) -> Result<AppConfig, BuildError> {
+    parse_app_context(source, false)
+}
+
+fn parse_app_context(source: &str, development: bool) -> Result<AppConfig, BuildError> {
     let phase = "keld.config.ts";
     let mut root = fields(source, phase)?;
     let name = required_text(&mut root, "name", phase)?;
@@ -233,14 +263,18 @@ pub(super) fn parse_app(source: &str) -> Result<AppConfig, BuildError> {
             "name exceeds 255 bytes or contains control characters",
         ));
     }
-    let version = required_text(&mut root, "version", phase)?;
+    let version = if development {
+        optional_text(&mut root, "version", phase)?.unwrap_or_default()
+    } else {
+        required_text(&mut root, "version", phase)?
+    };
     let entry = optional_text(&mut root, "entry", phase)?
         .unwrap_or_else(|| keld_core::DEFAULT_ENTRY.to_owned());
     let renderer = optional_text(&mut root, "renderer", phase)?;
     let initial_window = optional_text(&mut root, "initialWindow", phase)?;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     let renderer_source = parse_renderer_source(&mut root)?;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         let single_instance = keld_core::single_instance_from_config_ts(source)
             .map_err(|error| invalid(phase, error.to_string()))?;
@@ -294,7 +328,7 @@ pub(super) fn parse_app(source: &str) -> Result<AppConfig, BuildError> {
             "initialWindow: 'none' forbids renderer and auth",
         ));
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     if renderer_source.is_some() && !facade {
         return Err(invalid(
             phase,
@@ -308,11 +342,47 @@ pub(super) fn parse_app(source: &str) -> Result<AppConfig, BuildError> {
         entry,
         renderer: (!facade)
             .then(|| renderer.unwrap_or_else(|| keld_core::DEFAULT_RENDERER.to_owned())),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         renderer_source,
     })
 }
 
+/// The approved Windows development preparation has the same app/source readers,
+/// but its build root contains only graphSource and never selects packaging.
+#[cfg(windows)]
+pub(crate) fn parse_development_graph(
+    app_source: &str,
+    build_source: &str,
+) -> Result<(AppConfig, GraphSourceConfig), BuildError> {
+    let app = parse_app_context(app_source, true)?;
+    if app.renderer_source.is_none() {
+        return Err(invalid(
+            "development graph",
+            "rendererSource and graphSource are required together",
+        ));
+    }
+    let app_root = fields(app_source, "keld.config.ts")?;
+    if app_root.contains_key("version")
+        || app_root.contains_key("singleInstance")
+        || app_root.contains_key("applicationNameForUserAgent")
+    {
+        return Err(invalid(
+            "development graph",
+            "declared version, singleInstance or applicationNameForUserAgent requires the qualified Windows runtime metadata owner",
+        ));
+    }
+    let mut root = fields(build_source, "development keld.build.ts")?;
+    let graph = parse_graph_source(&mut root)?.ok_or_else(|| {
+        invalid(
+            "development graph",
+            "graphSource is required with rendererSource",
+        )
+    })?;
+    closed(&root, "development keld.build.ts")?;
+    Ok((app, graph))
+}
+
+#[cfg(any(target_os = "macos", test))]
 fn parse_executable_pin(
     source: &mut Fields,
     field: &'static str,
@@ -373,7 +443,8 @@ fn parse_sha256(text: &str) -> Option<[u8; 32]> {
 
 /// Parses the supported local target and signing without interpreting executable
 /// expressions or acquiring code. Platform availability is checked by the caller.
-pub(super) fn parse_build(source: &str) -> Result<LocalBuildConfig, BuildError> {
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn parse_build(source: &str) -> Result<LocalBuildConfig, BuildError> {
     let phase = "keld.build.ts";
     let mut root = fields(source, phase)?;
     if required_text(&mut root, "target", phase)? != "macos-arm64" {
@@ -388,7 +459,7 @@ pub(super) fn parse_build(source: &str) -> Result<LocalBuildConfig, BuildError> 
     let resources = required_string_array(&mut root, "resources", phase)?;
     let host = parse_executable_pin(&mut root, "host")?;
     let bun = parse_executable_pin(&mut root, "bun")?;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     let graph_source = parse_graph_source(&mut root)?;
     let out_dir = PathBuf::from(required_text(&mut root, "outDir", phase)?);
     closed(&root, phase)?;
@@ -399,7 +470,7 @@ pub(super) fn parse_build(source: &str) -> Result<LocalBuildConfig, BuildError> 
         resources,
         host,
         bun,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         graph_source,
         out_dir,
     })
@@ -410,7 +481,7 @@ mod tests {
     use super::*;
 
     const APP: &str = "export default {name:'Alpha', id:'dev.example.alpha', version:'1.2.3', entry:'src/main.ts', renderer:'index.html'} as const;";
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     const GRAPH_APP: &str = "export default {name:'Alpha', id:'dev.example.alpha', version:'1.2.3', entry:'src/main.ts', initialWindow:'none', rendererSource:{root:'client/published',entry:'pages/editor.html'}} as const;";
 
     fn build() -> String {
@@ -421,7 +492,7 @@ mod tests {
         )
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     fn graph_build() -> String {
         let source = format!(
             "graphSource:{{packageSha256:'{}',lockSha256:'{}',providerTrees:{{electron:'{}',api:'{}',kipc:'{}'}},preload:{{path:'bootstrap/app-preload.cjs',sha256:'{}'}}}},",
@@ -494,7 +565,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     #[test]
     fn installed_graph_runtime_declarations_are_optional_and_app_bound() {
         for declarations in [
@@ -515,7 +586,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     #[test]
     fn installed_graph_runtime_declarations_refuse_loss_or_identity_substitution() {
         for declaration in [
@@ -559,7 +630,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     #[test]
     fn closed_graph_source_captures_independent_expected_data_without_app_permissions() {
         let app = parse_app(GRAPH_APP).expect("closed facade source");
@@ -580,7 +651,7 @@ mod tests {
         assert_eq!(expected.preload.sha256, [0xff; 32]);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     #[test]
     fn graph_source_refuses_missing_extra_duplicate_and_expression_fields() {
         for source in [
@@ -602,7 +673,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     #[test]
     fn renderer_source_refuses_non_facade_renderer_auth_and_unknown_fields() {
         for source in [
@@ -624,7 +695,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     #[test]
     fn renderer_source_and_preload_use_the_gh499_canonical_component_grammar() {
         for source in [

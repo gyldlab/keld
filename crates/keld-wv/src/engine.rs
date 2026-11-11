@@ -472,14 +472,14 @@ pub enum AppWindowEvent {
 /// Immutable Host-only association with one accepted original load call.
 /// Core retains authenticated caller/window metadata before dispatch; this
 /// completion correlation is never a principal, grant or wire field.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeNavigationContext {
     operation: std::num::NonZeroU64,
     view: WebviewId,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl NativeNavigationContext {
     /// Capture the registry's admitted nonzero operation and mapped view.
     #[must_use]
@@ -549,9 +549,9 @@ impl core::fmt::Display for NativeNavigationRefusal {
 impl std::error::Error for NativeNavigationRefusal {}
 
 /// Actual native observations for one captured Host operation.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[derive(Debug, PartialEq, Eq)]
-pub enum MacOriginalNavigationFact {
+pub enum OriginalNavigationFact {
     /// Refusal before minting any `NativeAttempt`; not a fatal app failure.
     Refused {
         /// Closed original-load refusal category.
@@ -560,35 +560,39 @@ pub enum MacOriginalNavigationFact {
     /// The actual host-owned loadRequest returned a retained navigation.
     Started {
         /// Opaque actual native attempt; never synthesized by Core or a page.
-        attempt: crate::wkwebview::MacNativeAttempt,
+        attempt: crate::renderer_contract::NativeAttemptObservation,
     },
     /// The matched native callback committed the qualified original document.
     Committed {
         /// Actual native committed observation; not future-operation authority.
-        stamp: crate::wkwebview::MacNativeDocumentStamp,
+        stamp: crate::renderer_contract::NativeDocumentStamp,
         /// Qualified actual URL sharing its source-wide retained-byte charge.
-        native_url: crate::wkwebview::MacNavigationUrl,
+        native_url: crate::resource_source::NativeNavigationUrl,
         /// Irreversible revocation witness minted by that same actual commit.
-        document: crate::wkwebview::MacNativeDocumentLease,
+        document: crate::renderer_contract::CheckedNativeDocumentLease,
     },
     /// The matching actual navigation finished; commit alone is insufficient.
     Finished {
         /// Actual matched committed observation.
-        stamp: crate::wkwebview::MacNativeDocumentStamp,
+        stamp: crate::renderer_contract::NativeDocumentStamp,
     },
     /// A real admitted attempt failed or its native load return was absent.
     Failed {
         /// Actual native attempt whose operation failed.
-        attempt: crate::wkwebview::MacNativeAttempt,
+        attempt: crate::renderer_contract::NativeAttemptObservation,
         /// Old committed observation invalidated by this exact failure.
-        revoked: Option<crate::wkwebview::MacNativeDocumentStamp>,
+        revoked: Option<crate::renderer_contract::NativeDocumentStamp>,
     },
     /// The native owner retired a previously observed document.
     Revoked {
         /// Old observation; never authority for a later native operation.
-        previous: Option<crate::wkwebview::MacNativeDocumentStamp>,
+        previous: Option<crate::renderer_contract::NativeDocumentStamp>,
     },
 }
+
+/// Existing macOS API name for the same shared native observation.
+#[cfg(target_os = "macos")]
+pub use OriginalNavigationFact as MacOriginalNavigationFact;
 
 /// Stage of a failed native registry-window build (GH-531).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
