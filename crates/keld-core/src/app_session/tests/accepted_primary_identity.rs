@@ -251,6 +251,8 @@ fn accepted_primary_identity_fences_caller_context_before_healthy_echo() {
 #[cfg(windows)]
 #[test]
 fn windows_authenticated_generations_bind_retained_admission_to_the_current_principal() {
+    let _custody = keld_runtime::windows_job::install_host_death_job()
+        .expect("install process-lifetime custody before starting any role");
     use sha2::{Digest as _, Sha256};
     let root = tempfile::tempdir().expect("owned policy root");
     let path = root.path().join("policy.jsonc");
@@ -287,6 +289,18 @@ fn windows_authenticated_generations_bind_retained_admission_to_the_current_prin
         handle.observed_profile_binding(a1, p1),
         Some((keld_guard::ProfileState::Legacy, digest))
     );
+    // An external custody probe may hold this exact test process after the
+    // real bound publication. The marker conveys phase only, not authority.
+    if std::env::var_os("KELD_W6_CUSTODY_HOLD").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        println!("KELD_W6_BOUND");
+        std::io::stdout()
+            .flush()
+            .expect("flush custody phase marker");
+        let mut line = String::new();
+        std::io::stdin()
+            .read_line(&mut line)
+            .expect("wait for custody probe");
+    }
     std::fs::write(&path, br#"{"profile":"strict"}"#).expect("replace path policy after capture");
     control
         .get_mut()
