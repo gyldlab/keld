@@ -1,29 +1,98 @@
 //! Fixed document-start bootstrap for the Host-qualified original image.
-//! Native installation owns source/document admission; this is pure rendering.
+//! One emitter supplies counted UTF8 tests and counted native UTF16 storage.
 
 use crate::WvError;
 use crate::preload_image::{AppPreloadImage, preload_error};
 
-const RUNTIME: &str = include_str!("../wkwebview/macos_preload_runtime.generated.js");
+mod sinks;
+use sinks::{Measured, NativeWide, write_json};
 
-/// Render only the immutable image and canonical Host facts already admitted by Core.
-/// The top-frame guard precedes even factory publication. No path is reopened and
-/// the exact source is the body of the same eight-argument original wrapper as macOS.
-pub(super) fn render(image: &AppPreloadImage) -> Result<String, WvError> {
+const RUNTIME: &str = include_str!("../wkwebview/macos_preload_runtime.generated.js");
+const PREFIX: &str = "(() => {\n\"use strict\";\nif(window.top!==window)return;\n";
+const CAPTURE: &str = "\nconst runtime=globalThis.__keldOriginalPreloadRuntime; delete globalThis.__keldOriginalPreloadRuntime;\nruntime.installWindows(";
+const FUNCTION: &str =
+    ",function(require,process,exports,module,Buffer,global,setImmediate,clearImmediate){\n";
+const SUFFIX: &str = "\n});\n})();";
+
+fn emit(image: &AppPreloadImage, output: &mut impl std::fmt::Write) -> Result<(), WvError> {
     #[derive(serde::Serialize)]
     struct Facts<'a> {
         argv: &'a [String],
         versions: &'a std::collections::BTreeMap<String, String>,
     }
-    let facts = serde_json::to_string(&Facts {
-        argv: image.additional_arguments(),
-        versions: image.versions(),
+    let write_failed = || preload_error("counted bootstrap rendering refused");
+    output.write_str(PREFIX).map_err(|_| write_failed())?;
+    output.write_str(RUNTIME).map_err(|_| write_failed())?;
+    output.write_str(CAPTURE).map_err(|_| write_failed())?;
+    write_json(
+        output,
+        &Facts {
+            argv: image.additional_arguments(),
+            versions: image.versions(),
+        },
+    )
+    .map_err(|_| write_failed())?;
+    output.write_str(FUNCTION).map_err(|_| write_failed())?;
+    output
+        .write_str(image.source())
+        .map_err(|_| write_failed())?;
+    output.write_str(SUFFIX).map_err(|_| write_failed())
+}
+
+fn measure(image: &AppPreloadImage) -> Result<Measured, WvError> {
+    let mut measured = Measured::default();
+    emit(image, &mut measured)?;
+    Ok(measured)
+}
+
+/// One fixed native registration input; this is not a CONTROL carrier or an
+/// addition to the immutable source-image quota. The native View retains this
+/// separately counted allocation through AddScript completion or actual Close.
+pub(super) struct NativeBootstrapText {
+    wide: Vec<u16>,
+    utf8_bytes: usize,
+}
+impl NativeBootstrapText {
+    pub(super) fn as_nul_terminated_utf16(&self) -> &[u16] {
+        &self.wide
+    }
+    pub(super) fn allocated_bytes(&self) -> usize {
+        self.wide.capacity() * std::mem::size_of::<u16>()
+    }
+    pub(super) fn emitted_utf8_bytes(&self) -> usize {
+        self.utf8_bytes
+    }
+}
+
+/// Count exact immutable inputs before allocating once; the native path never
+/// creates an intermediate rendered UTF8 String or serialized-facts buffer.
+pub(super) fn render_native(image: &AppPreloadImage) -> Result<NativeBootstrapText, WvError> {
+    let measured = measure(image)?;
+    let mut output = NativeWide::reserve(measured.utf16_units)
+        .map_err(|_| preload_error("native bootstrap storage reservation refused"))?;
+    emit(image, &mut output)?;
+    let wide = output
+        .finish()
+        .map_err(|_| preload_error("native bootstrap capacity changed after reservation"))?;
+    Ok(NativeBootstrapText {
+        wide,
+        utf8_bytes: measured.utf8_bytes,
     })
-    .map_err(|_| preload_error("canonical process facts serialization refused"))?;
-    Ok(format!(
-        "(() => {{\n\"use strict\";\nif(window.top!==window)return;\n{RUNTIME}\nconst runtime=globalThis.__keldOriginalPreloadRuntime; delete globalThis.__keldOriginalPreloadRuntime;\nruntime.installWindows({facts},function(require,process,exports,module,Buffer,global,setImmediate,clearImmediate){{\n{}\n}});\n}})();",
-        image.source()
-    ))
+}
+
+/// UTF8 output is only needed by the executable composition oracle.
+#[cfg(test)]
+pub(super) fn render(image: &AppPreloadImage) -> Result<String, WvError> {
+    let measured = measure(image)?;
+    let mut output = String::new();
+    output
+        .try_reserve_exact(measured.utf8_bytes)
+        .map_err(|_| preload_error("bootstrap UTF8 test storage reservation refused"))?;
+    emit(image, &mut output)?;
+    if output.len() != measured.utf8_bytes || output.capacity() > measured.utf8_bytes {
+        return Err(preload_error("bootstrap UTF8 test capacity changed"));
+    }
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -111,6 +180,41 @@ console.log("exact bootstrap wrapper and main-frame guard passed");
 "#
         );
         run_bun(&program);
+    }
+
+    fn native_fixture(source: &str) -> crate::preload_image::AppPreloadImage {
+        AppPreloadBudget::default()
+            .reserve_window()
+            .expect("fixture source capacity")
+            .from_qualified_graph(
+                source.as_bytes().to_vec(),
+                Sha256::digest(source.as_bytes()).into(),
+                vec![String::from("--quoted=\"\u{1f680}\n")],
+                std::collections::BTreeMap::from([(
+                    String::from("keld"),
+                    String::from("fixture-\u{3bb}"),
+                )]),
+            )
+            .expect("same admitted fixture image")
+    }
+
+    #[test]
+    fn counted_native_render_is_exact_utf16_without_a_second_rendered_utf8_buffer() {
+        let image =
+            native_fixture("// exact original \u{1f680}\r\nglobalThis.fixture = '\u{3bb}';");
+        let utf8 = render(&image).expect("same canonical emitter oracle");
+        let native = super::render_native(&image).expect("count once then native allocation");
+        let expected: Vec<u16> = utf8.encode_utf16().chain(std::iter::once(0)).collect();
+        assert_eq!(native.as_nul_terminated_utf16(), expected);
+        assert_eq!(native.emitted_utf8_bytes(), utf8.len());
+        assert_eq!(native.allocated_bytes(), expected.len() * 2);
+    }
+
+    #[test]
+    fn admitted_nul_in_original_source_cannot_truncate_native_registration() {
+        let image = native_fixture("globalThis.before=1;\0globalThis.after=2;");
+        assert!(super::render_native(&image).is_err());
+        assert!(render(&image).is_err());
     }
 
     fn run_bun(program: &str) {
