@@ -749,7 +749,12 @@ mod tests {
 
     #[test]
     fn nested_outer_host_and_generation_job_complete_retirement() {
-        let mut child = Command::new(std::env::current_exe().expect("test binary"))
+        // The test runner itself is admitted suspended to a non-breakaway outer
+        // Job, modeling the ordinary launcher. Inside it the real Host installs
+        // its separate death Job, then Bun joins its per-generation Job. This
+        // exercises three nested Jobs plus the real grandchild.
+        let mut command = Command::new(std::env::current_exe().expect("test binary"));
+        command
             .args([
                 "--exact",
                 "windows_generation::tests::nested_outer_host_job_fixture",
@@ -757,30 +762,41 @@ mod tests {
                 "--nocapture",
             ])
             .env(NESTED_HOST_FIXTURE, "1")
-            .current_dir(std::env::current_dir().expect("D: working dir"))
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn isolated nested-Job test runner");
+            .current_dir(std::env::current_dir().expect("D: working dir"));
+        let mut child = WindowsSupervisedChild::spawn_role(
+            &WindowsRoleCommand::from_command(&command).expect("absolute native launcher input"),
+        )
+        .expect("outer launcher Job must admit suspended Host");
         let deadline = Instant::now() + Duration::from_secs(15);
-        loop {
-            if child.try_wait().expect("nested Job test exit").is_some() {
-                break;
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("outer launcher Job retirement") {
+                break status;
             }
             assert!(
                 Instant::now() < deadline,
-                "nested Host Job test did not exit"
+                "three-level nested Job fixture did not exit"
             );
             std::thread::sleep(Duration::from_millis(20));
-        }
-        let output = child.wait_with_output().expect("nested Job test output");
+        };
+        let stdout = bounded_capture_read(child.stdout.take().expect("launcher stdout"));
+        let stderr = bounded_capture_read(child.stderr.take().expect("launcher stderr"));
         assert!(
-            output.status.success()
-                && String::from_utf8_lossy(&output.stdout)
+            status.success()
+                && String::from_utf8_lossy(&stdout)
                     .contains("KELD_NESTED_HOST_AND_GENERATION_ZERO"),
-            "nested Host/Generation test refused: stdout={} stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
+            "three-level nested launcher/Host/Generation failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr),
+        );
+        let Kind::Generation(ref launcher) = child.kind else {
+            panic!("native outer launcher requires its own Job");
+        };
+        assert_eq!(
+            launcher
+                .family
+                .active_processes()
+                .expect("outer launcher Job accounting"),
+            0,
         );
     }
 
