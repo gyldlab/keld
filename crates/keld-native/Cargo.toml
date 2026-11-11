@@ -26,6 +26,11 @@ sha2 = { workspace = true }
 [dev-dependencies]
 serde_json.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# W4 S1 uses the existing Win32 SDK; Foundation, Threading and Registry
+# remain inherited from its workspace declaration.
+windows-sys = { workspace = true, features = ["Win32_Devices_Display", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
+
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { workspace = true }
 

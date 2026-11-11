@@ -48,13 +48,15 @@ sha2 = { workspace = true }
 # dependencies) into keld-core's and keld-host.exe's Windows build. Windows only,
 # because installed-root boot is Windows-only; keld-update never depends on keld-core.
 keld-update = { workspace = true }
+# Windows graph-v1 digest validation reuses the existing workspace SHA-256 pin.
+sha2 = { workspace = true }
 windows-permissions = { workspace = true }
 windows-sys = { workspace = true }
 
 [dev-dependencies]
 # #528 T5: the guarded router tests digest their permissions manifest on every
 # OS. `sha2` is already in each OS's build graph (keld-guard, keld-ipc), and is
-# a normal dependency only on macOS above.
+# a normal dependency on macOS and Windows above.
 sha2 = { workspace = true }
 tempfile = { workspace = true }
 # Enables only KEL-135 fault injection in the signed core test fixture; this
