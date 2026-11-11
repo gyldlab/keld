@@ -282,13 +282,18 @@ mod tests {
     }
 
     fn stage_git_sentinel(caller: &Path, fixture_environment: [(&str, &PathBuf); 2]) -> PathBuf {
-        let initialized = formatter_fixture_command("git")
-            .args(["init", "-q"])
-            .envs(fixture_environment)
-            .current_dir(caller)
-            .output()
-            .expect("initialize disposable caller");
-        assert!(initialized.status.success(), "{initialized:?}");
+        for args in [
+            &["init", "-q"][..],
+            &["config", "maintenance.auto", "false"],
+        ] {
+            let output = formatter_fixture_command("git")
+                .args(args)
+                .envs(fixture_environment)
+                .current_dir(caller)
+                .output()
+                .expect("initialize and configure disposable caller");
+            assert!(output.status.success(), "fixture Git {args:?}: {output:?}");
+        }
         let git_dir = caller.join(".git");
         assert_disposable_directory(&git_dir, &caller.canonicalize().expect("caller identity"));
         fs::write(caller.join("sentinel.txt"), b"caller source must survive\n")
