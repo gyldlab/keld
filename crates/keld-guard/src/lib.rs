@@ -25,11 +25,20 @@
 //! missing. That is not an OS-containment claim.
 
 mod admit;
+#[cfg(any(windows, test))]
+mod file_url;
 mod jsonc;
 mod manifest_profile;
 mod probe;
 mod renderer_channels;
 mod unique_json;
+#[cfg(any(windows, test))]
+pub use file_url::FileUrlRefusal;
+#[cfg(windows)]
+pub use file_url::{
+    AdmittedRootUrl, ParsedFileUrl, RootRelativeComponents, RootSpelling, file_components_equal,
+    file_components_match_graph_path, file_url_root_relative,
+};
 pub mod verified_manifest;
 mod window_csp;
 

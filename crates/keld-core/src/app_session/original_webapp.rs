@@ -9,13 +9,13 @@ use std::sync::Arc;
 
 use keld_guard::{ProfileState, ResolvedWindowCsp};
 use keld_wv::OriginalEntryQuery;
-use keld_wv::wkwebview::{
-    AdmittedWebAppSource, AppPreloadBudget, AppPreloadImage, VerifiedWebAsset,
-};
+use keld_wv::preload_image::{AppPreloadBudget, AppPreloadImage};
+use keld_wv::resource_source::{AdmittedWebAppSource, VerifiedWebAsset};
 
 use super::graph_contract::AdmittedStageGraph;
 use super::{HostAppError, app_detail};
 
+#[cfg(target_os = "macos")]
 const ORIGINAL_SCHEME: &str = "keld-resource";
 
 /// Convert the exact physical file:// URL from approved original main code
@@ -27,6 +27,7 @@ const ORIGINAL_SCHEME: &str = "keld-resource";
 ///
 /// # Errors
 /// Refuses every URI except the selected index in the retained graph's root.
+#[cfg(target_os = "macos")]
 pub(super) fn qualify_original_index_uri(
     selected_entry: &Path,
     original_uri: &str,
@@ -87,6 +88,7 @@ pub(super) fn qualify_original_index_uri(
 /// construct this value or claim that a native window has loaded.
 pub(super) struct PreparedOriginalSource {
     selected_stage: PathBuf,
+    #[cfg(target_os = "macos")]
     selected_entry: PathBuf,
     graph: Arc<AdmittedStageGraph>,
     preload_budget: AppPreloadBudget,
@@ -105,7 +107,6 @@ impl PreparedOriginalSource {
         policy: ResolvedWindowCsp,
         preload_budget: AppPreloadBudget,
     ) -> Result<Self, HostAppError> {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
         if admitted_profile != ProfileState::Legacy {
             return Err(app_detail(
                 "original resource profile",
@@ -114,9 +115,13 @@ impl PreparedOriginalSource {
         }
         // One existing graph operation rechecks once and returns descriptor,
         // immutable asset census and its own selected root path together.
-        let (root, assets, selected_stage, selected_entry) =
-            graph.verified_selected_source()?.into_parts();
+        let verified = graph.verified_selected_source()?;
+        #[cfg(target_os = "macos")]
+        let (root, assets, selected_stage, selected_entry) = verified.into_parts();
+        #[cfg(windows)]
+        let (root, assets, selected_stage, _) = verified.into_parts();
         let relative_entry = graph.selected_source()?.entry().to_owned();
+        #[cfg(target_os = "macos")]
         let selected_entry = selected_stage.join(selected_entry);
         let assets = assets
             .into_iter()
@@ -126,26 +131,40 @@ impl PreparedOriginalSource {
                 sha256: asset.sha256,
             })
             .collect();
-        let mut nonce = [0_u8; 16];
-        getrandom::fill(&mut nonce)
-            .map_err(|_| app_detail("original source authority", "OS entropy unavailable"))?;
-        let mut authority = String::with_capacity(32);
-        for byte in nonce {
-            authority.push(char::from(HEX[usize::from(byte >> 4)]));
-            authority.push(char::from(HEX[usize::from(byte & 0x0f)]));
-        }
-        let source = AdmittedWebAppSource::from_admitted_graph(
+        #[cfg(target_os = "macos")]
+        let source = {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            let mut nonce = [0_u8; 16];
+            getrandom::fill(&mut nonce)
+                .map_err(|_| app_detail("original source authority", "OS entropy unavailable"))?;
+            let mut authority = String::with_capacity(32);
+            for byte in nonce {
+                authority.push(char::from(HEX[usize::from(byte >> 4)]));
+                authority.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            }
+            AdmittedWebAppSource::from_admitted_graph(
+                root,
+                graph.graph_sha256(),
+                assets,
+                &relative_entry,
+                policy,
+                ORIGINAL_SCHEME.to_owned(),
+                authority,
+            )
+            .map_err(|detail| app_detail("original source admission", detail))?
+        };
+        #[cfg(windows)]
+        let source = AdmittedWebAppSource::from_admitted_windows_graph(
             root,
             graph.graph_sha256(),
             assets,
             &relative_entry,
             policy,
-            ORIGINAL_SCHEME.to_owned(),
-            authority,
         )
         .map_err(|detail| app_detail("original source admission", detail))?;
         Ok(Self {
             selected_stage,
+            #[cfg(target_os = "macos")]
             selected_entry,
             graph,
             preload_budget,
@@ -213,7 +232,17 @@ impl OriginalLoadSelection {
             .map_err(|error| app_detail("selected original preload image", error.to_string()))
     }
     pub(super) fn qualify_uri(&self, uri: &str) -> Result<OriginalEntryQuery, HostAppError> {
-        qualify_original_index_uri(&self.prepared.selected_entry, uri)
+        #[cfg(target_os = "macos")]
+        {
+            qualify_original_index_uri(&self.prepared.selected_entry, uri)
+        }
+        #[cfg(windows)]
+        {
+            self.prepared
+                .source
+                .qualify_original_entry_uri(uri)
+                .map_err(|detail| app_detail("original main file URL", detail))
+        }
     }
     pub(super) fn source(&self) -> &Arc<AdmittedWebAppSource> {
         self.prepared.source()
@@ -226,7 +255,7 @@ impl OriginalLoadSelection {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 

@@ -73,6 +73,9 @@ getrandom = { workspace = true }
 wry = { version = "0.56.1", features = ["devtools"] }
 
 [target.'cfg(target_os="windows")'.dependencies]
+# Reuse the existing canonical retained-root reader for verified local resources.
+# This sibling edge adds no package/version and cannot depend upward on Core/Wv.
+keld-update = { workspace = true }
 # GH1188: restrict the patched Tao source to Windows; other targets use crates.io.
 tao_windows = { package = "tao", version = "=0.35.3", path = "../../vendor/tao-0.35.3-keld" }
 getrandom = { workspace = true }

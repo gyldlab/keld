@@ -91,7 +91,7 @@ pub use windows_baseline::{
 pub use windows_extraction::{
     CompletedWindowsStage, ExtractedWindowsStage, WindowsExtractionRoot, WindowsGraphChildKind,
     WindowsGraphMetadata, graph_locator_metadata, open_retained_graph_child,
-    retained_graph_metadata,
+    retained_graph_dos_path, retained_graph_metadata,
 };
 #[cfg(windows)]
 pub use windows_fs::strict_graph_directory_names;
