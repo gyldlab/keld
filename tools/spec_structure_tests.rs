@@ -2476,6 +2476,68 @@ fn a_nested_real_value_passes_every_empty_field() {
 }
 
 #[test]
+fn directory_part_owns_requires_a_real_scope() {
+    let path = format!("{DIR}/design.md");
+    for value in [
+        "TBD",
+        "UNKNOWN",
+        "TBD: decisions pending",
+        "[TBD](index.md)",
+    ] {
+        let fixture = Fixture::new();
+        fixture.replace(&path, "Owns: decisions", &format!("Owns: {value}"));
+        assert_only(&fixture, Rule::PartHeader, value);
+    }
+    let nested = Fixture::new();
+    nested.replace(&path, "Owns: decisions\n\n", "Owns: decisions\n  - TBD\n\n");
+    assert_only(&nested, Rule::PartHeader, "nested placeholder");
+    for value in ["decisions", "Unknown channels are rejected"] {
+        let fixture = Fixture::new();
+        fixture.replace(&path, "Owns: decisions", &format!("Owns: {value}"));
+        assert!(fixture.rules().is_empty(), "{value}: {:?}", fixture.rules());
+    }
+}
+
+#[test]
+fn task_blockers_require_complete_id_statements() {
+    let path = format!("{DIR}/delivery.md");
+    for invalid in [
+        "B-1 and later",
+        "none B-1",
+        "B-1 none",
+        "B-1, later",
+        "B-1,",
+        "KEL-53",
+        "B-1;T-1",
+        "B-1 #1311",
+    ] {
+        let fixture = Fixture::new();
+        fixture.replace(
+            &path,
+            "- **Blocked by:** B-1",
+            &format!("- **Blocked by:** {invalid}"),
+        );
+        assert_only(&fixture, Rule::TaskFields, invalid);
+    }
+    for valid in [
+        "B-1",
+        "none",
+        "B-1, AC-1",
+        "B-1 T-1",
+        "#1311 AC-2",
+        "KEL-53 B-4",
+    ] {
+        let fixture = Fixture::new();
+        fixture.replace(
+            &path,
+            "- **Blocked by:** B-1",
+            &format!("- **Blocked by:** {valid}"),
+        );
+        assert!(fixture.rules().is_empty(), "{valid}: {:?}", fixture.rules());
+    }
+}
+
+#[test]
 fn a_field_may_use_any_list_marker_and_either_emphasis() {
     for line in [
         "- **Then:** x",

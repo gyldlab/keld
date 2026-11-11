@@ -299,6 +299,28 @@ docs_only_pr="$(result_for_paths docs/specs/gh532-first-proof-evidence-rules.md 
 expect_flags "docs-only PR runs only the docs lane" "$docs_only" "$docs_only_pr"
 expect_codeql "docs-only PR selects no CodeQL language" "$codeql_none" "$docs_only_pr"
 expect_no_package_selection "docs-only PR selects no package/suite" "$docs_only_pr"
+# #1321: the spec-structure census reads all GitHub-rendered Markdown forms,
+# including upper-case extensions and Markdown outside docs/specs. Each input
+# must reach the hosted hygiene job through docs or hygiene. A lower-case .md
+# remains the unchanged positive control.
+for extension in litcoffee livemd markdown md mdown mdwn mdx mkd mkdn mkdown ronn scd workbook MD MARKDOWN Md; do
+    input="packages/@keld/kipc/gh999-offroot.$extension"
+    routed="$(result_for_paths "$input")"
+    expect_exact_output "$input selects the hosted spec checker" docs true "$routed"
+    expect_exact_output "$input retains its TS package owner" ts true "$routed"
+    if [[ "$extension" != md ]]; then
+        expect_mermaid_flag "$input cannot bypass Mermaid validation" true "$routed"
+    fi
+done
+for extension in md markdown MD; do
+    input="crates/keld-wv/gh999-offroot.$extension"
+    routed="$(result_for_paths "$input")"
+    expect_exact_output "$input keeps the Rust owner" rust true "$routed"
+    expect_exact_output "$input reaches the spec checker" docs true "$routed"
+    expect_exact_output "$input does not become a GUI source" gui false "$routed"
+done
+expect_exact_output "a Rust source is not classified as Markdown" docs false \
+    "$(result_for_paths crates/keld-ipc/src/codec.rs)"
 # Negative control: the same directory with a Rust source extension selects
 # the Rust analysis, so the docs-only result is not a constant.
 docs_rust_source="$(result_for_paths docs/specs/gh532-first-proof-evidence-rules.md docs/specs/example.rs)"

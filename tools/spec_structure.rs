@@ -3602,7 +3602,7 @@ fn check_titles(docs: &[&Doc], report: &mut Report) {
 }
 
 fn check_part_header(doc: &Doc, report: &mut Report) {
-    for label in PART_FIELDS {
+    let fields = PART_FIELDS.map(|label| {
         read_field(
             doc,
             0,
@@ -3611,8 +3611,8 @@ fn check_part_header(doc: &Doc, report: &mut Report) {
             Spelling::Header,
             None,
             report,
-        );
-    }
+        )
+    });
     let mut lines = doc
         .lines()
         .iter()
@@ -3633,7 +3633,19 @@ fn check_part_header(doc: &Doc, report: &mut Report) {
         .next()
         .and_then(|(_, line)| line.field())
         .and_then(|text| field_value(text, "Owns", Spelling::Exact))
-        .is_some_and(|value| !value.is_empty());
+        .is_some_and(|value| non_value(&value, true).is_none())
+        && match &fields[1] {
+            Field::Once(field) => {
+                !field.statements.is_empty()
+                    && field
+                        .statements
+                        .iter()
+                        .all(|value| non_value(value, true).is_none())
+            }
+            // read_field already reports the distinct duplicate cause.
+            Field::Repeated => true,
+            Field::Absent => false,
+        };
     if !(title && backlink && owns) {
         report.add(
             Rule::PartHeader,
@@ -3722,6 +3734,35 @@ fn defined_id(text: &str) -> Option<(&'static str, u32)> {
 /// so and name the first identification action. Every other field states a fact.
 fn allows_unknown(kind: &str, label: &str) -> bool {
     kind == "B" && label == "Owner"
+}
+
+/// A task names only `none` or complete stable IDs. A foreign ID may carry a
+/// tracker prefix; comma-separated and nested ID lists are also valid.
+fn task_blockers_valid(statements: &[String]) -> bool {
+    if statements.len() == 1 && statements[0] == "none" {
+        return true;
+    }
+    !statements.is_empty()
+        && statements.iter().all(|statement| {
+            statement.split(',').all(|group| {
+                let mut saw_id = false;
+                let mut awaiting_id = false;
+                for word in group.split_whitespace() {
+                    if is_tracker_word(word) {
+                        if awaiting_id {
+                            return false;
+                        }
+                        awaiting_id = true;
+                    } else if parse_id(word).is_some_and(|(_, _, end)| end == word.len()) {
+                        saw_id = true;
+                        awaiting_id = false;
+                    } else {
+                        return false;
+                    }
+                }
+                saw_id && !awaiting_id
+            })
+        })
 }
 
 struct Definition {
@@ -3832,17 +3873,7 @@ fn check_definitions(
                 );
             }
             if let Some(field) = stated.get(TASK_BLOCKERS_FIELD) {
-                let none = field.statements.iter().any(|text| text == "none");
-                let prose = field
-                    .statements
-                    .iter()
-                    .any(|text| id_tokens(text).is_empty());
-                let settled = if none {
-                    field.statements.len() == 1
-                } else {
-                    !prose
-                };
-                if !settled {
+                if !task_blockers_valid(&field.statements) {
                     report.add(
                         Rule::TaskFields,
                         &doc.rel,

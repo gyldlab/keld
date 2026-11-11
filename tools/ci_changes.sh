@@ -94,6 +94,23 @@ codeql_extensionless_may_be_javascript() {
     [[ "$first" == "#!" ]]
 }
 
+# Match the 13 GitHub-rendered Markdown extensions admitted by
+# tools/spec_structure.rs::is_markdown_path, case-insensitively. The spec
+# census covers tracked Markdown outside docs/specs too, so each extension
+# must select the hosted hygiene job that runs "Spec structure contracts".
+is_spec_markdown_path() {
+    local name="${1##*/}"
+    [[ "$name" == *.* ]] || return 1
+    local extension
+    extension="$(printf '%s' "${name##*.}" | tr '[:upper:]' '[:lower:]')"
+    case "$extension" in
+        litcoffee | livemd | markdown | md | mdown | mdwn | mdx | mkd | mkdn | mkdown | ronn | scd | workbook)
+            return 0
+            ;;
+        *) return 1 ;;
+    esac
+}
+
 # CodeQL analyses source by language, independent of Cargo package ownership:
 # a documentation read that selects a Rust test package changes no analysed
 # source. The patterns follow the extractors' file types in CodeQL's supported
@@ -710,6 +727,9 @@ host_path_is_affected() {
     local host_dir
 
     # Documentation alone cannot alter the `keld-host --hello` executable.
+    if is_spec_markdown_path "$changed_file"; then
+        return 1
+    fi
     # Any other file below an actual host dependency is deliberately treated as
     # relevant: an unrecognised build input must run the smoke, not skip it.
     case "$changed_file" in
@@ -743,10 +763,29 @@ classify_path() {
                 return
             fi
             ;;
+        crates/*)
+            if is_spec_markdown_path "$changed_file"; then
+                local document_owner
+                if document_owner="$(package_for_path "$changed_file")"; then
+                    rust="$TRUE"
+                    add_changed_package_root "$document_owner"
+                else
+                    mark_unknown
+                    return
+                fi
+            fi
+            ;;
     esac
 
-    if [[ "$changed_file" == *.md ]]; then
+    if is_spec_markdown_path "$changed_file"; then
         markdown_changed="$TRUE"
+        docs="$TRUE"
+        # The range Mermaid scanner handles ordinary lowercase .md. Other
+        # recognized GitHub Markdown spellings must not silently skip it.
+        case "$changed_file" in
+            *.md) ;;
+            *) mermaid="$TRUE" ;;
+        esac
     fi
 
     # GH-508: the kipc channel allocation baseline is append-only against its
