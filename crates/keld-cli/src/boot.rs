@@ -1364,11 +1364,24 @@ fn prepare_windows_launch_parents(
 
 #[cfg(windows)]
 fn open_windows_launch_guard(path: &Path) -> Result<File, BootCompileError> {
+    open_windows_directory_guard(path, FILE_SHARE_READ | FILE_SHARE_WRITE)
+}
+
+/// Retains an authoring ancestor without granting concurrent write/delete opens.
+/// This is stricter than the dev launch guard: pathname traversal must not race
+/// a directory handle used to change reparse metadata.
+#[cfg(windows)]
+pub(crate) fn open_windows_input_directory_guard(path: &Path) -> Result<File, BootCompileError> {
+    open_windows_directory_guard(path, FILE_SHARE_READ)
+}
+
+#[cfg(windows)]
+fn open_windows_directory_guard(path: &Path, share_mode: u32) -> Result<File, BootCompileError> {
     use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
 
     let guard = OpenOptions::new()
         .read(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .share_mode(share_mode)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
         .map_err(|source| BootCompileError::new("launch namespace", source.to_string()))?;
@@ -1629,7 +1642,7 @@ fn write_new_file(
 
 #[cfg(windows)]
 #[allow(unsafe_code)] // reviewed Windows-only atomic creation boundary; see SAFETY proof at CreateDirectoryW
-fn create_windows_stage_root(path: &Path) -> io::Result<()> {
+pub(crate) fn create_windows_stage_root(path: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt as _;
 
     let descriptor = keld_guard::windows_owner_private_directory_security()?;
