@@ -251,9 +251,10 @@ fn accepted_primary_identity_fences_caller_context_before_healthy_echo() {
 #[cfg(windows)]
 #[test]
 fn windows_authenticated_generations_bind_retained_admission_to_the_current_principal() {
+    use sha2::{Digest as _, Sha256};
+
     let _custody = keld_runtime::windows_job::install_host_death_job()
         .expect("install process-lifetime custody before starting any role");
-    use sha2::{Digest as _, Sha256};
     let root = tempfile::tempdir().expect("owned policy root");
     let path = root.path().join("policy.jsonc");
     let bytes = br#"{"profile":"legacy"}"#;
