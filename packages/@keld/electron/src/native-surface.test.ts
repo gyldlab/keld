@@ -9,6 +9,7 @@
  * diagnostic/no-termination proof remains required; no mock supplies it here.
  */
 import { expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 
 import * as electron from "./index";
 import { isUnsupportedMemberError, type TrackingIssue } from "./unsupported.ts";
@@ -83,7 +84,7 @@ test("menu.set-application-menu source: void call reports actual missing-link fa
       "--no-install",
       "--no-env-file",
       "-e",
-      `import {Menu} from ${JSON.stringify(new URL("./index.ts", import.meta.url).pathname)};
+      `import {Menu} from ${JSON.stringify(fileURLToPath(new URL("./index.ts", import.meta.url)))};
        process.on('unhandledRejection',()=>{console.log('UNHANDLED');process.exitCode=4;});
        console.log('RETURN='+String(Menu.setApplicationMenu(Menu.buildFromTemplate([{label:'Explicit'}]))));
        await new Promise(resolve=>setImmediate(resolve));`,
@@ -93,7 +94,7 @@ test("menu.set-application-menu source: void call reports actual missing-link fa
     stderr: "pipe",
     timeout: 4000,
   });
-  expect(child.exitCode).toBe(0);
+  expect(child.exitCode, child.stderr.toString()).toBe(0);
   expect(child.stdout.toString()).toBe("RETURN=undefined\n");
   const diagnostics = child.stderr
     .toString()
@@ -154,8 +155,10 @@ test("menu.role-quit.before-quit pending GH-563: generic live-window Quit stays 
       "--no-install",
       "--no-env-file",
       "--preload",
-      new URL("../../kipc/src/transport.ts", import.meta.url).pathname,
-      new URL("./browser-window-boot.test-role.ts", import.meta.url).pathname,
+      fileURLToPath(new URL("../../kipc/src/transport.ts", import.meta.url)),
+      fileURLToPath(
+        new URL("./browser-window-boot.test-role.ts", import.meta.url),
+      ),
       "native-delete-before-import",
     ],
     env: { ...process.env, KELD_NATIVE_WINDOW_FACADE: "1" },
@@ -163,7 +166,7 @@ test("menu.role-quit.before-quit pending GH-563: generic live-window Quit stays 
     stderr: "pipe",
     timeout: 4000,
   });
-  expect(child.exitCode).toBe(0);
+  expect(child.exitCode, child.stderr.toString()).toBe(0);
   expect(child.stdout.toString()).toBe("PASS native-delete-before-import\n");
   expect(child.stderr.toString()).toBe("");
 });

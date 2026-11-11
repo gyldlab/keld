@@ -13,6 +13,8 @@ import { join } from "node:path";
 import { expect, test } from "bun:test";
 
 const fixtures = join(import.meta.dir, "..", "fixtures");
+/** Host launch facts use a rooted URL pathname; child cwd stays native. */
+const fixtureFactsRoot = new URL("../fixtures", import.meta.url).pathname;
 
 /** Kill switch only; every fixture exits by itself once its sequence settles. */
 const FIXTURE_KILL_MS = 10_000;
@@ -104,7 +106,7 @@ function runFixture(
               schema: 1,
               kind: "development",
               name: "GH491 replay fixture",
-              root: fixtures,
+              root: fixtureFactsRoot,
             })}`,
           ]
         : []),
@@ -120,18 +122,21 @@ function runFixture(
     killSignal: "SIGKILL",
   });
   const stdout = child.stdout.toString();
+  const stderr = child.stderr.toString();
   const line = (prefix: string): Record<string, unknown> => {
     const found = stdout
       .split("\n")
       .find((candidate) => candidate.startsWith(prefix));
     if (found === undefined) {
-      throw new Error(`${script}: no ${prefix.trim()} line in\n${stdout}`);
+      throw new Error(
+        `${script}: no ${prefix.trim()} line (exit=${String(child.exitCode)})\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+      );
     }
     return JSON.parse(found.slice(prefix.length)) as Record<string, unknown>;
   };
   return {
     code: child.exitCode,
-    stderr: child.stderr.toString(),
+    stderr,
     result: line("GH491_RESULT "),
     probe: line("GH491_PROBE ") as unknown as Probe,
   };
