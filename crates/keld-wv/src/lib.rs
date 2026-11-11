@@ -125,6 +125,8 @@ pub mod wkwebview;
 #[doc(hidden)]
 pub mod wv_link;
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub use engine::OriginalEntryQuery;
 #[cfg(target_os = "macos")]
 pub use engine::{AppDesktopDisplay, AppDesktopFacts, AppDesktopRect};
 pub use engine::{
@@ -133,9 +135,7 @@ pub use engine::{
     WindowSnapshot, WkWebViewEngineExt,
 };
 #[cfg(target_os = "macos")]
-pub use engine::{
-    MacOriginalNavigationFact, NativeNavigationContext, NativeNavigationRefusal, OriginalEntryQuery,
-};
+pub use engine::{MacOriginalNavigationFact, NativeNavigationContext, NativeNavigationRefusal};
 pub use error::WvError;
 pub use hello::{DEFAULT_HTML as HELLO_HTML, run as run_hello_window};
 pub use media::{

@@ -134,21 +134,36 @@ pub struct WebviewSpec {
 /// carried into the native command or used as any document/IPC principal.
 /// Only cold original-load commands own this bounded heap payload; ordinary
 /// GUI events retain no query allocation. The UI borrow ends after native capture.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OriginalEntryQuery {
-    text: Box<str>,
+    text: Option<Box<str>>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl OriginalEntryQuery {
     /// Accept the bounded original query without interpreting or decoding it.
     ///
     /// # Errors
     /// Rejects overlong, fragment-bearing and control-character input.
     pub fn new(query: &str) -> Result<Self, &'static str> {
-        Self::validate(query)?;
-        Ok(Self { text: query.into() })
+        Self::from_optional_query(Some(query))
+    }
+
+    /// Preserve whether the original URI carried a query delimiter.
+    ///
+    /// An absent query and an explicitly empty query have different native
+    /// navigation spellings and must not be conflated when binding a request.
+    ///
+    /// # Errors
+    /// Rejects overlong, fragment-bearing and control-character input.
+    pub fn from_optional_query(query: Option<&str>) -> Result<Self, &'static str> {
+        if let Some(query) = query {
+            Self::validate(query)?;
+        }
+        Ok(Self {
+            text: query.map(Into::into),
+        })
     }
 
     fn validate(query: &str) -> Result<(), &'static str> {
@@ -161,14 +176,25 @@ impl OriginalEntryQuery {
     /// Borrow the exact originally admitted query without allocation/truncation.
     ///
     /// # Errors
-    /// Refuses internally invalid bounded storage; no partial query is returned.
+    /// Refuses absent or internally invalid storage; no partial query is returned.
     pub fn as_str(&self) -> Result<&str, &'static str> {
-        Self::validate(&self.text)?;
-        Ok(&self.text)
+        self.as_optional_str()?
+            .ok_or("original source query absent")
+    }
+
+    /// Borrow the exact query and preserve an absent versus empty query.
+    ///
+    /// # Errors
+    /// Refuses internally invalid bounded storage; no partial query is returned.
+    pub fn as_optional_str(&self) -> Result<Option<&str>, &'static str> {
+        if let Some(query) = self.text.as_deref() {
+            Self::validate(query)?;
+        }
+        Ok(self.text.as_deref())
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "macos", target_os = "windows")))]
 mod original_entry_query_tests {
     use super::OriginalEntryQuery;
 
@@ -176,11 +202,17 @@ mod original_entry_query_tests {
     fn only_cold_query_payload_owns_indirection_and_hot_commands_stay_small() {
         assert!(std::mem::size_of::<super::AppWindowCommand>() <= 256);
         assert!(std::mem::size_of::<OriginalEntryQuery>() <= 2 * std::mem::size_of::<usize>());
-        let query = OriginalEntryQuery::new("appLang=é").expect("valid UTF8");
+        let query = OriginalEntryQuery::new("appLang=?").expect("valid UTF8");
         let owned = query.clone();
         drop(query);
-        assert_eq!(owned.as_str(), Ok("appLang=é"));
-        assert!(OriginalEntryQuery { text: "#".into() }.as_str().is_err());
+        assert_eq!(owned.as_str(), Ok("appLang=?"));
+        assert!(
+            OriginalEntryQuery {
+                text: Some("#".into())
+            }
+            .as_str()
+            .is_err()
+        );
     }
 
     #[test]
@@ -193,6 +225,7 @@ mod original_entry_query_tests {
         assert!(OriginalEntryQuery::new(&(max + "x")).is_err());
         for denied in ["#", "key=bad\u{0000}value", "line\nfeed"] {
             assert!(OriginalEntryQuery::new(denied).is_err(), "{denied:?}");
+            assert!(OriginalEntryQuery::from_optional_query(Some(denied)).is_err());
         }
         assert_eq!(
             OriginalEntryQuery::new("appLang=fr&queryObj=%257b")
@@ -200,6 +233,18 @@ mod original_entry_query_tests {
                 .as_str(),
             Ok("appLang=fr&queryObj=%257b")
         );
+    }
+
+    #[test]
+    fn absent_and_explicit_empty_query_remain_distinct() {
+        let absent = OriginalEntryQuery::from_optional_query(None).unwrap();
+        let empty = OriginalEntryQuery::from_optional_query(Some("")).unwrap();
+        assert_ne!(absent, empty);
+        assert_eq!(absent.as_optional_str(), Ok(None));
+        assert_eq!(empty.as_optional_str(), Ok(Some("")));
+        assert!(absent.as_str().is_err());
+        assert_eq!(empty.as_str(), Ok(""));
+        assert_eq!(absent.clone().as_optional_str(), Ok(None));
     }
 }
 
