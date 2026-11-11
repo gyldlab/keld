@@ -36,6 +36,8 @@ pub(crate) struct WindowsRoleCommand {
     pub(crate) current_dir: PathBuf,
     #[cfg(test)]
     test_fault: TestGenerationFault,
+    #[cfg(test)]
+    observed_child: Option<std::sync::mpsc::Sender<std::os::windows::io::OwnedHandle>>,
 }
 
 impl WindowsRoleCommand {
@@ -79,6 +81,8 @@ impl WindowsRoleCommand {
             current_dir,
             #[cfg(test)]
             test_fault: TestGenerationFault::None,
+            #[cfg(test)]
+            observed_child: None,
         })
     }
 }
@@ -213,6 +217,13 @@ impl WindowsSupervisedChild {
         )
         .map_err(io::Error::other)?;
         let mut launch = WindowsLaunchedProcess::record(child).map_err(io::Error::other)?;
+        #[cfg(test)]
+        if let Some(observer) = command.observed_child.as_ref() {
+            let exact = launch.child().process_handle().try_clone_to_owned()?;
+            observer
+                .send(exact)
+                .map_err(|_| io::Error::other("test native process witness receiver closed"))?;
+        }
         #[cfg(test)]
         if command.test_fault == TestGenerationFault::BeforeAssign {
             // Both native owners unwind without any first instruction.
@@ -589,9 +600,22 @@ mod tests {
             let mut role =
                 WindowsRoleCommand::from_command(&command).expect("absolute native inputs");
             role.test_fault = fault;
+            let (witness_tx, witness_rx) = std::sync::mpsc::channel();
+            role.observed_child = Some(witness_tx);
             let refusal = WindowsSupervisedChild::spawn_role(&role)
                 .err()
                 .expect("injected refused admission");
+            let exact_process = witness_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("retained exact pre-resume process handle");
+            let witness =
+                crate::windows_job::WindowsTestFamilyMember::from_observed_handle(exact_process);
+            assert!(
+                witness
+                    .wait_until_exited(Duration::from_secs(5))
+                    .expect("exact refused child process wait"),
+                "rejected suspended child must be terminated on native owner unwind"
+            );
             assert!(
                 refusal.to_string().contains("injected"),
                 "refusal must preserve the expected phase: {refusal}"

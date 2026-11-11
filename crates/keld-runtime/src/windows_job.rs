@@ -1265,6 +1265,12 @@ pub(crate) struct WindowsTestFamilyMember {
 
 #[cfg(test)]
 impl WindowsTestFamilyMember {
+    /// Retains the exact process object observed by the native suspended launcher.
+    /// Unlike a PID-based lookup, this stays valid across immediate launch rejection.
+    pub(crate) fn from_observed_handle(process: OwnedHandle) -> Self {
+        Self { process }
+    }
+
     pub(crate) fn has_exited(&self) -> Result<bool, WindowsHostJobError> {
         self.wait_until_exited(Duration::ZERO)
     }
