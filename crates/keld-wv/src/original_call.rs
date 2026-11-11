@@ -33,6 +33,15 @@ pub(crate) struct LocalCallBudget {
     bytes: usize,
 }
 impl LocalCallBudget {
+    pub(crate) const fn is_empty(&self) -> bool {
+        self.records == 0 && self.bytes == 0
+    }
+    pub(crate) const fn retained_records(&self) -> usize {
+        self.records
+    }
+    pub(crate) const fn retained_bytes(&self) -> usize {
+        self.bytes
+    }
     pub(crate) fn reserve(&mut self, bytes: usize) -> Result<(), WvError> {
         let records = self
             .records
@@ -71,6 +80,28 @@ fn bridge_error(detail: impl Into<String>) -> WvError {
 #[cfg(test)]
 mod postbind_queue_limits {
     use super::{LocalCallBudget, MAX_LOCAL_CALL_BYTES, MAX_LOCAL_CALL_RECORDS};
+
+    #[test]
+    fn observations_require_every_reserved_record_to_release() {
+        let mut budget = LocalCallBudget::default();
+        assert!(budget.is_empty());
+        budget
+            .reserve(0)
+            .expect("zero bytes still retain one record");
+        assert!(!budget.is_empty());
+        assert_eq!((budget.retained_records(), budget.retained_bytes()), (1, 0));
+        budget.reserve(7).expect("second retained record");
+        budget.release(0).expect("first actual record release");
+        assert!(!budget.is_empty());
+        assert_eq!((budget.retained_records(), budget.retained_bytes()), (1, 7));
+        assert!(budget.release(8).is_err());
+        assert_eq!((budget.retained_records(), budget.retained_bytes()), (1, 7));
+        budget.release(7).expect("last actual record release");
+        assert!(budget.is_empty());
+        assert_eq!((budget.retained_records(), budget.retained_bytes()), (0, 0));
+        assert!(budget.release(0).is_err());
+        assert!(budget.is_empty());
+    }
 
     #[test]
     fn postbind_record_max_plus_one_refuses_without_changing_custody() {
