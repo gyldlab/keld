@@ -47,12 +47,25 @@ export const TEST_HOOK_NAMES: readonly string[] = Object.freeze([
  * bytes from any caller directory. A failed build throws Bun's AggregateError.
  */
 export async function buildReleaseTransport(release = true): Promise<string> {
+  return buildReleaseTransportFromSourceRoot(kipc, release);
+}
+
+/** Build through the same producer from a retained, qualified KIPC source root.
+ * This is source selection, not source authentication. The caller must hold
+ * immutable source-closure/ancestor witnesses for src and every dependency.
+ * Never pass an application root or infer qualification from a path/hash alone.
+ */
+export async function buildReleaseTransportFromSourceRoot(
+  sourceRoot: string,
+  release = true,
+): Promise<string> {
+  const root = resolve(sourceRoot);
   const callerCwd = process.cwd();
   let built: Awaited<ReturnType<typeof Bun.build>>;
   try {
-    process.chdir(kipc);
+    process.chdir(root);
     built = await Bun.build({
-      entrypoints: [join(kipc, "src/transport.ts")],
+      entrypoints: [join(root, "src/transport.ts")],
       target: "node",
       format: "esm",
       minify: { syntax: true },

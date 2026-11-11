@@ -6850,6 +6850,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Local macOS package construction or verification failed at the named phase
 - fix: Correct the named missing, changed, escaping or incompatible input, executable mode, native signature or disk-image error, then build into a new output directory. Preserve the previous artifact and any reported cleanup failure. Do not use quarantine removal, deep signing or permission overrides as a remedy.
 
+## KELD-PACK-015
+
+- crate: keld-pack
+- message: Executable post-sign integrity check failed
+- fix: Retain the exact unsigned embedded image, sign it once without other image edits, and check the returned candidate before packaging. This pure byte check does not establish signature trust; existing Windows Guard verification remains required. Local test image preparation does not establish production provenance, installation or Strict runtime qualification.
+
 ## KELD-HELPER-001
 
 - crate: keld-updater-helper

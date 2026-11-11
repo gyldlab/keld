@@ -5,7 +5,10 @@ use super::{
     APP_ID, TRUST_E_NOSIGNATURE, WIN_VERIFY_TRUST_REJECTED, env_path, fixture_payload, sha256_hex,
 };
 use keld_guard::{WindowsAuthenticodeError, WindowsAuthenticodeImage};
-use keld_pack::{ExpectedAppIdentityPayload, embed_host_identity, read_host_identity};
+use keld_pack::{
+    ExpectedAppIdentityPayload, check_host_identity_post_sign, embed_host_identity,
+    read_host_identity,
+};
 
 /// `TRUST_E_BAD_DIGEST`: "The digital signature of the object did not verify."
 const TRUST_E_BAD_DIGEST: u32 = 0x8009_6010;
@@ -159,6 +162,9 @@ fn ac8_signed_container_coverage_falsifier() {
     let signed = std::fs::read(env_path("KELD_PACK_SIGNED_HOST")).expect("read the signed host");
     let payload = fixture_payload();
     let embedded = embed_host_identity(&host, &payload).expect("the release host is admissible");
+    check_host_identity_post_sign(&embedded, &signed, &payload).expect(
+        "the signed candidate preserves the embedded image and canonical certificate envelope",
+    );
 
     // The signed image is the writer's output signed once: the attribute certificate table
     // starts at the container's raw end and ends at end of file, and every byte before it
