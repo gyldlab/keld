@@ -201,9 +201,14 @@ impl NativeBuild {
                 ));
             }
         }
+        let close_custody = Rc::new(super::controller_custody::AdoptedControllerClose::new(
+            controller.clone(),
+            managed_release.clone(),
+        ));
         let view = View {
             window,
             controller,
+            close_custody,
             webview,
             hidden_for_minimize: std::cell::Cell::new(false),
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]

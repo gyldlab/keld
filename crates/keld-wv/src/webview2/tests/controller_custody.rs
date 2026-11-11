@@ -163,3 +163,23 @@ fn missing_completion_pointer_and_failure_hresult_keep_distinct_errors() {
     }
     assert_eq!(trace.closes.get(), 0);
 }
+
+#[test]
+fn adopted_close_reentry_cannot_retry_or_credit_success_early() {
+    let state = Cell::new(super::CloseState::Open);
+    let calls = Cell::new(0);
+    assert!(super::close_once(&state, || {
+        calls.set(calls.get() + 1);
+        assert!(!super::close_once(&state, || panic!("reentrant Close")));
+        true
+    }));
+    assert!(super::close_once(&state, || panic!("duplicate Drop Close")));
+    assert_eq!(calls.get(), 1);
+}
+
+#[test]
+fn failed_adopted_close_cannot_be_retried_or_upgraded_to_success() {
+    let state = Cell::new(super::CloseState::Open);
+    assert!(!super::close_once(&state, || false));
+    assert!(!super::close_once(&state, || panic!("retry after failure")));
+}

@@ -2493,6 +2493,7 @@ fn install_app_navigation_handler(
 struct View {
     window: Window,
     controller: ICoreWebView2Controller,
+    close_custody: Rc<controller_custody::AdoptedControllerClose>,
     webview: ICoreWebView2,
     hidden_for_minimize: Cell<bool>,
     /// D16 label only; the checked builder ID remains the sole identity source.
@@ -3261,7 +3262,7 @@ fn standalone_window_event(
 impl Drop for View {
     fn drop(&mut self) {
         // The shared custodian closes on this UI thread before Window drops.
-        controller_custody::close_adopted(&self.controller, self.managed_release.as_ref());
+        let _ = self.close_custody.close_on_ui();
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         t2_test_observation::native_release_step("view-drop.close-returned", None);
     }
