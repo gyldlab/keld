@@ -185,6 +185,65 @@ jobs:
                 p === ".clippy.toml" || p.endsWith("/.clippy.toml");
             };
             // __PROTECTED_PATH_POLICY_END__
+            // This implementation MUST match ci-provenance.yml byte-for-byte.
+            // __IMMUTABLE_CHANGED_PATHS_BEGIN__
+            const immutableChangedPaths = async (mergeBaseSha, headSha, expectedFiles) => {
+              const isSha = (value) => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
+              if (!isSha(mergeBaseSha) || !isSha(headSha)) {
+                throw new Error("CI provenance refuses missing immutable comparison commits");
+              }
+              const readCommitFiles = async (commitSha) => {
+                const commit = (await github.rest.git.getCommit({
+                  owner, repo, commit_sha: commitSha,
+                })).data;
+                if (commit?.sha !== commitSha || !isSha(commit?.tree?.sha)) {
+                  throw new Error("CI provenance refuses unbound Git commit tree");
+                }
+                // A recursive tree is an immutable SHA-addressed snapshot, not
+                // a mutable PR-number file listing. Never accept truncation.
+                const tree = (await github.rest.git.getTree({
+                  owner, repo, tree_sha: commit.tree.sha, recursive: "1",
+                })).data;
+                if (tree?.sha !== commit.tree.sha || tree.truncated !== false ||
+                    !Array.isArray(tree.tree)) {
+                  throw new Error("CI provenance refuses truncated or unbound Git tree");
+                }
+                const files = new Map();
+                const seen = new Set();
+                for (const entry of tree.tree) {
+                  if (!entry || typeof entry.path !== "string" || !entry.path ||
+                      entry.path.startsWith("/") || entry.path.endsWith("/") ||
+                      entry.path.includes("\\") || entry.path.includes("\u0000") ||
+                      entry.path.split("/").some((part) => !part || part === "." || part === "..") ||
+                      !isSha(entry.sha) || !/^[0-7]{6}$/.test(entry.mode) ||
+                      !["tree", "blob", "commit"].includes(entry.type) || seen.has(entry.path)) {
+                    throw new Error("CI provenance refuses malformed or duplicated Git tree entry");
+                  }
+                  seen.add(entry.path);
+                  if (entry.type !== "tree") {
+                    files.set(entry.path, `${entry.type}:${entry.mode}:${entry.sha}`);
+                  }
+                }
+                return files;
+              };
+              const [oldFiles, newFiles] = await Promise.all([
+                readCommitFiles(mergeBaseSha), readCommitFiles(headSha),
+              ]);
+              const changed = new Set();
+              for (const [path, identity] of oldFiles) {
+                if (newFiles.get(path) !== identity) changed.add(path);
+              }
+              for (const [path, identity] of newFiles) {
+                if (oldFiles.get(path) !== identity) changed.add(path);
+              }
+              // A rename has two tree paths but only one Compare-API entry.
+              // Any disagreement outside that exact bound fails closed.
+              if (changed.size < expectedFiles || changed.size > expectedFiles * 2) {
+                throw new Error("CI provenance immutable tree census disagrees with changed-file count");
+              }
+              return [...changed];
+            };
+            // __IMMUTABLE_CHANGED_PATHS_END__
             const verdicts = [];
             for (const event of snapshots) {
               let admitted = false;
@@ -202,33 +261,42 @@ jobs:
                 if (!Number.isSafeInteger(before.changed_files) ||
                     before.changed_files < 0)
                   throw Error('Invalid GitHub changed-file count');
-                if (before.changed_files >= 300) {
-                  // 300+ is a *verified policy DENY*, not an API outage.
-                  // It cannot be safely enumerated within Compare Commits.
+                if (before.changed_files > 600) {
+                  // Exceeding the reviewed 600-file cap is a policy DENY.
                   verifiedDenied = true;
-                  throw Error('Changed-file census >=300: trusted policy DENY');
+                  throw Error('Changed-file census >600: trusted policy DENY');
                 }
                 const compare = (await github.rest.repos.compareCommits({
                   owner,repo,base:event.base,head:event.head,page:1,per_page:100,
                 })).data;
                 if (compare?.base_commit?.sha !== event.base ||
-                    !Array.isArray(compare?.files) ||
-                    compare.files.length !== before.changed_files ||
-                    compare.files.length >= 300) {
+                    (before.changed_files < 300 &&
+                     (!Array.isArray(compare?.files) ||
+                      compare.files.length !== before.changed_files ||
+                      compare.files.length >= 300))) {
                   throw Error('Incomplete immutable Compare Commits evidence');
                 }
                 // Reuse the automatic verifier's approved protectedPath rule;
-                // reject statuses/renames that could conceal CI authority.
+                // inspect both sides of renames and every changed tree path.
                 const protectedChanges = [];
-                for (const file of compare.files) {
-                  if (!file || !['added','removed','modified','renamed','changed','copied'].includes(file.status))
-                    throw Error('Unknown changed-file status');
-                  if (file.status === 'renamed' && !file.previous_filename)
-                    throw Error('Rename missing source filename');
-                  if (protectedPath(file.filename) ||
-                      (file.previous_filename && protectedPath(file.previous_filename)))
-                    protectedChanges.push(file.filename);
+                let changedPaths;
+                if (before.changed_files < 300) {
+                  changedPaths = [];
+                  for (const file of compare.files) {
+                    if (!file || !['added','removed','modified','renamed','changed','copied'].includes(file.status))
+                      throw Error('Unknown changed-file status');
+                    if (file.status === 'renamed' && !file.previous_filename)
+                      throw Error('Rename missing source filename');
+                    changedPaths.push(file.filename);
+                    if (file.previous_filename) changedPaths.push(file.previous_filename);
+                  }
+                } else {
+                  changedPaths = await immutableChangedPaths(
+                    compare?.merge_base_commit?.sha, event.head, before.changed_files,
+                  );
                 }
+                for (const path of changedPaths)
+                  if (protectedPath(path)) protectedChanges.push(path);
                 if (protectedChanges.length) {
                   verifiedDenied = true; // concrete immutable protected path evidence
                   throw Error('Protected CI authority changed');

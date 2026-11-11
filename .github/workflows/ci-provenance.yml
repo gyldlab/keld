@@ -50,12 +50,12 @@ jobs:
               if (pr.head?.sha !== event.head?.sha || pr.base?.sha !== event.base?.sha) {
                 throw new Error("CI provenance refuses stale pull-request head/base event data");
               }
-              // GitHub's immutable Compare Commits API exposes at most 300
-              // changed files on its first page. Refuse the boundary itself
-              // because 300 entries cannot prove that more were not truncated.
+              // The policy permits at most 600 changed files. GitHub's
+              // Compare Commits API caps the immutable file list at 300;
+              // larger PRs require a complete immutable Git-tree census.
               if (!Number.isSafeInteger(pr.changed_files) ||
-                  pr.changed_files < 0 || pr.changed_files >= 300) {
-                throw new Error("CI provenance cannot safely enumerate all changed files");
+                  pr.changed_files < 0 || pr.changed_files > 600) {
+                throw new Error("CI provenance refuses more than 600 changed files");
               }
               return pr;
             };
@@ -72,10 +72,69 @@ jobs:
             if (comparison?.base_commit?.sha !== before.base.sha) {
               throw new Error("CI provenance refuses a comparison for the wrong immutable base");
             }
-            if (!Array.isArray(files) || files.length !== before.changed_files ||
-                files.length >= 300) {
+            if (before.changed_files < 300 &&
+                (!Array.isArray(files) || files.length !== before.changed_files ||
+                 files.length >= 300)) {
               throw new Error("CI provenance refuses an incomplete or truncated file list");
             }
+            // __IMMUTABLE_CHANGED_PATHS_BEGIN__
+            const immutableChangedPaths = async (mergeBaseSha, headSha, expectedFiles) => {
+              const isSha = (value) => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
+              if (!isSha(mergeBaseSha) || !isSha(headSha)) {
+                throw new Error("CI provenance refuses missing immutable comparison commits");
+              }
+              const readCommitFiles = async (commitSha) => {
+                const commit = (await github.rest.git.getCommit({
+                  owner, repo, commit_sha: commitSha,
+                })).data;
+                if (commit?.sha !== commitSha || !isSha(commit?.tree?.sha)) {
+                  throw new Error("CI provenance refuses unbound Git commit tree");
+                }
+                // A recursive tree is an immutable SHA-addressed snapshot, not
+                // a mutable PR-number file listing. Never accept truncation.
+                const tree = (await github.rest.git.getTree({
+                  owner, repo, tree_sha: commit.tree.sha, recursive: "1",
+                })).data;
+                if (tree?.sha !== commit.tree.sha || tree.truncated !== false ||
+                    !Array.isArray(tree.tree)) {
+                  throw new Error("CI provenance refuses truncated or unbound Git tree");
+                }
+                const files = new Map();
+                const seen = new Set();
+                for (const entry of tree.tree) {
+                  if (!entry || typeof entry.path !== "string" || !entry.path ||
+                      entry.path.startsWith("/") || entry.path.endsWith("/") ||
+                      entry.path.includes("\\") || entry.path.includes("\u0000") ||
+                      entry.path.split("/").some((part) => !part || part === "." || part === "..") ||
+                      !isSha(entry.sha) || !/^[0-7]{6}$/.test(entry.mode) ||
+                      !["tree", "blob", "commit"].includes(entry.type) || seen.has(entry.path)) {
+                    throw new Error("CI provenance refuses malformed or duplicated Git tree entry");
+                  }
+                  seen.add(entry.path);
+                  if (entry.type !== "tree") {
+                    files.set(entry.path, `${entry.type}:${entry.mode}:${entry.sha}`);
+                  }
+                }
+                return files;
+              };
+              const [oldFiles, newFiles] = await Promise.all([
+                readCommitFiles(mergeBaseSha), readCommitFiles(headSha),
+              ]);
+              const changed = new Set();
+              for (const [path, identity] of oldFiles) {
+                if (newFiles.get(path) !== identity) changed.add(path);
+              }
+              for (const [path, identity] of newFiles) {
+                if (oldFiles.get(path) !== identity) changed.add(path);
+              }
+              // A rename has two tree paths but only one Compare-API entry.
+              // Any disagreement outside that exact bound fails closed.
+              if (changed.size < expectedFiles || changed.size > expectedFiles * 2) {
+                throw new Error("CI provenance immutable tree census disagrees with changed-file count");
+              }
+              return [...changed];
+            };
+            // __IMMUTABLE_CHANGED_PATHS_END__
             // The PR itself can mint the old 'CI required' status. Until a
             // trusted job is made required, it must not be allowed to change
             // workflow definitions, the router, or executable CI policy.
@@ -140,17 +199,26 @@ jobs:
                 p === ".clippy.toml" || p.endsWith("/.clippy.toml");
             };
             const protectedChanges = [];
-            for (const file of files) {
-              if (!file || !["added", "removed", "modified", "renamed", "changed", "copied"].includes(file.status)) {
-                throw new Error("CI provenance refuses unknown changed-file status");
+            let changedPaths;
+            if (before.changed_files < 300) {
+              changedPaths = [];
+              for (const file of files) {
+                if (!file || !["added", "removed", "modified", "renamed", "changed", "copied"].includes(file.status)) {
+                  throw new Error("CI provenance refuses unknown changed-file status");
+                }
+                if (file.status === "renamed" && !file.previous_filename) {
+                  throw new Error("CI provenance refuses a rename with missing source path");
+                }
+                changedPaths.push(file.filename);
+                if (file.previous_filename) changedPaths.push(file.previous_filename);
               }
-              if (file.status === "renamed" && !file.previous_filename) {
-                throw new Error("CI provenance refuses a rename with missing source path");
-              }
-              if (protectedPath(file.filename) ||
-                  (file.previous_filename && protectedPath(file.previous_filename))) {
-                protectedChanges.push(file.filename);
-              }
+            } else {
+              changedPaths = await immutableChangedPaths(
+                comparison?.merge_base_commit?.sha, before.head.sha, before.changed_files,
+              );
+            }
+            for (const path of changedPaths) {
+              if (protectedPath(path)) protectedChanges.push(path);
             }
             // Reject every protected authority change until a separate,
             // revocation-aware maintainer approval protocol is live. GitHub
@@ -162,7 +230,7 @@ jobs:
             }
             verifyPR(await fetchPR()); // A new head must trigger its own event.
             core.info("CI provenance: unchanged workflow/router/CI authority; " +
-              files.length + " PR files inspected at " + before.head.sha);
+              before.changed_files + " PR files inspected at " + before.head.sha);
             core.setOutput("verified_head_sha", before.head.sha);
             core.setOutput("verified_base_sha", before.base.sha);
 

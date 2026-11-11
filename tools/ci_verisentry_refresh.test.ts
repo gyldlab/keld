@@ -39,6 +39,14 @@ function protectedPathBlock(code: string): string {
   return code.slice(begin, end).trim();
 }
 
+function immutableChangedPathsBlock(code: string): string {
+  const begin = code.indexOf("// __IMMUTABLE_CHANGED_PATHS_BEGIN__");
+  const end = code.indexOf("// __IMMUTABLE_CHANGED_PATHS_END__", begin);
+  if (begin < 0 || end < 0)
+    throw Error("Immutable census helper no longer found");
+  return code.slice(begin, end).trim();
+}
+
 function scenario(
   options: {
     eventName?: string;
@@ -65,6 +73,12 @@ function scenario(
     runAttempt?: string;
     triggeringActor?: string;
     failedCompare?: boolean;
+    failedGitTree?: boolean;
+    comparisonMergeBase?: string;
+    baseTreeEntries?: Record<string, unknown>[];
+    headTreeEntries?: Record<string, unknown>[];
+    truncatedTree?: "base" | "head";
+    wrongTreeSha?: "base" | "head";
     batchIndex?: string;
     clockMillis?: number;
   } = {},
@@ -86,8 +100,12 @@ function scenario(
   const failures: string[] = [];
   let reads = 0;
   let compareReads = 0;
+  let treeReads = 0;
   let checkReads = 0;
   let mainReads = 0;
+  const mergeBaseSha = options.comparisonMergeBase ?? "e".repeat(40);
+  const baseTreeSha = "f".repeat(40);
+  const headTreeSha = "1".repeat(40);
   const context = {
     repo: { owner: options.owner ?? "gyldlab", repo: options.repo ?? "keld" },
     eventName: options.eventName ?? "schedule",
@@ -98,6 +116,51 @@ function scenario(
   const github = {
     rest: {
       git: {
+        getCommit: async (args: Record<string, unknown>) => {
+          if (options.failedGitTree) throw Error("Git tree API unavailable");
+          const side = args.commit_sha === mergeBaseSha ? "base" : "head";
+          expect(args).toEqual({
+            owner: "gyldlab",
+            repo: "keld",
+            commit_sha: side === "base" ? mergeBaseSha : head,
+          });
+          return {
+            data: {
+              sha: args.commit_sha,
+              tree: { sha: side === "base" ? baseTreeSha : headTreeSha },
+            },
+          };
+        },
+        getTree: async (args: Record<string, unknown>) => {
+          if (options.failedGitTree) throw Error("Git tree API unavailable");
+          treeReads++;
+          const side = args.tree_sha === baseTreeSha ? "base" : "head";
+          expect(args).toEqual({
+            owner: "gyldlab",
+            repo: "keld",
+            tree_sha: side === "base" ? baseTreeSha : headTreeSha,
+            recursive: "1",
+          });
+          const headEntries = (
+            options.files ?? [{ filename: "docs/normal.md" }]
+          ).map((file) => ({
+            path: file.filename,
+            type: "blob",
+            mode: "100644",
+            sha: "2".repeat(40),
+          }));
+          return {
+            data: {
+              sha:
+                options.wrongTreeSha === side ? "0".repeat(40) : args.tree_sha,
+              truncated: options.truncatedTree === side,
+              tree:
+                side === "base"
+                  ? (options.baseTreeEntries ?? [])
+                  : (options.headTreeEntries ?? headEntries),
+            },
+          };
+        },
         getRef: async (args: Record<string, unknown>) => {
           mainReads++;
           expect(args).toEqual({
@@ -154,6 +217,7 @@ function scenario(
           return {
             data: {
               base_commit: { sha: options.compareBase ?? base },
+              merge_base_commit: { sha: mergeBaseSha },
               files: options.files ?? [
                 { filename: "docs/normal.md", status: "modified" },
               ],
@@ -237,6 +301,7 @@ function scenario(
     failures,
     getReads: () => reads,
     getCompareReads: () => compareReads,
+    getTreeReads: () => treeReads,
     getCheckReads: () => checkReads,
     getMainReads: () => mainReads,
   };
@@ -289,6 +354,9 @@ test("refresh is a protected-main-only cron and authorized manual dispatch, with
   );
   expect(refreshSource).not.toMatch(/actions\/checkout|\n\s+-\s+run:/);
   expect(protectedPathBlock(body)).toBe(protectedPathBlock(verifierBody));
+  expect(immutableChangedPathsBlock(body)).toBe(
+    immutableChangedPathsBlock(verifierBody),
+  );
 });
 
 test("a normal current PR gets exactly one App ID 5550363 success on test merge, never head", async () => {
@@ -319,12 +387,59 @@ test("protected CI path is a real App failure, not an omitted or neutral result"
   expect(s.failures).toHaveLength(0);
 });
 
-test("300 changed files is failure despite missing immutable comparison", async () => {
-  const s = scenario({ changedFiles: 300 });
+test("601 changed files is a verified policy DENY before immutable comparison", async () => {
+  const s = scenario({ changedFiles: 601 });
   await expect(s.run()).resolves.toBeUndefined();
   expect(s.getCompareReads()).toBe(0);
+  expect(s.getTreeReads()).toBe(0);
   expect(s.statuses).toHaveLength(1);
   expect(s.statuses[0].conclusion).toBe("failure");
+});
+
+test.each([300, 448, 600])(
+  "%i benign files get a trusted App PASS using immutable commit trees",
+  async (count) => {
+    const files = Array.from({ length: count }, (_, i) => ({
+      filename: `docs/benign-${i}.md`,
+      status: "added",
+    }));
+    const s = scenario({ changedFiles: count, files });
+    await expect(s.run()).resolves.toBeUndefined();
+    expect(s.getCompareReads()).toBe(1);
+    expect(s.getTreeReads()).toBe(2);
+    expect(s.statuses).toHaveLength(1);
+    expect(s.statuses[0].conclusion).toBe("success");
+  },
+);
+
+test("refresh rejects a protected path beyond the first 300 files", async () => {
+  const files = Array.from({ length: 448 }, (_, i) => ({
+    filename: `docs/benign-${i}.md`,
+    status: "added",
+  }));
+  files[447].filename = ".github/workflows/ci.yml";
+  const s = scenario({ changedFiles: 448, files });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.getTreeReads()).toBe(2);
+  expect(s.statuses).toHaveLength(1);
+  expect(s.statuses[0].conclusion).toBe("failure");
+});
+
+test("refresh cannot sign a PASS for an unbound/truncated immutable tree", async () => {
+  const files = Array.from({ length: 300 }, (_, i) => ({
+    filename: `docs/benign-${i}.md`,
+    status: "added",
+  }));
+  for (const options of [
+    { truncatedTree: "head" as const },
+    { wrongTreeSha: "base" as const },
+    { failedGitTree: true },
+  ]) {
+    const s = scenario({ changedFiles: 300, files, ...options });
+    await expect(s.run()).resolves.toBeUndefined();
+    expect(s.statuses).toHaveLength(0); // transient proof failure, not sticky App FAIL
+    expect(s.failures).toHaveLength(1);
+  }
 });
 
 test.each([
