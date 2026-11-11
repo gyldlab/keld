@@ -70,16 +70,75 @@ impl AdmittedWebAppSource {
         Ok(Arc::new(Self {
             webapp_root,
             root_identity: (held.dev(), held.ino()),
-            root_path,
-            root_url,
-            entry_components,
+            root_path: Arc::new(root_path),
+            root_url: Arc::new(root_url),
+            entry_components: Arc::new(entry_components),
             source: VerifiedSourceId(verified_graph_sha256),
             scheme: String::from("file"),
             entry,
             policy,
-            assets,
+            assets: Arc::new(assets),
+            _window_policy_credit: None,
             retained_bytes: Arc::new(AtomicUsize::new(0)),
         }))
+    }
+
+    /// Bind another trusted window key from the same verified manifest while
+    /// retaining this exact resource census, root custody and shared byte account.
+    /// The returned Arc remains a DISTINCT document/IPC source binding.
+    ///
+    /// # Errors
+    /// Refuses another manifest, changed custody, invalid policy or exhausted
+    /// shared metadata credit before allocating the source alias.
+    pub fn with_windows_window_policy(
+        &self,
+        policy: VerifiedResourceResponsePolicy,
+    ) -> Result<Arc<Self>, &'static str> {
+        if !valid_response_policy(&policy)
+            || policy.verified_sha256() != self.verified_manifest_sha256()
+        {
+            return Err("window policy does not belong to the admitted source manifest");
+        }
+        self.recheck_root()
+            .map_err(|_| "retained source custody changed")?;
+        let charge = std::mem::size_of::<Self>()
+            .checked_add(self.entry.len())
+            .and_then(|n| n.checked_add(self.scheme.len()))
+            .and_then(|n| n.checked_add(policy.window_key().len()))
+            .and_then(|n| n.checked_add(256))
+            .ok_or("source policy alias metadata overflow")?;
+        let credit =
+            crate::resource_intake::RetainedByteCredit::reserve(&self.retained_bytes, charge)
+                .map_err(|_| "source policy alias metadata budget exhausted")?;
+        let root = self
+            .webapp_root
+            .try_clone()
+            .map_err(|_| "cannot duplicate retained source custody")?;
+        Ok(Arc::new(Self {
+            webapp_root: root,
+            root_identity: self.root_identity,
+            root_path: Arc::clone(&self.root_path),
+            root_url: Arc::clone(&self.root_url),
+            entry_components: Arc::clone(&self.entry_components),
+            source: self.source,
+            scheme: self.scheme.clone(),
+            entry: self.entry.clone(),
+            policy,
+            assets: Arc::clone(&self.assets),
+            _window_policy_credit: Some(credit),
+            retained_bytes: Arc::clone(&self.retained_bytes),
+        }))
+    }
+
+    /// Resource-session admission only. Never use this predicate in place of
+    /// the exact source Arc identity required by document and IPC leases.
+    pub(crate) fn shares_windows_resource_custody(&self, other: &Self) -> bool {
+        self.source == other.source
+            && self.root_identity == other.root_identity
+            && self.entry == other.entry
+            && self.verified_manifest_sha256() == other.verified_manifest_sha256()
+            && Arc::ptr_eq(&self.assets, &other.assets)
+            && Arc::ptr_eq(&self.retained_bytes, &other.retained_bytes)
     }
 
     /// Qualify the original primary's file URL through the same parser used by
@@ -161,7 +220,7 @@ impl AdmittedWebAppSource {
         // The common map retains canonical graph spelling. An uncommon case
         // variant uses the same fallible Windows ordinal owner, never lowercase
         // or an ambient filesystem lookup. The admitted census bounds this scan.
-        for (path, asset) in &self.assets {
+        for (path, asset) in self.assets.iter() {
             if file_components_match_graph_path(components, path)
                 .map_err(|_| ResourceSourceError::InvalidPath)?
             {

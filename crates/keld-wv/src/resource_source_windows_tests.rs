@@ -10,6 +10,12 @@ static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(1);
 const ENTRY: &str = "views/editor.html";
 const ENTRY_BYTES: &[u8] = b"<html>selected fixture</html>\n";
 
+const POLICY: &str = "{\"profile\":\"legacy\",\"app\":{},\"windows\":{\"fixture\":{\"web\":{\"csp\":\"original-editor-offline\"}},\"alternate\":{\"web\":{\"csp\":\"original-editor-offline-empty-style\"}}}}\n";
+const EXPECTED: [u8; 32] = [
+    37, 191, 98, 241, 120, 231, 6, 2, 85, 199, 249, 253, 178, 140, 25, 141, 146, 212, 245, 118,
+    190, 67, 19, 60, 224, 95, 225, 252, 213, 109, 178, 51,
+];
+
 pub(crate) struct Fixture {
     owned: PathBuf,
     root: PathBuf,
@@ -55,11 +61,6 @@ impl Fixture {
             open_retained_graph_child(&parent, "selected assets", WindowsGraphChildKind::Directory)
                 .expect("canonical selected child");
         // Independent fixed policy bytes/digest, not a page-supplied header.
-        const POLICY: &str = "{\"profile\":\"legacy\",\"app\":{},\"windows\":{\"fixture\":{\"web\":{\"csp\":\"original-editor-offline\"}}}}\n";
-        const EXPECTED: [u8; 32] = [
-            215, 46, 191, 72, 140, 173, 92, 255, 48, 59, 90, 236, 196, 197, 67, 68, 75, 213, 119,
-            101, 68, 44, 13, 125, 203, 40, 242, 147, 25, 32, 233, 33,
-        ];
         let policy_path = owned.join("policy.jsonc");
         fs::write(&policy_path, POLICY).expect("policy literal");
         let policy = keld_guard::verified_manifest::load_verified_manifest(
@@ -327,4 +328,54 @@ fn oversize_inventory_does_not_refuse_an_unrequested_source_asset() {
         Err(crate::resource_intake::IntakeReject::AssetLimit),
         "a request for this row gets 413 before any file read"
     );
+}
+
+#[test]
+fn window_policy_aliases_share_custody_but_never_document_source_identity() {
+    let fixture = Fixture::new();
+    let source = fixture.source_arc();
+    let path = fixture.owned.join("policy.jsonc");
+    let alternate = keld_guard::verified_manifest::load_verified_manifest(
+        File::open(&path).expect("same pinned manifest"),
+        path,
+        EXPECTED,
+    )
+    .expect("same manifest digest")
+    .resolve_window_csp("alternate")
+    .expect("other trusted window key");
+    let alias = source
+        .with_windows_window_policy(alternate.clone())
+        .expect("checked policy alias");
+    assert!(source.shares_windows_resource_custody(&alias));
+    assert!(
+        !Arc::ptr_eq(&source, &alias),
+        "IPC/document binding must remain view-specific"
+    );
+    assert_eq!(alias.window_key(), "alternate");
+    assert_eq!(alias.response_policy(), alternate.response_header());
+    assert_ne!(
+        source.response_policy(),
+        alias.response_policy(),
+        "the first window's CSP is not ambient policy"
+    );
+    assert!(
+        source.retained_bytes.load(Ordering::Acquire) > 0,
+        "policy alias metadata stays charged"
+    );
+    let fresh = AdmittedWebAppSource::from_admitted_windows_graph(
+        source.webapp_root.try_clone().expect("same physical root"),
+        [7; 32],
+        source.assets.values().cloned().collect(),
+        Path::new(ENTRY),
+        source.policy.clone(),
+    )
+    .expect("independently created component source");
+    assert_eq!(source.root_identity, fresh.root_identity);
+    assert_eq!(source.source_id(), fresh.source_id());
+    assert!(
+        !source.shares_windows_resource_custody(&fresh),
+        "same files and digest cannot join a singleton's actual census/account"
+    );
+    drop(alias);
+    assert_eq!(source.retained_bytes.load(Ordering::Acquire), 0);
 }
