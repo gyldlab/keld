@@ -84,6 +84,7 @@ fn malformed_unknown_duplicate_and_authority_fields_fail_closed() {
     );
 }
 
+/// Unknown JSON fields resembling the old overflow sentinel must remain malformed.
 #[test]
 fn unknown_field_name_cannot_spoof_payload_overflow() {
     for bytes in [
