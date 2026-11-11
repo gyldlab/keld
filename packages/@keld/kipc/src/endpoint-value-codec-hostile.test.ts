@@ -138,6 +138,52 @@ test("native slots survive prototype changes and Dates keep timestamps", () => {
   );
 });
 
+test("GH-544 class instances flatten own enumerable fields with exact wire bytes", () => {
+  class Parent {
+    get inheritedGetter(): never {
+      throw new Error("must not invoke an inherited getter");
+    }
+  }
+  class RecordValue extends Parent {
+    label = "OK";
+  }
+  const instance = new RecordValue();
+  Object.defineProperty(instance, "hidden", {
+    value: 123,
+    configurable: true,
+  });
+  Object.defineProperty(Parent.prototype, "extra", {
+    value: "not own",
+    enumerable: true,
+    configurable: true,
+  });
+  // Record tag, one property, UTF-8 key "label", string tag and "OK".
+  const golden = Uint8Array.from([
+    7, 1, 0, 5, 0, 108, 97, 98, 101, 108, 5, 2, 0, 79, 75,
+  ]);
+  expect(encodeEndpointValue(instance)).toEqual(golden);
+  expect(decodeEndpointValue(golden)).toEqual({ label: "OK" });
+});
+
+test("default proxy wrappers over native-slot values stay unsupported", () => {
+  const nativeValues: object[] = [
+    new Uint8Array([1, 2]),
+    new Int16Array([3]),
+    new DataView(new ArrayBuffer(4)),
+    new Date(1),
+    new Map([["k", 1]]),
+    new Set([1]),
+    new ArrayBuffer(4),
+    Promise.resolve(1),
+    /k/,
+  ];
+  for (const nativeValue of nativeValues) {
+    const error = caught(() => encodeEndpointValue(new Proxy(nativeValue, {})));
+    expect(error.kind).toBe("UnsupportedValue");
+    expect(error.code).toBe("KELD-COMPAT-100");
+  }
+});
+
 test("forged tags are not invoked and symbol-tagged values are refused", () => {
   let getterCalls = 0;
   const tagged = {
@@ -153,7 +199,7 @@ test("forged tags are not invoked and symbol-tagged values are refused", () => {
 });
 
 test("genuine codec refusals retain identity while forged and nested throws normalize", () => {
-  const unsupported = caught(() => encodeEndpointValue(new (class Box {})()));
+  const unsupported = caught(() => encodeEndpointValue(Symbol("unsupported")));
   expect(unsupported.kind).toBe("UnsupportedValue");
   expect(unsupported.code).toBe("KELD-COMPAT-100");
 
