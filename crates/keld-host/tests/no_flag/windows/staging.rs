@@ -252,6 +252,10 @@ fn windows_explicit_profile_staging_preserves_digest_and_strict_refuses_before_e
             .expect("json");
     assert_eq!(descriptor["schema"], 3);
     assert_eq!(
+        descriptor["permissions"]["content_sha256"],
+        "sha256:8243d7d1139eb0ad94a55de124df2fd09b5a520fd69077224a24b828a2c66715"
+    );
+    assert_eq!(
         fs::read(stage.root().join("keld.permissions.jsonc"))
             .expect("staged bytes")
             .as_slice(),
