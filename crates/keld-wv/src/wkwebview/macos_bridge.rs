@@ -3042,8 +3042,7 @@ impl AppNativeState {
             && self.pending_call.is_none()
             && self.active_call.is_none()
             && self.local_calls.is_empty()
-            && self.local_budget.records == 0
-            && self.local_budget.bytes == 0
+            && self.local_budget.is_empty()
             && controls
             && !self.control_fault
     }
@@ -3452,7 +3451,7 @@ impl MacRendererBridge {
             "refused_before_entry":state.fixture.refused_before_entry,"last_refusal_call":state.fixture.last_refusal_call,"last_refusal_after_calls":state.fixture.last_refusal_after_calls,
             "held_event_completion":state.fixture.held_completion.as_ref().is_some_and(|receipt|matches!(&receipt.purpose,EvaluationPurpose::Event{..})),
             "held_call_completion":state.fixture.held_completion.as_ref().is_some_and(|receipt|matches!(&receipt.purpose,EvaluationPurpose::Call{..})),
-            "local_queue_records":state.local_calls.len(),"local_retained_records":state.local_budget.records,"local_retained_bytes":state.local_budget.bytes,
+            "local_queue_records":state.local_calls.len(),"local_retained_records":state.local_budget.retained_records(),"local_retained_bytes":state.local_budget.retained_bytes(),
             "pending_call":state.pending_call.as_ref().map(|call|serde_json::json!({"id":call.queued.invocation.id,"lease_current":call.queued.invocation.lease.is_current(),"locals_before":call.locals_before,"admission":format!("{:?}",call.admission)})),
             "active_call":state.active_call.as_ref().map(|call|serde_json::json!({"id":call.id,"lease_current":call.lease.is_current(),"function_finished":call.function_finished,"evaluation_finished":call.evaluation_finished,"send_forwarded":call.send_forwarded})),
             "pending_send":state.pending_send.as_ref().map(|send|serde_json::json!({"id":send.id,"lease_current":send.lease.is_current()})),
@@ -3487,7 +3486,7 @@ impl MacRendererBridge {
                 && state.active_call.is_none()
                 && state.pending_call.is_none()
                 && state.local_calls.is_empty()
-                && state.local_budget.records == 0
+                && state.local_budget.retained_records() == 0
                 && state.evaluations == 0
         })
     }
