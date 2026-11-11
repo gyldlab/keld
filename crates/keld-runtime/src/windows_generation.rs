@@ -25,6 +25,7 @@ enum TestGenerationFault {
     BeforeAssign,
     BeforeResume,
     Retirement,
+    ActiveZeroRefusal,
 }
 
 /// A complete, explicitly selected Windows role process input; it never executes a shell.
@@ -97,6 +98,13 @@ impl WindowsRoleChild {
             return Err(io::Error::other(
                 "injected generation Job retirement refusal",
             ));
+        }
+        #[cfg(test)]
+        if self.test_fault == TestGenerationFault::ActiveZeroRefusal {
+            return self
+                .family
+                .terminate_then_refuse_active_zero_for_test(FAMILY_RETIRE_DEADLINE)
+                .map_err(io::Error::other);
         }
         if !self.retired {
             self.family
@@ -645,7 +653,7 @@ mod tests {
             let command = fixture_command(&self.marker, true, false);
             let mut native =
                 WindowsRoleCommand::from_command(&command).expect("exact absolute fixture image");
-            native.test_fault = TestGenerationFault::Retirement;
+            native.test_fault = TestGenerationFault::ActiveZeroRefusal;
             Ok(crate::PreparedChild {
                 command: crate::PreparedCommand::WindowsRole(native),
                 lease: crate::NoLease,
@@ -674,7 +682,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("injected generation Job retirement refusal"),
+                .contains("injected generation Job active-zero accounting refusal"),
             "the original retirement failure must remain observable: {error}"
         );
         assert!(

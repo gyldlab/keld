@@ -1859,6 +1859,41 @@ impl WindowsProcessJob {
         self.terminate_and_wait_host_timed(timeout)
     }
 
+    /// Test-only refusal after real Job termination and the exact host exit.
+    /// It simulates a failed OS active-process-zero query without claiming the
+    /// family is empty. The live Job handle stays owned until the caller drops it.
+    #[cfg(test)]
+    pub(crate) fn terminate_then_refuse_active_zero_for_test(
+        &self,
+        timeout: Duration,
+    ) -> Result<(), WindowsHostJobError> {
+        if !self.host_assigned {
+            return Err(WindowsHostJobError::contract(
+                "generation Job active-zero test",
+                "no verified direct child is assigned",
+            ));
+        }
+        let Some(host) = self.host_process.as_ref() else {
+            return Err(WindowsHostJobError::contract(
+                "generation Job active-zero test",
+                "exact direct child handle is absent",
+            ));
+        };
+        self.terminate()?;
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            WindowsHostJobError::contract("generation Job active-zero test", "deadline overflow")
+        })?;
+        wait_handle_until(
+            host.as_raw_handle().cast(),
+            deadline,
+            "generation Job exact child termination",
+        )?;
+        Err(WindowsHostJobError::contract(
+            "generation Job active-zero test",
+            "injected generation Job active-zero accounting refusal",
+        ))
+    }
+
     /// Gives the exact host a bounded graceful-exit interval, then proves its
     /// attempt family is empty. A stalled shutdown is terminated and rechecked.
     ///
