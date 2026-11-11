@@ -259,6 +259,11 @@ fn run_same_window_recovery(failure_command: &str, legacy: bool) {
                 .as_slice(),
             br#"{"profile":"legacy"}"#
         );
+        fs::write(
+            stage.root().join("keld.permissions.jsonc"),
+            br#"{"profile":"strict"}"#,
+        )
+        .expect("change staged policy after verified capture");
     }
     writeln!(g1_writer, "{failure_command}").expect("fail g1 app link or process");
     g1_writer.flush().expect("flush g1 failure command");
