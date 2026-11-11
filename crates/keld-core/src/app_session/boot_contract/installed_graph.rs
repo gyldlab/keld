@@ -8,7 +8,8 @@ use super::{
     PermissionsDocument, boot_error, decode_digest, deserialize_object, parse_development_shape,
     probe_boot_bytes, validate_relative_path,
 };
-use crate::app_session::graph_contract::{GRAPH_FILE, SelectedRendererSource};
+use crate::app_session::graph_contract::GRAPH_FILE;
+use crate::app_session::graph_selection::SelectedRendererSource;
 use crate::hello::SingleInstanceDeclaration;
 
 #[derive(Deserialize)]

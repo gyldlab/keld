@@ -1,6 +1,8 @@
 //! Independent literal source/provider receipts exercise the retained installed
 //! graph owner. No fixture JavaScript is evaluated or passed off as real draw.io.
 
+use crate::app_session::graph_selection::SelectedRendererSource;
+
 use std::fs::{self, File};
 use std::os::unix::fs::{MetadataExt as _, symlink};
 use std::path::{Path, PathBuf};
@@ -8,8 +10,8 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    AdmittedStageGraph, ApprovedGraphCaptureInput, GRAPH_FILE, SelectedRendererSource,
-    make_graph_leaf_from_retained_root, read_bound_graph_leaf_from_retained_root,
+    AdmittedStageGraph, ApprovedGraphCaptureInput, GRAPH_FILE, make_graph_leaf_from_retained_root,
+    read_bound_graph_leaf_from_retained_root,
 };
 
 const PACKAGE: &str = concat!(

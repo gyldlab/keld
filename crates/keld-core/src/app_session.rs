@@ -36,13 +36,16 @@ use self::boot_contract::{InitialWindow, boot_error, parse_boot_bytes, target_er
 
 #[cfg(target_os = "macos")]
 mod graph_contract;
+#[cfg(any(target_os = "macos", windows))]
+mod graph_selection;
+#[cfg(any(target_os = "macos", windows))]
+pub use self::graph_selection::{SelectedRendererSource, validate_graph_relative_path};
 #[cfg(target_os = "macos")]
 mod launch_facts;
 #[cfg(target_os = "macos")]
 pub use self::graph_contract::{
     AdmittedStageGraph, ApprovedGraphCaptureInput, GRAPH_FILE, MAX_GRAPH_BYTES,
-    SelectedRendererSource, make_graph_leaf_from_retained_root,
-    read_bound_graph_leaf_from_retained_root, validate_graph_relative_path,
+    make_graph_leaf_from_retained_root, read_bound_graph_leaf_from_retained_root,
 };
 #[cfg(target_os = "macos")]
 pub use self::launch_facts::{

@@ -14,6 +14,11 @@ use std::os::fd::OwnedFd;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
 
+pub(super) use super::graph_selection::validate_graph_relative_path;
+use super::graph_selection::{
+    MAX_COMPONENTS, MAX_PATH_BYTES, SelectedRendererSource, relative_path,
+};
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -26,8 +31,6 @@ pub const MAX_GRAPH_BYTES: usize = 8 * 1024 * 1024;
 const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
 const MAX_FILES: usize = 32_768;
 const MAX_ENTRIES: usize = 65_536;
-const MAX_COMPONENTS: usize = 64;
-const MAX_PATH_BYTES: usize = 4_096;
 const BUFFER_BYTES: usize = 64 * 1024;
 
 #[cfg(test)]
@@ -70,95 +73,6 @@ pub struct ApprovedGraphCaptureInput {
     /// In PACKAGES order: the canonical *unpacked* subtree fingerprint of
     /// electron, @keld/api, and @keld/kipc, including all regular files.
     pub expected_package_trees: [[u8; 32]; 3],
-}
-
-/// Data selected by the one closed installed boot-6 descriptor.
-///
-/// `root` selects a directory relative to the signed app root; `entry` is
-/// relative to that directory, and `preload_path` is relative to the app root.
-/// This value verifies lexical shape only. It is not a graph grant, trusted
-/// package receipt, native `WebView` authority, or verified publisher identity.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SelectedRendererSource {
-    root: PathBuf,
-    entry: PathBuf,
-    preload_path: PathBuf,
-    preload_sha256: [u8; 32],
-}
-
-impl SelectedRendererSource {
-    /// Construct a canonical source selector from already parsed closed boot
-    /// data. File existence, digests and filesystem authority are checked only
-    /// when this selector is bound by the retained graph owner.
-    ///
-    /// # Errors
-    /// Refuses missing, escaping, protected or noncanonical selected paths.
-    pub fn new(
-        root: &str,
-        entry: &str,
-        preload_path: &str,
-        preload_sha256: [u8; 32],
-    ) -> Result<Self, HostAppError> {
-        let root = relative_path(root)?;
-        let entry = relative_path(entry)?;
-        let preload_path = relative_path(preload_path)?;
-        for path in [&root, &entry, &preload_path] {
-            if path.components().any(|component| {
-                matches!(component, Component::Normal(name) if {
-                    let name = name.to_string_lossy();
-                    matches!(name.as_ref(), ".git" | ".keld" | ".keld-work" | "node_modules"
-                        | "tests" | "__tests__" | "test-harness" | "private-evidence"
-                        | "keld.config.ts" | "keld.build.ts" | "keld.permissions.jsonc"
-                        | "keld.boot.json" | "keld.stage-graph.json" | ".npmrc" | ".netrc")
-                        || name == ".env" || name.starts_with(".env.")
-                })
-            }) {
-                return Err(graph_error(
-                    "selected source",
-                    "protected source or preload member",
-                ));
-            }
-        }
-        let full_entry = root.join(&entry);
-        let full_entry = full_entry
-            .to_str()
-            .ok_or_else(|| graph_error("selected source", "non UTF-8 entry"))?;
-        relative_path(full_entry)?;
-        Ok(Self {
-            root,
-            entry,
-            preload_path,
-            preload_sha256,
-        })
-    }
-
-    /// Selected directory relative to the signed application root.
-    #[must_use]
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
-    /// Selected entry relative to the selected resource directory.
-    #[must_use]
-    pub fn entry(&self) -> &Path {
-        &self.entry
-    }
-
-    /// Selected preload member relative to the signed application root.
-    #[must_use]
-    pub fn preload_path(&self) -> &Path {
-        &self.preload_path
-    }
-
-    /// Expected exact preload bytes; possession is not native execution authority.
-    #[must_use]
-    pub fn preload_sha256(&self) -> [u8; 32] {
-        self.preload_sha256
-    }
-
-    fn full_entry(&self) -> PathBuf {
-        self.root.join(&self.entry)
-    }
 }
 
 #[cfg(test)]
@@ -407,42 +321,6 @@ fn parse_sha(value: &str) -> Result<[u8; 32], HostAppError> {
             u8::from_str_radix(text, 16).map_err(|source| graph_error("digest", source))?;
     }
     Ok(result)
-}
-
-/// Apply the single GH499 component/length grammar at both CLI capture and
-/// Host/Guardian stage readback; an app cannot introduce a second path reader.
-///
-/// # Errors
-/// Refuses an empty, noncanonical, escaping, or overlong path.
-pub fn validate_graph_relative_path(input: &str) -> Result<(), HostAppError> {
-    relative_path(input).map(|_| ())
-}
-
-fn relative_path(path: &str) -> Result<PathBuf, HostAppError> {
-    if path.len() > MAX_PATH_BYTES
-        || path.is_empty()
-        || path.contains('\\')
-        || path.contains('\0')
-        || path.contains(':')
-    {
-        return Err(graph_error("path", "invalid length or forbidden character"));
-    }
-    let components = path.split('/').collect::<Vec<_>>();
-    if components.len() > MAX_COMPONENTS
-        || components
-            .iter()
-            .any(|name| name.is_empty() || *name == "." || *name == "..")
-    {
-        return Err(graph_error("path", "too many components or traversal"));
-    }
-    let parsed = Path::new(path);
-    if parsed
-        .components()
-        .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err(graph_error("path", "not project-relative"));
-    }
-    Ok(parsed.to_owned())
 }
 
 fn excluded(relative: &str) -> bool {
