@@ -55,6 +55,7 @@ type HostRendererMessage = { v: 2; document: string } & (
 interface AppTransport extends NativePort {
   readonly legacy: boolean;
   readonly numericReply?: (reply: NumericReply) => void;
+  readonly numericBind?: (document: string) => void;
   subscribe?(receive: (message: HostRendererMessage) => void): void;
 }
 interface RuntimeWindow extends Window {
@@ -636,6 +637,127 @@ export function installApp(
   });
 }
 
+/** Fixed Echo(1) facade; document authority and admission remain in native code. */
+function installWindowsNumeric(
+  w: RuntimeWindow,
+  post: (text: string) => void,
+): { bind(document: string): void; reply(value: NumericReply): void } {
+  if (descriptor(w, "keld"))
+    refuse("numeric page publication conflicts with an existing property");
+  const Bytes = Uint8Array;
+  const PromiseValue = Promise;
+  const ErrorValue = Error;
+  const add = w.addEventListener;
+  if (typeof add !== "function")
+    refuse("Windows document lifecycle target is unavailable");
+  let document: string | undefined;
+  let sequence = 0;
+  let retired = false;
+  let pending:
+    | {
+        request: number;
+        payload: number[];
+        sent: boolean;
+        resolve(value: Uint8Array): void;
+        reject(error: Error): void;
+      }
+    | undefined;
+  const error = (detail: string) => new ErrorValue("KELD-WV-011: " + detail);
+  const fail = (detail: string) =>
+    PromiseValue.reject<Uint8Array>(error(detail));
+  const dispatch = () => {
+    const call = pending;
+    if (!call || call.sent || document === undefined || retired) return;
+    call.sent = true;
+    try {
+      post(
+        stringify({
+          v: 2,
+          kind: "invoke",
+          document,
+          request: call.request,
+          channel: 1,
+          payload: call.payload,
+        }),
+      );
+    } catch {
+      // A reentrant earlier terminal must not reject a different successor.
+      if (pending === call) {
+        pending = undefined;
+        call.reject(error("renderer native post failed"));
+      }
+    }
+  };
+  const invoke = freeze(function invoke(
+    channel: unknown,
+    payload: unknown,
+    opts?: unknown,
+  ): Promise<Uint8Array> {
+    if (opts !== undefined) return fail("opts is not supported by this bridge");
+    if (channel !== 1)
+      return fail("renderer channel is not declared by this build");
+    if (!(payload instanceof Bytes))
+      return fail("payload must be a Uint8Array");
+    if (payload.byteLength > 4096)
+      return fail("payload exceeds the 4096-byte renderer bound");
+    if (retired) return fail("renderer document navigated before reply");
+    if (pending !== undefined)
+      return fail("another renderer invoke is already pending");
+    if (sequence === 0xffffffff)
+      return fail("renderer invoke sequence exhausted");
+    const snapshot: number[] = [];
+    for (let index = 0; index < payload.byteLength; index++)
+      snapshot.push(payload[index]!);
+    const request = ++sequence;
+    return new PromiseValue<Uint8Array>((resolve, reject) => {
+      pending = { request, payload: snapshot, sent: false, resolve, reject };
+      dispatch();
+    });
+  });
+  apply(add, w, [
+    "pagehide",
+    () => {
+      retired = true;
+      const call = pending;
+      pending = undefined;
+      call?.reject(error("renderer document navigated before reply"));
+    },
+    false,
+  ]);
+  define(w, "keld", {
+    value: freeze({ invoke }),
+    enumerable: true,
+    writable: false,
+    configurable: false,
+  });
+  return {
+    bind(value) {
+      if (retired || document !== undefined) return;
+      document = value;
+      dispatch();
+    },
+    reply(value) {
+      const call = pending;
+      if (retired || !call?.sent || value.request !== call.request) return;
+      pending = undefined;
+      if (value.ok) {
+        const bytes = new Bytes(value.payload.length);
+        for (let index = 0; index < bytes.length; index++)
+          bytes[index] = value.payload[index]!;
+        call.resolve(bytes);
+      } else {
+        call.reject(
+          new ErrorValue(
+            value.detail.startsWith(value.code)
+              ? value.detail
+              : value.code + ": " + value.detail,
+          ),
+        );
+      }
+    },
+  };
+}
+
 /** Explicit approved Windows Legacy adapter. Native still owns the source,
  * document nonce, grants and all effects; page-visible data grants no authority. */
 export function installWindows(
@@ -652,17 +774,18 @@ export function installWindows(
   if (!native || typeof send !== "function" || typeof subscribe !== "function")
     refuse("Windows native app port is unavailable");
   const numeric = descriptor(w, "__keldBridgeNativeResult")?.value as unknown;
+  const postMessage = (text: string) => {
+    apply(send, native, [text]);
+  };
+  const echo = installWindowsNumeric(w, postMessage);
   const transport: AppTransport = {
     legacy: true,
-    postMessage: (text) => {
-      apply(send, native, [text]);
+    postMessage,
+    numericBind: echo.bind,
+    numericReply: (reply) => {
+      echo.reply(reply);
+      if (typeof numeric === "function") apply(numeric, w, [reply]);
     },
-    numericReply:
-      typeof numeric === "function"
-        ? (reply) => {
-            apply(numeric, w, [reply]);
-          }
-        : undefined,
     subscribe: (receive) => {
       apply(subscribe, native, [
         "message",
@@ -1062,6 +1185,7 @@ function installAppRuntime(
     ready = value.ready === true;
     // Registration is world/native authenticated and document-bound only now.
     post({ v: 1, kind: "registered", document: credential, methods: METHODS });
+    native.numericBind?.(credential);
   });
   const nativeRouteState = (w.__keldAppRouteState = (document, value) => {
     if (!credential || document !== credential) return;

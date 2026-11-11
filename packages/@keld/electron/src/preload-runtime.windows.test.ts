@@ -40,14 +40,18 @@ function fixture(
 ) {
   const previous = globalThis.window;
   const dom = new EventTarget();
+  const lifecycle = new EventTarget();
   const posted: Message[] = [];
   const receivedReplies: unknown[] = [];
+  let postFailure = false;
   const stored = new Map<string, string>();
   const callbacks = new Set<
     (event: { data: unknown; source: unknown }) => void
   >();
   const port = {
     postMessage(text: string) {
+      if (postFailure)
+        throw new Error("actual captured port refused this post");
       posted.push(JSON.parse(text) as Message);
     },
     addEventListener(
@@ -65,6 +69,7 @@ function fixture(
   };
   const page = {
     document: dom,
+    addEventListener: lifecycle.addEventListener.bind(lifecycle),
     localStorage: {
       getItem: (key: string) => stored.get(key) ?? null,
       setItem: (key: string, value: string) => stored.set(key, value),
@@ -116,6 +121,10 @@ function fixture(
     receivedReplies,
     receive,
     restore,
+    pagehide: () => lifecycle.dispatchEvent(new Event("pagehide")),
+    setPostFailure: (value: boolean) => {
+      postFailure = value;
+    },
     install: () => windows.installWindows(facts, original),
     entered: () => entered,
     process: () => originalProcess,
@@ -543,5 +552,183 @@ describe("GH1184 closed HostRendererMessage carrier", () => {
         }),
       ),
     ).toBeUndefined();
+  });
+});
+
+type NumericFacade = {
+  invoke(
+    channel: unknown,
+    payload: unknown,
+    opts?: unknown,
+  ): Promise<Uint8Array>;
+};
+const numericFacade = (f: ReturnType<typeof fixture>) =>
+  f.page.keld as NumericFacade;
+
+describe("Windows fixed numeric Echo facade", () => {
+  test("queues one copied Echo request until accepted binding and settles only its closed reply", async () => {
+    const f = fixture({ numeric: true });
+    try {
+      f.install();
+      const facade = numericFacade(f);
+      expect(Object.isFrozen(facade)).toBe(true);
+      expect(Object.isFrozen(facade.invoke)).toBe(true);
+      expect(Object.keys(facade)).toEqual(["invoke"]);
+      expect(Object.getOwnPropertyDescriptor(f.page, "keld")).toMatchObject({
+        writable: false,
+        configurable: false,
+        enumerable: true,
+      });
+      expect(Object.hasOwn(f.page, "__keldBridgeNativeBind")).toBe(false);
+      const input = new Uint8Array([4, 5]);
+      const first = facade.invoke(1, input);
+      input[0] = 99;
+      expect(f.posted.filter((value) => value.kind === "invoke")).toHaveLength(
+        0,
+      );
+      await expect(facade.invoke(1, new Uint8Array())).rejects.toThrow(
+        "already pending",
+      );
+      f.bind();
+      const request = f.posted.find((value) => value.kind === "invoke")!;
+      expect(request).toEqual({
+        v: 2,
+        kind: "invoke",
+        document: token,
+        request: 1,
+        channel: 1,
+        payload: [4, 5],
+      });
+      expect(
+        f.posted.findIndex((value) => value.kind === "registered"),
+      ).toBeLessThan(f.posted.indexOf(request));
+      f.page.__keldBridgeNativeResult = () => {
+        throw new Error("late global replacement");
+      };
+      f.receive(
+        carrier("reply", { request: 1, ok: true, payload: [8] }, stale),
+      );
+      f.receive(carrier("reply", { request: 1, ok: true, payload: [8] }), {});
+      f.receive(carrier("reply", { request: 2, ok: true, payload: [8] }));
+      await expect(facade.invoke(1, new Uint8Array())).rejects.toThrow(
+        "already pending",
+      );
+      f.receive(carrier("reply", { request: 1, ok: true, payload: [7, 6] }));
+      expect(await first).toEqual(new Uint8Array([7, 6]));
+      expect(f.receivedReplies.at(-1)).toEqual({
+        request: 1,
+        ok: true,
+        payload: [7, 6],
+      });
+
+      const second = facade.invoke(1, new Uint8Array([3]));
+      expect(f.posted.at(-1)?.request).toBe(2);
+      f.receive(carrier("reply", { request: 1, ok: true, payload: [0] }));
+      await expect(facade.invoke(1, new Uint8Array())).rejects.toThrow(
+        "already pending",
+      );
+      f.receive(
+        carrier("reply", {
+          request: 2,
+          ok: false,
+          code: "KELD-GUARD001",
+          detail: "denied",
+        }),
+      );
+      await expect(second).rejects.toThrow("KELD-GUARD001: denied");
+    } finally {
+      f.restore();
+    }
+  });
+
+  test("refuses channels, options, payload types and overflow without native invocation", async () => {
+    const f = fixture();
+    try {
+      f.install();
+      const facade = numericFacade(f);
+      for (const channel of [0, 2, 65536, "1", NaN])
+        await expect(facade.invoke(channel, new Uint8Array())).rejects.toThrow(
+          "not declared",
+        );
+      await expect(facade.invoke(1, [1])).rejects.toThrow("Uint8Array");
+      await expect(facade.invoke(1, new Uint8Array(4097))).rejects.toThrow(
+        "4096",
+      );
+      await expect(facade.invoke(1, new Uint8Array(), {})).rejects.toThrow(
+        "opts",
+      );
+      expect(f.posted.filter((value) => value.kind === "invoke")).toHaveLength(
+        0,
+      );
+      f.bind();
+      const result = facade.invoke(1, new Uint8Array(4096).fill(7));
+      const request = f.posted.at(-1)!;
+      expect((request.payload as number[]).length).toBe(4096);
+      f.receive(
+        carrier("reply", {
+          request: 1,
+          ok: true,
+          payload: new Array(4097).fill(0),
+        }),
+      );
+      await expect(facade.invoke(1, new Uint8Array())).rejects.toThrow(
+        "already pending",
+      );
+      f.receive(carrier("reply", { request: 1, ok: true, payload: [] }));
+      expect(await result).toEqual(new Uint8Array());
+    } finally {
+      f.restore();
+    }
+  });
+
+  test("pagehide rejects queued or dispatched work and prevents late binding or replies", async () => {
+    for (const bound of [false, true]) {
+      const f = fixture();
+      try {
+        f.install();
+        if (bound) f.bind();
+        const facade = numericFacade(f);
+        const pending = facade.invoke(1, new Uint8Array([2]));
+        f.pagehide();
+        await expect(pending).rejects.toThrow("document navigated");
+        const calls = f.posted.filter(
+          (value) => value.kind === "invoke",
+        ).length;
+        f.bind();
+        f.receive(carrier("reply", { request: 1, ok: true, payload: [9] }));
+        await expect(facade.invoke(1, new Uint8Array())).rejects.toThrow(
+          "document navigated",
+        );
+        expect(
+          f.posted.filter((value) => value.kind === "invoke"),
+        ).toHaveLength(calls);
+      } finally {
+        f.restore();
+      }
+    }
+  });
+
+  test("a native post refusal releases only that request and never reuses its identifier", async () => {
+    const f = fixture();
+    try {
+      f.install();
+      f.bind();
+      const facade = numericFacade(f);
+      f.setPostFailure(true);
+      await expect(facade.invoke(1, new Uint8Array([1]))).rejects.toThrow(
+        "native post failed",
+      );
+      f.setPostFailure(false);
+      const next = facade.invoke(1, new Uint8Array([2]));
+      expect(f.posted.at(-1)?.request).toBe(2);
+      f.receive(carrier("reply", { request: 1, ok: true, payload: [0] }));
+      await expect(facade.invoke(1, new Uint8Array())).rejects.toThrow(
+        "already pending",
+      );
+      f.receive(carrier("reply", { request: 2, ok: true, payload: [2] }));
+      expect(await next).toEqual(new Uint8Array([2]));
+    } finally {
+      f.restore();
+    }
   });
 });
