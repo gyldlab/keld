@@ -12,14 +12,14 @@ mod config;
 mod local_archive;
 #[cfg(windows)]
 mod local_archive_command;
-#[cfg(windows)]
-mod local_initial_install;
-#[cfg(windows)]
-mod local_manifest_session;
 #[cfg(all(windows, test))]
 mod local_baseline;
 #[cfg(windows)]
 mod local_images;
+#[cfg(windows)]
+mod local_initial_install;
+#[cfg(windows)]
+mod local_manifest_session;
 #[cfg(windows)]
 mod local_source;
 #[cfg(windows)]
@@ -140,16 +140,18 @@ fn is_windows_app_input_check(args: &[String]) -> bool {
 }
 
 /// Recognizes only the ordinary Windows product route after diagnostic routes.
-fn windows_product_session(args:&[String])->Result<Option<&str>,BuildError> {
-    let rest=match args {
-        [flag,target,rest @ ..] if flag=="--target" && target=="windows-x64"=>Some(rest),
-        [target,rest @ ..] if target=="--target=windows-x64"=>Some(rest),
-        _=>None,
+fn windows_product_session(args: &[String]) -> Result<Option<&str>, BuildError> {
+    let rest = match args {
+        [flag, target, rest @ ..] if flag == "--target" && target == "windows-x64" => Some(rest),
+        [target, rest @ ..] if target == "--target=windows-x64" => Some(rest),
+        _ => None,
     };
     match rest {
-        None=>Ok(None),
-        Some([flag,path]) if flag=="--local-test-session" && !path.is_empty()=>Ok(Some(path)),
-        Some(_)=>Err(BuildError::invocation("Windows build requires explicit --local-test-session ABS_JSON and test-local-untimestamped in keld.build.ts; production signing is unavailable, installation is not implied")),
+        None => Ok(None),
+        Some([flag, path]) if flag == "--local-test-session" && !path.is_empty() => Ok(Some(path)),
+        Some(_) => Err(BuildError::invocation(
+            "Windows build requires explicit --local-test-session ABS_JSON and test-local-untimestamped in keld.build.ts; production signing is unavailable, installation is not implied",
+        )),
     }
 }
 
@@ -249,11 +251,18 @@ pub fn run_build(args: &[String]) -> Result<(), BuildError> {
             ));
         }
     }
-    if let Some(session)=windows_product_session(args)? {
+    if let Some(session) = windows_product_session(args)? {
         #[cfg(windows)]
-        {return windows_product::run(std::path::Path::new(session));}
+        {
+            return windows_product::run(std::path::Path::new(session));
+        }
         #[cfg(not(windows))]
-        {let _=session;return Err(BuildError::invocation("Windows product build requires native Windows; no source was built or signed"));}
+        {
+            let _ = session;
+            return Err(BuildError::invocation(
+                "Windows product build requires native Windows; no source was built or signed",
+            ));
+        }
     }
     parse_args(args)?;
     if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
@@ -499,7 +508,9 @@ mod tests {
             vec!["-h".into(), "garbage".into()],
         ] {
             assert_eq!(
-                run_build(&args).expect_err("invalid help invocation").exit_code(),
+                run_build(&args)
+                    .expect_err("invalid help invocation")
+                    .exit_code(),
                 2
             );
         }
@@ -593,13 +604,46 @@ mod tests {
 #[cfg(test)]
 mod windows_product_route_tests {
     use super::*;
-    fn args(values:&[&str])->Vec<String> {values.iter().map(|s|(*s).to_owned()).collect()}
-    #[test] fn ordinary_windows_route_is_explicit_test_only_and_closed() {
-        for a in [args(&["--target","windows-x64","--local-test-session","D:/session.json"]),args(&["--target=windows-x64","--local-test-session","D:/session.json"])] {
-            assert_eq!(windows_product_session(&a).unwrap(),Some("D:/session.json"));
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|s| (*s).to_owned()).collect()
+    }
+    #[test]
+    fn ordinary_windows_route_is_explicit_test_only_and_closed() {
+        for a in [
+            args(&[
+                "--target",
+                "windows-x64",
+                "--local-test-session",
+                "D:/session.json",
+            ]),
+            args(&[
+                "--target=windows-x64",
+                "--local-test-session",
+                "D:/session.json",
+            ]),
+        ] {
+            assert_eq!(
+                windows_product_session(&a).unwrap(),
+                Some("D:/session.json")
+            );
         }
-        for a in [args(&["--target","windows-x64"]),args(&["--target","windows-x64","--sign","production"]),args(&["--target","windows-x64","--local-test-session","D:/s","--install"])] {assert!(windows_product_session(&a).is_err());}
-        assert_eq!(windows_product_session(&args(&["--target","macos-arm64"])).unwrap(),None);
-        parse_args(&args(&["--target","macos-arm64"])).unwrap();
+        for a in [
+            args(&["--target", "windows-x64"]),
+            args(&["--target", "windows-x64", "--sign", "production"]),
+            args(&[
+                "--target",
+                "windows-x64",
+                "--local-test-session",
+                "D:/s",
+                "--install",
+            ]),
+        ] {
+            assert!(windows_product_session(&a).is_err());
+        }
+        assert_eq!(
+            windows_product_session(&args(&["--target", "macos-arm64"])).unwrap(),
+            None
+        );
+        parse_args(&args(&["--target", "macos-arm64"])).unwrap();
     }
 }

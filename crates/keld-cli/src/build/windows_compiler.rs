@@ -15,30 +15,53 @@ fn refusal(error: impl std::fmt::Display) -> BuildError {
 }
 
 fn reserved_transport(name: &str) -> bool {
-    name.rsplit('/').next().is_some_and(|leaf|
-        leaf.eq_ignore_ascii_case("kipc-transport.ts") || leaf.eq_ignore_ascii_case("kipc-transport.js"))
+    name.rsplit('/').next().is_some_and(|leaf| {
+        leaf.eq_ignore_ascii_case("kipc-transport.ts")
+            || leaf.eq_ignore_ascii_case("kipc-transport.js")
+    })
 }
 fn read_pinned(source: &local_source::PinnedFile) -> Result<Vec<u8>, BuildError> {
     let size = source.file.metadata().map_err(refusal)?.len();
-    if size > MAX_FILE { return Err(refusal("canonical transport bound")); }
+    if size > MAX_FILE {
+        return Err(refusal("canonical transport bound"));
+    }
     let mut bytes = vec![0; usize::try_from(size).map_err(refusal)?];
     let mut offset = 0;
     while offset < bytes.len() {
-        let count = source.file.seek_read(&mut bytes[offset..], offset as u64).map_err(refusal)?;
-        if count == 0 { return Err(refusal("canonical transport truncated")); }
+        let count = source
+            .file
+            .seek_read(&mut bytes[offset..], offset as u64)
+            .map_err(refusal)?;
+        if count == 0 {
+            return Err(refusal("canonical transport truncated"));
+        }
         offset += count;
     }
-    if source.file.seek_read(&mut [0], size).map_err(refusal)? != 0 { return Err(refusal("canonical transport grew")); }
+    if source.file.seek_read(&mut [0], size).map_err(refusal)? != 0 {
+        return Err(refusal("canonical transport grew"));
+    }
     Ok(bytes)
 }
-fn require_scaffold_bytes(actual: &[u8], canonical: &[u8], app_name: &str) -> Result<(), BuildError> {
+fn require_scaffold_bytes(
+    actual: &[u8],
+    canonical: &[u8],
+    app_name: &str,
+) -> Result<(), BuildError> {
     let canonical = std::str::from_utf8(canonical).map_err(refusal)?;
     // Reuse the existing create owner, including its release substitution and stamp.
     let expected = crate::template::render_transport(canonical, app_name);
-    if actual != expected.as_bytes() { return Err(refusal("scaffold transport differs from retained compiler-source canonical transport")); }
+    if actual != expected.as_bytes() {
+        return Err(refusal(
+            "scaffold transport differs from retained compiler-source canonical transport",
+        ));
+    }
     Ok(())
 }
-fn verify_scaffold_transport(actual: &local_source::PinnedFile, canonical: &local_source::PinnedFile, app_name: &str) -> Result<(), BuildError> {
+fn verify_scaffold_transport(
+    actual: &local_source::PinnedFile,
+    canonical: &local_source::PinnedFile,
+    app_name: &str,
+) -> Result<(), BuildError> {
     require_scaffold_bytes(&read_pinned(actual)?, &read_pinned(canonical)?, app_name)
 }
 
@@ -51,8 +74,17 @@ pub(super) struct CapturedModules {
     _directories: Vec<File>,
 }
 impl CapturedModules {
-    #[expect(clippy::case_sensitive_file_extension_comparisons, reason = "Captured module names require exact canonical lowercase suffixes.")]
-    pub(super) fn open(root: &Path, names: &[String], entry: &str, app_name: &str, sources: &local_source::ObservedCompilerSources<'_>) -> Result<Self, BuildError> {
+    #[expect(
+        clippy::case_sensitive_file_extension_comparisons,
+        reason = "Captured module names require exact canonical lowercase suffixes."
+    )]
+    pub(super) fn open(
+        root: &Path,
+        names: &[String],
+        entry: &str,
+        app_name: &str,
+        sources: &local_source::ObservedCompilerSources<'_>,
+    ) -> Result<Self, BuildError> {
         if names.is_empty() || names.len() > 4096 || !names.iter().any(|n| n == entry) {
             return Err(refusal(
                 "expected declared entry and at most4096 explicit modules",
@@ -65,7 +97,9 @@ impl CapturedModules {
         }
         let mut paths = std::collections::BTreeSet::new();
         for name in &sorted {
-            if !(name.ends_with(".js") || name.ends_with(".ts")) || reserved_transport(name) || name.len() > 100
+            if !(name.ends_with(".js") || name.ends_with(".ts"))
+                || reserved_transport(name)
+                || name.len() > 100
             {
                 return Err(refusal("unsupported module member"));
             }
@@ -81,13 +115,19 @@ impl CapturedModules {
             .map_err(refusal)?;
         let mut directories = windows_inputs::pin_input_root(root)?;
         let scaffold_transport = if entry.ends_with(".ts") {
-            let parent = root.join(entry).parent().ok_or_else(|| refusal("entry parent missing"))?.to_owned();
+            let parent = root
+                .join(entry)
+                .parent()
+                .ok_or_else(|| refusal("entry parent missing"))?
+                .to_owned();
             directories.extend(windows_inputs::pin_input_root(&parent)?);
             let actual = local_source::pin_file(&parent.join("kipc-transport.ts"), MAX_FILE)?;
             let canonical = sources.canonical_transport()?;
             verify_scaffold_transport(&actual, canonical, app_name)?;
             Some(actual)
-        } else { None };
+        } else {
+            None
+        };
         let mut files = Vec::new();
         let mut total = 0_u64;
         for name in sorted {
@@ -131,7 +171,13 @@ impl CapturedModules {
         }
         output.seek(SeekFrom::Start(0)).map_err(refusal)?;
         output.write_all(b"KELDCIN3").map_err(refusal)?;
-        output.write_all(&u32::try_from(self.entry.len()).map_err(refusal)?.to_le_bytes()).map_err(refusal)?;
+        output
+            .write_all(
+                &u32::try_from(self.entry.len())
+                    .map_err(refusal)?
+                    .to_le_bytes(),
+            )
+            .map_err(refusal)?;
         output.write_all(self.entry.as_bytes()).map_err(refusal)?;
         output
             .write_all(
@@ -385,14 +431,25 @@ mod scaffold_source_tests {
         let rendered = crate::template::render_transport(source, "hello");
         require_scaffold_bytes(rendered.as_bytes(), source.as_bytes(), "hello").unwrap();
         assert!(require_scaffold_bytes(rendered.as_bytes(), source.as_bytes(), "other").is_err());
-        assert!(require_scaffold_bytes(b"export const arbitrary = true;", source.as_bytes(), "hello").is_err());
+        assert!(
+            require_scaffold_bytes(
+                b"export const arbitrary = true;",
+                source.as_bytes(),
+                "hello"
+            )
+            .is_err()
+        );
         let changed = crate::template::restamp_transport("export const changed = true;\n");
         assert!(require_scaffold_bytes(changed.as_bytes(), source.as_bytes(), "hello").is_err());
         assert!(require_scaffold_bytes(rendered.as_bytes(), &[0xff], "hello").is_err());
     }
     #[test]
     fn reserved_source_names_are_case_insensitive_in_every_directory() {
-        for name in ["kipc-transport.ts", "src/KIPC-TRANSPORT.TS", "any/Kipc-Transport.Js"] {
+        for name in [
+            "kipc-transport.ts",
+            "src/KIPC-TRANSPORT.TS",
+            "any/Kipc-Transport.Js",
+        ] {
             assert!(reserved_transport(name));
         }
         assert!(!reserved_transport("src/echo.generated.ts"));
