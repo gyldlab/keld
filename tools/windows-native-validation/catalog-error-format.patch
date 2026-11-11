@@ -1,0 +1,11 @@
+--- a/crates/keld-update/src/windows_baseline/locate/v3.rs
++++ b/crates/keld-update/src/windows_baseline/locate/v3.rs
+@@ -40,7 +40,7 @@
+     let (signature_pin,signature)=read_record(located.install()?,CATALOG_SIGNATURE,profile)?;
+     let signature: [u8;64]=signature.try_into().map_err(|_|error("catalog signature","expected exactly 64 raw bytes"))?;
+     let catalog=verify_catalog_for_windows_host(Arc::clone(&host),&payload,&signature)
+-        .map_err(|e|error("protected catalog authentication",e))?;
++        .map_err(|e|error("protected catalog authentication",format!("{e:?}")))?;
+     crate::baseline::windows_v3::require_catalog_binding(&record,&catalog)?;
+     let mut selected=select_versioned_initial_baseline(&host,&catalog)?;
+     if selected.record()!=&record { return Err(error("protected selection","record changed during selection")); }
