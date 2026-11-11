@@ -339,6 +339,17 @@ jobs:
       - name: Worktree cache tool provenance test
         shell: bash
         run: bash tools/cache_tool_provenance_test.sh
+      # The committed Bun-oracle corpora spawn `bun --no-install`, which also
+      # disables local workspace `link:` resolution. `just ci` satisfies that
+      # through the `typescript` recipe; this job runs the same frozen installs
+      # so a selected keld-compat cannot fail only because CI skipped them.
+      - name: Install JS workspace links for Bun oracles
+        shell: bash
+        run: |
+          set -euo pipefail
+          for package in kipc api electron; do
+            (cd "packages/@keld/$package" && bun install --frozen-lockfile)
+          done
       - name: test
         shell: bash
         env:
