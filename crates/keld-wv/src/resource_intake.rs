@@ -138,7 +138,7 @@ pub(crate) fn worst_case_charge(
 
 /// Checked pending metadata ceiling under the approved source-owner policy.
 /// Opaque native allocator memory still requires separate OS qualification.
-const MAX_PENDING_METADATA_BYTES: usize = 40 * 1024;
+pub(crate) const MAX_PENDING_METADATA_BYTES: usize = 40 * 1024;
 
 pub(crate) fn pending_metadata_charge(
     native_units: usize,
@@ -374,6 +374,11 @@ impl TaskLedger {
 
     pub(crate) fn has_active_delivery(&self) -> bool {
         self.tasks.values().any(|task| task.delivery_active)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.tasks.is_empty()
     }
 
     /// Called only after the complete UI response and its owned credit drop.
