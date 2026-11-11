@@ -4,11 +4,11 @@
 mod boot_contract;
 #[cfg(target_os = "macos")]
 mod compat_router;
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_os = "macos", windows))]
 mod dialog_custody;
 #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
 mod dialog_custody_contract;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod dialog_session;
 mod error;
 #[cfg(target_os = "macos")]
@@ -4359,7 +4359,11 @@ fn run_direct_app_session(
         let observe_t2_release = std::env::var_os(keld_wv::TEST_WINDOWS_T2_OBSERVE_ENV).as_deref()
             == Some(std::ffi::OsStr::new("1"));
         #[cfg(windows)]
-        let window_result = engine.run_app_until_quit(
+        let mut dialog_presentation = router.handle.dialog.as_ref().map(|session| {
+            dialog_session::DialogMainOwner::new(Arc::clone(session), window_events_tx.clone())
+        });
+        #[cfg(windows)]
+        let window_result = engine.run_app_until_quit_with_dialog(
             window_commands_rx,
             window_events_tx,
             ready_trigger,
@@ -4380,7 +4384,18 @@ fn run_direct_app_session(
                 }
                 result
             },
+            &mut |parent, terminal| {
+                if let Some(dialog) = &mut dialog_presentation {
+                    dialog
+                        .drive(parent, terminal)
+                        .map_err(|error| keld_wv::WvError::EventLoop(error.to_string()))?;
+                }
+                Ok(())
+            },
         );
+        // Release the UI event sender before joining its Core receiver below.
+        #[cfg(windows)]
+        drop(dialog_presentation);
         #[cfg(target_os = "linux")]
         let window_result = engine.run_app_until_quit(window_commands_rx, window_events_tx);
         drop(window_commands_tx);
@@ -5605,8 +5620,8 @@ fn coordinate_window_events(
                 &desktop_seen,
                 facts,
             ),
-            #[cfg(target_os = "macos")]
-            AppWindowEvent::MacDialogFinished {
+            #[cfg(any(target_os = "macos", windows))]
+            AppWindowEvent::DialogFinished {
                 attempt,
                 nonce,
                 outcome,
@@ -6946,7 +6961,7 @@ struct PrimaryRouterHandle {
     #[cfg(target_os = "macos")]
     auth_commands: Option<SyncSender<AuthWork>>,
     /// One verified, immutable dialog policy and native effect custody owner.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     dialog: Option<Arc<dialog_session::DialogSession>>,
     #[cfg(target_os = "macos")]
     menu: Option<Arc<menu_router::MenuSession>>,
@@ -7036,7 +7051,7 @@ struct ActivePrimaryGeneration {
     /// is protected by the same current-generation/transition lock as the
     /// caller fence, and is reset only by installing a new Runtime generation.
     /// The dialog effect owner must not copy or independently advance it.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     dialog_nonce_high_water: u64,
     /// Correlation id of this generation's accepted-but-unanswered `Quit`
     /// while it waits for its FS drain (GH-527 §4.9). Set and cleared under
@@ -7045,7 +7060,7 @@ struct ActivePrimaryGeneration {
     pending_quit: Option<CorrelationId>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl ActivePrimaryGeneration {
     /// Admit each positive Message nonce at most once for this authenticated
     /// primary generation. The caller fence MUST run before invoking this.
@@ -7407,15 +7422,16 @@ impl PrimaryRouterHandle {
             if self.auth.is_some() {
                 channels.push(&keld_ipc::channel_table::AUTH);
             }
-            if self.dialog.is_some() {
-                channels.push(&keld_ipc::channel_table::DIALOG);
-            }
             if self.menu.is_some() {
                 channels.push(&keld_ipc::channel_table::MENU);
             }
             if self.compat.is_some() {
                 channels.push(&keld_ipc::channel_table::COMPAT_CONTROL);
             }
+        }
+        #[cfg(any(target_os = "macos", windows))]
+        if self.dialog.is_some() {
+            channels.push(&keld_ipc::channel_table::DIALOG);
         }
         channels
     }
@@ -7468,7 +7484,7 @@ impl PrimaryRouterHandle {
         #[cfg(not(target_os = "macos"))]
         let compat_retirement = Ok(());
         active.reader_stop.store(true, Ordering::Release);
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Some(dialog) = &self.dialog {
             dialog.retire(active.identity, active.attempt);
         }
@@ -7535,7 +7551,7 @@ impl PrimaryRouterHandle {
                 .take()
                 .map(|corr| (LIFECYCLE_CHANNEL, corr)),
         ];
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         let dialog_pending = self
             .dialog
             .as_ref()
@@ -7588,7 +7604,11 @@ impl PrimaryRouterHandle {
                 {
                     dialog_pending.into_iter().chain(menu_pending)
                 }
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(windows)]
+                {
+                    dialog_pending.into_iter()
+                }
+                #[cfg(not(any(target_os = "macos", windows)))]
                 {
                     None.into_iter()
                 }
@@ -8502,6 +8522,7 @@ impl PrimaryRouterHandle {
         )
     }
 
+    #[allow(clippy::too_many_lines)] // Keep guarded generation install/replay before reader spawn.
     fn install_prepared_generation_with_identity(
         &self,
         attempt: u32,
@@ -8566,7 +8587,7 @@ impl PrimaryRouterHandle {
                 profile_binding,
                 writer: writer_stream,
                 reader_stop: Arc::clone(&reader_stop),
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", windows))]
                 dialog_nonce_high_water: 0,
                 pending_quit: None,
             });
@@ -8877,7 +8898,7 @@ impl PrimaryRouter {
             auth: None,
             #[cfg(target_os = "macos")]
             auth_commands: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             dialog: fs.map(|guard| {
                 Arc::new(dialog_session::DialogSession::new(
                     guard.verified.clone(),
@@ -9016,7 +9037,7 @@ impl PrimaryRouter {
             auth: None,
             #[cfg(target_os = "macos")]
             auth_commands: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             dialog: fs.map(|guard| {
                 Arc::new(dialog_session::DialogSession::new(
                     guard.verified.clone(),
@@ -9645,7 +9666,7 @@ fn read_primary_frames(
             {
                 handle.enqueue_auth(attempt, header.corr(), &payload, reader_stop)?;
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             (FrameKind::Call, channel)
                 if channel == keld_ipc::channel_table::DIALOG.id()
                     && handle.shutdown.is_running() =>

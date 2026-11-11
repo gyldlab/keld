@@ -30,7 +30,7 @@ pub(super) enum CancelResult {
 pub(super) enum TerminalKind {
     Cancelled,
     NativeResult,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     NativeFailure,
     Expired,
 }
@@ -62,11 +62,11 @@ pub(super) struct DialogCustody {
 impl DialogCustody {
     /// The one currently reserved effect. A native callback may only report
     /// this owner; neither a callback nor an untrusted Cancel mints it.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     pub(super) fn active_owner(&self) -> Option<DialogOwner> {
         self.active.map(|active| active.owner)
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     pub(super) fn original_pending_for(
         &self,
         identity: PrimaryLinkIdentity,
@@ -116,7 +116,7 @@ impl DialogCustody {
                 Some(TerminalKind::NativeResult | TerminalKind::Expired) => {
                     CancelResult::AlreadyCompleted
                 }
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", windows))]
                 Some(TerminalKind::NativeFailure) => CancelResult::AlreadyCompleted,
             };
         }
@@ -147,7 +147,7 @@ impl DialogCustody {
     }
 
     /// A real native failure (not user dismissal) is its own terminal cause.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     pub(super) fn commit_native_failure(&mut self, owner: DialogOwner) -> bool {
         let Some(active) = self.active.as_mut().filter(|active| active.owner == owner) else {
             return false;

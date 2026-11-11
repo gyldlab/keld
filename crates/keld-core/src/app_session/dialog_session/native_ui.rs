@@ -1,6 +1,6 @@
 use super::{
-    AppWindowEvent, DialogOwner, DialogSession, DialogWorkOptions, HostAppError,
-    MacDialogUiOutcome, WebviewId, app_detail,
+    AppWindowEvent, DialogOwner, DialogSession, DialogUiOutcome, DialogWorkOptions, HostAppError,
+    WebviewId, app_detail,
 };
 use keld_native::dialog::DialogReplyV1;
 use keld_native::dialog::macos_file::MacFilePanel;
@@ -49,7 +49,7 @@ impl NativePanel {
 
     fn poll_outcome(
         &mut self,
-    ) -> Result<Option<(MacDialogUiOutcome, Option<DialogReplyV1>)>, HostAppError> {
+    ) -> Result<Option<(DialogUiOutcome, Option<DialogReplyV1>)>, HostAppError> {
         match self {
             Self::Message(panel) => panel
                 .poll_outcome()
@@ -59,12 +59,12 @@ impl NativePanel {
                             MacMessageOutcome::Selected(DialogReplyV1::Message {
                                 response,
                                 checkbox_checked,
-                            }) => MacDialogUiOutcome::Selected {
+                            }) => DialogUiOutcome::Selected {
                                 response,
                                 checkbox_checked,
                             },
                             MacMessageOutcome::Selected(_) | MacMessageOutcome::Dismissed => {
-                                MacDialogUiOutcome::Dismissed
+                                DialogUiOutcome::Dismissed
                             }
                         };
                         (outcome, None)
@@ -72,11 +72,11 @@ impl NativePanel {
                 })
                 .map_err(|source| app_detail("native Message callback", source.to_string())),
             Self::File(panel) => match panel.poll_outcome() {
-                Ok(result) => Ok(result.map(|value| (MacDialogUiOutcome::FileResult, Some(value)))),
+                Ok(result) => Ok(result.map(|value| (DialogUiOutcome::FileResult, Some(value)))),
                 Err(_source) if panel.quiescent() => {
                     // A malformed OS path is never a user Cancel. Real native
                     // callback and invisibility have already drained the UI.
-                    Ok(Some((MacDialogUiOutcome::Failed, None)))
+                    Ok(Some((DialogUiOutcome::Failed, None)))
                 }
                 Err(source) => Err(app_detail("native file callback", source.to_string())),
             },
@@ -104,13 +104,13 @@ impl DialogMainOwner {
     fn notify(
         &self,
         owner: DialogOwner,
-        outcome: MacDialogUiOutcome,
+        outcome: DialogUiOutcome,
         file_result: Option<DialogReplyV1>,
     ) -> Result<(), HostAppError> {
         self.session
             .record_native_outcome(owner, outcome, file_result)?;
         self.events
-            .send(AppWindowEvent::MacDialogFinished {
+            .send(AppWindowEvent::DialogFinished {
                 attempt: owner.attempt,
                 nonce: owner.nonce,
                 outcome,
@@ -139,9 +139,9 @@ impl DialogMainOwner {
         {
             if Instant::now() >= work.deadline {
                 self.session.expire(work.owner)?;
-                self.notify(work.owner, MacDialogUiOutcome::Dismissed, None)?;
+                self.notify(work.owner, DialogUiOutcome::Dismissed, None)?;
             } else if stopping || !self.session.may_present(work.owner)? {
-                self.notify(work.owner, MacDialogUiOutcome::Dismissed, None)?;
+                self.notify(work.owner, DialogUiOutcome::Dismissed, None)?;
             } else if let Some(parent) = resolve(work.parent) {
                 match NativePanel::prepare(main, work.options) {
                     Ok(mut panel) => {
@@ -150,7 +150,7 @@ impl DialogMainOwner {
                             // no physical sheet needs draining. Preserve the
                             // original correlation instead of killing Host.
                             eprintln!("{error}");
-                            self.notify(work.owner, MacDialogUiOutcome::Failed, None)?;
+                            self.notify(work.owner, DialogUiOutcome::Failed, None)?;
                         } else {
                             self.active = Some((work.owner, work.parent, panel, work.deadline));
                         }
@@ -160,11 +160,11 @@ impl DialogMainOwner {
                         // AppKit preparation must complete it through normal
                         // custody, never leave it retained on a fatal exit.
                         eprintln!("{error}");
-                        self.notify(work.owner, MacDialogUiOutcome::Failed, None)?;
+                        self.notify(work.owner, DialogUiOutcome::Failed, None)?;
                     }
                 }
             } else {
-                self.notify(work.owner, MacDialogUiOutcome::Failed, None)?;
+                self.notify(work.owner, DialogUiOutcome::Failed, None)?;
             }
         }
         if let Some((owner, parent_view, panel, deadline)) = self.active.as_mut() {

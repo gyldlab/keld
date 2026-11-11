@@ -206,7 +206,7 @@ impl NativeBuild {
             managed_release.clone(),
         ));
         let view = View {
-            window,
+            window: Rc::new(window),
             controller,
             close_custody,
             webview,

@@ -127,13 +127,18 @@ test("Open/Save rejects unsafe filters, bookmark authority and excess vectors be
   expect(() => save(false)).not.toThrow();
 });
 
-test("native Open/Save replies reject empty successes, leaking canceled paths and unsafe POSIX paths", () => {
+test("native Open/Save replies reject empty successes, leaking canceled paths and foreign or ambiguous paths", () => {
   const postcardString = (path: string): Uint8Array => {
     const data = new TextEncoder().encode(path);
     expect(data.byteLength).toBeLessThan(128);
     return Uint8Array.from([data.byteLength, ...data]);
   };
-  const path = "/tmp/diagram.drawio";
+  const path =
+    process.platform === "win32"
+      ? "C:\\tmp\\diagram.drawio"
+      : "/tmp/diagram.drawio";
+  const foreignPath =
+    process.platform === "win32" ? "/tmp/file" : "C:\\Windows";
   expect(
     decodeDialogReply(Uint8Array.from([2, 0, 1, ...postcardString(path)])),
   ).toEqual({ variant: "Open", canceled: false, file_paths: [path] });
@@ -144,7 +149,7 @@ test("native Open/Save replies reject empty successes, leaking canceled paths an
     "",
     "./relative",
     "../escape",
-    "C:\\Windows",
+    foreignPath,
     "/tmp/a\0b",
     "/tmp/a\\b",
     "/a/../b",
@@ -311,3 +316,68 @@ test("dialog parent ref preserves Rust field order", () => {
     0, 1, 1, 0xac, 0x02, 0x81, 0x04, 1, 120, 3, 0, 0, 0, 0, 0, 0, 1, 0, 0,
   ]);
 });
+
+test.skipIf(process.platform !== "win32")(
+  "Windows selected paths preserve native spelling through the shared codec",
+  () => {
+    const pathBytes = (path: string): number[] => {
+      const bytes = new TextEncoder().encode(path);
+      expect(bytes.byteLength).toBeLessThan(128);
+      return [bytes.byteLength, ...bytes];
+    };
+    for (const path of [
+      "C:\\",
+      "C:\\diagrams\\space name.drawio",
+      "C:\\diagrams\\設計.drawio",
+      "C:/diagrams/file.drawio",
+      "\\\\server\\share",
+      "\\\\server\\share\\folder\\diagram.drawio",
+    ]) {
+      expect(
+        decodeDialogReply(Uint8Array.from([3, 0, ...pathBytes(path)])),
+      ).toEqual({
+        variant: "Save",
+        canceled: false,
+        file_path: path,
+      });
+      expect(
+        decodeDialogReply(Uint8Array.from([2, 0, 1, ...pathBytes(path)])),
+      ).toEqual({
+        variant: "Open",
+        canceled: false,
+        file_paths: [path],
+      });
+      expect(() =>
+        decodeDialogReply(Uint8Array.from([3, 1, ...pathBytes(path)])),
+      ).toThrow("KELD-IPC-003");
+    }
+    for (const path of [
+      "C:relative.drawio",
+      "\\root-relative.drawio",
+      "\\\\?\\C:\\escape",
+      "\\\\.\\pipe\\app",
+      "\\??\\C:\\escape",
+      "\\\\server",
+      "\\\\server\\",
+      "C:\\dir\\..\\escape",
+      "C:\\dir/../escape",
+      "\\\\server\\share\\..\\escape",
+      "C:\\dir\\file.txt:stream",
+      "C:\\dir\\a\0b",
+      "C:\\dir\\*.drawio",
+      "\\\\server\\..\\file",
+      "C:\\dir\\.\\file",
+      "C:\\dir\\\\file",
+      "C:\\dir\\file.",
+      "C:\\dir\\file ",
+      "\\\\server\\share\\file:stream",
+    ]) {
+      expect(() =>
+        decodeDialogReply(Uint8Array.from([3, 0, ...pathBytes(path)])),
+      ).toThrow("KELD-IPC-003");
+      expect(() =>
+        decodeDialogReply(Uint8Array.from([2, 0, 1, ...pathBytes(path)])),
+      ).toThrow("KELD-IPC-003");
+    }
+  },
+);

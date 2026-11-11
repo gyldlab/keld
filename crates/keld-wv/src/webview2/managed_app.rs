@@ -43,6 +43,15 @@ pub(super) struct ManagedWindows {
 }
 
 impl ManagedWindows {
+    pub(super) fn dialog_parent(
+        &self,
+        view: crate::WebviewId,
+    ) -> Option<super::WindowsDialogParent> {
+        self.views
+            .get(&view.0)
+            .map(|view| super::WindowsDialogParent::new(Rc::clone(&view.window)))
+    }
+
     pub(super) fn new(
         builder: NativeBuild,
         events: Sender<AppWindowEvent>,
@@ -148,6 +157,7 @@ impl ManagedWindows {
         terminal_intent: bool,
     ) -> Result<(), WvError> {
         match command {
+            AppWindowCommand::DialogWake => Ok(()),
             AppWindowCommand::CreateWindow {
                 build,
                 width,

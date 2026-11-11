@@ -3,6 +3,14 @@
 
 #[cfg(not(test))]
 fn main() {
+    println!("cargo:rerun-if-changed=windows-dialog-tests.manifest");
+    if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() == Some("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").ok().as_deref() == Some("msvc")
+    {
+        let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/windows-dialog-tests.manifest");
+        println!("cargo:rustc-link-arg-tests=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg-tests=/MANIFESTINPUT:{manifest}");
+    }
     println!("cargo:rustc-check-cfg=cfg(keld_native_fs_observer_eligible)");
     for name in [
         "CARGO_FEATURE_FS_ACCEPTANCE_OBSERVER",

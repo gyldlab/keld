@@ -1,6 +1,6 @@
 use super::{
     ActivePrimaryGeneration, CallError, CorrelationId, DialogFault, DialogOwner, DialogReplyV1,
-    DialogSession, DialogWorkOptions, FrameKind, HostAppError, MacDialogUiOutcome,
+    DialogSession, DialogUiOutcome, DialogWorkOptions, FrameKind, HostAppError,
     PrimaryCallerContext, PrimaryRouterHandle, WebviewId, WindowError, WindowOwner, app_detail,
     app_ipc, encode, with_primary_caller_locked, write_frame,
 };
@@ -191,7 +191,7 @@ impl PrimaryRouterHandle {
         &self,
         attempt: u32,
         nonce: u64,
-        outcome: MacDialogUiOutcome,
+        outcome: DialogUiOutcome,
     ) -> Result<(), HostAppError> {
         let Some(dialog) = &self.dialog else {
             return Ok(());

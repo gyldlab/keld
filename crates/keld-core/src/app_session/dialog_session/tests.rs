@@ -1,11 +1,12 @@
 use super::{
     AppWindowCommand, CancelDisposition, CorrelationId, DialogFault, DialogOwner, DialogReplyV1,
-    DialogSession, MacDialogUiOutcome, MessageOptions, PrimaryLinkIdentity, WebviewId,
+    DialogSession, DialogUiOutcome, MessageOptions, PrimaryLinkIdentity, WebviewId,
 };
 use keld_ipc::window::{WindowGeneration, WindowId, WindowRef};
 use sha2::{Digest as _, Sha256};
 use std::sync::mpsc;
 
+#[cfg(target_os = "macos")]
 #[path = "publication_tests.rs"]
 mod publication;
 
@@ -72,6 +73,7 @@ fn dialog_guard_denial_never_allocates_or_wakes_native_owner() {
 // Removing either the channel registration or its reader dispatch arm must fail
 // the correlated Guard ERR; direct handler tests cannot prove that connection.
 // The paired-stream fixture proves routing, not Runtime admission or native UI.
+#[cfg(target_os = "macos")]
 fn native_guard_denial_through_primary_reader(channel: keld_ipc::ChannelId) {
     use crate::app_session as app;
     use keld_ipc::codec::{decode, encode};
@@ -165,11 +167,13 @@ fn native_guard_denial_through_primary_reader(channel: keld_ipc::ChannelId) {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn primary_reader_routes_dialog_guard_denial_and_keeps_link_healthy() {
     native_guard_denial_through_primary_reader(keld_ipc::channel_table::DIALOG.id());
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn primary_reader_routes_menu_guard_denial_and_keeps_link_healthy() {
     native_guard_denial_through_primary_reader(keld_ipc::channel_table::MENU.id());
 }
@@ -195,10 +199,7 @@ fn dialog_cancel_at_capacity_keeps_distinct_original_and_cancel_correlations() {
     session
         .reserve(first, options(), WebviewId(3))
         .expect("one reservation");
-    assert!(matches!(
-        wake.try_recv(),
-        Ok(AppWindowCommand::MacDialogWake)
-    ));
+    assert!(matches!(wake.try_recv(), Ok(AppWindowCommand::DialogWake)));
     assert_eq!(
         session.pending_original_for(first.identity, first.attempt),
         Some(CorrelationId(7))
@@ -216,17 +217,14 @@ fn dialog_cancel_at_capacity_keeps_distinct_original_and_cancel_correlations() {
         session.cancel(first.identity, 1, 9, CorrelationId(8)),
         Ok(CancelDisposition::Requested),
     );
-    assert!(matches!(
-        wake.try_recv(),
-        Ok(AppWindowCommand::MacDialogWake)
-    ));
+    assert!(matches!(wake.try_recv(), Ok(AppWindowCommand::DialogWake)));
     assert!(session.take_work().expect("bounded pending work").is_some());
     assert!(!session.may_present(first).expect("tombstone"));
     session
-        .record_native_outcome(first, MacDialogUiOutcome::Dismissed, None)
+        .record_native_outcome(first, DialogUiOutcome::Dismissed, None)
         .expect("OS callback observed after cancellation");
     let terminal = session
-        .complete(1, 9, MacDialogUiOutcome::Dismissed)
+        .complete(1, 9, DialogUiOutcome::Dismissed)
         .expect("OS callback modeled as already physically drained");
     assert!(terminal == Some((first, Err(DialogFault::Cancelled))));
     assert!(session.fully_drained());
@@ -236,7 +234,7 @@ fn dialog_cancel_at_capacity_keeps_distinct_original_and_cancel_correlations() {
             .complete(
                 1,
                 9,
-                MacDialogUiOutcome::Selected {
+                DialogUiOutcome::Selected {
                     response: 0,
                     checkbox_checked: false,
                 }
@@ -257,7 +255,7 @@ fn dialog_committed_native_result_wins_before_late_cancel_and_role_retirement() 
     session
         .record_native_outcome(
             first,
-            MacDialogUiOutcome::Selected {
+            DialogUiOutcome::Selected {
                 response: 2,
                 checkbox_checked: true,
             },
@@ -268,7 +266,7 @@ fn dialog_committed_native_result_wins_before_late_cancel_and_role_retirement() 
         .complete(
             1,
             17,
-            MacDialogUiOutcome::Selected {
+            DialogUiOutcome::Selected {
                 response: 2,
                 checkbox_checked: true,
             },
@@ -291,14 +289,14 @@ fn dialog_committed_native_result_wins_before_late_cancel_and_role_retirement() 
     session.retire(first.identity, first.attempt);
     assert!(
         session
-            .complete(1, 17, MacDialogUiOutcome::Dismissed)
+            .complete(1, 17, DialogUiOutcome::Dismissed)
             .unwrap()
             .is_none()
     );
 }
 
 #[test]
-fn appkit_observed_native_click_is_terminal_before_event_coordinator_receives_it() {
+fn native_click_is_terminal_before_event_coordinator_receives_it() {
     let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
     let first = original(22, 25);
     session
@@ -311,7 +309,7 @@ fn appkit_observed_native_click_is_terminal_before_event_coordinator_receives_it
     session
         .record_native_outcome(
             first,
-            MacDialogUiOutcome::Selected {
+            DialogUiOutcome::Selected {
                 response: 2,
                 checkbox_checked: false,
             },
@@ -331,7 +329,7 @@ fn appkit_observed_native_click_is_terminal_before_event_coordinator_receives_it
         .complete(
             1,
             25,
-            MacDialogUiOutcome::Selected {
+            DialogUiOutcome::Selected {
                 response: 2,
                 checkbox_checked: false,
             },

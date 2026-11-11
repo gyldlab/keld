@@ -14,6 +14,9 @@ pub mod macos_file;
 /// The Host owns Guard, parent identity, correlation, and callback retirement.
 #[cfg(target_os = "macos")]
 pub mod macos_message;
+/// Actual Windows Common Item Dialog and TaskDialog presentation on the Host STA.
+#[cfg(windows)]
+pub mod windows;
 
 use std::collections::HashSet;
 use std::fmt;
@@ -269,14 +272,14 @@ pub enum DialogReplyV1 {
     Open {
         /// Native Cancel is a value with an empty path list.
         canceled: bool,
-        /// At most 32 actual OS-selected absolute POSIX paths, in order.
+        /// At most 32 actual OS-selected absolute paths for this host, in order.
         file_paths: Vec<String>,
     },
     /// Actual native Save location or Cancel, with no file creation.
     Save {
         /// Native Cancel is a value, not a synthetic last path.
         canceled: bool,
-        /// Actual absolute POSIX save location; empty only on Cancel.
+        /// Actual absolute save location for this host; empty only on Cancel.
         file_path: String,
     },
 }
@@ -402,10 +405,49 @@ pub fn validate_save_options(options: &SaveDialogOptions) -> Result<(), IpcError
 }
 
 fn selected_path(path: &str) -> bool {
-    path.len() <= 4096
-        && path.starts_with('/')
-        && !path.contains(['\0', '\\'])
-        && !path.split('/').any(|part| part == "..")
+    if path.len() > 4096 || path.contains('\0') {
+        return false;
+    }
+    if cfg!(windows) {
+        selected_windows_path(path)
+    } else {
+        path.starts_with('/') && !path.contains('\\') && !path.split('/').any(|part| part == "..")
+    }
+}
+
+// The host selects its own grammar. This is path-only result data, not a
+// filesystem grant or normalization step; the selected spelling is preserved.
+fn selected_windows_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    let drive = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/');
+    let (tail, minimum_components) = if drive {
+        (&path[3..], 0)
+    } else if let Some(tail) = path.strip_prefix(r"\\") {
+        (tail, 2)
+    } else {
+        return false;
+    };
+    let mut parts = tail.split(['\\', '/']).peekable();
+    let mut count = 0;
+    while let Some(part) = parts.next() {
+        if part.is_empty() && parts.peek().is_none() {
+            break; // Drive/share root or one trailing directory separator.
+        }
+        if part.is_empty()
+            || matches!(part, "." | "..")
+            || part.ends_with([' ', '.'])
+            || part
+                .chars()
+                .any(|ch| ch < ' ' || matches!(ch, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+        {
+            return false;
+        }
+        count += 1;
+    }
+    count >= minimum_components
 }
 
 /// Validate the native result *before* serializing the original correlation.

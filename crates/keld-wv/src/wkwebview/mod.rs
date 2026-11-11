@@ -35,12 +35,12 @@ use tao::window::Window;
 use wry::WebViewExtMacOS;
 
 pub use crate::engine::AppReadyTrigger;
-pub use crate::engine::MacDialogUiOutcome;
 pub use crate::engine::{AppWindowCommand, AppWindowEvent};
 use crate::engine::{
     DevtoolsAction, NavTarget, Rect, WebEngine, WebviewSpec, WkWebViewEngineExt,
     first_host_init_turn,
 };
+pub use crate::engine::{DialogUiOutcome, MacDialogUiOutcome};
 use crate::error::WvError;
 use crate::profile::{
     EphemeralProfile, ProfileError, ProfileErrorKind, ProfileIdentity, WebProfileSelection,

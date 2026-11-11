@@ -46,6 +46,8 @@
 
 mod activation_observer;
 mod browser_instance;
+mod dialog;
+pub use dialog::{WindowsDialogDriver, WindowsDialogParent, WindowsDialogParentResolver};
 mod managed_app;
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 mod managed_test_control;
@@ -2492,7 +2494,9 @@ fn install_app_navigation_handler(
 
 /// One live webview and the host window it fills (v0: one per window).
 struct View {
-    window: Window,
+    // A dialog lease can keep this exact parent alive across a reentrant modal
+    // pump. The existing release custodian still observes physical HWND teardown.
+    window: Rc<Window>,
     controller: ICoreWebView2Controller,
     close_custody: Rc<controller_custody::AdoptedControllerClose>,
     webview: ICoreWebView2,
@@ -3720,14 +3724,58 @@ impl WebView2Engine {
     /// Returns [`WvError::Navigate`] when initial navigation fails or exceeds
     /// its deadline, and [`WvError::EventLoop`] for duplicate run, fatal
     /// session command, or a non-zero tao exit.
-    #[allow(clippy::too_many_lines)] // native custody and terminal ordering share this UI-loop owner
     pub fn run_app_until_quit<E: fmt::Display>(
+        self,
+        commands: Receiver<AppWindowCommand>,
+        events: Sender<AppWindowEvent>,
+        ready_trigger: AppReadyTrigger,
+        on_loop_entry: impl FnOnce(),
+        release_witness: impl FnOnce(Instant) -> Result<(), E>,
+    ) -> Result<(), WvError> {
+        self.run_app_until_quit_inner(
+            commands,
+            events,
+            ready_trigger,
+            on_loop_entry,
+            release_witness,
+            None,
+        )
+    }
+
+    /// Run the same managed loop with Core's guarded native dialog owner.
+    ///
+    /// # Errors
+    ///
+    /// Reports the same lifecycle/release failures as `run_app_until_quit`, plus
+    /// a failure from the existing Core dialog custody driver.
+    pub fn run_app_until_quit_with_dialog<E: fmt::Display>(
+        self,
+        commands: Receiver<AppWindowCommand>,
+        events: Sender<AppWindowEvent>,
+        ready_trigger: AppReadyTrigger,
+        on_loop_entry: impl FnOnce(),
+        release_witness: impl FnOnce(Instant) -> Result<(), E>,
+        drive: &mut WindowsDialogDriver<'_>,
+    ) -> Result<(), WvError> {
+        self.run_app_until_quit_inner(
+            commands,
+            events,
+            ready_trigger,
+            on_loop_entry,
+            release_witness,
+            Some(drive),
+        )
+    }
+
+    #[allow(clippy::too_many_lines)] // native custody and terminal ordering share this UI-loop owner
+    fn run_app_until_quit_inner<E: fmt::Display>(
         mut self,
         commands: Receiver<AppWindowCommand>,
         events: Sender<AppWindowEvent>,
         ready_trigger: AppReadyTrigger,
         on_loop_entry: impl FnOnce(),
         release_witness: impl FnOnce(Instant) -> Result<(), E>,
+        mut dialog_drive: Option<&mut WindowsDialogDriver<'_>>,
     ) -> Result<(), WvError> {
         let Some(mut event_loop) = self.event_loop.take() else {
             return Err(WvError::EventLoop(String::from(
@@ -3819,6 +3867,22 @@ impl WebView2Engine {
             }
         }
         let code = event_loop.run_return(move |event, target, control_flow| {
+            if matches!(&event, Event::MainEventsCleared)
+                && let Some(drive) = dialog_drive.as_deref_mut()
+            {
+                // Clone the authentic W2 lease while borrowed, then RELEASE the
+                // map borrow before Core can enter a synchronous native dialog.
+                // MainEventsCleared follows the originating WebView2 callback.
+                let result = drive(
+                    &mut |view| managed.borrow().dialog_parent(view),
+                    Arc::clone(&terminal_intent_in_loop),
+                );
+                if let Err(error) = result {
+                    eprintln!("KELD-NATIVE-016: dialog UI driver failed: {error}");
+                    fatal_in_loop.store(true, Ordering::Release);
+                    terminal_intent_in_loop.store(true, Ordering::Release);
+                }
+            }
             // The hook runs only between outer message dispatches. This is the
             // existing sole mutable owner for each backend callback.
             let mut managed = managed.borrow_mut();
