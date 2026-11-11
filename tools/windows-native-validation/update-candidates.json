@@ -1,0 +1,255 @@
+{
+  "schema": 1,
+  "files": {
+    "crates/keld-update/Cargo.toml": {
+      "b2b0fd892b1eb1743e392ad3311bc0b96c171e55f7b2f88b141f506116af6139": [
+        "previous-reviewed-candidate"
+      ],
+      "bbf1a1321677e212237b1406514ddc90372e03c22d448bcc19de1b889cc22ae1": [
+        "previous-reviewed-candidate"
+      ],
+      "3daa98c560d00ae6bd1e00ec98508e98e5686ee27aa8045afb0bf6721f6cfe52": [
+        "previous-reviewed-candidate"
+      ],
+      "502e5d0b4d2a1b6d00085a8043d52029293cca3818dc40818dceea227c8d5671": [
+        "composed-v10"
+      ]
+    },
+    "crates/keld-update/src/baseline.rs": {
+      "c1bf7cdad679af21168cc7eda70df82c5e00f0ea03d9e12a0e27e08825ef0136": [
+        "composed-v10",
+        "protected-v10"
+      ],
+      "34a7f154214b40aa468288985ef02476da7e08adf40a439aeaab59d4cc102a60": [
+        "protected-before"
+      ]
+    },
+    "crates/keld-update/src/baseline/windows_v3.rs": {
+      "eda3d1a01182973dd546965b384a42817477c74fcc9e836450cd740f642504e9": [
+        "composed-v10",
+        "protected-v10"
+      ]
+    },
+    "crates/keld-update/src/manifest.rs": {
+      "aebad0861ded27e460206cb40f7ae3a3991867d04ead0fda274780a6719744ac": [
+        "composed-v10",
+        "protected-v10"
+      ],
+      "7e5a4baf96777d1282c3e9fbb2e6b140189656f49f43fea9a2397a1b60afeed8": [
+        "protected-before"
+      ]
+    },
+    "crates/keld-update/src/provenance.rs": {
+      "1d5da2a0cc6ed201dacb36c6d881879cf58e0afb91e3e69ef72219e0bb3ed5c2": [
+        "previous-reviewed-candidate"
+      ],
+      "d97aa09bc17e03469b5855827d51d41d814ae6a6ef512d9692fc61e01a360baa": [
+        "previous-reviewed-candidate",
+        "composed-v10"
+      ]
+    },
+    "crates/keld-update/src/records.rs": {
+      "b5f732478c61e4c8a8110b2898e663b1556493ba02937df690011680df5a7932": [
+        "previous-reviewed-candidate"
+      ],
+      "097e7241f88ae46ae094bcf6dd4d4aa1d63efde3f11bd5dcda2c4ee6bfefab97": [
+        "previous-reviewed-candidate",
+        "composed-v10"
+      ]
+    },
+    "crates/keld-update/src/records/profile_binding_v3.rs": {
+      "0f525c70167843bb7b49dd397ffc3d953b962c239c8cf4ec154ad01f8aec0c93": [
+        "previous-reviewed-candidate",
+        "composed-v10"
+      ]
+    },
+    "crates/keld-update/src/windows_baseline.rs": {
+      "557e2531b8940afe96ed9c7777d23a0bc1b2154288ec25311677b58b74a2ec31": [
+        "previous-reviewed-candidate",
+        "protected-before",
+        "source-before"
+      ],
+      "5979880a263c50a347a2835bbf312110c1da30d27adc17d407e71ee48f963136": [
+        "previous-reviewed-candidate",
+        "workspace-before"
+      ],
+      "35c5451f26da4dbee183b778dd60bbc96ea7266bb32af80e24946ca84849f514": [
+        "previous-reviewed-candidate"
+      ],
+      "79b27020075a3c951c051a02a2168664cd1c6079d8ac4c58911abe0a92a5ee29": [
+        "composed-v10"
+      ],
+      "90061583945f5f50353ff92999df3b88f8749c2b1a99f885a347f8e9f8249f0e": [
+        "protected-v10"
+      ]
+    },
+    "crates/keld-update/src/windows_baseline/generation_source.rs": {
+      "4baba2fce52a4b6c11a24f4e9e86b758b574311d0b656d879eea79267db91084": [
+        "previous-reviewed-candidate",
+        "workspace-before"
+      ],
+      "acab27bf0ca1af7c0fea655e3fbe715aea92d813c2fac2e89d96b6447cd77597": [
+        "previous-reviewed-candidate",
+        "protected-before"
+      ],
+      "45bff40254c1c94a5dbfb7ee7ae8c8f93579451cdf5e8932219586740ea3aa00": [
+        "composed-v10",
+        "protected-v10"
+      ]
+    },
+    "crates/keld-update/src/windows_baseline/generation_source/workspace.rs": {
+      "76faf0b7a3fd39e6f7ff36ccbf540d5a7c62b2486e2f8865c8eab4c7c8893db4": [
+        "previous-reviewed-candidate",
+        "protected-before"
+      ],
+      "ba912e98b6068c3025d98f72f5cebc90fcabb07e0b3e45e9bda096fe6a5905cc": [
+        "composed-v10",
+        "protected-v10"
+      ]
+    },
+    "crates/keld-update/src/windows_baseline/initialize.rs": {
+      "4fefa88045cc724e9cdd59f9848435cada101ed4d006b84ad1168edb5b0c569e": [
+        "composed-v10",
+        "protected-v10"
+      ],
+      "f35b17869452916cebadc7435f6d31ae6ff163de5dcc9016bbb12d8e0e47c605": [
+        "protected-before"
+      ]
+    },
+    "crates/keld-update/src/windows_baseline/initialize/publication.rs": {
+      "fc62d3b37d30d7f4b1171b84aacec2e1376c273b103563bda376d4eb1a772bb9": [
+        "composed-v10",
+        "protected-v10"
+      ],
+      "70af712277d6733590c27da7ae8bd013643594a2f06adc0dd7dc5c1039af950c": [
+        "protected-before"
+      ]
+    },
+    "crates/keld-update/src/windows_baseline/initialize/request_v3.rs": {
+      "6cd5dce38a3545763801a90968775ae1e3fc3b2f502023a7fb5c4410ae1aa794": [
+        "composed-v10",
+        "protected-v10"
+      ]
+    },
+    "crates/keld-update/src/windows_baseline/initialize/v3.rs": {
+      "f83b5e2c1ffd726503ead5446e23e70599bb454a704e197d9a9c39f40c110c65": [
+        "composed-v10",
+        "protected-v10"
+      ]
+    },
+    "crates/keld-update/src/windows_baseline/load.rs": {
+      "54f4185c7faa5dd21f6f248378bcbdc73c3bdd08f141c2c0abe78310fb7bfa6a": [
+        "previous-reviewed-candidate",
+        "protected-before",
+        "source-before"
+      ],
+      "6ecfae42862978e09f667359b8693af6cafb54a791259290a7536706739ddb1c": [
+        "previous-reviewed-candidate"
+      ],
+      "00b28dc6378ad7e9cb83b7b5491fa82a45ec00d14ad2d45803be97a9331fb61a": [
+        "composed-v10",
+        "protected-v10"
+      ]
+    },
+    "crates/keld-update/src/windows_baseline/locate.rs": {
+      "9635d15f56f183b87e3712cd600017602bdd6554d0a27eb611c0b0e8f9dcf4c8": [
+        "composed-v10",
+        "protected-v10"
+      ],
+      "7ce6e9bb9efbc5d1be122f8751dd256dd6e1b49262649d1b5e4568f99509d50e": [
+        "protected-before"
+      ]
+    },
+    "crates/keld-update/src/windows_baseline/locate/v3.rs": {
+      "c546f7ec0ab2cef164ebac663c290f99bd6a3764eefc23012f6f1ffb3eff5fde": [
+        "composed-v10",
+        "protected-v10"
+      ]
+    },
+    "crates/keld-update/src/windows_baseline/tests/per_user.rs": {
+      "07089f98bc9eb3208dc678c133faef0bc90083f0101b4465b3bb8ba5cda1a9e4": [
+        "previous-reviewed-candidate",
+        "source-before"
+      ],
+      "f46ed602b453eee2666a5af5b28ea03fa7b4a1b7c404888f706debee67edfbf3": [
+        "previous-reviewed-candidate",
+        "workspace-before"
+      ],
+      "e9f48e966ea3b9f6903c20ab363cd881837e21cf10031bfc4120759a5d20c758": [
+        "previous-reviewed-candidate",
+        "composed-v10"
+      ]
+    },
+    "crates/keld-update/src/windows_extraction/tests/generation_stage.rs": {
+      "abed70628c18d1b57a1c9ab4a7f467395989a4573026eb6151aa52c7f0a30629": [
+        "composed-v10"
+      ]
+    },
+    "crates/keld-update/src/windows_fs.rs": {
+      "773dabcef30dc5ce0d32f836bf7942dcb65025b174ad112222e3dd940f73897c": [
+        "composed-v10"
+      ]
+    },
+    "crates/keld-update/src/windows_generation_stage.rs": {
+      "165f633e4879a691ef1ec4b4e152892522e1fc747835ab25278f9536e4d6c9a5": [
+        "composed-v10"
+      ],
+      "5ae024d151dbc3ff99b5aa7f0295c042b720767f9f868ba3764b509ecdc03f96": [
+        "protected-before",
+        "protected-v10"
+      ]
+    },
+    "crates/keld-update/src/windows_generation_stage/grant_join.rs": {
+      "ee313a4eaa3343651d0f80a85f41295ba5628514d780b1ca8724f88fbd6d7858": [
+        "composed-v10"
+      ],
+      "445cc538f2107bfcafa81f6a131efaf583f38dc000673c7b8eb3cebb99bdfd15": [
+        "protected-before"
+      ],
+      "a6cc4c3b21d95190e86d4a61b41e27265a36b05f8416f2447bc84eb231bca627": [
+        "protected-v10"
+      ]
+    },
+    "crates/keld-update/src/windows_generation_stage/installation_binding.rs": {
+      "58e493ff28f5ef75a5f72b6cb27add95d6cd3efa9ea0d049eba72eb7c736f4ac": [
+        "composed-v10",
+        "protected-v10"
+      ],
+      "50ab289249ffb82ed29dfdc0ead43e33e8f8f61db6b134d960497d60b3f4f74e": [
+        "protected-before"
+      ]
+    },
+    "crates/keld-update/src/windows_generation_stage/read_plan.rs": {
+      "ff8b67680d8c5c7e079b89081c80058c1e99be1fc5cc5e3faa93cb288f759468": [
+        "composed-v10",
+        "protected-v10"
+      ],
+      "6b022899c3e3eadcc2a8aa7a50030b38beb6fadc89cf1735d7c700061ac1a8ca": [
+        "protected-before"
+      ]
+    },
+    "crates/keld-update/src/windows_generation_stage/resource_preparation.rs": {
+      "dea8db86b2d48934a0d44cd85a416a0cb9e8cc4ed13510381d66de5f12ad4342": [
+        "composed-v10"
+      ]
+    },
+    "crates/keld-update/src/windows_generation_stage/role_data.rs": {
+      "a4d2448da0d763cd065e310fbec3e3ae7e8b5d99b75f40bb2e53f4895180c805": [
+        "composed-v10"
+      ],
+      "44779dfe448f355f5f764af8352c20943582d9f9247f988ddb43053e92a9866a": [
+        "protected-before",
+        "protected-v10"
+      ]
+    },
+    "crates/keld-update/src/windows_generation_stage/seal_directories.rs": {
+      "522ab7a2bf5a1235d032ffb67a255aabb1b99394d9be1931a525007bc0224ac0": [
+        "composed-v10"
+      ],
+      "c1961c0b0d45847703d867867b4741ce9e5dd675127b75e1b4ffe85f65fa62de": [
+        "protected-before",
+        "protected-v10"
+      ]
+    }
+  }
+}
