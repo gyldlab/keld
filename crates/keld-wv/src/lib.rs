@@ -125,6 +125,8 @@ pub mod wkwebview;
 #[doc(hidden)]
 pub mod wv_link;
 
+#[cfg(target_os = "macos")]
+pub use engine::MacOriginalNavigationFact;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use engine::OriginalEntryQuery;
 #[cfg(target_os = "macos")]
@@ -134,8 +136,8 @@ pub use engine::{
     LogicalSize, NavTarget, Rect, WebEngine, WebKitGtkEngineExt, WebView2EngineExt, WebviewSpec,
     WindowSnapshot, WkWebViewEngineExt,
 };
-#[cfg(target_os = "macos")]
-pub use engine::{MacOriginalNavigationFact, NativeNavigationContext, NativeNavigationRefusal};
+#[cfg(any(target_os = "macos", windows))]
+pub use engine::{NativeNavigationContext, NativeNavigationRefusal, OriginalNavigationFact};
 pub use error::WvError;
 pub use hello::{DEFAULT_HTML as HELLO_HTML, run as run_hello_window};
 pub use media::{
