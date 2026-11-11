@@ -312,6 +312,42 @@ impl ProjectPermissionsSource {
     }
 }
 
+#[cfg(windows)]
+fn capture_windows_permissions(root: &Path) -> Result<Vec<u8>, BootCompileError> {
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+    let _root_guard = open_windows_launch_guard(root)?;
+    let path = root.join(PERMISSIONS_FILE);
+    let file = match OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(PERMISSIONS_BYTES.to_vec());
+        }
+        Err(error) => {
+            return Err(BootCompileError::new(
+                "permissions source",
+                error.to_string(),
+            ));
+        }
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|e| BootCompileError::new("permissions source", e.to_string()))?;
+    if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(BootCompileError::new(
+            "permissions source",
+            "policy must be a regular non-reparse file",
+        ));
+    }
+    ensure_current_principal_owns(&path)?;
+    keld_guard::read_manifest_bytes(file, &path)
+        .map_err(|e| BootCompileError::new("permissions source", e.to_string()))
+}
+
 /// Compiles one fresh, non-release owner-private platform boot stage.
 ///
 /// This is a tooling surface: it creates the bytes consumed by the exact
@@ -402,6 +438,54 @@ where
     if let Some(renderer) = &renderer {
         validate_relative("renderer", renderer)?;
     }
+
+    #[cfg(target_os = "macos")]
+    let permissions_snapshot = ProjectPermissionsSource::open(&project_root)?.capture()?;
+    #[cfg(windows)]
+    let permissions_snapshot = capture_windows_permissions(&project_root)?;
+    #[cfg(any(target_os = "macos", windows))]
+    let declared_profile = {
+        let source = std::str::from_utf8(permissions_snapshot.as_slice()).map_err(|source| {
+            BootCompileError::new(
+                "permissions profile",
+                format!("policy is not UTF-8: {source}"),
+            )
+        })?;
+        keld_guard::parse_manifest(source)
+            .map_err(|source| BootCompileError::new("permissions profile", source.to_string()))?
+            .declared_profile()
+    };
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let declared_profile = {
+        // The historical fixed policy remains the output on these platforms,
+        // but it must never silently erase an explicit project request.
+        match keld_guard::load_manifest(&project_root.join(PERMISSIONS_FILE)) {
+            Ok(manifest) if manifest.declared_profile().is_some() => {
+                return Err(BootCompileError::new(
+                    "permissions profile",
+                    "explicit security profiles are qualified only for macOS primary boots; preserve the request and use a supporting target",
+                ));
+            }
+            Ok(_) | Err(keld_guard::ManifestError::NotFound { .. }) => None,
+            Err(source) => {
+                return Err(BootCompileError::new(
+                    "permissions profile",
+                    source.to_string(),
+                ));
+            }
+        }
+    };
+    #[cfg(target_os = "macos")]
+    let permissions_bytes = permissions_snapshot.as_slice();
+    #[cfg(windows)]
+    let permissions_bytes = if declared_profile.is_some() {
+        permissions_snapshot.as_slice()
+    } else {
+        PERMISSIONS_BYTES
+    };
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let permissions_bytes = PERMISSIONS_BYTES;
+    let schema = keld_core::app_session::boot_schema(facade, declared_profile);
 
     let entry_source = contained_source(&project_root, &entry, "entry")?;
     let renderer_source = renderer
@@ -503,12 +587,6 @@ where
             return Err(BootCompileError::new("kipc transport", source.to_string()));
         }
     }
-    #[cfg(target_os = "macos")]
-    let permissions_snapshot = ProjectPermissionsSource::open(&project_root)?.capture()?;
-    #[cfg(target_os = "macos")]
-    let permissions_bytes = permissions_snapshot.as_slice();
-    #[cfg(not(target_os = "macos"))]
-    let permissions_bytes = PERMISSIONS_BYTES;
     write_new_file(
         &root.join(PERMISSIONS_FILE),
         permissions_bytes,
@@ -517,7 +595,7 @@ where
     )?;
     let digest = Sha256::digest(permissions_bytes);
     let mut descriptor = serde_json::json!({
-        "schema": 1,
+        "schema": schema,
         "name": name,
         "entry": entry,
         "renderer": renderer,
@@ -530,7 +608,7 @@ where
         let object = descriptor.as_object_mut().ok_or_else(|| {
             BootCompileError::new("boot descriptor", "generated root is not an object")
         })?;
-        object.insert(String::from("schema"), serde_json::Value::from(2));
+        object.insert(String::from("schema"), serde_json::Value::from(schema));
         object.remove("renderer");
     }
     // Preserve the byte shape of legacy stages when no auth profile is configured.
@@ -1013,6 +1091,39 @@ mod error_tests {
 #[cfg(all(test, unix))]
 #[allow(clippy::expect_used, clippy::panic)] // unit-test fixture failures are assertion oracles
 mod tests {
+    #[test]
+    fn explicit_profile_staging_never_discards_the_project_request() {
+        for profile in ["strict", "legacy"] {
+            let (_temp, project, host) = fixture();
+            let source = format!(r#"{{"profile":"{profile}"}}"#);
+            std::fs::write(project.join(super::PERMISSIONS_FILE), source.as_bytes())
+                .expect("explicit source policy");
+            let staged = super::stage_dev_boot(&project, &host);
+            #[cfg(target_os = "macos")]
+            {
+                let stage = staged.expect("qualified renderer/profile producer");
+                let descriptor: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(stage.root().join("keld.boot.json")).expect("descriptor"),
+                )
+                .expect("compiled JSON");
+                assert_eq!(
+                    descriptor["schema"], 3,
+                    "explicit profile must not be ignored by an old host"
+                );
+                assert_eq!(
+                    std::fs::read(stage.root().join(super::PERMISSIONS_FILE))
+                        .expect("captured policy"),
+                    source.as_bytes()
+                );
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let error = staged.expect_err("unsupported explicit-profile producer must refuse");
+                assert!(error.to_string().contains("profile"), "{error}");
+            }
+        }
+    }
+
     use std::fs;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
@@ -1488,3 +1599,27 @@ mod tests {
 #[allow(clippy::expect_used, clippy::panic)]
 // test fixture failures are assertion oracles, as in the sibling unit-test module
 mod permissions_tests;
+
+#[cfg(all(test, windows))]
+#[allow(clippy::expect_used, clippy::panic)] // test-owned temporary fixtures
+mod windows_profile_capture_tests {
+    use super::*;
+    #[test]
+    fn captures_exact_legacy_bytes_and_rejects_invalid_policy() {
+        let root = tempfile::tempdir().expect("owned root");
+        let bytes = br#"{ "profile": "legacy", "app": {"fs":{"read":["/tmp/**"]}} }"#;
+        fs::write(root.path().join(PERMISSIONS_FILE), bytes).expect("policy");
+        let captured = capture_windows_permissions(root.path()).expect("capture");
+        assert_eq!(captured, bytes);
+        assert_eq!(
+            keld_guard::parse_manifest(std::str::from_utf8(&captured).expect("utf8"))
+                .expect("valid")
+                .declared_profile(),
+            Some(keld_guard::DeclaredProfile::Legacy)
+        );
+        fs::write(root.path().join(PERMISSIONS_FILE), br#"{"profile":null}"#)
+            .expect("invalid fixture");
+        let invalid = capture_windows_permissions(root.path()).expect("capture invalid bytes");
+        assert!(keld_guard::parse_manifest(std::str::from_utf8(&invalid).expect("utf8")).is_err());
+    }
+}

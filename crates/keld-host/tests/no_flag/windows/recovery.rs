@@ -24,12 +24,12 @@ use crate::{
 
 #[test]
 fn windows_no_flag_host_recovers_bun_in_the_same_native_window() {
-    run_same_window_recovery("CRASH");
+    run_same_window_recovery("CRASH", false);
 }
 
 #[test]
 fn windows_link_only_failure_uses_the_supervisor_owned_restart_path() {
-    run_same_window_recovery("CLOSE_LINK");
+    run_same_window_recovery("CLOSE_LINK", false);
 }
 
 #[test]
@@ -99,6 +99,17 @@ fn windows_fast_revoked_g2_is_never_installed_ahead_of_g3() {
     let (_g1_reader, mut g1_writer, g1_pid, _g1_link) =
         accept_ready_generation(&control_listener, &mut child);
     let g1_window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
+    if legacy {
+        fs::write(
+            fixture.project.join("keld.permissions.jsonc"),
+            br#"{"profile":"strict"}"#,
+        )
+        .expect("change source after capture");
+        assert_eq!(
+            fs::read(stage.root().join("keld.permissions.jsonc")).expect("retained stage"),
+            br#"{"profile":"legacy"}"#
+        );
+    }
     g1_writer.write_all(b"CRASH\n").expect("crash g1");
     g1_writer.flush().expect("flush g1 crash");
 
@@ -201,8 +212,20 @@ fn windows_crash_loop_keeps_core033_as_the_outer_host_error() {
     assert!(stderr.contains("KELD-RUNTIME-002"), "{stderr}");
 }
 
-fn run_same_window_recovery(failure_command: &str) {
+#[test]
+fn windows_explicit_legacy_recovery_retains_captured_policy() {
+    run_same_window_recovery("CRASH", true);
+}
+
+fn run_same_window_recovery(failure_command: &str, legacy: bool) {
     let fixture = ProductFixture::new();
+    if legacy {
+        fs::write(
+            fixture.project.join("keld.permissions.jsonc"),
+            br#"{"profile":"legacy"}"#,
+        )
+        .expect("legacy policy");
+    }
     let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind recovery control");
     let control_port = control_listener
         .local_addr()
@@ -259,6 +282,19 @@ fn run_same_window_recovery(failure_command: &str) {
     assert!(status.success(), "recovery host exited with {status}");
     assert!(!process_exists(g1_pid), "retired g1 Bun survived");
     assert!(!process_exists(g2_pid), "g2 Bun survived Quit");
+    if legacy {
+        let mut stderr = String::new();
+        child
+            .stderr
+            .take()
+            .expect("stderr")
+            .read_to_string(&mut stderr)
+            .expect("read stderr");
+        assert!(
+            stderr.contains("legacy — zero-authority claim forfeited"),
+            "{stderr}"
+        );
+    }
 }
 
 #[test]
