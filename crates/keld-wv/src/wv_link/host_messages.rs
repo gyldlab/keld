@@ -100,6 +100,24 @@ struct BoundedWriter {
     bytes: Vec<u8>,
     maximum: usize,
 }
+struct EncodedLength {
+    bytes: usize,
+    maximum: usize,
+}
+impl Write for EncodedLength {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.bytes = self
+            .bytes
+            .checked_add(bytes.len())
+            .filter(|size| *size <= self.maximum)
+            .ok_or_else(|| io::Error::other("Host renderer envelope exceeds reserved bound"))?;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 impl Write for BoundedWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if bytes.len() > self.maximum - self.bytes.len() {
@@ -135,13 +153,7 @@ impl<'a> HostRendererMessage<'a> {
         }
     }
 
-    /// Encode only after the native owner reserves this representation's capacity.
-    /// The exact-capacity buffer refuses before exceeding the closed carrier bound.
-    ///
-    /// # Errors
-    /// Rejects malformed correlations, mismatched call document, invalid topics,
-    /// excessive payloads and encoded size. This function grants no authority.
-    pub fn encode(&self, document: &str) -> Result<Vec<u8>, WvLinkRejectReason> {
+    fn validate(&self, document: &str) -> Result<(), WvLinkRejectReason> {
         if !valid_document(document) {
             return Err(WvLinkRejectReason::InvalidDocument);
         }
@@ -198,11 +210,46 @@ impl<'a> HostRendererMessage<'a> {
             }
             _ => (),
         }
-        let maximum = self.maximum();
-        let mut writer = BoundedWriter {
-            bytes: Vec::with_capacity(maximum),
-            maximum,
+        Ok(())
+    }
+
+    /// Count the sole canonical serialization before allocating its byte storage.
+    /// Callers reserve their existing position/metadata bucket before counting,
+    /// then charge JSON plus native UTF16 capacity before copying either form.
+    ///
+    /// # Errors
+    /// Refuses the same invalid data and encoded bounds as the encoder.
+    pub fn encoded_len(&self, document: &str) -> Result<usize, WvLinkRejectReason> {
+        self.validate(document)?;
+        let mut counter = EncodedLength {
+            bytes: 0,
+            maximum: self.maximum(),
         };
+        serde_json::to_writer(
+            &mut counter,
+            &Envelope {
+                v: 2,
+                document,
+                message: self,
+            },
+        )
+        .map_err(|_| WvLinkRejectReason::MalformedEnvelope)?;
+        Ok(counter.bytes)
+    }
+
+    /// Encode only after the native owner reserves this exact representation.
+    /// A small call does not allocate the whole 512KiB envelope allowance.
+    ///
+    /// # Errors
+    /// Rejects malformed correlations, mismatched call document, invalid topics,
+    /// excessive payloads, encoded size or allocation refusal.
+    pub fn encode(&self, document: &str) -> Result<Vec<u8>, WvLinkRejectReason> {
+        let maximum = self.encoded_len(document)?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(maximum)
+            .map_err(|_| WvLinkRejectReason::MalformedEnvelope)?;
+        let mut writer = BoundedWriter { bytes, maximum };
         serde_json::to_writer(
             &mut writer,
             &Envelope {
@@ -212,6 +259,9 @@ impl<'a> HostRendererMessage<'a> {
             },
         )
         .map_err(|_| WvLinkRejectReason::MalformedEnvelope)?;
+        if writer.bytes.len() != maximum {
+            return Err(WvLinkRejectReason::MalformedEnvelope);
+        }
         Ok(writer.bytes)
     }
 }
@@ -220,6 +270,29 @@ impl<'a> HostRendererMessage<'a> {
 mod tests {
     use super::*;
     const DOC: &str = "0123456789abcdef0123456789abcdef";
+    #[test]
+    fn small_original_call_counts_and_retains_exact_encoded_storage() {
+        let args = [serde_json::Value::String(String::from("mainResp"))];
+        let message = HostRendererMessage::AppCall {
+            source_document: DOC,
+            call: 7,
+            method: "registerMsgListener",
+            args: &args,
+        };
+        let expected = message.encoded_len(DOC).expect("canonical count");
+        let encoded = message.encode(DOC).expect("canonical bytes");
+        assert_eq!(expected, encoded.len());
+        assert_eq!(encoded.capacity(), expected);
+        assert!(
+            expected < 256,
+            "a small call must fit the shared local budget"
+        );
+        assert_eq!(
+            message.encoded_len("bad"),
+            Err(WvLinkRejectReason::InvalidDocument)
+        );
+    }
+
     #[test]
     fn exact_binding_and_event_wire_bytes() {
         assert_eq!(HostRendererMessage::Bound { ready: false }.encode(DOC).unwrap(),
