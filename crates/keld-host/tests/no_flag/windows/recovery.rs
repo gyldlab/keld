@@ -99,17 +99,6 @@ fn windows_fast_revoked_g2_is_never_installed_ahead_of_g3() {
     let (_g1_reader, mut g1_writer, g1_pid, _g1_link) =
         accept_ready_generation(&control_listener, &mut child);
     let g1_window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
-    if legacy {
-        fs::write(
-            fixture.project.join("keld.permissions.jsonc"),
-            br#"{"profile":"strict"}"#,
-        )
-        .expect("change source after capture");
-        assert_eq!(
-            fs::read(stage.root().join("keld.permissions.jsonc")).expect("retained stage"),
-            br#"{"profile":"legacy"}"#
-        );
-    }
     g1_writer.write_all(b"CRASH\n").expect("crash g1");
     g1_writer.flush().expect("flush g1 crash");
 
@@ -258,6 +247,19 @@ fn run_same_window_recovery(failure_command: &str, legacy: bool) {
         accept_ready_generation(&control_listener, &mut child);
     expect_renderer_beacon(beacon, "initial renderer beacon");
     let g1_window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
+    if legacy {
+        fs::write(
+            fixture.project.join("keld.permissions.jsonc"),
+            br#"{"profile":"strict"}"#,
+        )
+        .expect("change source after capture");
+        assert_eq!(
+            fs::read(stage.root().join("keld.permissions.jsonc"))
+                .expect("retained stage")
+                .as_slice(),
+            br#"{"profile":"legacy"}"#
+        );
+    }
     writeln!(g1_writer, "{failure_command}").expect("fail g1 app link or process");
     g1_writer.flush().expect("flush g1 failure command");
     let mut closed = String::new();

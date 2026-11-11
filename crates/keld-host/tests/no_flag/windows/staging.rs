@@ -252,7 +252,9 @@ fn windows_explicit_profile_staging_preserves_digest_and_strict_refuses_before_e
             .expect("json");
     assert_eq!(descriptor["schema"], 3);
     assert_eq!(
-        fs::read(stage.root().join("keld.permissions.jsonc")).expect("staged bytes"),
+        fs::read(stage.root().join("keld.permissions.jsonc"))
+            .expect("staged bytes")
+            .as_slice(),
         bytes
     );
     let output = dev_stage_command(stage.root(), stage.host())
@@ -309,7 +311,9 @@ fn windows_profile_free_stage_keeps_existing_default_policy() {
             .expect("json");
     assert_eq!(descriptor["schema"], 1);
     assert_eq!(
-        fs::read(stage.root().join("keld.permissions.jsonc")).expect("fixed policy"),
+        fs::read(stage.root().join("keld.permissions.jsonc"))
+            .expect("fixed policy")
+            .as_slice(),
         b"{}\n"
     );
 }

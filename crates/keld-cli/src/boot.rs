@@ -1610,7 +1610,7 @@ mod windows_profile_capture_tests {
         let bytes = br#"{ "profile": "legacy", "app": {"fs":{"read":["/tmp/**"]}} }"#;
         fs::write(root.path().join(PERMISSIONS_FILE), bytes).expect("policy");
         let captured = capture_windows_permissions(root.path()).expect("capture");
-        assert_eq!(captured, bytes);
+        assert_eq!(captured.as_slice(), bytes);
         assert_eq!(
             keld_guard::parse_manifest(std::str::from_utf8(&captured).expect("utf8"))
                 .expect("valid")
