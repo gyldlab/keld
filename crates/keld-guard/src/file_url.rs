@@ -187,11 +187,10 @@ pub fn file_url_root_relative(
             spelling = RootSpelling::CaseVariant;
         }
     }
-    let relative = decoded
-        .components
-        .into_iter()
-        .skip(root.components.len())
-        .collect();
+    // Keep the existing descriptor allocation: a second Vec<String> during
+    // root removal would violate the native caller's bounded parser scratch.
+    let mut relative = decoded.components;
+    relative.drain(..root.components.len());
     Ok(ParsedFileUrl {
         components: validate_relative_components(relative)?,
         raw_query: decoded.raw_query,
@@ -240,11 +239,6 @@ fn validate_relative_components(
     if parts.is_empty() {
         return Err(FileUrlRefusal::OutsideRoot);
     }
-    for part in &parts {
-        super::validate_windows_package_component(part)
-            .and_then(|()| super::ensure_nfc(part))
-            .map_err(|_| FileUrlRefusal::Component(part.clone()))?;
-    }
     let length = parts
         .iter()
         .try_fold(parts.len() - 1, |length, part| {
@@ -253,6 +247,13 @@ fn validate_relative_components(
         .ok_or(FileUrlRefusal::TooLong)?;
     if length > MAX_RELATIVE_BYTES {
         return Err(FileUrlRefusal::TooLong);
+    }
+    // Enforce the unchanged 100-byte selection bound before any per-component
+    // normalization scratch. Oversized rejected input cannot enlarge that work.
+    for part in &parts {
+        super::validate_windows_package_component(part)
+            .and_then(|()| super::ensure_nfc(part))
+            .map_err(|_| FileUrlRefusal::Component(part.clone()))?;
     }
     if let Some(extension) = parts
         .last()
@@ -325,7 +326,11 @@ fn decode_file_url(url: &str) -> Result<DecodedFileUrl, FileUrlRefusal> {
     if tail.is_empty() || tail.ends_with('/') {
         return Err(FileUrlRefusal::DotSegment);
     }
+    let count = tail.split('/').filter(|part| !part.is_empty()).count();
     let mut components = Vec::new();
+    components
+        .try_reserve_exact(count)
+        .map_err(|_| FileUrlRefusal::TooLong)?;
     for raw in tail.split('/').filter(|part| !part.is_empty()) {
         let decoded = decode_component(raw)?;
         if decoded.contains(['/', '\\', '\0']) {
@@ -402,6 +407,36 @@ pub fn file_components_match_graph_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_uri_many_components_have_one_exact_descriptor_allocation() {
+        let url = format!("file:/C:/{}", vec!["x"; 1_020].join("/"));
+        assert_eq!(url.encode_utf16().count(), 2_048);
+        let decoded = decode_file_url(&url).unwrap();
+        assert_eq!(decoded.components.len(), 1_020);
+        assert_eq!(decoded.components.capacity(), 1_020);
+        let owned = url.capacity()
+            + decoded.components.capacity() * std::mem::size_of::<String>()
+            + decoded
+                .components
+                .iter()
+                .map(String::capacity)
+                .sum::<usize>();
+        assert!(
+            owned < 32 * 1_024,
+            "owned URI/descriptors/components: {owned}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn oversized_relative_selection_refuses_before_normalization_scratch() {
+        let parts = vec!["e\u{301}".repeat(40)];
+        assert_eq!(
+            validate_relative_components(parts),
+            Err(FileUrlRefusal::TooLong)
+        );
+    }
 
     #[test]
     fn lexical_file_url_rules_decode_once_and_preserve_query() {

@@ -87,7 +87,7 @@ pub(super) fn read_task_text(
     text.copy_bounded(max_utf16_units, max_utf8_bytes)
 }
 
-/// GetCurrentHeader returns two independent task allocations in one call. Keep
+/// `GetCurrentHeader` returns two independent task allocations in one call. Keep
 /// both under the SAME RAII owner, including getter/first-conversion failures.
 /// The second string's stricter field bound is selected only after the first
 /// bounded string is known; a Host nonce therefore keeps its 32/32 bound before
