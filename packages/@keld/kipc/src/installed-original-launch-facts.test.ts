@@ -272,6 +272,114 @@ test("schema7 rejects nested accessors/proxies/inherited required fields without
   expect(reads).toBe(0);
 });
 
+test("schema7 gives typed refusals for active and revoked object and array proxies", () => {
+  let traps = 0;
+  for (const key of [
+    "top",
+    "paths",
+    "singleInstance",
+    "originalResourcePolicy",
+  ]) {
+    const source = original();
+    const record = key === "top" ? source : nested(source, key);
+    for (const target of [record, []]) {
+      for (const revoked of [false, true]) {
+        const proxy = Proxy.revocable(target, {
+          get() {
+            traps++;
+            throw new Error("unexpected proxy get");
+          },
+          ownKeys() {
+            traps++;
+            throw new Error("unexpected proxy ownKeys");
+          },
+          getOwnPropertyDescriptor() {
+            traps++;
+            throw new Error("unexpected proxy descriptor");
+          },
+        });
+        if (revoked) proxy.revoke();
+        const input =
+          key === "top" ? proxy.proxy : { ...source, [key]: proxy.proxy };
+        let failure: unknown;
+        try {
+          captureHostLaunchFacts(input);
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure).toMatchObject({ code: "KELD-IPC-029" });
+      }
+    }
+    expect(() =>
+      captureHostLaunchFacts(key === "top" ? [] : { ...source, [key]: [] }),
+    ).toThrow("KELD-IPC-029");
+  }
+  expect(traps).toBe(0);
+  expect(captureOriginal(original())).toEqual(JSON.parse(fixtureText));
+});
+
+test("descriptor admission ignores replaced inherited hasOwnProperty methods", () => {
+  const codec = join(import.meta.dir, "launch-facts.ts");
+  const child = Bun.spawnSync({
+    cmd: [
+      process.execPath,
+      "--no-install",
+      "--no-env-file",
+      "-e",
+      `import { captureHostLaunchFacts } from ${JSON.stringify(codec)};
+       const original = () => (${fixtureText});
+       const saved = Object.getOwnPropertyDescriptor(Object.prototype, "hasOwnProperty");
+       const results = [];
+       for (const replacement of [() => true, undefined]) {
+         let calls = 0;
+         const result = { valid: false, missing: null, accessors: [], calls: 0 };
+         try {
+           Object.defineProperty(Object.prototype, "hasOwnProperty", {
+             ...saved, value: replacement
+           });
+           result.valid = captureHostLaunchFacts(original()).schema === 7;
+           try { captureHostLaunchFacts({}); }
+           catch (error) { result.missing = error.code ?? null; }
+           for (const [key, field] of [
+             ["top", "name"], ["paths", "appData"],
+             ["singleInstance", "verdict"], ["originalResourcePolicy", "windowKey"]
+           ]) {
+             const source = original();
+             const record = key === "top" ? source : source[key];
+             const value = record[field];
+             Object.defineProperty(record, field, {
+               get() { calls++; return value; }
+             });
+             let code = null;
+             try { captureHostLaunchFacts(source); }
+             catch (error) { code = error.code ?? null; }
+             result.accessors.push(code);
+           }
+           result.calls = calls;
+         } finally {
+           Object.defineProperty(Object.prototype, "hasOwnProperty", saved);
+         }
+         results.push(result);
+       }
+       console.log(JSON.stringify(results));`,
+    ],
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 4000,
+  });
+  expect(child.exitCode).toBe(0);
+  expect(child.stderr.toString()).toBe("");
+  expect(JSON.parse(child.stdout.toString())).toEqual(
+    [0, 1].map(() => ({
+      valid: true,
+      missing: "KELD-IPC-029",
+      accessors: Array(4).fill("KELD-IPC-029"),
+      calls: 0,
+    })),
+  );
+  expect(captureOriginal(original())).toEqual(JSON.parse(fixtureText));
+});
+
 test("capture never invokes an inherited serializer while enforcing the record size limit", () => {
   const codec = join(import.meta.dir, "launch-facts.ts");
   const child = Bun.spawnSync({

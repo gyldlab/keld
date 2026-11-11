@@ -91,14 +91,15 @@ export function captureHostLaunchFacts(
   if (
     value === null ||
     typeof value !== "object" ||
-    Array.isArray(value) ||
-    isLaunchFactsProxy(value)
+    isLaunchFactsProxy(value) ||
+    Array.isArray(value)
   )
     return invalidLaunchFacts();
   const keys = Reflect.ownKeys(value);
   const baseKeys = ["schema", "kind", "name", "root"];
   for (const key of keys) {
-    if (!Object.getOwnPropertyDescriptor(value, key)?.hasOwnProperty("value"))
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !Object.hasOwn(descriptor, "value"))
       return invalidLaunchFacts();
   }
   const record = value as Record<string, unknown>;
@@ -188,8 +189,8 @@ export function captureHostLaunchFacts(
     if (
       input === null ||
       typeof input !== "object" ||
-      Array.isArray(input) ||
-      isLaunchFactsProxy(input)
+      isLaunchFactsProxy(input) ||
+      Array.isArray(input)
     )
       return invalidLaunchFacts();
     const copied: Partial<
@@ -199,7 +200,8 @@ export function captureHostLaunchFacts(
       if (key !== "appData" && key !== "userData" && key !== "documents")
         return invalidLaunchFacts();
       const descriptor = Object.getOwnPropertyDescriptor(input, key);
-      if (!descriptor?.hasOwnProperty("value")) return invalidLaunchFacts();
+      if (descriptor === undefined || !Object.hasOwn(descriptor, "value"))
+        return invalidLaunchFacts();
       const path: unknown = descriptor.value;
       if (
         !validText(path) ||
@@ -218,8 +220,8 @@ export function captureHostLaunchFacts(
       (schema !== 4 && schema !== 5 && schema !== 7) ||
       input === null ||
       typeof input !== "object" ||
-      Array.isArray(input) ||
-      isLaunchFactsProxy(input)
+      isLaunchFactsProxy(input) ||
+      Array.isArray(input)
     )
       return invalidLaunchFacts();
     const fields = Reflect.ownKeys(input);
@@ -227,7 +229,8 @@ export function captureHostLaunchFacts(
     if (
       fields.length !== 1 ||
       fields[0] !== "verdict" ||
-      !descriptor?.hasOwnProperty("value") ||
+      descriptor === undefined ||
+      !Object.hasOwn(descriptor, "value") ||
       (descriptor.value !== "acquired" && descriptor.value !== "contended")
     )
       return invalidLaunchFacts();
@@ -245,8 +248,8 @@ export function captureHostLaunchFacts(
     if (
       input === null ||
       typeof input !== "object" ||
-      Array.isArray(input) ||
-      isLaunchFactsProxy(input)
+      isLaunchFactsProxy(input) ||
+      Array.isArray(input)
     )
       return invalidLaunchFacts();
     const fields = [
@@ -272,7 +275,11 @@ export function captureHostLaunchFacts(
     >;
     for (const key of fields) {
       const descriptor = Object.getOwnPropertyDescriptor(input, key);
-      if (!descriptor?.hasOwnProperty("value") || !validText(descriptor.value))
+      if (
+        descriptor === undefined ||
+        !Object.hasOwn(descriptor, "value") ||
+        !validText(descriptor.value)
+      )
         return invalidLaunchFacts();
       copied[key] = descriptor.value;
     }
