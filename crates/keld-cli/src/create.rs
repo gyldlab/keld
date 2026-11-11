@@ -295,12 +295,23 @@ mod tests {
             .expect("canonical fixture owner");
         let caller = fixture.path().join("caller");
         let child_temp = fixture.path().join("child-temp");
-        for directory in [&caller, &child_temp] {
+        let git_home = fixture.path().join("git-home");
+        for directory in [&caller, &child_temp, &git_home] {
             fs::create_dir(directory).expect("disposable child directory");
             assert_disposable_directory(directory, &owner);
         }
+        let global_config = git_home.join(".gitconfig");
+        let global_excludes = git_home.join(".gitignore_global");
+        fs::write(
+            &global_config,
+            b"[core]\n\texcludesFile = ~/.gitignore_global\n",
+        )
+        .expect("disposable global Git config");
+        fs::write(&global_excludes, b"sentinel.txt\n").expect("disposable global ignore");
+        let fixture_environment = [("HOME", &git_home), ("USERPROFILE", &git_home)];
         let initialized = formatter_fixture_command("git")
             .args(["init", "-q"])
+            .envs(fixture_environment)
             .current_dir(&caller)
             .output()
             .expect("initialize disposable caller");
@@ -309,8 +320,19 @@ mod tests {
         assert_disposable_directory(&git_dir, &caller.canonicalize().expect("caller identity"));
         fs::write(caller.join("sentinel.txt"), b"caller source must survive\n")
             .expect("caller source sentinel");
+        let ignored = formatter_fixture_command("git")
+            .args(["check-ignore", "--quiet", "sentinel.txt"])
+            .envs(fixture_environment)
+            .current_dir(&caller)
+            .output()
+            .expect("observe disposable global ignore");
+        assert!(
+            ignored.status.success(),
+            "global ignore must match sentinel: {ignored:?}"
+        );
         let staged = formatter_fixture_command("git")
-            .args(["add", "sentinel.txt"])
+            .args(["add", "-f", "--", "sentinel.txt"])
+            .envs(fixture_environment)
             .current_dir(&caller)
             .output()
             .expect("stage disposable caller sentinel");
@@ -322,6 +344,8 @@ mod tests {
             git_dir.join("HEAD"),
             git_dir.join("index"),
             config_sentinel.clone(),
+            global_config,
+            global_excludes,
         ];
         let before = protected
             .each_ref()
@@ -331,6 +355,7 @@ mod tests {
         child
             .args([FORMATTER_TEST, "--exact", "--nocapture", "--color", "never"])
             .current_dir(&child_temp)
+            .envs(fixture_environment)
             .env("TEMP", &child_temp)
             .env("TMP", &child_temp)
             .env("TMPDIR", &child_temp);
