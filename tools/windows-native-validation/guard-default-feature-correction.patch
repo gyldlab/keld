@@ -1,0 +1,10 @@
+--- a/crates/keld-guard/src/windows_profile/grant.rs
++++ b/crates/keld-guard/src/windows_profile/grant.rs
+@@ -522,6 +522,7 @@
+         // independent of the incoming handle. The owned Rc outlives the writer.
+         let creating_registration=std::rc::Rc::clone(&custody.registration);
+         let preparation=match claim_registration {
++            #[cfg(any(feature = "qualification-catalog", test))]
+             Some(claim) if std::ptr::eq(claim, creating_registration.as_ref()) && claim.generation_claimed() =>
+                 creating_registration.prepare_retained_grant_inner(custody.destination.as_ref().expect("new custody destination"),access)
+                     .map(|mut prepared| { prepared.authority=GrantWriteAuthority::GenerationClaim;prepared }),
