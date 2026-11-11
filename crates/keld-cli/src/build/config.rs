@@ -1,6 +1,7 @@
 //! Closed, inert authoring data for the first native local macOS build.
 
 use std::collections::BTreeMap;
+#[cfg(any(target_os = "macos", test))]
 use std::path::PathBuf;
 
 use keld_core::{LiteralConfigValue, literal_config_from_ts};
@@ -49,6 +50,7 @@ pub(super) struct PreloadPin {
 }
 
 /// Input qualification pin. Strings here cannot mint publisher authority.
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug)]
 pub(super) struct ExecutablePin {
     pub(super) path: PathBuf,
@@ -57,6 +59,7 @@ pub(super) struct ExecutablePin {
 }
 
 /// Exact local package selection. No paths are opened during parsing.
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug)]
 pub(super) struct LocalBuildConfig {
     pub(super) bundle_version: String,
@@ -109,6 +112,7 @@ fn optional_text(
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn required_string_array(
     source: &mut Fields,
     field: &'static str,
@@ -313,6 +317,7 @@ pub(super) fn parse_app(source: &str) -> Result<AppConfig, BuildError> {
     })
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn parse_executable_pin(
     source: &mut Fields,
     field: &'static str,
@@ -353,6 +358,7 @@ fn parse_executable_pin(
     })
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn parse_sha256(text: &str) -> Option<[u8; 32]> {
     let bytes = text.as_bytes();
     if bytes.len() != 64
@@ -373,6 +379,7 @@ fn parse_sha256(text: &str) -> Option<[u8; 32]> {
 
 /// Parses the supported local target and signing without interpreting executable
 /// expressions or acquiring code. Platform availability is checked by the caller.
+#[cfg(any(target_os = "macos", test))]
 pub(super) fn parse_build(source: &str) -> Result<LocalBuildConfig, BuildError> {
     let phase = "keld.build.ts";
     let mut root = fields(source, phase)?;
