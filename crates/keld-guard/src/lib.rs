@@ -1112,40 +1112,29 @@ fn ensure_nfc(component: &str) -> Result<(), String> {
     let source = utf16(component)?;
     let source_len = i32::try_from(source.len())
         .map_err(|_| "Windows package component is too long".to_owned())?;
-    // SAFETY: source is a live, initialized UTF-16 buffer and source_len is
-    // its checked code-unit length. A null destination with zero capacity is
-    // the documented size query; no pointer is retained by Win32.
-    let required = unsafe {
-        NormalizeString(
-            NormalizationC,
-            source.as_ptr(),
-            source_len,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if required <= 0 {
-        return Err("Windows NormalizationC check failed".to_owned());
-    }
-    let required_units = usize::try_from(required)
-        .map_err(|_| "Windows normalization size is out of range".to_owned())?;
+    // This is an equality check, not a normalizing transformation. An already
+    // NFC input is unchanged and fits exactly its own UTF16 length. A longer
+    // normalized output is already a refusal, so no OS-sized allocation/retry
+    // is needed. The source and destination capacities are both input-bounded.
     let mut normalized = Vec::new();
     normalized
-        .try_reserve_exact(required_units)
+        .try_reserve_exact(source.len())
         .map_err(|_| "cannot allocate Windows normalization buffer".to_owned())?;
-    normalized.resize(required_units, 0);
-    // SAFETY: normalized is initialized and has exactly the checked capacity
-    // requested by NormalizeString; both buffers remain live for this call.
+    normalized.resize(source.len(), 0);
+    // SAFETY: both owned buffers contain source_len initialized UTF16 units;
+    // source_len was checked as i32. Win32 receives the exact destination bound,
+    // retains neither pointer, and reports insufficient space as a failure.
+    // https://learn.microsoft.com/windows/win32/api/winnls/nf-winnls-normalizestring
     let written = unsafe {
         NormalizeString(
             NormalizationC,
             source.as_ptr(),
             source_len,
             normalized.as_mut_ptr(),
-            required,
+            source_len,
         )
     };
-    if written <= 0 || written > required {
+    if written <= 0 || written > source_len {
         return Err("Windows NormalizationC check failed".to_owned());
     }
     let written_units = usize::try_from(written)
@@ -1760,8 +1749,20 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_package_paths_require_nfc_components() {
+        for name in [
+            "plain.txt",
+            "caf\u{00e9}.txt",
+            "\u{ac00}.txt",
+            "\u{1f642}.txt",
+        ] {
+            assert!(validate_windows_package_paths(&[name]).is_ok(), "{name}");
+        }
         assert!(validate_windows_package_paths(&["assets/caf\u{00e9}.txt"]).is_ok());
         assert!(validate_windows_package_paths(&["assets/cafe\u{0301}.txt"]).is_err());
+        // U+0344 normalizes to two code units. Refuse it without growing the
+        // output buffer; its two-character NFC spelling remains admissible.
+        assert!(validate_windows_package_paths(&["\u{0344}.txt"]).is_err());
+        assert!(validate_windows_package_paths(&["\u{0308}\u{0301}.txt"]).is_ok());
     }
 
     #[cfg(windows)]

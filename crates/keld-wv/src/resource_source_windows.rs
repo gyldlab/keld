@@ -62,11 +62,17 @@ impl AdmittedWebAppSource {
                 keld_guard::validate_windows_graph_namespace(&[path])
                     .map_err(|_| ResourceSourceError::InvalidPath)
             })?;
-        let names = assets.keys().map(String::as_str).collect::<Vec<_>>();
-        keld_guard::validate_windows_graph_namespace(&names)
+        let asset_names = assets.keys().map(String::as_str).collect::<Vec<_>>();
+        keld_guard::validate_windows_graph_namespace(&asset_names)
             .map_err(|_| "ambiguous Windows resource namespace")?;
         let entry_components = RootRelativeComponents::from_graph_path(&entry)
             .map_err(|_| "selected resource entry is not a serviceable Windows file URL")?;
+        let entry_url = root_url
+            .url_for(&entry_components, None)
+            .map_err(|_| "selected entry has no native file URL")?;
+        if entry_url.encode_utf16().count() > ORIGINAL_WEBAPP_LIMITS.max_url_utf16_units {
+            return Err("selected entry exceeds the existing native URL metadata bound");
+        }
         Ok(Arc::new(Self {
             webapp_root,
             root_identity: (held.dev(), held.ino()),

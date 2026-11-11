@@ -59,6 +59,7 @@ mod navigation_diagnostics;
 mod original_bootstrap;
 mod original_callbacks;
 mod original_navigation;
+mod original_resource;
 mod startup_retirement;
 mod view_build;
 mod view_host;
