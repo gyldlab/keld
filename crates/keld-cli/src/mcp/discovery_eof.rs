@@ -16,7 +16,7 @@ use tokio::io::{AsyncRead, ReadBuf};
 #[cfg(test)]
 mod tests;
 
-/// rmcp reports bootstrap EOF as ConnectionClosed. A successful discovery and
+/// rmcp reports bootstrap EOF as `ConnectionClosed`. A successful discovery and
 /// an actual input EOF distinguish normal closure from an input or send fault.
 #[derive(Debug, Default)]
 pub(super) struct DiscoveryEof {
