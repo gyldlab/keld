@@ -1,0 +1,17 @@
+{
+  "scope": "reviewed source transport; mirror only; native tests pending",
+  "source_components": [
+    "owned-context1bf76053",
+    "movable-catalog51e7ebcf",
+    "closed-receipt892d0bf6",
+    "resource-owner30f965e1",
+    "verified-signature-retentionea29f81d"
+  ],
+  "files": {
+    "README.md": "29a4cab26a572d549ca8d09a96f17be0e253fe3450ef0881ac6e3d20f89a5bcb",
+    "guard-source-plan.json": "7e9bb240cfb94099c01a51be1d0423eafd31dc73b750afb3cbbc5d3ab73634b5",
+    "preview_guard.py": "d66d484bef2c9d3721d5de6498afb307c19c3b0948927be405c955cbf642f6f5",
+    "preview_safety.py": "f862e00ebc1af7b4f3b82d89a076eb251d86781848eaadc2a1e6a4808278d252",
+    "test_preview.py": "f9281f1478a31d3a8961a931ef7a4d1273606f6484242d321293e8c951116c24"
+  }
+}
