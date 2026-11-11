@@ -19,6 +19,8 @@ pub(crate) struct IntakeLimits {
     pub max_header_fields: usize,
     pub max_header_utf16_units: usize,
     pub max_asset_bytes: usize,
+    /// Platform-approved payload representations charged until native completion.
+    pub buffer_copies: usize,
     /// All retained native tasks, including metadata waiting for the reader.
     pub task_slots: usize,
     pub max_retained_bytes: usize,
@@ -26,13 +28,29 @@ pub(crate) struct IntakeLimits {
 
 /// GH473 approved *candidate* caps for the pinned 23,118,872-byte app asset.
 /// The native high-water and cancellation proof must qualify these values.
+#[cfg(not(windows))]
 pub(crate) const ORIGINAL_WEBAPP_LIMITS: IntakeLimits = IntakeLimits {
     max_url_utf16_units: 2_048,
     max_header_fields: 32,
     max_header_utf16_units: 4_096,
     max_asset_bytes: 32 * 1024 * 1024,
+    buffer_copies: 4,
     task_slots: 64,
     max_retained_bytes: 256 * 1024 * 1024,
+};
+
+/// Approved GH1185 section 4.5 policy at 53c95fb: one Host-wide reader/session.
+/// A Windows stream copy may temporarily add one file cap above this reserved
+/// buffer account; native residency after Complete remains Q29's measured gate.
+#[cfg(windows)]
+pub(crate) const ORIGINAL_WEBAPP_LIMITS: IntakeLimits = IntakeLimits {
+    max_url_utf16_units: 2_048,
+    max_header_fields: 32,
+    max_header_utf16_units: 4_096,
+    max_asset_bytes: 64 * 1024 * 1024,
+    buffer_copies: 1,
+    task_slots: 1_024,
+    max_retained_bytes: 128 * 1024 * 1024,
 };
 
 /// Metadata observed without turning the native request into an `http::Request`.
@@ -86,9 +104,9 @@ pub(crate) fn check_shape(
 }
 
 /// Conservative ownership charge BEFORE the worker reads source bytes. The
-/// four copies cover the bounded Rust read, response data, Cocoa ownership and
-/// one pending-delivery representation; the exact high-water needs native
-/// qualification. Metadata includes native UTF-16 URL/header lengths and
+/// macOS policy charges four representations; approved Windows arm (b) charges
+/// the verified body size through native completion. The transient stream copy
+/// and post-Complete residency need their separate native qualification. Metadata includes native UTF-16 URL/header lengths and
 /// bounded MIME/CSP response headers. No allocation based on untrusted size.
 pub(crate) fn worst_case_charge(
     asset_size: u64,
@@ -101,7 +119,7 @@ pub(crate) fn worst_case_charge(
         return Err(IntakeReject::AssetLimit);
     }
     let copies = bytes
-        .checked_mul(4)
+        .checked_mul(limits.buffer_copies)
         .ok_or(IntakeReject::RetainedByteLimit)?;
     // Each native UTF-16 unit may expand to multiple UTF-8 bytes. Four is
     // conservative conversion headroom, not a loss-prone two-byte ceiling.
@@ -410,6 +428,7 @@ mod tests {
             max_header_fields: 2,
             max_header_utf16_units: 12,
             max_asset_bytes: 32,
+            buffer_copies: 4,
             task_slots: 2,
             max_retained_bytes: 100,
         }
@@ -567,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn original_max_asset_and_32mib_limit_charge_before_open() {
+    fn original_max_asset_and_platform_limits_charge_before_open() {
         let source = 23_118_872_u64;
         let charge = worst_case_charge(
             source,
@@ -583,11 +602,13 @@ mod tests {
         let b = ledger.begin(2).expect("second native asset");
         ledger.reserve_bytes(a, charge).expect("source charge");
         ledger.reserve_bytes(b, charge).expect("two source copies");
-        assert_eq!(ORIGINAL_WEBAPP_LIMITS.task_slots, 64);
-        let pending: Vec<_> = (3..=64)
+        let pending: Vec<_> = (3..=ORIGINAL_WEBAPP_LIMITS.task_slots)
             .map(|identity| ledger.begin(identity).expect("bounded pending metadata"))
             .collect();
-        assert_eq!(ledger.begin(65), Err(IntakeReject::NoTaskCapacity));
+        assert_eq!(
+            ledger.begin(ORIGINAL_WEBAPP_LIMITS.task_slots + 1),
+            Err(IntakeReject::NoTaskCapacity)
+        );
         for ticket in pending {
             assert!(ledger.begin_terminal_callback(ticket));
             ledger.release(ticket).expect("metadata retired");
@@ -791,7 +812,8 @@ mod tests {
 /// Counts all retained source/input/native copy headroom even across a
 /// background worker result queued after the native UI handler shut down.
 /// This RAII charge follows the actual last owned copy, unlike a task ledger
-/// reset at stopURLSchemeTask, and has only one aggregate owner per view.
+/// reset at retirement, and has one aggregate owner for the admitted source.
+/// Windows supplies that same account to its one Host-wide resource session.
 #[derive(Debug)]
 pub(crate) struct RetainedByteCredit {
     account: Arc<AtomicUsize>,

@@ -307,3 +307,24 @@ fn relative_reader_refuses_hardlink_and_intermediate_junction_substitution() {
         ENTRY_BYTES
     );
 }
+
+#[test]
+fn oversize_inventory_does_not_refuse_an_unrequested_source_asset() {
+    let (assets, _) = admit_asset_census(
+        vec![VerifiedWebAsset {
+            path: PathBuf::from("large.bin"),
+            size: 64 * 1024 * 1024 + 1,
+            sha256: [9; 32],
+        }],
+        Path::new("large.bin"),
+        |_| Ok(()),
+    )
+    .expect("inventory metadata creates no body allocation");
+    let selected = &assets["large.bin"];
+    assert_eq!(selected.size, 64 * 1024 * 1024 + 1);
+    assert_eq!(
+        crate::resource_intake::worst_case_charge(selected.size, 0, 0, ORIGINAL_WEBAPP_LIMITS),
+        Err(crate::resource_intake::IntakeReject::AssetLimit),
+        "a request for this row gets 413 before any file read"
+    );
+}
