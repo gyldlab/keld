@@ -77,6 +77,19 @@ impl CheckedNativeDocumentLease {
     pub fn belongs_to_source(&self, source: &Arc<AdmittedWebAppSource>) -> bool {
         self.0.belongs_to_source(source)
     }
+    /// Observe the living owner's exact current lease and retained source in
+    /// this turn. The result is not authority for a later native operation.
+    pub(crate) fn belongs_to_owner(
+        &self,
+        owner: &crate::native_document::NativeDocumentOwner,
+    ) -> bool {
+        owner
+            .lease_for(self.0.stamp())
+            .is_some_and(|current| current.same_binding(&self.0))
+            && owner
+                .source_binding()
+                .is_some_and(|source| self.belongs_to_source(&source))
+    }
     /// Match the exact original irreversible native lease, not numeric coincidence.
     #[must_use]
     pub fn same_binding(&self, other: &Self) -> bool {
