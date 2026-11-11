@@ -5,3 +5,7 @@ Extends ../../AGENTS.md. GH1184 exact approved contract; independent unsafe/desi
 - native_text.rs: bounded returned COM-task PWSTR reads, strict conversion, and one matching free.
 - original_callbacks.rs: creating-STA WebView2 navigation subscriptions/removal, canonical identity QI, bounded URI/header/ID/error getters, SetCancel.
 - Reuse the sole checked document owner. No generation inferred from URL/order, callback-held Rust borrow across native entry, escaping unwind, or cross-thread native handle. Pending navigation holds posts; actual replacement revokes. Unexpected navigation reentry inside a post retains outcome-unknown charge and fails qualification.
+- native_text.rs tests: controlled COM allocation/out-pointer writes and matching free.
+- original_resource/native.rs: STA file:* filters/WRR registration, bounded request/source-kind/body-presence getters, deferrals, SDK memory stream, fixed 403/413/503 or verified 200 response, one-shot Complete; shared parser/census/intake owners only.
+- mod.rs: existing registered wait also owns the reader thread handle; zero-time signal, checked unregister before join. Closed wake kind and pool unwind barrier; no COM there.
+- Deferral plus refusal failure: revoke, call canonical retained Close before return; closed hook requires actual success. Keep worker/body credit until quiescent.

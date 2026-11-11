@@ -52,8 +52,8 @@ mod managed_test_control;
 mod managed_windows;
 #[cfg(all(feature = "media-acceptance", test))]
 pub(crate) mod media_acceptance;
-mod navigation_diagnostics;
 mod native_text;
+mod navigation_diagnostics;
 mod original_callbacks;
 mod original_navigation;
 mod startup_retirement;
@@ -118,7 +118,7 @@ use webview2_com::{
 use webview2_com::{PermissionRequestedEventHandler, wait_with_pump};
 use windows::Win32::Foundation::{
     E_POINTER, E_UNEXPECTED, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_INVALID_STATE,
-    FILETIME, HANDLE, HWND, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_TIMEOUT,
+    FILETIME, HANDLE, HWND, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::Storage::FileSystem::{
@@ -438,6 +438,7 @@ enum WindowsLoopEvent {
     ProfileReleaseWake,
     DeferredBuildWake,
     ControllerFocus(WebviewId),
+    OriginalWake(WebviewId),
 }
 
 struct PersistentPurgeOwner {
@@ -2551,18 +2552,46 @@ fn commit_profile_stop(stop: Option<&PersistentStopTransition>) {
     }
 }
 
-/// Thread-pool callback: wakes the tao loop so [`ProfileReleaseWait::poll`]
-/// observes the signaled browser process handle.
-unsafe extern "system" fn browser_exit_wake(context: *mut core::ffi::c_void, _timed_out: bool) {
-    // SAFETY: `context` is the `EventLoopProxy` box `BrowserExitWake::register`
-    // leaked for exactly this registration; `Drop` reclaims it only after
-    // `UnregisterWaitEx` has waited for this callback to return.
-    let proxy = unsafe { &*context.cast::<EventLoopProxy<WindowsLoopEvent>>() };
-    let _ = proxy.send_event(WindowsLoopEvent::ProfileReleaseWake);
+/// The registered native wait retains exactly this immutable wake input.
+/// It contains no source, resource ticket, COM interface, or application callback.
+#[derive(Clone, Copy)]
+enum NativeWakeKind {
+    BrowserRelease,
+    ResourceReader(WebviewId),
 }
 
-/// One registered wait that posts `ProfileReleaseWake` when the browser
-/// process handle is signaled, so the loop needs no polling timer.
+impl NativeWakeKind {
+    fn is_resource_reader(self) -> bool {
+        matches!(self, Self::ResourceReader(_))
+    }
+}
+
+struct NativeWakeContext {
+    proxy: EventLoopProxy<WindowsLoopEvent>,
+    kind: NativeWakeKind,
+}
+
+/// Pool callback only wakes Tao. The UI separately observes the retained kernel
+/// object; a reader wake never supplies a browser-process release receipt.
+unsafe extern "system" fn browser_exit_wake(context: *mut core::ffi::c_void, _timed_out: bool) {
+    // SAFETY: `context` is the `NativeWakeContext` box `register_kind` owns
+    // for exactly this registration; `Drop` reclaims it only after
+    // `UnregisterWaitEx` has waited for this callback to return.
+    let wake = unsafe { &*context.cast::<NativeWakeContext>() };
+    let event = match wake.kind {
+        NativeWakeKind::BrowserRelease => WindowsLoopEvent::ProfileReleaseWake,
+        NativeWakeKind::ResourceReader(view) => WindowsLoopEvent::OriginalWake(view),
+    };
+    // A poisoned Rust queue must not unwind across the native pool ABI.
+    // The barrier contains no COM or native handle operation.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = wake.proxy.send_event(event);
+    }));
+}
+
+/// One canonical native wait owner. Browser waits post `ProfileReleaseWake`;
+/// the single Host resource reader posts `OriginalWake` on actual termination.
+/// A wake never substitutes for the browser's separate bound exit receipt.
 ///
 /// The registration owns the process handle it waits on: closing a handle
 /// while a registered wait is still pending is undefined
@@ -2570,8 +2599,9 @@ unsafe extern "system" fn browser_exit_wake(context: *mut core::ffi::c_void, _ti
 /// after a successful unregistration and leaked otherwise.
 struct BrowserExitWake {
     wait: Option<HANDLE>,
-    proxy: *mut EventLoopProxy<WindowsLoopEvent>,
+    proxy: *mut NativeWakeContext,
     process: ManuallyDrop<OwnedHandle>,
+    kind: NativeWakeKind,
 }
 
 impl BrowserExitWake {
@@ -2579,7 +2609,23 @@ impl BrowserExitWake {
         process: OwnedHandle,
         proxy: EventLoopProxy<WindowsLoopEvent>,
     ) -> Result<Self, WvError> {
-        let proxy = Box::into_raw(Box::new(proxy));
+        Self::register_kind(process, proxy, NativeWakeKind::BrowserRelease)
+    }
+
+    fn register_for_resource_reader(
+        thread: OwnedHandle,
+        proxy: EventLoopProxy<WindowsLoopEvent>,
+        view: WebviewId,
+    ) -> Result<Self, WvError> {
+        Self::register_kind(thread, proxy, NativeWakeKind::ResourceReader(view))
+    }
+
+    fn register_kind(
+        process: OwnedHandle,
+        proxy: EventLoopProxy<WindowsLoopEvent>,
+        kind: NativeWakeKind,
+    ) -> Result<Self, WvError> {
+        let proxy = Box::into_raw(Box::new(NativeWakeContext { proxy, kind }));
         let mut wait = HANDLE::default();
         // SAFETY: `process` is a live owned SYNCHRONIZE handle that this
         // registration owns and closes only after checked retirement or abort
@@ -2602,20 +2648,47 @@ impl BrowserExitWake {
             // SAFETY: no wait was registered, so nothing else can reach the box.
             drop(unsafe { Box::from_raw(proxy) });
             // No wait references `process`, so dropping it here is sound.
-            return Err(profile_failure_with(
-                ProfileErrorKind::LifecycleUnproven,
-                BROWSER_EXIT_WAKE_UNREGISTERED,
-            ));
+            return Err(if kind.is_resource_reader() {
+                WvError::EventLoop(String::from(
+                    "resource reader native termination wait could not be registered",
+                ))
+            } else {
+                profile_failure_with(
+                    ProfileErrorKind::LifecycleUnproven,
+                    BROWSER_EXIT_WAKE_UNREGISTERED,
+                )
+            });
         }
         Ok(Self {
             wait: Some(wait),
             proxy,
             process: ManuallyDrop::new(process),
+            kind,
         })
     }
 
     fn process(&self) -> HANDLE {
         HANDLE(self.process.as_raw_handle())
+    }
+
+    fn resource_reader_signaled(&self) -> Result<bool, WvError> {
+        if !self.kind.is_resource_reader() {
+            return Err(WvError::EventLoop(String::from(
+                "a browser wait cannot prove resource reader termination",
+            )));
+        }
+        // SAFETY: this wait retains the cloned handle of the exact owned Rust
+        // reader thread. A zero-time kernel observation never waits on the UI.
+        // WAIT_OBJECT_0 means the thread and its TLS destructors have terminated;
+        // only then may the UI consume that thread's JoinHandle without blocking.
+        // https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject
+        match unsafe { WaitForSingleObject(self.process(), 0) } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            _ => Err(WvError::EventLoop(String::from(
+                "resource reader native termination observation failed",
+            ))),
+        }
     }
 }
 
@@ -2639,20 +2712,30 @@ impl BrowserExitWake {
         // input is the real blocking native result. An injected error takes the
         // same retain-without-free branch below; only its fixture reclaims them.
         let result = unsafe {
-            media_acceptance::exit_wake_control::after_native_unregister(
-                result,
-                self.proxy,
-                self.process(),
-            )
+            if self.kind.is_resource_reader() {
+                result
+            } else {
+                media_acceptance::exit_wake_control::after_native_unregister(
+                    result,
+                    self.proxy,
+                    self.process(),
+                )
+            }
         };
         if result.is_err() {
             // Do not reclaim callback context or close the wait's object without
             // confirmed cancellation. Both are intentionally retained as before,
             // but the checked caller must now refuse successful profile release.
-            return Err(profile_failure_with(
-                ProfileErrorKind::LifecycleUnproven,
-                "browser-exit wait retirement was not confirmed; profile release is unproved",
-            ));
+            return Err(if self.kind.is_resource_reader() {
+                WvError::EventLoop(String::from(
+                    "resource reader native wait retirement was not confirmed; source release is unproved",
+                ))
+            } else {
+                profile_failure_with(
+                    ProfileErrorKind::LifecycleUnproven,
+                    "browser-exit wait retirement was not confirmed; profile release is unproved",
+                )
+            });
         }
         // SAFETY: actual blocking cancellation confirmed that no callback can
         // still reach this one registered proxy. The consumed token prevents a
