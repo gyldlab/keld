@@ -25,14 +25,7 @@ impl PendingOriginalEvent {
         lease: CheckedNativeDocumentLease,
         credential: String,
     ) -> Result<Self, &'static str> {
-        if id == 0
-            || !owner
-                .lease_for(lease.0.stamp())
-                .is_some_and(|current| current.same_binding(&lease.0))
-            || !owner
-                .source_binding()
-                .is_some_and(|source| lease.belongs_to_source(&source))
-        {
+        if id == 0 || !lease.belongs_to_owner(owner) {
             return Err("addressed event native lease revoked or mismatched");
         }
         Ok(Self {

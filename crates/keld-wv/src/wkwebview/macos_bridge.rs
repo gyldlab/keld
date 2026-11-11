@@ -23,6 +23,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::WebviewId;
 use crate::error::WvError;
+use crate::original_call::active::{ActiveOriginalCall, PendingOriginalSend};
 use crate::original_call::{LocalCallBudget, original_call_channel};
 use crate::original_event::PendingOriginalEvent;
 use crate::wv_link::{AppPageCall, AppWvLinkEnvelope, decode_app_wv_link};
@@ -1100,16 +1101,17 @@ impl MacRendererBridge {
                 disposition,
                 ..
             } => {
-                if state.pending_send.as_ref().is_none_or(|send| {
-                    send.id != request
-                        || u64::from(send.lease.stamp().observed_generation()) != navigation
-                }) {
+                if state
+                    .pending_send
+                    .as_ref()
+                    .is_none_or(|send| !send.matches_result(navigation, request))
+                {
                     return Ok(());
                 }
                 let Some(send) = state.pending_send.take() else {
                     return Ok(());
                 };
-                if send.lease.is_current() && state.retiring_at.is_none() {
+                if send.lease().is_current() && state.retiring_at.is_none() {
                     let token = state.app_credential.as_ref().ok_or_else(|| {
                         bridge_error("terminal result has no current app binding")
                     })?;
@@ -1802,10 +1804,10 @@ struct AppNativeState {
     registration_notice: Option<super::MacNativeDocumentLease>,
     route_role: Option<RendererRoleWitness>,
     pending_call: Option<PendingAppCall>,
-    active_call: Option<ActiveAppCall>,
+    active_call: Option<ActiveOriginalCall>,
     local_calls: VecDeque<QueuedLocalCall>,
     local_budget: LocalCallBudget,
-    pending_send: Option<PendingAppSend>,
+    pending_send: Option<PendingOriginalSend>,
     pending_event: Option<PendingOriginalEvent>,
     evaluations: usize,
     retiring_at: Option<std::time::Instant>,
@@ -1963,11 +1965,11 @@ fn handle_app_call(
                 call.method,
                 channel,
                 state.pending_call.is_some(),
-                state.active_call.as_ref().map(|active| active.id),
+                state.active_call.as_ref().map(ActiveOriginalCall::id),
                 state
                     .active_call
                     .as_ref()
-                    .is_some_and(|active| active.send_forwarded),
+                    .is_some_and(ActiveOriginalCall::send_forwarded),
                 state.pending_send.is_some(),
                 state.pending_event.is_some(),
                 state.control_fault,
@@ -2099,7 +2101,7 @@ fn queue_original(
         && state
             .active_call
             .as_ref()
-            .is_none_or(|active| active.channel.is_none())
+            .is_none_or(|active| active.channel().is_none())
         && !state
             .local_calls
             .iter()
@@ -2128,16 +2130,16 @@ fn handle_app_control(
     let mut state = app.borrow_mut();
     match control {
         AppWvLinkEnvelope::CallFinished { document, call } => {
-            let active = state
+            state
                 .active_call
                 .as_mut()
-                .filter(|active| active.id == call && active.credential == document)
                 .ok_or_else(|| {
                     bridge_error(
                         "original invocation completion does not match retained physical custody",
                     )
-                })?;
-            active.function_finished = true;
+                })?
+                .observe_function_finished(call, &document)
+                .map_err(bridge_error)?;
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
             {
                 state.fixture.finished_calls += 1;
@@ -2371,20 +2373,18 @@ fn send_compat_message(
         .active_call
         .as_ref()
         .filter(|active| {
-            active.credential == document
-                && active.channel.as_deref() == Some(&channel)
-                && !active.send_forwarded
-                && active.lease.is_current()
-                && active
-                    .role_witness
-                    .as_ref()
-                    .is_some_and(|role| state.role_current(role))
+            active.send_eligible(
+                &state.document.borrow(),
+                state.route_role.as_ref(),
+                document,
+                &channel,
+            )
         })
         .ok_or_else(|| bridge_error("app send lacks its current original-function admission"))?;
     if state.pending_send.is_some() {
         return Err(bridge_error("native send credit occupied"));
     }
-    let lease = active.lease.clone();
+    let lease = active.lease().clone();
     let mut request = request_for_lease(
         lease.clone(),
         message.get(),
@@ -2396,12 +2396,9 @@ fn send_compat_message(
         .requests
         .try_send(request)
         .map_err(|_| bridge_error("existing bounded renderer endpoint unavailable"))?;
-    state.pending_send = Some(PendingAppSend {
-        id: message.get(),
-        lease,
-    });
+    state.pending_send = Some(PendingOriginalSend::after_handoff(message.get(), lease));
     if let Some(active) = state.active_call.as_mut() {
-        active.send_forwarded = true;
+        active.send_handed_off().map_err(bridge_error)?;
     }
     Ok(())
 }
@@ -2554,21 +2551,6 @@ struct PendingAppCall {
     locals_before: usize,
     admission: AppCallAdmission,
 }
-struct ActiveAppCall {
-    id: u32,
-    lease: super::MacNativeDocumentLease,
-    credential: String,
-    channel: Option<String>,
-    send_forwarded: bool,
-    function_finished: bool,
-    evaluation_finished: bool,
-    local_bytes: usize,
-    role_witness: Option<RendererRoleWitness>,
-}
-struct PendingAppSend {
-    id: u32,
-    lease: super::MacNativeDocumentLease,
-}
 #[derive(Clone)]
 enum EvaluationPurpose {
     Control,
@@ -2631,13 +2613,7 @@ impl AppNativeState {
         }
         let owner = self.document.borrow();
         let stamp = lease.0.stamp();
-        self.stamp == Some(stamp)
-            && owner
-                .lease_for(stamp)
-                .is_some_and(|current| current.same_binding(&lease.0))
-            && owner
-                .source_binding()
-                .is_some_and(|source| lease.belongs_to_source(&source))
+        self.stamp == Some(stamp) && lease.belongs_to_owner(&owner)
     }
     fn release_local(&mut self, bytes: usize) {
         if self.local_budget.release(bytes).is_err() {
@@ -2754,7 +2730,7 @@ impl AppNativeState {
     }
     fn clear_active_call(&mut self) {
         if let Some(call) = self.active_call.take() {
-            let bytes = call.local_bytes;
+            let bytes = call.local_bytes();
             drop(call);
             if bytes != 0 {
                 self.release_local(bytes);
@@ -2792,17 +2768,14 @@ impl AppNativeState {
                 return Ok(None);
             }
             let queued = pending.queued;
-            self.active_call = Some(ActiveAppCall {
-                id: queued.invocation.id,
-                lease: queued.invocation.lease.clone(),
-                credential: queued.credential,
-                channel: queued.channel,
-                send_forwarded: false,
-                function_finished: false,
-                evaluation_finished: false,
-                local_bytes: queued.bytes,
-                role_witness: queued.role_witness,
-            });
+            self.active_call = Some(ActiveOriginalCall::entered(
+                queued.invocation.id,
+                queued.invocation.lease.clone(),
+                queued.credential,
+                queued.channel,
+                queued.bytes,
+                queued.role_witness,
+            ));
             return Ok(Some(queued.invocation));
         }
         if self
@@ -2831,17 +2804,14 @@ impl AppNativeState {
                 .checked_sub(1)
                 .ok_or_else(|| bridge_error("original call order barrier underflow"))?;
         }
-        self.active_call = Some(ActiveAppCall {
-            id: local.invocation.id,
-            lease: local.invocation.lease.clone(),
-            credential: local.credential,
-            channel: None,
-            send_forwarded: false,
-            function_finished: false,
-            evaluation_finished: false,
-            local_bytes: local.bytes,
-            role_witness: None,
-        });
+        self.active_call = Some(ActiveOriginalCall::entered(
+            local.invocation.id,
+            local.invocation.lease.clone(),
+            local.credential,
+            None,
+            local.bytes,
+            None,
+        ));
         Ok(Some(local.invocation))
     }
     fn prepare_cancelled_original(
@@ -2864,17 +2834,12 @@ impl AppNativeState {
                 self.fixture.last_refusal_call = local.invocation.id;
                 self.fixture.last_refusal_after_calls = self.fixture.finished_calls;
             }
-            self.active_call = Some(ActiveAppCall {
-                id: local.invocation.id,
-                lease: local.invocation.lease.clone(),
-                credential: local.credential,
-                channel: None,
-                send_forwarded: false,
-                function_finished: true,
-                evaluation_finished: false,
-                local_bytes: local.bytes,
-                role_witness: None,
-            });
+            self.active_call = Some(ActiveOriginalCall::refused_before_entry(
+                local.invocation.id,
+                local.invocation.lease.clone(),
+                local.credential,
+                local.bytes,
+            ));
             return Ok(Some(local.invocation));
         }
         self.drop_queued_call(local);
@@ -2952,13 +2917,12 @@ impl AppNativeState {
             }
         }
         if let Some(call) = self.active_call.as_ref()
-            && call.function_finished
-            && call.evaluation_finished
+            && call.ready_to_release()
         {
-            if call.channel.is_some() && !call.send_forwarded {
+            if call.needs_preflight_abort() {
                 let request = request_for_lease(
-                    call.lease.clone(),
-                    call.id,
+                    call.lease().clone(),
+                    call.id(),
                     RendererBridgeOperation::PreflightAborted,
                     Vec::new(),
                 );
@@ -3215,15 +3179,8 @@ fn complete_evaluation(app: &SharedAppState, receipt: NativeEvaluationReceipt) {
             }
         }
         EvaluationPurpose::Call { id, lease } => {
-            if let Some(call) = state
-                .active_call
-                .as_mut()
-                .filter(|call| call.id == id && call.lease.same_binding(&lease))
-            {
-                call.evaluation_finished = true;
-                if !receipt.completed || !lease.is_current() {
-                    call.function_finished = true;
-                }
+            if let Some(call) = state.active_call.as_mut() {
+                call.observe_native_quiescence(id, &lease, receipt.completed);
             }
         }
         EvaluationPurpose::Event { id, lease } => {
@@ -3426,8 +3383,8 @@ impl MacRendererBridge {
             "held_call_completion":state.fixture.held_completion.as_ref().is_some_and(|receipt|matches!(&receipt.purpose,EvaluationPurpose::Call{..})),
             "local_queue_records":state.local_calls.len(),"local_retained_records":state.local_budget.retained_records(),"local_retained_bytes":state.local_budget.retained_bytes(),
             "pending_call":state.pending_call.as_ref().map(|call|serde_json::json!({"id":call.queued.invocation.id,"lease_current":call.queued.invocation.lease.is_current(),"locals_before":call.locals_before,"admission":format!("{:?}",call.admission)})),
-            "active_call":state.active_call.as_ref().map(|call|serde_json::json!({"id":call.id,"lease_current":call.lease.is_current(),"function_finished":call.function_finished,"evaluation_finished":call.evaluation_finished,"send_forwarded":call.send_forwarded})),
-            "pending_send":state.pending_send.as_ref().map(|send|serde_json::json!({"id":send.id,"lease_current":send.lease.is_current()})),
+            "active_call":state.active_call.as_ref().map(|call|serde_json::json!({"id":call.id(),"lease_current":call.lease().is_current(),"function_finished":call.function_finished(),"evaluation_finished":call.native_finished(),"send_forwarded":call.send_forwarded()})),
+            "pending_send":state.pending_send.as_ref().map(|send|serde_json::json!({"id":send.id(),"lease_current":send.lease().is_current()})),
             "pending_event":state.pending_event.as_ref().map(|event|serde_json::json!({"id":event.id(),"lease_current":event.lease().is_current(),"consumed_sent":event.consumed_sent(),"quiesced":event.native_quiescence(),"quiesced_sent":event.quiescence_sent()}))
         })
     }

@@ -5,6 +5,8 @@
 use crate::WvError;
 use crate::wv_link::AppPageCall;
 
+pub(crate) mod active;
+
 const MAX_LOCAL_CALL_RECORDS: usize = 64;
 const MAX_LOCAL_CALL_BYTES: usize = 524_288;
 
