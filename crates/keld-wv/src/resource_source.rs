@@ -278,7 +278,10 @@ pub(crate) fn admit_asset_census(
             return Err("ambiguous captured asset path");
         }
         validate_path(path).map_err(|_| "invalid captured asset path")?;
-        if asset.size > (32 * 1024 * 1024) {
+        // Windows admits immutable oversize rows and refuses only a request
+        // for those bytes with 413 before I/O, as GH1185 section 4.5 requires.
+        #[cfg(not(windows))]
+        if asset.size > crate::resource_intake::ORIGINAL_WEBAPP_LIMITS.max_asset_bytes as u64 {
             return Err("captured source exceeds original asset ceiling");
         }
         selected.insert(path.to_owned(), asset);
