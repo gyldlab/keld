@@ -27,7 +27,39 @@ interface IpcRendererFacade {
 interface NativePort {
   postMessage(text: string): void;
 }
+interface WindowsNativePort extends NativePort {
+  addEventListener(
+    name: "message",
+    receive: (event: { data: unknown; source: unknown }) => void,
+  ): void;
+}
+type TerminalDisposition =
+  | { status: "consumed" | "no-listener" | "stale" }
+  | { status: "refused"; code: string; message: string }
+  | {
+      status: "route-retired";
+      certainty: "not-dispatched" | "outcome-unknown";
+    };
+type NumericReply =
+  | { request: number; ok: true; payload: number[] }
+  | { request: number; ok: false; code: string; detail: string };
+type HostRendererMessage = { v: 2; document: string } & (
+  | { kind: "bound" | "route-state"; ready: boolean }
+  | { kind: "event"; delivery: number; channel: string; payload: number[] }
+  | { kind: "send-result"; message: number; disposition: TerminalDisposition }
+  | { kind: "app-registered" }
+  | { kind: "app-refused"; call: number }
+  | { kind: "app-call"; call: number; method: Method; args: Local[] }
+  | ({ kind: "reply" } & NumericReply)
+);
+interface AppTransport extends NativePort {
+  readonly legacy: boolean;
+  readonly numericReply?: (reply: NumericReply) => void;
+  subscribe?(receive: (message: HostRendererMessage) => void): void;
+}
 interface RuntimeWindow extends Window {
+  readonly chrome?: { readonly webview?: WindowsNativePort };
+  __keldBridgeNativeResult?: (reply: NumericReply) => void;
   readonly webkit?: {
     readonly messageHandlers?: Readonly<Record<string, NativePort>>;
   };
@@ -112,6 +144,280 @@ function frozenFacts(facts: PreloadFacts): {
   for (const key of Object.keys(facts.versions))
     define(versions, key, { value: facts.versions[key], enumerable: true });
   return freeze({ type: "renderer", versions: freeze(versions) });
+}
+
+function closed(
+  value: unknown,
+  fields: readonly string[],
+): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || isArray(value)) return false;
+  const keys = Object.keys(value);
+  return (
+    keys.length === fields.length && keys.every((key) => fields.includes(key))
+  );
+}
+function nonzeroU32(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value > 0 &&
+    value <= 0xffffffff
+  );
+}
+function payloadBytes(value: unknown): value is number[] {
+  return (
+    isArray(value) &&
+    value.length <= 4096 &&
+    value.every(
+      (byte) =>
+        typeof byte === "number" &&
+        Number.isInteger(byte) &&
+        byte >= 0 &&
+        byte <= 255,
+    )
+  );
+}
+
+/** Validate the existing Local graph once before copy or original method entry. */
+function localArguments(value: unknown): {
+  args: Local[];
+  callbacks: Set<number>;
+} {
+  if (!isArray(value) || value.length > 16)
+    refuse("local argument count bound exceeded");
+  let keys = 0,
+    bytes = 0;
+  const callbacks = new Set<number>();
+  function visit(item: unknown, depth: number): void {
+    if (depth > 16 || ++keys > MAX_KEYS)
+      refuse("local argument graph bound exceeded");
+    if (item === null || typeof item === "boolean") return;
+    if (typeof item === "number") {
+      if (!Number.isFinite(item)) refuse("nonfinite local number");
+      return;
+    }
+    if (typeof item === "string") {
+      bytes += boundedText(item);
+      if (bytes > 65_536) refuse("local byte bound exceeded");
+      return;
+    }
+    if (!item || typeof item !== "object" || isArray(item))
+      refuse("malformed local argument");
+    const row = item as Record<string, unknown>;
+    switch (row.k) {
+      case "undefined":
+        if (!closed(row, ["k"])) refuse("invalid undefined descriptor");
+        return;
+      case "callback":
+        if (!closed(row, ["k", "id"]) || !nonzeroU32(row.id))
+          refuse("invalid local callback slot");
+        callbacks.add(row.id);
+        return;
+      case "array":
+        if (
+          !closed(row, ["k", "values"]) ||
+          !isArray(row.values) ||
+          row.values.length > 256
+        )
+          refuse("local array admission refused");
+        for (const child of row.values) visit(child, depth + 1);
+        return;
+      case "object": {
+        if (
+          !closed(row, ["k", "entries"]) ||
+          !isArray(row.entries) ||
+          row.entries.length > 256
+        )
+          refuse("local object admission refused");
+        const names = new Set<string>();
+        for (const pair of row.entries) {
+          if (
+            !isArray(pair) ||
+            pair.length !== 2 ||
+            typeof pair[0] !== "string"
+          )
+            refuse("invalid local data pair");
+          const key = pair[0];
+          if (
+            ++keys > MAX_KEYS ||
+            names.has(key) ||
+            key === "__proto__" ||
+            key === "constructor" ||
+            key === "prototype"
+          )
+            refuse("local key refused");
+          names.add(key);
+          bytes += boundedText(key);
+          if (bytes > 65_536) refuse("local byte bound exceeded");
+          visit(pair[1], depth + 1);
+        }
+        return;
+      }
+      default:
+        refuse("unknown local value tag");
+    }
+  }
+  for (const item of value) visit(item, 1);
+  return { args: value as Local[], callbacks };
+}
+
+/** JSON.parse owns syntax and number/string decoding; this bounded lexical pass
+ * retains duplicate-key evidence that JSON.parse otherwise discards. It is not
+ * an endpoint-value codec or a second Local representation. */
+function noDuplicateJsonKeys(text: string): boolean {
+  const stack: (Set<string> | undefined)[] = [];
+  let keys = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      const start = i++;
+      for (; i < text.length; i++) {
+        if (text[i] === "\\") i++;
+        else if (text[i] === '"') break;
+      }
+      if (i === text.length) return false;
+      let next = i + 1;
+      while (next < text.length && /[\t\n\r ]/.test(text[next]!)) next++;
+      if (text[next] === ":") {
+        const names = stack.at(-1);
+        if (!names || ++keys > 1024) return false;
+        const key = parse(text.slice(start, i + 1)) as string;
+        if (names.has(key)) return false;
+        names.add(key);
+      }
+    } else if (c === "{" || c === "[") {
+      if (stack.length >= 64) return false;
+      stack.push(c === "{" ? new Set<string>() : undefined);
+    } else if (c === "}" || c === "]") stack.pop();
+  }
+  return true;
+}
+
+function terminal(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const row = value as Record<string, unknown>;
+  switch (row.status) {
+    case "consumed":
+    case "no-listener":
+    case "stale":
+      return closed(row, ["status"]);
+    case "route-retired":
+      return (
+        closed(row, ["status", "certainty"]) &&
+        (row.certainty === "not-dispatched" ||
+          row.certainty === "outcome-unknown")
+      );
+    case "refused":
+      return (
+        closed(row, ["status", "code", "message"]) &&
+        typeof row.code === "string" &&
+        typeof row.message === "string" &&
+        boundedText(row.code) <= 4096 &&
+        boundedText(row.message) <= 4096
+      );
+    default:
+      return false;
+  }
+}
+
+/** Sole closed decoder for the GH1184 Host-to-page JSON carrier. No permission
+ * or native-origin authority is derived from its output. */
+export function decodeHostRendererMessage(
+  text: unknown,
+): HostRendererMessage | undefined {
+  if (typeof text !== "string" || text.length > 512 * 1024) return;
+  try {
+    const encoded = apply(encodeText, encoder, [text]) as Uint8Array;
+    if (
+      encoded.length > 512 * 1024 ||
+      apply(decodeText, decoder, [encoded]) !== text ||
+      !noDuplicateJsonKeys(text)
+    )
+      return;
+    const value = parse(text) as Record<string, unknown>;
+    if (
+      !value ||
+      typeof value !== "object" ||
+      isArray(value) ||
+      value.v !== 2 ||
+      typeof value.document !== "string" ||
+      !/^[0-9a-f]{32}$/.test(value.document) ||
+      typeof value.kind !== "string"
+    )
+      return;
+    const fields = (extra: readonly string[]) =>
+      closed(value, ["v", "document", "kind", ...extra]);
+    let maximum = 4096;
+    switch (value.kind) {
+      case "bound":
+      case "route-state":
+        if (!fields(["ready"]) || typeof value.ready !== "boolean") return;
+        break;
+      case "event":
+        maximum = 64 * 1024;
+        if (
+          !fields(["delivery", "channel", "payload"]) ||
+          !nonzeroU32(value.delivery) ||
+          typeof value.channel !== "string" ||
+          value.channel.length === 0 ||
+          boundedText(value.channel) > 256 ||
+          /[\u0000-\u001f\u007f-\u009f*]/.test(value.channel) ||
+          !payloadBytes(value.payload)
+        )
+          return;
+        break;
+      case "send-result":
+        if (
+          !fields(["message", "disposition"]) ||
+          !nonzeroU32(value.message) ||
+          !terminal(value.disposition)
+        )
+          return;
+        break;
+      case "app-registered":
+        if (!fields([])) return;
+        break;
+      case "app-refused":
+        if (!fields(["call"]) || !nonzeroU32(value.call)) return;
+        break;
+      case "app-call":
+        maximum = 512 * 1024;
+        if (
+          !fields(["call", "method", "args"]) ||
+          !nonzeroU32(value.call) ||
+          !method(value.method)
+        )
+          return;
+        localArguments(value.args);
+        break;
+      case "reply":
+        if (!nonzeroU32(value.request)) return;
+        if (value.ok === true) {
+          maximum = 64 * 1024;
+          if (
+            !fields(["request", "ok", "payload"]) ||
+            !payloadBytes(value.payload)
+          )
+            return;
+        } else if (value.ok === false) {
+          if (
+            !fields(["request", "ok", "code", "detail"]) ||
+            typeof value.code !== "string" ||
+            typeof value.detail !== "string" ||
+            boundedText(value.code) > 4096 ||
+            boundedText(value.detail) > 4096
+          )
+            return;
+        } else return;
+        break;
+      default:
+        return;
+    }
+    if (encoded.length > maximum) return;
+    return value as HostRendererMessage;
+  } catch {
+    return;
+  }
 }
 
 /** The sole page handler carries untrusted copied values; it has no credential. */
@@ -301,25 +607,85 @@ export function installPage(facts: PreloadFacts): void {
   dom.dispatchEvent(new CustomEvent(READY_QUERY));
 }
 
-/** Application-world runtime. The only executable argument is the native-authenticated image. */
+type OriginalPreload = (
+  require: (name: string) => unknown,
+  process: object,
+  exports: object,
+  module: object,
+  Buffer: unknown,
+  global: unknown,
+  setImmediate: unknown,
+  clearImmediate: unknown,
+) => void;
+
+/** Preserve the actual macOS isolated-world entry point and isolation fact. */
 export function installApp(
   facts: PreloadFacts,
-  original: (
-    require: (name: string) => unknown,
-    process: object,
-    exports: object,
-    module: object,
-    Buffer: unknown,
-    global: unknown,
-    setImmediate: unknown,
-    clearImmediate: unknown,
-  ) => void,
+  original: OriginalPreload,
+): void {
+  const w = window as RuntimeWindow;
+  const native = w.webkit?.messageHandlers?.__keld_app_world;
+  const send = native?.postMessage;
+  if (!native || typeof send !== "function")
+    refuse("isolated native app port is unavailable");
+  installAppRuntime(facts, original, {
+    legacy: false,
+    postMessage: (text) => {
+      apply(send, native, [text]);
+    },
+  });
+}
+
+/** Explicit approved Windows Legacy adapter. Native still owns the source,
+ * document nonce, grants and all effects; page-visible data grants no authority. */
+export function installWindows(
+  facts: PreloadFacts,
+  original: OriginalPreload,
+): void {
+  const w = window as RuntimeWindow;
+  // The fixed native bootstrap also checks its qualified source before install.
+  // This guard must precede both facade publication and original source entry.
+  if (w.top !== w) return;
+  const native = w.chrome?.webview;
+  const send = native?.postMessage;
+  const subscribe = native?.addEventListener;
+  if (!native || typeof send !== "function" || typeof subscribe !== "function")
+    refuse("Windows native app port is unavailable");
+  const numeric = descriptor(w, "__keldBridgeNativeResult")?.value as unknown;
+  const transport: AppTransport = {
+    legacy: true,
+    postMessage: (text) => {
+      apply(send, native, [text]);
+    },
+    numericReply:
+      typeof numeric === "function"
+        ? (reply) => {
+            apply(numeric, w, [reply]);
+          }
+        : undefined,
+    subscribe: (receive) => {
+      apply(subscribe, native, [
+        "message",
+        (event: { data: unknown; source: unknown }) => {
+          if (event.source !== native) return;
+          const value = decodeHostRendererMessage(event.data);
+          if (value) receive(value);
+        },
+      ]);
+    },
+  };
+  installPage(facts);
+  installAppRuntime(facts, original, transport);
+}
+
+/** One original runtime owns callbacks, copies and accounting for both adapters. */
+function installAppRuntime(
+  facts: PreloadFacts,
+  original: OriginalPreload,
+  native: AppTransport,
 ): void {
   const w = window as RuntimeWindow;
   const dom = w.document;
-  const native = w.webkit?.messageHandlers?.__keld_app_world;
-  if (!native || typeof native.postMessage !== "function")
-    refuse("isolated native app port is unavailable");
   let credential: string | undefined,
     ready = false,
     message = 0,
@@ -624,7 +990,7 @@ export function installApp(
   const process = freeze({
     ...frozenFacts(facts),
     sandboxed: true,
-    contextIsolated: true,
+    contextIsolated: !native.legacy,
     argv: freeze([...facts.argv]),
     env: freeze(Object.create(null)),
   });
@@ -656,8 +1022,9 @@ export function installApp(
       );
       return;
     }
-    // DOM data is untrusted. The private credential is appended only here and
-    // never put into a page/DOM event or used as a page-function identity.
+    // DOM data is untrusted. This appends only the currently bound nonce.
+    // Mac keeps it private; the approved Windows Legacy page may read/forge it.
+    // Neither representation replaces native source, identity or grant checks.
     post({
       v: 1,
       kind: "call",
@@ -670,21 +1037,21 @@ export function installApp(
   dom.addEventListener(READY_QUERY, () => {
     if (nativeRegistered) dom.dispatchEvent(new CustomEvent(READY_EVENT));
   });
-  w.__keldAppNativeRefusal = (document, call) => {
+  const nativeRefusal = (w.__keldAppNativeRefusal = (document, call) => {
     if (document === credential)
       dom.dispatchEvent(new CustomEvent(PAGE_REFUSAL_EVENT, { detail: call }));
-  };
-  w.__keldAppNativeRegistered = (document) => {
+  });
+  const nativeRegisteredReceipt = (w.__keldAppNativeRegistered = (document) => {
     if (document === credential && credential && registry && processPublished) {
       nativeRegistered = true;
       dom.dispatchEvent(new CustomEvent(READY_EVENT));
     }
-  };
-  w.__keldAppTryBind = () => post({ v: 2, kind: "bind" });
-  w.__keldAppNativeBind = (value) => {
+  });
+  const tryBind = (w.__keldAppTryBind = () => post({ v: 2, kind: "bind" }));
+  const nativeBind = (w.__keldAppNativeBind = (value) => {
     if (
       credential !== undefined ||
-      value.document !== w.__keldHostDocumentCredential ||
+      (!native.legacy && value.document !== w.__keldHostDocumentCredential) ||
       !registry ||
       !processPublished ||
       typeof value.document !== "string" ||
@@ -695,19 +1062,19 @@ export function installApp(
     ready = value.ready === true;
     // Registration is world/native authenticated and document-bound only now.
     post({ v: 1, kind: "registered", document: credential, methods: METHODS });
-  };
-  w.__keldAppRouteState = (document, value) => {
+  });
+  const nativeRouteState = (w.__keldAppRouteState = (document, value) => {
     if (!credential || document !== credential) return;
     ready = value === true;
     if (!ready) {
       activeWatches.clear();
       for (const record of requests.values()) record.active = false;
     }
-  };
-  w.__keldAppNativeTerminal = (value) => {
+  });
+  const nativeTerminal = (w.__keldAppNativeTerminal = (value) => {
     if (value.document !== credential) return;
     if (value.disposition.status === "route-retired")
-      w.__keldAppRouteState?.(value.document, false);
+      nativeRouteState(value.document, false);
     else if (value.disposition.status !== "consumed")
       for (const record of requests.values())
         if (record.message === (value as { message?: number }).message)
@@ -719,8 +1086,8 @@ export function installApp(
           (value.disposition.message ?? "one-way send refused"),
       );
     // A terminal one-way result never fabricates mainResp or deletes original maps.
-  };
-  w.__keldAppNativeCall = (call) => {
+  });
+  const nativeCall = (w.__keldAppNativeCall = (call) => {
     if (
       !credential ||
       call.document !== credential ||
@@ -735,34 +1102,7 @@ export function installApp(
       entered = false;
     const proxiesBefore = new Set(callbackProxies.keys());
     try {
-      const ids = new Set<number>();
-      let censusNodes = 0;
-      const census = (value: Local, depth = 1): void => {
-        if (depth > 16 || ++censusNodes > 256)
-          refuse("local admission graph bound exceeded");
-        if (!value || typeof value !== "object") return;
-        if (value.k === "callback") ids.add(value.id);
-        else if (value.k === "array") {
-          if (!isArray(value.values) || value.values.length > 256)
-            refuse("local array admission refused");
-          for (const child of value.values) census(child, depth + 1);
-        } else if (value.k === "object") {
-          if (!isArray(value.entries) || value.entries.length > 256)
-            refuse("local object admission refused");
-          for (const pair of value.entries) {
-            if (
-              !isArray(pair) ||
-              pair.length !== 2 ||
-              typeof pair[0] !== "string"
-            )
-              refuse("invalid local data pair");
-            if (++censusNodes > 256)
-              refuse("local key admission bound exceeded");
-            census(pair[1], depth + 1);
-          }
-        }
-      };
-      for (const value of call.args) census(value);
+      const { callbacks: ids } = localArguments(call.args);
       bytes = stringify(call.args).length * 2 + ids.size * 2_048 + 1_024;
       const local =
         call.method === "registerMsgListener" || call.method === "listenOnce";
@@ -811,8 +1151,8 @@ export function installApp(
         call: call.call,
       });
     }
-  };
-  w.__keldAppNativeEvent = (event) => {
+  });
+  const nativeEvent = (w.__keldAppNativeEvent = (event) => {
     if (!credential || event.document !== credential) return;
     if (!ready) {
       post({
@@ -905,7 +1245,49 @@ export function installApp(
       delivery: event.delivery,
       disposition,
     });
-  };
+  });
+  native.subscribe?.((value) => {
+    if (value.kind === "bound") {
+      nativeBind(value);
+      return;
+    }
+    if (!credential || value.document !== credential) return;
+    switch (value.kind) {
+      case "event":
+        nativeEvent(value);
+        break;
+      case "send-result":
+        nativeTerminal(value);
+        break;
+      case "route-state":
+        nativeRouteState(value.document, value.ready);
+        break;
+      case "app-registered":
+        nativeRegisteredReceipt(value.document);
+        break;
+      case "app-refused":
+        nativeRefusal(value.document, value.call);
+        break;
+      case "app-call":
+        nativeCall(value);
+        break;
+      case "reply":
+        if (value.ok)
+          native.numericReply?.({
+            request: value.request,
+            ok: true,
+            payload: value.payload,
+          });
+        else
+          native.numericReply?.({
+            request: value.request,
+            ok: false,
+            code: value.code,
+            detail: value.detail,
+          });
+        break;
+    }
+  });
   const exports = {};
   const module = { exports };
   try {
@@ -922,11 +1304,11 @@ export function installApp(
   } catch (error) {
     console.error("Unable to load preload script:", error);
   }
-  if (registry && processPublished) w.__keldAppTryBind();
+  if (registry && processPublished) tryBind();
 }
 
 // This factory is embedded in a native-owned closure and removed immediately.
 Object.defineProperty(globalThis, "__keldOriginalPreloadRuntime", {
-  value: Object.freeze({ installApp, installPage }),
+  value: Object.freeze({ installApp, installPage, installWindows }),
   configurable: true,
 });
