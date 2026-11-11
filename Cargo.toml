@@ -153,9 +153,9 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Netw
 # Linux-only, cold strict-profile launch path.
 seccompiler = { version = "=0.5.0", default-features = false }
 # KEL-78/T4: safe `security.capability` xattr readback for the reviewed
-# unprivileged Bubblewrap executable. Exact version is already lockfile-pinned
-# through tempfile; `fs` only, cold Linux admission path.
-rustix = { version = "=1.1.4", default-features = false, features = ["fs", "std"] }
+# unprivileged Bubblewrap executable. Version 1.1.6 fixes RUSTSEC-2026-0486;
+# `fs` and `std` support this cold Linux admission path.
+rustix = { version = "=1.1.6", default-features = false, features = ["fs", "std"] }
 # --- Dependency review (KEL-130/T1 / AGENTS.md gate) ---
 # Names: cap-std =4.0.3 and cap-fs-ext =4.0.3
 # Purpose: safe retained-directory capabilities, handle-relative no-follow
