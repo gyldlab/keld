@@ -17,12 +17,24 @@ use crate::windows_lpac::{WindowsLpacStdio, WindowsSuspendedChild, create_privat
 
 const FAMILY_RETIRE_DEADLINE: Duration = Duration::from_secs(10);
 
+/// Test-only cut points. Production builds never include this type or its branches.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TestGenerationFault {
+    None,
+    BeforeAssign,
+    BeforeResume,
+    Retirement,
+}
+
 /// A complete, explicitly selected Windows role process input; it never executes a shell.
 pub(crate) struct WindowsRoleCommand {
     pub(crate) program: PathBuf,
     pub(crate) args: Vec<OsString>,
     pub(crate) environment: Vec<(OsString, OsString)>,
     pub(crate) current_dir: PathBuf,
+    #[cfg(test)]
+    test_fault: TestGenerationFault,
 }
 
 impl WindowsRoleCommand {
@@ -64,6 +76,8 @@ impl WindowsRoleCommand {
             args: command.get_args().map(OsString::from).collect(),
             environment,
             current_dir,
+            #[cfg(test)]
+            test_fault: TestGenerationFault::None,
         })
     }
 }
@@ -72,10 +86,18 @@ struct WindowsRoleChild {
     launch: WindowsLaunchedProcess,
     family: WindowsProcessJob,
     retired: bool,
+    #[cfg(test)]
+    test_fault: TestGenerationFault,
 }
 
 impl WindowsRoleChild {
     fn retire(&mut self) -> io::Result<()> {
+        #[cfg(test)]
+        if self.test_fault == TestGenerationFault::Retirement {
+            return Err(io::Error::other(
+                "injected generation Job retirement refusal",
+            ));
+        }
         if !self.retired {
             self.family
                 .terminate_and_wait_attached(FAMILY_RETIRE_DEADLINE)
@@ -183,9 +205,21 @@ impl WindowsSupervisedChild {
         )
         .map_err(io::Error::other)?;
         let mut launch = WindowsLaunchedProcess::record(child).map_err(io::Error::other)?;
+        #[cfg(test)]
+        if command.test_fault == TestGenerationFault::BeforeAssign {
+            // Both native owners unwind without any first instruction.
+            return Err(io::Error::other(
+                "injected before generation Job assignment",
+            ));
+        }
         let membership = family
             .assign_child(launch.child())
             .map_err(io::Error::other)?;
+        #[cfg(test)]
+        if command.test_fault == TestGenerationFault::BeforeResume {
+            // The exact child remains suspended, and the Job still kills on close.
+            return Err(io::Error::other("injected before generation thread resume"));
+        }
         launch.resume(&membership).map_err(io::Error::other)?;
         drop(stdout_write);
         drop(stderr_write);
@@ -195,6 +229,8 @@ impl WindowsSupervisedChild {
                 launch,
                 family,
                 retired: false,
+                #[cfg(test)]
+                test_fault: command.test_fault,
             }),
             stdout: Some(WindowsCapturedReader::Native(stdout_read)),
             stderr: Some(WindowsCapturedReader::Native(stderr_read)),
@@ -241,22 +277,48 @@ mod tests {
     const FIXTURE: &str = "KELD_TEST_GENERATION_CHILD";
     const MARKER: &str = "KELD_TEST_GENERATION_PID_MARKER";
     const EXIT_MODE: &str = "KELD_TEST_GENERATION_EXIT_MODE";
+    const CAPTURE_MODE: &str = "KELD_TEST_GENERATION_CAPTURE_MODE";
 
     #[test]
     #[ignore = "private subprocess fixture"]
     fn generation_descendant_fixture() {
         assert_eq!(std::env::var(FIXTURE).as_deref(), Ok("1"));
-        let marker = std::env::var_os(MARKER).expect("private PID marker path");
-        let mut descendant = Command::new("cmd.exe")
-            .args(["/C", "ping -n 60 127.0.0.1 >NUL"])
+        let marker =
+            std::path::PathBuf::from(std::env::var_os(MARKER).expect("private PID marker path"));
+        let capture_mode = std::env::var(CAPTURE_MODE).as_deref() == Ok("1");
+        let ready_marker = marker.with_extension("ready");
+        let shell_command = if capture_mode {
+            String::from(
+                "echo KELD_GRANDCHILD_STDOUT & echo KELD_GRANDCHILD_STDERR 1>&2 & echo ready > descendant.ready & ping -n 60 127.0.0.1 >NUL",
+            )
+        } else {
+            String::from("ping -n 60 127.0.0.1 >NUL")
+        };
+        let mut command = Command::new("cmd.exe");
+        command
+            .args(["/C", &shell_command])
             .creation_flags(0x0000_0008) // DETACHED_PROCESS: no console host.
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn descendant");
-        std::fs::write(marker, descendant.id().to_string())
+            .stdin(Stdio::null());
+        if capture_mode {
+            // Grandchild retains the actual anonymous stdio pipes inherited
+            // from the suspended native role. Closing only the parent is insufficient.
+            command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+        } else {
+            command.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+        let mut descendant = command.spawn().expect("spawn descendant");
+        std::fs::write(&marker, descendant.id().to_string())
             .expect("report exact direct descendant PID");
+        if capture_mode {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !ready_marker.is_file() {
+                assert!(
+                    Instant::now() < deadline,
+                    "grandchild did not report its pipe writes"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
         if std::env::var(EXIT_MODE).as_deref() == Ok("natural") {
             // Abnormal child-lifecycle cell: the parent exits and its live
             // descendant must be retired by the generation Job, not by wait().
@@ -266,7 +328,7 @@ mod tests {
         let _ = descendant.wait().expect("fixture descendant wait");
     }
 
-    fn spawn_fixture(marker: &Path, natural_exit: bool) -> WindowsSupervisedChild {
+    fn fixture_command(marker: &Path, natural_exit: bool, capture_mode: bool) -> Command {
         let mut command = Command::new(std::env::current_exe().expect("test fixture image"));
         command
             .args([
@@ -277,12 +339,26 @@ mod tests {
             ])
             .env(FIXTURE, "1")
             .env(MARKER, marker)
-            .current_dir(std::env::current_dir().expect("test fixture directory"));
+            .current_dir(marker.parent().expect("test fixture directory"));
         if natural_exit {
             command.env(EXIT_MODE, "natural");
         } else {
             command.env_remove(EXIT_MODE);
         }
+        if capture_mode {
+            command.env(CAPTURE_MODE, "1");
+        } else {
+            command.env_remove(CAPTURE_MODE);
+        }
+        command
+    }
+
+    fn spawn_fixture(
+        marker: &Path,
+        natural_exit: bool,
+        capture_mode: bool,
+    ) -> WindowsSupervisedChild {
+        let command = fixture_command(marker, natural_exit, capture_mode);
         WindowsSupervisedChild::spawn_role(
             &WindowsRoleCommand::from_command(&command).expect("absolute native inputs"),
         )
@@ -307,7 +383,7 @@ mod tests {
     fn generation_shutdown_retires_exact_live_descendant() {
         let directory = tempfile::tempdir().expect("test marker directory");
         let marker = directory.path().join("descendant.pid");
-        let mut child = spawn_fixture(&marker, false);
+        let mut child = spawn_fixture(&marker, false, false);
         let pid = descendant_pid(&marker);
         let Kind::Generation(ref generation) = child.kind else {
             panic!("must use native generation Job");
@@ -350,7 +426,7 @@ mod tests {
     fn natural_bun_exit_retires_descendant_before_returning_status() {
         let directory = tempfile::tempdir().expect("test marker directory");
         let marker = directory.path().join("descendant.pid");
-        let mut child = spawn_fixture(&marker, true);
+        let mut child = spawn_fixture(&marker, true, false);
         let pid = descendant_pid(&marker);
         let Kind::Generation(ref generation) = child.kind else {
             panic!("must use native generation Job");
@@ -388,6 +464,315 @@ mod tests {
                 .active_processes()
                 .expect("Job accounting"),
             0
+        );
+    }
+
+    fn bounded_capture_read(mut reader: WindowsCapturedReader) -> Vec<u8> {
+        use std::io::Read as _;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let owner = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let read = reader.read_to_end(&mut bytes).map(|_| bytes);
+            let _ = tx.send(read);
+        });
+        let bytes = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Job retirement must release inherited stdio writers")
+            .expect("captured pipe read");
+        owner.join().expect("bounded capture owner");
+        bytes
+    }
+
+    #[test]
+    fn natural_exit_retires_grandchild_inherited_capture_before_successor() {
+        let directory = tempfile::tempdir().expect("test marker directory");
+        let marker = directory.path().join("descendant.pid");
+        let mut child = spawn_fixture(&marker, true, true);
+        let pid = descendant_pid(&marker);
+        let Kind::Generation(ref generation) = child.kind else {
+            panic!("must use native generation Job");
+        };
+        let witness = generation
+            .family
+            .pin_test_live_member(pid)
+            .expect("live descendant retained native standard handles");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("retire generation before result") {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "capture fixture did not exit");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        if status.code() != Some(0) {
+            let stderr = bounded_capture_read(child.stderr.take().expect("fixture stderr"));
+            panic!(
+                "fixture returned {:?}: {}",
+                status.code(),
+                String::from_utf8_lossy(&stderr)
+            );
+        }
+        assert!(
+            witness
+                .wait_until_exited(Duration::from_secs(5))
+                .expect("exact descendant process exit")
+        );
+        let Kind::Generation(ref generation) = child.kind else {
+            panic!("must use native generation Job");
+        };
+        assert_eq!(
+            generation
+                .family
+                .active_processes()
+                .expect("authoritative Job-zero"),
+            0,
+        );
+        let stdout = bounded_capture_read(child.stdout.take().expect("stdout reader"));
+        let stderr = bounded_capture_read(child.stderr.take().expect("stderr reader"));
+        assert!(
+            String::from_utf8_lossy(&stdout).contains("KELD_GRANDCHILD_STDOUT"),
+            "grandchild must actually inherit and write the native stdout pipe"
+        );
+        assert!(
+            String::from_utf8_lossy(&stderr).contains("KELD_GRANDCHILD_STDERR"),
+            "grandchild must actually inherit and write the native stderr pipe"
+        );
+    }
+
+    #[test]
+    fn independent_writer_prevents_capture_eof_until_released() {
+        // Negative control: a surviving writer must prevent EOF. Otherwise the
+        // inherited-grandchild test could pass without checking the real race.
+        use std::io::Read as _;
+        let (mut read, write) = create_private_pipe().expect("private pipe");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let result = read.read_to_end(&mut bytes).map(|_| bytes);
+            let _ = tx.send(result);
+        });
+        assert!(
+            matches!(
+                rx.recv_timeout(Duration::from_millis(100)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ),
+            "an unretired writer must keep the reader open"
+        );
+        drop(write);
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(2))
+                .expect("EOF observed after writer release")
+                .expect("pipe bytes"),
+            Vec::<u8>::new()
+        );
+        reader.join().expect("test capture worker");
+    }
+
+    #[test]
+    fn refused_suspended_admission_never_executes_bun_marker() {
+        let dir = tempfile::tempdir_in(std::env::current_dir().expect("D: working dir"))
+            .expect("private D: fixture");
+        for fault in [
+            TestGenerationFault::BeforeAssign,
+            TestGenerationFault::BeforeResume,
+        ] {
+            let marker = dir.path().join(format!("{fault:?}.pid"));
+            let command = fixture_command(&marker, false, false);
+            let mut role =
+                WindowsRoleCommand::from_command(&command).expect("absolute native inputs");
+            role.test_fault = fault;
+            let refusal = WindowsSupervisedChild::spawn_role(&role)
+                .err()
+                .expect("injected refused admission");
+            assert!(
+                refusal.to_string().contains("injected"),
+                "refusal must preserve the expected phase: {refusal}"
+            );
+            assert!(
+                !marker.exists(),
+                "the test executable must never reach its first marker write before Job admission"
+            );
+        }
+    }
+
+    #[test]
+    fn refused_retirement_keeps_job_kill_on_close_fallback() {
+        let dir = tempfile::tempdir_in(std::env::current_dir().expect("D: working dir"))
+            .expect("private D: fixture");
+        let marker = dir.path().join("failure-descendant.pid");
+        let mut child = spawn_fixture(&marker, true, false);
+        let pid = descendant_pid(&marker);
+        let Kind::Generation(ref mut generation) = child.kind else {
+            panic!("must own generation Job");
+        };
+        let witness = generation
+            .family
+            .pin_test_live_member(pid)
+            .expect("live exact nested descendant");
+        generation.test_fault = TestGenerationFault::Retirement;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !generation.launch.has_exited().expect("direct child exit") {
+            assert!(Instant::now() < deadline, "direct fixture did not exit");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            child.try_wait().is_err(),
+            "failed Job-zero proof must not become a successful exit status"
+        );
+        drop(child);
+        assert!(
+            witness
+                .wait_until_exited(Duration::from_secs(5))
+                .expect("retained descendant handle"),
+            "dropped faulted generation must still kill its descendants via KILL_ON_JOB_CLOSE"
+        );
+    }
+
+    struct FailingRetirementPreparer {
+        marker: PathBuf,
+        prepare_calls: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    }
+
+    impl crate::ChildPreparer for FailingRetirementPreparer {
+        type Lease = crate::NoLease;
+
+        fn prepare(
+            &mut self,
+            _attempt: u32,
+        ) -> Result<crate::PreparedChild<Self::Lease>, crate::RuntimeError> {
+            self.prepare_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let command = fixture_command(&self.marker, true, false);
+            let mut native =
+                WindowsRoleCommand::from_command(&command).expect("exact absolute fixture image");
+            native.test_fault = TestGenerationFault::Retirement;
+            Ok(crate::PreparedChild {
+                command: crate::PreparedCommand::WindowsRole(native),
+                lease: crate::NoLease,
+            })
+        }
+    }
+
+    #[test]
+    fn failed_generation_retirement_is_terminal_without_successor() {
+        let dir = tempfile::tempdir_in(std::env::current_dir().expect("D: working dir"))
+            .expect("private D: fixture");
+        let marker = dir.path().join("supervisor-descendant.pid");
+        let prepare_calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let supervisor = crate::Supervisor::start_prepared(
+            crate::RestartPolicy::default(),
+            FailingRetirementPreparer {
+                marker: marker.clone(),
+                prepare_calls: std::sync::Arc::clone(&prepare_calls),
+            },
+        )
+        .expect("native first generation admitted");
+        let outcome = supervisor.wait_for_outcome();
+        let crate::SupervisorOutcome::Failed(ref error) = outcome else {
+            panic!("failed Job retirement must report Failed, got {outcome:?}");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("injected generation Job retirement refusal"),
+            "the original retirement failure must remain observable: {error}"
+        );
+        assert!(
+            marker.exists(),
+            "fixture must spawn a real child and descendant before retirement fails"
+        );
+        assert_eq!(
+            prepare_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a failed Job-zero witness must never admit a second generation",
+        );
+    }
+
+    const NESTED_HOST_FIXTURE: &str = "KELD_TEST_GENERATION_NESTED_HOST";
+
+    #[test]
+    #[ignore = "private native nested-Host Job subprocess"]
+    fn nested_outer_host_job_fixture() {
+        assert_eq!(
+            std::env::var(NESTED_HOST_FIXTURE).as_deref(),
+            Ok("1"),
+            "only the parent test may launch this fixture"
+        );
+        let _host_death =
+            crate::windows_job::install_host_death_job().expect("host joins nested Job");
+        let dir = tempfile::tempdir_in(std::env::current_dir().expect("D: working dir"))
+            .expect("private D: fixture");
+        let marker = dir.path().join("nested-descendant.pid");
+        let mut child = spawn_fixture(&marker, true, false);
+        let pid = descendant_pid(&marker);
+        let Kind::Generation(ref generation) = child.kind else {
+            panic!("new child requires generation Job");
+        };
+        let witness = generation
+            .family
+            .pin_test_live_member(pid)
+            .expect("actual nested Job must retain exact grandchild");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("nested Job retirement") {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "nested fixture did not retire");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(status.code(), Some(0));
+        assert!(
+            witness
+                .wait_until_exited(Duration::from_secs(5))
+                .expect("retained grandchild handle")
+        );
+        let Kind::Generation(ref generation) = child.kind else {
+            panic!("native generation Job must survive until end of proof");
+        };
+        assert_eq!(
+            generation
+                .family
+                .active_processes()
+                .expect("nested Job accounting"),
+            0
+        );
+        println!("KELD_NESTED_HOST_AND_GENERATION_ZERO");
+    }
+
+    #[test]
+    fn nested_outer_host_and_generation_job_complete_retirement() {
+        let mut child = Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "windows_generation::tests::nested_outer_host_job_fixture",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(NESTED_HOST_FIXTURE, "1")
+            .current_dir(std::env::current_dir().expect("D: working dir"))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn isolated nested-Job test runner");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if child.try_wait().expect("nested Job test exit").is_some() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "nested Host Job test did not exit"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let output = child.wait_with_output().expect("nested Job test output");
+        assert!(
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout)
+                    .contains("KELD_NESTED_HOST_AND_GENERATION_ZERO"),
+            "nested Host/Generation test refused: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
         );
     }
 
