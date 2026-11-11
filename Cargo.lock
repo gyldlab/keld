@@ -1725,6 +1725,7 @@ dependencies = [
  "webview2-com",
  "windows",
  "windows-permissions",
+ "windows-sys 0.61.2",
  "wry",
 ]
 
