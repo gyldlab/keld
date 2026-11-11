@@ -6,12 +6,12 @@
 //! SAME opened nofollow descriptor before releasing a complete response.
 //! Source access is independent of the Bun role's FS broker and restart.
 
-use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::Read;
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::MetadataExt as _;
-use std::path::{Component, Path, PathBuf};
+#[cfg(test)]
+use std::path::PathBuf;
+use std::path::{Component, Path};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -19,6 +19,7 @@ use std::sync::{
 
 use nix::fcntl::{OFlag, openat};
 use nix::sys::stat::Mode;
+#[cfg(test)]
 use sha2::{Digest as _, Sha256};
 
 use super::macos_document::VerifiedSourceId;
@@ -27,33 +28,10 @@ pub use crate::resource_source::{
     AdmittedWebAppSource, VerifiedResourceResponsePolicy, VerifiedWebAsset,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ResourceSourceError {
-    InvalidEntry,
-    InvalidUrl,
-    WrongAuthority,
-    InvalidPath,
-    AbsentAsset,
-    FileNotRegular,
-    EscapingFile,
-    SourceChanged,
-    TooLarge,
-    Cancelled,
-    Io,
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct SelectedRead {
-    pub(super) path: String,
-    pub(super) size: u64,
-    pub(super) sha256: [u8; 32],
-    pub(super) mime: &'static str,
-}
-
-pub(super) struct VerifiedBytes {
-    pub(super) bytes: Vec<u8>,
-    pub(super) mime: &'static str,
-}
+pub(super) use crate::resource_source::{ResourceSourceError, SelectedRead, VerifiedBytes};
+use crate::resource_source::{
+    admit_asset_census, mime_for, read_verified_file, valid_response_policy,
+};
 
 pub use crate::resource_source::NativeNavigationUrl as MacNavigationUrl;
 
@@ -84,10 +62,7 @@ impl AdmittedWebAppSource {
         fixed_scheme: String,
         host_authority: String,
     ) -> Result<Arc<Self>, &'static str> {
-        if policy.response_header().trim().is_empty()
-            || policy.response_header().len() > 4096
-            || policy.response_header().contains('\r')
-            || policy.response_header().contains('\n')
+        if !valid_response_policy(&policy)
             || !valid_scheme(&fixed_scheme)
             || host_authority.len() != 32
             || !host_authority
@@ -102,28 +77,14 @@ impl AdmittedWebAppSource {
         )
         .metadata()
         .map_err(|_| "cannot stat retained webapp root")?;
-        if !metadata.is_dir() || assets.is_empty() || assets.len() > 32768 {
+        if !metadata.is_dir() {
             return Err("incomplete retained webapp source");
         }
-        let mut selected = BTreeMap::new();
-        for asset in assets {
-            let path = asset.path.to_str().ok_or("non-UTF-8 captured asset path")?;
-            if path.len() > 1024 || path.is_empty() || selected.contains_key(path) {
-                return Err("ambiguous captured asset path");
-            }
-            check_relative_asset(path).map_err(|_| "invalid captured asset path")?;
-            if asset.size > (32 * 1024 * 1024) {
-                return Err("captured source exceeds original asset ceiling");
-            }
-            selected.insert(path.to_owned(), asset);
-        }
-        let entry = selected_entry_relative_to_code_root
-            .to_str()
-            .ok_or("selected document entry is not UTF-8")?;
-        check_relative_asset(entry).map_err(|_| "selected document entry is not canonical")?;
-        if !selected.contains_key(entry) {
-            return Err("selected document entry is absent from the verified asset graph");
-        }
+        let (selected, entry) = admit_asset_census(
+            assets,
+            selected_entry_relative_to_code_root,
+            check_relative_asset,
+        )?;
         Ok(Arc::new(Self {
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
             lifecycle_gate: std::sync::Mutex::new(None),
@@ -132,7 +93,7 @@ impl AdmittedWebAppSource {
             source: VerifiedSourceId(verified_graph_sha256),
             scheme: fixed_scheme,
             authority: host_authority,
-            entry: entry.to_owned(),
+            entry,
             policy,
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
             fixture_response_override: std::sync::OnceLock::new(),
@@ -359,69 +320,6 @@ impl AdmittedWebAppSource {
     }
 }
 
-// The worker's existing admitted result allocation is the read buffer. The
-// one-byte stack probe detects growth without reserving any extra retained byte.
-fn read_verified_file(
-    mut file: File,
-    request: &SelectedRead,
-    checked_size: usize,
-    max_asset_bytes: usize,
-    cancelled: &AtomicBool,
-) -> Result<VerifiedBytes, ResourceSourceError> {
-    let mut result = vec![0_u8; checked_size];
-    let mut digest = Sha256::new();
-    let mut read_bytes = 0_usize;
-    while read_bytes < checked_size {
-        // Regular-file reads are not preemptible; the same worker owns this
-        // descriptor/buffer until the call returns and cancellation is observed.
-        if cancelled.load(Ordering::Acquire) {
-            return Err(ResourceSourceError::Cancelled);
-        }
-        let end = read_bytes
-            .checked_add((64 * 1024).min(checked_size - read_bytes))
-            .ok_or(ResourceSourceError::SourceChanged)?;
-        let count = file
-            .read(&mut result[read_bytes..end])
-            .map_err(|_| ResourceSourceError::Io)?;
-        if count == 0 {
-            break;
-        }
-        let next = read_bytes
-            .checked_add(count)
-            .ok_or(ResourceSourceError::SourceChanged)?;
-        digest.update(&result[read_bytes..next]);
-        read_bytes = next;
-    }
-    result.truncate(read_bytes);
-    if cancelled.load(Ordering::Acquire) {
-        return Err(ResourceSourceError::Cancelled);
-    }
-    if read_bytes == checked_size {
-        let mut overrun = [0_u8; 1];
-        if file
-            .read(&mut overrun)
-            .map_err(|_| ResourceSourceError::Io)?
-            != 0
-        {
-            return Err(ResourceSourceError::SourceChanged);
-        }
-    }
-    if cancelled.load(Ordering::Acquire) {
-        return Err(ResourceSourceError::Cancelled);
-    }
-    let actual_sha256: [u8; 32] = digest.finalize().into();
-    if result.len() as u64 != request.size
-        || result.len() > max_asset_bytes
-        || actual_sha256 != request.sha256
-    {
-        return Err(ResourceSourceError::SourceChanged);
-    }
-    Ok(VerifiedBytes {
-        bytes: result,
-        mime: request.mime,
-    })
-}
-
 fn valid_scheme(scheme: &str) -> bool {
     !scheme.is_empty()
         && scheme.len() <= 32
@@ -513,34 +411,6 @@ fn check_relative_asset(path: &str) -> Result<(), ResourceSourceError> {
         return Err(ResourceSourceError::InvalidPath);
     }
     Ok(())
-}
-
-fn mime_for(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or_default()
-    {
-        "html" | "htm" => "text/html; charset=utf-8",
-        "js" => "text/javascript; charset=utf-8",
-        "css" => "text/css; charset=utf-8",
-        "json" | "map" => "application/json; charset=utf-8",
-        "xml" => "application/xml",
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "ico" => "image/x-icon",
-        "ttf" => "font/ttf",
-        "woff" => "font/woff",
-        "woff2" => "font/woff2",
-        "wasm" => "application/wasm",
-        "txt" | "md" | "properties" | "mf" => "text/plain; charset=utf-8",
-        "pdf" => "application/pdf",
-        "jar" => "application/java-archive",
-        _ => "application/octet-stream",
-    }
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@ mod dialog_session;
 mod error;
 #[cfg(target_os = "macos")]
 mod menu_router;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod original_webapp;
 mod profile_preflight;
 #[cfg(target_os = "macos")]

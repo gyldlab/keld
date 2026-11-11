@@ -501,3 +501,81 @@ fn provider_preflight_ignores_unrelated_project_inputs_and_refuses_changed_provi
     );
     assert!(!fixture.root.join(".keld").exists());
 }
+
+#[cfg(windows)]
+#[test]
+fn core_prepares_windows_source_and_selected_preload_from_the_same_graph_owner() {
+    use crate::app_session::original_webapp::PreparedOriginalSource;
+    use keld_wv::preload_image::AppPreloadBudget;
+    use std::sync::Arc;
+
+    let fixture = Fixture::new();
+    let graph = Arc::new(fixture.admitted());
+    const POLICY: &str = "{\"profile\":\"legacy\",\"app\":{},\"windows\":{\"fixture\":{\"web\":{\"csp\":\"original-editor-offline\"}}}}\n";
+    const EXPECTED: [u8; 32] = [
+        215, 46, 191, 72, 140, 173, 92, 255, 48, 59, 90, 236, 196, 197, 67, 68, 75, 213, 119, 101,
+        68, 44, 13, 125, 203, 40, 242, 147, 25, 32, 233, 33,
+    ];
+    let policy_path = fixture.root.join("keld.permissions.jsonc");
+    fs::write(&policy_path, POLICY).expect("fixed independently pinned policy");
+    let policy = keld_guard::verified_manifest::load_verified_manifest(
+        File::open(&policy_path).expect("policy handle"),
+        policy_path,
+        EXPECTED,
+    )
+    .expect("same immutable policy owner")
+    .resolve_window_csp("fixture")
+    .expect("trusted fixed window key");
+    let budget = AppPreloadBudget::default();
+    let prepared = PreparedOriginalSource::prepare(
+        Arc::clone(&graph),
+        keld_guard::ProfileState::Legacy,
+        policy,
+        budget.clone(),
+    )
+    .expect("retained graph into the shared source owner");
+    assert_eq!(prepared.graph_sha256(), graph.graph_sha256());
+    assert_eq!(prepared.selected_stage(), fixture.root);
+    assert_eq!(prepared.window_key(), "fixture");
+    assert_eq!(prepared.source().verified_manifest_sha256(), EXPECTED);
+    // Literal modeled facts exercise immutable preload capture, not a real Bun
+    // runtime observation or native execution receipt.
+    let selection = prepared.with_runtime_versions(std::collections::BTreeMap::from([(
+        String::from("fixture"),
+        String::from("1"),
+    )]));
+    let uri = format!(
+        "file:///{}/client/assets/nested/editor.html?queryObj=%257b",
+        fixture
+            .root
+            .to_str()
+            .expect("fixture UTF8")
+            .replace('\\', "/")
+    );
+    assert_eq!(
+        selection
+            .qualify_uri(&uri)
+            .expect("same selected-entry parser")
+            .as_optional_str(),
+        Ok(Some("queryObj=%257b"))
+    );
+    assert!(
+        selection
+            .qualify_uri(&uri.replace("nested/editor.html", "styles.css"))
+            .is_err()
+    );
+    let image = selection
+        .prepare_preload(
+            fixture
+                .root
+                .join(PRELOAD)
+                .to_str()
+                .expect("canonical selected preload"),
+            Vec::new(),
+        )
+        .expect("same selected image and shared budget");
+    assert_eq!(image.source_bytes(), PRELOAD_BYTES.len());
+    assert_eq!(budget.retained_bytes(), Some(PRELOAD_BYTES.len()));
+    drop(image);
+    assert_eq!(budget.retained_bytes(), Some(0));
+}

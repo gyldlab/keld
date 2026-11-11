@@ -28,7 +28,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_WRITE, FILE_TRAVERSE, FileAttributeTagInfo, FileDispositionInfoEx,
     FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, GetDriveTypeW,
     GetFileInformationByHandleEx, GetFinalPathNameByHandleW, GetVolumeInformationByHandleW,
-    READ_CONTROL, SYNCHRONIZE, SetFileInformationByHandle, VOLUME_NAME_GUID, WRITE_DAC,
+    READ_CONTROL, SYNCHRONIZE, SetFileInformationByHandle, VOLUME_NAME_DOS, VOLUME_NAME_GUID,
+    WRITE_DAC,
 };
 use windows_sys::Win32::System::IO::{IO_STATUS_BLOCK, IO_STATUS_BLOCK_0};
 use windows_sys::Win32::System::SystemServices::{FILE_PERSISTENT_ACLS, FILE_READ_ONLY_VOLUME};
@@ -149,6 +150,28 @@ pub(crate) fn qualified_volume_root(directory: &File) -> io::Result<String> {
 }
 
 fn normalized_guid_path(directory: &File) -> io::Result<Vec<u16>> {
+    let path = normalized_handle_path(directory, VOLUME_NAME_GUID)?;
+    volume_guid_root(&path)?;
+    Ok(path)
+}
+
+/// Observes the retained object's normalized local DOS locator, without reopening it.
+pub(crate) fn normalized_dos_path(directory: &File) -> io::Result<std::path::PathBuf> {
+    let path = normalized_handle_path(directory, VOLUME_NAME_DOS)?;
+    let text = String::from_utf16(&path).map_err(io::Error::other)?;
+    let drive_path = text
+        .strip_prefix(r"\\?\")
+        .ok_or_else(|| unsupported("normalized local DOS path prefix is absent"))?;
+    let bytes = drive_path.as_bytes();
+    if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || bytes[2] != b'\\' {
+        return Err(unsupported(
+            "resource source requires a normalized local drive path",
+        ));
+    }
+    Ok(std::path::PathBuf::from(text))
+}
+
+fn normalized_handle_path(directory: &File, volume_mode: u32) -> io::Result<Vec<u16>> {
     let mut path = Vec::new();
     path.try_reserve_exact(MAX_WINDOWS_PATH_UNITS)
         .map_err(io::Error::other)?;
@@ -156,13 +179,13 @@ fn normalized_guid_path(directory: &File) -> io::Result<Vec<u16>> {
     let capacity = u32::try_from(path.len()).map_err(io::Error::other)?;
     // SAFETY: the retained handle stays live and `path` is writable for `capacity`
     // UTF-16 units. Only the returned in-bounds length is used below; no pointer
-    // is retained. The flags request the object's normalized volume-GUID path.
+    // is retained. The fixed caller flags select a normalized volume-GUID or local DOS path.
     let length = unsafe {
         GetFinalPathNameByHandleW(
             directory.as_raw_handle().cast(),
             path.as_mut_ptr(),
             capacity,
-            FILE_NAME_NORMALIZED | VOLUME_NAME_GUID,
+            FILE_NAME_NORMALIZED | volume_mode,
         )
     };
     if length == 0 {
@@ -171,11 +194,10 @@ fn normalized_guid_path(directory: &File) -> io::Result<Vec<u16>> {
     let length = usize::try_from(length).map_err(io::Error::other)?;
     if length >= path.len() || path[length] != 0 {
         return Err(unsupported(
-            "volume-GUID path exceeds the supported Windows path bound",
+            "normalized path exceeds the supported Windows path bound",
         ));
     }
     path.truncate(length);
-    volume_guid_root(&path)?;
     Ok(path)
 }
 

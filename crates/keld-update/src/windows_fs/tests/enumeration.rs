@@ -235,3 +235,22 @@ fn retained_graph_descendant_pins_required_ancestors() {
     drop(leaf);
     std::fs::rename(&parent_path, root.join("moved")).expect("rename after custody released");
 }
+
+#[test]
+fn graph_dos_locator_is_observed_from_the_retained_handle() {
+    let temp = tempfile::tempdir().expect("owned locator fixture");
+    let selected = temp.path().join("source with spaces");
+    std::fs::create_dir(&selected).expect("fixture directory");
+    let file = super::support::retained_directory(&selected);
+    let observed = crate::retained_graph_dos_path(&file).expect("normalized handle locator");
+    assert_eq!(
+        observed,
+        selected.canonicalize().expect("independent existing path")
+    );
+    let from_handle = crate::retained_graph_metadata(&file).expect("retained identity");
+    let from_locator = crate::graph_locator_metadata(&observed).expect("named identity");
+    assert_eq!(
+        (from_handle.dev(), from_handle.ino()),
+        (from_locator.dev(), from_locator.ino())
+    );
+}

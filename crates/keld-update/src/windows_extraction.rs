@@ -881,3 +881,15 @@ fn extraction_error(
 pub(crate) mod lpac_probe;
 #[cfg(test)]
 mod tests;
+
+/// Observe a retained graph object's normalized local DOS locator.
+///
+/// This read-only path is descriptive data. It does not transfer custody and
+/// must never replace the retained root and relative no-follow child opens.
+///
+/// # Errors
+/// Refuses a failed native name query, invalid UTF-16, or a network/device root.
+pub fn retained_graph_dos_path(file: &StdFile) -> io::Result<std::path::PathBuf> {
+    retained_graph_metadata(file)?;
+    crate::windows_fs::normalized_dos_path(file)
+}

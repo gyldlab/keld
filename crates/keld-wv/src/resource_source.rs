@@ -8,6 +8,41 @@ use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::sync::{Arc, atomic::AtomicUsize};
 
+#[path = "resource_source_io.rs"]
+mod io;
+pub(crate) use io::{mime_for, read_verified_file};
+#[cfg(windows)]
+#[path = "resource_source_windows.rs"]
+pub(crate) mod windows;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResourceSourceError {
+    InvalidEntry,
+    InvalidUrl,
+    WrongAuthority,
+    InvalidPath,
+    AbsentAsset,
+    FileNotRegular,
+    EscapingFile,
+    SourceChanged,
+    TooLarge,
+    Cancelled,
+    Io,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SelectedRead {
+    pub(crate) path: String,
+    pub(crate) size: u64,
+    pub(crate) sha256: [u8; 32],
+    pub(crate) mime: &'static str,
+}
+
+pub(crate) struct VerifiedBytes {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) mime: &'static str,
+}
+
 /// Consumed from the ONE GH499 validated retained resource subgraph. These
 /// values are not read from JavaScript or a renderer request.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,8 +70,19 @@ pub struct AdmittedWebAppSource {
     pub(crate) webapp_root: OwnedFd,
     #[cfg(target_os = "macos")]
     pub(crate) root_device: u64,
+    #[cfg(windows)]
+    pub(crate) webapp_root: std::fs::File,
+    #[cfg(windows)]
+    pub(crate) root_identity: (u64, u64),
+    #[cfg(windows)]
+    pub(crate) root_path: PathBuf,
+    #[cfg(windows)]
+    pub(crate) root_url: keld_guard::AdmittedRootUrl,
+    #[cfg(windows)]
+    pub(crate) entry_components: keld_guard::RootRelativeComponents,
     pub(crate) source: VerifiedSourceId,
     pub(crate) scheme: String,
+    #[cfg(target_os = "macos")]
     pub(crate) authority: String,
     pub(crate) entry: String,
     pub(crate) policy: VerifiedResourceResponsePolicy,
@@ -210,3 +256,39 @@ impl PartialEq for NativeNavigationUrl {
     }
 }
 impl Eq for NativeNavigationUrl {}
+
+pub(crate) fn valid_response_policy(policy: &VerifiedResourceResponsePolicy) -> bool {
+    !policy.response_header().trim().is_empty()
+        && policy.response_header().len() <= 4096
+        && !policy.response_header().contains(['\r', '\n'])
+}
+
+pub(crate) fn admit_asset_census(
+    assets: Vec<VerifiedWebAsset>,
+    selected_entry_relative_to_code_root: &std::path::Path,
+    validate_path: impl Fn(&str) -> Result<(), ResourceSourceError>,
+) -> Result<(BTreeMap<String, VerifiedWebAsset>, String), &'static str> {
+    if assets.is_empty() || assets.len() > 32_768 {
+        return Err("incomplete retained webapp source");
+    }
+    let mut selected = BTreeMap::new();
+    for asset in assets {
+        let path = asset.path.to_str().ok_or("non-UTF-8 captured asset path")?;
+        if path.len() > 1024 || path.is_empty() || selected.contains_key(path) {
+            return Err("ambiguous captured asset path");
+        }
+        validate_path(path).map_err(|_| "invalid captured asset path")?;
+        if asset.size > (32 * 1024 * 1024) {
+            return Err("captured source exceeds original asset ceiling");
+        }
+        selected.insert(path.to_owned(), asset);
+    }
+    let entry = selected_entry_relative_to_code_root
+        .to_str()
+        .ok_or("selected document entry is not UTF-8")?;
+    validate_path(entry).map_err(|_| "selected document entry is not canonical")?;
+    if !selected.contains_key(entry) {
+        return Err("selected document entry is absent from the verified asset graph");
+    }
+    Ok((selected, entry.to_owned()))
+}
