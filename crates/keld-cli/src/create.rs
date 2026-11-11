@@ -250,9 +250,39 @@ mod tests {
     fn created_app_native_formatter_checks_repairs_and_is_idempotent() {
         use std::process::Command;
 
+        let git = |cwd: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .expect("run fixture Git");
+            assert!(output.status.success(), "fixture Git {args:?}: {output:?}");
+        };
         for name in ["formatted-app".to_owned(), "a".repeat(100)] {
             let dir = tempfile::tempdir().expect("tempdir");
-            let root = create_project(dir.path(), &name).expect("create app");
+            // Model a generated app under another checkout's ignored scratch
+            // tree: Bun must still inspect its own files, including new ones.
+            git(dir.path(), &["init", "-q"]);
+            git(dir.path(), &["config", "maintenance.auto", "false"]);
+            fs::write(dir.path().join(".gitignore"), "ignored/\n").expect("outer ignore");
+            let ignored = dir.path().join("ignored");
+            fs::create_dir(&ignored).expect("ignored fixture parent");
+            let root = create_project(&ignored, &name).expect("create app");
+            let inherited_ignore = Command::new("git")
+                .args(["check-ignore", "--quiet"])
+                .arg(root.join("src/main.ts"))
+                .current_dir(dir.path())
+                .status()
+                .expect("check outer ignore");
+            assert!(
+                inherited_ignore.success(),
+                "outer ignore must hide app files"
+            );
+
+            // Isolate the app as its own Git root. Without this boundary,
+            // format:check incorrectly succeeds on unformatted ignored files.
+            git(&root, &["init", "-q"]);
+            git(&root, &["config", "maintenance.auto", "false"]);
             let run = |script: &str| {
                 Command::new("bun")
                     .args(["run", script])
