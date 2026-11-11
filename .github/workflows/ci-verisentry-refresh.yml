@@ -230,15 +230,30 @@ jobs:
                 readCommitFiles(mergeBaseSha), readCommitFiles(headSha),
               ]);
               const changed = new Set();
+              const removed = new Map();
+              const added = new Map();
+              const countIdentity = (counts, identity) =>
+                counts.set(identity, (counts.get(identity) || 0) + 1);
               for (const [path, identity] of oldFiles) {
-                if (newFiles.get(path) !== identity) changed.add(path);
+                if (newFiles.get(path) !== identity) {
+                  changed.add(path);
+                  if (!newFiles.has(path)) countIdentity(removed, identity);
+                }
               }
               for (const [path, identity] of newFiles) {
-                if (oldFiles.get(path) !== identity) changed.add(path);
+                if (oldFiles.get(path) !== identity) {
+                  changed.add(path);
+                  if (!oldFiles.has(path)) countIdentity(added, identity);
+                }
               }
-              // A rename has two tree paths but only one Compare-API entry.
-              // Any disagreement outside that exact bound fails closed.
-              if (changed.size < expectedFiles || changed.size > expectedFiles * 2) {
+              // Renames expose both source and destination tree paths but are
+              // one PR file. Count only provably identical mode/type/blob
+              // pairs as renames; uncertain modified renames fail closed.
+              let provenRenames = 0;
+              for (const [identity, count] of removed) {
+                provenRenames += Math.min(count, added.get(identity) || 0);
+              }
+              if (changed.size - provenRenames !== expectedFiles) {
                 throw new Error("CI provenance immutable tree census disagrees with changed-file count");
               }
               return [...changed];
@@ -301,7 +316,9 @@ jobs:
                   verifiedDenied = true; // concrete immutable protected path evidence
                   throw Error('Protected CI authority changed');
                 }
-                if (!matches(await fetchPR())) throw Error('PR moved after immutable comparison');
+                const after = await fetchPR();
+                if (!matches(after) || after.changed_files !== before.changed_files)
+                  throw Error('PR moved or changed file count after immutable comparison');
                 admitted = true;
                 reason = 'protected-main immutable CI admission passed';
               } catch (error) {

@@ -42,6 +42,7 @@ function fixture(
     state?: string;
     changedFiles?: number;
     changedOnSecondFetch?: boolean;
+    changedCountOnSecondFetch?: number;
     apiFailure?: boolean;
     badEventNumber?: boolean;
     mutablePrFileList?: ChangedFile[];
@@ -134,6 +135,17 @@ function fixture(
           reads += 1;
           if (reads === 2 && overrides.changedOnSecondFetch) {
             return { data: { ...current, head: { sha: "newer-head" } } };
+          }
+          if (
+            reads === 2 &&
+            overrides.changedCountOnSecondFetch !== undefined
+          ) {
+            return {
+              data: {
+                ...current,
+                changed_files: overrides.changedCountOnSecondFetch,
+              },
+            };
           }
           return { data: current };
         },
@@ -503,6 +515,44 @@ test.each([300, 448, 600])(
   },
 );
 
+test("inconsistent 300-file metadata cannot disguise 448 distinct immutable additions", async () => {
+  const files = Array.from({ length: 448 }, (_, i) => ({
+    filename: `docs/add-${i}.md`,
+    status: "added",
+  }));
+  const f = fixture(files, {
+    head: "a".repeat(40),
+    base: "b".repeat(40),
+    changedFiles: 300,
+    comparisonFiles: files.slice(0, 300),
+  });
+  await expect(f.run()).rejects.toThrow(
+    "census disagrees with changed-file count",
+  );
+  expect(f.getTrees()).toBe(2);
+});
+
+test("immutable tree census supports exact source/destination rename pairs", async () => {
+  const files = Array.from({ length: 300 }, (_, i) => ({
+    filename: `docs/add-${i}.md`,
+    status: "added",
+  }));
+  const old = {
+    path: "docs/old-name.md",
+    type: "blob",
+    mode: "100644",
+    sha: "f".repeat(40),
+  };
+  const f = fixture(files, {
+    head: "a".repeat(40),
+    base: "b".repeat(40),
+    baseTreeEntries: [old],
+    comparisonFiles: files.slice(0, 300),
+  });
+  await expect(f.run()).resolves.toBeUndefined();
+  expect(f.getTrees()).toBe(2);
+});
+
 test("599 and 600 are permitted, but 601 files are rejected before enumeration", async () => {
   const f = fixture([], { changedFiles: 601 });
   await expect(f.run()).rejects.toThrow("more than 600 changed files");
@@ -672,6 +722,11 @@ test("mismatched or changing head/base, missing files, and wrong base fail close
       changedOnSecondFetch: true,
     }).run(),
   ).rejects.toThrow("stale pull-request head/base");
+  await expect(
+    fixture([{ filename: "docs/ok.md", status: "modified" }], {
+      changedCountOnSecondFetch: 2,
+    }).run(),
+  ).rejects.toThrow("changed PR file count during verification");
   await expect(
     fixture([{ filename: "docs/ok.md", status: "modified" }], {
       changedFiles: 2,

@@ -412,6 +412,57 @@ test.each([300, 448, 600])(
   },
 );
 
+test("refresh cannot sign a 300-file PASS when the immutable tree has 448 distinct additions", async () => {
+  const files = Array.from({ length: 448 }, (_, i) => ({
+    filename: `docs/add-${i}.md`,
+    status: "added",
+  }));
+  const s = scenario({ changedFiles: 300, files });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.getTreeReads()).toBe(2);
+  expect(s.statuses).toHaveLength(0);
+  expect(s.failures).toHaveLength(1);
+});
+
+test("refresh admits immutable exact-content rename pairs", async () => {
+  const files = Array.from({ length: 300 }, (_, i) => ({
+    filename: `docs/add-${i}.md`,
+    status: "added",
+  }));
+  const s = scenario({
+    changedFiles: 300,
+    files,
+    baseTreeEntries: [
+      {
+        path: "docs/old-name.md",
+        type: "blob",
+        mode: "100644",
+        sha: "2".repeat(40),
+      },
+    ],
+  });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.statuses).toHaveLength(1);
+  expect(s.statuses[0].conclusion).toBe("success");
+});
+
+test("refresh rechecks a stable file count before App success publication", async () => {
+  const initial = {
+    number: 345,
+    state: "open",
+    changed_files: 1,
+    base: { ref: "main", sha: base, repo: { full_name: "gyldlab/keld" } },
+    head: { sha: head },
+    mergeable: true,
+    merge_commit_sha: merge,
+  };
+  const modifiedCount = { ...initial, changed_files: 2 };
+  const s = scenario({ readSequence: [initial, modifiedCount, modifiedCount] });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.statuses).toHaveLength(0);
+  expect(s.failures).toHaveLength(1);
+});
+
 test("refresh rejects a protected path beyond the first 300 files", async () => {
   const files = Array.from({ length: 448 }, (_, i) => ({
     filename: `docs/benign-${i}.md`,
