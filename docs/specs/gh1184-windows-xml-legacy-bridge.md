@@ -1,6 +1,10 @@
 # Spec: Windows XML Legacy development preload bridge
-Status: draft
+Status: approved
 Tracker: GH-1184 · Owner: repository owner · Updated: 2026-11-11
+
+Approved exact proposal: `5e286fddd945a6ccad8a599d938421afaf14f5ea`,
+[human receipt6801094337](https://github.com/gyldlab/keld/issues/1184#issuecomment-6801094337).
+The implementation still owes all technical and native qualification gates.
 
 This bounded proposal preserves PR1307/r17 at `d2c48b1b1fe3d42bf08dcc82211671e06f72654f`.
 Approval of this file authorizes only the Windows XML development slice below, not
@@ -300,7 +304,7 @@ is a semantic choice, not a claimed speedup.
 
 ## 10. Open questions
 
-One human-owned decision: approve main-world emulation for this selected-source explicit
+Resolved by the receipt above: approve main-world emulation for this selected-source explicit
 Legacy development slice, with direct page use of every declared literal channel and
 page-readable preload arguments/data, instead of the unimplemented general r17
 classifier/attestation design. Recommended for the bounded XML MVP. Declining preserves
@@ -314,4 +318,4 @@ realm/tracker amendment; B3/B4/B6 use approved W3 selected graph/entry owners; B
 actual AAC owners; B7 uses deterministic delayed-callback falsification; B8 uses
 exact-current independent review; B9 uses bounded receipt above; B10/B11 use existing
 hand-reviewed source/config and exact channel keys. General migration/release remains
-outside this slice. No approval or native qualification is asserted by this draft.
+outside this slice. Approval covers this bounded contract; no native qualification is asserted.

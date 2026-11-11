@@ -23,53 +23,9 @@ use sha2::{Digest as _, Sha256};
 
 use super::macos_document::VerifiedSourceId;
 
-/// Consumed from the ONE GH499 validated retained resource subgraph. These
-/// values are not read from JavaScript or a renderer request.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VerifiedWebAsset {
-    /// Relative to the retained graph-selected code-root directory FD.
-    pub path: PathBuf,
-    /// Exact captured file length authenticated by the selected graph.
-    pub size: u64,
-    /// Exact captured content digest; reads must still authenticate actual bytes.
-    pub sha256: [u8; 32],
-}
-
-/// The sole opaque Guard-owned digest-verified window response policy.
-/// No raw header or unverified manifest can construct this source input.
-pub use keld_guard::ResolvedWindowCsp as VerifiedResourceResponsePolicy;
-
-/// A capability that only the Core authenticated graph/preflight owner may
-/// construct and pass to the macOS engine's first disposable Legacy window.
-/// The scheme/authority are locators, NOT webview/IPC/doc credentials.
-pub struct AdmittedWebAppSource {
-    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-    lifecycle_gate: std::sync::Mutex<Option<super::s1_resource_lifecycle::ReadGate>>,
-    webapp_root: OwnedFd,
-    root_device: u64,
-    source: VerifiedSourceId,
-    scheme: String,
-    authority: String,
-    entry: String,
-    policy: VerifiedResourceResponsePolicy,
-    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-    fixture_response_override: std::sync::OnceLock<String>,
-    assets: BTreeMap<String, VerifiedWebAsset>,
-    /// Resource results already queued into Tao can outlive one native View.
-    /// One owner-wide account prevents two successive windows from each
-    /// admitting a full 256 MiB while old pending results are retained.
-    retained_bytes: Arc<AtomicUsize>,
-}
-
-impl std::fmt::Debug for AdmittedWebAppSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AdmittedWebAppSource")
-            .field("source", &"<opaque>")
-            .field("scheme", &self.scheme)
-            .field("entry", &self.entry)
-            .finish_non_exhaustive()
-    }
-}
+pub use crate::resource_source::{
+    AdmittedWebAppSource, VerifiedResourceResponsePolicy, VerifiedWebAsset,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ResourceSourceError {
@@ -99,134 +55,16 @@ pub(super) struct VerifiedBytes {
     pub(super) mime: &'static str,
 }
 
-/// Immutable actual native URL or source-qualified native origin metadata.
-/// Explicit aliases share the allocation and retain source-wide byte credit.
-pub struct MacNavigationUrl {
-    allocation: Arc<NavigationUrlAllocation>,
-    _alias_credit: Option<super::macos_resource_native::RetainedByteCredit>,
-}
-
-struct NavigationUrlAllocation {
-    text: String,
-    credit: super::macos_resource_native::RetainedByteCredit,
-}
+pub use crate::resource_source::NativeNavigationUrl as MacNavigationUrl;
 
 impl MacNavigationUrl {
-    /// Modeled callback metadata for the debug-only lease-owner component fixture.
-    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-    pub(super) fn fixture_capture(
-        text: &str,
-        account: &Arc<AtomicUsize>,
-    ) -> Result<Self, super::macos_resource_intake::IntakeReject> {
-        Self::capture_bounded(text, text.encode_utf16().count(), account)
-    }
-    /// Borrow the qualified native metadata without allocating or releasing credit.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.allocation.text
-    }
-
-    /// Admit another shared URL alias against the same source budget.
-    /// The extra queue/event slot stays charged until this alias is dropped.
-    ///
-    /// # Errors
-    /// Refuses a full shared retained-byte account before creating an alias.
-    pub fn try_clone(&self) -> Result<Self, crate::engine::NativeNavigationRefusal> {
-        let credit = self
-            .allocation
-            .credit
-            .reserve_more(navigation_url_slot_charge())
-            .map_err(|_| crate::engine::NativeNavigationRefusal::RetainedByteLimit)?;
-        Ok(Self {
-            allocation: Arc::clone(&self.allocation),
-            _alias_credit: Some(credit),
-        })
-    }
-
     pub(super) fn capture(
         actual: &objc2_foundation::NSString,
         account: &Arc<AtomicUsize>,
-    ) -> Result<Self, super::macos_resource_intake::IntakeReject> {
+    ) -> Result<Self, crate::resource_intake::IntakeReject> {
         Self::capture_bounded(actual, actual.length(), account)
     }
-
-    // Native URL strings and qualified native-origin tuples share one bounded
-    // formatting/reservation owner. The caller supplies native UTF16 units.
-    fn capture_bounded(
-        actual: impl std::fmt::Display,
-        units: usize,
-        account: &Arc<AtomicUsize>,
-    ) -> Result<Self, super::macos_resource_intake::IntakeReject> {
-        use super::macos_resource_intake::{
-            IntakeReject, ORIGINAL_WEBAPP_LIMITS, worst_case_charge,
-        };
-        use super::macos_resource_native::RetainedByteCredit;
-        use std::fmt::Write as _;
-        if units == 0 || units > ORIGINAL_WEBAPP_LIMITS.max_url_utf16_units {
-            return Err(IntakeReject::MetadataLimit);
-        }
-        let buffer = units
-            .checked_mul(4)
-            .ok_or(IntakeReject::RetainedByteLimit)?;
-        let copies = units
-            .checked_mul(2)
-            .ok_or(IntakeReject::RetainedByteLimit)?;
-        let overhead = std::mem::size_of::<NavigationUrlAllocation>()
-            .checked_add(4 * std::mem::size_of::<usize>())
-            .and_then(|bytes| bytes.checked_add(navigation_url_slot_charge()))
-            .ok_or(IntakeReject::RetainedByteLimit)?;
-        let charged = worst_case_charge(0, copies, overhead, ORIGINAL_WEBAPP_LIMITS)?;
-        // Existing source-wide account, reserved before any owned UTF8 copy.
-        let credit = RetainedByteCredit::reserve(account, charged)?;
-        let mut text = String::new();
-        text.try_reserve_exact(buffer)
-            .map_err(|_| IntakeReject::RetainedByteLimit)?;
-        let mut writer = BoundedNavigationUrl {
-            text,
-            limit: buffer,
-        };
-        write!(&mut writer, "{actual}").map_err(|_| IntakeReject::MetadataLimit)?;
-        Ok(Self {
-            allocation: Arc::new(NavigationUrlAllocation {
-                text: writer.text,
-                credit,
-            }),
-            _alias_credit: None,
-        })
-    }
 }
-
-fn navigation_url_slot_charge() -> usize {
-    std::mem::size_of::<crate::engine::AppWindowEvent>() + 4 * std::mem::size_of::<usize>()
-}
-
-// The precharged buffer may never grow through a formatting fallback.
-struct BoundedNavigationUrl {
-    text: String,
-    limit: usize,
-}
-impl std::fmt::Write for BoundedNavigationUrl {
-    fn write_str(&mut self, value: &str) -> std::fmt::Result {
-        if value.len() > self.limit.saturating_sub(self.text.len()) {
-            return Err(std::fmt::Error);
-        }
-        self.text.push_str(value);
-        Ok(())
-    }
-}
-impl std::fmt::Debug for MacNavigationUrl {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("MacNavigationUrl")
-            .field(&self.as_str())
-            .finish()
-    }
-}
-impl PartialEq for MacNavigationUrl {
-    fn eq(&self, other: &Self) -> bool {
-        self.as_str() == other.as_str()
-    }
-}
-impl Eq for MacNavigationUrl {}
 
 impl AdmittedWebAppSource {
     /// Core calls only after the immutable GH499 graph, Host-selected
@@ -325,32 +163,6 @@ impl AdmittedWebAppSource {
         self.webapp_root.as_raw_fd()
     }
 
-    pub(super) const fn source_id(&self) -> VerifiedSourceId {
-        self.source
-    }
-
-    pub(super) fn scheme(&self) -> &str {
-        &self.scheme
-    }
-
-    /// Borrow the exact immutable Guard resolution retained by this source.
-    #[must_use]
-    pub const fn resolved_window_policy(&self) -> &keld_guard::ResolvedWindowCsp {
-        &self.policy
-    }
-
-    /// Actual trusted manifest key bound to this source's immutable policy.
-    #[must_use]
-    pub fn window_key(&self) -> &str {
-        self.policy.window_key()
-    }
-
-    /// Digest verified over the exact permissions bytes by the sole Guard owner.
-    #[must_use]
-    pub const fn verified_manifest_sha256(&self) -> [u8; 32] {
-        self.policy.verified_sha256()
-    }
-
     pub(super) fn response_policy(&self) -> &str {
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         if let Some(header) = self.fixture_response_override.get() {
@@ -368,10 +180,6 @@ impl AdmittedWebAppSource {
                     .replace(" 'wasm-unsafe-eval'", ""),
             )
             .map_err(|_| "fixed first-party negative header already selected")
-    }
-
-    pub(super) fn retained_credit_account(&self) -> Arc<AtomicUsize> {
-        Arc::clone(&self.retained_bytes)
     }
 
     /// Only the admitted first main document may carry arbitrary original
@@ -857,8 +665,8 @@ mod tests {
 
     #[test]
     fn native_origin_uses_and_releases_the_existing_source_retained_byte_account() {
-        use super::super::macos_resource_intake::ORIGINAL_WEBAPP_LIMITS;
         use super::super::macos_resource_native::RetainedByteCredit;
+        use crate::resource_intake::ORIGINAL_WEBAPP_LIMITS;
         let fixture = Fixture::new();
         let source = original_source(&fixture.0, vec![asset("index.html", b"entry")]);
         let account = source.retained_credit_account();
@@ -1115,9 +923,8 @@ mod tests {
         // Selector/carrier admission is not final native request admission.
         // Preserve this existing input rule; final full URL normalization and
         // budget refusal now belong to the sole native request preparation.
-        let query_only_max = "x".repeat(
-            super::super::macos_resource_intake::ORIGINAL_WEBAPP_LIMITS.max_url_utf16_units,
-        );
+        let query_only_max =
+            "x".repeat(crate::resource_intake::ORIGINAL_WEBAPP_LIMITS.max_url_utf16_units);
         assert!(source.admitted_entry_url(&query_only_max).is_some());
         assert!(source.admitted_entry_url(&(query_only_max + "x")).is_none());
     }
@@ -1168,9 +975,9 @@ mod tests {
 
 #[cfg(test)]
 mod navigation_url_tests {
-    use super::super::macos_resource_intake::{IntakeReject, ORIGINAL_WEBAPP_LIMITS};
     use super::super::macos_resource_native::RetainedByteCredit;
     use super::*;
+    use crate::resource_intake::{IntakeReject, ORIGINAL_WEBAPP_LIMITS};
     use objc2_foundation::NSString;
     use std::sync::atomic::Ordering;
 

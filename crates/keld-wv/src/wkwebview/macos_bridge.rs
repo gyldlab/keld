@@ -6,7 +6,6 @@
 
 use std::collections::VecDeque;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
@@ -19,6 +18,7 @@ use objc2_web_kit::{
     WKUserScript, WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration,
 };
 use serde::Serialize;
+#[cfg(test)]
 use sha2::{Digest as _, Sha256};
 
 use crate::WebviewId;
@@ -32,191 +32,18 @@ use crate::wv_link::{
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 mod boot_diagnostic;
 
-/// Maximum source bytes admitted for one window before UTF-8 parsing.
-pub const MAX_APP_PRELOAD_BYTES: usize = 512 * 1024;
-const MAX_HOST_PRELOAD_BYTES: usize = 8 * 1024 * 1024;
-
-/// One Host session's source-image retention account; share across all windows.
-#[derive(Clone, Debug, Default)]
-pub struct AppPreloadBudget(Arc<Mutex<usize>>);
-
-impl AppPreloadBudget {
-    /// Reserve the full per-window cap before opening/copying any source bytes.
-    /// The successful image shrinks this reservation to its actual size.
-    ///
-    /// # Errors
-    /// Refuses Host aggregate exhaustion; no bytes or descriptors are retained.
-    pub fn reserve_window(&self) -> Result<AppPreloadReservation, WvError> {
-        let mut used = self
-            .0
-            .lock()
-            .map_err(|_| preload_error("source account is poisoned"))?;
-        let next = used
-            .checked_add(MAX_APP_PRELOAD_BYTES)
-            .filter(|next| *next <= MAX_HOST_PRELOAD_BYTES)
-            .ok_or_else(|| preload_error("8 MiB Host source-image limit exhausted"))?;
-        *used = next;
-        Ok(AppPreloadReservation {
-            budget: self.clone(),
-            charged: MAX_APP_PRELOAD_BYTES,
-        })
-    }
-
-    /// Retained and currently reserved source bytes, for owner observations.
-    #[must_use]
-    pub fn retained_bytes(&self) -> Option<usize> {
-        self.0.lock().ok().map(|used| *used)
-    }
-}
-
-/// Capacity retained across one bounded descriptor read and exact image check.
-#[derive(Debug)]
-pub struct AppPreloadReservation {
-    budget: AppPreloadBudget,
-    charged: usize,
-}
-
-impl Drop for AppPreloadReservation {
-    fn drop(&mut self) {
-        // A poisoned account refuses future admission. Recover only for exact
-        // resource release, never to authorize additional construction.
-        let mut used = self
-            .budget
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *used = used.saturating_sub(self.charged);
-    }
-}
-
-impl AppPreloadReservation {
-    /// Retain the exact complete image and digest selected by Core's installed,
-    /// boot-bound, rechecked graph. No renderer URL or JavaScript argument may
-    /// supply the expected digest or select an alternate preload.
-    /// `versions` is supplied by the canonical Host session-facts owner.
-    ///
-    /// # Errors
-    /// Refuses changed source, invalid UTF-8, missing/bounded facts or arguments.
-    pub fn from_qualified_graph(
-        mut self,
-        bytes: Vec<u8>,
-        selected_sha256: [u8; 32],
-        additional_arguments: Vec<String>,
-        versions: std::collections::BTreeMap<String, String>,
-    ) -> Result<AppPreloadImage, WvError> {
-        if bytes.is_empty()
-            || bytes.len() > MAX_APP_PRELOAD_BYTES
-            || <[u8; 32]>::from(Sha256::digest(&bytes)) != selected_sha256
-        {
-            return Err(preload_error(
-                "preload bytes differ from the Core-qualified boot-selected graph digest",
-            ));
-        }
-        if additional_arguments.len() > 16 {
-            return Err(preload_error("more than 16 preload arguments"));
-        }
-        let argument_bytes = additional_arguments
-            .iter()
-            .try_fold(0_usize, |total, value| {
-                if value.len() > 256 || value.contains('\0') {
-                    return None;
-                }
-                total.checked_add(value.len())
-            })
-            .filter(|total| *total <= 2_048)
-            .ok_or_else(|| preload_error("preload arguments exceed their byte bound"))?;
-        let _ = argument_bytes;
-        let fact_bytes = versions.iter().try_fold(0_usize, |total, (key, value)| {
-            if key.is_empty()
-                || key.len() > 128
-                || value.is_empty()
-                || value.len() > 256
-                || key.contains('\0')
-                || value.contains('\0')
-            {
-                return None;
-            }
-            total.checked_add(key.len())?.checked_add(value.len())
-        });
-        if versions.is_empty() || versions.len() > 32 || fact_bytes.is_none_or(|size| size > 8_192)
-        {
-            return Err(preload_error(
-                "canonical Host process versions are missing or exceed their bound",
-            ));
-        }
-        let source =
-            String::from_utf8(bytes).map_err(|_| preload_error("original preload is not UTF-8"))?;
-        {
-            let mut used = self
-                .budget
-                .0
-                .lock()
-                .map_err(|_| preload_error("source account is poisoned"))?;
-            *used -= self.charged - source.len();
-            self.charged = source.len();
-        }
-        Ok(AppPreloadImage(Arc::new(AppPreloadImageInner {
-            source: source.into_boxed_str(),
-            sha256: selected_sha256,
-            additional_arguments,
-            versions,
-            _reservation: self,
-        })))
-    }
-}
-
-#[derive(Debug)]
-struct AppPreloadImageInner {
-    source: Box<str>,
-    sha256: [u8; 32],
-    additional_arguments: Vec<String>,
-    versions: std::collections::BTreeMap<String, String>,
-    _reservation: AppPreloadReservation,
-}
-
-/// Immutable Host-authenticated original image/configuration for exactly one window.
-/// Clones share bytes and the one retention charge; navigation never reopens a path.
-#[derive(Clone, Debug)]
-pub struct AppPreloadImage(Arc<AppPreloadImageInner>);
-
-impl AppPreloadImage {
-    /// Number of immutable source bytes retained by this image.
-    #[must_use]
-    pub fn source_bytes(&self) -> usize {
-        self.0.source.len()
-    }
-    /// Ordered original window arguments captured before native construction.
-    #[must_use]
-    pub fn additional_arguments(&self) -> &[String] {
-        &self.0.additional_arguments
-    }
-    /// Immutable canonical Host session process facts used by the preload.
-    #[must_use]
-    pub fn versions(&self) -> &std::collections::BTreeMap<String, String> {
-        &self.0.versions
-    }
-    /// Whether a surviving window may adopt this exact source/configuration.
-    #[must_use]
-    pub fn same_configuration(&self, other: &Self) -> bool {
-        self.0.sha256 == other.0.sha256
-            && self.0.additional_arguments == other.0.additional_arguments
-            && self.0.versions == other.0.versions
-    }
-}
-
-fn preload_error(detail: impl Into<String>) -> WvError {
-    WvError::AppPreloadSource {
-        detail: detail.into(),
-    }
-}
+use crate::preload_image::preload_error;
+pub use crate::preload_image::{
+    AppPreloadBudget, AppPreloadImage, AppPreloadReservation, MAX_APP_PRELOAD_BYTES,
+};
 
 const HANDLER_NAME: &str = "__keld_wv_link_v1";
 /// Placeholder in both injected scripts for the host-admitted channel id.
 ///
-/// `keld-wv` has no `keld-ipc` dependency (architecture 01 §3): the host passes
+/// `keld-wv` has no `keld-ipc` dependency (architecture 01 Â§3): the host passes
 /// the admitted id to [`RendererBridgeEndpoint::new`] and
 /// [`render_bridge_script`] writes it into each script at construction
-/// (GH-508 spec §4.6).
+/// (GH-508 spec Â§4.6).
 const ADMITTED_CHANNEL_PLACEHOLDER: &str = "__KELD_ADMITTED_CHANNEL__";
 
 const PAGE_FACADE_SCRIPT: &str = r#"
@@ -369,321 +196,11 @@ fn render_bridge_script(template: &str, admitted_channel: u16) -> String {
     template.replace(ADMITTED_CHANNEL_PLACEHOLDER, &admitted_channel.to_string())
 }
 
-/// Operation on the single existing native/Core renderer endpoint.
-#[derive(Debug)]
-pub enum RendererBridgeOperation {
-    /// Actual authenticated app registry installed for this native lease/source.
-    /// Identity-only observation: request zero, no payload, topic or grant.
-    Registered,
-    /// Existing numeric KEL142 request.
-    Invoke,
-    /// Asynchronous actual Host admission before original Function entry.
-    Preflight {
-        /// Exact outbound literal, derived from copied action data.
-        channel: String,
-    },
-    /// Actual original ipcRenderer.send; final Host Guard remains mandatory.
-    Send {
-        /// Exact literal channel.
-        channel: String,
-    },
-    /// Original app-world consumer completed an addressed event.
-    Consumed {
-        /// Exact consumer result; transport release remains separate.
-        disposition: WvConsumerDisposition,
-    },
-    /// Authority was physically retired; no successor replay.
-    Retired,
-    /// Native original Function turn quiesced without any Send entering Core.
-    PreflightAborted,
-    /// Real WK event evaluation completion, independent of consumer disposition.
-    EventQuiesced {
-        /// True only when `WebKit` reported no evaluation error.
-        completed: bool,
-    },
-}
-
-/// Native-only observation of the existing authenticated role's stop witness.
-/// This retains the Core-owned identity; it mints no principal or wire token.
-#[derive(Clone, Debug)]
-pub struct RendererRoleWitness {
-    stopped: Arc<AtomicBool>,
-}
-impl RendererRoleWitness {
-    /// Capture the actual primary caller's existing stop flag, never page data.
-    #[must_use]
-    pub const fn new(stopped: Arc<AtomicBool>) -> Self {
-        Self { stopped }
-    }
-    /// Whether the captured role has not been retired by its owner.
-    #[must_use]
-    pub fn is_live(&self) -> bool {
-        !self.stopped.load(Ordering::Acquire)
-    }
-    /// Require the exact existing role owner, not equal Boolean values.
-    #[must_use]
-    pub fn matches(&self, stopped: &Arc<AtomicBool>) -> bool {
-        self.is_live() && Arc::ptr_eq(&self.stopped, stopped)
-    }
-    /// Compare two native observations without minting another generation.
-    #[must_use]
-    pub fn same_role(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.stopped, &other.stopped)
-    }
-}
-
-/// One renderer request that already passed `WebKit` world/frame/document admission.
-#[derive(Debug)]
-pub struct RendererBridgeRequest {
-    webview: WebviewId,
-    navigation: u64,
-    request: u32,
-    channel: u16,
-    payload: Vec<u8>,
-    operation: RendererBridgeOperation,
-    document_lease: Option<super::MacNativeDocumentLease>,
-    native_facts: Option<NativeMessageFacts>,
-    role_witness: Option<RendererRoleWitness>,
-}
-
-impl RendererBridgeRequest {
-    /// Select operation before using the legacy numeric accessors.
-    #[must_use]
-    pub const fn operation(&self) -> &RendererBridgeOperation {
-        &self.operation
-    }
-    /// Read the sole native document owner's revocation witness at final Host admission.
-    #[must_use]
-    pub fn document_lease(&self) -> Option<&super::MacNativeDocumentLease> {
-        self.document_lease.as_ref()
-    }
-    /// Original role observed before retaining a queued effectful call.
-    #[must_use]
-    pub fn role_witness(&self) -> Option<&RendererRoleWitness> {
-        self.role_witness.as_ref()
-    }
-    /// Actual native request URL captured in this WK callback, never caller data.
-    #[must_use]
-    pub fn url(&self) -> Option<&str> {
-        self.native_facts.as_ref().map(NativeMessageFacts::url)
-    }
-    /// Qualified actual native origin serialization; absent means fail closed.
-    #[must_use]
-    pub fn origin(&self) -> Option<&str> {
-        self.native_facts
-            .as_ref()
-            .and_then(NativeMessageFacts::origin)
-    }
-    /// Actual same-message native origin tuple; serialization is separately qualified.
-    #[must_use]
-    pub fn native_origin_tuple(&self) -> Option<(&str, &str, i64)> {
-        self.native_facts
-            .as_ref()
-            .map(NativeMessageFacts::native_origin_tuple)
-    }
-
-    /// Returns the host-minted `WebView` identity that admitted this request.
-    #[must_use]
-    pub const fn webview(&self) -> WebviewId {
-        self.webview
-    }
-
-    /// Returns the renderer-local request id used only for promise settlement.
-    #[must_use]
-    pub const fn request(&self) -> u32 {
-        self.request
-    }
-
-    /// Returns the host-owned navigation generation that admitted this call.
-    ///
-    /// This value never crosses the page/native envelope. It only prevents a
-    /// late outcome from an old document settling a newer document that reused
-    /// the same renderer-local request id.
-    #[must_use]
-    pub const fn navigation(&self) -> u64 {
-        self.navigation
-    }
-
-    /// Returns the declared application channel selected by the facade.
-    #[must_use]
-    pub const fn channel(&self) -> u16 {
-        self.channel
-    }
-
-    /// Returns the synchronously snapshotted application payload bytes.
-    #[must_use]
-    pub fn payload(&self) -> &[u8] {
-        &self.payload
-    }
-}
-
-/// Terminal host result for one renderer-local request.
-#[derive(Debug)]
-pub enum RendererBridgeOutcome {
-    /// Existing bounded receiver removed a request; retry retained controls only.
-    ControlCapacity,
-    /// Actual Host preflight completed; late/stale outcomes are discarded natively.
-    Preflight {
-        /// Owning native view.
-        webview: WebviewId,
-        /// Original checked native document generation.
-        navigation: u64,
-        /// Original untrusted local call correlation only.
-        request: u32,
-        /// Whether actual current-role/grant/capacity admission succeeded.
-        accepted: bool,
-    },
-    /// Canonical one-way send terminal disposition; never manufactures a page response.
-    SendResult {
-        /// Owning native view.
-        webview: WebviewId,
-        /// Original checked native document generation.
-        navigation: u64,
-        /// Original local one-way sequence.
-        request: u32,
-        /// Exact canonical terminal result after actual transport release.
-        disposition: crate::wv_link::WvTerminalDisposition,
-    },
-    /// Core completed the actual canonical event-release receipt.
-    EventReleased {
-        /// Owning view.
-        webview: WebviewId,
-        /// Original checked native document generation.
-        navigation: u64,
-        /// Exact event delivery correlation.
-        request: u32,
-    },
-    /// Addressed GH543 event carrying sole GH544 codec bytes.
-    Event {
-        /// Owning native view.
-        webview: WebviewId,
-        /// Exact original checked native generation; never current-successor lookup.
-        navigation: u64,
-        /// Nonzero delivery correlation.
-        request: u32,
-        /// Exact literal event topic.
-        channel: String,
-        /// Opaque bounded endpoint arguments.
-        payload: Vec<u8>,
-    },
-    /// Current authenticated Bun route availability; retirement does not free JS maps.
-    RouteState {
-        /// Owning native view.
-        webview: WebviewId,
-        /// Exact checked native document generation.
-        navigation: u64,
-        /// Whether the actual route is admitted.
-        ready: bool,
-        /// The existing authenticated role owner; never exposed to JavaScript.
-        role: RendererRoleWitness,
-    },
-    /// Successful application reply for one renderer-local request.
-    Reply {
-        /// `WebView` that owns the renderer promise.
-        webview: WebviewId,
-        /// Host-owned navigation generation that admitted the request.
-        navigation: u64,
-        /// Renderer-local request id.
-        request: u32,
-        /// Application reply bytes.
-        payload: Vec<u8>,
-    },
-    /// Typed terminal failure for one renderer-local request.
-    Error {
-        /// `WebView` that owns the renderer promise.
-        webview: WebviewId,
-        /// Host-owned navigation generation that admitted the request.
-        navigation: u64,
-        /// Renderer-local request id.
-        request: u32,
-        /// Stable KELD diagnostic code.
-        code: String,
-        /// Sanitized detail with no endpoint/token/authority material.
-        detail: String,
-    },
-}
-
-impl RendererBridgeOutcome {
-    #[must_use]
-    pub(super) const fn webview(&self) -> Option<WebviewId> {
-        match self {
-            Self::Reply { webview, .. }
-            | Self::Error { webview, .. }
-            | Self::Preflight { webview, .. }
-            | Self::SendResult { webview, .. }
-            | Self::Event { webview, .. }
-            | Self::RouteState { webview, .. }
-            | Self::EventReleased { webview, .. } => Some(*webview),
-            Self::ControlCapacity => None,
-        }
-    }
-
-    #[must_use]
-    const fn request(&self) -> u32 {
-        match self {
-            Self::Reply { request, .. }
-            | Self::Error { request, .. }
-            | Self::Preflight { request, .. }
-            | Self::SendResult { request, .. }
-            | Self::Event { request, .. }
-            | Self::EventReleased { request, .. } => *request,
-            Self::RouteState { .. } | Self::ControlCapacity => 0,
-        }
-    }
-
-    #[must_use]
-    const fn navigation(&self) -> u64 {
-        match self {
-            Self::Reply { navigation, .. }
-            | Self::Error { navigation, .. }
-            | Self::Preflight { navigation, .. }
-            | Self::SendResult { navigation, .. }
-            | Self::Event { navigation, .. }
-            | Self::RouteState { navigation, .. }
-            | Self::EventReleased { navigation, .. } => *navigation,
-            Self::ControlCapacity => 0,
-        }
-    }
-}
-
-/// Core-facing bounded request sender plus UI-facing terminal outcomes.
-#[derive(Debug)]
-pub struct RendererBridgeEndpoint {
-    pub(super) requests: SyncSender<RendererBridgeRequest>,
-    pub(super) outcomes: Option<Receiver<RendererBridgeOutcome>>,
-    pub(super) admitted_channel: u16,
-}
-
-impl RendererBridgeEndpoint {
-    pub(super) fn shared_view(
-        requests: SyncSender<RendererBridgeRequest>,
-        admitted_channel: u16,
-    ) -> Self {
-        Self {
-            requests,
-            outcomes: None,
-            admitted_channel,
-        }
-    }
-
-    /// Creates the one-view host/renderer channel pair used by this slice.
-    ///
-    /// `admitted_channel` is the one kipc channel id the renderer may invoke;
-    /// the host passes it from its channel table (GH-508 spec §4.6). Both the
-    /// injected scripts and native admission reject every other id.
-    #[must_use]
-    pub fn new(
-        requests: SyncSender<RendererBridgeRequest>,
-        outcomes: Receiver<RendererBridgeOutcome>,
-        admitted_channel: u16,
-    ) -> Self {
-        Self {
-            requests,
-            outcomes: Some(outcomes),
-            admitted_channel,
-        }
-    }
-}
+use crate::renderer_bridge::NativeMessageFacts;
+pub use crate::renderer_bridge::{
+    RendererBridgeEndpoint, RendererBridgeOperation, RendererBridgeOutcome, RendererBridgeRequest,
+    RendererRoleWitness,
+};
 
 #[derive(Debug)]
 struct PendingRequest {
@@ -1793,10 +1310,10 @@ mod native_message_text_tests {
     }
     #[test]
     fn native_utf8_bound_is_checked_without_repair_or_clipping() {
-        assert!(bounded_native_message_text(&NSString::from_str("é"), 1).is_err());
+        assert!(bounded_native_message_text(&NSString::from_str("Ã©"), 1).is_err());
         assert_eq!(
-            bounded_native_message_text(&NSString::from_str("é"), 2).expect("exact UTF8"),
-            "é"
+            bounded_native_message_text(&NSString::from_str("Ã©"), 2).expect("exact UTF8"),
+            "Ã©"
         );
         assert!(bounded_native_message_text(&NSString::from_str("ab"), 1).is_err());
     }
@@ -2392,7 +1909,7 @@ fn render_original_scripts(image: &AppPreloadImage) -> Result<(String, String), 
     // caller-provided module text, evaluation or loader fallback is accepted.
     let app = format!(
         "{prefix}runtime.installApp({facts},function(require,process,exports,module,Buffer,global,setImmediate,clearImmediate){{\n{}\n}});\n}})();",
-        image.0.source
+        image.source()
     );
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
     let app = if boot_diagnostic::enabled() {
@@ -4192,40 +3709,6 @@ impl MacRendererBridge {
                 state.evaluations,
             )
         })
-    }
-}
-
-/// Actual same-message frame metadata. Only the exact source-qualified native
-/// keld-resource tuple has the isolated-world serialization observed by the
-/// inert WK probe. Unknown tuple semantics refuse capture, never guess null.
-#[derive(Debug)]
-pub(super) struct NativeMessageFacts {
-    url: super::MacNavigationUrl,
-    protocol: Option<super::MacNavigationUrl>,
-    host: Option<super::MacNavigationUrl>,
-    port: i64,
-    serialized_origin: Option<super::MacNavigationUrl>,
-}
-
-impl NativeMessageFacts {
-    pub(super) fn url(&self) -> &str {
-        self.url.as_str()
-    }
-    pub(super) fn origin(&self) -> Option<&str> {
-        self.serialized_origin
-            .as_ref()
-            .map(super::MacNavigationUrl::as_str)
-    }
-    pub(super) fn native_origin_tuple(&self) -> (&str, &str, i64) {
-        (
-            self.protocol
-                .as_ref()
-                .map_or("", super::MacNavigationUrl::as_str),
-            self.host
-                .as_ref()
-                .map_or("", super::MacNavigationUrl::as_str),
-            self.port,
-        )
     }
 }
 

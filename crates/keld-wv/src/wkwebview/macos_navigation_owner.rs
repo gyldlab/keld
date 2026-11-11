@@ -24,7 +24,6 @@ use objc2_web_kit::{
 use super::macos_document::{
     NativeAttempt, NativeCommittedStamp, NativeDocumentOwner, RetainedNavigationWitness,
 };
-use super::macos_resource_intake::ORIGINAL_WEBAPP_LIMITS;
 use super::macos_resource_source::{AdmittedWebAppSource, MacNavigationUrl};
 use super::{MacNativeAttempt, MacNativeDocumentLease, MacNativeDocumentStamp};
 use crate::WebviewId;
@@ -32,6 +31,7 @@ use crate::engine::{
     AppWindowEvent, MacOriginalNavigationFact, NativeNavigationContext, NativeNavigationRefusal,
 };
 use crate::error::WvError;
+use crate::resource_intake::ORIGINAL_WEBAPP_LIMITS;
 
 /// Optional composition with the existing UI-owned original preload bridge.
 /// The hook receives actual native commit evidence and must recheck the same
@@ -968,10 +968,8 @@ const _: for<'owner, 'view, 'navigation> extern "C-unwind" fn(
 
 #[cfg(test)]
 mod native_entry_request_tests {
-    use super::super::macos_resource_intake::{
-        NativeRequestShape, ORIGINAL_WEBAPP_LIMITS, check_shape,
-    };
     use super::*;
+    use crate::resource_intake::{NativeRequestShape, ORIGINAL_WEBAPP_LIMITS, check_shape};
 
     const ENTRY: &str = "keld-resource://0123456789abcdef0123456789abcdef/index.html";
 

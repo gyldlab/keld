@@ -35,15 +35,15 @@ use tao::event_loop::EventLoopProxy;
 
 use super::WkUserEvent;
 use super::macos_document::{NativeDocumentOwner, ResourceLease};
-use super::macos_resource_intake::{
-    IntakeReject, NativeRequestShape, ORIGINAL_WEBAPP_LIMITS, TaskLedger, TaskTicket, check_shape,
-    pending_metadata_charge, worst_case_charge,
-};
 use super::macos_resource_source::{
     AdmittedWebAppSource, ResourceSourceError, SelectedRead, VerifiedBytes,
 };
 use crate::WebviewId;
 use crate::error::WvError;
+use crate::resource_intake::{
+    IntakeReject, NativeRequestShape, ORIGINAL_WEBAPP_LIMITS, TaskLedger, TaskTicket, check_shape,
+    pending_metadata_charge, worst_case_charge,
+};
 
 /// Only the exact native view and its Host-signed source descriptor can select
 /// an initial load; this is a private UI/worker result, not KIPC/app data.
@@ -258,41 +258,7 @@ impl<T> ReaderCustody<T> {
     }
 }
 
-/// Counts all retained source/input/native copy headroom even across a
-/// background worker result queued after the native UI handler shut down.
-/// This RAII charge follows the actual last owned copy, unlike a task ledger
-/// reset at stopURLSchemeTask, and has only one aggregate owner per view.
-#[derive(Debug)]
-pub(super) struct RetainedByteCredit {
-    account: Arc<AtomicUsize>,
-    bytes: usize,
-}
-
-impl RetainedByteCredit {
-    pub(super) fn reserve_more(&self, bytes: usize) -> Result<Self, IntakeReject> {
-        Self::reserve(&self.account, bytes)
-    }
-
-    pub(super) fn reserve(account: &Arc<AtomicUsize>, bytes: usize) -> Result<Self, IntakeReject> {
-        account
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                current
-                    .checked_add(bytes)
-                    .filter(|next| *next <= ORIGINAL_WEBAPP_LIMITS.max_retained_bytes)
-            })
-            .map_err(|_| IntakeReject::RetainedByteLimit)?;
-        Ok(Self {
-            account: Arc::clone(account),
-            bytes,
-        })
-    }
-}
-
-impl Drop for RetainedByteCredit {
-    fn drop(&mut self) {
-        self.account.fetch_sub(self.bytes, Ordering::AcqRel);
-    }
-}
+pub(crate) use crate::resource_intake::RetainedByteCredit;
 
 struct BoundedNativeRequest {
     url: Retained<NSURL>,

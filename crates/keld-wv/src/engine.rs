@@ -454,7 +454,7 @@ impl NativeNavigationContext {
 }
 
 /// Bounded original-load refusal before any native attempt is minted.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeNavigationRefusal {
     /// The mapped view is absent or does not match this native owner.
@@ -471,7 +471,7 @@ pub enum NativeNavigationRefusal {
     RetainedByteLimit,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl core::fmt::Display for NativeNavigationRefusal {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let detail = match self {
@@ -500,7 +500,7 @@ impl core::fmt::Display for NativeNavigationRefusal {
         write!(f, "{code}: {detail}")
     }
 }
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl std::error::Error for NativeNavigationRefusal {}
 
 /// Actual native observations for one captured Host operation.

@@ -4,13 +4,17 @@
 //! native `NSString` values or opening an `HTTPBodyStream`.
 
 use std::collections::BTreeMap;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 #[cfg(test)]
 mod native_pending_policy_contract;
 
 /// Limits come from verified Host policy, never a page, Wry, or a global fallback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct IntakeLimits {
+pub(crate) struct IntakeLimits {
     pub max_url_utf16_units: usize,
     pub max_header_fields: usize,
     pub max_header_utf16_units: usize,
@@ -22,7 +26,7 @@ pub(super) struct IntakeLimits {
 
 /// GH473 approved *candidate* caps for the pinned 23,118,872-byte app asset.
 /// The native high-water and cancellation proof must qualify these values.
-pub(super) const ORIGINAL_WEBAPP_LIMITS: IntakeLimits = IntakeLimits {
+pub(crate) const ORIGINAL_WEBAPP_LIMITS: IntakeLimits = IntakeLimits {
     max_url_utf16_units: 2_048,
     max_header_fields: 32,
     max_header_utf16_units: 4_096,
@@ -33,7 +37,7 @@ pub(super) const ORIGINAL_WEBAPP_LIMITS: IntakeLimits = IntakeLimits {
 
 /// Metadata observed without turning the native request into an `http::Request`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct NativeRequestShape {
+pub(crate) struct NativeRequestShape {
     pub is_get: bool,
     pub has_body: bool,
     pub has_body_stream: bool,
@@ -43,7 +47,7 @@ pub(super) struct NativeRequestShape {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum IntakeReject {
+pub(crate) enum IntakeReject {
     WrongMethod,
     BodyOrStream,
     MissingUrl,
@@ -58,7 +62,7 @@ pub(super) enum IntakeReject {
 }
 
 /// Shape-only admission. Not permission to open or deliver source bytes.
-pub(super) fn check_shape(
+pub(crate) fn check_shape(
     shape: NativeRequestShape,
     limits: IntakeLimits,
 ) -> Result<(), IntakeReject> {
@@ -86,7 +90,7 @@ pub(super) fn check_shape(
 /// one pending-delivery representation; the exact high-water needs native
 /// qualification. Metadata includes native UTF-16 URL/header lengths and
 /// bounded MIME/CSP response headers. No allocation based on untrusted size.
-pub(super) fn worst_case_charge(
+pub(crate) fn worst_case_charge(
     asset_size: u64,
     native_metadata_units: usize,
     policy_response_bytes: usize,
@@ -118,7 +122,7 @@ pub(super) fn worst_case_charge(
 /// Opaque native allocator memory still requires separate OS qualification.
 const MAX_PENDING_METADATA_BYTES: usize = 40 * 1024;
 
-pub(super) fn pending_metadata_charge(
+pub(crate) fn pending_metadata_charge(
     native_units: usize,
     selected_path_capacity: usize,
     record_bytes: usize,
@@ -141,20 +145,20 @@ pub(super) fn pending_metadata_charge(
 /// Task incarnation is NOT GH542's document generation. It prevents a native
 /// task-pointer reuse from resurrecting cancellation or retained accounting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct TaskTicket {
+pub(crate) struct TaskTicket {
     native_identity: usize,
     incarnation: u64,
 }
 
 impl TaskTicket {
-    pub(super) const fn native_identity(self) -> usize {
+    pub(crate) const fn native_identity(self) -> usize {
         self.native_identity
     }
 
     /// Read-only existing resource-ticket ordinal for dedicated Root diagnostics.
     /// It is neither a document identifier nor a new counter or authority.
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-    pub(super) const fn diagnostic_incarnation(self) -> u64 {
+    pub(crate) const fn diagnostic_incarnation(self) -> u64 {
         self.incarnation
     }
 }
@@ -180,7 +184,7 @@ struct Task {
 /// reservations remain charged until the true worker/buffer owner is quiescent.
 /// No Objective-C reference or filesystem handle is captured in this state.
 #[derive(Debug)]
-pub(super) struct TaskLedger {
+pub(crate) struct TaskLedger {
     limits: IntakeLimits,
     next_incarnation: u64,
     tasks: BTreeMap<usize, Task>,
@@ -188,7 +192,7 @@ pub(super) struct TaskLedger {
 }
 
 impl TaskLedger {
-    pub(super) fn new(limits: IntakeLimits) -> Self {
+    pub(crate) fn new(limits: IntakeLimits) -> Self {
         Self {
             limits,
             next_incarnation: 0,
@@ -197,7 +201,7 @@ impl TaskLedger {
         }
     }
 
-    pub(super) fn begin(&mut self, native_identity: usize) -> Result<TaskTicket, IntakeReject> {
+    pub(crate) fn begin(&mut self, native_identity: usize) -> Result<TaskTicket, IntakeReject> {
         if self.tasks.contains_key(&native_identity) {
             return Err(IntakeReject::DuplicateNativeTask);
         }
@@ -240,7 +244,7 @@ impl TaskLedger {
             .ok_or(IntakeReject::StoppedOrFinished)
     }
 
-    pub(super) fn reserve_bytes(
+    pub(crate) fn reserve_bytes(
         &mut self,
         ticket: TaskTicket,
         additional: usize,
@@ -265,7 +269,7 @@ impl TaskLedger {
     }
 
     /// Mark qualified metadata ready without reserving a body or worker.
-    pub(super) fn queue_read(&mut self, ticket: TaskTicket) -> Result<(), IntakeReject> {
+    pub(crate) fn queue_read(&mut self, ticket: TaskTicket) -> Result<(), IntakeReject> {
         let entry = self.current_mut(ticket)?;
         if entry.phase != Phase::Live || entry.worker_active || entry.queued_read {
             return Err(IntakeReject::StoppedOrFinished);
@@ -277,7 +281,7 @@ impl TaskLedger {
     /// One outstanding read/result uses the existing single worker and bounded
     /// channel. A terminal delivery also holds the slot across native reentry.
     /// Admission incarnation orders service, never native pointer value.
-    pub(super) fn next_queued_read(&self) -> Option<TaskTicket> {
+    pub(crate) fn next_queued_read(&self) -> Option<TaskTicket> {
         if self
             .tasks
             .values()
@@ -295,7 +299,7 @@ impl TaskLedger {
             })
     }
 
-    pub(super) fn worker_started(&mut self, ticket: TaskTicket) -> Result<(), IntakeReject> {
+    pub(crate) fn worker_started(&mut self, ticket: TaskTicket) -> Result<(), IntakeReject> {
         if self
             .tasks
             .values()
@@ -313,14 +317,14 @@ impl TaskLedger {
     }
 
     /// The native stopURLSchemeTask callback tombstones the associated task.
-    pub(super) fn stop(&mut self, native_identity: usize) {
+    pub(crate) fn stop(&mut self, native_identity: usize) {
         if let Some(entry) = self.tasks.get_mut(&native_identity) {
             entry.phase = Phase::Stopped;
         }
     }
 
     /// Destroy/Quit also covers a delivery temporarily owned outside the task map.
-    pub(super) fn stop_all(&mut self) {
+    pub(crate) fn stop_all(&mut self) {
         for task in self.tasks.values_mut() {
             task.phase = Phase::Stopped;
         }
@@ -328,7 +332,7 @@ impl TaskLedger {
 
     /// Take the terminal callback lease before reentering Objective-C. Do not
     /// retain a `RefCell` borrow or Rust lock while invoking a `WebKit` callback.
-    pub(super) fn begin_terminal_callback(&mut self, ticket: TaskTicket) -> bool {
+    pub(crate) fn begin_terminal_callback(&mut self, ticket: TaskTicket) -> bool {
         let Ok(entry) = self.current_mut(ticket) else {
             return false;
         };
@@ -340,7 +344,7 @@ impl TaskLedger {
     }
 
     /// The UI consumes the worker result but still owns response/native buffers.
-    pub(super) fn delivery_started(&mut self, ticket: TaskTicket) -> Result<(), IntakeReject> {
+    pub(crate) fn delivery_started(&mut self, ticket: TaskTicket) -> Result<(), IntakeReject> {
         let entry = self.current_mut(ticket)?;
         if !entry.worker_active || entry.delivery_active {
             return Err(IntakeReject::StoppedOrFinished);
@@ -350,23 +354,23 @@ impl TaskLedger {
         Ok(())
     }
 
-    pub(super) fn has_active_delivery(&self) -> bool {
+    pub(crate) fn has_active_delivery(&self) -> bool {
         self.tasks.values().any(|task| task.delivery_active)
     }
 
     /// Called only after the complete UI response and its owned credit drop.
-    pub(super) fn delivery_quiesced(&mut self, ticket: TaskTicket) -> Result<(), IntakeReject> {
+    pub(crate) fn delivery_quiesced(&mut self, ticket: TaskTicket) -> Result<(), IntakeReject> {
         self.current_mut(ticket)?.delivery_active = false;
         Ok(())
     }
 
-    pub(super) fn worker_quiesced(&mut self, ticket: TaskTicket) -> Result<(), IntakeReject> {
+    pub(crate) fn worker_quiesced(&mut self, ticket: TaskTicket) -> Result<(), IntakeReject> {
         self.current_mut(ticket)?.worker_active = false;
         Ok(())
     }
 
     /// Release a terminal/stopped incarnation only after work is quiescent.
-    pub(super) fn release(&mut self, ticket: TaskTicket) -> Result<(), IntakeReject> {
+    pub(crate) fn release(&mut self, ticket: TaskTicket) -> Result<(), IntakeReject> {
         let entry = self.current(ticket)?;
         if entry.phase == Phase::Live || entry.worker_active || entry.delivery_active {
             return Err(IntakeReject::WorkNotQuiescent);
@@ -379,7 +383,7 @@ impl TaskLedger {
 
     /// Called after each native didReceiveResponse / didReceiveData boundary.
     /// A reentrant WK stop can tombstone even a previously Terminal task.
-    pub(super) fn may_continue_native_delivery(&self, ticket: TaskTicket) -> bool {
+    pub(crate) fn may_continue_native_delivery(&self, ticket: TaskTicket) -> bool {
         self.current(ticket)
             .is_ok_and(|task| task.phase == Phase::Terminal && !task.worker_active)
     }
@@ -781,5 +785,41 @@ mod tests {
             .expect("stopped delivery retired");
         assert!(!ledger.has_active_delivery());
         assert_eq!(ledger.live_count(), 0);
+    }
+}
+
+/// Counts all retained source/input/native copy headroom even across a
+/// background worker result queued after the native UI handler shut down.
+/// This RAII charge follows the actual last owned copy, unlike a task ledger
+/// reset at stopURLSchemeTask, and has only one aggregate owner per view.
+#[derive(Debug)]
+pub(crate) struct RetainedByteCredit {
+    account: Arc<AtomicUsize>,
+    bytes: usize,
+}
+
+impl RetainedByteCredit {
+    pub(crate) fn reserve_more(&self, bytes: usize) -> Result<Self, IntakeReject> {
+        Self::reserve(&self.account, bytes)
+    }
+
+    pub(crate) fn reserve(account: &Arc<AtomicUsize>, bytes: usize) -> Result<Self, IntakeReject> {
+        account
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current
+                    .checked_add(bytes)
+                    .filter(|next| *next <= ORIGINAL_WEBAPP_LIMITS.max_retained_bytes)
+            })
+            .map_err(|_| IntakeReject::RetainedByteLimit)?;
+        Ok(Self {
+            account: Arc::clone(account),
+            bytes,
+        })
+    }
+}
+
+impl Drop for RetainedByteCredit {
+    fn drop(&mut self) {
+        self.account.fetch_sub(self.bytes, Ordering::AcqRel);
     }
 }

@@ -4,6 +4,9 @@
 //! shapes frozen by KEL-142 and carries no app-link endpoint, token, principal,
 //! generation, grant, or other application authority.
 
+mod host_messages;
+pub use host_messages::HostRendererMessage;
+
 use core::fmt;
 use core::num::{NonZeroU16, NonZeroU32};
 
@@ -291,6 +294,44 @@ impl LocalSyntaxBudget {
         Ok(())
     }
 }
+// The existing syntax budget also validates borrowed outbound Local data.
+// This does not decode or duplicate the endpoint-value grammar.
+fn validate_local_arguments(args: &[serde_json::Value]) -> Result<(), WvLinkRejectReason> {
+    fn visit(
+        budget: &mut LocalSyntaxBudget,
+        value: &serde_json::Value,
+        depth: usize,
+    ) -> Result<(), serde_json::Error> {
+        budget.node::<serde_json::Error>(depth)?;
+        match value {
+            serde_json::Value::String(text) => budget.text::<serde_json::Error>(text)?,
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    visit(budget, value, depth + 1)?;
+                }
+            }
+            serde_json::Value::Object(values) => {
+                for (key, value) in values {
+                    budget.node::<serde_json::Error>(depth + 1)?;
+                    budget.text::<serde_json::Error>(key)?;
+                    visit(budget, value, depth + 1)?;
+                }
+            }
+            serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+            }
+        }
+        Ok(())
+    }
+    if args.len() > 16 {
+        return Err(WvLinkRejectReason::MalformedEnvelope);
+    }
+    let mut budget = LocalSyntaxBudget::default();
+    for value in args {
+        visit(&mut budget, value, 1).map_err(|_| WvLinkRejectReason::MalformedEnvelope)?;
+    }
+    Ok(())
+}
+
 struct LocalValueSeed<'a> {
     budget: &'a mut LocalSyntaxBudget,
     depth: usize,
@@ -663,7 +704,7 @@ mod compat_v2_tests {
             assert_eq!(decode(&value).is_ok(), allowed);
         }
         for (count, allowed) in [(128, true), (129, false)] {
-            let topic = "é".repeat(count);
+            let topic = "Ã©".repeat(count);
             let value = format!(
                 r#"{{"v":2,"kind":"send","document":"{DOC}","message":1,"channel":"{topic}","payload":[]}}"#
             );
