@@ -38,6 +38,8 @@ rustix = { workspace = true, features = ["process"] }
 keld-pack = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
+# GH1185: reuse the retained Windows graph opener; no second unsafe path reader.
+keld-update = { workspace = true }
 windows-permissions = { workspace = true }
 windows-sys = { workspace = true }
 
