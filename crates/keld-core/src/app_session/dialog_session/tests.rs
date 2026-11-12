@@ -30,7 +30,11 @@ fn with_manifest(
     (DialogSession::new(verified, wake), receive, temp)
 }
 
-fn original(correlation: u32, nonce: u64) -> DialogOwner {
+// The dialog nonce participates in ownership and replay refusal: test with a
+// fresh OS-backed value rather than a hard-coded value passed as a nonce.
+fn original(correlation: u32) -> DialogOwner {
+    let token = keld_ipc::SessionToken::random().expect("test dialog nonce entropy");
+    let nonce = u64::from_le_bytes(token.as_bytes()[..8].try_into().expect("32-byte token"));
     DialogOwner {
         identity: PrimaryLinkIdentity::Fixture,
         attempt: 1,
@@ -191,7 +195,7 @@ fn retiring_fs_only_generation_without_a_dialog_must_not_enqueue_native_ui_wake(
 fn dialog_cancel_at_capacity_keeps_distinct_original_and_cancel_correlations() {
     let (session, wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
     session.authorize().expect("verified exact dialog grant");
-    let first = original(7, 9);
+    let first = original(7);
     session
         .reserve(first, options(), WebviewId(3))
         .expect("one reservation");
@@ -204,16 +208,16 @@ fn dialog_cancel_at_capacity_keeps_distinct_original_and_cancel_correlations() {
         Some(CorrelationId(7))
     );
     assert_eq!(
-        session.reserve(original(8, 10), options(), WebviewId(3)),
+        session.reserve(original(8), options(), WebviewId(3)),
         Err(DialogFault::Busy)
     );
     assert_eq!(
-        session.cancel(first.identity, 1, 9, CorrelationId(7)),
+        session.cancel(first.identity, 1, first.nonce, CorrelationId(7)),
         Err(DialogFault::InvalidRequest),
         "a Cancel may not overwrite its original correlation",
     );
     assert_eq!(
-        session.cancel(first.identity, 1, 9, CorrelationId(8)),
+        session.cancel(first.identity, 1, first.nonce, CorrelationId(8)),
         Ok(CancelDisposition::Requested),
     );
     assert!(matches!(
@@ -226,7 +230,7 @@ fn dialog_cancel_at_capacity_keeps_distinct_original_and_cancel_correlations() {
         .record_native_outcome(first, MacDialogUiOutcome::Dismissed, None)
         .expect("OS callback observed after cancellation");
     let terminal = session
-        .complete(1, 9, MacDialogUiOutcome::Dismissed)
+        .complete(1, first.nonce, MacDialogUiOutcome::Dismissed)
         .expect("OS callback modeled as already physically drained");
     assert!(terminal == Some((first, Err(DialogFault::Cancelled))));
     assert!(session.fully_drained());
@@ -235,7 +239,7 @@ fn dialog_cancel_at_capacity_keeps_distinct_original_and_cancel_correlations() {
         session
             .complete(
                 1,
-                9,
+                first.nonce,
                 MacDialogUiOutcome::Selected {
                     response: 0,
                     checkbox_checked: false,
@@ -249,7 +253,7 @@ fn dialog_cancel_at_capacity_keeps_distinct_original_and_cancel_correlations() {
 #[test]
 fn dialog_committed_native_result_wins_before_late_cancel_and_role_retirement() {
     let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
-    let first = original(15, 17);
+    let first = original(15);
     session
         .reserve(first, options(), WebviewId(2))
         .expect("reserve");
@@ -267,7 +271,7 @@ fn dialog_committed_native_result_wins_before_late_cancel_and_role_retirement() 
     let reply = session
         .complete(
             1,
-            17,
+            first.nonce,
             MacDialogUiOutcome::Selected {
                 response: 2,
                 checkbox_checked: true,
@@ -285,13 +289,13 @@ fn dialog_committed_native_result_wins_before_late_cancel_and_role_retirement() 
             ))
     );
     assert_eq!(
-        session.cancel(first.identity, 1, 17, CorrelationId(99)),
+        session.cancel(first.identity, 1, first.nonce, CorrelationId(99)),
         Ok(CancelDisposition::AlreadyCompleted),
     );
     session.retire(first.identity, first.attempt);
     assert!(
         session
-            .complete(1, 17, MacDialogUiOutcome::Dismissed)
+            .complete(1, first.nonce, MacDialogUiOutcome::Dismissed)
             .unwrap()
             .is_none()
     );
@@ -300,7 +304,7 @@ fn dialog_committed_native_result_wins_before_late_cancel_and_role_retirement() 
 #[test]
 fn appkit_observed_native_click_is_terminal_before_event_coordinator_receives_it() {
     let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
-    let first = original(22, 25);
+    let first = original(22);
     session
         .reserve(first, options(), WebviewId(3))
         .expect("reserve one effect");
@@ -330,7 +334,7 @@ fn appkit_observed_native_click_is_terminal_before_event_coordinator_receives_it
     let result = session
         .complete(
             1,
-            25,
+            first.nonce,
             MacDialogUiOutcome::Selected {
                 response: 2,
                 checkbox_checked: false,
