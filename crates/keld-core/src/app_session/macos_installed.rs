@@ -29,7 +29,8 @@ use crate::macos_profile_identity::{
 use super::boot_contract::{ParsedBoot, parse_installed_boot_bytes};
 use super::graph_contract::{AdmittedStageGraph, read_bound_graph_leaf_from_retained_root};
 use super::launch_facts::{
-    LaunchFacts, MACOS_LOCAL_LAUNCH_PRELOAD_PATH, macos_local_launch_bootstrap_sources,
+    LaunchFacts, MACOS_LOCAL_LAUNCH_PRELOAD_PATH, MACOS_LOCAL_RUNTIME_ENTRY_PATH,
+    macos_local_launch_bootstrap_sources, macos_local_original_entry_bootstrap_source,
 };
 use super::{
     AppBootSelection, BOOT_FILE, HostAppError, InitialWindow, MAX_BOOT_BYTES, PERMISSIONS_FILE,
@@ -157,11 +158,30 @@ impl FileIdentity {
     }
 }
 
-fn open_launch_bootstrap(app: &File) -> Result<Vec<(File, FileIdentity)>, HostAppError> {
-    // Every generated module is qualified against this Host's compiled
-    // owner bytes. The sealed application cannot select another bootstrap.
+fn open_launch_bootstrap(
+    app: &File,
+    original_graph_entry: Option<&Path>,
+) -> Result<Vec<(File, FileIdentity)>, HostAppError> {
+    // Every generated module is qualified against independently compiled
+    // Host owner bytes. Only an admitted original graph renders the fourth
+    // owner from the *separately parsed sealed boot-selected entry*; plain
+    // installed roles retain the inert exact-byte template instead.
+    let original_entry_source = original_graph_entry
+        .map(|entry| {
+            macos_local_original_entry_bootstrap_source(entry.to_str().ok_or_else(|| {
+                admission_error("original graph entry", "boot-selected entry is not UTF-8")
+            })?)
+        })
+        .transpose()?;
     let mut launch_bootstrap = Vec::new();
-    for (path, expected) in macos_local_launch_bootstrap_sources() {
+    for (path, compiled_expected) in macos_local_launch_bootstrap_sources() {
+        let expected = if path == MACOS_LOCAL_RUNTIME_ENTRY_PATH {
+            original_entry_source
+                .as_deref()
+                .unwrap_or(compiled_expected)
+        } else {
+            compiled_expected
+        };
         let file = open_file(app, Path::new(path), "installed launch bootstrap")?;
         let identity = FileIdentity::of(&file, "installed launch bootstrap")?;
         let actual = read_bounded_at(&file, expected.len(), "installed launch bootstrap")?;
@@ -314,7 +334,11 @@ impl ValidatedMacLocalBundle {
             read_sealed_local_metadata(&contents, &resources, &bun, &signing.signing_identifier)?;
         let (boot, boot_bytes, parsed, policy, entry) =
             read_installed_local_boot_files(&app, &metadata)?;
-        let launch_bootstrap = open_launch_bootstrap(&app)?;
+        let original_graph_entry = parsed
+            .installed_graph
+            .as_ref()
+            .map(|_| parsed.entry.as_path());
+        let launch_bootstrap = open_launch_bootstrap(&app, original_graph_entry)?;
         let app_path = signing.bundle_path.join(MACOS_APP_RELATIVE_PATH);
         let graph = parsed
             .installed_graph
@@ -811,6 +835,24 @@ impl MacLocalGuardianFacts {
         }
     }
 
+    /// Fixed, Core-compiled app-root entry bootstrap. Admission compares its
+    /// bytes against retained no-follow signed files; generation revalidation
+    /// checks the same complete set before Guardian starts each Bun child.
+    /// The original entry remains independently sealed by boot and graph.
+    ///
+    /// # Errors
+    /// Refuses any disagreement between original launch mode and signed graph.
+    pub fn runtime_entry_bootstrap_path(&self) -> Result<Option<PathBuf>, HostAppError> {
+        match (self.original_graph, self.origin.graph()) {
+            (true, Some(_)) => Ok(Some(self.app_root().join(MACOS_LOCAL_RUNTIME_ENTRY_PATH))),
+            (false, None) => Ok(None),
+            _ => Err(admission_error(
+                "installed runtime entry",
+                "original launch mode and retained installed graph disagree",
+            )),
+        }
+    }
+
     /// Whether the sealed boot descriptor selects Host-owned native windows.
     ///
     /// The Guardian uses this value instead of a caller argument to choose the
@@ -1036,11 +1078,108 @@ mod tests {
     use std::fs;
     use std::io::{Seek as _, SeekFrom};
     use std::os::unix::fs::symlink;
+    use std::path::Path;
 
     use super::{
-        MacLocalIntegrityPins, hash_bounded_file, open_absolute_directory,
+        MacLocalIntegrityPins, hash_bounded_file, open_absolute_directory, open_launch_bootstrap,
         path_is_local_app_candidate, read_bounded_at,
     };
+
+    #[test]
+    fn four_generated_leaves_refuse_remove_and_same_size_tamper_in_both_installed_modes() {
+        use super::{
+            MACOS_LOCAL_RUNTIME_ENTRY_PATH, macos_local_launch_bootstrap_sources,
+            macos_local_original_entry_bootstrap_source,
+        };
+
+        // The Core reader's exact-byte check is independent of an outer
+        // ad-hoc signature: these tests mutate fixture files directly. The
+        // eight actual remove/tamper + re-sign launch cases remain in the
+        // shipping macOS native driver and require a signed bundle build.
+        let root = tempfile::tempdir().expect("isolated fixture root");
+        let canonical = root.path().canonicalize().expect("physical root");
+        let selected_entry = Path::new("src/main.mjs");
+        let sources = macos_local_launch_bootstrap_sources();
+        assert_eq!(sources.len(), 4, "four Core-owned source leaves");
+        let directory = open_absolute_directory(&canonical).expect("physical root handle");
+
+        for original_graph in [false, true] {
+            for (relative, template) in sources {
+                let source = if original_graph && relative == MACOS_LOCAL_RUNTIME_ENTRY_PATH {
+                    macos_local_original_entry_bootstrap_source("src/main.mjs")
+                        .expect("sealed original literal template")
+                } else {
+                    template.to_vec()
+                };
+                let path = canonical.join(relative);
+                fs::create_dir_all(path.parent().expect("source parent"))
+                    .expect("create source parent");
+                fs::write(path, source).expect("write original owner bytes");
+            }
+            let selected = original_graph.then_some(selected_entry);
+            assert_eq!(
+                open_launch_bootstrap(&directory, selected)
+                    .expect("complete admitted bootstrap")
+                    .len(),
+                4,
+                "a complete exact source set must admit in each mode"
+            );
+
+            for (relative, _) in sources {
+                let path = canonical.join(relative);
+                let original = fs::read(&path).expect("retained original source bytes");
+                for remove in [true, false] {
+                    if remove {
+                        fs::remove_file(&path).expect("remove one leaf");
+                    } else {
+                        // Change one comment byte while keeping the exact
+                        // byte length, to falsify a size-only admission.
+                        let comment_end = original
+                            .windows(2)
+                            .position(|window| window == b"*/")
+                            .expect("owner source has an initial comment");
+                        let offset = (3..comment_end)
+                            .find(|&i| original[i].is_ascii_alphabetic())
+                            .expect("owner comment has a mutable letter");
+                        let mut mutated = original.clone();
+                        mutated[offset] ^= 0x20;
+                        assert_eq!(mutated.len(), original.len());
+                        fs::write(&path, mutated).expect("write same-size mutation");
+                    }
+
+                    let denied = open_launch_bootstrap(&directory, selected)
+                        .expect_err("every missing/altered owner must refuse");
+                    assert!(
+                        denied.to_string().contains("installed launch bootstrap"),
+                        "Core must attribute source refusal: {relative}: {denied}"
+                    );
+                    fs::write(&path, &original).expect("restore only owned fixture");
+                }
+                assert_eq!(
+                    open_launch_bootstrap(&directory, selected)
+                        .expect("restored source set")
+                        .len(),
+                    4
+                );
+            }
+
+            // A path alias with the correct bytes still cannot become an
+            // admitted owner file. The exact app-root member must open with
+            // O_NOFOLLOW, even before comparing its compiled content.
+            let bootstrap = canonical.join(MACOS_LOCAL_RUNTIME_ENTRY_PATH);
+            let expected = fs::read(&bootstrap).expect("fourth generated leaf");
+            let outside = tempfile::NamedTempFile::new().expect("external fixture file");
+            fs::write(outside.path(), &expected).expect("matching external source");
+            fs::remove_file(&bootstrap).expect("remove exact leaf before alias");
+            symlink(outside.path(), &bootstrap).expect("install alias");
+            assert!(
+                open_launch_bootstrap(&directory, selected).is_err(),
+                "identical bytes through a symlink cannot replace an exact owner leaf"
+            );
+            fs::remove_file(&bootstrap).expect("remove alias");
+            fs::write(&bootstrap, expected).expect("restore exact source fixture");
+        }
+    }
 
     #[test]
     fn guardian_private_bundle_digest_fields_require_exact_canonical_hex() {
