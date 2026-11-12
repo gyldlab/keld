@@ -84,12 +84,9 @@ fn console_failure_reports_published_error_and_preserves_original_panic() {
             panic!("original pre-READY failure sentinel");
         });
         match result {
-            Err(failure) => super::finish_beacon_failure(
-                failure,
-                beacon_failure,
-                || {},
-                std::io::stderr,
-            ),
+            Err(failure) => {
+                super::finish_beacon_failure(failure, beacon_failure, || {}, std::io::stderr)
+            }
             Ok(()) => panic!("the pre-READY failure disappeared"),
         }
     }
@@ -137,11 +134,8 @@ fn failed_diagnostic_sink_keeps_cleanup_and_original_panic() {
     let mut direct_sink = BrokenWriter {
         cleanup_finished: &cleaned,
     };
-    let error = super::write_beacon_failure(
-        &mut direct_sink,
-        BeaconFailureObservation::Failed,
-    )
-    .expect_err("writer error must remain observable");
+    let error = super::write_beacon_failure(&mut direct_sink, BeaconFailureObservation::Failed)
+        .expect_err("writer error must remain observable");
     assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
 
     cleaned.set(false);
