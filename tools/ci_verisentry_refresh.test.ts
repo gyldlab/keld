@@ -936,7 +936,9 @@ test("cross-batch duplicate parent commits are denied even if other PR list merg
 });
 
 test("refresh census is generated from the automatic verifier's sole source", () => {
-  expect(generateRefreshCensus(trustedSource, refreshSource)).toBe(refreshSource);
+  expect(generateRefreshCensus(trustedSource, refreshSource)).toBe(
+    refreshSource,
+  );
   const marker = "const immutableChangedPaths = async";
   const changedOwner = trustedSource.replace(
     marker,
@@ -944,7 +946,9 @@ test("refresh census is generated from the automatic verifier's sole source", ()
   );
   const changedOutput = generateRefreshCensus(changedOwner, refreshSource);
   expect(changedOutput).not.toBe(refreshSource);
-  expect(generateRefreshCensus(changedOwner, changedOutput)).toBe(changedOutput);
+  expect(generateRefreshCensus(changedOwner, changedOutput)).toBe(
+    changedOutput,
+  );
   const manualEdit = refreshSource.replace(
     marker,
     "// manual edit\n            " + marker,
@@ -954,8 +958,12 @@ test("refresh census is generated from the automatic verifier's sole source", ()
 
 test("census generation rejects missing and duplicate markers", () => {
   const marker = "            // __IMMUTABLE_CHANGED_PATHS_BEGIN__";
-  expect(() => generateRefreshCensus("", refreshSource)).toThrow("one complete");
-  expect(() => generateRefreshCensus(trustedSource, "")).toThrow("one complete");
+  expect(() => generateRefreshCensus("", refreshSource)).toThrow(
+    "one complete",
+  );
+  expect(() => generateRefreshCensus(trustedSource, "")).toThrow(
+    "one complete",
+  );
   expect(() =>
     generateRefreshCensus(trustedSource + "\n" + marker, refreshSource),
   ).toThrow("one complete");
