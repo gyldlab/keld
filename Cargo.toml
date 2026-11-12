@@ -71,7 +71,7 @@ semver = "=1.0.28"
 zstd = { version = "=0.14.3", default-features = false }
 
 # --- Dependency review (KEL-42 / AGENTS.md gate) ---
-# Name: rmcp =3.1.2 (official modelcontextprotocol/rust-sdk)
+# Name: rmcp =3.9.0 (official modelcontextprotocol/rust-sdk)
 # Purpose: MCP 2026-07-28 wire (server/discover, dual-version negotiation,
 #   SEP-2549 cache hints, JSON Schema tool schemas) for `keld mcp serve`.
 # Alternatives rejected: (a) hand-rolled JSON-RPC/stdio — own conformance across
@@ -79,13 +79,14 @@ zstd = { version = "=0.14.3", default-features = false }
 #   binary; (c) community crates — not official, no 2026-07-28 confirmed.
 # Features: server + macros + transport-io (stdio) ONLY — no
 #   transport-streamable-http*, no reqwest/auth. Exact pin: wire churn post-GA.
-rmcp = { version = "=3.1.2", default-features = false, features = [
+rmcp = { version = "=3.9.0", default-features = false, features = [
     "server",
     "macros",
     "transport-io",
 ] }
 # Tokio only on the MCP serve cold path (AGENTS.md: async only in cli tooling).
-# No net: stdio only. `io-util`/`sync` are what rmcp's stdio transport needs.
+# MCP uses stdio only. rmcp's transport-io transitively enables tokio/net for
+# its optional pipe support; Keld does not enable HTTP/auth transports.
 tokio = { version = "1", default-features = false, features = [
     "rt",
     "io-std",
@@ -152,9 +153,9 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Netw
 # Linux-only, cold strict-profile launch path.
 seccompiler = { version = "=0.5.0", default-features = false }
 # KEL-78/T4: safe `security.capability` xattr readback for the reviewed
-# unprivileged Bubblewrap executable. Exact version is already lockfile-pinned
-# through tempfile; `fs` only, cold Linux admission path.
-rustix = { version = "=1.1.4", default-features = false, features = ["fs", "std"] }
+# unprivileged Bubblewrap executable. Version 1.1.6 fixes RUSTSEC-2026-0486;
+# `fs` and `std` support this cold Linux admission path.
+rustix = { version = "=1.1.6", default-features = false, features = ["fs", "std"] }
 # --- Dependency review (KEL-130/T1 / AGENTS.md gate) ---
 # Names: cap-std =4.0.3 and cap-fs-ext =4.0.3
 # Purpose: safe retained-directory capabilities, handle-relative no-follow
