@@ -46,8 +46,6 @@ use std::fmt;
 use std::fs;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::fs::File;
-#[cfg(any(target_os = "linux", windows))]
-use std::io::Write as _;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::io::{self, Read};
 #[cfg(target_os = "macos")]
