@@ -125,13 +125,15 @@ fn verified_profile_preflight_checks_both_version_and_entry_before_admission() {
                     super::profile_preflight::validate_profile(schema, &verified, diagnostic);
                 let valid_pair = matches!((schema, explicit), (1 | 2, false) | (3 | 4, true));
                 let facade = matches!(schema, 2 | 4);
+                // No-profile facade preflight is not itself platform admission.
+                // Explicit profiles remain refused outside macOS.
                 if !valid_pair || (diagnostic && (explicit || facade)) {
                     assert_eq!(
                         result.expect_err("preflight mismatch").code(),
                         "KELD-CORE-035",
                         "{name}/{schema}/{diagnostic}"
                     );
-                } else if !cfg!(target_os = "macos") && (explicit || facade) {
+                } else if !cfg!(target_os = "macos") && explicit {
                     assert_eq!(
                         result
                             .expect_err("unsupported target/mode stays refused")
