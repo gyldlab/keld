@@ -574,9 +574,11 @@ class ExecutorTests(SelectionTests):
     def test_typescript_recipe_checks_all_packages_with_frozen_installs(self):
         result, observed = self.run_production_typescript()
         self.assertEqual(result.returncode, 0, result.stderr)
+        # API's frozen local link must exist BEFORE KIPC typechecks code
+        # that imports @keld/api; the test still requires every later step.
         self.assertEqual(observed, [
-            "kipc:install --frozen-lockfile", "kipc:run typecheck", "kipc:test",
-            "api:install --frozen-lockfile", "api:run typecheck", "api:test",
+            "kipc:install --frozen-lockfile", "api:install --frozen-lockfile",
+            "kipc:run typecheck", "kipc:test", "api:run typecheck", "api:test",
             "electron:install --frozen-lockfile", "electron:run typecheck", "electron:test",
         ])
 
@@ -585,8 +587,8 @@ class ExecutorTests(SelectionTests):
             with self.subTest(failure=failure):
                 result, observed = self.run_production_typescript(failure)
                 self.assertEqual(result.returncode, 37, result.stderr)
-                expected = ["kipc:install --frozen-lockfile", "kipc:run typecheck", "kipc:test",
-                            "api:install --frozen-lockfile", "api:run typecheck"]
+                expected = ["kipc:install --frozen-lockfile", "api:install --frozen-lockfile",
+                            "kipc:run typecheck", "kipc:test", "api:run typecheck"]
                 if failure == "test":
                     expected.append("api:test")
                 self.assertEqual(observed, expected)
