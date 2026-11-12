@@ -5,13 +5,18 @@ use super::{CorrelationId, PrimaryLinkIdentity};
 
 // The wire field is named `nonce`, but this contract admits a monotonically
 // increasing, generation-scoped operation sequence, not a cryptographic secret.
-// Explicit fixture values let the tests distinguish replay from a new operation.
-fn owner(attempt: u32, correlation: u32, operation_sequence: u64) -> DialogOwner {
+// Mint each test operation at runtime, preserving same/different-sequence assertions.
+fn next_operation_sequence() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+fn owner(attempt: u32, correlation: u32) -> DialogOwner {
     DialogOwner {
         identity: PrimaryLinkIdentity::Fixture,
         attempt,
         correlation: CorrelationId(correlation),
-        nonce: operation_sequence,
+        nonce: next_operation_sequence(),
         parent: None,
     }
 }
@@ -19,8 +24,8 @@ fn owner(attempt: u32, correlation: u32, operation_sequence: u64) -> DialogOwner
 #[test]
 fn cancelled_original_gets_one_terminal_and_retains_capacity_until_quiescence() {
     let mut custody = DialogCustody::default();
-    let original = owner(1, 7, 1);
-    let successor = owner(1, 9, 2);
+    let original = owner(1, 7);
+    let successor = owner(1, 9);
     assert_ne!(original.nonce, successor.nonce);
     custody.reserve(original).expect("first panel");
     assert_eq!(
@@ -60,8 +65,8 @@ fn cancelled_original_gets_one_terminal_and_retains_capacity_until_quiescence() 
 #[test]
 fn foreign_generation_cannot_cancel_active_effect() {
     let mut custody = DialogCustody::default();
-    let original = owner(1, 7, 1);
-    let other_operation = owner(1, 8, 2);
+    let original = owner(1, 7);
+    let other_operation = owner(1, 8);
     assert_ne!(original.nonce, other_operation.nonce);
     custody.reserve(original).expect("first panel");
     assert_eq!(
@@ -78,8 +83,8 @@ fn foreign_generation_cannot_cancel_active_effect() {
 #[test]
 fn committed_native_result_cannot_be_replaced_by_cancel_or_sent_twice() {
     let mut custody = DialogCustody::default();
-    let original = owner(4, 19, 7);
-    let successor = owner(4, 20, 8);
+    let original = owner(4, 19);
+    let successor = owner(4, 20);
     assert_ne!(original.nonce, successor.nonce);
     custody.reserve(original).expect("first panel");
     assert!(custody.commit_native_result(original));
@@ -105,10 +110,13 @@ fn committed_native_result_cannot_be_replaced_by_cancel_or_sent_twice() {
 #[test]
 fn retired_generation_suppresses_wire_reply_but_keeps_native_custody() {
     let mut custody = DialogCustody::default();
-    let original = owner(4, 21, 1);
+    let original = owner(4, 21);
     // A different generation can legitimately restart its sequence at the
     // same value. The retired generation must still lose its authority.
-    let successor = owner(5, 22, original.nonce);
+    let successor = DialogOwner {
+        nonce: original.nonce,
+        ..owner(5, 22)
+    };
     assert_ne!(original.attempt, successor.attempt);
     assert_eq!(original.nonce, successor.nonce);
     custody.reserve(original).expect("first panel");
@@ -131,8 +139,8 @@ fn retired_generation_suppresses_wire_reply_but_keeps_native_custody() {
 #[test]
 fn quiescence_without_outcome_or_retirement_is_not_a_release() {
     let mut custody = DialogCustody::default();
-    let original = owner(1, 7, 1);
-    let successor = owner(1, 9, 2);
+    let original = owner(1, 7);
+    let successor = owner(1, 9);
     custody.reserve(original).expect("first panel");
     assert_eq!(
         custody.quiesced(original),
@@ -145,8 +153,8 @@ fn quiescence_without_outcome_or_retirement_is_not_a_release() {
 #[test]
 fn expiration_is_not_a_user_cancel_and_retains_capacity_until_native_drains() {
     let mut custody = DialogCustody::default();
-    let initial = owner(3, 7, 1);
-    let successor = owner(3, 8, 2);
+    let initial = owner(3, 7);
+    let successor = owner(3, 8);
     custody.reserve(initial).expect("first operation");
     assert!(custody.expire(initial));
     assert!(!custody.commit_native_result(initial));
