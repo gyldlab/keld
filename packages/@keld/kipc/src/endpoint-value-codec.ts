@@ -88,6 +88,11 @@ const NativeError = Error;
 const toNumber = Number;
 const toString = String;
 const toBigInt = BigInt;
+const boxedNumberValueOf = Number.prototype.valueOf;
+const boxedBooleanValueOf = Boolean.prototype.valueOf;
+const boxedStringValueOf = String.prototype.valueOf;
+const boxedBigIntValueOf = BigInt.prototype.valueOf;
+const boxedSymbolValueOf = Symbol.prototype.valueOf;
 const isArray = Array.isArray;
 const isView = ArrayBuffer.isView;
 const isFiniteNumber = Number.isFinite;
@@ -212,6 +217,13 @@ const brandProbes: [string, (value: object) => unknown][] = [
   ["WeakMap", (value) => apply(weakMapHas, value, [{}])],
   ["WeakSet", (value) => apply(weakSetHas, value, [{}])],
   ["ArrayBuffer", (value) => apply(arrayBufferByteLength, value, [])],
+  // Boxed primitives also carry internal slots. Their captured valueOf
+  // builtins refuse unbranded receivers without reading caller properties.
+  ["Number", (value) => apply(boxedNumberValueOf, value, [])],
+  ["Boolean", (value) => apply(boxedBooleanValueOf, value, [])],
+  ["String", (value) => apply(boxedStringValueOf, value, [])],
+  ["BigInt", (value) => apply(boxedBigIntValueOf, value, [])],
+  ["Symbol", (value) => apply(boxedSymbolValueOf, value, [])],
   ...(sharedBufferByteLength === undefined
     ? []
     : [
@@ -243,7 +255,7 @@ function isInstance(value: unknown, constructor: Function): boolean {
 }
 
 function forbiddenKey(key: string): boolean {
-  return key === "__proto__" || key === "constructor" || key === "prototype";
+  return key === "__proto__";
 }
 
 /** Proxy traps may execute, but a thrown trap never escapes as an untyped error. */

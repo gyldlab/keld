@@ -40,3 +40,62 @@ test("unsupported native values report a static type label", () => {
     ok: true,
   });
 });
+
+test("boxed native primitives refuse without reading caller-defined type getters", () => {
+  const cases: [object, string][] = [
+    [new Number(42), "Number"],
+    [new Boolean(false), "Boolean"],
+    [new String("abc"), "String"],
+    [Object(123n), "BigInt"],
+    [Object(Symbol("secret")), "Symbol"],
+  ];
+  let getterCalls = 0;
+  for (const [value, label] of cases) {
+    Object.defineProperty(value, "constructor", {
+      get() {
+        getterCalls++;
+        throw new Error("untrusted constructor getter");
+      },
+    });
+    Object.defineProperty(value, "valueOf", {
+      get() {
+        getterCalls++;
+        throw new Error("untrusted valueOf getter");
+      },
+    });
+    Object.defineProperty(value, Symbol.toStringTag, {
+      get() {
+        getterCalls++;
+        throw new Error("untrusted type tag getter");
+      },
+    });
+    let caught: unknown;
+    try {
+      encodeEndpointValue(value);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(CompatCodecError);
+    expect((caught as CompatCodecError).code).toBe("KELD-COMPAT-100");
+    expect((caught as CompatCodecError).kind).toBe("UnsupportedValue");
+    expect((caught as Error).message).toContain(`unsupported ${label} object`);
+
+    // A replaced prototype must not disguise the native internal slot.
+    Object.setPrototypeOf(value, null);
+    expect(() => encodeEndpointValue(value)).toThrow(`unsupported ${label}`);
+  }
+  expect(getterCalls).toBe(0);
+
+  class OrdinaryValue {
+    public field = 7;
+  }
+  expect(decodeEndpointValue(encodeEndpointValue(new OrdinaryValue()))).toEqual(
+    {
+      field: 7,
+    },
+  );
+  const forgedPrototype = Object.setPrototypeOf({ field: 9 }, Number.prototype);
+  expect(decodeEndpointValue(encodeEndpointValue(forgedPrototype))).toEqual({
+    field: 9,
+  });
+});

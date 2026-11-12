@@ -87,3 +87,71 @@ test("refusals ignore an inherited Error name setter installed by a trap", () =>
     ok: true,
   });
 });
+
+test("JSON constructor and prototype data keys round-trip without prototype pollution", () => {
+  const json = JSON.parse(
+    '{"constructor":42,"prototype":{"constructor":"nested","prototype":false}}',
+  );
+  const result = decodeEndpointValue(encodeEndpointValue(json)) as Record<
+    string,
+    unknown
+  >;
+  expect(result).toEqual(json);
+  expect(Object.getPrototypeOf(result)).toBe(Object.prototype);
+  expect(Object.hasOwn(result, "constructor")).toBe(true);
+  expect(Object.hasOwn(result, "prototype")).toBe(true);
+
+  const forbidden = JSON.parse('{"__proto__":{"polluted":true}}');
+  expect(() => encodeEndpointValue(forbidden)).toThrow("KELD-COMPAT-101");
+  expect(() =>
+    decodeEndpointValue(
+      Uint8Array.from([
+        7,
+        1,
+        0,
+        9,
+        0,
+        ...new TextEncoder().encode("__proto__"),
+        1,
+      ]),
+    ),
+  ).toThrow("KELD-COMPAT-101");
+  expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+});
+
+test("decoder defines JSON data keys without calling inherited setters", () => {
+  const originalConstructor = Object.getOwnPropertyDescriptor(
+    Object.prototype,
+    "constructor",
+  )!;
+  const originalPrototype = Object.getOwnPropertyDescriptor(
+    Object.prototype,
+    "prototype",
+  );
+  const wire = encodeEndpointValue(
+    JSON.parse('{"constructor":42,"prototype":false}'),
+  );
+  let setterCalls = 0;
+  let decoded: Record<string, unknown> | undefined;
+  try {
+    for (const key of ["constructor", "prototype"]) {
+      Object.defineProperty(Object.prototype, key, {
+        configurable: true,
+        set() {
+          setterCalls++;
+          throw new Error("inherited setter must not run");
+        },
+      });
+    }
+    decoded = decodeEndpointValue(wire) as Record<string, unknown>;
+  } finally {
+    Object.defineProperty(Object.prototype, "constructor", originalConstructor);
+    if (originalPrototype === undefined)
+      delete (Object.prototype as Record<string, unknown>).prototype;
+    else
+      Object.defineProperty(Object.prototype, "prototype", originalPrototype);
+  }
+  expect(setterCalls).toBe(0);
+  expect(decoded).toEqual({ constructor: 42, prototype: false });
+  expect(Object.getPrototypeOf(decoded)).toBe(Object.prototype);
+});
