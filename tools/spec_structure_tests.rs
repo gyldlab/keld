@@ -4720,7 +4720,7 @@ fn links_parse_as_commonmark_destinations() {
 
 #[test]
 fn id_tokens_respect_word_boundaries() {
-    let numbers = |line: &str| -> Vec<(&str, u32)> {
+    let numbers = |line: &str| -> Vec<(&str, String)> {
         id_tokens(&render_text(line).text)
             .into_iter()
             .map(|token| (token.kind, token.number))
@@ -4728,7 +4728,11 @@ fn id_tokens_respect_word_boundaries() {
     };
     assert_eq!(
         numbers("see AC-1/AC-2, (B-3)."),
-        [("AC", 1), ("AC", 2), ("B", 3)]
+        [
+            ("AC", "1".to_owned()),
+            ("AC", "2".to_owned()),
+            ("B", "3".to_owned())
+        ]
     );
     assert_eq!(numbers("CODE-T-1 and T-1x and x-U-2 and Q-3-b"), []);
     assert_eq!(numbers("https://example.com/AC-1 and D-Bus"), []);
@@ -5239,7 +5243,7 @@ fn a_rendered_line_keeps_its_role() {
         value_of("\u{200b}- - - Pin: y", "Pin", Spelling::Header).as_deref(),
         Some("y")
     );
-    assert_eq!(defined_id("*AC-1: a literal mark"), Some(("AC", 1)));
+    assert_eq!(defined_id("*AC-1: a literal mark"), Some(("AC", "1".to_owned())));
     let first = |text: &str| {
         let doc = Doc::parse("x.md", text);
         field_statements(&doc, 0, doc.line_count(), None)
@@ -5780,4 +5784,94 @@ fn task_dependencies_resolve_the_admitted_statement() {
         "- **Blocked by:**\n  ```text\n  B-1 and later\n  ```\n",
     );
     assert_only(&fixture, Rule::TaskFields, "malformed fenced dependency");
+}
+
+#[test]
+fn stable_id_numbers_keep_their_full_decimal_identity() {
+    for number in [
+        "0",
+        "4294967294",
+        "4294967295",
+        "4294967296",
+        "4294967297",
+        "9999999999999999999999999999999999999999",
+    ] {
+        let text = format!("D-{number}");
+        assert_eq!(parse_id(&text), Some(("D", number.to_owned(), text.len())));
+        let padded = format!("D-00{number}");
+        assert_eq!(
+            parse_id(&padded),
+            Some(("D", number.to_owned(), padded.len()))
+        );
+    }
+    for invalid in ["D-", "D-4294967296x", "D-4294967296-1"] {
+        assert_eq!(parse_id(invalid), None, "{invalid}");
+    }
+}
+
+#[test]
+fn oversized_ids_resolve_only_their_own_definition() {
+    let replace_design = |fixture: &Fixture, design: &str| {
+        fixture.replace(
+            SINGLE,
+            "## 4. Design\n\nnone\n",
+            &format!("## 4. Design\n\n{design}\n"),
+        );
+    };
+    for defined in ["4294967295", "4294967296", "4294967297"] {
+        let fixture = Fixture::new();
+        replace_design(&fixture, &format!("### D-{defined}: choice\n\nD-{defined}"));
+        assert!(fixture.rules().is_empty(), "{defined}: {:?}", fixture.rules());
+        for missing in ["4294967295", "4294967296", "4294967297"] {
+            if missing == defined {
+                continue;
+            }
+            let fixture = Fixture::new();
+            replace_design(
+                &fixture,
+                &format!("### D-{defined}: choice\n\nD-{missing}"),
+            );
+            assert_only(&fixture, Rule::IdDangling, missing);
+        }
+    }
+    let fixture = Fixture::new();
+    replace_design(
+        &fixture,
+        "### D-4294967296: first\n\nD-4294967297\n\n### D-4294967297: second\n\nD-4294967296",
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+    for duplicate in ["4294967296", "004294967296"] {
+        let fixture = Fixture::new();
+        replace_design(
+            &fixture,
+            &format!("### D-4294967296: first\n\n### D-{duplicate}: second"),
+        );
+        assert_only(&fixture, Rule::IdDuplicate, duplicate);
+    }
+    let fixture = Fixture::new();
+    replace_design(&fixture, "### D-4294967296: choice\n\n#99 D-4294967297");
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+}
+
+#[test]
+fn oversized_blocker_identity_is_shared_by_tasks_and_index() {
+    let fixture = Fixture::new();
+    fixture.replace(&format!("{DIR}/index.md"), "- B-1", "- B-4294967296");
+    fixture.replace(
+        &format!("{DIR}/delivery.md"),
+        "- **Blocked by:** B-1",
+        "- **Blocked by:** B-4294967296",
+    );
+    fixture.replace(
+        &format!("{DIR}/delivery.md"),
+        "### B-1: stop",
+        "### B-4294967296: stop",
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+    fixture.replace(
+        &format!("{DIR}/delivery.md"),
+        "- **Blocked by:** B-4294967296",
+        "- **Blocked by:** B-4294967297",
+    );
+    assert_only(&fixture, Rule::IdDangling, "a different oversized blocker");
 }

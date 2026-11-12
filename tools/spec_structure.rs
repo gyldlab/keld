@@ -2988,19 +2988,29 @@ fn is_word_byte(byte: u8) -> bool {
 #[derive(Debug, PartialEq, Eq)]
 struct IdToken {
     kind: &'static str,
-    number: u32,
+    number: String,
     legacy_form: bool,
     /// Preceded by `#n`, `KEL-n` or `GH-n`: another spec's ID.
     foreign: bool,
 }
 
+/// Decimal identity without a machine-width limit; preserve leading-zero equivalence.
+fn canonical_id_number(digits: &str) -> String {
+    let significant = digits.trim_start_matches('0');
+    if significant.is_empty() {
+        "0".to_owned()
+    } else {
+        significant.to_owned()
+    }
+}
+
 /// `AC-3`-style text at the start of `text`, returning its kind and number.
-fn parse_id(text: &str) -> Option<(&'static str, u32, usize)> {
+fn parse_id(text: &str) -> Option<(&'static str, String, usize)> {
     KINDS.iter().find_map(|(kind, _)| {
         let digits = text.strip_prefix(kind)?.strip_prefix('-')?;
         let width = digits.bytes().take_while(u8::is_ascii_digit).count();
-        // Too long to be a number is still an ID, so its fields are read.
-        let number = digits.get(..width)?.parse().unwrap_or(u32::MAX);
+        // Preserve every digit: oversized IDs still own fields and never alias.
+        let number = canonical_id_number(digits.get(..width)?);
         let end = kind.len() + 1 + width;
         let next = text.as_bytes().get(end).copied();
         (width > 0 && !next.is_some_and(|byte| is_word_byte(byte) || byte == b'-'))
@@ -3056,7 +3066,7 @@ fn id_tokens(line: &str) -> Vec<IdToken> {
                     if width > 0 && !next.is_some_and(is_word_byte) {
                         tokens.push(IdToken {
                             kind: "AC",
-                            number: digits[..width].parse().unwrap_or(0),
+                            number: canonical_id_number(&digits[..width]),
                             legacy_form: true,
                             foreign: foreign_prefix(&line[..at]),
                         });
@@ -3725,7 +3735,7 @@ fn part_table(index: &Doc, report: &mut Report) -> Vec<String> {
 
 /// The ID a heading defines: it opens the heading, whatever follows, so a differently
 /// worded restatement is still a second definition.
-fn defined_id(text: &str) -> Option<(&'static str, u32)> {
+fn defined_id(text: &str) -> Option<(&'static str, String)> {
     let (kind, number, _) = parse_id(text.trim_start_matches(LABEL_MARKS))?;
     Some((kind, number))
 }
@@ -3785,8 +3795,8 @@ fn check_definitions(
     docs: &[&Doc],
     report: &mut Report,
     task_references: &mut Vec<TaskReferences>,
-) -> BTreeMap<(&'static str, u32), Definition> {
-    let mut defined: BTreeMap<(&'static str, u32), Definition> = BTreeMap::new();
+) -> BTreeMap<(&'static str, String), Definition> {
+    let mut defined: BTreeMap<(&'static str, String), Definition> = BTreeMap::new();
     for doc in docs.iter().copied() {
         let headings = doc.headings();
         let mut section = None;
@@ -3803,7 +3813,7 @@ fn check_definitions(
                 .iter()
                 .find(|next| next.level <= heading.level || defined_id(next.text()).is_some())
                 .map_or(doc.line_count(), |next| next.index);
-            if let Some(previous) = defined.get(&(kind, number)) {
+            if let Some(previous) = defined.get(&(kind, number.clone())) {
                 report.add(
                     Rule::IdDuplicate,
                     &doc.rel,
@@ -3992,7 +4002,7 @@ fn check_fences(docs: &[&Doc], report: &mut Report) {
 
 fn check_references(
     docs: &[&Doc],
-    defined: &BTreeMap<(&'static str, u32), Definition>,
+    defined: &BTreeMap<(&'static str, String), Definition>,
     task_references: &[TaskReferences],
     report: &mut Report,
 ) {
@@ -4032,7 +4042,7 @@ fn check_references(
                             token.number
                         ),
                     );
-                } else if !defined.contains_key(&(token.kind, token.number)) {
+                } else if !defined.contains_key(&(token.kind, token.number.clone())) {
                     report.add(
                         Rule::IdDangling,
                         &doc.rel,
@@ -4052,7 +4062,7 @@ fn check_references(
 /// The index lists exactly the open blockers.
 fn check_open_blockers(
     index: &Doc,
-    defined: &BTreeMap<(&'static str, u32), Definition>,
+    defined: &BTreeMap<(&'static str, String), Definition>,
     report: &mut Report,
 ) {
     let headings = index.headings();
@@ -4062,16 +4072,16 @@ fn check_open_blockers(
     else {
         return;
     };
-    let blockers = |wanted: Option<bool>| -> BTreeSet<u32> {
+    let blockers = |wanted: Option<bool>| -> BTreeSet<String> {
         defined
             .iter()
             .filter(|((kind, _), definition)| *kind == "B" && definition.open == wanted)
-            .map(|((_, number), _)| *number)
+            .map(|((_, number), _)| number.clone())
             .collect()
     };
     let open = blockers(Some(true));
     let unsettled = blockers(None);
-    let listed: BTreeSet<u32> = (headings[at].index + 1..index.body_end(headings, at))
+    let listed: BTreeSet<String> = (headings[at].index + 1..index.body_end(headings, at))
         .filter_map(|line| index.line(line).prose())
         .flat_map(|line| id_tokens(&line.text))
         .filter(|token| token.kind == "B" && !token.foreign)
