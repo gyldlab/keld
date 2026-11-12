@@ -810,6 +810,39 @@ fn validate_cargo_ancestor_configuration(source: &Path) -> Result<(), BuildError
     Ok(())
 }
 
+/// Reject recursive Git object stores that Git would otherwise follow through
+/// objects/info/alternates. This metadata-only check does not read the file's
+/// potentially sensitive path contents. It narrows one developer input, but
+/// concurrent object-store mutation is still not hermetically excluded.
+fn reject_recursive_object_alternates(objects: &Path) -> Result<(), BuildError> {
+    let info = objects.join("info");
+    match fs::symlink_metadata(&info) {
+        Ok(metadata) if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 => {
+            return Err(failure(
+                "Git recursive alternates",
+                "reparse info directory refused",
+            ));
+        }
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(failure(
+                "Git recursive alternates",
+                "non-directory info refused",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(failure("Git recursive alternates", error)),
+    }
+    match fs::symlink_metadata(info.join("alternates")) {
+        Ok(_) => Err(failure(
+            "Git recursive alternates",
+            "unmeasured objects/info/alternates refused",
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(failure("Git recursive alternates", error)),
+    }
+}
+
 /// Select and retain one explicit x64-hosted native MSVC linker. Cargo's
 /// Windows target otherwise resolves `link.exe` through mutable PATH, where
 /// Git for Windows also installs an unrelated executable with that name.
@@ -1072,6 +1105,9 @@ pub(super) fn prepare(
     // It never parses or follows a caller-controlled gitdir indirection file.
     directory_pins.extend(pin_directories(&request.source.join(".git"))?);
     directory_pins.extend(pin_directories(&request.source.join(".git/objects"))?);
+    // Git can recursively follow an unmeasured external object store through
+    // objects/info/alternates even with one explicit alternate in the child.
+    reject_recursive_object_alternates(&request.source.join(".git/objects"))?;
     let parent = request
         .session
         .parent()
@@ -1731,6 +1767,25 @@ mod tests {
         drop(guards);
         fs::rename(sibling.path(), target.join("new-root-child"))
             .expect("released positive control");
+    }
+
+    #[test]
+    fn git_recursive_object_alternates_are_refused_before_source_execution() {
+        let temporary = tempfile::tempdir().expect("owned synthetic Git object fixture");
+        let objects = temporary.path().join("objects");
+        let info = objects.join("info");
+        fs::create_dir_all(&info).expect("synthetic object info");
+        reject_recursive_object_alternates(&objects).expect("clean object store");
+        let external = info.join("alternates");
+        fs::write(&external, b"D:/external-unmeasured-objects\n")
+            .expect("write nonsecret synthetic alternate reference");
+        let error = reject_recursive_object_alternates(&objects)
+            .expect_err("unmeasured recursive Git object store must fail closed");
+        assert!(error.to_string().contains("Git recursive alternates"));
+        // A directory used in place of the alternate file is also an input.
+        fs::remove_file(&external).expect("remove only owned test fixture");
+        fs::create_dir(&external).expect("synthetic directory instead of alternate file");
+        assert!(reject_recursive_object_alternates(&objects).is_err());
     }
 
     #[test]
