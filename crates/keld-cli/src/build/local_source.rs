@@ -783,6 +783,33 @@ fn validate_developer_cache(root: &Path) -> Result<(), BuildError> {
     Ok(())
 }
 
+/// Cargo walks from its manifest directory towards the volume root and can
+/// load .cargo/config(.toml) outside the materialized, measured source tree.
+/// Refuse any existing ancestor configuration before invoking Cargo, without
+/// opening its potentially sensitive contents. This removes one ambient input;
+/// compiler/linker/build-script inputs still prevent hermetic release claims.
+fn validate_cargo_ancestor_configuration(source: &Path) -> Result<(), BuildError> {
+    let parent = source
+        .parent()
+        .ok_or_else(|| failure("ambient Cargo configuration", "source parent missing"))?;
+    for ancestor in parent.ancestors() {
+        for name in ["config", "config.toml"] {
+            let path = ancestor.join(".cargo").join(name);
+            match fs::symlink_metadata(&path) {
+                Ok(_) => {
+                    return Err(failure(
+                        "ambient Cargo configuration",
+                        "unmeasured ancestor .cargo/config detected; isolated compiler refused",
+                    ));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(failure("ambient Cargo configuration", error)),
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) struct Request {
     pub(super) source: PathBuf,
     pub(super) commit: String,
@@ -1401,6 +1428,9 @@ pub(super) fn prepare(
             recipe_digest.update(unit.to_le_bytes());
         }
     }
+    // Cargo would otherwise search unmeasured .cargo/config(.toml) in every
+    // ancestor of the private source checkout. Refuse before starting Cargo.
+    validate_cargo_ancestor_configuration(&source)?;
     // Retained source/tool pins remain alive. Never print arbitrary compiler diagnostics.
     // create_new refuses replacement; the enclosing session has retained private ancestry.
     let mut diagnostic = OpenOptions::new()
@@ -1667,6 +1697,31 @@ mod tests {
         drop(guards);
         fs::rename(sibling.path(), target.join("new-root-child"))
             .expect("released positive control");
+    }
+
+    #[test]
+    fn isolated_source_refuses_ambient_cargo_configuration_in_parent_directories() {
+        let temporary = tempfile::tempdir().expect("isolated source fixture");
+        let source = temporary.path().join("session").join("source");
+        fs::create_dir_all(&source).expect("source fixture");
+        validate_cargo_ancestor_configuration(&source).expect("clean ancestry");
+        let ambient = temporary.path().join(".cargo");
+        fs::create_dir(&ambient).expect("ambient Cargo directory");
+        for name in ["config", "config.toml"] {
+            let path = ambient.join(name);
+            fs::write(&path, b"[build]\nrustflags = ['--cfg=ambient_injection']\n")
+                .expect("write only owned nonsecret regression input");
+            assert!(
+                validate_cargo_ancestor_configuration(&source).is_err(),
+                "parent {name} must not influence the isolated build"
+            );
+            fs::remove_file(path).expect("remove owned regression input");
+        }
+        // Cargo config inside the materialized source is part of the measured source.
+        let tracked = source.join(".cargo");
+        fs::create_dir(&tracked).expect("tracked source config directory");
+        fs::write(tracked.join("config.toml"), b"[build]\n").expect("write tracked fixture");
+        validate_cargo_ancestor_configuration(&source).expect("source config is not ambient");
     }
 
     #[test]
