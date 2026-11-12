@@ -19,6 +19,7 @@ pub mod bootstrap;
 pub mod call_error;
 pub mod channel_table;
 pub mod codec;
+pub mod compat_control;
 pub mod echo;
 pub mod frame;
 pub mod guard_dispatch;

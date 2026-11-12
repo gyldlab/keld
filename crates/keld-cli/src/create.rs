@@ -253,6 +253,11 @@ mod tests {
         for name in ["formatted-app".to_owned(), "a".repeat(100)] {
             let dir = tempfile::tempdir().expect("tempdir");
             let root = create_project(dir.path(), &name).expect("create app");
+            // Model an independent application repository. Managed test temp
+            // directories can sit beneath KELD's ignored .keld-work tree; without
+            // this boundary the formatter silently excludes every fixture file
+            // and even the deliberately unformatted negative control passes.
+            fs::create_dir(root.join(".git")).expect("independent formatter fixture boundary");
             let run = |script: &str| {
                 Command::new("bun")
                     .args(["run", script])

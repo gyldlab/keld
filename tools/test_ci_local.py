@@ -17,6 +17,29 @@ import ci_inputs
 import ci_local
 
 
+def native_ci_bash() -> str:
+    """Use the actual CI Bash, never the unrelated Windows WSL bash.exe.
+
+    On Windows Git for Windows owns the repository operations in this test.
+    Its installed bin/bash.exe is selected from the same installed git.exe,
+    rather than using the first system-wide bash command on PATH.
+    """
+    if os.name == "nt":
+        git_exe = shutil.which("git.exe")
+        if git_exe is None:
+            raise RuntimeError("native Git for Windows is required by router tests")
+        shell = Path(git_exe).parent.parent / "bin" / "bash.exe"
+        if not shell.is_file():
+            raise RuntimeError("Git for Windows bash.exe is missing beside git.exe")
+        return str(shell)
+    if sys.platform == "darwin":
+        return "/bin/bash"
+    shell = shutil.which("bash")
+    if shell is None:
+        raise RuntimeError("native CI Bash is missing")
+    return shell
+
+
 def tracked_snapshot(source: Path, destination: Path) -> None:
     """Make a real Git fixture from tracked working bytes, without touching source.
 
@@ -420,9 +443,26 @@ class SelectionTests(unittest.TestCase):
 class FmtIncludedBashCompatibilityTests(unittest.TestCase):
     """Exercise the production Rust discovery helper without Bash's mapfile builtin."""
 
+    @unittest.skipUnless(os.name == "nt", "Windows Git Bash selection only")
+    def test_native_ci_bash_does_not_accept_wsl_launcher_from_path(self):
+        actual = native_ci_bash()
+        self.assertTrue(Path(actual).is_file())
+        original_which = shutil.which
+        # A Windows WSL alias can precede Git Bash in a caller's PATH. The
+        # helper must derive Bash from the same Git executable, not that alias.
+        with unittest.mock.patch(
+            "shutil.which",
+            side_effect=lambda command: (
+                r"C:\Windows\System32\bash.exe"
+                if command == "bash"
+                else original_which(command)
+            ),
+        ):
+            self.assertEqual(native_ci_bash(), actual)
+
     def test_fmt_included_supports_bash_without_mapfile(self):
         source = Path(__file__).resolve().parent.parent
-        bash = "/bin/bash" if sys.platform == "darwin" else shutil.which("bash")
+        bash = native_ci_bash()
         self.assertTrue(bash, "formatter compatibility coverage requires Bash")
         with tempfile.TemporaryDirectory(prefix="keld-fmt-included-bash-") as temporary:
             root = Path(temporary)
@@ -474,7 +514,7 @@ class ExecutorTests(SelectionTests):
 
     def run_production_typescript(self, failure=""):
         source = Path(__file__).resolve().parent.parent
-        bash = shutil.which("bash")
+        bash = native_ci_bash()
         self.assertIsNotNone(bash, "recipe tests require the same Bash used by CI")
         with tempfile.TemporaryDirectory(prefix="keld-ci-typescript-") as temporary:
             root = Path(temporary)
@@ -536,11 +576,21 @@ class ExecutorTests(SelectionTests):
                        "packages/@keld/api/src/echo.generated.ts",
                        "packages/@keld/api/src/fs.generated.ts",
                        "packages/@keld/api/src/auth.generated.ts",
+                       "packages/@keld/api/src/menu.generated.ts",
+                       "packages/@keld/api/src/dialog.generated.ts",
+                       "packages/@keld/api/src/window-codec.ts",
+                       "packages/@keld/kipc/src/runtime-process.generated.ts",
+                       "packages/@keld/kipc/src/compat-control.generated.ts",
                        "packages/@keld/kipc/src/transport.ts"]
             for relative in outputs + ["justfile", "bunfig.toml", "tools/fmt_included.sh",
                     "packages/@keld/kipc/scripts/echo-codegen.ts",
+                    "packages/@keld/kipc/scripts/menu-codegen.ts",
+                    "packages/@keld/kipc/src/launch-facts.ts",
                     "crates/keld-ipc/src/echo.rs", "crates/keld-ipc/src/channel_table.rs",
-                    "crates/keld-native/src/fs.rs", "crates/keld-native/src/auth/mod.rs"]:
+                    "crates/keld-ipc/src/lifecycle.rs", "crates/keld-ipc/src/window.rs",
+                    "crates/keld-ipc/src/compat_control.rs",
+                    "crates/keld-native/src/fs.rs", "crates/keld-native/src/auth/mod.rs",
+                    "crates/keld-native/src/menu.rs", "crates/keld-native/src/dialog.rs"]:
                 destination = root / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source / relative, destination)
@@ -659,7 +709,7 @@ class ExecutorTests(SelectionTests):
 class RouterFailureBoundaryTests(unittest.TestCase):
     def test_real_github_and_local_entrypoints_never_publish_after_helper_failure(self):
         source = Path(__file__).resolve().parent
-        bash = shutil.which("bash")
+        bash = native_ci_bash()
         self.assertIsNotNone(bash, "router tests require the same Bash used by CI")
         for fault in ("helper-exit", "[]", "null", "42", "invalid"):
             with self.subTest(fault=fault), tempfile.TemporaryDirectory(prefix="keld-ci-boundary-") as temporary:
@@ -728,7 +778,7 @@ class ProductionConsumerTests(unittest.TestCase):
 
             def route(path):
                 return subprocess.run(
-                    ["bash", "tools/ci_changes.sh", "classify"],
+                    [native_ci_bash(), "tools/ci_changes.sh", "classify"],
                     cwd=root,
                     input=(path + "\0").encode(),
                     capture_output=True,
@@ -940,7 +990,7 @@ class ProductionConsumerTests(unittest.TestCase):
             environment.pop("GITHUB_OUTPUT", None)
             environment.update(KELD_CI_EVENT_NAME="pull_request", KELD_CI_BASE_SHA=base,
                                KELD_CI_HEAD_SHA=head)
-            result = subprocess.run([shutil.which("bash"), "tools/ci_changes.sh", "github"],
+            result = subprocess.run([native_ci_bash(), "tools/ci_changes.sh", "github"],
                                     cwd=root, env=environment, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             selection = dict(line.split("=", 1) for line in result.stdout.splitlines())
@@ -952,7 +1002,7 @@ class ProductionConsumerTests(unittest.TestCase):
             subprocess.run(["git", "commit", "-qam", "shared and owned edit"], cwd=root, check=True, capture_output=True)
             environment["KELD_CI_HEAD_SHA"] = subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
-            result = subprocess.run([shutil.which("bash"), "tools/ci_changes.sh", "github"],
+            result = subprocess.run([native_ci_bash(), "tools/ci_changes.sh", "github"],
                                     cwd=root, env=environment, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             selection = dict(line.split("=", 1) for line in result.stdout.splitlines())

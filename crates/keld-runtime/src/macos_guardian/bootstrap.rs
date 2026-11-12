@@ -232,6 +232,30 @@ impl GuardianBootstrap {
     ) -> Result<GuardedPrimary, RuntimeError> {
         self.register_guarded_primary_until_inner(
             deadline,
+            false,
+            #[cfg(test)]
+            None,
+        )
+    }
+
+    /// Requires the qualified primary's runtime facts before its bound handoff.
+    ///
+    /// The existing authenticated role admission consumes and acknowledges Init
+    /// before returning a generation. Select this only when the canonical preload
+    /// awaits that acknowledgment before application dependencies. Native UI
+    /// readiness and permission admission remain separate.
+    ///
+    /// # Errors
+    ///
+    /// Returns the existing registration errors, or a later generation admission
+    /// failure when runtime facts are missing, malformed or exceed their deadline.
+    pub fn register_guarded_primary_with_runtime_process_facts_until(
+        self,
+        deadline: Instant,
+    ) -> Result<GuardedPrimary, RuntimeError> {
+        self.register_guarded_primary_until_inner(
+            deadline,
+            true,
             #[cfg(test)]
             None,
         )
@@ -243,12 +267,13 @@ impl GuardianBootstrap {
         deadline: Instant,
         fence: super::generation_host::GenerationRegistrationFence,
     ) -> Result<GuardedPrimary, RuntimeError> {
-        self.register_guarded_primary_until_inner(deadline, Some(fence))
+        self.register_guarded_primary_until_inner(deadline, false, Some(fence))
     }
 
     fn register_guarded_primary_until_inner(
         mut self,
         deadline: Instant,
+        require_runtime_process_facts: bool,
         #[cfg(test)] registration_fence: Option<
             super::generation_host::GenerationRegistrationFence,
         >,
@@ -307,6 +332,7 @@ impl GuardianBootstrap {
             quit_ack_reader,
             control,
             deadline,
+            require_runtime_process_facts,
             #[cfg(test)]
             registration_fence,
         )

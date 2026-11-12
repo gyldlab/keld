@@ -729,7 +729,19 @@ fn consecutive_actual_public_auth_negative_quits_reap_real_hosts_without_graphic
     // first case retires and the second timed out; the same observer/CLI path
     // must stay reusable for the two later negative cases as well.
     for case in &CASES {
-        let _ = run_case(owned.path(), repo, &cli, &host, None, case)?;
+        if let Err(error) = run_case(owned.path(), repo, &cli, &host, None, case) {
+            // Keep only this test's owned diagnostic root on failure. The
+            // ordinary CLI stdout/stderr and phase journal are otherwise
+            // deleted by TempDir Drop before the root owner can classify a
+            // nonzero CLI exit. Preserve the original typed test failure.
+            let retained = owned.keep();
+            eprintln!(
+                "KELD_KEL89_QUIT_FAILURE_DIAGNOSTICS case={} retained_root={}",
+                case.name,
+                retained.display()
+            );
+            return Err(error);
+        }
     }
     Ok(())
 }
