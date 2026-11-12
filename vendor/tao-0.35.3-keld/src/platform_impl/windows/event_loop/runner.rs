@@ -774,7 +774,11 @@ mod gh1188_nested_redraw_tests {
       runner.send_event(Event::UserEvent(1));
       assert_eq!(
         &*seen.borrow(),
-        &[("new-events", false), ("main-cleared", true), ("redraw", true)]
+        &[
+          ("new-events", false),
+          ("main-cleared", true),
+          ("redraw", true)
+        ]
       );
       runner.redraw_events_cleared();
     }
