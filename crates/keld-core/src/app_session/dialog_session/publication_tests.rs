@@ -39,7 +39,7 @@ fn terminal_write_loss(fault: Fault, outcome: MacDialogUiOutcome) {
         );
         handle.windows = Some(windows);
     }
-    prepare_terminal(&session, outcome);
+    let operation_sequence = prepare_terminal(&session, outcome);
     let (mut read_probe, reader_stop) = {
         let current = handle.current.lock().expect("current writer");
         let active = current.as_ref().expect("generation one");
@@ -56,7 +56,7 @@ fn terminal_write_loss(fault: Fault, outcome: MacDialogUiOutcome) {
     read_probe
         .shutdown(std::net::Shutdown::Write)
         .expect("fail outbound write only");
-    let coordinator = coordinate_terminal(&handle, outcome);
+    let coordinator = coordinate_terminal(&handle, operation_sequence, outcome);
     let mut retired_before_ack = false;
     let mut stopped_before_ack = false;
     let mut locks_released = false;
@@ -124,12 +124,12 @@ fn terminal_write_loss(fault: Fault, outcome: MacDialogUiOutcome) {
     assert_successor_roundtrip(&handle);
 }
 
-fn prepare_terminal(session: &DialogSession, outcome: MacDialogUiOutcome) {
+fn prepare_terminal(session: &DialogSession, outcome: MacDialogUiOutcome) -> u64 {
     // Parent admission/native presentation have separate tests. This cut owns
     // terminal publication only, so a parent lookup cannot mask the write fault.
     let owner = DialogOwner {
         parent: None,
-        ..original(701, 1)
+        ..original(701)
     };
     session
         .reserve(owner, options(), WebviewId(1))
@@ -141,17 +141,19 @@ fn prepare_terminal(session: &DialogSession, outcome: MacDialogUiOutcome) {
     session
         .record_native_outcome(owner, outcome, None)
         .expect("commit observed outcome");
+    owner.nonce
 }
 
 fn coordinate_terminal(
     handle: &app::PrimaryRouterHandle,
+    operation_sequence: u64,
     outcome: MacDialogUiOutcome,
 ) -> std::thread::JoinHandle<Result<(), app::HostAppError>> {
     let (events, receive) = mpsc::channel();
     events
         .send(app::AppWindowEvent::MacDialogFinished {
             attempt: 1,
-            nonce: 1,
+            nonce: operation_sequence,
             outcome,
         })
         .expect("actual coordinator event");
