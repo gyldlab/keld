@@ -6,8 +6,22 @@ use super::{
 use serde::Deserialize;
 use std::fs::File;
 use std::io::Read as _;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 const MAX_INPUT: u64 = 64 * 1024;
+
+/// The ephemeral test session may identify only absolute local-disk tools.
+/// In particular, UNC/network, device-namespace and traversing paths must not
+/// be admitted as executable or public-key locators before source preparation.
+/// This is a syntactic admission; retained file/namespace guards still apply.
+fn absolute_local_disk_locator(path: &Path) -> bool {
+    let mut components = path.components();
+    matches!(
+        components.next(),
+        Some(Component::Prefix(prefix))
+            if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+    ) && matches!(components.next(), Some(Component::RootDir))
+        && components.all(|part| matches!(part, Component::Normal(_)))
+}
 fn refuse(e: impl std::fmt::Display) -> BuildError {
     BuildError::input("Windows local-test build", e)
 }
@@ -67,9 +81,9 @@ fn parse_session(bytes: &[u8]) -> Result<TestSession, BuildError> {
         &session.sign_tool.path,
         &session.release_public_key,
     ] {
-        if !path.is_absolute() {
+        if !absolute_local_disk_locator(path) {
             return Err(refuse(
-                "session tools and public-key locators must be absolute",
+                "session tools and public-key locators must be absolute local-disk paths without traversal",
             ));
         }
     }
@@ -92,6 +106,9 @@ fn resolve(root: &Path, path: &Path) -> Result<PathBuf, BuildError> {
         return Err(refuse("noncanonical build locator"));
     }
     if path.is_absolute() {
+        if !absolute_local_disk_locator(path) {
+            return Err(refuse("absolute build locator must be on a local disk"));
+        }
         Ok(path.to_owned())
     } else if path
         .components()
@@ -200,6 +217,33 @@ mod tests {
             bad["outputNonce"] = serde_json::json!(nonce);
             assert!(parse_session(&serde_json::to_vec(&bad).unwrap()).is_err());
         }
+    }
+    #[test]
+    fn local_test_session_refuses_network_and_traversing_tool_locators() {
+        let good = session();
+        for unsafe_path in [
+            r"\\server\share\git.exe",
+            r"\\?\UNC\server\share\git.exe",
+            "D:/tools/../git.exe",
+            "D:tools/git.exe",
+        ] {
+            for key in ["git", "cargo", "rustc", "cargoHome", "releasePublicKey"] {
+                let mut bad = good.clone();
+                bad[key] = serde_json::json!(unsafe_path);
+                assert!(
+                    parse_session(&serde_json::to_vec(&bad).unwrap()).is_err(),
+                    "{key} accepted an unqualified Windows locator"
+                );
+            }
+            let mut bad = good.clone();
+            bad["signTool"]["path"] = serde_json::json!(unsafe_path);
+            assert!(
+                parse_session(&serde_json::to_vec(&bad).unwrap()).is_err(),
+                "signTool accepted an unqualified Windows locator"
+            );
+        }
+        assert!(resolve(Path::new("D:/project"), Path::new(r"\\server\share\out")).is_err());
+        assert!(resolve(Path::new("D:/project"), Path::new("E:/out/../other")).is_err());
     }
     #[test]
     fn stale_host_commit_cannot_replace_selected_integrated_source() {
