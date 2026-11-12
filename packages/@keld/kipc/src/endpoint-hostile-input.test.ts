@@ -52,7 +52,7 @@ test("refusal checks the error from exactly one invocation", () => {
       calls += 1;
       if (calls === 1) throw new Error("KELD-COMPAT-101");
       throw typed;
-    }, "KELD-COMPAT-101")
+    }, "KELD-COMPAT-101"),
   ).toThrow();
   expect(calls).toBe(1);
 });
