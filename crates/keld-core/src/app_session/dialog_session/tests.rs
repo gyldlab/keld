@@ -32,12 +32,18 @@ fn with_manifest(
 
 // This is the admitted operation sequence scoped to an authenticated role
 // generation. It is a replay/cancellation identifier, not cryptographic keying.
-fn original(correlation: u32, operation_sequence: u64) -> DialogOwner {
+// Generate distinct test operations; wrong-sequence paths borrow another owner.
+fn next_operation_sequence() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+fn original(correlation: u32) -> DialogOwner {
     DialogOwner {
         identity: PrimaryLinkIdentity::Fixture,
         attempt: 1,
         correlation: CorrelationId(correlation),
-        nonce: operation_sequence,
+        nonce: next_operation_sequence(),
         parent: Some(WindowRef {
             id: WindowId(1),
             incarnation: WindowGeneration(1),
@@ -193,8 +199,8 @@ fn retiring_fs_only_generation_without_a_dialog_must_not_enqueue_native_ui_wake(
 fn dialog_cancel_at_capacity_keeps_distinct_original_and_cancel_correlations() {
     let (session, wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
     session.authorize().expect("verified exact dialog grant");
-    let first = original(7, 9);
-    let successor = original(8, 10);
+    let first = original(7);
+    let successor = original(8);
     assert_ne!(first.nonce, successor.nonce);
     session
         .reserve(first, options(), WebviewId(3))
@@ -284,8 +290,8 @@ fn dialog_cancel_at_capacity_keeps_distinct_original_and_cancel_correlations() {
 #[test]
 fn dialog_committed_native_result_wins_before_late_cancel_and_role_retirement() {
     let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
-    let first = original(15, 17);
-    let successor = original(16, 18);
+    let first = original(15);
+    let successor = original(16);
     assert_ne!(first.nonce, successor.nonce);
     session
         .reserve(first, options(), WebviewId(2))
@@ -357,7 +363,7 @@ fn dialog_committed_native_result_wins_before_late_cancel_and_role_retirement() 
 #[test]
 fn appkit_observed_native_click_is_terminal_before_event_coordinator_receives_it() {
     let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
-    let first = original(22, 25);
+    let first = original(22);
     session
         .reserve(first, options(), WebviewId(3))
         .expect("reserve one effect");
