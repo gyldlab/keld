@@ -25,13 +25,32 @@ def native_ci_bash() -> str:
     rather than using the first system-wide bash command on PATH.
     """
     if os.name == "nt":
+        # Git Bash can present a POSIX git.exe pathname, or a test fixture can
+        # put its own git shim first in PATH. Neither is authority to select
+        # Windows System32's unrelated WSL bash launcher.
+        candidates = []
         git_exe = shutil.which("git.exe")
-        if git_exe is None:
-            raise RuntimeError("native Git for Windows is required by router tests")
-        shell = Path(git_exe).parent.parent / "bin" / "bash.exe"
-        if not shell.is_file():
-            raise RuntimeError("Git for Windows bash.exe is missing beside git.exe")
-        return str(shell)
+        if git_exe is not None:
+            git_path = Path(git_exe)
+            if git_path.is_file():
+                candidates.extend([
+                    git_path.parent.parent / "bin" / "bash.exe",
+                    git_path.parent.parent.parent / "bin" / "bash.exe",
+                ])
+        # Resolve the native Git installation, not a possibly shadowed
+        # subprocess PATH entry. A missing installation must fail closed.
+        for variable in ("ProgramFiles", "ProgramFiles(x86)"):
+            program_files = os.environ.get(variable)
+            if program_files:
+                git_root = Path(program_files) / "Git"
+                if (git_root / "cmd" / "git.exe").is_file() or (
+                    git_root / "bin" / "git.exe"
+                ).is_file():
+                    candidates.append(git_root / "bin" / "bash.exe")
+        for shell in candidates:
+            if shell.is_file():
+                return str(shell)
+        raise RuntimeError("native Git for Windows bash.exe is unavailable")
     if sys.platform == "darwin":
         return "/bin/bash"
     shell = shutil.which("bash")
@@ -454,6 +473,19 @@ class FmtIncludedBashCompatibilityTests(unittest.TestCase):
             "shutil.which",
             side_effect=lambda command: (
                 r"C:\Windows\System32\bash.exe"
+                if command == "bash"
+                else original_which(command)
+            ),
+        ):
+            self.assertEqual(native_ci_bash(), actual)
+        # A test fixture's fake Git executable must not divert selection to
+        # a similarly named path or cause unrelated WSL launch.
+        with unittest.mock.patch(
+            "shutil.which",
+            side_effect=lambda command: (
+                r"C:\Windows\System32\git.exe"
+                if command == "git.exe"
+                else r"C:\Windows\System32\bash.exe"
                 if command == "bash"
                 else original_which(command)
             ),
