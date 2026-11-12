@@ -517,13 +517,18 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
 **Current versus proposed:** `keld-pack` implements the separately scoped Windows
 update/container primitives; format names alone do not implement installers.
 [GH-1404's draft local macOS successor](../specs/macos-local-app-packaging.md)
-proposes native Apple `codesign` and `hdiutil` for a local ad-hoc `.app`/DMG,
-with a new reviewed installed-bundle admission contract. It is not yet approved or
-implemented, and it does not weaken publisher identity, Strict or public-release
-requirements. The formats and cross-host signing below remain longer-term targets;
-the future Windows/Linux packaging records [GH-1405](https://github.com/gyldlab/keld/issues/1405)
-and [GH-1406](https://github.com/gyldlab/keld/issues/1406) are design-only and defer
-their implementation and final installer-format choices.
+specifies native Apple `codesign` and `hdiutil` for a local ad-hoc `.app`/DMG,
+with a separately reviewed installed-bundle admission contract. The exact
+specification received [delegated implementation approval](https://github.com/gyldlab/keld/pull/1407#pullrequestreview-5787262030)
+at `3c490596`, but still declares `Status: draft` without a recorded personal
+human sign-off. [GH-1404](https://github.com/gyldlab/keld/issues/1404)
+tracks implementation separately. This documentation PR contains no macOS
+packaging implementation or installed-artifact acceptance; its do-not-merge
+restriction remains. The design does not weaken publisher identity, Strict or
+public-release requirements. The formats and cross-host signing below remain
+longer-term targets; [GH-1405](https://github.com/gyldlab/keld/issues/1405)
+and [GH-1406](https://github.com/gyldlab/keld/issues/1406)
+remain design-only records for deferred Windows/Linux packaging decisions.
 
 - Formats: macOS `.app`/`.dmg` (+ notarization via rcodesign — pure Rust, no Xcode
   needed for CI), Windows NSIS + MSI (WiX-free Rust authoring, Deno proved viability),
