@@ -36,6 +36,7 @@ test("unsupported native values report a static type label", () => {
   }
   const stripped = Object.setPrototypeOf(new Map(), null);
   expect(() => encodeEndpointValue(stripped)).toThrow("unsupported Map");
-  expect(decodeEndpointValue(encodeEndpointValue({ ok: true })))
-    .toEqual({ ok: true });
+  expect(decodeEndpointValue(encodeEndpointValue({ ok: true }))).toEqual({
+    ok: true,
+  });
 });

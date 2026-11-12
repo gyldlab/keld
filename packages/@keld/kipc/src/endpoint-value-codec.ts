@@ -212,10 +212,12 @@ const brandProbes: [string, (value: object) => unknown][] = [
   ["ArrayBuffer", (value) => apply(arrayBufferByteLength, value, [])],
   ...(sharedBufferByteLength === undefined
     ? []
-    : [[
-      "SharedArrayBuffer",
-      (value: object) => apply(sharedBufferByteLength, value, []),
-    ] as [string, (value: object) => unknown]]),
+    : [
+      [
+        "SharedArrayBuffer",
+        (value: object) => apply(sharedBufferByteLength, value, []),
+      ] as [string, (value: object) => unknown],
+    ]),
 ];
 
 function nativeBrandName(value: object): string | undefined {
