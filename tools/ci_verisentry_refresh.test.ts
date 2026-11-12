@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { generateRefreshCensus } from "./ci_provenance_codegen";
 
 const refreshSource = readFileSync(
   ".github/workflows/ci-verisentry-refresh.yml",
@@ -218,9 +219,9 @@ function scenario(
             data: {
               base_commit: { sha: options.compareBase ?? base },
               merge_base_commit: { sha: mergeBaseSha },
-              files: options.files ?? [
+              files: (options.files ?? [
                 { filename: "docs/normal.md", status: "modified" },
-              ],
+              ]).slice(0, 300),
             },
           };
         },
@@ -930,4 +931,53 @@ test("cross-batch duplicate parent commits are denied even if other PR list merg
     ),
   ).toBe(false);
   expect(s.statuses.length).toBeGreaterThan(0);
+});
+
+test("refresh census is generated from the automatic verifier's sole source", () => {
+  expect(generateRefreshCensus(trustedSource, refreshSource)).toBe(refreshSource);
+  const marker = "const immutableChangedPaths = async";
+  const changedOwner = trustedSource.replace(marker, "// owner change\n            " + marker);
+  const changedOutput = generateRefreshCensus(changedOwner, refreshSource);
+  expect(changedOutput).not.toBe(refreshSource);
+  expect(generateRefreshCensus(changedOwner, changedOutput)).toBe(changedOutput);
+  const manualEdit = refreshSource.replace(marker, "// manual edit\n            " + marker);
+  expect(generateRefreshCensus(trustedSource, manualEdit)).toBe(refreshSource);
+});
+
+test("census generation rejects missing and duplicate markers", () => {
+  const marker = "            // __IMMUTABLE_CHANGED_PATHS_BEGIN__";
+  expect(() => generateRefreshCensus("", refreshSource)).toThrow("one complete");
+  expect(() => generateRefreshCensus(trustedSource, "")).toThrow("one complete");
+  expect(() =>
+    generateRefreshCensus(trustedSource + "\n" + marker, refreshSource),
+  ).toThrow("one complete");
+  expect(() =>
+    generateRefreshCensus(trustedSource, refreshSource + "\n" + marker),
+  ).toThrow("one complete");
+});
+
+test("refresh tree census rechecks a 300-file count before App publication", async () => {
+  const files = Array.from({ length: 300 }, (_, i) => ({
+    filename: `docs/tree-${i}.md`,
+    status: "added",
+  }));
+  const initial = {
+    number: 345,
+    state: "open",
+    changed_files: 300,
+    base: { ref: "main", sha: base, repo: { full_name: "gyldlab/keld" } },
+    head: { sha: head },
+    mergeable: true,
+    merge_commit_sha: merge,
+  };
+  const changed = { ...initial, changed_files: 301 };
+  const s = scenario({
+    changedFiles: 300,
+    files,
+    readSequence: [initial, changed, changed],
+  });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.getTreeReads()).toBe(2);
+  expect(s.statuses).toHaveLength(0);
+  expect(s.failures).toHaveLength(1);
 });

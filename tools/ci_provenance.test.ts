@@ -773,3 +773,18 @@ test("review-state changes cannot authorize a protected CI edit without a truste
   expect(code).not.toContain("listReviews");
   expect(f.outputs).toEqual({});
 });
+
+test("tree census rechecks a 300-file count after enumeration", async () => {
+  const files = Array.from({ length: 300 }, (_, i) => ({
+    filename: `docs/tree-${i}.md`,
+    status: "added",
+  }));
+  const f = fixture(files, {
+    head: "a".repeat(40),
+    base: "b".repeat(40),
+    comparisonFiles: files.slice(0, 300),
+    changedCountOnSecondFetch: 301,
+  });
+  await expect(f.run()).rejects.toThrow("changed PR file count during verification");
+  expect(f.getTrees()).toBe(2);
+});

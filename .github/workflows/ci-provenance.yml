@@ -77,6 +77,8 @@ jobs:
                  files.length >= 300)) {
               throw new Error("CI provenance refuses an incomplete or truncated file list");
             }
+            // Canonical census source. Regenerate the refresh copy with:
+            // bun tools/ci_provenance_codegen.ts --write
             // __IMMUTABLE_CHANGED_PATHS_BEGIN__
             const immutableChangedPaths = async (mergeBaseSha, headSha, expectedFiles) => {
               const isSha = (value) => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);

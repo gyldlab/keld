@@ -185,7 +185,8 @@ jobs:
                 p === ".clippy.toml" || p.endsWith("/.clippy.toml");
             };
             // __PROTECTED_PATH_POLICY_END__
-            // This implementation MUST match ci-provenance.yml byte-for-byte.
+            // Generated from ci-provenance.yml; do not edit this block directly.
+            // Regenerate: bun tools/ci_provenance_codegen.ts --write
             // __IMMUTABLE_CHANGED_PATHS_BEGIN__
             const immutableChangedPaths = async (mergeBaseSha, headSha, expectedFiles) => {
               const isSha = (value) => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
