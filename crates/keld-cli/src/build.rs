@@ -379,6 +379,48 @@ fn run_macos_native() -> Result<(), BuildError> {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pack_stages_one_exact_original_entry_source_before_graph_capture() {
+        let original = installed_generated_sources("src/main.mjs", true)
+            .expect("Host-selected original entry is canonical");
+        let ordinary = installed_generated_sources("src/main.mjs", false)
+            .expect("plain installed application keeps an inert template");
+        assert_eq!(original.len(), 4);
+        assert_eq!(ordinary.len(), 4);
+
+        let selected = keld_core::app_session::MACOS_LOCAL_RUNTIME_ENTRY_PATH;
+        for index in 0..3 {
+            assert_eq!(original[index].path, ordinary[index].path);
+            assert_eq!(original[index].bytes, ordinary[index].bytes);
+        }
+        assert_eq!(original[3].path, selected);
+        assert_eq!(ordinary[3].path, selected);
+        let selected_source = String::from_utf8(original[3].bytes.clone())
+            .expect("rendered original entry is exact UTF-8");
+        assert!(
+            selected_source
+                .contains("await bootHostSelectedEntry(() => import(\"./src/main.mjs\"));"),
+            "Pack must preserve the literal original import in its pre-sign copy"
+        );
+        assert!(!selected_source.contains("__KELD_SELECTED_ENTRY__"));
+        assert!(
+            String::from_utf8(ordinary[3].bytes.clone())
+                .expect("unchanged inert template")
+                .contains("__KELD_SELECTED_ENTRY__")
+        );
+        for invalid in [
+            "src/../other.mjs",
+            "src/malicious?query.mjs",
+            "src/main#fragment.mjs",
+        ] {
+            assert!(
+                installed_generated_sources(invalid, true).is_err(),
+                "producer must reject a runtime-sensitive original path: {invalid}"
+            );
+        }
+    }
+
     #[test]
     fn local_package_requires_explicit_legacy_policy_at_guard_boundary() {
         for (source, expect) in [
