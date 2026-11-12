@@ -2975,6 +2975,11 @@ fn empty_mermaid_manifest_skips_docker_and_render_output() {
         include_str!("mermaid_docs.rs"),
     )
     .expect("copy the canonical block parser");
+    fs::write(
+        checkout.join("tools/markdown_paths.rs"),
+        include_str!("markdown_paths.rs"),
+    )
+    .expect("copy canonical Markdown classifier");
     assert!(
         Command::new("git")
             .args(["add", "README.md", "tools/mermaid_docs.rs"])
@@ -3175,6 +3180,11 @@ fn write_msys_renderer_fixture(
         include_str!("mermaid_docs.rs"),
     )
     .expect("copy canonical Mermaid parser");
+    fs::write(
+        checkout.join("tools/markdown_paths.rs"),
+        include_str!("markdown_paths.rs"),
+    )
+    .expect("copy canonical Markdown classifier");
     fs::write(checkout.join(MERMAID_CONFIG), "{}\n").expect("renderer config");
     temp.write("renderer.sh", include_str!("mermaid_render_check.sh"));
     temp.write("bin/docker", docker);
@@ -4018,4 +4028,20 @@ fn job_level_keys_after_steps_are_found_and_nested_if_is_ignored() {
     );
     let nested_only = "  job:\n    steps:\n      - name: one\n        if: ${{ nested }}\n";
     assert_eq!(workflow_job_level_if(nested_only), None);
+}
+
+#[test]
+fn missing_mermaid_shared_classifier_freshness_fails() {
+    let temp = complete_fixture();
+    temp.write(
+        MERMAID_RENDERER,
+        &read(temp.path(), MERMAID_RENDERER)
+            .expect("renderer fixture")
+            .replace(
+                r#" || "$workspace/tools/markdown_paths.rs" -nt "$mermaid_docs""#,
+                "",
+            ),
+    );
+    let error = check(temp.path()).expect_err("stale shared classifier must fail");
+    assert!(error.contains("markdown_paths.rs"), "{error}");
 }

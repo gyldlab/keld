@@ -2777,7 +2777,7 @@ fn check_mermaid_gate_files(root: &Path) -> Result<(), String> {
         "MSYS2_ARG_CONV_EXCL='*'",
         "trap cleanup EXIT",
         r#"workspace=$(cd "$workspace" && pwd -P)"#,
-        r#"if [[ ! -x "$mermaid_docs" || "$workspace/tools/mermaid_docs.rs" -nt "$mermaid_docs" ]]; then"#,
+        r#"if [[ ! -x "$mermaid_docs" || "$workspace/tools/mermaid_docs.rs" -nt "$mermaid_docs" || "$workspace/tools/markdown_paths.rs" -nt "$mermaid_docs" ]]; then"#,
         r#"if [[ -L "$workspace/target" ]]; then"#,
         r#"render_parent=$(cd "$workspace/target" && pwd -P)"#,
         r#"[[ "$render_parent" == "$workspace/target" ]] || {"#,
