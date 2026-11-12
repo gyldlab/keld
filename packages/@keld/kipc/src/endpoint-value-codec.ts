@@ -50,22 +50,18 @@ const CODE: Record<CompatCodecErrorKind, string> = {
 
 /** Local, synchronous refusal. It is not a Host-dispatch certainty report. */
 export class CompatCodecError extends Error {
-  readonly code: string;
-  readonly kind: CompatCodecErrorKind;
+  readonly code!: string;
+  readonly kind!: CompatCodecErrorKind;
 
   constructor(kind: CompatCodecErrorKind, reason: string) {
     super(
       `${CODE[kind]}: ${kind}: ${reason}. Fix the endpoint value before sending it.`,
     );
-    // A caller trap can poison Error.prototype.name before normalization.
-    defineProperty(this, "name", {
-      value: "CompatCodecError",
-      configurable: true,
-      enumerable: true,
-      writable: true,
-    });
-    this.kind = kind;
-    this.code = CODE[kind];
+    // A caller trap can poison both inherited Error fields and descriptor
+    // names such as Object.prototype.get/set before normalization.
+    defineProperty(this, "name", ownDataDescriptor("CompatCodecError", true));
+    defineProperty(this, "kind", ownDataDescriptor(kind, true));
+    defineProperty(this, "code", ownDataDescriptor(CODE[kind], true));
   }
 }
 
@@ -77,6 +73,7 @@ const ownKeys = Reflect.ownKeys;
 const ownDescriptor = Object.getOwnPropertyDescriptor;
 const hasOwn = Object.hasOwn;
 const defineProperty = Object.defineProperty;
+const objectCreate = Object.create;
 const setProto = Object.setPrototypeOf;
 const hasInstance = Function.prototype[Symbol.hasInstance];
 const NativeArrayBuffer = ArrayBuffer;
@@ -154,6 +151,21 @@ const exoticConstructors: [Function, string][] = [
     ? []
     : [[Blob, "Blob"] as [Function, string]]),
 ];
+
+/** Define data slots with a null-prototype descriptor, immune to hostile
+ * inherited `get` or `set` properties on Object.prototype.
+ */
+function ownDataDescriptor(
+  value: unknown,
+  enumerable: boolean,
+): PropertyDescriptor {
+  const descriptor: PropertyDescriptor = objectCreate(null);
+  descriptor.value = value;
+  descriptor.configurable = true;
+  descriptor.enumerable = enumerable;
+  descriptor.writable = true;
+  return descriptor;
+}
 
 /**
  * Refusal identity belongs to one synchronous public operation. Hostile
@@ -549,6 +561,15 @@ class ValueWriter {
       return;
     }
 
+    // Native internal-slot probes run BEFORE the prototype-only Error branch.
+    // Otherwise a real Map whose prototype was grafted to Error.prototype
+    // could be serialized as an Error instead of a typed native refusal.
+    const exoticName = knownExoticName(value) ?? nativeBrandName(value);
+    if (exoticName === "Date") return this.date(value);
+    if (exoticName !== undefined)
+      reject("UnsupportedValue", `unsupported ${exoticName} object`);
+    // An unbranded Proxy<Date> may still inherit Date.prototype, but its
+    // captured getTime call cannot read [[DateValue]] and refuses in date().
     if (isInstance(value, NativeDate)) return this.date(value);
     if (isInstance(value, NativeError)) {
       const name = this.errorField(value, "name") ?? "Error";
@@ -564,13 +585,6 @@ class ValueWriter {
 
     // Class instances with own enumerable string data fields flatten to
     // ordinary records. Never invoke Symbol.toStringTag or toJSON as a probe.
-    // The internal-slot probes catch a native whose prototype was replaced and
-    // which the chain check above therefore cannot see.
-    const exoticName = knownExoticName(value) ?? nativeBrandName(value);
-    if (exoticName === "Date") return this.date(value);
-    if (exoticName !== undefined)
-      reject("UnsupportedValue", `unsupported ${exoticName} object`);
-
     const keys = checkedOwnKeys(value);
     if (keys.length > ENDPOINT_VALUE_NODES - this.visits)
       reject(
@@ -725,12 +739,11 @@ class ValueReader {
         // Define, do not push: an inherited indexed setter would otherwise
         // swallow the element while the array still reports its length.
         for (let i = 0; i < count; i++)
-          defineProperty(array, i, {
-            value: this.node(depth + 1),
-            configurable: true,
-            enumerable: true,
-            writable: true,
-          });
+          defineProperty(
+            array,
+            i,
+            ownDataDescriptor(this.node(depth + 1), true),
+          );
         return array;
       }
       case 7: {
@@ -753,12 +766,11 @@ class ValueReader {
           if (previous !== undefined && keyOrder(previous, raw) >= 0)
             reject("MalformedValue", "duplicate or noncanonical object keys");
           previous = raw;
-          defineProperty(object, key, {
-            value: this.node(depth + 1),
-            configurable: true,
-            enumerable: true,
-            writable: true,
-          });
+          defineProperty(
+            object,
+            key,
+            ownDataDescriptor(this.node(depth + 1), true),
+          );
         }
         return object;
       }
@@ -784,18 +796,9 @@ class ValueReader {
           reject("MalformedValue", "invalid Error stack marker");
         const stack = hasStack === 1 ? this.text().value : undefined;
         const error = new NativeError(message);
-        defineProperty(error, "name", {
-          value: name,
-          configurable: true,
-          writable: true,
-        });
+        defineProperty(error, "name", ownDataDescriptor(name, false));
         if (stack === undefined) delete error.stack;
-        else
-          defineProperty(error, "stack", {
-            value: stack,
-            configurable: true,
-            writable: true,
-          });
+        else defineProperty(error, "stack", ownDataDescriptor(stack, false));
         return error;
       }
       default:
