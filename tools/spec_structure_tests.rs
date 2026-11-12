@@ -5243,7 +5243,10 @@ fn a_rendered_line_keeps_its_role() {
         value_of("\u{200b}- - - Pin: y", "Pin", Spelling::Header).as_deref(),
         Some("y")
     );
-    assert_eq!(defined_id("*AC-1: a literal mark"), Some(("AC", "1".to_owned())));
+    assert_eq!(
+        defined_id("*AC-1: a literal mark"),
+        Some(("AC", "1".to_owned()))
+    );
     let first = |text: &str| {
         let doc = Doc::parse("x.md", text);
         field_statements(&doc, 0, doc.line_count(), None)
@@ -5821,16 +5824,17 @@ fn oversized_ids_resolve_only_their_own_definition() {
     for defined in ["4294967295", "4294967296", "4294967297"] {
         let fixture = Fixture::new();
         replace_design(&fixture, &format!("### D-{defined}: choice\n\nD-{defined}"));
-        assert!(fixture.rules().is_empty(), "{defined}: {:?}", fixture.rules());
+        assert!(
+            fixture.rules().is_empty(),
+            "{defined}: {:?}",
+            fixture.rules()
+        );
         for missing in ["4294967295", "4294967296", "4294967297"] {
             if missing == defined {
                 continue;
             }
             let fixture = Fixture::new();
-            replace_design(
-                &fixture,
-                &format!("### D-{defined}: choice\n\nD-{missing}"),
-            );
+            replace_design(&fixture, &format!("### D-{defined}: choice\n\nD-{missing}"));
             assert_only(&fixture, Rule::IdDangling, missing);
         }
     }
