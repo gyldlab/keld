@@ -246,15 +246,223 @@ mod tests {
         assert_eq!(fs::read_to_string(&dest).expect("reread"), "x");
     }
 
+    fn formatter_fixture_command(
+        program: impl AsRef<std::ffi::OsStr>,
+        git_home: &Path,
+    ) -> std::process::Command {
+        let mut command = std::process::Command::new(program);
+        // A fixture owns its Git repository and config. Preserve ordinary OS/Bun
+        // inputs while excluding all Git controls, including GIT_CONFIG.
+        command
+            .env_clear()
+            .envs(std::env::vars_os().filter(|(key, _)| {
+                !key.to_string_lossy()
+                    .to_ascii_uppercase()
+                    .starts_with("GIT_")
+            }))
+            .env("HOME", git_home)
+            .env("USERPROFILE", git_home)
+            .env("XDG_CONFIG_HOME", git_home)
+            .env("GIT_CONFIG_NOSYSTEM", "1");
+        command
+    }
+
+    fn assert_disposable_directory(path: &Path, parent: &Path) {
+        let metadata = fs::symlink_metadata(path).expect("disposable directory metadata");
+        assert!(metadata.is_dir() && !metadata.is_symlink());
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            assert_eq!(
+                metadata.file_attributes() & 0x400,
+                0,
+                "fixture reparse point"
+            );
+        }
+        assert_eq!(
+            path.canonicalize()
+                .expect("canonical disposable directory")
+                .parent(),
+            Some(parent),
+            "disposable directory must be directly beneath its owner"
+        );
+    }
+
+    fn stage_git_sentinel(caller: &Path, git_home: &Path) -> PathBuf {
+        for args in [
+            &["init", "-q"][..],
+            &["config", "maintenance.auto", "false"],
+        ] {
+            let output = formatter_fixture_command("git", git_home)
+                .args(args)
+                .current_dir(caller)
+                .output()
+                .expect("initialize and configure disposable caller");
+            assert!(output.status.success(), "fixture Git {args:?}: {output:?}");
+        }
+        let git_dir = caller.join(".git");
+        assert_disposable_directory(&git_dir, &caller.canonicalize().expect("caller identity"));
+        fs::write(caller.join("sentinel.txt"), b"caller source must survive\n")
+            .expect("caller source sentinel");
+        let ignored = formatter_fixture_command("git", git_home)
+            .args(["check-ignore", "--quiet", "sentinel.txt"])
+            .current_dir(caller)
+            .output()
+            .expect("observe disposable global ignore");
+        assert!(
+            ignored.status.success(),
+            "global ignore must match sentinel: {ignored:?}"
+        );
+        let staged = formatter_fixture_command("git", git_home)
+            .args(["add", "-f", "--", "sentinel.txt"])
+            .current_dir(caller)
+            .output()
+            .expect("stage disposable caller sentinel");
+        assert!(staged.status.success(), "{staged:?}");
+        git_dir
+    }
+
+    fn assert_formatter_preserves_inherited_git_target(config_only: bool) {
+        const FORMATTER_TEST: &str =
+            "create::tests::created_app_native_formatter_checks_repairs_and_is_idempotent";
+        let parent = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonical task temp");
+        let fixture = tempfile::tempdir().expect("disposable Git isolation fixture");
+        assert_disposable_directory(fixture.path(), &parent);
+        let owner = fixture
+            .path()
+            .canonicalize()
+            .expect("canonical fixture owner");
+        let caller = fixture.path().join("caller");
+        let child_temp = fixture.path().join("child-temp");
+        let git_home = fixture.path().join("git-home");
+        for directory in [&caller, &child_temp, &git_home] {
+            fs::create_dir(directory).expect("disposable child directory");
+            assert_disposable_directory(directory, &owner);
+        }
+        let global_config = git_home.join(".gitconfig");
+        let global_excludes = git_home.join(".gitignore_global");
+        fs::write(
+            &global_config,
+            b"[core]\n\texcludesFile = ~/.gitignore_global\n",
+        )
+        .expect("disposable global Git config");
+        fs::write(&global_excludes, b"sentinel.txt\n").expect("disposable global ignore");
+        let git_dir = stage_git_sentinel(&caller, &git_home);
+        // A caller template must not hide TypeScript from the child formatter.
+        let template = git_home.join("template");
+        fs::create_dir_all(template.join("info")).expect("hostile template directory");
+        let template_excludes = template.join("info/exclude");
+        fs::write(&template_excludes, b"*.ts\n").expect("hostile template excludes");
+        let xdg_git = git_home.join("git");
+        fs::create_dir(&xdg_git).expect("fixture XDG Git directory");
+        let xdg_config = xdg_git.join("config");
+        let poison = b"[init]\n\ttemplateDir = ~/template\n";
+        fs::write(&xdg_config, poison).expect("hostile XDG Git config");
+        let mut home_config = fs::read(&global_config).expect("global config");
+        home_config.extend_from_slice(poison);
+        fs::write(&global_config, home_config).expect("hostile HOME Git config");
+        let config_sentinel = fixture.path().join("sentinel.config");
+        fs::write(&config_sentinel, b"[fixture]\n\tmarker = preserve\n").expect("config sentinel");
+        let protected = [
+            git_dir.join("config"),
+            git_dir.join("HEAD"),
+            git_dir.join("index"),
+            config_sentinel.clone(),
+            global_config,
+            global_excludes,
+            xdg_config,
+            template_excludes,
+        ];
+        let before = protected
+            .each_ref()
+            .map(|path| fs::read(path).expect("sentinel bytes"));
+        let mut child = formatter_fixture_command(
+            std::env::current_exe().expect("current test executable"),
+            &git_home,
+        );
+        child
+            .args([FORMATTER_TEST, "--exact", "--nocapture", "--color", "never"])
+            .current_dir(&child_temp)
+            .env("TEMP", &child_temp)
+            .env("TMP", &child_temp)
+            .env("TMPDIR", &child_temp);
+        if config_only {
+            child.env("GIT_CONFIG", &config_sentinel);
+        } else {
+            child
+                .env("GIT_DIR", &git_dir)
+                .env("GIT_COMMON_DIR", &git_dir)
+                .env("GIT_WORK_TREE", &caller)
+                .env("GIT_INDEX_FILE", git_dir.join("index"));
+        }
+        let output = child
+            .output()
+            .expect("run formatter with disposable Git poison");
+        for (path, expected) in protected.iter().zip(before) {
+            assert_eq!(
+                fs::read(path).expect("sentinel after child"),
+                expected,
+                "formatter changed disposable caller/config sentinel {} (config_only={config_only})",
+                path.display()
+            );
+        }
+        assert!(output.status.success(), "formatter child: {output:?}");
+        let stdout = String::from_utf8(output.stdout).expect("test output UTF-8");
+        assert!(stdout.contains(FORMATTER_TEST), "{stdout}");
+        assert!(stdout.contains("1 passed; 0 failed"), "{stdout}");
+    }
+
+    #[test]
+    fn created_app_native_formatter_preserves_inherited_git_location() {
+        assert_formatter_preserves_inherited_git_target(false);
+    }
+
+    #[test]
+    fn created_app_native_formatter_preserves_inherited_git_config() {
+        assert_formatter_preserves_inherited_git_target(true);
+    }
+
     #[test]
     fn created_app_native_formatter_checks_repairs_and_is_idempotent() {
-        use std::process::Command;
-
+        let config_owner = tempfile::tempdir().expect("fixture-owned Git configuration");
+        let git_home = config_owner.path();
+        let git = |cwd: &Path, args: &[&str]| {
+            let output = formatter_fixture_command("git", git_home)
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .expect("run fixture Git");
+            assert!(output.status.success(), "fixture Git {args:?}: {output:?}");
+        };
         for name in ["formatted-app".to_owned(), "a".repeat(100)] {
             let dir = tempfile::tempdir().expect("tempdir");
-            let root = create_project(dir.path(), &name).expect("create app");
+            // Model a generated app under another checkout's ignored scratch
+            // tree: Bun must still inspect its own files, including new ones.
+            git(dir.path(), &["init", "-q"]);
+            git(dir.path(), &["config", "maintenance.auto", "false"]);
+            fs::write(dir.path().join(".gitignore"), "ignored/\n").expect("outer ignore");
+            let ignored = dir.path().join("ignored");
+            fs::create_dir(&ignored).expect("ignored fixture parent");
+            let root = create_project(&ignored, &name).expect("create app");
+            let inherited_ignore = formatter_fixture_command("git", git_home)
+                .args(["check-ignore", "--quiet"])
+                .arg(root.join("src/main.ts"))
+                .current_dir(dir.path())
+                .status()
+                .expect("check outer ignore");
+            assert!(
+                inherited_ignore.success(),
+                "outer ignore must hide app files"
+            );
+
+            // Isolate the app as its own Git root. Without this boundary,
+            // format:check incorrectly succeeds on unformatted ignored files.
+            git(&root, &["init", "-q"]);
+            git(&root, &["config", "maintenance.auto", "false"]);
             let run = |script: &str| {
-                Command::new("bun")
+                formatter_fixture_command("bun", git_home)
                     .args(["run", script])
                     .current_dir(&root)
                     .output()
