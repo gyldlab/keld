@@ -3443,7 +3443,11 @@ fn anchors_are_checked_for_every_rendered_markdown_extension() {
                 if fragment == "missing" {
                     assert_only(&fixture, Rule::Anchor, &target);
                 } else {
-                    assert!(fixture.rules().is_empty(), "{target}: {:?}", fixture.rules());
+                    assert!(
+                        fixture.rules().is_empty(),
+                        "{target}: {:?}",
+                        fixture.rules()
+                    );
                 }
             }
         }
