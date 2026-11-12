@@ -3033,15 +3033,38 @@ fn mermaid_native_dacl_does_not_depend_on_path_whoami() {
     // executable must not supply identity to the native restoration process.
     let renderer = include_str!("mermaid_render_check.sh");
     let start = renderer.find("running_under_msys() {").expect("MSYS owner");
+    // Stop at the end of the restoration helpers. The rest of the render
+    // script builds Mermaid documentation and invokes Docker, which are not
+    // inputs to this native DACL-only regression. In Git Bash those unrelated
+    // build steps can select GNU link.exe instead of the MSVC linker.
     let end = renderer
-        .find("\nrun_with_timeout 8 docker info")
-        .expect("helper boundary");
+        .find("\nworkspace=$(git rev-parse --show-toplevel")
+        .expect("restoration helper boundary");
     let script = format!(
         "set -euo pipefail\n{}\nrender_parent=$(cd \"$1\" && pwd -P)\nwhoami.exe() {{ echo 'GNU whoami rejects Windows arguments' >&2; return 64; }}\nrestore_docker_output_dir \"$render_parent/keld-mermaid-render.fixture\"\n",
         &renderer[start..end]
     );
     temp.write("native-dacl-restore.sh", &script);
-    let output = Command::new("bash")
+    // Windows CreateProcess can select System32\\bash.exe (WSL) before Git Bash,
+    // while Git's bin directory is normally absent from PATH. Discover the
+    // installed Git.exe and use that installation's native sh.exe explicitly.
+    let git_paths = Command::new("where.exe")
+        .arg("git.exe")
+        .output()
+        .expect("locate native Git for Windows");
+    assert!(git_paths.status.success(), "native Git for Windows missing");
+    let paths = String::from_utf8_lossy(&git_paths.stdout);
+    let shell = paths
+        .lines()
+        .filter_map(|candidate| {
+            Path::new(candidate.trim())
+                .parent()?
+                .parent()
+                .map(|git_root| git_root.join("bin/sh.exe"))
+        })
+        .find(|candidate| candidate.is_file())
+        .expect("locate Git for Windows sh.exe beside git.exe");
+    let output = Command::new(shell)
         .arg(temp.path().join("native-dacl-restore.sh"))
         .arg(&parent)
         .output()
