@@ -78,7 +78,7 @@ Keep each authoring value in one file:
 | --- | --- |
 | `keld.config.ts` | Existing root `name`, `entry`, `renderer`/ `initialWindow`, `auth`; integrate existing root `version` owner and add root `id` once. No nested `app` aliases. |
 | `keld.permissions.jsonc` | Existing exact policy, including explicit profile; no new packaging grants. |
-| `keld.build.ts` | Closed literal fields `target`, `signing`, `bundleVersion`, `minimumSystemVersion`, optional `icon`, `resources`, `host`, `bun`, `outDir`. |
+| `keld.build.ts` | Closed literal fields `target`, `signing`, `bundleVersion`, `minimumSystemVersion`, `resources`, `host`, `bun`, `outDir`, and optional `icon`. |
 
 The build subset has `target: "macos-arm64"`, `signing: "adhoc-local"`,
 `resources: string[]`, and `host`/`bun` objects containing `path`, `sha256`,

@@ -125,16 +125,18 @@ and detaches using the observed device identity.
 
 ### AC-11: Qualified module resolution
 
-- **Given:** An installed app imports a dependency absent from its captured graph.
-- **When:** Start the app with a matching package offered outside the graph.
-- **Then:** Installed app works after renaming/relocation and from unrelated cwd. Executable application
-dependencies resolve only from the independently qualified sealed graph; missing/unqualified imports refuse
-before evaluation without install, registry or ambient-cache fallback. No source/resource/runtime access
-escapes to the checkout or developer cache.
-- **Negative control:** Isolate the following fault before evaluating the required observable.
-  - **Single fault:** Supply that package only through an ancestor node_modules directory.
+- **Given:** An installed app has a complete independently qualified sealed graph.
+- **When:** Rename or relocate the app, then start it from an unrelated cwd.
+- **Then:** The app starts and its executable application dependencies resolve only from that graph.
+No source/resource/runtime access escapes to the checkout or developer cache.
+Missing or unqualified imports in the separate refusal case below refuse before evaluation,
+without install, registry or ambient-cache fallback.
+- **Negative control:** Use a separate missing-dependency fixture, not the complete-graph success fixture.
+  - **Single fault:** Omit one imported dependency from the captured graph.
   - **At-risk precondition:** Valid boot, runtime and signature inputs reach executable module resolution.
-  - **Expected RED:** Refusal precedes external marker evaluation with no fallback acquisition.
+A matching marker package exists only in an ancestor node_modules directory.
+  - **Expected RED:** The missing import refuses before external marker evaluation, without fallback acquisition.
+The complete-graph success fixture still launches after relocation from an unrelated cwd.
 
 ### AC-12: Original editor workflow
 
