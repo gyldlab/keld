@@ -263,6 +263,7 @@ jobs:
             const verdicts = [];
             for (const event of snapshots) {
               let admitted = false;
+              let verifiedFileCount;
               let verifiedDenied = false;
               let reason = 'missing trusted proof';
               let current;
@@ -320,6 +321,7 @@ jobs:
                 const after = await fetchPR();
                 if (!matches(after) || after.changed_files !== before.changed_files)
                   throw Error('PR moved or changed file count after immutable comparison');
+                verifiedFileCount = before.changed_files;
                 admitted = true;
                 reason = 'protected-main immutable CI admission passed';
               } catch (error) {
@@ -369,7 +371,7 @@ jobs:
                   retry:skip !== 'unmergeable PR' && skip !== 'moved or closed PR'});
                 continue;
               }
-              verdicts.push({...event,merge:current.merge_commit_sha,admitted,reason});
+              verdicts.push({...event,merge:current.merge_commit_sha,admitted,reason,verifiedFileCount});
             }
             const mergeCounts = new Map();
             for (const v of verdicts) if (v.merge)
@@ -400,6 +402,13 @@ jobs:
                     pr.base?.repo?.full_name !== 'gyldlab/keld' ||
                     pr.head?.sha !== verdict.head || pr.merge_commit_sha !== verdict.merge) {
                   counts.skipped++;
+                  continue;
+                }
+                if (verdict.admitted &&
+                    (!Number.isSafeInteger(pr.changed_files) || pr.changed_files < 0 ||
+                     pr.changed_files > 600 || pr.changed_files !== verdict.verifiedFileCount)) {
+                  counts.errors++;
+                  core.warning('VeriSentry prewrite changed-file count changed or invalid on PR #'+verdict.number);
                   continue;
                 }
                 // GitHub may transiently reset mergeable to null when it

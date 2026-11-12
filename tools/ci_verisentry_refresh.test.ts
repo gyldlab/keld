@@ -997,3 +997,39 @@ test("refresh tree census rechecks a 300-file count before App publication", asy
   expect(s.statuses).toHaveLength(0);
   expect(s.failures).toHaveLength(1);
 });
+
+test("refresh binds final publication to the verified 300-file census", async () => {
+  const files = Array.from({ length: 300 }, (_, i) => ({
+    filename: `docs/final-${i}.md`,
+    status: "added",
+  }));
+  const current = {
+    number: 345,
+    state: "open",
+    changed_files: 300,
+    base: { ref: "main", sha: base, repo: { full_name: "gyldlab/keld" } },
+    head: { sha: head },
+    mergeable: true,
+    merge_commit_sha: merge,
+  };
+  for (const count of [300, 601, 301, -1, 1.5, NaN, undefined]) {
+    const final = { ...current, changed_files: count };
+    const s = scenario({
+      changedFiles: 300,
+      files,
+      readSequence: [current, current, current, final],
+    });
+    await expect(s.run()).resolves.toBeUndefined();
+    expect(s.getReads()).toBe(4);
+    expect(s.getTreeReads()).toBe(2);
+    if (count === 300) {
+      expect(s.statuses).toHaveLength(1);
+      expect(s.statuses[0].conclusion).toBe("success");
+      expect(s.failures).toHaveLength(0);
+    } else {
+      expect(s.statuses).toHaveLength(0);
+      expect(s.failures).toHaveLength(1);
+      expect(s.warnings.join(" ")).toContain("prewrite changed-file count");
+    }
+  }
+});
