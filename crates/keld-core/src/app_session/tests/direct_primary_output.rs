@@ -246,3 +246,56 @@ fn supervised_output_child() {
     let mut stop = [0];
     let _ = control.read_exact(&mut stop);
 }
+
+#[test]
+fn stream_failure_preserves_the_other_stream_and_both_errors() {
+    let output = keld_runtime::CapturedOutput {
+        stdout: "retained stdout\n".to_owned(),
+        stderr: "retained stderr\n".to_owned(),
+        stdout_dropped_bytes: 7,
+        stderr_dropped_bytes: 11,
+        ..Default::default()
+    };
+    let stdout_path = tempfile::NamedTempFile::new().expect("stdout sink");
+    let stderr_path = tempfile::NamedTempFile::new().expect("stderr sink");
+    let mut failed_stdout = std::fs::File::open(stdout_path.path()).expect("read-only stdout");
+    let mut failed_stderr = std::fs::File::open(stderr_path.path()).expect("read-only stderr");
+    let mut good_stdout = Vec::new();
+    let mut good_stderr = Vec::new();
+
+    let error = super::super::forward_direct_primary_output_to(
+        &output,
+        &mut failed_stdout,
+        &mut good_stderr,
+    )
+    .expect_err("read-only stdout must fail");
+    assert!(error.to_string().contains("primary stdout forwarding"));
+    let stderr_notice = keld_runtime::CapturedOutput::elision_notice(11).expect("stderr notice");
+    assert_eq!(
+        good_stderr,
+        format!("retained stderr\n{stderr_notice}").as_bytes()
+    );
+
+    let error = super::super::forward_direct_primary_output_to(
+        &output,
+        &mut good_stdout,
+        &mut failed_stderr,
+    )
+    .expect_err("read-only stderr must fail");
+    assert!(error.to_string().contains("primary stderr forwarding"));
+    let stdout_notice = keld_runtime::CapturedOutput::elision_notice(7).expect("stdout notice");
+    assert_eq!(
+        good_stdout,
+        format!("retained stdout\n{stdout_notice}").as_bytes()
+    );
+
+    let error = super::super::forward_direct_primary_output_to(
+        &output,
+        &mut failed_stdout,
+        &mut failed_stderr,
+    )
+    .expect_err("both read-only sinks must fail");
+    let detail = error.to_string();
+    assert!(detail.contains("primary stdout forwarding"));
+    assert!(detail.contains("primary stderr forwarding"));
+}

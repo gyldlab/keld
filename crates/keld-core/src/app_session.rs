@@ -5868,26 +5868,44 @@ fn recover_retired_fs_generation(
 
 #[cfg(any(target_os = "linux", windows))]
 fn forward_direct_primary_output(supervisor: &PrimaryRoleSupervisor) -> Result<(), HostAppError> {
-    let output = supervisor.output();
-    io::stdout()
-        .write_all(output.stdout.as_bytes())
-        .map_err(|source| app_io("primary stdout forwarding", &source))?;
-    if let Some(notice) = keld_runtime::CapturedOutput::elision_notice(output.stdout_dropped_bytes)
-    {
-        io::stdout()
-            .write_all(notice.as_bytes())
-            .map_err(|source| app_io("primary stdout forwarding", &source))?;
+    forward_direct_primary_output_to(&supervisor.output(), &mut io::stdout(), &mut io::stderr())
+}
+
+#[cfg(any(target_os = "linux", windows))]
+fn forward_direct_primary_output_to(
+    output: &keld_runtime::CapturedOutput,
+    stdout: &mut impl io::Write,
+    stderr: &mut impl io::Write,
+) -> Result<(), HostAppError> {
+    fn forward(
+        sink: &mut impl io::Write,
+        bytes: &str,
+        dropped: usize,
+        phase: &'static str,
+    ) -> Result<(), HostAppError> {
+        sink.write_all(bytes.as_bytes())
+            .map_err(|source| app_io(phase, &source))?;
+        if let Some(notice) = keld_runtime::CapturedOutput::elision_notice(dropped) {
+            sink.write_all(notice.as_bytes())
+                .map_err(|source| app_io(phase, &source))?;
+        }
+        Ok(())
     }
-    io::stderr()
-        .write_all(output.stderr.as_bytes())
-        .map_err(|source| app_io("primary stderr forwarding", &source))?;
-    if let Some(notice) = keld_runtime::CapturedOutput::elision_notice(output.stderr_dropped_bytes)
-    {
-        io::stderr()
-            .write_all(notice.as_bytes())
-            .map_err(|source| app_io("primary stderr forwarding", &source))?;
-    }
-    Ok(())
+
+    collapse_app_results([
+        forward(
+            stdout,
+            &output.stdout,
+            output.stdout_dropped_bytes,
+            "primary stdout forwarding",
+        ),
+        forward(
+            stderr,
+            &output.stderr,
+            output.stderr_dropped_bytes,
+            "primary stderr forwarding",
+        ),
+    ])
 }
 
 #[cfg(any(target_os = "linux", windows))]
