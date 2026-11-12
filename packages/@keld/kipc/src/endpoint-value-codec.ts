@@ -156,34 +156,41 @@ const exoticConstructors: [Function, string][] = [
 ];
 
 /**
- * Genuine refusals are recognised by module-owned identity. A prototype probe
- * is not proof: a caller can graft `CompatCodecError.prototype` onto any
- * thrown value, and a thrown Proxy can run a hostile `getPrototypeOf` trap
- * inside the classifier itself.
+ * Refusal identity belongs to one synchronous public operation. Hostile
+ * traps may replay a previous rejection or reenter another public codec
+ * operation; neither grants the outer operation's error provenance.
  */
-const ownErrors = new NativeWeakSet<object>();
+let activeRefusals: WeakSet<object> | null = null;
 
 function reject(kind: CompatCodecErrorKind, reason: string): never {
   const error = new CompatCodecError(kind, reason);
-  apply(weakSetAdd, ownErrors, [error]);
+  if (activeRefusals !== null) apply(weakSetAdd, activeRefusals, [error]);
   throw error;
 }
 
-function isOwnError(value: unknown): boolean {
+function isOwnError(value: unknown, owned: WeakSet<object>): boolean {
   return (
     typeof value === "object" &&
     value !== null &&
-    apply(weakSetHas, ownErrors, [value])
+    apply(weakSetHas, owned, [value])
   );
 }
 
-/** Normalize every non-codec throw from a hostile trap into one typed refusal. */
+/**
+ * Preserve only this operation's genuine refusals. Nested entry gets its own
+ * scope; finally restores the outer identity set even on thrown Proxy traps.
+ */
 function guard<T>(run: () => T, reason: string): T {
+  const previous = activeRefusals;
+  const owned = new NativeWeakSet<object>();
+  activeRefusals = owned;
   try {
     return run();
   } catch (error) {
-    if (isOwnError(error)) throw error;
+    if (isOwnError(error, owned)) throw error;
     return reject("MalformedValue", reason);
+  } finally {
+    activeRefusals = previous;
   }
 }
 
@@ -804,18 +811,24 @@ class ValueReader {
   }
 }
 
+/** Private decoding path shared by the two public entry points under one guard. */
+function decodeValueSnapshot(bytes: Uint8Array): unknown {
+  if (!isInstance(bytes, NativeUint8Array))
+    reject("MalformedValue", "endpoint payload must be bytes");
+  const length: number = apply(byteLength, bytes, []);
+  if (length > ENDPOINT_VALUE_LIMIT)
+    reject("CodecLimit", "encoded value exceeds 4096 bytes");
+  const owned = new NativeUint8Array(length);
+  apply(byteSet, owned, [bytes]);
+  return new ValueReader(owned).decode();
+}
+
 /** Decode one complete owned byte value; never accepts a JSON substitute. */
 export function decodeEndpointValue(bytes: Uint8Array): unknown {
-  return guard(() => {
-    if (!isInstance(bytes, NativeUint8Array))
-      reject("MalformedValue", "endpoint payload must be bytes");
-    const length: number = apply(byteLength, bytes, []);
-    if (length > ENDPOINT_VALUE_LIMIT)
-      reject("CodecLimit", "encoded value exceeds 4096 bytes");
-    const owned = new NativeUint8Array(length);
-    apply(byteSet, owned, [bytes]);
-    return new ValueReader(owned).decode();
-  }, "endpoint payload is not a readable byte snapshot");
+  return guard(
+    () => decodeValueSnapshot(bytes),
+    "endpoint payload is not a readable byte snapshot",
+  );
 }
 
 /** Apply the IPC caller-vector count without restricting generic result arrays. */
@@ -835,7 +848,7 @@ export function encodeEndpointArguments(args: readonly unknown[]): Uint8Array {
 /** Apply the same caller-vector count after the one owned endpoint decoder. */
 export function decodeEndpointArguments(bytes: Uint8Array): unknown[] {
   return guard(() => {
-    const value = decodeEndpointValue(bytes);
+    const value = decodeValueSnapshot(bytes);
     if (!isArray(value))
       return reject("MalformedValue", "IPC arguments must decode to an array");
     if (value.length > 16)
