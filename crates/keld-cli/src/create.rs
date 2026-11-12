@@ -246,7 +246,10 @@ mod tests {
         assert_eq!(fs::read_to_string(&dest).expect("reread"), "x");
     }
 
-    fn formatter_fixture_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    fn formatter_fixture_command(
+        program: impl AsRef<std::ffi::OsStr>,
+        git_home: &Path,
+    ) -> std::process::Command {
         let mut command = std::process::Command::new(program);
         // A fixture owns its Git repository and config. Preserve ordinary OS/Bun
         // inputs while excluding all Git controls, including GIT_CONFIG.
@@ -256,7 +259,11 @@ mod tests {
                 !key.to_string_lossy()
                     .to_ascii_uppercase()
                     .starts_with("GIT_")
-            }));
+            }))
+            .env("HOME", git_home)
+            .env("USERPROFILE", git_home)
+            .env("XDG_CONFIG_HOME", git_home)
+            .env("GIT_CONFIG_NOSYSTEM", "1");
         command
     }
 
@@ -281,14 +288,13 @@ mod tests {
         );
     }
 
-    fn stage_git_sentinel(caller: &Path, fixture_environment: [(&str, &PathBuf); 2]) -> PathBuf {
+    fn stage_git_sentinel(caller: &Path, git_home: &Path) -> PathBuf {
         for args in [
             &["init", "-q"][..],
             &["config", "maintenance.auto", "false"],
         ] {
-            let output = formatter_fixture_command("git")
+            let output = formatter_fixture_command("git", git_home)
                 .args(args)
-                .envs(fixture_environment)
                 .current_dir(caller)
                 .output()
                 .expect("initialize and configure disposable caller");
@@ -298,9 +304,8 @@ mod tests {
         assert_disposable_directory(&git_dir, &caller.canonicalize().expect("caller identity"));
         fs::write(caller.join("sentinel.txt"), b"caller source must survive\n")
             .expect("caller source sentinel");
-        let ignored = formatter_fixture_command("git")
+        let ignored = formatter_fixture_command("git", git_home)
             .args(["check-ignore", "--quiet", "sentinel.txt"])
-            .envs(fixture_environment)
             .current_dir(caller)
             .output()
             .expect("observe disposable global ignore");
@@ -308,9 +313,8 @@ mod tests {
             ignored.status.success(),
             "global ignore must match sentinel: {ignored:?}"
         );
-        let staged = formatter_fixture_command("git")
+        let staged = formatter_fixture_command("git", git_home)
             .args(["add", "-f", "--", "sentinel.txt"])
-            .envs(fixture_environment)
             .current_dir(caller)
             .output()
             .expect("stage disposable caller sentinel");
@@ -345,8 +349,20 @@ mod tests {
         )
         .expect("disposable global Git config");
         fs::write(&global_excludes, b"sentinel.txt\n").expect("disposable global ignore");
-        let fixture_environment = [("HOME", &git_home), ("USERPROFILE", &git_home)];
-        let git_dir = stage_git_sentinel(&caller, fixture_environment);
+        let git_dir = stage_git_sentinel(&caller, &git_home);
+        // A caller template must not hide TypeScript from the child formatter.
+        let template = git_home.join("template");
+        fs::create_dir_all(template.join("info")).expect("hostile template directory");
+        let template_excludes = template.join("info/exclude");
+        fs::write(&template_excludes, b"*.ts\n").expect("hostile template excludes");
+        let xdg_git = git_home.join("git");
+        fs::create_dir(&xdg_git).expect("fixture XDG Git directory");
+        let xdg_config = xdg_git.join("config");
+        let poison = b"[init]\n\ttemplateDir = ~/template\n";
+        fs::write(&xdg_config, poison).expect("hostile XDG Git config");
+        let mut home_config = fs::read(&global_config).expect("global config");
+        home_config.extend_from_slice(poison);
+        fs::write(&global_config, home_config).expect("hostile HOME Git config");
         let config_sentinel = fixture.path().join("sentinel.config");
         fs::write(&config_sentinel, b"[fixture]\n\tmarker = preserve\n").expect("config sentinel");
         let protected = [
@@ -356,16 +372,19 @@ mod tests {
             config_sentinel.clone(),
             global_config,
             global_excludes,
+            xdg_config,
+            template_excludes,
         ];
         let before = protected
             .each_ref()
             .map(|path| fs::read(path).expect("sentinel bytes"));
-        let mut child =
-            formatter_fixture_command(std::env::current_exe().expect("current test executable"));
+        let mut child = formatter_fixture_command(
+            std::env::current_exe().expect("current test executable"),
+            &git_home,
+        );
         child
             .args([FORMATTER_TEST, "--exact", "--nocapture", "--color", "never"])
             .current_dir(&child_temp)
-            .envs(fixture_environment)
             .env("TEMP", &child_temp)
             .env("TMP", &child_temp)
             .env("TMPDIR", &child_temp);
@@ -407,8 +426,10 @@ mod tests {
 
     #[test]
     fn created_app_native_formatter_checks_repairs_and_is_idempotent() {
+        let config_owner = tempfile::tempdir().expect("fixture-owned Git configuration");
+        let git_home = config_owner.path();
         let git = |cwd: &Path, args: &[&str]| {
-            let output = formatter_fixture_command("git")
+            let output = formatter_fixture_command("git", git_home)
                 .args(args)
                 .current_dir(cwd)
                 .output()
@@ -425,7 +446,7 @@ mod tests {
             let ignored = dir.path().join("ignored");
             fs::create_dir(&ignored).expect("ignored fixture parent");
             let root = create_project(&ignored, &name).expect("create app");
-            let inherited_ignore = formatter_fixture_command("git")
+            let inherited_ignore = formatter_fixture_command("git", git_home)
                 .args(["check-ignore", "--quiet"])
                 .arg(root.join("src/main.ts"))
                 .current_dir(dir.path())
@@ -441,7 +462,7 @@ mod tests {
             git(&root, &["init", "-q"]);
             git(&root, &["config", "maintenance.auto", "false"]);
             let run = |script: &str| {
-                formatter_fixture_command("bun")
+                formatter_fixture_command("bun", git_home)
                     .args(["run", script])
                     .current_dir(&root)
                     .output()
