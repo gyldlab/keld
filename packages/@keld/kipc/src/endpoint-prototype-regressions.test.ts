@@ -175,3 +175,57 @@ test("decoder defines JSON data keys without calling inherited setters", () => {
   expect(decoded).toEqual({ constructor: 42, prototype: false });
   expect(Object.getPrototypeOf(decoded)).toBe(Object.prototype);
 });
+
+test("codec descriptors ignore inherited get and set planted by a proxy trap", () => {
+  const arrayWire = encodeEndpointValue([false]);
+  const objectWire = encodeEndpointValue({ constructor: 42, prototype: false });
+  const errorWire = encodeEndpointValue(new Error("safe"));
+  const poison = {
+    __proto__: null,
+    configurable: true,
+    value: () => undefined,
+  } as PropertyDescriptor;
+
+  for (const field of ["get", "set"] as const) {
+    const original = Object.getOwnPropertyDescriptor(Object.prototype, field);
+    let caught: unknown;
+    try {
+      encodeEndpointValue(
+        new Proxy(
+          {},
+          {
+            ownKeys() {
+              Object.defineProperty(Object.prototype, field, poison);
+              throw new Error("trap must be converted to a typed refusal");
+            },
+          },
+        ),
+      );
+    } catch (error) {
+      caught = error;
+    } finally {
+      Reflect.deleteProperty(Object.prototype, field);
+      if (original) Object.defineProperty(Object.prototype, field, original);
+    }
+    expect(caught).toBeInstanceOf(CompatCodecError);
+    expect((caught as CompatCodecError).code).toBe("KELD-COMPAT-101");
+    expect((caught as CompatCodecError).kind).toBe("MalformedValue");
+
+    let decoded: unknown[] = [];
+    try {
+      Object.defineProperty(Object.prototype, field, poison);
+      decoded = [
+        decodeEndpointValue(arrayWire),
+        decodeEndpointValue(objectWire),
+        decodeEndpointValue(errorWire),
+      ];
+    } finally {
+      Reflect.deleteProperty(Object.prototype, field);
+      if (original) Object.defineProperty(Object.prototype, field, original);
+    }
+    expect(decoded[0]).toEqual([false]);
+    expect(decoded[1]).toEqual({ constructor: 42, prototype: false });
+    expect((decoded[2] as Error).message).toBe("safe");
+    expect((decoded[2] as Error).name).toBe("Error");
+  }
+});

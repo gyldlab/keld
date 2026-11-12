@@ -58,12 +58,7 @@ export class CompatCodecError extends Error {
       `${CODE[kind]}: ${kind}: ${reason}. Fix the endpoint value before sending it.`,
     );
     // A caller trap can poison Error.prototype.name before normalization.
-    defineProperty(this, "name", {
-      value: "CompatCodecError",
-      configurable: true,
-      enumerable: true,
-      writable: true,
-    });
+    defineProperty(this, "name", ownDataDescriptor("CompatCodecError", true));
     this.kind = kind;
     this.code = CODE[kind];
   }
@@ -77,6 +72,22 @@ const ownKeys = Reflect.ownKeys;
 const ownDescriptor = Object.getOwnPropertyDescriptor;
 const hasOwn = Object.hasOwn;
 const defineProperty = Object.defineProperty;
+
+/** A poisoned Object.prototype.get/set must not enter descriptor conversion. */
+function ownDataDescriptor(
+  value: unknown,
+  enumerable = false,
+): PropertyDescriptor {
+  // A __proto__ literal sets the descriptor's prototype to null; it is not
+  // an own property. The assertion avoids TS's excess-property check.
+  return {
+    __proto__: null,
+    value,
+    configurable: true,
+    enumerable,
+    writable: true,
+  } as PropertyDescriptor;
+}
 const setProto = Object.setPrototypeOf;
 const hasInstance = Function.prototype[Symbol.hasInstance];
 const NativeArrayBuffer = ArrayBuffer;
@@ -700,12 +711,11 @@ class ValueReader {
         // Define, do not push: an inherited indexed setter would otherwise
         // swallow the element while the array still reports its length.
         for (let i = 0; i < count; i++)
-          defineProperty(array, i, {
-            value: this.node(depth + 1),
-            configurable: true,
-            enumerable: true,
-            writable: true,
-          });
+          defineProperty(
+            array,
+            i,
+            ownDataDescriptor(this.node(depth + 1), true),
+          );
         return array;
       }
       case 7: {
@@ -728,12 +738,11 @@ class ValueReader {
           if (previous !== undefined && keyOrder(previous, raw) >= 0)
             reject("MalformedValue", "duplicate or noncanonical object keys");
           previous = raw;
-          defineProperty(object, key, {
-            value: this.node(depth + 1),
-            configurable: true,
-            enumerable: true,
-            writable: true,
-          });
+          defineProperty(
+            object,
+            key,
+            ownDataDescriptor(this.node(depth + 1), true),
+          );
         }
         return object;
       }
@@ -759,18 +768,9 @@ class ValueReader {
           reject("MalformedValue", "invalid Error stack marker");
         const stack = hasStack === 1 ? this.text().value : undefined;
         const error = new NativeError(message);
-        defineProperty(error, "name", {
-          value: name,
-          configurable: true,
-          writable: true,
-        });
+        defineProperty(error, "name", ownDataDescriptor(name));
         if (stack === undefined) delete error.stack;
-        else
-          defineProperty(error, "stack", {
-            value: stack,
-            configurable: true,
-            writable: true,
-          });
+        else defineProperty(error, "stack", ownDataDescriptor(stack));
         return error;
       }
       default:
