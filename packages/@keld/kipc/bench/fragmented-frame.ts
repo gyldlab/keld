@@ -11,12 +11,19 @@ type Sample = {
   elapsedMs: number;
 };
 
+/**
+ * Time one fragmented frame from the header push through payload completion.
+ * Reuse a prebuilt input chunk so the sample includes header-triggered payload
+ * allocation and reassembly, not benchmark input construction. Verify that the
+ * decoded frame has the expected length and leaves no unread bytes.
+ */
 async function measure(payloadBytes: number): Promise<Sample> {
   const reader = new FrameReader();
   const pending = reader.readFrame();
-  reader.push(encodeHeader(FrameKind.Reply, 0, 1, 1, payloadBytes));
   const fullChunk = new Uint8Array(CHUNK_BYTES).fill(0x5a);
+  // Time the header push as well: the payload allocation now happens there.
   const started = performance.now();
+  reader.push(encodeHeader(FrameKind.Reply, 0, 1, 1, payloadBytes));
   for (let offset = 0; offset < payloadBytes; offset += CHUNK_BYTES) {
     const remaining = payloadBytes - offset;
     reader.push(
