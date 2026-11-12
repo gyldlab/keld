@@ -277,9 +277,9 @@ pub(crate) fn bundle_public_api_entry(
     fs::remove_file(build).expect("remove bundle-only script");
 }
 
-/// Copies the ordinary package layout without bundling or transport aliases.
-/// Every source file keeps its bytes; the late import therefore owns a distinct
-/// stamped transport namespace from the optional Host-preloaded sidecar.
+/// Stages one ordinary source-package graph without bundling or copying KIPC
+/// a second time. The API's declared dependency resolves to the same staged
+/// KIPC package, distinct from the optional Host-preloaded transport sidecar.
 pub(crate) fn copy_public_package_sources(repo: &Path, destination: &Path) {
     fn copy_directory(source: &Path, destination: &Path) {
         fs::create_dir_all(destination).expect("package source destination");
@@ -294,11 +294,41 @@ pub(crate) fn copy_public_package_sources(repo: &Path, destination: &Path) {
         }
     }
     for package in ["api", "electron", "kipc"] {
-        copy_directory(
-            &repo.join(format!("packages/@keld/{package}/src")),
-            &destination.join(format!("@keld/{package}/src")),
-        );
+        let original = repo.join(format!("packages/@keld/{package}"));
+        let staged = destination.join(format!("@keld/{package}"));
+        copy_directory(&original.join("src"), &staged.join("src"));
+        fs::copy(original.join("package.json"), staged.join("package.json"))
+            .expect("byte-identical package manifest");
     }
+    let api: serde_json::Value = serde_json::from_slice(
+        &fs::read(destination.join("@keld/api/package.json")).expect("staged API manifest"),
+    )
+    .expect("actual API manifest JSON");
+    let kipc: serde_json::Value = serde_json::from_slice(
+        &fs::read(destination.join("@keld/kipc/package.json")).expect("staged KIPC manifest"),
+    )
+    .expect("actual KIPC manifest JSON");
+    assert_eq!(
+        api["dependencies"]["@keld/kipc"], "link:../kipc",
+        "the staged dependency must be the actual local SDK package edge"
+    );
+    assert_eq!(
+        kipc["name"], "@keld/kipc",
+        "the declared package edge must select canonical KIPC"
+    );
+    // The real package manager supplies this local, declared edge. The late
+    // source-copy fixture must do the same rather than silently depend on the
+    // caller's ambient node_modules or create another transport instance.
+    let link_parent = destination.join("@keld/api/node_modules/@keld");
+    fs::create_dir_all(&link_parent).expect("API dependency parent");
+    let linked_kipc = link_parent.join("kipc");
+    std::os::unix::fs::symlink("../../../kipc", &linked_kipc)
+        .expect("one API-to-staged-KIPC package link");
+    assert_eq!(
+        fs::canonicalize(&linked_kipc).expect("resolved API KIPC package"),
+        fs::canonicalize(destination.join("@keld/kipc")).expect("staged KIPC package"),
+        "API must reuse its one staged KIPC package"
+    );
 }
 
 /// Bundles an `@keld/api` entry with the kipc transport left external as
