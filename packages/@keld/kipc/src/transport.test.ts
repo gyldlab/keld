@@ -398,7 +398,6 @@ describe("FrameReader chunk queue", () => {
     const reader = new FrameReader();
     const pending = reader.readFrame();
     const frame = encodeFrame(FrameKind.Ping, 17, 23, new Uint8Array());
-    const started = performance.now();
     const constructorDescriptor = Object.getOwnPropertyDescriptor(
       globalThis,
       "Uint8Array",
@@ -423,6 +422,9 @@ describe("FrameReader chunk queue", () => {
       ...constructorDescriptor,
       value: delayedConstructor,
     });
+    // Anchor beside the first push, not before fixture setup: the injected 25ms
+    // copy delay must straddle the unchanged five-second wire deadline.
+    const started = performance.now();
     try {
       reader.push(frame.subarray(0, 1));
     } finally {
@@ -433,6 +435,7 @@ describe("FrameReader chunk queue", () => {
     }
     reader.push(frame.subarray(1));
     await expect(pending).rejects.toThrow("KELD-IPC-006");
+    expect(delayCopy).toBe(false);
   }, 8_000);
 
   test("wall-clock rollback cannot extend a monotonic frame deadline", async () => {
