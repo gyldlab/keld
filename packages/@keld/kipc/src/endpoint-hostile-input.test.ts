@@ -26,14 +26,36 @@ function withoutIndex(prototype: object, key: string, run: () => void): void {
 }
 
 function refusal(run: () => unknown, code: string): void {
-  expect(run).toThrow(code);
+  let caught: unknown;
   try {
     run();
   } catch (error) {
-    expect(error).toBeInstanceOf(codec.CompatCodecError);
-    expect((error as codec.CompatCodecError).code).toBe(code);
+    caught = error;
   }
+  expect(caught).toBeInstanceOf(codec.CompatCodecError);
+  expect((caught as codec.CompatCodecError).code).toBe(code);
 }
+
+test("refusal checks the error from exactly one invocation", () => {
+  let calls = 0;
+  const typed = new codec.CompatCodecError("MalformedValue", "test refusal");
+  refusal(() => {
+    calls += 1;
+    throw typed;
+  }, "KELD-COMPAT-101");
+  expect(calls).toBe(1);
+  expect(() => refusal(() => undefined, "KELD-COMPAT-101")).toThrow();
+
+  calls = 0;
+  expect(() =>
+    refusal(() => {
+      calls += 1;
+      if (calls === 1) throw new Error("KELD-COMPAT-101");
+      throw typed;
+    }, "KELD-COMPAT-101")
+  ).toThrow();
+  expect(calls).toBe(1);
+});
 
 test("an inherited array index setter installed by a trap cannot change the wire", () => {
   let installed = false;
