@@ -68,4 +68,3 @@ and all other platform cells remain unverified until actually exercised.
 
 Architecture/security review is independent of the author and covers the final
 diff. It does not replace the separate exact-content feature-spec approval.
-

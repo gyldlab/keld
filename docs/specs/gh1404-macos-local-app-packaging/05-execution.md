@@ -102,14 +102,20 @@ fallback. Execute through Launch Services from an independent copied location.
 
 ### Controls for AC-5
 
-Validly re-sign a package requesting Strict/publisher persistence/update authority: still refuse those
-privileges. Whole-app replacement/re-signing is a documented same-user non-guarantee, never a passed
-authenticity test.
+Use admitted local provenance and consistent signed bundle, boot, permission digest and qualified graph inputs.
+Verify the ordinary launch selects a fresh ephemeral store. At the existing profile owner, a reviewed
+nonpublic test probe requests publisher-backed persistence and records that owner's denial.
+Do not misuse the Guard Legacy/Strict field as a store selector. Earlier integrity refusal is not this verdict.
+An isolated local-restriction fault must make the forbidden-store assertion fail.
+Probe Guard Strict and updater authority separately at their owners, preserving valid input identities.
+Whole-app replacement/re-signing remains a same-user non-guarantee, never a passed authenticity test.
 
 ### Controls for AC-6
 
-Use an authenticated denied capability and verify typed denial plus absent external side effect. Separately
-disclose Legacy ambient authority.
+Through the same authenticated link and exact manifest, exercise a permitted broker operation and a denied one.
+Independently read back the authorized effect and the absence of a prohibited effect on disposable resources.
+The denied call also returns its expected typed refusal. Separate deny-all and allow-all fault injections
+must respectively fail the permitted and denied controls. Disclose Legacy ambient authority separately.
 
 ### Controls for AC-7
 
@@ -145,25 +151,35 @@ load. Repeat on Bun recovery/restart and after relocation.
 
 ### Controls for AC-17
 
-Construct a separate signed, disposable fixture with an executable marker module
-present in the bundle but absent from the independently qualified resource graph.
-Keep boot, policy, runtime and signature inputs valid. Attempt imports through
-static/dynamic loading, `require`, and worker entry points. Record refusal by the
-earliest qualified graph owner before marker evaluation. If Pack refuses the input
-before signing, retain that outcome as an early refusal, not as installed-resolver
-acceptance. Also exercise a separately qualified and sealed positive module.
-Repeat the applicable controls after restart and relocation.
+Require separate producer and installed-resolver verdicts. Offer the unqualified marker to Pack and record
+its producer refusal. Independently construct a disposable local bundle using reviewed fixture construction
+and normal signing. Keep boot, policy, runtime and graph identities valid except for the excluded marker.
+The executable marker is physically present and signed but not independently qualified.
+Relocate the app and require installed-resolver refusal before marker effects for static/dynamic imports,
+require and worker entry points. Repeat every loading path after Bun restart and relocation.
+The qualified marker counterpart must execute under otherwise identical conditions.
+Record the refusing owner and external marker observations separately for each fixture.
+Pack refusal is not installed coverage. An earlier refusal blocks the installed verdict until a reviewed
+fixture reaches that owner; do not bypass installed admission or silently count the earlier refusal.
 
 ### Controls for AC-12
 
-Original pinned editor, native interaction, saved XML/content readback, veto/Cancel/Save/Discard/Quit
-ordering. A window or mock editor is insufficient.
+Save document state A and verify its file contents. Make unsaved edit B before the first close.
+Observe the native unsaved dialog, then Cancel: the window stays open with B and disk remains A.
+Save B, read back B, close and reopen B. Make unsaved edit C before the second close.
+Observe the second native unsaved dialog, then Discard: disk retains B, not C.
+Reopen to verify B without C, then Quit. Record native window/document state and file contents at each step.
+An isolated Cancel-as-Close fault must fail independent native observation. A mock editor is insufficient.
 
 ### Controls for AC-13
 
-Isolated subprocess controls for Bun and Host death; independent PID/start identity and descendant census,
-bounded observation deadlines, cleanup then relaunch. Bundle/document hashes remain unchanged. Record
-detached/simultaneous-death outcomes separately; an unmet required condition blocks closure.
+Run healthy quit/relaunch as the positive control. Separately terminate Bun only, Host only and Guardian only.
+For Guardian-only loss, confirm enrollment and an active Bun generation with Host initially alive.
+Record exact PID/start identities, descendant census, authenticated-link revocation and owned-group retirement.
+Declare observation and subsequent-launch deadlines before each run. Require successful launch within that bound.
+Any surviving owned child, stale link, failed required launch or changed bundle/document hash turns the case RED.
+Report detached and simultaneous-death cases separately; they do not exempt Guardian-only loss.
+Keep AC-13 open with the existing runtime owner if a required result cannot be established.
 
 ### Controls for AC-14–AC-15
 

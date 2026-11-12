@@ -56,26 +56,41 @@ CFBundleIdentifier reaches the identifier consistency validator.
 
 ### AC-5: Local trust boundary
 
-- **Given:** An ad-hoc local bundle has otherwise valid signed metadata.
-- **When:** Request a publisher-backed persistent profile.
-- **Then:** Local provenance cannot select a publisher-backed persistent profile, Strict containment or
-updater authority. The existing Apple publisher path and dev path retain their own rejection tests.
-- **Negative control:** Isolate the following fault before evaluating the required observable.
-  - **Single fault:** Change only the requested profile class and re-sign the local bundle.
-  - **At-risk precondition:** The local seal remains valid so signature rejection cannot hide profile
-enforcement.
-  - **Expected RED:** The local provenance owner refuses publisher-backed persistence.
+- **Given:** An admitted LocalDevelopment artifact has consistent signed bundle, boot, policy and graph identities.
+- **When:** Exercise the owning local-profile decision with valid provenance and a publisher-backed store request.
+- **Then:** The ordinary local launch selects a fresh ephemeral WebView profile.
+The local-profile owner denies publisher-backed persistence. Local provenance grants neither Strict containment
+nor updater authority. Existing Apple publisher and development paths retain their own rejection tests.
+- **Negative control:** Use a reviewed owner-level probe, not a new public configuration field.
+  - **Single fault:** Request publisher-backed persistence at the local-profile decision for valid local provenance.
+  - **At-risk precondition:** Bundle admission and policy integrity pass before the probe reaches that owner.
+The Guard Legacy/Strict policy field is not a WebView store selector.
+  - **Expected RED:** Record the local-profile owner's denial, with no persistent store selected.
+An earlier signature, manifest-digest or graph refusal does not satisfy this control.
+
+In an isolated nonshipping fault test, disable only the local-profile restriction.
+The negative check must detect selection of the forbidden persistent store and turn RED.
+Test Guard Strict and updater authority separately at their owning decisions, with consistent identities.
+These are proposed tests, not permission to weaken shipped admission or add a public bypass.
 
 ### AC-6: Guard enforcement
 
-- **Given:** An installed Legacy app has an authenticated link and exact Guard policy.
-- **When:** Issue a capability request denied by that policy.
-- **Then:** The exact existing Guard manifest is enforced. A denied authenticated capability/resource request
-has no prohibited side effect. Legacy's ambient OS authority is explicitly disclosed, never called Strict.
-- **Negative control:** Isolate the following fault before evaluating the required observable.
-  - **Single fault:** Request one denied capability.
-  - **At-risk precondition:** Authentication succeeds and the request reaches Guard.
-  - **Expected RED:** Typed denial occurs with no prohibited external side effect.
+- **Given:** An installed Legacy app has one authenticated link and the exact Guard manifest.
+The manifest permits a broker operation and denies a separate operation.
+- **When:** Invoke both operations through that same link and manifest.
+- **Then:** The permitted call produces its authorized effect, verified outside Guard's decision result.
+The denied call returns its typed refusal and produces no prohibited effect.
+Legacy's ambient OS authority remains explicitly disclosed, never called Strict.
+- **Negative control:** Pair the denied operation with the permitted successful-effect control.
+  - **Single fault:** Request the operation denied by the exact manifest.
+  - **At-risk precondition:** Authentication succeeds and both calls reach Guard.
+The permitted call demonstrates that an unconditional denial cannot satisfy the test.
+  - **Expected RED:** A prohibited external effect or missing typed refusal fails the denied control.
+A missing authorized effect fails the permitted control.
+
+In separate isolated nonshipping fault tests, inject deny-all and allow-all decisions.
+Deny-all must fail the permitted-effect control. Allow-all must fail the denied-effect control.
+Use owned disposable resources and independently read back both effects.
 
 ### AC-7: Installed launch facts
 
@@ -140,26 +155,38 @@ The complete-graph success fixture still launches after relocation from an unrel
 
 ### AC-12: Original editor workflow
 
-- **Given:** The pinned original editor opens a document and has unsaved changes.
-- **When:** Close its native window and select Cancel.
-- **Then:** Original draw.io passes Launch → Open → Edit → Save → unsaved Close → Cancel → Save → Reopen →
-Discard → Quit, with native observations and saved-file readback.
-- **Negative control:** Isolate the following fault before evaluating the required observable.
+- **Given:** The pinned original editor opens a document through its native workflow.
+- **When:** Save state A, make unsaved edit B, close and select Cancel in the observed native dialog.
+Then save B, close and reopen, make unsaved edit C, close and select Discard in a second observed native dialog.
+- **Then:** Cancel preserves the open window and unsaved B while disk still contains A.
+Saving B changes disk to B. Reopening reads B. Discard closes without saving C, and disk retains B.
+Reopening again shows B without C, followed by ordinary Quit.
+Record native window/document state and independent saved-file readback at each boundary.
+- **Negative control:** Isolate the Cancel branch after the fresh unsaved edit B.
   - **Single fault:** Treat Cancel as permission to close.
-  - **At-risk precondition:** The unsaved-change dialog is reached and Cancel is selected.
-  - **Expected RED:** Window/document state loss fails independent native observation.
+  - **At-risk precondition:** Independent native observation confirms the unsaved-change dialog is visible
+and Cancel is selected while B is dirty.
+  - **Expected RED:** Closing the window or losing B fails the native observation.
+Neither the earlier Save nor a label saying unsaved Close establishes this precondition.
 
 ### AC-13: Process lifecycle and cleanup
 
-- **Given:** An installed app owns a Bun generation with known process identity.
-- **When:** Trigger ordinary cleanup and relaunch.
-- **Then:** Normal quit/relaunch, Bun failure/recovery where applicable, Host failure and owned-child cleanup
-pass using exact process identities. No installed files or user documents are removed by cleanup.
-- **Negative control:** Isolate the following fault before evaluating the required observable.
-  - **Single fault:** Kill the owned Bun process.
-  - **At-risk precondition:** The recorded generation is live before termination and cleanup observes its
-death.
-  - **Expected RED:** Leaked owned children or changed bundle/document hashes fail the lifecycle check.
+- **Given:** An installed app has a live Host, enrolled Guardian and active Bun generation with exact process identities.
+- **When:** Exercise healthy quit/relaunch and separate Bun-only, Host-only and Guardian-only death cases.
+- **Then:** Required cleanup and bounded subsequent launch succeed, with link revocation and owned-group retirement.
+Independent PID/start identities and descendant census show no remaining owned children or stale authenticated link.
+Installed bundle and user-document hashes remain unchanged.
+- **Negative control:** Exercise Guardian-only loss independently of Bun-only and Host-only controls.
+  - **Single fault:** Kill only the enrolled Guardian while Host is initially alive and Bun is active.
+  - **At-risk precondition:** Record Host, Guardian and Bun PID/start identities and generation enrollment
+before termination. Confirm the Host was not simultaneously terminated.
+  - **Expected RED:** A surviving owned child, stale authenticated link, changed bundle/document hash
+or failed required relaunch before the declared deadline fails the test.
+
+Declare bounded observation and relaunch deadlines before the run, not after seeing its outcome.
+Healthy quit/relaunch remains the positive control. Known simultaneous-death and detached-descendant limits
+do not exempt Guardian-only loss. If this required case fails, keep AC-13 open with the existing runtime
+owner named for the remaining work. Do not silently waive the requirement or add an unreviewed supervisor.
 
 ### AC-14: Qualification identity
 
@@ -196,17 +223,24 @@ pass on exact implementation heads. Future-platform design/issue mapping is pres
 
 ### AC-17: Present but unqualified executable module
 
-- **Given:** A disposable signed bundle has valid boot, policy and runtime facts.
-- **When:** Its independently qualified entry attempts to import an in-bundle executable marker module.
-- **Then:** Only an independently qualified module may execute. A valid code seal is insufficient.
-The independently qualified and sealed version of the marker imports under the same runtime and bundle settings.
-- **Negative control:** Use a separate present-but-unqualified module fixture.
-  - **Single fault:** Include one executable marker module without admitting its identity to the independently qualified graph.
-  - **At-risk precondition:** Surrounding signing, boot, policy and runtime facts remain valid.
-The qualified entry reaches the graph owner's admission decision for the marker.
-  - **Expected RED:** The existing graph owner or installed resolver refuses the unqualified marker before execution.
-If Pack rejects the fixture before signing, record that exact owner's refusal, not installed-resolver acceptance.
-Exercise the loading paths, restarts and relocation controls specified in the test plan.
+- **Given:** A disposable validly signed local bundle has consistent boot, policy and runtime facts.
+An executable marker is physically present but excluded from the independently qualified graph.
+- **When:** After relocation, a qualified entry attempts static and dynamic imports, require and worker entry points.
+- **Then:** Record two distinct verdicts: Pack producer refusal and installed-resolver refusal.
+The installed resolver denies the present unqualified marker before execution, including after Bun restart.
+An independently qualified version of that marker executes under otherwise identical bundle/runtime conditions.
+- **Negative control:** Require a second fixture reaching installed admission in addition to the Pack refusal fixture.
+  - **Single fault:** Exclude the present executable marker's identity from the independently qualified graph.
+  - **At-risk precondition:** Valid signatures, boot, policy and runtime facts admit the disposable bundle.
+The qualified entry reaches installed module admission for the marker after relocation.
+  - **Expected RED:** Marker execution or missing installed-owner refusal fails installed-resolver acceptance.
+A Pack refusal alone cannot satisfy this verdict.
+
+Build the disposable installed fixture through reviewed test-fixture construction and normal local signing.
+Do not disable installed admission or qualify the excluded marker to make the fixture reach its owner.
+Record which owner refused each fixture. If earlier admission prevents reaching the installed resolver,
+record that coverage blocker and keep this verdict unpassed until a reviewed fixture reaches the owner.
+Repeat all four loading paths after restart and relocation, with the qualified positive control.
 
 A failed required cleanup, trust, graph or installed workflow criterion blocks this
 mission's completion. A narrower passing subset must not be relabeled full acceptance.
