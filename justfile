@@ -74,9 +74,11 @@ mermaid-full: mermaid-test mermaid-check mermaid-render-check
 # Verify the package compiler and runtime contracts from one frozen dependency graph.
 typescript:
     cd packages/@keld/kipc && bun install --frozen-lockfile
+    # KIPC's TypeScript project traverses API sources which import @keld/kipc.
+    # Materialize the API's declared local link before either typecheck.
+    cd packages/@keld/api && bun install --frozen-lockfile
     cd packages/@keld/kipc && bun run typecheck
     cd packages/@keld/kipc && bun test
-    cd packages/@keld/api && bun install --frozen-lockfile
     cd packages/@keld/api && bun run typecheck
     cd packages/@keld/api && bun test
     cd packages/@keld/electron && bun install --frozen-lockfile
