@@ -5,10 +5,12 @@ use super::{BuildError, local_archive::LocalArchiveCandidate, local_source};
 use sha2::{Digest as _, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
-use std::os::windows::fs::OpenOptionsExt as _;
+use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+};
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct Completion {
@@ -21,6 +23,35 @@ const WAIT: Duration = Duration::from_secs(300);
 fn refuse(e: impl std::fmt::Display) -> BuildError {
     BuildError::input("local manifest signing session", e)
 }
+
+// Create-new and fsync a complete receipt BEFORE creating an empty readiness
+// marker. Opening this exact leaf with deny-write sharing also proves its
+// publisher's write handle is closed. Only a transient sharing violation can
+// be retried; a malformed, reparse or nonempty marker fails closed.
+fn open_ready_marker(path: &Path) -> Result<Option<File>, BuildError> {
+    let pin = match OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound || error.raw_os_error() == Some(32) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(refuse(error)),
+    };
+    let metadata = pin.metadata().map_err(refuse)?;
+    if !metadata.is_file()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || metadata.len() != 0
+    {
+        return Err(refuse("readiness marker must be an empty, regular leaf"));
+    }
+    Ok(Some(pin))
+}
 /// Only a verified response to this execution's literal manifest constructs this.
 /// Not a catalog, release authorization, installation or Strict capability.
 pub(super) struct SignedManifest<'candidate, 'images> {
@@ -28,6 +59,8 @@ pub(super) struct SignedManifest<'candidate, 'images> {
     manifest: PathBuf,
     signature: PathBuf,
     _completion: local_source::PinnedFile,
+    // Ready is a zero-byte create-new signal, independently held read-only.
+    _ready: File,
     _manifest: File,
     _signature: local_source::PinnedFile,
     _request: File,
@@ -78,8 +111,9 @@ pub(super) fn wait<'candidate, 'images>(
     let manifest = root.join("app.keld.manifest.json");
     let signature = root.join("app.keld.manifest.sig");
     let completion = root.join("manifest-signing-complete.json");
-    // Never reuse a stale signature, including a dangling link.
-    for output in [&signature, &completion] {
+    let ready = root.join("manifest-signing-complete.ready");
+    // Neither a signed result nor its readiness signal may be reused.
+    for output in [&signature, &completion, &ready] {
         match std::fs::symlink_metadata(output) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(refuse(e)),
@@ -117,11 +151,13 @@ pub(super) fn wait<'candidate, 'images>(
     );
     std::io::stdout().flush().map_err(refuse)?;
     let start = Instant::now();
-    loop {
-        match std::fs::symlink_metadata(&completion) {
-            Ok(_) => break,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(refuse(e)),
+    // A retained FILE_SHARE_READ directory guard correctly refuses Windows
+    // hard-link/rename publication. Instead the controller closes and fsyncs
+    // the create-new JSON, then creates a zero-byte ready leaf. Until ready is
+    // closed, even an existing JSON name is NOT eligible for observation.
+    let ready_pin = loop {
+        if let Some(pin) = open_ready_marker(&ready)? {
+            break pin;
         }
         if start.elapsed() >= WAIT {
             return Err(refuse(
@@ -129,7 +165,7 @@ pub(super) fn wait<'candidate, 'images>(
             ));
         }
         std::thread::sleep(Duration::from_millis(50));
-    }
+    };
     let mut complete = local_source::pin_file(&completion, 1024)?;
     let mut complete_bytes = Vec::new();
     complete
@@ -165,6 +201,7 @@ pub(super) fn wait<'candidate, 'images>(
     Ok(SignedManifest {
         candidate,
         _completion: complete,
+        _ready: ready_pin,
         manifest,
         signature,
         _manifest: retained,
@@ -201,6 +238,52 @@ mod tests {
                 &vec![0; 1024 * 1024 + 1]
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn ready_marker_requires_closed_empty_leaf_under_exact_directory_guard() {
+        let root = tempfile::tempdir().expect("fresh native fixture");
+        let _guard = crate::boot::open_windows_input_directory_guard(root.path())
+            .expect("retained read-only parent");
+        let completion = root.path().join("manifest-signing-complete.json");
+        let ready = root.path().join("manifest-signing-complete.ready");
+        // An otherwise complete JSON file is never its own readiness signal.
+        std::fs::write(&completion, b"complete but not yet published")
+            .expect("create exact receipt");
+        assert!(open_ready_marker(&ready).expect("missing ready").is_none());
+        let writer = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&ready)
+            .expect("create-new marker under retained directory");
+        writer.sync_all().expect("flush empty marker");
+        assert!(
+            open_ready_marker(&ready)
+                .expect("writer still owns marker")
+                .is_none(),
+            "readiness must not be observed until the writer closes"
+        );
+        drop(writer);
+        let pinned = open_ready_marker(&ready)
+            .expect("closed marker")
+            .expect("marker now visible");
+        assert_eq!(pinned.metadata().expect("ready metadata").len(), 0);
+        assert!(
+            OpenOptions::new().write(true).open(&ready).is_err(),
+            "retained ready pin denies a later writer"
+        );
+        assert!(
+            std::fs::rename(&ready, root.path().join("wrong.ready")).is_err(),
+            "retained directory guard denies namespace replacement"
+        );
+        drop(pinned);
+        let malformed = root.path().join("nonempty.ready");
+        std::fs::write(&malformed, b"unexpected").expect("nonempty control");
+        assert!(
+            open_ready_marker(&malformed).is_err(),
+            "nonempty marker is not a completion signal"
         );
     }
 }
