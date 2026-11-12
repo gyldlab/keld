@@ -46,7 +46,7 @@ Nothing else. No `src-tauri/`, no Rust files, no new IDL in the migration path.
 
 Current boot consumers use root fields such as `name` and `entry`; the original-app
 integration also owns root `version`. The draft
-[local macOS packaging successor](../specs/macos-local-app-packaging.md) proposes one
+[local macOS packaging successor](../specs/gh1404-macos-local-app-packaging/index.md) proposes one
 root `id` alongside those fields and a bounded literal `keld.build.ts` subset. It
 does not make the nested `app` example below a second accepted metadata source.
 [PR #1407's delegated implementation approval](https://github.com/gyldlab/keld/pull/1407#pullrequestreview-5787262030)

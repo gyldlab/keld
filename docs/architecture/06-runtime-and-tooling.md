@@ -516,7 +516,7 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
 
 **Current versus proposed:** `keld-pack` implements the separately scoped Windows
 update/container primitives; format names alone do not implement installers.
-[GH-1404's draft local macOS successor](../specs/macos-local-app-packaging.md)
+[GH-1404's draft local macOS successor](../specs/gh1404-macos-local-app-packaging/index.md)
 specifies native Apple `codesign` and `hdiutil` for a local ad-hoc `.app`/DMG,
 with a separately reviewed installed-bundle admission contract. The exact
 specification received [delegated implementation approval](https://github.com/gyldlab/keld/pull/1407#pullrequestreview-5787262030)
