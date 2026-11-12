@@ -1,6 +1,6 @@
 # path	lines	bytes	line_overflow	structure
 docs/specs/gh1091-bun-native-tooling.md	-	-	-	exempt
-docs/specs/gh1095-request-error-codes.md	912	60578	2916	exempt
+docs/specs/gh1095-request-error-codes.md	908	60540	2916	exempt
 docs/specs/gh1149-settled-source-reclamation.md	-	-	1733	exempt
 docs/specs/gh1188-windows-window-adapter.md	1677	235798	78454	exempt
 docs/specs/gh508-kipc-channel-table.md	897	64352	397	exempt

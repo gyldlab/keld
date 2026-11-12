@@ -11,8 +11,10 @@
 {"schema":"keld.kel142-approval/v1","decision":"approved","approved_content_head":"2e8da1b7ba19783eceb671093620419664537415","linear_comment_id":"53510bc6-66e0-441c-8992-010b6a8719e6","source":"active-user-voice-session-2026-09-30"}
 
 #1321 moved this spec into the directory layout. The approved rules are unchanged, and the
-approved numbers remain in the headings, so §4.1, §5.1 and §7 stay valid. The approved text
-has no FACT, INFERRED or UNKNOWN labels. UNKNOWN whether each claim still holds at `Pin`.
+approved numbers remain in the part headings. Legacy section references require a named
+part and heading, not the directory alone. The historical design assumptions are dated
+in [design-api](design-api.md#3-historical-design-facts-approved-2026-09-30), with separately
+verified API ownership facts at `Pin`. Other historical claims remain unqualified.
 
 ## 1. Goal & non-goals
 

@@ -3151,8 +3151,8 @@ fn the_committed_gh1095_row_is_below_its_seal() {
     let path = "docs/specs/gh1095-request-error-codes.md";
     let text = history.text_at(BASELINE_SEAL, path).expect("seal holds it");
     let at_seal = measure(&Doc::parse(path, &text)).bytes;
-    let committed = fs::read_to_string(root.join(SPEC_ROOT).join(BASELINE_FILE))
-        .expect("run from the repository root");
+    let symlinks = symlink_set(&history.tracked_files().expect("tracked policy inputs"));
+    let committed = read_policy_text(&root, BASELINE, &symlinks).expect("regular bounded baseline");
     let mut report = Report::default();
     let rows = parse_baseline(BASELINE, &committed, &mut report);
     assert!(report.findings.is_empty(), "{:?}", report.findings);
@@ -5223,13 +5223,14 @@ fn baseline_rows_prints_what_check_accepts() {
 #[test]
 fn baseline_rows_reproduces_the_committed_baseline() {
     let root = env::current_dir().expect("cwd");
-    let committed = fs::read_to_string(root.join(SPEC_ROOT).join(BASELINE_FILE))
-        .expect("run from the repository root")
-        .replace("\r\n", "\n");
     let history = GitHistory {
         root: &root,
         base_ref: "HEAD".to_owned(),
     };
+    let symlinks = symlink_set(&history.tracked_files().expect("tracked policy inputs"));
+    let committed = read_policy_text(&root, BASELINE, &symlinks)
+        .expect("regular bounded baseline")
+        .replace("\r\n", "\n");
     assert_eq!(
         baseline_rows_at(&root, &history).expect("rows print"),
         committed
@@ -5910,4 +5911,131 @@ fn oversized_blocker_identity_is_shared_by_tasks_and_index() {
         "- **Blocked by:** B-4294967297",
     );
     assert_only(&fixture, Rule::IdDangling, "a different oversized blocker");
+}
+
+#[test]
+fn policy_inputs_reject_index_links_and_oversize_before_parsing() {
+    for path in [BASELINE, TEMPLATE] {
+        let mut fixture = Fixture::new();
+        assert!(fixture.try_run().is_ok(), "regular control");
+        fixture.symlinks.push(path.to_owned());
+        let error = fixture.try_run().err().expect("indexed link refused");
+        assert!(error.contains("symlink"), "{path}: {error}");
+
+        let fixture = Fixture::new();
+        fixture.write(path, &"x".repeat(MAX_POLICY_BYTES as usize + 1));
+        let error = fixture.try_run().err().expect("oversize refused");
+        assert!(error.contains("exceeds"), "{path}: {error}");
+    }
+}
+
+#[test]
+fn policy_reader_checks_regular_type_utf8_and_byte_boundary() {
+    let fixture = Fixture::new();
+    let symlinks = BTreeSet::new();
+    for size in [0, MAX_POLICY_BYTES as usize] {
+        fixture.write(BASELINE, &"x".repeat(size));
+        assert_eq!(
+            read_policy_text(&fixture.root, BASELINE, &symlinks)
+                .expect("bounded regular text")
+                .len(),
+            size
+        );
+    }
+    fixture.write_bytes(BASELINE, &[0xff]);
+    assert!(
+        read_policy_text(&fixture.root, BASELINE, &symlinks)
+            .expect_err("invalid UTF-8")
+            .contains("UTF-8")
+    );
+    fs::remove_file(fixture.root.join(BASELINE)).expect("remove fixture file");
+    fs::create_dir(fixture.root.join(BASELINE)).expect("replace with directory");
+    assert!(
+        read_policy_text(&fixture.root, BASELINE, &symlinks)
+            .expect_err("directory refused")
+            .contains("regular file")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn policy_inputs_reject_native_links_and_linked_ancestors() {
+    use std::os::unix::fs::symlink;
+
+    for path in [BASELINE, TEMPLATE] {
+        let fixture = Fixture::new();
+        let outside = Fixture::new();
+        fs::remove_file(fixture.root.join(path)).expect("remove fixture file");
+        symlink(outside.root.join(path), fixture.root.join(path)).expect("finite link");
+        let error = fixture.try_run().err().expect("native link refused");
+        assert!(error.contains("symlink"), "{path}: {error}");
+    }
+    for dir in ["docs/specs", "docs/agents", "docs"] {
+        let fixture = Fixture::new();
+        let outside = Fixture::new();
+        fs::remove_dir_all(fixture.root.join(dir)).expect("remove fixture directory");
+        symlink(outside.root.join(dir), fixture.root.join(dir)).expect("finite ancestor link");
+        let error = fixture.try_run().err().expect("linked ancestor refused");
+        assert!(error.contains("symlink"), "{dir}: {error}");
+    }
+}
+
+#[test]
+fn markdown_line_anchors_require_an_existing_positive_line() {
+    for extension in ["md", "MD", "markdown", "mdx"] {
+        for (fragment, valid) in [
+            ("L1", true),
+            ("L2", true),
+            ("present", true),
+            ("L", false),
+            ("L0", false),
+            ("L3", false),
+            ("L999999999999999999999999999999", false),
+        ] {
+            let fixture = Fixture::new();
+            let target = format!("docs/guide.{extension}");
+            fixture.write(&target, "# Present\nsecond line\n");
+            link_from_design(&fixture, &format!("../../guide.{extension}#{fragment}"));
+            if valid {
+                assert!(
+                    fixture.rules().is_empty(),
+                    "{extension}#{fragment}: {:?}",
+                    fixture.rules()
+                );
+            } else {
+                assert_only(&fixture, Rule::Anchor, fragment);
+            }
+        }
+    }
+}
+
+#[test]
+fn current_blockers_require_complete_unique_statements() {
+    let index = format!("{DIR}/index.md");
+    for invalid in [
+        "- B-1\n- none",
+        "- B-1 is closed",
+        "- B-1\n- B-1",
+        "- B-1\n- B-01",
+        "- B-1\nunaccounted prose",
+        "```text\nB-1\n```",
+        "",
+    ] {
+        let fixture = Fixture::new();
+        fixture.replace(&index, "- B-1\n", &format!("{invalid}\n"));
+        assert_only(&fixture, Rule::OpenBlockers, invalid);
+    }
+    for valid in ["- B-1", "- **B-1**", "- [B-1](delivery.md#b-1-stop)"] {
+        let fixture = Fixture::new();
+        fixture.replace(&index, "- B-1\n", &format!("{valid}\n"));
+        assert!(fixture.rules().is_empty(), "{valid}: {:?}", fixture.rules());
+    }
+    let fixture = Fixture::new();
+    fixture.replace(
+        &format!("{DIR}/delivery.md"),
+        "**Status:** open",
+        "**Status:** closed",
+    );
+    fixture.replace(&index, "- B-1\n", "none\n");
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
 }

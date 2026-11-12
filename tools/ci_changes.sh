@@ -909,10 +909,10 @@ classify_path() {
 
         # These tools own the generated-doc and Mermaid contracts.
         docs/research | docs/* | llms.txt | llms-full.txt | README.md | CONTRIBUTING.md | \
-        tools/llms_docs.rs | tools/mermaid_docs.rs | tools/mermaid_render_check.sh | tools/mermaid-render-config.json)
+        tools/llms_docs.rs | tools/mermaid_docs.rs | tools/markdown_paths.rs | tools/mermaid_render_check.sh | tools/mermaid-render-config.json)
             docs="$TRUE"
             case "$changed_file" in
-                docs/research | tools/mermaid_docs.rs | tools/mermaid_render_check.sh | tools/mermaid-render-config.json)
+                docs/research | tools/mermaid_docs.rs | tools/markdown_paths.rs | tools/mermaid_render_check.sh | tools/mermaid-render-config.json)
                     mermaid="$TRUE"
                     ;;
             esac

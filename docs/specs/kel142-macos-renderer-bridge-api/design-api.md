@@ -5,7 +5,21 @@ Owns: section 4, the design constraints and the frozen public API
 
 ## 4. Design: constraints and public API
 
-### 3. Current facts that constrain the design
+### 3. Historical design facts (approved 2026-09-30)
+
+The numbered statements below preserve the approved design's historical assumptions.
+They are not assertions about implementation at the index's later source pin.
+At `606a47e319e8e7a43530e3f249ff22416fe46274`:
+
+- FACT: `@keld/api` exists and exports `app`, `channels`, and `echoChannel`
+  (`packages/@keld/api/src/index.ts:1-10`).
+- FACT: `@keld/electron` is a compatibility facade over `@keld/api`;
+  generic lifecycle/session ownership is in the latter
+  (`packages/@keld/electron/src/app.ts:1-8`).
+- UNKNOWN: this migration has not requalified historical statements 3-6
+  against that pin. The approved API contract below is unchanged.
+
+Historical statements:
 
 1. `@keld/api` is specified but absent.
 2. `@keld/electron` currently owns a direct `LifecycleLink` over the canonical

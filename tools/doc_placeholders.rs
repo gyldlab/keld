@@ -18,6 +18,10 @@
 )]
 mod markdown_contract;
 
+mod markdown_paths;
+
+use markdown_paths::is_markdown_path;
+
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
@@ -203,7 +207,7 @@ fn collect_markdown(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<(
                 continue;
             }
             collect_markdown(root, &path, out)?;
-        } else if path.extension().is_some_and(|ext| ext == "md") {
+        } else if is_markdown_path(&path) {
             out.push(path);
         }
     }
@@ -464,5 +468,46 @@ mod tests {
         actual.dedup();
         assert_eq!(actual.len(), KNOWN_PLACEHOLDERS.len(), "duplicate entry");
         assert_eq!(sorted, KNOWN_PLACEHOLDERS.to_vec(), "keep the list sorted");
+    }
+
+    #[test]
+    fn actual_document_scan_checks_every_markdown_extension() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "keld-placeholder-extensions-{}-{nonce}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).expect("create exclusive fixture");
+        fs::create_dir(root.join("docs")).unwrap();
+        fs::create_dir(root.join(".agents")).unwrap();
+        let slots = KNOWN_PLACEHOLDERS
+            .iter()
+            .map(|name| format!("{{{name}}}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        fs::write(root.join("README.md"), slots).unwrap();
+        fs::write(root.join("docs/ignored.txt"), "{BS}").unwrap();
+        assert!(check(&root).is_ok());
+        for extension in markdown_paths::MARKDOWN_EXTENSIONS {
+            for spelling in [extension.to_owned(), extension.to_ascii_uppercase()] {
+                let path = root.join(format!("docs/example.{spelling}"));
+                fs::write(&path, "ordinary prose").unwrap();
+                assert!(check(&root).is_ok(), "{spelling}");
+                fs::write(&path, "{BS}").unwrap();
+                let error = check(&root).expect_err("discovered placeholder must fail");
+                assert!(error.contains("unknown template placeholder"), "{error}");
+                assert!(error.contains(&format!("example.{spelling}")), "{error}");
+                fs::remove_file(path).unwrap();
+            }
+        }
+        fs::remove_dir_all(root).expect("remove owned extension fixture");
     }
 }

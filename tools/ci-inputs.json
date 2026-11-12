@@ -312,7 +312,7 @@
         "*.[sS][cC][dD]",
         "*.[wW][oO][rR][kK][bB][oO][oO][kK]"
       ],
-      "contract": "Self-tests use fixtures. The live gate reads docs/specs, the template, every tracked file with an extension in MARKDOWN_EXTENSIONS of tools/spec_structure.rs, in any case, relative link targets and Git history. A link target outside these inputs is a LINK-CODE failure, so a change that skips this gate cannot stale a spec link.",
+      "contract": "Self-tests use fixtures. The live gate reads docs/specs, the template, every tracked file with an extension in MARKDOWN_EXTENSIONS of tools/markdown_paths.rs, in any case, relative link targets and Git history. A link target outside these inputs is a LINK-CODE failure, so a change that skips this gate cannot stale a spec link.",
       "reader_set": "policy-readers"
     },
     {
@@ -402,6 +402,7 @@
       ],
       "inputs": [
         "tools/mermaid*",
+        "tools/markdown_paths.rs",
         "tools/markdown_contract.rs",
         "tools/repo_path_contract.rs",
         "tools/justfile_contract.rs",

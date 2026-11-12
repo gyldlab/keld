@@ -31,10 +31,14 @@ mod markdown_contract;
 #[path = "git_base_contract.rs"]
 mod git_base_contract;
 
+mod markdown_paths;
+#[cfg(test)]
+use markdown_paths::MARKDOWN_EXTENSIONS;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read};
 use std::path::{Component, Path};
 use std::process::{Command, Output};
 
@@ -49,6 +53,8 @@ const BASELINE_FILE: &str = ".spec-baseline.tsv";
 const BASELINE_HEADER: &str = "# path\tlines\tbytes\tline_overflow\tstructure";
 const TEMPLATE: &str = "docs/agents/spec-template.md";
 const INDEX_FILE: &str = "index.md";
+/// Policy files are small text inputs, never an unbounded stream.
+const MAX_POLICY_BYTES: u64 = 1024 * 1024;
 
 /// Line cap the repository owner set for one spec file.
 const MAX_LINES: usize = 500;
@@ -129,23 +135,6 @@ const ALL_LABELS: [&[&str]; 6] = [
 ];
 /// A heading with this text marks a spec, wherever the file sits.
 const SPEC_SIGNATURE: &str = "acceptance criteria";
-/// File extensions GitHub renders as Markdown, so a spec can land under any of them: every
-/// name of the Markdown family in `github/markup` and Linguist.
-const MARKDOWN_EXTENSIONS: [&str; 13] = [
-    "litcoffee",
-    "livemd",
-    "markdown",
-    "md",
-    "mdown",
-    "mdwn",
-    "mdx",
-    "mkd",
-    "mkdn",
-    "mkdown",
-    "ronn",
-    "scd",
-    "workbook",
-];
 /// The one header field that can stay `UNKNOWN`, as a `migrated:` slot.
 const HEADER_OWNER_SLOT: &str = "header.Owner";
 /// Stable ID kinds and the one section that may define each.
@@ -3195,7 +3184,7 @@ fn symlink_on_path(root: &Path, resolved: &str, symlinks: &BTreeSet<String>) -> 
 
 fn check_links(root: &Path, doc: &Doc, symlinks: &BTreeSet<String>, report: &mut Report) {
     // A spec can link one target many times. Each parse of it costs the whole target.
-    let mut anchors: BTreeMap<String, Option<BTreeSet<String>>> = BTreeMap::new();
+    let mut anchors: BTreeMap<String, Option<(BTreeSet<String>, usize)>> = BTreeMap::new();
     let mut labels: BTreeMap<&str, usize> = BTreeMap::new();
     for (index, label) in doc.labels() {
         if let Some(first) = labels.get(label) {
@@ -3273,17 +3262,14 @@ fn check_links(root: &Path, doc: &Doc, symlinks: &BTreeSet<String>, report: &mut
             );
             continue;
         }
-        if fragment.is_empty()
-            || !is_markdown_path(&resolved)
-            || fragment.starts_with('L') && fragment[1..].bytes().all(|byte| byte.is_ascii_digit())
-        {
+        if fragment.is_empty() || !is_markdown_path(&resolved) {
             continue;
         }
         let slugs = anchors.entry(resolved.clone()).or_insert_with(|| {
             let raw = fs::read_to_string(&on_disk).ok()?;
-            Some(heading_slugs(&Doc::parse(&resolved, &raw)))
+            Some((heading_slugs(&Doc::parse(&resolved, &raw)), raw.lines().count()))
         });
-        let Some(slugs) = slugs else {
+        let Some((slugs, lines)) = slugs else {
             report.add(
                 Rule::Anchor,
                 &doc.rel,
@@ -3292,12 +3278,22 @@ fn check_links(root: &Path, doc: &Doc, symlinks: &BTreeSet<String>, report: &mut
             );
             continue;
         };
-        if !slugs.contains(&fragment) {
+        let valid = if let Some(digits) = fragment
+            .strip_prefix('L')
+            .filter(|digits| digits.bytes().all(|byte| byte.is_ascii_digit()))
+        {
+            digits
+                .parse::<usize>()
+                .is_ok_and(|line| line > 0 && line <= *lines)
+        } else {
+            slugs.contains(&fragment)
+        };
+        if !valid {
             report.add(
                 Rule::Anchor,
                 &doc.rel,
                 index + 1,
-                format!("anchor `#{fragment}` is not a heading in `{resolved}`"),
+                format!("anchor `#{fragment}` is not a heading or existing line in `{resolved}`"),
             );
         }
     }
@@ -4081,14 +4077,38 @@ fn check_open_blockers(
     };
     let open = blockers(Some(true));
     let unsettled = blockers(None);
-    let listed: BTreeSet<String> = (headings[at].index + 1..index.body_end(headings, at))
-        .filter_map(|line| index.line(line).prose())
-        .flat_map(|line| id_tokens(&line.text))
-        .filter(|token| token.kind == "B" && !token.foreign)
-        .map(|token| token.number)
-        .filter(|number| !unsettled.contains(number))
-        .collect();
-    if listed != open {
+    let mut listed = BTreeSet::new();
+    let mut none = false;
+    let mut valid = true;
+    let mut statements = 0;
+    for line in headings[at].index + 1..index.body_end(headings, at) {
+        let rendered = index.line(line);
+        let Some(text) = rendered
+            .prose()
+            .map(|inline| inline.text.as_str())
+            .or_else(|| rendered.code())
+        else {
+            continue;
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        statements += 1;
+        if rendered.field().is_none() {
+            valid = false;
+        }
+        if text == "none" {
+            none = true;
+        } else if let Some(("B", number, end)) = parse_id(text) {
+            valid &= end == text.len() && listed.insert(number);
+        } else {
+            valid = false;
+        }
+    }
+    valid &= statements > 0 && (!none || statements == 1);
+    listed.retain(|number| !unsettled.contains(number));
+    if !valid || listed != open {
         report.add(
             Rule::OpenBlockers,
             &index.rel,
@@ -4747,6 +4767,45 @@ fn settle_unknowns(
     }
 }
 
+/// Read a policy input only after rejecting indexed and native symlinks. The checkout
+/// is assumed stable during validation; this is not a concurrent-mutation sandbox.
+fn read_policy_text(
+    root: &Path,
+    rel: &str,
+    symlinks: &BTreeSet<String>,
+) -> Result<String, String> {
+    let fail = |detail| format!("SPEC-STRUCTURE: policy input `{rel}`: {detail}");
+    if let Some(link) = symlink_on_path(root, rel, symlinks) {
+        return Err(fail(format!(
+            "passes through symlink `{link}`; replace it with a regular file"
+        )));
+    }
+    for ancestor in Path::new(rel).ancestors().skip(1) {
+        let metadata =
+            fs::symlink_metadata(root.join(ancestor)).map_err(|error| fail(error.to_string()))?;
+        if !metadata.is_dir() {
+            return Err(fail("an ancestor is not a regular directory".to_owned()));
+        }
+    }
+    let path = root.join(rel);
+    let metadata = fs::symlink_metadata(&path).map_err(|error| fail(error.to_string()))?;
+    if !metadata.is_file() {
+        return Err(fail("is not a regular file".to_owned()));
+    }
+    if metadata.len() > MAX_POLICY_BYTES {
+        return Err(fail(format!("exceeds {MAX_POLICY_BYTES} bytes")));
+    }
+    let file = fs::File::open(&path).map_err(|error| fail(error.to_string()))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_POLICY_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| fail(error.to_string()))?;
+    if bytes.len() as u64 > MAX_POLICY_BYTES {
+        return Err(fail(format!("exceeds {MAX_POLICY_BYTES} bytes")));
+    }
+    String::from_utf8(bytes).map_err(|error| fail(format!("is not UTF-8: {error}")))
+}
+
 fn read_doc(root: &Path, rel: &str) -> Result<Doc, String> {
     let raw = fs::read_to_string(root.join(rel))
         .map_err(|error| format!("SPEC-STRUCTURE: cannot read `{rel}`: {error}"))?;
@@ -4884,8 +4943,13 @@ fn check_directory(
 
 /// The one `markdown` fence a reader of the template sees, which must itself pass the
 /// standard. A comment, an HTML block, a quote or indented code shows no copy source.
-fn check_template(root: &Path, report: &mut Report) -> Result<(), String> {
-    let doc = read_doc(root, TEMPLATE)?;
+fn check_template(
+    root: &Path,
+    symlinks: &BTreeSet<String>,
+    report: &mut Report,
+) -> Result<(), String> {
+    let raw = read_policy_text(root, TEMPLATE, symlinks)?;
+    let doc = Doc::parse(TEMPLATE, &raw);
     // GitHub may hide a fence this view reads, so the template has no such text.
     check_unread(&doc, report);
     let copies: Vec<_> = doc
@@ -4924,9 +4988,7 @@ fn check_template(root: &Path, report: &mut Report) -> Result<(), String> {
 
 /// True for a path GitHub renders as Markdown.
 fn is_markdown_path(path: &str) -> bool {
-    path.rsplit_once('.').is_some_and(|(_, extension)| {
-        MARKDOWN_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
-    })
+    markdown_paths::is_markdown_path(Path::new(path))
 }
 
 /// True for rendered text a reader takes for the spec heading, whatever its spacing.
@@ -5038,7 +5100,14 @@ fn check_outside(root: &Path, sealed: &BTreeSet<String>, tracked: &[Tracked], re
                 continue;
             }
         }
-        let bytes = match fs::read(root.join(rel)) {
+        let read = if rel == TEMPLATE {
+            read_policy_text(root, rel, &symlinks)
+                .map(String::into_bytes)
+                .map_err(std::io::Error::other)
+        } else {
+            fs::read(root.join(rel))
+        };
+        let bytes = match read {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 report.absent_markdown += 1;
@@ -5120,8 +5189,9 @@ fn symlink_set(tracked: &[Tracked]) -> BTreeSet<String> {
 fn check_tree(root: &Path, config: &Config, history: &dyn History) -> Result<Report, String> {
     let mut report = Report::default();
     let baseline_rel = format!("{SPEC_ROOT}/{BASELINE_FILE}");
-    let baseline_text = fs::read_to_string(root.join(&baseline_rel))
-        .map_err(|error| format!("SPEC-STRUCTURE: cannot read `{baseline_rel}`: {error}"))?;
+    let tracked = history.tracked_files()?;
+    let symlinks = symlink_set(&tracked);
+    let baseline_text = read_policy_text(root, &baseline_rel, &symlinks)?;
     let rows = parse_baseline(&baseline_rel, &baseline_text, &mut report);
 
     if rows.len() != config.rows {
@@ -5139,8 +5209,6 @@ fn check_tree(root: &Path, config: &Config, history: &dyn History) -> Result<Rep
     }
     let sealed = history.paths_at(config.seal, SPEC_ROOT)?;
     check_ratchet(&baseline_rel, &rows, history, &mut report)?;
-    let tracked = history.tracked_files()?;
-    let symlinks = symlink_set(&tracked);
 
     let mut units = Vec::new();
     let entries = fs::read_dir(root.join(SPEC_ROOT))
@@ -5293,7 +5361,7 @@ fn check_tree(root: &Path, config: &Config, history: &dyn History) -> Result<Rep
         }
     }
     check_outside(root, &sealed, &tracked, &mut report);
-    check_template(root, &mut report)?;
+    check_template(root, &symlinks, &mut report)?;
     report
         .findings
         .sort_by(|left, right| (&left.file, left.line).cmp(&(&right.file, right.line)));
