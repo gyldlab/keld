@@ -3274,7 +3274,7 @@ fn check_links(root: &Path, doc: &Doc, symlinks: &BTreeSet<String>, report: &mut
             continue;
         }
         if fragment.is_empty()
-            || !resolved.ends_with(".md")
+            || !is_markdown_path(&resolved)
             || fragment.starts_with('L') && fragment[1..].bytes().all(|byte| byte.is_ascii_digit())
         {
             continue;

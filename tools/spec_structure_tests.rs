@@ -3432,6 +3432,34 @@ fn every_rendered_markdown_extension_is_censused() {
 }
 
 #[test]
+fn anchors_are_checked_for_every_rendered_markdown_extension() {
+    for extension in MARKDOWN_EXTENSIONS {
+        for spelling in [extension.to_owned(), extension.to_ascii_uppercase()] {
+            for fragment in ["missing", "existing", ""] {
+                let mut fixture = Fixture::new();
+                fixture.track(&format!("docs/guide.{spelling}"), b"# Existing\n");
+                let target = format!("../../guide.{spelling}#{fragment}");
+                link_from_design(&fixture, &target);
+                if fragment == "missing" {
+                    assert_only(&fixture, Rule::Anchor, &target);
+                } else {
+                    assert!(fixture.rules().is_empty(), "{target}: {:?}", fixture.rules());
+                }
+            }
+        }
+    }
+    let mut fixture = Fixture::new();
+    fixture.track("docs/guide.Md", b"# Existing\n");
+    link_from_design(&fixture, "../../guide.Md#missing");
+    assert_only(&fixture, Rule::Anchor, "mixed-case Markdown extension");
+
+    let fixture = Fixture::new();
+    fixture.write("docs/guide.txt", "# Existing\n");
+    link_from_design(&fixture, "../../guide.txt#missing");
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+}
+
+#[test]
 fn a_link_may_reach_any_documentation_but_no_code() {
     for path in [
         "docs/a.png",
