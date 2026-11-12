@@ -99,3 +99,40 @@ test("boxed native primitives refuse without reading caller-defined type getters
     field: 9,
   });
 });
+
+test("RegExp with a replaced prototype keeps its native type refusal", () => {
+  const stripped = Object.setPrototypeOf(/plain/, null);
+  expect(() => encodeEndpointValue(stripped)).toThrow(
+    "unsupported RegExp object",
+  );
+
+  const value = /hostile+/gu;
+  let getterCalls = 0;
+  Object.defineProperty(value, "constructor", {
+    get() {
+      getterCalls++;
+      throw new Error("constructor must not be read");
+    },
+  });
+  Object.defineProperty(value, Symbol.toStringTag, {
+    get() {
+      getterCalls++;
+      throw new Error("toStringTag must not be read");
+    },
+  });
+  Object.setPrototypeOf(value, null);
+  let caught: unknown;
+  try {
+    encodeEndpointValue(value);
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(CompatCodecError);
+  expect((caught as CompatCodecError).code).toBe("KELD-COMPAT-100");
+  expect((caught as CompatCodecError).kind).toBe("UnsupportedValue");
+  expect((caught as Error).message).toContain("unsupported RegExp object");
+  expect(getterCalls).toBe(0);
+  expect(decodeEndpointValue(encodeEndpointValue({ ok: true }))).toEqual({
+    ok: true,
+  });
+});

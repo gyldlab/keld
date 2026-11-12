@@ -23,8 +23,8 @@
  * Residual, by construction: a Proxy reports its target's own keys and hides
  * its internal slots, so a proxied native can only be reduced to its own data
  * fields; the wire stays valid and no copy of the hidden state is claimed.
- * `RegExp`, `Promise`, `Error`, `Blob` and `URL` keep only the prototype-chain
- * check, because no side-effect-free brand probe exists for them.
+ * `Promise`, `Error`, `Blob` and `URL` keep only the prototype-chain
+ * check; their side-effect-free native brand checks are not established here.
  */
 
 export const ENDPOINT_VALUE_LIMIT = 4_096;
@@ -107,6 +107,7 @@ const mapHas = Map.prototype.has;
 const setHas = Set.prototype.has;
 const charCodeAt = String.prototype.charCodeAt;
 const regexpExec = RegExp.prototype.exec;
+const regexpGlobal = ownDescriptor(RegExp.prototype, "global")!.get!;
 const dateTime = Date.prototype.getTime;
 const getUint16 = DataView.prototype.getUint16;
 const getFloat64 = DataView.prototype.getFloat64;
@@ -204,10 +205,10 @@ function detachedArray<T>(): T[] {
  * replaced still refuses instead of flattening to an empty record.
  *
  * Every probe below is spec-guaranteed to reject a receiver without the slot.
- * Deliberately absent: `RegExp.prototype.source` (spec-legal to answer "(?:)"
- * for any object, which would refuse every record on such an engine),
- * `RegExp.prototype.exec`/`Promise.prototype.then` (side effects on the probed
- * value). Those brands keep only the prototype-chain check.
+ * `RegExp.prototype.global` checks [[OriginalFlags]] without expanding the
+ * source pattern; only the intrinsic RegExp.prototype may return undefined.
+ * Deliberately absent: `RegExp.prototype.exec`/`Promise.prototype.then`
+ * (side effects on the probed value). Promise keeps a chain-only check.
  */
 const sharedBufferByteLength = sharedArrayBufferByteLength;
 const brandProbes: [string, (value: object) => unknown][] = [
@@ -217,6 +218,14 @@ const brandProbes: [string, (value: object) => unknown][] = [
   ["WeakMap", (value) => apply(weakMapHas, value, [{}])],
   ["WeakSet", (value) => apply(weakSetHas, value, [{}])],
   ["ArrayBuffer", (value) => apply(arrayBufferByteLength, value, [])],
+  [
+    "RegExp",
+    (value) => {
+      const flag = apply(regexpGlobal, value, []);
+      if (typeof flag !== "boolean") throw new TypeError("unbranded RegExp");
+      return flag;
+    },
+  ],
   // Boxed primitives also carry internal slots. Their captured valueOf
   // builtins refuse unbranded receivers without reading caller properties.
   ["Number", (value) => apply(boxedNumberValueOf, value, [])],
