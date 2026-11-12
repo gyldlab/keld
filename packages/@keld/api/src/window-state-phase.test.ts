@@ -150,6 +150,10 @@ console.log("PASS staged same canonical capture");
     for (const [source, staged] of [
       ["compat-control.generated.ts", "kipc-compat-control.ts"],
       ["runtime-process.generated.ts", "kipc-runtime-process.ts"],
+      // The Host-owned API now evaluates this same browser-safe codec before
+      // user code. Keep the staged direct-entry fixture's module graph exact,
+      // not a missing/misresolved package subpath.
+      ["endpoint-value-codec.ts", "kipc-endpoint-value-codec.ts"],
     ]) {
       writeFileSync(
         join(stage, staged),
@@ -189,6 +193,10 @@ console.log("PASS staged same canonical capture");
           .replaceAll(
             "@keld/kipc/runtime-process-facts",
             "./kipc-runtime-process.ts",
+          )
+          .replaceAll(
+            "@keld/kipc/endpoint-value-codec",
+            "./kipc-endpoint-value-codec.ts",
           )
           .replaceAll("@keld/kipc", "./kipc-transport.ts"),
       );

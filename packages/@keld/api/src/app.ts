@@ -1,3 +1,8 @@
+// The Host-owned API evaluates before user code and before the late Electron
+// facade. Capture the browser-safe endpoint codec's native collection probes
+// here, while Map and WeakMap are still the trusted runtime intrinsics. The
+// later facade import must reuse this exact module, not trust mutated globals.
+import "@keld/kipc/endpoint-value-codec";
 import type { MenuRequestV1, MenuInstallReceipt } from "./menu.generated.ts";
 import { isMainThread, parentPort } from "node:worker_threads";
 /**
