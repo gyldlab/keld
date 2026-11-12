@@ -3155,7 +3155,7 @@ fn resolve_link(doc_rel: &str, target: &str) -> Option<String> {
 /// The router selects this gate for these paths. A link to any other path could go stale
 /// through a change that does not run the gate, and turn the next docs PR red instead.
 fn in_docs_lane(resolved: &str) -> bool {
-    resolved.ends_with(".md")
+    markdown_paths::is_markdown_path(Path::new(resolved))
         || [".agents", "docs"].iter().any(|dir| {
             resolved == *dir
                 || resolved

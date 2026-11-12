@@ -6039,3 +6039,31 @@ fn current_blockers_require_complete_unique_statements() {
     fixture.replace(&index, "- B-1\n", "none\n");
     assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
 }
+
+#[test]
+fn off_root_markdown_links_use_the_shared_extension_contract() {
+    for extension in MARKDOWN_EXTENSIONS {
+        for spelling in [extension.to_owned(), extension.to_ascii_uppercase()] {
+            for fragment in ["guide", "missing"] {
+                let mut fixture = Fixture::new();
+                let path = format!("packages/@keld/kipc/guide.{spelling}");
+                fixture.track(&path, b"# Guide\n");
+                let target = format!("../../../{path}#{fragment}");
+                link_from_design(&fixture, &target);
+                if fragment == "missing" {
+                    assert_only(&fixture, Rule::Anchor, &target);
+                } else {
+                    assert!(
+                        fixture.rules().is_empty(),
+                        "{target}: {:?}",
+                        fixture.rules()
+                    );
+                }
+            }
+        }
+    }
+    let mut fixture = Fixture::new();
+    fixture.track("packages/@keld/kipc/source.rs", b"fn main() {}\n");
+    link_from_design(&fixture, "../../../packages/@keld/kipc/source.rs");
+    assert_only(&fixture, Rule::LinkCode, "off-root source remains forbidden");
+}
