@@ -141,7 +141,9 @@ const exoticConstructors: [Function, string][] = [
   ...(typeof URLSearchParams === "undefined"
     ? []
     : [[URLSearchParams, "URLSearchParams"] as [Function, string]]),
-  ...(typeof Blob === "undefined" ? [] : [[Blob, "Blob"] as [Function, string]]),
+  ...(typeof Blob === "undefined"
+    ? []
+    : [[Blob, "Blob"] as [Function, string]]),
 ];
 
 /**
