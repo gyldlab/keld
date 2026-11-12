@@ -138,16 +138,6 @@ A matching marker package exists only in an ancestor node_modules directory.
   - **Expected RED:** The missing import refuses before external marker evaluation, without fallback acquisition.
 The complete-graph success fixture still launches after relocation from an unrelated cwd.
 
-- **Additional negative control:** Use a separate present-but-unqualified module fixture.
-  - **Single fault:** Add one executable marker module to a signed bundle without
-    admitting its identity to the independently qualified resource graph.
-  - **At-risk precondition:** The disposable bundle has valid signing, boot, policy
-    and runtime facts. The qualified entry attempts to import the marker module.
-  - **Expected RED:** The existing graph owner or installed resolver refuses the
-    unqualified module before marker execution. A valid code seal is insufficient.
-  - **Valid control:** The independently qualified and sealed version of that module
-    imports successfully under the same runtime and bundle settings.
-
 ### AC-12: Original editor workflow
 
 - **Given:** The pinned original editor opens a document and has unsaved changes.
@@ -203,6 +193,20 @@ pass on exact implementation heads. Future-platform design/issue mapping is pres
   - **Single fault:** Leave one applicable required gate failing.
   - **At-risk precondition:** The closeout evaluates the exact head, not an earlier receipt.
   - **Expected RED:** The failing gate blocks a complete acceptance claim.
+
+### AC-17: Present but unqualified executable module
+
+- **Given:** A disposable signed bundle has valid boot, policy and runtime facts.
+- **When:** Its independently qualified entry attempts to import an in-bundle executable marker module.
+- **Then:** Only an independently qualified module may execute. A valid code seal is insufficient.
+The independently qualified and sealed version of the marker imports under the same runtime and bundle settings.
+- **Negative control:** Use a separate present-but-unqualified module fixture.
+  - **Single fault:** Include one executable marker module without admitting its identity to the independently qualified graph.
+  - **At-risk precondition:** Surrounding signing, boot, policy and runtime facts remain valid.
+The qualified entry reaches the graph owner's admission decision for the marker.
+  - **Expected RED:** The existing graph owner or installed resolver refuses the unqualified marker before execution.
+If Pack rejects the fixture before signing, record that exact owner's refusal, not installed-resolver acceptance.
+Exercise the loading paths, restarts and relocation controls specified in the test plan.
 
 A failed required cleanup, trust, graph or installed workflow criterion blocks this
 mission's completion. A narrower passing subset must not be relabeled full acceptance.

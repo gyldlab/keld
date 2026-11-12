@@ -143,6 +143,8 @@ no dependency acquisition/network request, and no checkout/cache rescue. Observe
 effects independently of the resolver. A matching dependency captured in the qualified sealed graph must still
 load. Repeat on Bun recovery/restart and after relocation.
 
+### Controls for AC-17
+
 Construct a separate signed, disposable fixture with an executable marker module
 present in the bundle but absent from the independently qualified resource graph.
 Keep boot, policy, runtime and signature inputs valid. Attempt imports through
@@ -212,10 +214,10 @@ spec approval artifact, not an optional implementation preference.
 
 ### Q-2: Integration evidence
 
- owners of #499/#502/#553/#452/#570 must supply the
-exact committed source/provider and applicable qualification handoff required by
-T-2/T-3. Current bounded test integration is real evidence but is not installed release
-approval. #589 records the resulting end-to-end consumer evidence.
+Owners of #499/#502/#553/#452/#570 must supply committed source/provider and
+qualification handoffs. B-3 covers the generic inputs for T-2/T-3; B-2 covers original
+draw.io inputs for T-4. Current bounded test integration is evidence, not installed
+release approval. #589 records the resulting end-to-end consumer evidence.
 
 ### U-1: Execution uncertainties
 
