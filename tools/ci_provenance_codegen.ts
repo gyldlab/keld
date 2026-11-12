@@ -44,6 +44,8 @@ if (import.meta.main) {
   if (args[0] === "--write") {
     if (generated !== current) writeFileSync(output, generated);
   } else if (generated !== current) {
-    throw new Error("Stale census output: bun tools/ci_provenance_codegen.ts --write");
+    throw new Error(
+      "Stale census output: bun tools/ci_provenance_codegen.ts --write",
+    );
   }
 }

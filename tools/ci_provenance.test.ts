@@ -785,6 +785,8 @@ test("tree census rechecks a 300-file count after enumeration", async () => {
     comparisonFiles: files.slice(0, 300),
     changedCountOnSecondFetch: 301,
   });
-  await expect(f.run()).rejects.toThrow("changed PR file count during verification");
+  await expect(f.run()).rejects.toThrow(
+    "changed PR file count during verification",
+  );
   expect(f.getTrees()).toBe(2);
 });

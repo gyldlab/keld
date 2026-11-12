@@ -219,9 +219,11 @@ function scenario(
             data: {
               base_commit: { sha: options.compareBase ?? base },
               merge_base_commit: { sha: mergeBaseSha },
-              files: (options.files ?? [
-                { filename: "docs/normal.md", status: "modified" },
-              ]).slice(0, 300),
+              files: (
+                options.files ?? [
+                  { filename: "docs/normal.md", status: "modified" },
+                ]
+              ).slice(0, 300),
             },
           };
         },
@@ -936,11 +938,17 @@ test("cross-batch duplicate parent commits are denied even if other PR list merg
 test("refresh census is generated from the automatic verifier's sole source", () => {
   expect(generateRefreshCensus(trustedSource, refreshSource)).toBe(refreshSource);
   const marker = "const immutableChangedPaths = async";
-  const changedOwner = trustedSource.replace(marker, "// owner change\n            " + marker);
+  const changedOwner = trustedSource.replace(
+    marker,
+    "// owner change\n            " + marker,
+  );
   const changedOutput = generateRefreshCensus(changedOwner, refreshSource);
   expect(changedOutput).not.toBe(refreshSource);
   expect(generateRefreshCensus(changedOwner, changedOutput)).toBe(changedOutput);
-  const manualEdit = refreshSource.replace(marker, "// manual edit\n            " + marker);
+  const manualEdit = refreshSource.replace(
+    marker,
+    "// manual edit\n            " + marker,
+  );
   expect(generateRefreshCensus(trustedSource, manualEdit)).toBe(refreshSource);
 });
 
