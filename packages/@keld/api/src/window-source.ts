@@ -11,7 +11,7 @@ import {
   stateMapClear,
   linkError,
   type KeldCallError,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 import type { MirrorSource } from "./mirror.ts";
 import {
   decodeWindowEvent,
