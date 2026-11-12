@@ -249,6 +249,23 @@ test("genuine codec refusals retain identity while forged and nested throws norm
   expect(replayFailure.kind).toBe("MalformedValue");
   expect(replayFailure.code).toBe("KELD-COMPAT-101");
   expect(replayFailure).not.toBe(cached);
+  // Native-prototype classification must also reject replayed old errors.
+  // A previously minted Unsupported100 has no authority in this invocation.
+  let prototypeCalls = 0;
+  const replayedFromPrototype = new Proxy(
+    {},
+    {
+      getPrototypeOf() {
+        prototypeCalls += 1;
+        throw cached;
+      },
+    },
+  );
+  const directReplay = caught(() => encodeEndpointValue(replayedFromPrototype));
+  expect(prototypeCalls).toBeGreaterThan(0);
+  expect(directReplay.kind).toBe("MalformedValue");
+  expect(directReplay.code).toBe("KELD-COMPAT-101");
+  expect(directReplay).not.toBe(cached);
 
   const nested = {
     child: new Proxy(
@@ -286,6 +303,21 @@ test("nested public codec calls cannot launder their refusals into a caller", ()
     const error = caught(() => encodeEndpointValue(hostile));
     expect(error.kind).toBe("MalformedValue");
     expect(error.code).toBe("KELD-COMPAT-101");
+    let prototypeCalls = 0;
+    const prototypeReentry = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          prototypeCalls += 1;
+          nestedOperation();
+          return Object.prototype;
+        },
+      },
+    );
+    const nestedError = caught(() => encodeEndpointValue(prototypeReentry));
+    expect(prototypeCalls).toBeGreaterThan(0);
+    expect(nestedError.kind).toBe("MalformedValue");
+    expect(nestedError.code).toBe("KELD-COMPAT-101");
   }
   expect(caught(() => encodeEndpointArguments(seventeen)).code).toBe(
     "KELD-COMPAT-102",
@@ -293,6 +325,11 @@ test("nested public codec calls cannot launder their refusals into a caller", ()
   expect(caught(() => decodeEndpointArguments(validSeventeenWire)).code).toBe(
     "KELD-COMPAT-102",
   );
+  // The private decoder's node-boundary rejection must not be remapped by
+  // a second public guard into MalformedValue.
+  expect(
+    caught(() => decodeEndpointArguments(Uint8Array.from([6, 0, 1]))).code,
+  ).toBe("KELD-COMPAT-102");
 });
 
 test("revoked proxy argument arrays produce genuine malformed-value errors", () => {
