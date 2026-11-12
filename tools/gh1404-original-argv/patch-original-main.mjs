@@ -18,7 +18,9 @@ export function originalParserArgv(rawArgv, defaultApp, installedOriginal) {
       typeof rawArgv[1] !== "string" ||
       typeof rawArgv[2] !== "string"
     ) {
-      throw new Error("KELD-IPC-005: Host-selected original arguments are malformed");
+      throw new Error(
+        "KELD-IPC-005: Host-selected original arguments are malformed",
+      );
     }
     // [Bun, fixed bootstrap, sealed original], with NO CLI user operands.
     // The signed Host refuses argc!=3 before evaluating the original.
@@ -57,9 +59,15 @@ const SELECTED_ARGV = [
 function replaceExactlyOnce(source, oldText, newText, label) {
   const first = source.indexOf(oldText);
   if (first < 0 || source.indexOf(oldText, first + oldText.length) >= 0) {
-    throw new Error("KELD-IPC-005: expected one " + label + " in independently qualified original source");
+    throw new Error(
+      "KELD-IPC-005: expected one " +
+        label +
+        " in independently qualified original source",
+    );
   }
-  return source.slice(0, first) + newText + source.slice(first + oldText.length);
+  return (
+    source.slice(0, first) + newText + source.slice(first + oldText.length)
+  );
 }
 
 /** Produce a proposed patch, never write or auto-select an original source. */

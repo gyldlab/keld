@@ -10,7 +10,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { originalParserArgv, patchOriginalMainText } from "./patch-original-main.mjs";
+import {
+  originalParserArgv,
+  patchOriginalMainText,
+} from "./patch-original-main.mjs";
 
 const bun = "/sealed/Helpers/bun";
 const bootstrap = "/sealed/Resources/app/keld-installed-runtime-entry.mjs";
@@ -49,7 +52,8 @@ test("installed parser refuses absent original identity instead of treating argv
     [bun, bootstrap],
     [bun, bootstrap, null],
     [bun, bootstrap, { malicious: true }],
-  ]) assert.throws(() => originalParserArgv(bad, false, true), /KELD-IPC-005/);
+  ])
+    assert.throws(() => originalParserArgv(bad, false, true), /KELD-IPC-005/);
 });
 
 test("installed bootstrap refuses appended argv even if it names an existing user diagram", () => {
@@ -66,7 +70,10 @@ test("installed bootstrap refuses appended argv even if it names an existing use
 test("unselected direct original retains upstream parser positions without mutating argv", () => {
   for (const defaultApp of [true, false, undefined]) {
     const source = Object.freeze([bun, original, diagram]);
-    const before = defaultApp === true ? [bun, original, diagram] : [null, bun, original, diagram];
+    const before =
+      defaultApp === true
+        ? [bun, original, diagram]
+        : [null, bun, original, diagram];
     assert.deepEqual(originalParserArgv(source, defaultApp, false), before);
     assert.deepEqual(source, [bun, original, diagram]);
   }
@@ -93,89 +100,140 @@ test("patch only exact original parser seam and preserve runtime identities", ()
   assert.doesNotMatch(patched, /Bun\.main\s*=/);
   assert.doesNotMatch(patched, /import\.meta\.main\s*=/);
   assert.throws(() => patchOriginalMainText(patched), /original parser anchor/);
-  assert.throws(() => patchOriginalMainText(sourceSample.replace("let argv = process.argv", "let argv = external")), /original parser anchor/);
-});
-
-test("pristine upstream source can be patched only when supplied as an explicit pinned test input", {
-  skip: !process.env.GH1404_PINNED_ORIGINAL_MAIN,
-}, () => {
-  const path = process.env.GH1404_PINNED_ORIGINAL_MAIN;
-  const source = readFileSync(path, "utf8");
-  assert.equal(createHash("sha256").update(source).digest("hex"), "55505e690d37070344be172a68ad997ab48c687302dc5dee30a988d4f153770d");
-  const patched = patchOriginalMainText(source);
-  assert(patched.includes("function originalParserArgv("));
-  assert(patched.includes("let argv = originalParserArgv("));
-  assert.equal(patched.includes("argv.unshift(null)"), false);
-  assert(patched.length > source.length);
-});
-
-test("exact upstream args.js can serve as an independent parser oracle when pinned input is supplied", {
-  skip: !process.env.GH1404_PINNED_ORIGINAL_ARGS,
-}, async () => {
-  const path = process.env.GH1404_PINNED_ORIGINAL_ARGS;
-  const source = readFileSync(path);
-  assert.equal(createHash("sha1").update(Buffer.from(`blob ${source.byteLength}\0`)).update(source).digest("hex"), "e5ab92e4468fc80d888f953945b60a24e20c8b06");
-  const { parseDrawioArgs } = await import("data:text/javascript;base64," + source.toString("base64"));
-  for (const defaultApp of [true, false, undefined]) {
-    for (const user of [[], [diagram]]) {
-      if (user.length) {
-        assert.throws(
-          () => originalParserArgv([bun, bootstrap, original, ...user], defaultApp, true),
-          /KELD-IPC-005/,
-        );
-        continue;
-      }
-      const mapped = originalParserArgv([bun, bootstrap, original, ...user], defaultApp, true);
-      assert.deepEqual(parseDrawioArgs(mapped).args, []);
-    }
-  }
-});
-
-test("real pinned parser exposes no internal paths to original args-obj or conditional grant eligibility", {
-  skip: !process.env.GH1404_PINNED_ORIGINAL_ARGS || !process.env.GH1404_PINNED_ORIGINAL_MAIN,
-}, async () => {
-  const parserPath = process.env.GH1404_PINNED_ORIGINAL_ARGS;
-  const originalPath = process.env.GH1404_PINNED_ORIGINAL_MAIN;
-
-  const originalSource = readFileSync(originalPath, "utf8");
-  assert.match(originalSource, /if \(fs\.existsSync\(a\)\)/);
-  assert.match(originalSource, /blessPath\(a\)/);
-  assert.match(originalSource, /webContents\.send\('args-obj'/);
-  assert.match(originalSource, /app\.on\("open-file"/);
-  const bytes = readFileSync(parserPath);
-  const { parseDrawioArgs } = await import(
-    "data:text/javascript;base64," + bytes.toString("base64")
+  assert.throws(
+    () =>
+      patchOriginalMainText(
+        sourceSample.replace("let argv = process.argv", "let argv = external"),
+      ),
+    /original parser anchor/,
   );
-  const scratch = mkdtempSync(join(tmpdir(), "keld-gh1404-w12-argv-"));
-  try {
-    const roleBootstrap = join(scratch, "keld-installed-runtime-entry.mjs");
-    const roleOriginal = join(scratch, "electron.js");
-    const realDiagram = join(scratch, "chosen.drawio");
-    for (const file of [roleBootstrap, roleOriginal, realDiagram]) {
-      writeFileSync(file, "source-only fixture\n");
-    }
-    for (const mode of [true, false, undefined]) {
-      for (const selected of [[], [realDiagram]]) {
-        const actual = [bun, roleBootstrap, roleOriginal, ...selected];
-        if (selected.length) {
-          // A real selected .drawio still needs its independent OS open-file
-          // authorization; the installed Host cannot admit it via CLI argv.
-          assert.throws(() => originalParserArgv(actual, mode, true), /KELD-IPC-005/);
+});
+
+test(
+  "pristine upstream source can be patched only when supplied as an explicit pinned test input",
+  {
+    skip: !process.env.GH1404_PINNED_ORIGINAL_MAIN,
+  },
+  () => {
+    const path = process.env.GH1404_PINNED_ORIGINAL_MAIN;
+    const source = readFileSync(path, "utf8");
+    assert.equal(
+      createHash("sha256").update(source).digest("hex"),
+      "55505e690d37070344be172a68ad997ab48c687302dc5dee30a988d4f153770d",
+    );
+    const patched = patchOriginalMainText(source);
+    assert(patched.includes("function originalParserArgv("));
+    assert(patched.includes("let argv = originalParserArgv("));
+    assert.equal(patched.includes("argv.unshift(null)"), false);
+    assert(patched.length > source.length);
+  },
+);
+
+test(
+  "exact upstream args.js can serve as an independent parser oracle when pinned input is supplied",
+  {
+    skip: !process.env.GH1404_PINNED_ORIGINAL_ARGS,
+  },
+  async () => {
+    const path = process.env.GH1404_PINNED_ORIGINAL_ARGS;
+    const source = readFileSync(path);
+    assert.equal(
+      createHash("sha1")
+        .update(Buffer.from(`blob ${source.byteLength}\0`))
+        .update(source)
+        .digest("hex"),
+      "e5ab92e4468fc80d888f953945b60a24e20c8b06",
+    );
+    const { parseDrawioArgs } = await import(
+      "data:text/javascript;base64," + source.toString("base64")
+    );
+    for (const defaultApp of [true, false, undefined]) {
+      for (const user of [[], [diagram]]) {
+        if (user.length) {
+          assert.throws(
+            () =>
+              originalParserArgv(
+                [bun, bootstrap, original, ...user],
+                defaultApp,
+                true,
+              ),
+            /KELD-IPC-005/,
+          );
           continue;
         }
-        const fixed = parseDrawioArgs(originalParserArgv(actual, mode, true)).args;
-        const conditionalBlessInputs = fixed.filter((path) => existsSync(path));
-        assert.deepEqual(fixed, [], "args-obj must not receive an internal source");
-        assert.deepEqual(conditionalBlessInputs, []);
-        assert(!fixed.includes(roleOriginal));
-        assert(!fixed.includes(roleBootstrap));
-        // Deleting the adaptation restores the concrete original.js false grant.
-        const old = parseDrawioArgs(actual).args;
-        assert(old.includes(roleOriginal));
-        assert(old.filter((path) => existsSync(path)).includes(roleOriginal));
+        const mapped = originalParserArgv(
+          [bun, bootstrap, original, ...user],
+          defaultApp,
+          true,
+        );
+        assert.deepEqual(parseDrawioArgs(mapped).args, []);
       }
     }
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
-  }
-});
+  },
+);
+
+test(
+  "real pinned parser exposes no internal paths to original args-obj or conditional grant eligibility",
+  {
+    skip:
+      !process.env.GH1404_PINNED_ORIGINAL_ARGS ||
+      !process.env.GH1404_PINNED_ORIGINAL_MAIN,
+  },
+  async () => {
+    const parserPath = process.env.GH1404_PINNED_ORIGINAL_ARGS;
+    const originalPath = process.env.GH1404_PINNED_ORIGINAL_MAIN;
+
+    const originalSource = readFileSync(originalPath, "utf8");
+    assert.match(originalSource, /if \(fs\.existsSync\(a\)\)/);
+    assert.match(originalSource, /blessPath\(a\)/);
+    assert.match(originalSource, /webContents\.send\('args-obj'/);
+    assert.match(originalSource, /app\.on\("open-file"/);
+    const bytes = readFileSync(parserPath);
+    const { parseDrawioArgs } = await import(
+      "data:text/javascript;base64," + bytes.toString("base64")
+    );
+    const scratch = mkdtempSync(join(tmpdir(), "keld-gh1404-w12-argv-"));
+    try {
+      const roleBootstrap = join(scratch, "keld-installed-runtime-entry.mjs");
+      const roleOriginal = join(scratch, "electron.js");
+      const realDiagram = join(scratch, "chosen.drawio");
+      for (const file of [roleBootstrap, roleOriginal, realDiagram]) {
+        writeFileSync(file, "source-only fixture\n");
+      }
+      for (const mode of [true, false, undefined]) {
+        for (const selected of [[], [realDiagram]]) {
+          const actual = [bun, roleBootstrap, roleOriginal, ...selected];
+          if (selected.length) {
+            // A real selected .drawio still needs its independent OS open-file
+            // authorization; the installed Host cannot admit it via CLI argv.
+            assert.throws(
+              () => originalParserArgv(actual, mode, true),
+              /KELD-IPC-005/,
+            );
+            continue;
+          }
+          const fixed = parseDrawioArgs(
+            originalParserArgv(actual, mode, true),
+          ).args;
+          const conditionalBlessInputs = fixed.filter((path) =>
+            existsSync(path),
+          );
+          assert.deepEqual(
+            fixed,
+            [],
+            "args-obj must not receive an internal source",
+          );
+          assert.deepEqual(conditionalBlessInputs, []);
+          assert(!fixed.includes(roleOriginal));
+          assert(!fixed.includes(roleBootstrap));
+          // Deleting the adaptation restores the concrete original.js false grant.
+          const old = parseDrawioArgs(actual).args;
+          assert(old.includes(roleOriginal));
+          assert(old.filter((path) => existsSync(path)).includes(roleOriginal));
+        }
+      }
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
