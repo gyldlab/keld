@@ -80,11 +80,11 @@ fn console_failure_reports_published_error_and_preserves_original_panic() {
     const SELECTOR: &str = "support::renderer::failure_observation_tests::console_failure_reports_published_error_and_preserves_original_panic";
     if std::env::var_os(CHILD).is_some() {
         let mut beacon = Some(failed_beacon());
-        let (result, beacon_failure) = crate::console::catch_console_failure(&mut beacon, |_| {
+        let (result, beacon_failure) = super::catch_beacon_failure(&mut beacon, |_| {
             panic!("original pre-READY failure sentinel");
         });
         match result {
-            Err(failure) => crate::console::finish_console_failure(
+            Err(failure) => super::finish_beacon_failure(
                 failure,
                 beacon_failure,
                 || {},
@@ -137,7 +137,7 @@ fn failed_diagnostic_sink_keeps_cleanup_and_original_panic() {
     let mut direct_sink = BrokenWriter {
         cleanup_finished: &cleaned,
     };
-    let error = crate::console::write_console_beacon_failure(
+    let error = super::write_beacon_failure(
         &mut direct_sink,
         BeaconFailureObservation::Failed,
     )
@@ -146,7 +146,7 @@ fn failed_diagnostic_sink_keeps_cleanup_and_original_panic() {
 
     cleaned.set(false);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        crate::console::finish_console_failure(
+        super::finish_beacon_failure(
             Box::new(42_u32),
             Some(BeaconFailureObservation::Failed),
             || cleaned.set(true),
@@ -178,7 +178,7 @@ fn locked_stderr_does_not_precede_console_cleanup() {
     let (cleaned_tx, cleaned_rx) = mpsc::channel();
     let finisher = thread::spawn(move || {
         std::panic::catch_unwind(|| {
-            crate::console::finish_console_failure(
+            super::finish_beacon_failure(
                 Box::new(42_u32),
                 Some(BeaconFailureObservation::Failed),
                 || cleaned_tx.send(()).expect("cleanup reached"),

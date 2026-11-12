@@ -10,7 +10,7 @@ use crate::support::process::{
 use crate::support::product::ProductFixture;
 use crate::support::product_cycle::run_product_cycle;
 use crate::support::renderer::{
-    BeaconFailureObservation, RendererBeacon, expect_renderer_beacon, spawn_renderer_beacon,
+    catch_beacon_failure, expect_renderer_beacon, finish_beacon_failure, spawn_renderer_beacon,
 };
 use crate::support::window::wait_for_host_window;
 use crate::{
@@ -216,42 +216,6 @@ exit $p.ExitCode
     Ok(stdout)
 }
 
-pub(crate) fn catch_console_failure<T>(
-    beacon: &mut Option<RendererBeacon>,
-    run: impl FnOnce(&mut Option<RendererBeacon>) -> T,
-) -> (std::thread::Result<T>, Option<BeaconFailureObservation>) {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(beacon)));
-    let observation = if result.is_err() {
-        beacon.take().map(RendererBeacon::observe_on_failure)
-    } else {
-        None
-    };
-    (result, observation)
-}
-
-pub(crate) fn write_console_beacon_failure(
-    sink: &mut impl Write,
-    observation: BeaconFailureObservation,
-) -> std::io::Result<()> {
-    writeln!(sink, "KELD-BEACON-ON-FAILURE: {}", observation.message())
-}
-
-pub(crate) fn finish_console_failure<W: Write>(
-    failure: Box<dyn std::any::Any + Send>,
-    beacon: Option<BeaconFailureObservation>,
-    cleanup: impl FnOnce(),
-    open_sink: impl FnOnce() -> W,
-) -> ! {
-    cleanup();
-    if let Some(beacon) = beacon
-        && let Err(_report_error) = write_console_beacon_failure(&mut open_sink(), beacon)
-    {
-        // A broken diagnostic sink cannot deliver its own error. Cleanup is
-        // complete and the original panic remains the primary failure.
-    }
-    std::panic::resume_unwind(failure);
-}
-
 fn cleanup_console_cli(cli: &mut std::process::Child) {
     let _ = cli.kill();
     let _ = cli.wait();
@@ -287,7 +251,7 @@ pub(crate) fn run_console_ctrl_c_case() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("console CLI");
-    let (observation, beacon_failure) = catch_console_failure(&mut beacon, |beacon| {
+    let (observation, beacon_failure) = catch_beacon_failure(&mut beacon, |beacon| {
         let host_pid =
             wait_for_child_process(&mut cli, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
         let sentinel_pid = wait_for_cleanup_sentinel(&mut cli, Instant::now() + PRODUCT_DEADLINE);
@@ -365,7 +329,7 @@ pub(crate) fn run_console_ctrl_c_case() {
     if let Err(failure) = observation {
         // Keep precondition failures from orphaning the terminal-facing helper.
         // Killing this exact fixture child closes the existing host lease.
-        finish_console_failure(
+        finish_beacon_failure(
             failure,
             beacon_failure,
             || cleanup_console_cli(&mut cli),

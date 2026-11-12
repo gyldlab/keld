@@ -55,6 +55,42 @@ impl RendererBeacon {
     }
 }
 
+pub(crate) fn catch_beacon_failure<T>(
+    beacon: &mut Option<RendererBeacon>,
+    run: impl FnOnce(&mut Option<RendererBeacon>) -> T,
+) -> (std::thread::Result<T>, Option<BeaconFailureObservation>) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(beacon)));
+    let observation = if result.is_err() {
+        beacon.take().map(RendererBeacon::observe_on_failure)
+    } else {
+        None
+    };
+    (result, observation)
+}
+
+pub(crate) fn write_beacon_failure(
+    sink: &mut impl Write,
+    observation: BeaconFailureObservation,
+) -> std::io::Result<()> {
+    writeln!(sink, "KELD-BEACON-ON-FAILURE: {}", observation.message())
+}
+
+pub(crate) fn finish_beacon_failure<W: Write>(
+    failure: Box<dyn std::any::Any + Send>,
+    beacon: Option<BeaconFailureObservation>,
+    cleanup: impl FnOnce(),
+    open_sink: impl FnOnce() -> W,
+) -> ! {
+    cleanup();
+    if let Some(beacon) = beacon
+        && let Err(_report_error) = write_beacon_failure(&mut open_sink(), beacon)
+    {
+        // A broken diagnostic sink cannot deliver its own error. Cleanup is
+        // complete and the original panic remains the primary failure.
+    }
+    std::panic::resume_unwind(failure);
+}
+
 pub(crate) fn spawn_renderer_beacon(listener: TcpListener) -> RendererBeacon {
     let (observed_tx, observed) = mpsc::channel();
     let (activate_deadline, deadline_rx) = mpsc::channel();
