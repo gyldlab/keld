@@ -8,11 +8,36 @@
  * Depth is16 with root1; node/property visits are independently bounded.
  * Engine allocation inside Reflect.ownKeys still needs the GH544 high-water
  * qualification; post-return codec limits do not prove an engine memory bound.
+ *
+ * Hostile-input rules proven by `endpoint-hostile-input.test.ts`:
+ * - wire bytes and accumulator entries never write through `[[Set]]` on a
+ *   normal array, because an inherited indexed setter planted by a caller trap
+ *   would intercept even a captured `Array.prototype.push`;
+ * - the IPC argument count is enforced against the same array snapshot the
+ *   writer serializes, never against an earlier separate read;
+ * - a value whose native prototype was replaced still refuses, because native
+ *   brands are probed by applying a built-in that requires the internal slot;
+ * - codec refusals are identified by module-owned identity, so a forged
+ *   `CompatCodecError.prototype` or a hostile `getPrototypeOf` trap cannot
+ *   escape as an uncoded error.
+ * Residual, by construction: a Proxy reports its target's own keys and hides
+ * its internal slots, so a proxied native can only be reduced to its own data
+ * fields; the wire stays valid and no copy of the hidden state is claimed.
+ * `Promise`, `Error`, `Blob` and `URL` keep only the prototype-chain
+ * check; their side-effect-free native brand checks are not established here.
  */
 
 export const ENDPOINT_VALUE_LIMIT = 4_096;
 export const ENDPOINT_VALUE_DEPTH = 16;
 export const ENDPOINT_VALUE_NODES = 256;
+/**
+ * Array own-key and descriptor inspections are the work a proxy trap can
+ * amplify without growing the wire: 80 one-element arrays with 250
+ * non-enumerable own keys each fit in 323 bytes yet cost 20,240 probes. They
+ * are charged to this explicit internal budget, which leaves the reviewed
+ * node/visit boundary and its 255/256 test untouched.
+ */
+const ENDPOINT_VALUE_PROBES = ENDPOINT_VALUE_NODES * 4;
 
 export type CompatCodecErrorKind =
   "UnsupportedValue" | "MalformedValue" | "CodecLimit";
@@ -32,14 +57,16 @@ export class CompatCodecError extends Error {
     super(
       `${CODE[kind]}: ${kind}: ${reason}. Fix the endpoint value before sending it.`,
     );
-    this.name = "CompatCodecError";
+    // A caller trap can poison Error.prototype.name before normalization.
+    defineProperty(this, "name", {
+      value: "CompatCodecError",
+      configurable: true,
+      enumerable: true,
+      writable: true,
+    });
     this.kind = kind;
     this.code = CODE[kind];
   }
-}
-
-function reject(kind: CompatCodecErrorKind, reason: string): never {
-  throw new CompatCodecError(kind, reason);
 }
 
 // A Proxy descriptor/ownKeys trap can mutate globals during this very call.
@@ -50,16 +77,25 @@ const ownKeys = Reflect.ownKeys;
 const ownDescriptor = Object.getOwnPropertyDescriptor;
 const hasOwn = Object.hasOwn;
 const defineProperty = Object.defineProperty;
+const setProto = Object.setPrototypeOf;
 const hasInstance = Function.prototype[Symbol.hasInstance];
 const NativeArrayBuffer = ArrayBuffer;
 const NativeDataView = DataView;
 const NativeUint8Array = Uint8Array;
+// The intrinsic %TypedArray% constructor covers all typed-array classes,
+// including a Proxy whose underlying indexed slots are hidden by the wrapper.
+const NativeTypedArray: Function = Object.getPrototypeOf(NativeUint8Array);
 const NativeWeakSet = WeakSet;
 const NativeDate = Date;
 const NativeError = Error;
 const toNumber = Number;
 const toString = String;
 const toBigInt = BigInt;
+const boxedNumberValueOf = Number.prototype.valueOf;
+const boxedBooleanValueOf = Boolean.prototype.valueOf;
+const boxedStringValueOf = String.prototype.valueOf;
+const boxedBigIntValueOf = BigInt.prototype.valueOf;
+const boxedSymbolValueOf = Symbol.prototype.valueOf;
 const isArray = Array.isArray;
 const isView = ArrayBuffer.isView;
 const isFiniteNumber = Number.isFinite;
@@ -69,8 +105,12 @@ const arrayPush = Array.prototype.push;
 const arraySort = Array.prototype.sort;
 const weakSetHas = WeakSet.prototype.has;
 const weakSetAdd = WeakSet.prototype.add;
+const weakMapHas = WeakMap.prototype.has;
+const mapHas = Map.prototype.has;
+const setHas = Set.prototype.has;
 const charCodeAt = String.prototype.charCodeAt;
 const regexpExec = RegExp.prototype.exec;
+const regexpGlobal = ownDescriptor(RegExp.prototype, "global")!.get!;
 const dateTime = Date.prototype.getTime;
 const getUint16 = DataView.prototype.getUint16;
 const getFloat64 = DataView.prototype.getFloat64;
@@ -82,24 +122,141 @@ const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
 const byteLength = ownDescriptor(typedArrayPrototype, "byteLength")!.get!;
 const byteOffset = ownDescriptor(typedArrayPrototype, "byteOffset")!.get!;
 const byteBuffer = ownDescriptor(typedArrayPrototype, "buffer")!.get!;
+const arrayBufferByteLength = ownDescriptor(
+  ArrayBuffer.prototype,
+  "byteLength",
+)!.get!;
+const sharedArrayBufferByteLength =
+  typeof SharedArrayBuffer === "undefined"
+    ? undefined
+    : ownDescriptor(SharedArrayBuffer.prototype, "byteLength")!.get!;
 const encodeText = TextEncoder.prototype.encode;
 const decodeText = TextDecoder.prototype.decode;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const arrayIndex = /^(0|[1-9][0-9]*)$/;
-const exoticConstructors: Function[] = [
-  ArrayBuffer,
-  Map,
-  Set,
-  WeakMap,
-  WeakSet,
-  RegExp,
-  Promise,
-  ...(typeof SharedArrayBuffer === "undefined" ? [] : [SharedArrayBuffer]),
-  ...(typeof URL === "undefined" ? [] : [URL]),
-  ...(typeof URLSearchParams === "undefined" ? [] : [URLSearchParams]),
-  ...(typeof Blob === "undefined" ? [] : [Blob]),
+const exoticConstructors: [Function, string][] = [
+  [ArrayBuffer, "ArrayBuffer"],
+  [Map, "Map"],
+  [Set, "Set"],
+  [WeakMap, "WeakMap"],
+  [WeakSet, "WeakSet"],
+  [RegExp, "RegExp"],
+  [Promise, "Promise"],
+  ...(typeof SharedArrayBuffer === "undefined"
+    ? []
+    : [[SharedArrayBuffer, "SharedArrayBuffer"] as [Function, string]]),
+  ...(typeof URL === "undefined" ? [] : [[URL, "URL"] as [Function, string]]),
+  ...(typeof URLSearchParams === "undefined"
+    ? []
+    : [[URLSearchParams, "URLSearchParams"] as [Function, string]]),
+  ...(typeof Blob === "undefined"
+    ? []
+    : [[Blob, "Blob"] as [Function, string]]),
 ];
+
+/**
+ * Genuine refusals are recognised by module-owned identity. A prototype probe
+ * is not proof: a caller can graft `CompatCodecError.prototype` onto any
+ * thrown value, and a thrown Proxy can run a hostile `getPrototypeOf` trap
+ * inside the classifier itself.
+ */
+const ownErrors = new NativeWeakSet<object>();
+
+function reject(kind: CompatCodecErrorKind, reason: string): never {
+  const error = new CompatCodecError(kind, reason);
+  apply(weakSetAdd, ownErrors, [error]);
+  throw error;
+}
+
+function isOwnError(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    apply(weakSetHas, ownErrors, [value])
+  );
+}
+
+/** Normalize every non-codec throw from a hostile trap into one typed refusal. */
+function guard<T>(run: () => T, reason: string): T {
+  try {
+    return run();
+  } catch (error) {
+    if (isOwnError(error)) throw error;
+    return reject("MalformedValue", reason);
+  }
+}
+
+/**
+ * A normal array is written through `[[Set]]`, which walks the prototype
+ * chain, so an indexed setter planted on `Array.prototype` by a caller trap
+ * intercepts even a captured `Array.prototype.push`. Accumulators are created
+ * without that chain.
+ */
+function detachedArray<T>(): T[] {
+  const array: T[] = [];
+  // Direct call, not Reflect.apply: Bun 1.4.4 rejects the builtin when it is
+  // forwarded that way ("Cannot set prototype of undefined or null").
+  setProto(array, null);
+  return array;
+}
+
+/**
+ * Native brands are verified by applying a built-in that requires the internal
+ * slot, not by walking the prototype chain, so a `Map`, `Set`, `ArrayBuffer`,
+ * `SharedArrayBuffer`, `WeakMap`, `WeakSet` or `Date` whose prototype was
+ * replaced still refuses instead of flattening to an empty record.
+ *
+ * Every probe below is spec-guaranteed to reject a receiver without the slot.
+ * `RegExp.prototype.global` checks [[OriginalFlags]] without expanding the
+ * source pattern; only the intrinsic RegExp.prototype may return undefined.
+ * Deliberately absent: `RegExp.prototype.exec`/`Promise.prototype.then`
+ * (side effects on the probed value). Promise keeps a chain-only check.
+ */
+const sharedBufferByteLength = sharedArrayBufferByteLength;
+const brandProbes: [string, (value: object) => unknown][] = [
+  ["Date", (value) => apply(dateTime, value, [])],
+  ["Map", (value) => apply(mapHas, value, [undefined])],
+  ["Set", (value) => apply(setHas, value, [undefined])],
+  ["WeakMap", (value) => apply(weakMapHas, value, [{}])],
+  ["WeakSet", (value) => apply(weakSetHas, value, [{}])],
+  ["ArrayBuffer", (value) => apply(arrayBufferByteLength, value, [])],
+  [
+    "RegExp",
+    (value) => {
+      const flag = apply(regexpGlobal, value, []);
+      if (typeof flag !== "boolean") throw new TypeError("unbranded RegExp");
+      return flag;
+    },
+  ],
+  // Boxed primitives also carry internal slots. Their captured valueOf
+  // builtins refuse unbranded receivers without reading caller properties.
+  ["Number", (value) => apply(boxedNumberValueOf, value, [])],
+  ["Boolean", (value) => apply(boxedBooleanValueOf, value, [])],
+  ["String", (value) => apply(boxedStringValueOf, value, [])],
+  ["BigInt", (value) => apply(boxedBigIntValueOf, value, [])],
+  ["Symbol", (value) => apply(boxedSymbolValueOf, value, [])],
+  ...(sharedBufferByteLength === undefined
+    ? []
+    : [
+        [
+          "SharedArrayBuffer",
+          (value: object) => apply(sharedBufferByteLength, value, []),
+        ] as [string, (value: object) => unknown],
+      ]),
+];
+
+function nativeBrandName(value: object): string | undefined {
+  for (let index = 0; index < brandProbes.length; index++) {
+    try {
+      brandProbes[index][1](value);
+      return brandProbes[index][0];
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
 
 function byteSize(value: Uint8Array): number {
   return apply(byteLength, value, []);
@@ -110,7 +267,7 @@ function isInstance(value: unknown, constructor: Function): boolean {
 }
 
 function forbiddenKey(key: string): boolean {
-  return key === "__proto__" || key === "constructor" || key === "prototype";
+  return key === "__proto__";
 }
 
 /** Proxy traps may execute, but a thrown trap never escapes as an untyped error. */
@@ -141,11 +298,14 @@ function checkedDescriptor(
  * Symbol.toStringTag getters on ordinary objects. Native brands known to have
  * host state or callable behavior refuse before flattening own data fields.
  */
-function knownExotic(value: object): boolean {
-  if (isView(value)) return true;
+function knownExoticName(value: object): string | undefined {
+  if (isView(value)) return "TypedArray/DataView";
+  if (isInstance(value, NativeDataView)) return "DataView";
+  if (isInstance(value, NativeTypedArray)) return "TypedArray";
   for (let i = 0; i < exoticConstructors.length; i++)
-    if (isInstance(value, exoticConstructors[i])) return true;
-  return false;
+    if (isInstance(value, exoticConstructors[i][0]))
+      return exoticConstructors[i][1];
+  return undefined;
 }
 
 /** Refuse invalid UTF-16 rather than allowing TextEncoder to repair it. */
@@ -184,22 +344,48 @@ function keyOrder(left: Uint8Array, right: Uint8Array): number {
 }
 
 class ValueWriter {
-  readonly bytes: number[] = [];
+  /**
+   * Wire bytes live in a typed array: integer-indexed writes there are own
+   * slot stores, so a planted `Array.prototype` setter cannot redirect them.
+   * The explicit length keeps allocation independent of caller state.
+   */
+  private readonly storage = new NativeUint8Array(ENDPOINT_VALUE_LIMIT);
+  private length = 0;
   private readonly seen = new NativeWeakSet<object>();
   private nodes = 0;
   private visits = 0;
+  private probes = 0;
+
+  constructor(private readonly rootArrayLimit = ENDPOINT_VALUE_NODES) {}
+
+  private chargeProbes(count: number): void {
+    this.probes += count;
+    if (this.probes > ENDPOINT_VALUE_PROBES)
+      reject(
+        "CodecLimit",
+        "aggregate array key probes exceed the probe budget",
+      );
+  }
+
+  private reserve(count: number): number {
+    if (count > ENDPOINT_VALUE_LIMIT - this.length)
+      reject("CodecLimit", "encoded value exceeds 4096 bytes");
+    const at = this.length;
+    this.length += count;
+    return at;
+  }
 
   private append(...bytes: number[]): void {
-    if (bytes.length > ENDPOINT_VALUE_LIMIT - this.bytes.length)
-      reject("CodecLimit", "encoded value exceeds 4096 bytes");
-    apply(arrayPush, this.bytes, bytes);
+    const at = this.reserve(bytes.length);
+    for (let index = 0; index < bytes.length; index++)
+      this.storage[at + index] = bytes[index];
   }
 
   private buffer(value: Uint8Array): void {
-    if (byteSize(value) > ENDPOINT_VALUE_LIMIT - this.bytes.length)
-      reject("CodecLimit", "encoded value exceeds 4096 bytes");
-    for (let i = 0; i < byteSize(value); i++)
-      apply(arrayPush, this.bytes, [value[i]]);
+    const size = byteSize(value);
+    const at = this.reserve(size);
+    for (let index = 0; index < size; index++)
+      this.storage[at + index] = value[index];
   }
 
   private u16(value: number): void {
@@ -226,6 +412,25 @@ class ValueWriter {
     this.buffer(new NativeUint8Array(storage));
   }
 
+  /** Use the native slot, including after a genuine Date loses its prototype. */
+  private date(value: object): void {
+    let timestamp: number;
+    try {
+      timestamp = apply(dateTime, value, []);
+    } catch {
+      return reject("UnsupportedValue", "unsupported Date wrapper");
+    }
+    if (
+      !isFiniteNumber(timestamp) ||
+      !isSafeInteger(timestamp) ||
+      timestamp < -8_640_000_000_000_000 ||
+      timestamp > 8_640_000_000_000_000
+    )
+      reject("MalformedValue", "invalid Date");
+    this.append(8);
+    this.i64(timestamp);
+  }
+
   private visitObject(value: object): void {
     if (apply(weakSetHas, this.seen, [value]))
       reject("MalformedValue", "cycle or shared object identity");
@@ -249,6 +454,15 @@ class ValueWriter {
         `Error ${key} must be an own string data property`,
       );
     return descriptor.value;
+  }
+
+  finish(): Uint8Array {
+    const result = new NativeUint8Array(this.length);
+    // subarray consults mutable constructor/@@species even when captured.
+    // Copy private indexed bytes without invoking a caller-controlled hook.
+    for (let index = 0; index < this.length; index++)
+      result[index] = this.storage[index];
+    return result;
   }
 
   visit(value: unknown, depth = 1): void {
@@ -292,14 +506,16 @@ class ValueWriter {
           "array length is not a bounded own data property",
         );
       const length: number = lengthDescriptor.value;
-      if (
-        length > ENDPOINT_VALUE_NODES - this.nodes ||
-        length > ENDPOINT_VALUE_NODES - this.visits
-      )
+      // One read authorizes the wire: an earlier separate count check could be
+      // answered with 16 while this snapshot answers with 17.
+      if (depth === 1 && length > this.rootArrayLimit)
+        reject("CodecLimit", "IPC argument vector exceeds sixteen arguments");
+      if (length > ENDPOINT_VALUE_NODES - this.nodes)
         reject("CodecLimit", "array count exceeds remaining node budget");
       const keys = checkedOwnKeys(value);
       if (keys.length > ENDPOINT_VALUE_NODES + 1)
         reject("CodecLimit", "array own keys exceed the bounded domain");
+      this.chargeProbes(1 + keys.length);
       for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
         const key = keys[keyIndex];
         if (typeof key === "symbol")
@@ -326,14 +542,7 @@ class ValueWriter {
       return;
     }
 
-    if (isInstance(value, NativeDate)) {
-      const timestamp = apply(dateTime, value, []);
-      if (!isFiniteNumber(timestamp) || !isInteger(timestamp))
-        reject("MalformedValue", "invalid Date");
-      this.append(8);
-      this.i64(timestamp);
-      return;
-    }
+    if (isInstance(value, NativeDate)) return this.date(value);
     if (isInstance(value, NativeError)) {
       const name = this.errorField(value, "name") ?? "Error";
       const message = this.errorField(value, "message") ?? "";
@@ -348,8 +557,12 @@ class ValueWriter {
 
     // Class instances with own enumerable string data fields flatten to
     // ordinary records. Never invoke Symbol.toStringTag or toJSON as a probe.
-    if (knownExotic(value))
-      reject("UnsupportedValue", "unsupported exotic object");
+    // The internal-slot probes catch a native whose prototype was replaced and
+    // which the chain check above therefore cannot see.
+    const exoticName = knownExoticName(value) ?? nativeBrandName(value);
+    if (exoticName === "Date") return this.date(value);
+    if (exoticName !== undefined)
+      reject("UnsupportedValue", `unsupported ${exoticName} object`);
 
     const keys = checkedOwnKeys(value);
     if (keys.length > ENDPOINT_VALUE_NODES - this.visits)
@@ -358,11 +571,11 @@ class ValueWriter {
         "object property keys exceed aggregate visit budget",
       );
     this.visits += keys.length;
-    const entries: { bytes: Uint8Array; value: unknown }[] = [];
+    const entries = detachedArray<{ bytes: Uint8Array; value: unknown }>();
     // Reserve the object tag/count and each key length plus its value tag.
     // A key may use 4096 bytes alone; never retain hundreds of those keys
     // before the later writer detects that the complete value cannot fit.
-    let minimumBytes = this.bytes.length + 3;
+    let minimumBytes = this.length + 3;
     if (minimumBytes > ENDPOINT_VALUE_LIMIT)
       reject("CodecLimit", "object header exceeds the remaining byte budget");
     for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
@@ -406,19 +619,11 @@ class ValueWriter {
 
 /** Snapshot one supported value before sending it over the authenticated route. */
 export function encodeEndpointValue(value: unknown): Uint8Array {
-  try {
+  return guard(() => {
     const writer = new ValueWriter();
     writer.visit(value);
-    const result = new NativeUint8Array(writer.bytes.length);
-    for (let i = 0; i < writer.bytes.length; i++) result[i] = writer.bytes[i];
-    return result;
-  } catch (error) {
-    if (isInstance(error, CompatCodecError)) throw error;
-    return reject(
-      "MalformedValue",
-      "proxy trap or exotic brand operation failed",
-    );
-  }
+    return writer.finish();
+  }, "proxy trap or exotic brand operation failed");
 }
 
 class ValueReader {
@@ -510,8 +715,15 @@ class ValueReader {
             "array count exceeds remaining node/visit budget",
           );
         const array: unknown[] = [];
+        // Define, do not push: an inherited indexed setter would otherwise
+        // swallow the element while the array still reports its length.
         for (let i = 0; i < count; i++)
-          apply(arrayPush, array, [this.node(depth + 1)]);
+          defineProperty(array, i, {
+            value: this.node(depth + 1),
+            configurable: true,
+            enumerable: true,
+            writable: true,
+          });
         return array;
       }
       case 7: {
@@ -594,7 +806,7 @@ class ValueReader {
 
 /** Decode one complete owned byte value; never accepts a JSON substitute. */
 export function decodeEndpointValue(bytes: Uint8Array): unknown {
-  try {
+  return guard(() => {
     if (!isInstance(bytes, NativeUint8Array))
       reject("MalformedValue", "endpoint payload must be bytes");
     const length: number = apply(byteLength, bytes, []);
@@ -603,43 +815,34 @@ export function decodeEndpointValue(bytes: Uint8Array): unknown {
     const owned = new NativeUint8Array(length);
     apply(byteSet, owned, [bytes]);
     return new ValueReader(owned).decode();
-  } catch (error) {
-    if (isInstance(error, CompatCodecError)) throw error;
-    return reject(
-      "MalformedValue",
-      "endpoint payload is not a readable byte snapshot",
-    );
-  }
+  }, "endpoint payload is not a readable byte snapshot");
 }
 
 /** Apply the IPC caller-vector count without restricting generic result arrays. */
 export function encodeEndpointArguments(args: readonly unknown[]): Uint8Array {
-  if (!isArray(args))
-    return reject("MalformedValue", "IPC arguments must be an array");
-  const descriptor = checkedDescriptor(args, "length");
-  if (
-    !descriptor ||
-    !hasOwn(descriptor, "value") ||
-    !isSafeInteger(descriptor.value) ||
-    descriptor.value < 0
-  )
-    return reject("MalformedValue", "IPC arguments need a bounded own length");
-  if (descriptor.value > 16)
-    return reject(
-      "CodecLimit",
-      "IPC argument vector exceeds sixteen arguments",
-    );
-  return encodeEndpointValue(args);
+  return guard(() => {
+    // Array.isArray throws for a revoked proxy; the guard keeps that a typed
+    // refusal. No separate length check follows: the count is enforced on the
+    // same snapshot the writer serializes, so a drifting proxy length cannot
+    // authorize a seventeenth argument.
+    if (!isArray(args))
+      return reject("MalformedValue", "IPC arguments must be an array");
+    const writer = new ValueWriter(16);
+    writer.visit(args);
+    return writer.finish();
+  }, "IPC argument vector is not a readable array snapshot");
 }
 /** Apply the same caller-vector count after the one owned endpoint decoder. */
 export function decodeEndpointArguments(bytes: Uint8Array): unknown[] {
-  const value = decodeEndpointValue(bytes);
-  if (!isArray(value))
-    return reject("MalformedValue", "IPC arguments must decode to an array");
-  if (value.length > 16)
-    return reject(
-      "CodecLimit",
-      "IPC argument vector exceeds sixteen arguments",
-    );
-  return value;
+  return guard(() => {
+    const value = decodeEndpointValue(bytes);
+    if (!isArray(value))
+      return reject("MalformedValue", "IPC arguments must decode to an array");
+    if (value.length > 16)
+      return reject(
+        "CodecLimit",
+        "IPC argument vector exceeds sixteen arguments",
+      );
+    return value;
+  }, "IPC argument vector is not a readable array snapshot");
 }
