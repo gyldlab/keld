@@ -5,7 +5,8 @@
  * The enclosing GH540 message owns the version, document, principal and grants.
  * This module owns only a bounded, deterministic value snapshot and parser.
  * No Node, Bun, IPC, function proxy, JSON or ambient authority is involved.
- * Depth is16 with root1; node/property visits are independently bounded.
+ * Depth is 16 with root 1; semantic node/property visits are bounded at 256.
+ * Own-key and descriptor inspection has a separate finite work budget.
  * Engine allocation inside Reflect.ownKeys still needs the GH544 high-water
  * qualification; post-return codec limits do not prove an engine memory bound.
  * JavaScript cannot atomically snapshot a Proxy: the codec bounds and validates
@@ -16,6 +17,10 @@
 export const ENDPOINT_VALUE_LIMIT = 4_096;
 export const ENDPOINT_VALUE_DEPTH = 16;
 export const ENDPOINT_VALUE_NODES = 256;
+// All 256 legitimate semantic nodes may be arrays: a root with 255 distinct
+// empty child arrays requires 1534 array snapshot probes. Admit such normal
+// shapes while bounding additional work on hidden and hostile properties.
+const ENDPOINT_SNAPSHOT_PROBES = 2_048;
 
 export type CompatCodecErrorKind =
   "UnsupportedValue" | "MalformedValue" | "CodecLimit";
@@ -340,6 +345,13 @@ class ValueWriter {
   private readonly seen = new NativeWeakSet<object>();
   private nodes = 0;
   private visits = 0;
+  private snapshotProbes = 0;
+
+  private chargeSnapshotProbes(count: number, reason: string): void {
+    if (count > ENDPOINT_SNAPSHOT_PROBES - this.snapshotProbes)
+      reject("CodecLimit", reason);
+    this.snapshotProbes += count;
+  }
 
   private append(...bytes: number[]): void {
     if (bytes.length > ENDPOINT_VALUE_LIMIT - this.bytes.length)
@@ -391,8 +403,12 @@ class ValueWriter {
     if (++this.visits > ENDPOINT_VALUE_NODES)
       reject(
         "CodecLimit",
-        "Error property probes exceed aggregate visit budget",
+        "Error fields exceed aggregate semantic visit budget",
       );
+    this.chargeSnapshotProbes(
+      1,
+      "Error descriptors exceed snapshot probe budget",
+    );
     const descriptor = checkedDescriptor(value, key);
     if (descriptor === undefined) return undefined;
     if (!hasOwn(descriptor, "value") || typeof descriptor.value !== "string")
@@ -430,6 +446,10 @@ class ValueWriter {
     this.visitObject(value);
 
     if (isArray(value)) {
+      this.chargeSnapshotProbes(
+        1,
+        "array length exceeds snapshot probe budget",
+      );
       const lengthDescriptor = checkedDescriptor(value, "length");
       if (
         lengthDescriptor === undefined ||
@@ -443,18 +463,22 @@ class ValueWriter {
           "array length is not a bounded own data property",
         );
       const length: number = lengthDescriptor.value;
-      const keys = checkedOwnKeys(value);
-      if (keys.length * 2 + 1 > ENDPOINT_VALUE_NODES - this.visits)
-        reject(
-          "CodecLimit",
-          "array own-key and descriptor probes exceed aggregate visit budget",
-        );
-      this.visits += keys.length * 2 + 1;
+      // Refuse oversized arrays before ownKeys can allocate or invoke a
+      // hostile Proxy trap. The final descriptor still checks length races.
       if (
         length > ENDPOINT_VALUE_NODES - this.nodes ||
         length > ENDPOINT_VALUE_NODES - this.visits
       )
         reject("CodecLimit", "array count exceeds remaining node budget");
+      this.chargeSnapshotProbes(
+        1,
+        "array ownKeys exceeds snapshot probe budget",
+      );
+      const keys = checkedOwnKeys(value);
+      this.chargeSnapshotProbes(
+        keys.length * 2,
+        "array own-key and descriptor probes exceed snapshot budget",
+      );
       const items: PropertyDescriptor[] = [];
       for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
         const key = keys[keyIndex];
@@ -538,7 +562,15 @@ class ValueWriter {
     if (knownExotic(value))
       reject("UnsupportedValue", "unsupported exotic object");
 
+    this.chargeSnapshotProbes(
+      1,
+      "object ownKeys exceeds snapshot probe budget",
+    );
     const keys = checkedOwnKeys(value);
+    this.chargeSnapshotProbes(
+      keys.length * 2,
+      "object own-key and descriptor probes exceed snapshot budget",
+    );
     if (keys.length > ENDPOINT_VALUE_NODES - this.visits)
       reject(
         "CodecLimit",

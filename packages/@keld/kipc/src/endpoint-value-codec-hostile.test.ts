@@ -333,11 +333,80 @@ test("array probe budget rejects huge own-key sets before descriptor inspection"
   expect(descriptorCalls).toBe(1);
 });
 
-test("small arrays share the aggregate descriptor-probe budget", () => {
+test("ordinary arrays use semantic node budgets independently of snapshot probes", () => {
+  const eightyFive = Array<null>(85).fill(null);
+  const wire = Uint8Array.from([6, 85, 0, ...Array<number>(85).fill(1)]);
+  expect(wire.byteLength).toBe(88);
+  expect(encodeEndpointValue(eightyFive)).toEqual(wire);
+  expect(decodeEndpointValue(wire)).toEqual(eightyFive);
+
+  // 255 children plus the root occupy all 256 semantic value nodes.
+  const maximum = Array<null>(255).fill(null);
+  expect(decodeEndpointValue(encodeEndpointValue(maximum))).toEqual(maximum);
+  expect(caught(() => encodeEndpointValue([...maximum, null])).code).toBe(
+    "KELD-COMPAT-102",
+  );
+
+  // A root with 255 distinct empty arrays is also 256 semantic nodes.
+  // The separate probe cap must accommodate this normal shape.
+  const forest = Array.from({ length: 255 }, () => [] as unknown[]);
+  expect(decodeEndpointValue(encodeEndpointValue(forest))).toEqual(forest);
+
+  const nested = { values: eightyFive };
+  expect(decodeEndpointValue(encodeEndpointValue(nested))).toEqual(nested);
+  class Payload {
+    values = eightyFive;
+    get inherited(): never {
+      throw new Error("inherited getter must not run");
+    }
+  }
+  expect(decodeEndpointValue(encodeEndpointValue(new Payload()))).toEqual(
+    nested,
+  );
+});
+
+test("oversized array Proxy refuses from its length before ownKeys", () => {
+  let ownKeysCalls = 0;
+  const oversized = new Proxy(Array<null>(512).fill(null), {
+    ownKeys() {
+      ownKeysCalls += 1;
+      throw new Error("oversized array visited ownKeys");
+    },
+  });
+  const error = caught(() => encodeEndpointValue(oversized));
+  expect(error.kind).toBe("CodecLimit");
+  expect(error.code).toBe("KELD-COMPAT-102");
+  expect(ownKeysCalls).toBe(0);
+});
+
+test("private non-enumerable descriptor traps normalize without invoking getters", () => {
+  let reads = 0;
+  const target = [null];
+  Object.defineProperty(target, "private", {
+    configurable: true,
+    enumerable: false,
+    get() {
+      reads += 1;
+      throw new Error("private getter must not run");
+    },
+  });
+  const hostile = new Proxy(target, {
+    getOwnPropertyDescriptor(value, key) {
+      if (key === "private") throw new Error("private descriptor denied");
+      return Reflect.getOwnPropertyDescriptor(value, key);
+    },
+  });
+  expect(caught(() => encodeEndpointValue(hostile)).code).toBe(
+    "KELD-COMPAT-101",
+  );
+  expect(reads).toBe(0);
+});
+
+test("small arrays share an independent finite snapshot-probe budget", () => {
   let descriptorCalls = 0;
-  const children = Array.from({ length: 30 }, () => {
+  const children = Array.from({ length: 100 }, () => {
     const item = [null];
-    for (let index = 0; index < 3; index++)
+    for (let index = 0; index < 10; index++)
       Object.defineProperty(item, `hidden${index}`, {
         value: index,
         configurable: true,
@@ -352,13 +421,14 @@ test("small arrays share the aggregate descriptor-probe budget", () => {
   const failure = caught(() => encodeEndpointValue(children));
   expect(failure.kind).toBe("CodecLimit");
   expect(failure.code).toBe("KELD-COMPAT-102");
-  expect(descriptorCalls).toBeLessThan(256);
+  expect(descriptorCalls).toBeLessThan(2_048);
 });
 
 test("normal arrays and the 256 aggregate visit boundary remain accepted", () => {
   const boundary = Array.from({ length: 84 }, (_, index) => index);
   expect(decodeEndpointValue(encodeEndpointValue(boundary))).toEqual(boundary);
-  expect(caught(() => encodeEndpointValue([...boundary, 84])).code).toBe(
-    "KELD-COMPAT-102",
-  );
+  expect(decodeEndpointValue(encodeEndpointValue([...boundary, 84]))).toEqual([
+    ...boundary,
+    84,
+  ]);
 });
