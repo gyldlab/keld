@@ -810,6 +810,27 @@ fn validate_cargo_ancestor_configuration(source: &Path) -> Result<(), BuildError
     Ok(())
 }
 
+/// Select and retain one explicit x64-hosted native MSVC linker. Cargo's
+/// Windows target otherwise resolves `link.exe` through mutable PATH, where
+/// Git for Windows also installs an unrelated executable with that name.
+/// This is developer-toolchain custody, not a Microsoft publisher assertion or
+/// a hermetic linker/SDK qualification.
+fn pin_native_msvc_linker(root: &Path) -> Result<(PinnedFile, Vec<File>), BuildError> {
+    if !root.is_absolute() {
+        return Err(failure(
+            "native MSVC linker",
+            "absolute selected VCToolsInstallDir required",
+        ));
+    }
+    let image = root.join("bin/Hostx64/x64/link.exe");
+    let parent = image
+        .parent()
+        .ok_or_else(|| failure("native MSVC linker", "linker parent missing"))?;
+    let directories = pin_directories(parent)?;
+    let linker = pin_file(&image, MAX_IMAGE)?;
+    Ok((linker, directories))
+}
+
 pub(super) struct Request {
     pub(super) source: PathBuf,
     pub(super) commit: String,
@@ -1068,6 +1089,12 @@ pub(super) fn prepare(
     let git = pin_file_with_budget(&request.git, MAX_IMAGE, Some(&budget))?;
     let cargo = pin_file_with_budget(&request.cargo, MAX_IMAGE, Some(&budget))?;
     let rustc = pin_file_with_budget(&request.rustc, MAX_IMAGE, Some(&budget))?;
+    // The selected native Cargo linker must be explicit, not an ambient PATH
+    // lookup that can choose Git for Windows' unrelated link.exe.
+    let selected_vc_tools = std::env::var_os("VCToolsInstallDir")
+        .ok_or_else(|| failure("native MSVC linker", "VCToolsInstallDir not selected"))?;
+    let (msvc_linker, linker_directories) = pin_native_msvc_linker(Path::new(&selected_vc_tools))?;
+    directory_pins.extend(linker_directories);
     create_private(&request.session)?;
     let gitdir = request.session.join("git");
     let source = request.session.join("source");
@@ -1390,6 +1417,10 @@ pub(super) fn prepare(
         ("CARGO_INCREMENTAL".into(), "0".into()),
         ("CARGO_NET_OFFLINE".into(), "true".into()),
         ("RUSTC".into(), rustc.path.as_os_str().to_owned()),
+        (
+            "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER".into(),
+            msvc_linker.path.as_os_str().to_owned(),
+        ),
     ]);
     let mut args = os_args(&[
         "build",
@@ -1410,8 +1441,11 @@ pub(super) fn prepare(
     append_initial_install_feature(&mut args, initial_install);
     let mut recipe_digest = Sha256::new();
     recipe_digest.update(
-        b"keld.local-source-recipe/v5\0aggregate-prepare-30min-cooperative-io\0quoted-git-alternate\0cargo-capture-1MiB-per-stream-30min-private-stderr\0precreated-fixed-msvc-target-root\0",
+        b"keld.local-source-recipe/v6\0aggregate-prepare-30min-cooperative-io\0quoted-git-alternate\0cargo-capture-1MiB-per-stream-30min-private-stderr\0precreated-fixed-msvc-target-root\0pinned-explicit-msvc-linker\0",
     );
+    // The selected developer linker bytes change the observed recipe identity.
+    // A digest is not a publisher signature or complete toolchain provenance.
+    recipe_digest.update(msvc_linker.sha256);
     recipe_digest.update(match request.cache_mode {
         CacheMode::Snapshot => b"immutable-registry-snapshot".as_slice(),
         CacheMode::MutableDeveloper => b"mutable-developer-cache-unmeasured".as_slice(),
@@ -1722,6 +1756,39 @@ mod tests {
         fs::create_dir(&tracked).expect("tracked source config directory");
         fs::write(tracked.join("config.toml"), b"[build]\n").expect("write tracked fixture");
         validate_cargo_ancestor_configuration(&source).expect("source config is not ambient");
+    }
+
+    #[test]
+    fn selected_native_msvc_linker_is_explicitly_pinned_and_missing_image_refused() {
+        let temporary = tempfile::tempdir().expect("owned MSVC test fixture");
+        assert!(
+            pin_native_msvc_linker(Path::new("relative-vc-tools")).is_err(),
+            "relative linker root must not be accepted"
+        );
+        let root = temporary.path().join("native-vc-tools");
+        assert!(
+            pin_native_msvc_linker(&root).is_err(),
+            "missing native linker must refuse instead of falling back to PATH"
+        );
+        let image = root.join("bin/Hostx64/x64/link.exe");
+        fs::create_dir_all(image.parent().expect("linker parent")).expect("fixture directory");
+        fs::write(&image, b"nonsecret test-only native linker bytes").expect("fixture image");
+        let (linker, directories) =
+            pin_native_msvc_linker(&root).expect("capture explicit selected linker");
+        assert_eq!(linker.path, image);
+        let expected_digest: [u8; 32] =
+            Sha256::digest(b"nonsecret test-only native linker bytes").into();
+        assert_eq!(
+            linker.sha256, expected_digest,
+            "retained linker digest binds exactly the selected bytes"
+        );
+        assert!(!directories.is_empty(), "retain native linker parent chain");
+        assert!(
+            fs::write(&image, b"replaced while retained").is_err(),
+            "pinned image must not be overwritten during native compilation"
+        );
+        drop(linker);
+        drop(directories);
     }
 
     #[test]
