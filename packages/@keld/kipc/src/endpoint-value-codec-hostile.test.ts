@@ -469,3 +469,97 @@ test("normal arrays and the 256 aggregate visit boundary remain accepted", () =>
     84,
   ]);
 });
+
+test("hostile inherited descriptor get/set cannot escape typed refusal or corrupt decode", () => {
+  const originalGet = Object.getOwnPropertyDescriptor(Object.prototype, "get");
+  const originalSet = Object.getOwnPropertyDescriptor(Object.prototype, "set");
+  const arrayWire = encodeEndpointValue([null, { active: true }]);
+  const errorWire = encodeEndpointValue(new Error("bounded"));
+  let trapCalls = 0;
+  let thrown: unknown;
+  let decodedArray: unknown;
+  let decodedError: unknown;
+  let decodeFailure: unknown;
+  const dataDescriptor = (value: unknown): PropertyDescriptor => {
+    const descriptor: PropertyDescriptor = Object.create(null);
+    descriptor.value = value;
+    descriptor.configurable = true;
+    descriptor.writable = true;
+    return descriptor;
+  };
+  const hostile = new Proxy(
+    { active: true },
+    {
+      ownKeys() {
+        trapCalls += 1;
+        // These are ordinary data fields, intentionally named like descriptor
+        // fields. ToPropertyDescriptor on an inherited-key object must not
+        // observe them when the decoder defines its own output slots.
+        Object.defineProperty(
+          Object.prototype,
+          "get",
+          dataDescriptor(() => {}),
+        );
+        Object.defineProperty(
+          Object.prototype,
+          "set",
+          dataDescriptor(() => {}),
+        );
+        throw 0;
+      },
+    },
+  );
+  try {
+    try {
+      encodeEndpointValue(hostile);
+    } catch (error) {
+      thrown = error;
+    }
+    try {
+      decodedArray = decodeEndpointValue(arrayWire);
+      decodedError = decodeEndpointValue(errorWire);
+    } catch (error) {
+      decodeFailure = error;
+    }
+  } finally {
+    // Restore before assertions or Bun's own test/formatter internals run.
+    Reflect.deleteProperty(Object.prototype, "get");
+    Reflect.deleteProperty(Object.prototype, "set");
+    if (originalGet)
+      Object.defineProperty(Object.prototype, "get", originalGet);
+    if (originalSet)
+      Object.defineProperty(Object.prototype, "set", originalSet);
+  }
+  expect(trapCalls).toBe(1);
+  expect(thrown).toBeInstanceOf(CompatCodecError);
+  expect((thrown as CompatCodecError).kind).toBe("MalformedValue");
+  expect((thrown as CompatCodecError).code).toBe("KELD-COMPAT-101");
+  expect(decodeFailure).toBeUndefined();
+  expect(decodedArray).toEqual([null, { active: true }]);
+  expect(decodedError).toBeInstanceOf(Error);
+  expect((decodedError as Error).message).toBe("bounded");
+});
+
+test("a native object grafted onto Error.prototype keeps its internal-slot refusal", () => {
+  for (const [value, label] of [
+    [new Map([["secret", 1]]), "Map"],
+    [new Set([1]), "Set"],
+    [new ArrayBuffer(4), "ArrayBuffer"],
+    [/hostile/gu, "RegExp"],
+  ] as const) {
+    const prototype = Object.getPrototypeOf(value);
+    Object.setPrototypeOf(value, Error.prototype);
+    try {
+      const failure = caught(() => encodeEndpointValue(value));
+      expect(failure.kind).toBe("UnsupportedValue");
+      expect(failure.code).toBe("KELD-COMPAT-100");
+      expect(failure.message).toContain(`unsupported ${label} object`);
+    } finally {
+      Object.setPrototypeOf(value, prototype);
+    }
+  }
+  const genuine = new Error("valid");
+  const roundTrip = decodeEndpointValue(encodeEndpointValue(genuine));
+  expect(roundTrip).toBeInstanceOf(Error);
+  expect((roundTrip as Error).message).toBe("valid");
+});

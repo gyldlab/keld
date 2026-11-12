@@ -40,26 +40,11 @@ export class CompatCodecError extends Error {
     super(
       `${CODE[kind]}: ${kind}: ${reason}. Fix the endpoint value before sending it.`,
     );
-    // An untrusted Proxy trap may have installed inherited setters before a
-    // refusal is created. Define own properties without invoking those setters.
-    defineProperty(this, "name", {
-      value: "CompatCodecError",
-      configurable: true,
-      enumerable: true,
-      writable: true,
-    });
-    defineProperty(this, "kind", {
-      value: kind,
-      configurable: true,
-      enumerable: true,
-      writable: true,
-    });
-    defineProperty(this, "code", {
-      value: CODE[kind],
-      configurable: true,
-      enumerable: true,
-      writable: true,
-    });
+    // A caller trap can poison both inherited Error fields and descriptor
+    // names such as Object.prototype.get/set before normalization.
+    defineProperty(this, "name", ownDataDescriptor("CompatCodecError", true));
+    defineProperty(this, "kind", ownDataDescriptor(kind, true));
+    defineProperty(this, "code", ownDataDescriptor(CODE[kind], true));
   }
 }
 
@@ -80,6 +65,7 @@ const ownKeys = Reflect.ownKeys;
 const ownDescriptor = Object.getOwnPropertyDescriptor;
 const hasOwn = Object.hasOwn;
 const defineProperty = Object.defineProperty;
+const objectCreate = Object.create;
 const hasInstance = Function.prototype[Symbol.hasInstance];
 const NativeArrayBuffer = ArrayBuffer;
 const NativeDataView = DataView;
@@ -154,10 +140,27 @@ const exoticConstructors: Function[] = [
   ...(typeof URLSearchParams === "undefined" ? [] : [URLSearchParams]),
   ...(typeof Blob === "undefined" ? [] : [Blob]),
 ];
-// A previously returned genuine refusal can be thrown from a later hostile
-// Proxy trap. Only refusals minted during the current encode/decode invocation
-// may escape that invocation's catch boundary unchanged. Nested reentry gets
-// its own scope and cannot launder a cached error into its caller.
+
+/** Define data slots with a null-prototype descriptor, immune to hostile
+ * inherited `get` or `set` properties on Object.prototype.
+ */
+function ownDataDescriptor(
+  value: unknown,
+  enumerable: boolean,
+): PropertyDescriptor {
+  const descriptor: PropertyDescriptor = objectCreate(null);
+  descriptor.value = value;
+  descriptor.configurable = true;
+  descriptor.enumerable = enumerable;
+  descriptor.writable = true;
+  return descriptor;
+}
+
+/**
+ * Refusal identity belongs to one synchronous public operation. Hostile
+ * traps may replay a previous rejection or reenter another public codec
+ * operation; neither grants the outer operation's error provenance.
+ */
 let activeRefusals: WeakSet<object> | null = null;
 
 function byteSize(value: Uint8Array): number {
@@ -200,12 +203,7 @@ function inCodecScope<T>(action: () => T, reason: string): T {
 }
 
 function appendOwn<T>(array: T[], value: T): void {
-  defineProperty(array, toString(array.length), {
-    value,
-    configurable: true,
-    enumerable: true,
-    writable: true,
-  });
+  defineProperty(array, toString(array.length), ownDataDescriptor(value, true));
 }
 
 function forbiddenKey(key: string): boolean {
@@ -502,12 +500,7 @@ class ValueWriter {
         ) {
           if (!hasOwn(descriptor, "value"))
             reject("MalformedValue", "sparse or accessor array entry");
-          defineProperty(items, key, {
-            value: descriptor,
-            configurable: true,
-            enumerable: true,
-            writable: true,
-          });
+          defineProperty(items, key, ownDataDescriptor(descriptor, true));
         }
       }
       const finalLength = checkedDescriptor(value, "length");
@@ -735,7 +728,14 @@ class ValueReader {
             "array count exceeds remaining node/visit budget",
           );
         const array: unknown[] = [];
-        for (let i = 0; i < count; i++) appendOwn(array, this.node(depth + 1));
+        // Define, do not push: an inherited indexed setter would otherwise
+        // swallow the element while the array still reports its length.
+        for (let i = 0; i < count; i++)
+          defineProperty(
+            array,
+            i,
+            ownDataDescriptor(this.node(depth + 1), true),
+          );
         return array;
       }
       case 7: {
@@ -758,12 +758,11 @@ class ValueReader {
           if (previous !== undefined && keyOrder(previous, raw) >= 0)
             reject("MalformedValue", "duplicate or noncanonical object keys");
           previous = raw;
-          defineProperty(object, key, {
-            value: this.node(depth + 1),
-            configurable: true,
-            enumerable: true,
-            writable: true,
-          });
+          defineProperty(
+            object,
+            key,
+            ownDataDescriptor(this.node(depth + 1), true),
+          );
         }
         return object;
       }
@@ -789,18 +788,9 @@ class ValueReader {
           reject("MalformedValue", "invalid Error stack marker");
         const stack = hasStack === 1 ? this.text().value : undefined;
         const error = new NativeError(message);
-        defineProperty(error, "name", {
-          value: name,
-          configurable: true,
-          writable: true,
-        });
+        defineProperty(error, "name", ownDataDescriptor(name, false));
         if (stack === undefined) delete error.stack;
-        else
-          defineProperty(error, "stack", {
-            value: stack,
-            configurable: true,
-            writable: true,
-          });
+        else defineProperty(error, "stack", ownDataDescriptor(stack, false));
         return error;
       }
       default:
