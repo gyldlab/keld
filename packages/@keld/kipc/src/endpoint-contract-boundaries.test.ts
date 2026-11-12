@@ -56,7 +56,12 @@ test("aggregate object key plus tagged-value visits 255/256 pass and257 refuse",
   const withArray = objectValue(127);
   withArray.k126 = [null];
   expect(codec.decodeEndpointValue(objectWire(127, true))).toEqual(withArray);
-  expect(() => codec.encodeEndpointValue(withArray)).toThrow("KELD-COMPAT-102");
+  expect(codec.encodeEndpointValue(withArray)).toEqual(objectWire(127, true));
+  const overBudget = objectValue(127);
+  overBudget.k126 = [null, null];
+  expect(() => codec.encodeEndpointValue(overBudget)).toThrow(
+    "KELD-COMPAT-102",
+  );
   expect(() => codec.encodeEndpointValue(objectValue(128))).toThrow(
     "KELD-COMPAT-102",
   );
