@@ -91,6 +91,26 @@ current user, SYSTEM, and Administrators. Subsequent validation follows the Wind
 it rejects foreign ordinary-user read, write, execute, delete, or ACL/owner authority
 while retaining the AppContainer and capability ACEs WebView2 requires.
 
+Windows application sessions require two release facts before durable `idle`,
+ephemeral deletion, or in-host handover (GH-1188 D7). The current browser must
+provide its normal exit receipt when a controller exists. Core then observes the
+actual retained host-death Job, excluding only the Host and retained Bun families,
+within the remaining post-exit grace. A zero-controller session still requires
+that census. The constructor writes `Running` after the verified environment and
+exit observer exist, before Ready. Failure preserves `Stopping` and returns
+`KELD-WV-009`; a normal browser receipt alone cannot release the profile.
+
+Each Bun generation reserves enrollment before spawn and joins its own nested Job
+through its retained Child before authenticated admission. Retired generation Jobs
+remain until native accounting proves them empty. The session seals admission
+before release and refuses pending or contended enrollment. At most 64 nonempty
+families are retained; capacity exhaustion refuses a new spawn. Post-spawn
+assignment does not claim to capture an earlier descendant: such a process stays
+non-family and blocks release. Job cleanup does not prove Bun-family filesystem
+containment or release by service-started processes outside the Host Job. The
+standalone hello loop has no application-session Host Job and keeps its separate
+receipt-only contract. Managed Windows windows remain disabled until T3.
+
 During a `PerUserDirect` update the old host hands this persistent profile to the
 candidate: it closes its window, tells the application that its last window closed,
 waits a bounded time for the application's own `Quit` and only then ends it, so that

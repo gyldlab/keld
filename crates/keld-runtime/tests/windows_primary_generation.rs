@@ -23,6 +23,9 @@ use keld_runtime::primary::{
 };
 use keld_runtime::{RestartPolicy, SupervisorOutcome};
 
+#[path = "windows_primary_generation/families.rs"]
+mod families;
+
 const EVENT_DEADLINE: Duration = Duration::from_secs(10);
 const CONTROL_POLL: Duration = Duration::from_millis(200);
 const CONTROL_DEADLINE: Duration = Duration::from_secs(30);
@@ -125,19 +128,21 @@ fn run_clean_successor_cycle(fixture: &PrimaryFixture) {
     echo.join();
 }
 
+fn primary_config(fixture: &PrimaryFixture) -> PrimaryRoleConfig {
+    PrimaryRoleConfig::new("bun")
+        .arg(PrimaryFixture::script_path())
+        .arg(fixture.control_port().to_string())
+        .current_dir(fixture.dir())
+        .restart_policy(RestartPolicy {
+            max_crashes: 3,
+            window_secs: 30,
+        })
+        .admission_timeout(Duration::from_secs(10))
+}
+
 fn start_primary(fixture: &PrimaryFixture) -> PrimaryRoleSupervisor {
-    PrimaryRoleSupervisor::start_with_bound_generations(
-        PrimaryRoleConfig::new("bun")
-            .arg(PrimaryFixture::script_path())
-            .arg(fixture.control_port().to_string())
-            .current_dir(fixture.dir())
-            .restart_policy(RestartPolicy {
-                max_crashes: 3,
-                window_secs: 30,
-            })
-            .admission_timeout(Duration::from_secs(10)),
-    )
-    .expect("Windows primary role must spawn under Bun")
+    PrimaryRoleSupervisor::start_with_bound_generations(primary_config(fixture))
+        .expect("Windows primary role must spawn under Bun")
 }
 
 fn expect_provisioned(

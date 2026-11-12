@@ -241,10 +241,10 @@ fn check_project_layout(project_root: Option<&Path>) -> Check {
 fn check_renderer(root: &Path) -> Check {
     match facade_mode_for_project(root) {
         Ok(true) => {
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "macos", windows)))]
             {
                 let detail = String::from(
-                    "KELD-CLI-047: initialWindow: 'none' requires macOS facade boot support. Remove initialWindow for renderer boots on this platform.",
+                    "KELD-CLI-047: initialWindow: 'none' requires macOS or Windows facade boot support. Remove initialWindow for renderer boots on this platform.",
                 );
                 return Check {
                     label: "renderer",
@@ -260,7 +260,7 @@ fn check_renderer(root: &Path) -> Check {
                     ),
                 };
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             return Check {
                 label: "renderer",
                 ok: true,
@@ -511,7 +511,7 @@ mod tests {
         )
         .expect("facade config");
         let facade = renderer_check(dir.path());
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             assert!(
                 facade.ok,
@@ -525,7 +525,7 @@ mod tests {
             assert!(renderer.ok, "{renderer:?}");
             assert!(renderer.error.is_none());
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             assert!(
                 !facade.ok,
@@ -570,10 +570,13 @@ mod tests {
         let project = project_check(Some(dir.path()));
         assert!(project.ok, "{project:?}");
         let renderer = renderer_check(dir.path());
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         assert!(renderer.ok, "{renderer:?}");
-        #[cfg(not(target_os = "macos"))]
-        assert!(!renderer.ok, "non-macOS facade unsupported: {renderer:?}");
+        #[cfg(not(any(target_os = "macos", windows)))]
+        assert!(
+            !renderer.ok,
+            "facade unsupported on this platform: {renderer:?}"
+        );
     }
 
     #[test]
@@ -632,6 +635,25 @@ mod tests {
             display_project_path(Path::new(r"\\?\C:\Users\runneradmin\app")),
             r"C:\Users\runneradmin\app"
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_facade_doctor_accepts_no_renderer_after_t2_release_integration() {
+        let dir = tempfile::tempdir().expect("doctor fixture");
+        fs::write(
+            dir.path().join("keld.config.ts"),
+            "export default { initialWindow: 'none', entry: 'main.ts' } as const;\n",
+        )
+        .expect("facade config");
+        fs::write(dir.path().join("main.ts"), "export {};\n").expect("entry");
+        assert!(!dir.path().join("index.html").exists());
+        let result = renderer_check(dir.path());
+        assert!(
+            result.ok,
+            "T2 Windows facade must not require a renderer: {result:?}"
+        );
+        assert!(result.error.is_none());
     }
 
     #[test]

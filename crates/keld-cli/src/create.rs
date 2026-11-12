@@ -250,9 +250,34 @@ mod tests {
     fn created_app_native_formatter_checks_repairs_and_is_idempotent() {
         use std::process::Command;
 
+        let initialize_repository = |directory: &std::path::Path| {
+            for args in [
+                &["init", "--quiet"][..],
+                &["config", "maintenance.auto", "false"][..],
+            ] {
+                let mut command = Command::new("git");
+                command.args(args).current_dir(directory);
+                for key in [
+                    "GIT_DIR",
+                    "GIT_COMMON_DIR",
+                    "GIT_WORK_TREE",
+                    "GIT_INDEX_FILE",
+                    "GIT_OBJECT_DIRECTORY",
+                ] {
+                    command.env_remove(key);
+                }
+                let result = command.output().expect("initialize fixture repository");
+                assert!(result.status.success(), "fixture Git command: {result:?}");
+            }
+        };
         for name in ["formatted-app".to_owned(), "a".repeat(100)] {
             let dir = tempfile::tempdir().expect("tempdir");
+            initialize_repository(dir.path());
+            // Model managed scratch even when the test runs outside this repository.
+            fs::write(dir.path().join(".gitignore"), format!("{name}/\n"))
+                .expect("ignore the nested fixture in its parent repository");
             let root = create_project(dir.path(), &name).expect("create app");
+            initialize_repository(&root);
             let run = |script: &str| {
                 Command::new("bun")
                     .args(["run", script])
