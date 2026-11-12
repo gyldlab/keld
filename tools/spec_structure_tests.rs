@@ -6065,5 +6065,9 @@ fn off_root_markdown_links_use_the_shared_extension_contract() {
     let mut fixture = Fixture::new();
     fixture.track("packages/@keld/kipc/source.rs", b"fn main() {}\n");
     link_from_design(&fixture, "../../../packages/@keld/kipc/source.rs");
-    assert_only(&fixture, Rule::LinkCode, "off-root source remains forbidden");
+    assert_only(
+        &fixture,
+        Rule::LinkCode,
+        "off-root source remains forbidden",
+    );
 }
