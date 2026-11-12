@@ -216,7 +216,7 @@ fn dialog_cancel_at_capacity_keeps_distinct_original_and_cancel_correlations() {
             first.identity,
             first.attempt,
             successor.nonce,
-            CorrelationId(8)
+            CorrelationId(9)
         ),
         Err(DialogFault::InvalidRequest),
         "another operation's sequence cannot cancel this reservation",
