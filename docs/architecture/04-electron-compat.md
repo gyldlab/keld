@@ -50,8 +50,9 @@ integration also owns root `version`. The draft
 root `id` alongside those fields and a bounded literal `keld.build.ts` subset. It
 does not make the nested `app` example below a second accepted metadata source.
 [PR #1407's delegated implementation approval](https://github.com/gyldlab/keld/pull/1407#pullrequestreview-5787262030)
-covers the unchanged specification at `3c490596`; it does not establish personal
-human specification sign-off, installed-product acceptance or merge clearance.
+covers the specification revision at `3c490596`, not the later installed
+module-resolution amendment. It does not establish personal human specification
+sign-off, installed-product acceptance or merge clearance.
 The specification retains `Status: draft`; implementation and final acceptance
 are tracked separately in [GH-1404](https://github.com/gyldlab/keld/issues/1404).
 

@@ -1,7 +1,7 @@
 # Spec: local macOS application packaging and installed boot
 
 Status: draft
-Linear: GH-1404 (#517 fallback) · Owner: GYLDLAB · Updated: 2026-11-05
+Linear: GH-1404 (#517 fallback) · Owner: GYLDLAB · Updated: 2026-11-12
 
 Tracker of record: [GH-1404](https://github.com/gyldlab/keld/issues/1404).
 Future design only: [Windows GH-1405](https://github.com/gyldlab/keld/issues/1405)
@@ -10,6 +10,8 @@ This document is a proposed contract, not implementation or approval evidence.
 Product implementation starts only after exact-content human approval under
 [workflow step 2](../agents/workflow.md) and the [spec template](../agents/spec-template.md).
 The user's delivery objective remains open until installed macOS acceptance passes.
+The installed module-resolution amendment below changes the previously approved
+specification; its exact-content approval and native acceptance remain separate gates.
 
 ## 1. Goal & non-goals
 
@@ -131,7 +133,7 @@ All implementation criteria below are unrun at draft creation.
 | A8 | Bundled Bun is selected by validated absolute identity. Missing/replaced Bun and hostile PATH/preload inputs cannot launch a substitute. |
 | A9 | Each nested executable verifies before the containing bundle is signed; the final outer application has a verified ad-hoc signature. Pinned Bun retains its valid input signature and bytes. Independent executable-content/resource mutations fail signature verification; executable modes have separate package/admission checks. |
 | A10 | The DMG verifies, mounts read-only, contains the app and Applications shortcut, supports copying, and detaches using the observed device identity. |
-| A11 | Installed app works after renaming/relocation and from unrelated cwd. No source/resource/runtime access escapes to the checkout or developer cache. |
+| A11 | Installed app works after renaming/relocation and from unrelated cwd. Executable application dependencies resolve only from the independently qualified sealed graph; missing/unqualified imports refuse before evaluation without install, registry or ambient-cache fallback. No source/resource/runtime access escapes to the checkout or developer cache. |
 | A12 | Original draw.io passes Launch → Open → Edit → Save → unsaved Close → Cancel → Save → Reopen → Discard → Quit, with native observations and saved-file readback. |
 | A13 | Normal quit/relaunch, Bun failure/recovery where applicable, Host failure and owned-child cleanup pass using exact process identities. No installed files or user documents are removed by cleanup. |
 | A14 | Pre-sign input qualification and independent post-sign final-artifact qualification identify exact Host/provider/app/runtime bytes; no historical receipt silently transfers. |
@@ -284,6 +286,11 @@ licenses/attributions remain resources. Native code discovered among resources m
 be explicitly classified and placed in a standard code location or rejected; it
 must never be silently treated as inert data.
 
+Capture and independently qualify the complete executable dependency closure, including
+package trees and worker modules, through the same graph owner. A package name or
+lockfile entry alone is not a qualification receipt. Assembly must not rely on runtime
+downloads or the installation location's ancestor `node_modules` to complete that closure.
+
 ### 4.4 Bundle and boot contract
 
 | Content | Fixed bundle-relative location |
@@ -382,6 +389,28 @@ validated local bundle, checks the parent-selected entry/runtime identities, and
 executes the absolute bundled Bun. Existing environment sanitation and qualified
 canonical preload remain mandatory. No PATH, BUN_OPTIONS, ambient bunfig, developer
 Bun or source-tree fallback is allowed.
+
+For every installed Bun generation, including recovery/restart, the Guardian must
+disable automatic dependency installation with `--no-install`, or an independently
+proved equivalent for the exact pinned Bun and invocation. The installed resolver
+must admit executable application/package modules only from the independently qualified
+sealed graph. This includes static/dynamic imports, `require`, worker entry points
+and their transitive dependencies; qualified framework preloads remain subject to
+their existing contracts. Bun/Node built-ins remain the pinned runtime's facilities,
+not ambient npm packages.
+
+Disabling installation alone is insufficient: normal resolution can search ancestor
+`node_modules`. Resolve and validate the selected module's captured identity through
+the existing graph/admission owner before evaluation; reject missing, unlisted or
+escaping modules rather than falling back to caches, registries or unqualified paths
+in the checkout, home, cwd or installation ancestors. Sanitize inherited resolution inputs (including
+`NODE_PATH` and unqualified configuration/preloads); neither ambient `.npmrc` nor
+a registry override may acquire or admit code. Revalidate on generation restart and
+relocation. Reuse the graph owner and pinned runtime's supported controls, not a
+second package manager or policy engine. If those controls cannot enforce this
+boundary for a supported loading path, installed acceptance stays blocked until that
+owner supplies a separately reviewed solution. This module-admission requirement
+does not claim OS containment or remove Legacy's disclosed ambient OS authority.
 
 The transport remains a separately packaged canonical `kipc-transport.ts` or
 `.js` with the existing release build/stamp requirements. Do not inline it into
@@ -616,7 +645,7 @@ does not prove publisher identity; an API return does not prove installed behavi
 | A8 | Hostile PATH Bun writes a marker; missing installed Bun must fail without that marker. Replace Bun with differently hashed validly signed code meeting the same designated requirement: sealed digest still refuses. Preserve preload/ambient Bun option negative controls and generation revalidation. |
 | A9 | Independently mutate copied Host, Bun, boot, policy and app resource bytes after signing; signature verification fails. Separately chmod copied Host/Bun to `0644`: record signature-still-valid as the control, then require Pack rejection, installed Bun admission/generation refusal before app effects, or Launch Services refusal for the non-executable Host. Re-signing is a separate trust-control case. |
 | A10 | Verify/mount/copy/detach exact DMG device; corrupted disposable image fails integrity; unrelated mounts and existing files remain untouched. |
-| A11 | Rename and move the copied app, clear development dependencies, use unrelated cwd, inspect actual Host/Bun/resource paths. No checkout-based rescue. |
+| A11 | Rename/move the copied app and use unrelated cwd. Omit a required dependency, then independently offer marker packages through a populated Bun cache, hostile registry/`.npmrc`, ancestor `node_modules` and `NODE_PATH`. Exercise static/dynamic import, `require` and worker dependency paths: typed refusal before marker evaluation, no dependency acquisition/network request, and no checkout/cache rescue. Observe requests and external marker effects independently of the resolver. A matching dependency captured in the qualified sealed graph must still load. Repeat on Bun recovery/restart and after relocation. |
 | A12 | Original pinned editor, native interaction, saved XML/content readback, veto/Cancel/Save/Discard/Quit ordering. A window or mock editor is insufficient. |
 | A13 | Isolated subprocess controls for Bun and Host death; independent PID/start identity and descendant census, bounded observation deadlines, cleanup then relaunch. Bundle/document hashes remain unchanged. Record detached/simultaneous-death outcomes separately; an unmet required condition blocks closure. |
 | A14–A15 | Change one qualification pin or final artifact; receipt cannot transfer. Two-build comparison separates input/content/signed/image identities. |
