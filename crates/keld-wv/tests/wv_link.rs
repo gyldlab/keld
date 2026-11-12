@@ -84,6 +84,22 @@ fn malformed_unknown_duplicate_and_authority_fields_fail_closed() {
     );
 }
 
+/// Unknown JSON fields resembling the old overflow sentinel must remain malformed.
+#[test]
+fn unknown_field_name_cannot_spoof_payload_overflow() {
+    for bytes in [
+        br#"{"v":1,"kind":"bind","keld-wv-link-payload-too-large":0}"#.as_slice(),
+        br#"{"v":1,"kind":"bind","keld-wv-link-payload-\u0074oo-large":0}"#.as_slice(),
+    ] {
+        assert_eq!(
+            decode_wv_link(bytes),
+            Err(WvLinkRejectReason::MalformedEnvelope),
+            "unknown fields cannot become payload-overflow reports: {}",
+            String::from_utf8_lossy(bytes)
+        );
+    }
+}
+
 #[test]
 fn version_and_nonzero_identifiers_have_distinct_rejections() {
     assert_eq!(
