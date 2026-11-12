@@ -126,18 +126,22 @@ const decodeText = TextDecoder.prototype.decode;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const arrayIndex = /^(0|[1-9][0-9]*)$/;
-const exoticConstructors: Function[] = [
-  ArrayBuffer,
-  Map,
-  Set,
-  WeakMap,
-  WeakSet,
-  RegExp,
-  Promise,
-  ...(typeof SharedArrayBuffer === "undefined" ? [] : [SharedArrayBuffer]),
-  ...(typeof URL === "undefined" ? [] : [URL]),
-  ...(typeof URLSearchParams === "undefined" ? [] : [URLSearchParams]),
-  ...(typeof Blob === "undefined" ? [] : [Blob]),
+const exoticConstructors: [Function, string][] = [
+  [ArrayBuffer, "ArrayBuffer"],
+  [Map, "Map"],
+  [Set, "Set"],
+  [WeakMap, "WeakMap"],
+  [WeakSet, "WeakSet"],
+  [RegExp, "RegExp"],
+  [Promise, "Promise"],
+  ...(typeof SharedArrayBuffer === "undefined"
+    ? []
+    : [[SharedArrayBuffer, "SharedArrayBuffer"] as [Function, string]]),
+  ...(typeof URL === "undefined" ? [] : [[URL, "URL"] as [Function, string]]),
+  ...(typeof URLSearchParams === "undefined"
+    ? []
+    : [[URLSearchParams, "URLSearchParams"] as [Function, string]]),
+  ...(typeof Blob === "undefined" ? [] : [[Blob, "Blob"] as [Function, string]]),
 ];
 
 /**
@@ -199,28 +203,31 @@ function detachedArray<T>(): T[] {
  * value). Those brands keep only the prototype-chain check.
  */
 const sharedBufferByteLength = sharedArrayBufferByteLength;
-const brandProbes: ((value: object) => unknown)[] = [
-  (value) => apply(dateTime, value, []),
-  (value) => apply(mapHas, value, [undefined]),
-  (value) => apply(setHas, value, [undefined]),
-  (value) => apply(weakMapHas, value, [{}]),
-  (value) => apply(weakSetHas, value, [{}]),
-  (value) => apply(arrayBufferByteLength, value, []),
+const brandProbes: [string, (value: object) => unknown][] = [
+  ["Date", (value) => apply(dateTime, value, [])],
+  ["Map", (value) => apply(mapHas, value, [undefined])],
+  ["Set", (value) => apply(setHas, value, [undefined])],
+  ["WeakMap", (value) => apply(weakMapHas, value, [{}])],
+  ["WeakSet", (value) => apply(weakSetHas, value, [{}])],
+  ["ArrayBuffer", (value) => apply(arrayBufferByteLength, value, [])],
   ...(sharedBufferByteLength === undefined
     ? []
-    : [(value: object) => apply(sharedBufferByteLength, value, [])]),
+    : [[
+      "SharedArrayBuffer",
+      (value: object) => apply(sharedBufferByteLength, value, []),
+    ] as [string, (value: object) => unknown]]),
 ];
 
-function hasNativeBrand(value: object): boolean {
+function nativeBrandName(value: object): string | undefined {
   for (let index = 0; index < brandProbes.length; index++) {
     try {
-      brandProbes[index](value);
-      return true;
+      brandProbes[index][1](value);
+      return brandProbes[index][0];
     } catch {
       continue;
     }
   }
-  return false;
+  return undefined;
 }
 
 function byteSize(value: Uint8Array): number {
@@ -263,11 +270,12 @@ function checkedDescriptor(
  * Symbol.toStringTag getters on ordinary objects. Native brands known to have
  * host state or callable behavior refuse before flattening own data fields.
  */
-function knownExotic(value: object): boolean {
-  if (isView(value)) return true;
+function knownExoticName(value: object): string | undefined {
+  if (isView(value)) return "TypedArray/DataView";
   for (let i = 0; i < exoticConstructors.length; i++)
-    if (isInstance(value, exoticConstructors[i])) return true;
-  return false;
+    if (isInstance(value, exoticConstructors[i][0]))
+      return exoticConstructors[i][1];
+  return undefined;
 }
 
 /** Refuse invalid UTF-16 rather than allowing TextEncoder to repair it. */
@@ -509,8 +517,9 @@ class ValueWriter {
     // ordinary records. Never invoke Symbol.toStringTag or toJSON as a probe.
     // The internal-slot probes catch a native whose prototype was replaced and
     // which the chain check above therefore cannot see.
-    if (knownExotic(value) || hasNativeBrand(value))
-      reject("UnsupportedValue", "unsupported exotic object");
+    const exoticName = knownExoticName(value) ?? nativeBrandName(value);
+    if (exoticName !== undefined)
+      reject("UnsupportedValue", `unsupported ${exoticName} object`);
 
     const keys = checkedOwnKeys(value);
     if (keys.length > ENDPOINT_VALUE_NODES - this.visits)
