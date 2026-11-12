@@ -119,6 +119,26 @@ test("JSON constructor and prototype data keys round-trip without prototype poll
   expect(({} as Record<string, unknown>).polluted).toBeUndefined();
 });
 
+test("literal tag-07 golden admits constructor and prototype as own data", () => {
+  // Independent wire oracle: tag07, two UTF-8 sorted keys, f64LE(42), false.
+  // Do not derive these bytes from the encoder or its key-order comparator.
+  const wire = Uint8Array.from([
+    7, 2, 0, 11, 0, 99, 111, 110, 115, 116, 114, 117, 99, 116, 111, 114, 4, 0,
+    0, 0, 0, 0, 0, 69, 64, 9, 0, 112, 114, 111, 116, 111, 116, 121, 112, 101, 2,
+  ]);
+  const value = JSON.parse('{"constructor":42,"prototype":false}');
+  expect(encodeEndpointValue(value)).toEqual(wire);
+  const decoded = decodeEndpointValue(wire) as Record<string, unknown>;
+  expect(decoded).toEqual(value);
+  expect(Object.getOwnPropertyDescriptor(decoded, "constructor")?.value).toBe(
+    42,
+  );
+  expect(Object.getOwnPropertyDescriptor(decoded, "prototype")?.value).toBe(
+    false,
+  );
+  expect(Object.getPrototypeOf(decoded)).toBe(Object.prototype);
+});
+
 test("decoder defines JSON data keys without calling inherited setters", () => {
   const originalConstructor = Object.getOwnPropertyDescriptor(
     Object.prototype,
