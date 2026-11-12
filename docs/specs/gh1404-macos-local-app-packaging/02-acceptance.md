@@ -138,6 +138,16 @@ A matching marker package exists only in an ancestor node_modules directory.
   - **Expected RED:** The missing import refuses before external marker evaluation, without fallback acquisition.
 The complete-graph success fixture still launches after relocation from an unrelated cwd.
 
+- **Additional negative control:** Use a separate present-but-unqualified module fixture.
+  - **Single fault:** Add one executable marker module to a signed bundle without
+    admitting its identity to the independently qualified resource graph.
+  - **At-risk precondition:** The disposable bundle has valid signing, boot, policy
+    and runtime facts. The qualified entry attempts to import the marker module.
+  - **Expected RED:** The existing graph owner or installed resolver refuses the
+    unqualified module before marker execution. A valid code seal is insufficient.
+  - **Valid control:** The independently qualified and sealed version of that module
+    imports successfully under the same runtime and bundle settings.
+
 ### AC-12: Original editor workflow
 
 - **Given:** The pinned original editor opens a document and has unsaved changes.

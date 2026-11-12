@@ -44,35 +44,39 @@ launch-fact codec extension must be versioned and reject unknown/mixed records.
 
 - **Blocked by:** B-1
 
-independently review this exact proposal, reconcile owners and obtain
-  exact-content human specification approval. Keep the draft PR open.
+Independently review this exact proposal and reconcile its owners.
+  Obtain exact-content human specification approval before implementing the amended contract.
+  Keep the spec draft and the PR open; do not merge.
 
 
 ### T-2: Minimal installed app
 
-- **Blocked by:** T-1, B-2
+- **Blocked by:** T-1, B-3
 
-minimal real local app through the shipping Host: bundle admission,
-  absolute bundled Bun, existing Guard, ephemeral profile, durable cleanup and
-  installed launch facts, using Pack's native app/signing path. Fail-first controls
-  precede the implementation. No draw.io hardcoding.
+Build a minimal installed app through the shipping Host with independently
+  qualified generic inputs. Exercise bundle admission, absolute bundled Bun,
+  existing Guard, ephemeral profile, durable cleanup and installed launch facts.
+  Use the native Pack signing path and fail-first controls. Do not hardcode draw.io.
+  Do not require approval of the original draw.io source to build this fixture.
 
 
 ### T-3: CLI and DMG
 
-- **Blocked by:** T-2, B-2
+- **Blocked by:** T-2, B-3
 
-complete the macOS CLI/config and DMG output, receipt and failure cleanup.
-  Integrate only committed qualified graph/provider source under its owners.
+Complete the generic macOS CLI/config and DMG output, receipt and failure cleanup.
+  Use only committed, independently qualified generic graph/provider inputs.
+  Defer original draw.io resource integration until its separate B-2 handoff.
 
 
 ### T-4: Native acceptance
 
-- **Blocked by:** T-3
+- **Blocked by:** T-3, B-2
 
-independently install/relocate both apps, run original draw.io workflows,
-  all required security/lifecycle controls and current-head quality/review gates;
-  publish only verified local artifacts and exact limitations.
+Independently install and relocate the minimal and original draw.io apps.
+  Integrate only qualified original draw.io inputs from the B-2 handoff.
+  Run original draw.io workflows, security/lifecycle controls and current-head gates.
+  Publish only verified local artifacts and exact limitations.
 
 
 Track meaningful PR-sized subunits on GH-1404 before their first edit; do not create
@@ -138,6 +142,15 @@ Exercise static/dynamic import, `require` and worker dependency paths: typed ref
 no dependency acquisition/network request, and no checkout/cache rescue. Observe requests and external marker
 effects independently of the resolver. A matching dependency captured in the qualified sealed graph must still
 load. Repeat on Bun recovery/restart and after relocation.
+
+Construct a separate signed, disposable fixture with an executable marker module
+present in the bundle but absent from the independently qualified resource graph.
+Keep boot, policy, runtime and signature inputs valid. Attempt imports through
+static/dynamic loading, `require`, and worker entry points. Record refusal by the
+earliest qualified graph owner before marker evaluation. If Pack refuses the input
+before signing, retain that outcome as an early refusal, not as installed-resolver
+acceptance. Also exercise a separately qualified and sealed positive module.
+Repeat the applicable controls after restart and relocation.
 
 ### Controls for AC-12
 
@@ -225,10 +238,20 @@ macOS implementation once its own approval and source dependencies are satisfied
 - **Impact:** T-1 cannot complete and implementation under this amended contract remains gated.
 - **Check:** Record exact-content approval of the complete index and all parts.
 
-### B-2: Qualified integration handoff
+### B-2: Qualified original-application handoff
 
 - **Status:** open
 - **Owner:** Graph/provider and launch-fact owners of GH-499, GH-502, GH-553, GH-452 and GH-570
-- **Impact:** T-2 and T-3 cannot integrate unqualified original application inputs.
-- **Check:** Record committed source, provider and applicable qualification handoffs for the exact
-implementation inputs.
+- **Impact:** T-4 cannot integrate or accept original draw.io without its independent
+  committed source/provider/launch-fact qualifications. This does not block the generic fixture.
+- **Check:** Record approved original-app source, provider and qualification
+  handoffs for the exact draw.io implementation inputs.
+
+### B-3: Qualified generic minimal-app handoff
+
+- **Status:** open
+- **Owner:** Generic graph/provider and launch-fact owners of GH-499, GH-502, GH-553, GH-452 and GH-570
+- **Impact:** T-2 and T-3 require qualified generic Host, Bun, graph, permission
+  and installed launch-fact inputs. Draw.io-specific source approval is not required.
+- **Check:** Record the committed minimal-app fixture, its independently qualified
+  generic inputs and the fail-closed admission checks before build or installed launch.

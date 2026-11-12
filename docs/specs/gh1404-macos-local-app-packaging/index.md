@@ -10,11 +10,12 @@ Tracker of record: [GH-1404](https://github.com/gyldlab/keld/issues/1404).
 Future design only: [Windows GH-1405](https://github.com/gyldlab/keld/issues/1405)
 and [Linux GH-1406](https://github.com/gyldlab/keld/issues/1406).
 This document is a proposed contract, not implementation or approval evidence.
-Product implementation starts only after exact-content human approval under
+The delegated implementation approval at `3c490596ceb483254551d37041d25e7e110dfa41`
+covers only that historical specification. It does not approve the later module-resolution amendment.
+Implementation of the amended contract requires exact-content human approval under
 [workflow step 2](../../agents/workflow.md) and the [spec template](../../agents/spec-template.md).
 The user's delivery objective remains open until installed macOS acceptance passes.
-The installed module-resolution amendment below changes the previously approved
-specification; its exact-content approval and native acceptance remain separate gates.
+Formal specification approval, native acceptance and merge clearance are separate gates.
 
 ## 1. Goal & non-goals
 
@@ -24,7 +25,8 @@ original application resources and existing Host-enforced permissions. Local ad-
 signing is the initial artifact class. The original draw.io migration is the first
 full acceptance consumer; a separate minimal app proves framework independence.
 
-Implement macOS now. Design Windows/Linux now; implement them later.
+Target macOS first, subject to the approval and input gates below.
+Design Windows/Linux now; implement them later.
 
 Non-goals: Windows/Linux code, installers, adapters, traits, dependencies or pipelines;
 universal or Intel Mac qualification; public Developer ID/notarized distribution;
@@ -50,6 +52,7 @@ and all other platform cells remain unverified until actually exercised.
 
 - B-1
 - B-2
+- B-3
 
 ## 8. Review gates triggered
 
