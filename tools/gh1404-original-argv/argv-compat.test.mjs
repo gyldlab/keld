@@ -19,9 +19,78 @@ const bun = "/sealed/Helpers/bun";
 const bootstrap = "/sealed/Resources/app/keld-installed-runtime-entry.mjs";
 const original = "/sealed/Resources/app/src/main/electron.js";
 const diagram = "/user/actual-selected.drawio";
+// Reuse the schema-7 source fixture from the KIPC owner's own test corpus.
+// Parsing this fixture is test data, NOT an authentication mechanism.
+const selectedFacts = Object.freeze(
+  JSON.parse(
+    readFileSync(
+      new URL(
+        "../../packages/@keld/kipc/test/fixtures/installed-launch-facts-v7.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ),
+);
 
 function parsedPositions(argv) {
   return argv.slice(2).filter((part) => part != null);
+}
+
+for (const defaultApp of [true, false, undefined]) {
+  test(`runtime-selected original refuses missing or mismatched schema-7 facts before parsing, defaultApp=${String(defaultApp)}`, () => {
+    const mismatches = [
+      undefined,
+      null,
+      { schema: 6, kind: "local-development" },
+      { schema: 7, kind: "development" },
+      { schema: 7, kind: "local-development" },
+      {
+        schema: 7,
+        kind: "local-development",
+        originalResourcePolicy: { contract: "unqualified" },
+      },
+    ];
+    for (const hostFacts of mismatches) {
+      for (const extra of [[], [diagram]]) {
+        const raw = Object.freeze([bun, bootstrap, original, ...extra]);
+        assert.throws(
+          () => originalParserArgv(raw, defaultApp, true, hostFacts),
+          /KELD-IPC-005/,
+          `selected role must refuse ${JSON.stringify(hostFacts)} with extra=${extra.length}`,
+        );
+        assert.deepEqual(raw, [bun, bootstrap, original, ...extra]);
+      }
+    }
+  });
+
+  test(`matching installed facts without runtime selection refuse downgrade, defaultApp=${String(defaultApp)}`, () => {
+    assert.throws(
+      () =>
+        originalParserArgv(
+          Object.freeze([bun, bootstrap, original]),
+          defaultApp,
+          false,
+          selectedFacts,
+        ),
+      /KELD-IPC-005/,
+    );
+  });
+
+  test(`unknown runtime selection never becomes a direct-entry fallback, defaultApp=${String(defaultApp)}`, () => {
+    for (const selection of [undefined, null, 0, 1, "true"]) {
+      assert.throws(
+        () =>
+          originalParserArgv(
+            Object.freeze([bun, bootstrap, original]),
+            defaultApp,
+            selection,
+            selectedFacts,
+          ),
+        /KELD-IPC-005/,
+      );
+    }
+  });
 }
 
 for (const defaultApp of [true, false, undefined]) {
@@ -30,13 +99,18 @@ for (const defaultApp of [true, false, undefined]) {
       const authentic = Object.freeze([bun, bootstrap, original, ...user]);
       if (user.length) {
         assert.throws(
-          () => originalParserArgv(authentic, defaultApp, true),
+          () => originalParserArgv(authentic, defaultApp, true, selectedFacts),
           /KELD-IPC-005/,
         );
         assert.deepEqual(authentic, [bun, bootstrap, original, ...user]);
         return;
       }
-      const effective = originalParserArgv(authentic, defaultApp, true);
+      const effective = originalParserArgv(
+        authentic,
+        defaultApp,
+        true,
+        selectedFacts,
+      );
       assert.deepEqual(parsedPositions(effective), []);
       assert.deepEqual(authentic, [bun, bootstrap, original, ...user]);
       assert.equal(effective.includes(bootstrap), false);
@@ -53,7 +127,10 @@ test("installed parser refuses absent original identity instead of treating argv
     [bun, bootstrap, null],
     [bun, bootstrap, { malicious: true }],
   ])
-    assert.throws(() => originalParserArgv(bad, false, true), /KELD-IPC-005/);
+    assert.throws(
+      () => originalParserArgv(bad, false, true, selectedFacts),
+      /KELD-IPC-005/,
+    );
 });
 
 test("installed bootstrap refuses appended argv even if it names an existing user diagram", () => {
@@ -61,7 +138,13 @@ test("installed bootstrap refuses appended argv even if it names an existing use
   // a trustworthy open-file event; never bless it by parsing mutable argv.
   for (const mode of [true, false, undefined]) {
     assert.throws(
-      () => originalParserArgv([bun, bootstrap, original, diagram], mode, true),
+      () =>
+        originalParserArgv(
+          [bun, bootstrap, original, diagram],
+          mode,
+          true,
+          selectedFacts,
+        ),
       /KELD-IPC-005/,
     );
   }
@@ -74,7 +157,10 @@ test("unselected direct original retains upstream parser positions without mutat
       defaultApp === true
         ? [bun, original, diagram]
         : [null, bun, original, diagram];
-    assert.deepEqual(originalParserArgv(source, defaultApp, false), before);
+    assert.deepEqual(
+      originalParserArgv(source, defaultApp, false, undefined),
+      before,
+    );
     assert.deepEqual(source, [bun, original, diagram]);
   }
 });
@@ -94,7 +180,12 @@ test("patch only exact original parser seam and preserve runtime identities", ()
   const patched = patchOriginalMainText(sourceSample);
   assert.match(patched, /hostLaunchFacts, runtimeProcessFactsSelected/);
   assert.match(patched, /originalParserArgv\(\s*process\.argv/);
-  assert.match(patched, /hostLaunchFacts\?\.schema === 7/);
+  assert.match(
+    patched,
+    /process\.argv, process\.defaultApp, runtimeProcessFactsSelected, hostLaunchFacts/,
+  );
+  assert.match(patched, /hostFacts\?\.schema !== 7/);
+  assert.doesNotMatch(patched, /const sealedOriginalGraph/);
   assert.doesNotMatch(patched, /argv\.unshift\(null\)/);
   assert.doesNotMatch(patched, /process\.argv\s*=/);
   assert.doesNotMatch(patched, /Bun\.main\s*=/);
@@ -156,6 +247,7 @@ test(
                 [bun, bootstrap, original, ...user],
                 defaultApp,
                 true,
+                selectedFacts,
               ),
             /KELD-IPC-005/,
           );
@@ -165,8 +257,33 @@ test(
           [bun, bootstrap, original, ...user],
           defaultApp,
           true,
+          selectedFacts,
         );
         assert.deepEqual(parseDrawioArgs(mapped).args, []);
+        for (const badFacts of [
+          undefined,
+          { schema: 6, kind: "local-development" },
+          { schema: 7, kind: "development" },
+          { schema: 7, kind: "local-development" },
+        ]) {
+          let parserCalls = 0;
+          assert.throws(() => {
+            // Refusal must occur *before* the actual pinned draw.io parser.
+            const permitted = originalParserArgv(
+              [bun, bootstrap, original, ...user],
+              defaultApp,
+              true,
+              badFacts,
+            );
+            parserCalls += 1;
+            return parseDrawioArgs(permitted);
+          }, /KELD-IPC-005/);
+          assert.equal(
+            parserCalls,
+            0,
+            "invalid selected facts cannot reach args.js",
+          );
+        }
       }
     }
   },
@@ -207,13 +324,13 @@ test(
             // A real selected .drawio still needs its independent OS open-file
             // authorization; the installed Host cannot admit it via CLI argv.
             assert.throws(
-              () => originalParserArgv(actual, mode, true),
+              () => originalParserArgv(actual, mode, true, selectedFacts),
               /KELD-IPC-005/,
             );
             continue;
           }
           const fixed = parseDrawioArgs(
-            originalParserArgv(actual, mode, true),
+            originalParserArgv(actual, mode, true, selectedFacts),
           ).args;
           const conditionalBlessInputs = fixed.filter((path) =>
             existsSync(path),

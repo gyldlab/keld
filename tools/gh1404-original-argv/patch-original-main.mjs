@@ -7,11 +7,29 @@
  * Host IPC link before importing original electron.js. Its fixed argv[2] is
  * an internal selected source, never evidence of user open-file intent.
  */
-export function originalParserArgv(rawArgv, defaultApp, installedOriginal) {
+export function originalParserArgv(
+  rawArgv,
+  defaultApp,
+  runtimeSelected,
+  hostFacts,
+) {
   if (!Array.isArray(rawArgv)) {
     throw new Error("KELD-IPC-005: original process arguments are unavailable");
   }
-  if (installedOriginal) {
+  if (runtimeSelected === true) {
+    // The Host's immutable runtime selection MUST NOT be folded into a
+    // boolean with decoded launch facts. A missing/mismatched schema-7
+    // record must refuse BEFORE upstream draw.io parses any user file.
+    if (
+      hostFacts?.schema !== 7 ||
+      hostFacts.kind !== "local-development" ||
+      hostFacts.originalResourcePolicy?.contract !==
+        "gh473-original-editor-offline/v1"
+    ) {
+      throw new Error(
+        "KELD-IPC-005: selected original requires matching schema-7 Host launch facts",
+      );
+    }
     if (
       rawArgv.length !== 3 ||
       typeof rawArgv[0] !== "string" ||
@@ -27,6 +45,13 @@ export function originalParserArgv(rawArgv, defaultApp, installedOriginal) {
     // File intent remains with existing native open-file / picker owners.
     // Never promote a mutable argv tail into a user-authorized file.
     return [rawArgv[0], null];
+  }
+  // An invalid selection or a schema-7 installed original without that
+  // selection is a mismatch, not permission to parse the signed entry.
+  if (runtimeSelected !== false || hostFacts?.schema === 7) {
+    throw new Error(
+      "KELD-IPC-005: original runtime selection and Host facts disagree",
+    );
   }
   // Preserve ordinary original/Electron parsing without changing process.argv.
   return defaultApp === true ? [...rawArgv] : [null, ...rawArgv];
@@ -44,16 +69,11 @@ const LEGACY_ARGV = [
   "    }",
 ].join("\n");
 const SELECTED_ARGV = [
-  "    // Only closed schema-7 Host facts combined with the runtime-selected",
-  "    // entry graph activate the signed-original parser adaptation. Neither",
-  "    // these data facts nor a pathname grants filesystem authority. The",
-  "    // sealed Host bootstrap already verified the original and Init ACK.",
-  "    const sealedOriginalGraph =",
-  "        runtimeProcessFactsSelected === true &&",
-  "        hostLaunchFacts?.schema === 7 &&",
-  "        hostLaunchFacts?.kind === 'local-development';",
+  "    // Runtime selection and decoded Host facts must agree; missing or",
+  "    // mismatched facts refuse before any draw.io file-argument parsing.",
+  "    // The signed Host independently verified the entry and Init ACK.",
   "    let argv = originalParserArgv(",
-  "        process.argv, process.defaultApp, sealedOriginalGraph);",
+  "        process.argv, process.defaultApp, runtimeProcessFactsSelected, hostLaunchFacts);",
 ].join("\n");
 
 function replaceExactlyOnce(source, oldText, newText, label) {
