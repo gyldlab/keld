@@ -563,3 +563,59 @@ test("a native object grafted onto Error.prototype keeps its internal-slot refus
   expect(roundTrip).toBeInstanceOf(Error);
   expect((roundTrip as Error).message).toBe("valid");
 });
+
+test("early trusted codec import keeps authentic Map/WeakMap brands across late constructor poison", () => {
+  const moduleUrl = new URL("./endpoint-value-codec.ts", import.meta.url).href;
+  for (const globalName of ["Map", "WeakMap"] as const) {
+    for (const style of ["throwing", "forged-native-comment"] as const) {
+      const script = `
+      const original = globalThis[${JSON.stringify(globalName)}];
+      const path = ${JSON.stringify(moduleUrl)} + "?early-${globalName}-${style}";
+      // The approved Host-owned API evaluates this same module BEFORE
+      // application-controlled constructors can be changed.
+      const codec = await import(path);
+      const retained = new Map([["private", 1]]);
+      const weakKey = {};
+      const retainedWeak = new WeakMap([[weakKey, 1]]);
+      let fakeHasCalls = 0;
+      const fake = ${JSON.stringify(style)} === "throwing"
+        ? (() => { throw Error("hostile constructor"); })
+        : Function("return function ${globalName}() { /* [native code] */ }")();
+      if (${JSON.stringify(style)} !== "throwing")
+        fake.prototype.has = eval("(function has() { /* [native code] */ fakeHasCalls++; return true; })");
+      globalThis[${JSON.stringify(globalName)}] = fake;
+      try {
+        if ((await import(path)) !== codec)
+          throw Error("late caller evaluated a second endpoint codec");
+        const restored = codec.decodeEndpointValue(
+          codec.encodeEndpointValue({ own: "safe" }));
+        if (JSON.stringify(restored) !== '{"own":"safe"}')
+          throw Error("legitimate record lost after late constructor poison");
+        const args = codec.decodeEndpointArguments(
+          codec.encodeEndpointArguments([true]));
+        if (args.length !== 1 || args[0] !== true)
+          throw Error("legitimate argument vector lost after poison");
+        for (const value of [retained, retainedWeak]) {
+          let error;
+          try { codec.encodeEndpointValue(value); } catch (caught) { error = caught; }
+          if (error?.code !== "KELD-COMPAT-100" || error.kind !== "UnsupportedValue")
+            throw Error("genuine native brand was lost: " + String(error));
+        }
+        if (fakeHasCalls !== 0)
+          throw Error("late forged has was invoked as a native brand probe");
+      } finally {
+        globalThis[${JSON.stringify(globalName)}] = original;
+      }
+      console.log("PASS ${globalName}-${style}");
+    `;
+      const child = Bun.spawnSync([process.execPath, "-e", script], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(child.exitCode, new TextDecoder().decode(child.stderr)).toBe(0);
+      expect(new TextDecoder().decode(child.stdout).trim()).toBe(
+        `PASS ${globalName}-${style}`,
+      );
+    }
+  }
+});
