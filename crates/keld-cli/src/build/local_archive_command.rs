@@ -168,7 +168,9 @@ fn execute(
     )?;
     let channel = images.channel.clone();
     let selected_commit = images.source.commit.clone();
-    let pair = local_images::prepare_request(images, initial_install.is_some() || signing_session)?;
+    // A manifest-signing request does not authorize or implement installation.
+    // The installed Host feature/role is selected only by an explicit install.
+    let pair = local_images::prepare_request(images, initial_install.is_some())?;
     if pair.source.source_commit != selected_commit {
         return Err(BuildError::input(
             "source receipt",

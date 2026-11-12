@@ -54,6 +54,24 @@ function relativeTarget(importer: string, specifier: string): string {
   return parts.join("/");
 }
 
+// Resolution is limited to names already admitted by the native inventory.
+// Extensionless imports may select one unique .ts or .js member; they never
+// trigger Bun/TypeScript filesystem lookup or an implicit directory index.
+function resolveInventoryMember(
+  target: string,
+  files: ReadonlyMap<string, string>,
+): string {
+  if (files.has(target)) return target;
+  if (target.endsWith(".ts") || target.endsWith(".js"))
+    throw new Error("Import is absent from captured inventory");
+  const candidates = [`${target}.ts`, `${target}.js`].filter((name) =>
+    files.has(name),
+  );
+  if (candidates.length !== 1)
+    throw new Error("Import is absent from captured inventory");
+  return candidates[0]!;
+}
+
 export interface ClosedApp {
   /** Defensive copies; callers cannot mutate input bytes after admission. */
   readonly files: ReadonlyMap<string, string>;
@@ -188,9 +206,10 @@ export async function admitClosedApp(
             if (specifier) {
               if (!ts.isStringLiteral(specifier))
                 throw new Error("Static string import required");
-              const target = relativeTarget(name, specifier.text);
-              if (!transportAlias(entry, target) && !files.has(target))
-                throw new Error("Import is absent from captured inventory");
+              const raw = relativeTarget(name, specifier.text);
+              const target = transportAlias(entry, raw)
+                ? raw
+                : resolveInventoryMember(raw, files);
               imports.push(target);
             }
           }
@@ -233,14 +252,13 @@ export async function bundleCapturedApp(
             path: string;
             importer: string;
           }) => {
-            const target =
+            const raw =
               args.kind === "entry-point-build"
                 ? args.path
                 : relativeTarget(args.importer, args.path);
-            if (transportAlias(entry, target))
+            if (transportAlias(entry, raw))
               return { path: `./${TRANSPORT}`, external: true };
-            if (!admitted.files.has(target))
-              throw new Error("Compiler requested an uncaptured module");
+            const target = resolveInventoryMember(raw, admitted.files);
             return { path: target, namespace: "keld-captured" };
           };
           build.onResolve({ filter: /.*/, namespace: "file" }, resolveCaptured);

@@ -159,9 +159,13 @@ fn assert_runner_retires_descendant(capture: bool) {
     }
     let args = os_args(&["--exact", DIRECT_SELECTOR, "--ignored", "--nocapture"]);
     let descendant_pin = OnceLock::<WindowsProcessPeer>::new();
+    let (job_sender, job_receiver) = std::sync::mpsc::channel();
     let deadline = Instant::now() + WAIT;
     std::thread::scope(|scope| {
         let runner = scope.spawn(|| {
+            if !capture {
+                super::set_owned_job_test_tap(job_sender.clone());
+            }
             let result = if capture {
                 let input = std::fs::File::open("NUL").expect("null fixture stdin");
                 run_captured_with_options(
@@ -188,6 +192,17 @@ fn assert_runner_retires_descendant(capture: bool) {
                 .map(|peer| peer.has_exited().expect("exact descendant process signal"));
             (result, exited_at_return)
         });
+        // A retained QUERY|TERMINATE handle proves a missing explicit
+        // terminate-and-wait is not hidden by KILL_ON_JOB_CLOSE during Drop.
+        let _retained_job = if capture {
+            None
+        } else {
+            Some(
+                job_receiver
+                    .recv_timeout(WAIT)
+                    .expect("retain exact native Job before the tool resumes"),
+            )
+        };
         let mut descendant = ObservedFixture::accept(&descendant_listener, deadline);
         let mut direct = ObservedFixture::accept(&direct_listener, deadline);
         assert_ne!(direct.peer.process_id(), descendant.peer.process_id());
@@ -207,14 +222,20 @@ fn assert_runner_retires_descendant(capture: bool) {
         );
         direct.release();
         let (result, exited_at_return) = runner.join().expect("runner did not panic");
+        // Job ActiveProcesses == 0 can precede the exact process HANDLE
+        // signal on native Windows. Retain the independent process object and
+        // require a prompt signal, not a cooperative exit or a fixed sleep.
         result.expect("successful tool and complete family retirement");
-        assert_eq!(
-            exited_at_return,
-            Some(true),
-            "runner returned before its parked descendant process object signaled"
+        assert!(direct.peer.has_exited().expect("direct process exited"));
+        assert!(
+            exited_at_return == Some(true)
+                || descendant
+                    .peer
+                    .wait_until_exited(Duration::from_secs(1))
+                    .expect("bounded exact descendant observation"),
+            "Job reported family retirement but the exact descendant survived"
         );
         descendant.assert_no_cooperative_exit();
-        assert!(direct.peer.has_exited().expect("direct process exited"));
         assert!(
             descendant
                 .peer

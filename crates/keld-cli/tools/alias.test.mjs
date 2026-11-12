@@ -31,3 +31,60 @@ assert.equal(transportAlias("src/main.ts", "src/KIPC-TRANSPORT.ts"), false);
 console.log(
   "production alias helper tests passed (not compiler/native evidence)",
 );
+
+const resolverStart = source.indexOf("function relativeTarget(");
+const resolverEnd = source.indexOf(
+  "export interface ClosedApp {",
+  resolverStart,
+);
+assert.ok(resolverStart !== -1 && resolverEnd > resolverStart);
+const resolverFns = source
+  .slice(resolverStart, resolverEnd)
+  .replaceAll(": ReadonlyMap<string, string>", "")
+  .replaceAll(": string", "")
+  .replace("return candidates[0]!;", "return candidates[0];");
+const { relativeTarget, resolveInventoryMember } = new Function(
+  resolverFns + ";return {relativeTarget,resolveInventoryMember};",
+)();
+const admitted = new Map([
+  ["src/main.ts", ""],
+  ["src/other.js", ""],
+  ["src/empty.ts", ""],
+]);
+assert.equal(relativeTarget("src/kipc.ts", "./main"), "src/main");
+assert.equal(resolveInventoryMember("src/main", admitted), "src/main.ts");
+assert.equal(resolveInventoryMember("src/other", admitted), "src/other.js");
+assert.equal(resolveInventoryMember("src/main.ts", admitted), "src/main.ts");
+assert.equal(resolveInventoryMember("src/empty", admitted), "src/empty.ts");
+assert.throws(() => resolveInventoryMember("src/missing", admitted), /absent/);
+assert.throws(
+  () => resolveInventoryMember("src/missing.ts", admitted),
+  /absent/,
+);
+assert.throws(
+  () =>
+    resolveInventoryMember(
+      "src/ambiguous",
+      new Map([
+        ["src/ambiguous.ts", ""],
+        ["src/ambiguous.js", ""],
+      ]),
+    ),
+  /absent/,
+);
+assert.throws(
+  () =>
+    resolveInventoryMember(
+      "src/missing.ts",
+      new Map([["src/missing.ts.js", ""]]),
+    ),
+  /absent/,
+);
+assert.throws(() => relativeTarget("src/main.ts", "../../outside"), /escapes/);
+assert.throws(
+  () => relativeTarget("src/main.ts", "node:fs"),
+  /Only explicit relative/,
+);
+console.log(
+  "exact production in-inventory resolution tests passed (not native compiler proof)",
+);

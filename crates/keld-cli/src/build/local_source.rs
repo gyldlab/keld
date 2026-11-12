@@ -340,6 +340,26 @@ fn pin_file_with_budget(
     })
 }
 
+// Retain one independently owned exact Job handle during the native test.
+// KILL_ON_JOB_CLOSE must not mask a removed explicit terminate-and-wait.
+#[cfg(test)]
+thread_local! {
+    static OWNED_JOB_TEST_TAP:
+        std::cell::RefCell<Option<std::sync::mpsc::Sender<std::os::windows::io::OwnedHandle>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_owned_job_test_tap(sender: std::sync::mpsc::Sender<std::os::windows::io::OwnedHandle>) {
+    OWNED_JOB_TEST_TAP.with(|tap| {
+        assert!(
+            tap.borrow().is_none(),
+            "one observer per owned fixture thread"
+        );
+        *tap.borrow_mut() = Some(sender);
+    });
+}
+
 fn run_owned(
     tool: &PinnedFile,
     args: &[OsString],
@@ -399,6 +419,18 @@ fn run_owned(
             return Err(failure("local source Job assignment", error));
         }
     };
+    #[cfg(test)]
+    OWNED_JOB_TEST_TAP.with(|tap| -> Result<(), BuildError> {
+        if let Some(sender) = tap.borrow().as_ref() {
+            let witness = job
+                .duplicate_cleanup_observer_handle()
+                .map_err(|error| failure("source test Job witness", error))?;
+            sender
+                .send(witness)
+                .map_err(|_| failure("source test Job witness", "observer disconnected"))?;
+        }
+        Ok(())
+    })?;
     if let Err(error) = process.resume(&membership) {
         job.terminate_and_wait(process.child(), Duration::from_secs(10))
             .map_err(|cleanup| {
