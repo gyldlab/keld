@@ -208,10 +208,10 @@ fn second_fs_call_is_rejected_before_its_payload_while_first_is_outstanding() {
 
     release_tx.send(()).expect("release first FS worker");
     let shutdown = router.shutdown();
-    assert_eq!(
+    assert!(matches!(
         fatal.expect("second FS Call must fail before its withheld payload is read"),
         AppWindowCommand::Fatal
-    );
+    ));
     let error = shutdown.expect_err("second outstanding FS Call must fail the session");
     assert!(
         error.to_string().contains("KELD-IPC-005"),

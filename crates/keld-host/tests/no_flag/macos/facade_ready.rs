@@ -13,7 +13,7 @@ use std::io::{BufReader, Write as _};
 use std::os::unix::net::UnixListener;
 use std::os::unix::process::CommandExt as _;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 fn assert_zero_native_app_windows(host_pid: u32) {
@@ -39,32 +39,102 @@ fn assert_zero_native_app_windows(host_pid: u32) {
 
 #[test]
 fn shipping_schema_two_host_emits_ready_without_an_initial_native_window() {
-    let fixture = ProductFixture::new("facade-ready");
-    fs::write(fixture.project.join("src/main.ts"), &fixture.entry_source)
+    shipping_facade_host_ready(false);
+}
+
+#[test]
+fn shipping_schema_four_legacy_host_preserves_windowless_ready_and_disclosure() {
+    shipping_facade_host_ready(true);
+}
+
+fn stage_facade_fixture(
+    fixture: &ProductFixture,
+    explicit_legacy: bool,
+    diagnostics: &Path,
+    witness: &Path,
+) -> keld_cli::boot::DevBootStage {
+    let entry = if explicit_legacy {
+        fs::write(
+            fixture.project.join("keld.permissions.jsonc"),
+            b"{\"profile\":\"legacy\"}\n",
+        )
+        .expect("sole explicit profile source");
+        let log = serde_json::to_string(&diagnostics).expect("owned log path");
+        let mark = serde_json::to_string(&witness).expect("owned witness path");
+        format!(
+            "import {{ readFileSync as readProfileLogSync, writeFileSync as writeProfileWitnessSync }} from 'node:fs';\nconst firstProfileLog = readProfileLogSync({log}, 'utf8');\nwriteProfileWitnessSync({mark}, firstProfileLog.includes('legacy — zero-authority claim forfeited') ? 'visible\\n' : 'missing\\n');\n{}",
+            fixture.entry_source
+        )
+    } else {
+        fixture.entry_source.clone()
+    };
+    fs::write(fixture.project.join("src/main.ts"), &entry)
         .expect("existing authenticated raw lifecycle fixture");
     fs::write(
         fixture.project.join("keld.config.ts"),
         "export default { name: \"KELD facade Ready\", entry: \"src/main.ts\", initialWindow: \"none\" } as const;\n",
     )
     .expect("explicit facade config");
-    let stage = keld_cli::boot::stage_dev_boot(
-        &fixture.project,
-        Path::new(env!("CARGO_BIN_EXE_keld-host")),
-    )
-    .expect("compile rendererless stage");
+    keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(env!("CARGO_BIN_EXE_keld-host")))
+        .expect("compile rendererless stage")
+}
+
+fn assert_first_entry_profile(
+    diagnostics: &Path,
+    witness: &Path,
+    output: &Output,
+    host_pid: u32,
+    bun_pid: u32,
+) {
+    let stderr = fs::read_to_string(diagnostics).expect("actual shipping Host stderr");
+    assert_eq!(
+        fs::read(witness).expect("first app-body OS file observation"),
+        b"visible\n",
+        "actual Host output: {output:?}; captured stderr: {stderr}"
+    );
+    assert_eq!(
+        stderr
+            .matches("legacy — zero-authority claim forfeited")
+            .count(),
+        1,
+        "{stderr}"
+    );
+    assert!(stderr.contains("bound primary"), "{stderr}");
+    eprintln!(
+        "KEL78_SCHEMA4_NATIVE_READY host_pid={host_pid} bun_pid={bun_pid} ready_before_window=true first_entry_forfeit=visible exit={} stdout={:?} stderr={stderr:?}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+fn shipping_facade_host_ready(explicit_legacy: bool) {
+    let fixture = ProductFixture::new(if explicit_legacy {
+        "facade-profile-ready"
+    } else {
+        "facade-ready"
+    });
+    let diagnostics = fixture.root.path().join("host-profile.stderr");
+    let witness = fixture.root.path().join("first-entry-profile.txt");
+    let stage = stage_facade_fixture(&fixture, explicit_legacy, &diagnostics, &witness);
     assert!(!stage.root().join("index.html").exists());
     let descriptor: serde_json::Value = serde_json::from_slice(
         &fs::read(stage.root().join("keld.boot.json")).expect("staged descriptor"),
     )
     .expect("strict descriptor JSON");
-    assert_eq!(descriptor["schema"], 2);
+    assert_eq!(descriptor["schema"], if explicit_legacy { 4 } else { 2 });
     assert!(descriptor.get("renderer").is_none());
+    assert!(descriptor.get("auth").is_none());
 
     let control_path = fixture.root.path().join("facade-ready.sock");
     let listener = UnixListener::bind(&control_path).expect("test-only control");
     listener
         .set_nonblocking(true)
         .expect("bounded nonblocking accept");
+    let stderr = if explicit_legacy {
+        Stdio::from(fs::File::create(&diagnostics).expect("owned Host stderr"))
+    } else {
+        Stdio::piped()
+    };
     let child = Command::new(stage.host())
         .process_group(0)
         .current_dir(stage.root())
@@ -74,7 +144,7 @@ fn shipping_schema_two_host_emits_ready_without_an_initial_native_window() {
         .env("KELD_T2_EXIT_ON_LINK_EOF", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(stderr)
         .spawn()
         .expect("launch shipping no-flag host");
     let mut cleanup = ShippingLaunchCleanup::new(child);
@@ -100,20 +170,22 @@ fn shipping_schema_two_host_emits_ready_without_an_initial_native_window() {
 
     assert_zero_native_app_windows(host_pid);
 
-    // This is a duration oracle, not a synchronization sleep: an Init that
-    // already happened disarms the entire startup deadline, even with no view.
-    std::thread::sleep(keld_wv::INITIAL_MILESTONE_DEADLINE + Duration::from_secs(1));
-    assert!(
-        cleanup
-            .cli
-            .as_mut()
-            .expect("live host")
-            .try_wait()
-            .expect("inspect live windowless host")
-            .is_none(),
-        "the already-Init windowless Host exited at the old startup deadline"
-    );
-    assert_zero_native_app_windows(host_pid);
+    if !explicit_legacy {
+        // This is a duration oracle, not a synchronization sleep: an Init that
+        // already happened disarms the entire startup deadline, even with no view.
+        std::thread::sleep(keld_wv::INITIAL_MILESTONE_DEADLINE + Duration::from_secs(1));
+        assert!(
+            cleanup
+                .cli
+                .as_mut()
+                .expect("live host")
+                .try_wait()
+                .expect("inspect live windowless host")
+                .is_none(),
+            "the already-Init windowless Host exited at the old startup deadline"
+        );
+        assert_zero_native_app_windows(host_pid);
+    }
 
     writer
         .write_all(b"QUIT\n")
@@ -126,6 +198,9 @@ fn shipping_schema_two_host_emits_ready_without_an_initial_native_window() {
         output.status.success(),
         "native facade host failed: {output:?}"
     );
+    if explicit_legacy {
+        assert_first_entry_profile(&diagnostics, &witness, &output, host_pid, bun_pid);
+    }
     await_process_gone(bun_pid);
     assert!(
         !stage.root().exists(),

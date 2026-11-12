@@ -109,12 +109,12 @@ fn revoke_racing_accepted_quit_does_not_join_on_the_guardian_owner() {
         .expect("Quit race tail");
     let (header, _) = keld_ipc::link::read_frame(&mut client).expect("Quit race reply");
     assert_eq!(header.corr, CorrelationId(81));
-    assert_eq!(
+    assert!(matches!(
         window_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("Quit race UI exit"),
         AppWindowCommand::Quit
-    );
+    ));
     router.shutdown().expect("Quit race router shutdown");
     guardian_thread.join().expect("Quit race guardian joins");
 }
@@ -407,12 +407,12 @@ fn wrong_correlation_cannot_complete_host_echo_waiter() {
         terminal.to_string().contains("primary reader"),
         "unexpected waiter failure: {terminal}"
     );
-    assert_eq!(
+    assert!(matches!(
         window_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("protocol failure wakes UI"),
         AppWindowCommand::Fatal
-    );
+    ));
     assert!(
         router.shutdown().is_err(),
         "wrong correlation must remain a router/session failure"
@@ -439,12 +439,12 @@ fn app_link_disconnect_terminalizes_pending_echo_and_fresh_session_still_works()
         terminal.to_string().contains("primary reader"),
         "unexpected disconnect terminal outcome: {terminal}"
     );
-    assert_eq!(
+    assert!(matches!(
         window_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("disconnect wakes the fatal UI path"),
         AppWindowCommand::Fatal
-    );
+    ));
     assert!(
         router.shutdown().is_err(),
         "the failed reader remains a session failure"
