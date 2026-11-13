@@ -345,7 +345,10 @@ fn terminal_failure_survives_failed_sink_with_output_forwarded_once() {
             "primary stderr forwarding"
         };
         let forwarding = detail.find(phase).expect("sink failure retained");
-        assert!(owner < forwarding, "owner error must precede cleanup: {detail}");
+        assert!(
+            owner < forwarding,
+            "owner error must precede cleanup: {detail}"
+        );
         assert!(detail.contains("KELD-RUNTIME-003"));
         assert_eq!(
             healthy,
