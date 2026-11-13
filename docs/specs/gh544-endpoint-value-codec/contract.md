@@ -1,26 +1,7 @@
-# Spec: host-opaque Electron endpoint value codec v0 (GH544)
+# Endpoint codec contract
 
-Status: draft
-
-Tracker: [GH544](https://github.com/gyldlab/keld/issues/544) · Owner: GYLDLAB / `@keld/electron` · Updated: 2026-10-25
-
-## 1. Goal & non-goals
-
-Provide **one** bounded TypeScript codec shared unchanged by the Bun
-Electron facade, isolated renderer compatibility runtime and future
-`executeJavaScript` result-value consumer. An endpoint value survives
-encode → Host-opaque forwarding → decode with the selected first-proof
-domain: JSON values, `undefined`, `Date`, ordinary `Error`
-(name/message/optional stack), and class instances flattened to their
-own enumerable data properties. Independent golden bytes and a
-renderer-build identity check must refute a JSON-only replacement.
-
-**Non-goals:** `ipcMain`/`ipcRenderer` implementation, native routing,
-contextBridge callback proxies, envelope/result ownership, binary and
-MessagePort transfer, general structured clone, new KIPC channel,
-second transport or conformance score changes. Actual
-`rendererReq → mainResp` belongs to GH465/GH543/GH466/GH467/GH484.
-**Spec-only draft; no implementation authorized.**
+Part of: [index](index.md)
+Owns: sections 2, 3 and 4
 
 ## 2. Spec refs
 
@@ -48,46 +29,117 @@ second transport or conformance score changes. Actual
 - GH464/#1130 owns **expected-fail conformance** and any eventual
   score flip; this spec changes no GH464 or GH467 files.
 
-## 3. Acceptance criteria (binary)
+## 3. Acceptance criteria
 
-1. **V1, one source:** Bun and renderer consume the exact same TS
-   codec source/build, reproduce §4.3 golden bytes independently, and
-   fail deterministic cold build drift after a renderer-only edit.
-2. **V2, fidelity:** `undefined !== null`, signed Date milliseconds,
-   negative-zero Number sign (`Object.is(decoded,-0)`), Error
-   name/message/optional stack (no custom properties), and a
-   class instance's own fields round-trip with no original prototype.
-3. **V3, forbidden input:** Root and nested Function, Promise, Symbol,
-   WeakMap, WeakSet, Map, Set, RegExp, ArrayBuffer, DataView, Buffer
-   and typed arrays synchronously throw a typed error **before any
-   send**; no application listener fires.
-4. **V4, no lossy coerces:** Cycles, shared object aliases, BigInt,
-   NaN/infinity, invalid Date, malformed UTF-16, sparse arrays,
-   own accessor descriptors (including Error name/message/stack)
-   and symbol-keyed data refuse without invoking accessor getters.
-   Proxy enumeration traps may execute arbitrary application JS;
-   their output never proves Host authorization or dispatch certainty.
-5. **V5, hostile decoder:** Unknown tag, truncation, trailing bytes,
-   duplicate/unordered map keys, invalid UTF-8, reserved prototype key
-   and malformed nested value refuse without writing to a prototype.
-6. **V6, bounds:** Exact encoded byte boundary 4096 accepts and 4097
-   refuses (otherwise valid value); depth 16/17 (root level 1,
-   including the outer args array), value nodes 256/257, and
-   **aggregate value/property visits** 256/257 independently accept/refuse.
-   An IPC argument vector additionally has a **16/17 IPC arguments**
-   boundary (16 accepted, 17 refused), without restricting ordinary decoded
-   result arrays to sixteen elements. All limits apply before unbounded
-   codec-owned traversal, retention, allocation or dispatch **after**
-   JS engine key enumeration. The visit count alone does not qualify
-   bounded pre-return engine scratch; that implementation gate remains open.
-7. **V7, copies and layers:** Mutating the caller's value after encode
-   or the input `Uint8Array` after decode leaves the returned owned
-   result unchanged. Host forwards the opaque byte sequence without
-   knowing value tags; no Rust crate decodes them.
-8. **V8, consumer:** Independently round-trip small draw.io
-   `rendererReq` args and Error-shaped `mainResp` data with unchanged
-   `reqId`, while GH464's expected-fail product cells remain **fail**
-   until genuine native and listener acceptance.
+### AC-1: V1 contract
+
+- **Given:** Identical cold-build inputs and independent literal vectors.
+- **When:** Build both endpoints and run each golden.
+- **Then:** **V1, one source:** Bun and renderer consume the exact same TS
+  codec source/build, reproduce §4.3 golden bytes independently, and
+  fail deterministic cold build drift after a renderer-only edit.
+- **Negative control:**
+  - **Single fault:** Hand-edit only the renderer output.
+  - **At-risk precondition:** The unmodified renderer matches the canonical source.
+  - **Expected RED:** Source-identity check rejects the edited output.
+
+### AC-2: V2 contract
+
+- **Given:** Each supported §4.3 positive value.
+- **When:** Encode and decode in both builds.
+- **Then:** **V2, fidelity:** `undefined !== null`, signed Date milliseconds,
+  negative-zero Number sign (`Object.is(decoded,-0)`), Error
+  name/message/optional stack (no custom properties), and a
+  class instance's own fields round-trip with no original prototype.
+- **Negative control:**
+  - **Single fault:** Collapse negative zero to positive zero.
+  - **At-risk precondition:** The negative-zero golden reaches number encoding.
+  - **Expected RED:** Independent bytes and Object.is(decoded,-0) assertions fail.
+
+### AC-3: V3 contract
+
+- **Given:** Each V3 forbidden value at root and nested positions.
+- **When:** Attempt serialization before sending.
+- **Then:** **V3, forbidden input:** Root and nested Function, Promise, Symbol,
+  WeakMap, WeakSet, Map, Set, RegExp, ArrayBuffer, DataView, Buffer
+  and typed arrays synchronously throw a typed error **before any
+  send**; no application listener fires.
+- **Negative control:**
+  - **Single fault:** Accept Map as an ordinary object.
+  - **At-risk precondition:** A Map reaches serialization before transport dispatch.
+  - **Expected RED:** Forbidden-value test observes missing typed refusal or a send.
+
+### AC-4: V4 contract
+
+- **Given:** V4 inputs, including an Error own accessor.
+- **When:** Inspect descriptors during serialization.
+- **Then:** **V4, no lossy coerces:** Cycles, shared object aliases, BigInt,
+  NaN/infinity, invalid Date, malformed UTF-16, sparse arrays,
+  own accessor descriptors (including Error name/message/stack)
+  and symbol-keyed data refuse without invoking accessor getters.
+  Proxy enumeration traps may execute arbitrary application JS;
+  their output never proves Host authorization or dispatch certainty.
+- **Negative control:**
+  - **Single fault:** Read error.stack instead of its own descriptor.
+  - **At-risk precondition:** An Error has an own stack getter with a counter.
+  - **Expected RED:** Getter counter is nonzero instead of zero and typed refusal.
+
+### AC-5: V5 contract
+
+- **Given:** §4.3 hostile bytes and ordering positives.
+- **When:** Decode complete payloads.
+- **Then:** **V5, hostile decoder:** Unknown tag, truncation, trailing bytes,
+  duplicate/unordered map keys, invalid UTF-8, reserved prototype key
+  and malformed nested value refuse without writing to a prototype.
+- **Negative control:**
+  - **Single fault:** Accept the reversed UTF-16-order key golden.
+  - **At-risk precondition:** Otherwise valid reversed keys reach ordering validation.
+  - **Expected RED:** The typed MalformedValue assertion fails.
+
+### AC-6: V6 contract
+
+- **Given:** Independent exact and over-boundary V6 fixtures.
+- **When:** Apply each limit at its specified owner.
+- **Then:** **V6, bounds:** Exact encoded byte boundary 4096 accepts and 4097
+  refuses (otherwise valid value); depth 16/17 (root level 1,
+  including the outer args array), value nodes 256/257, and
+  **aggregate value/property visits** 256/257 independently accept/refuse.
+  An IPC argument vector additionally has a **16/17 IPC arguments**
+  boundary (16 accepted, 17 refused), without restricting ordinary decoded
+  result arrays to sixteen elements. All limits apply before unbounded
+  codec-owned traversal, retention, allocation or dispatch **after**
+  JS engine key enumeration. The visit count alone does not qualify
+  bounded pre-return engine scratch; that implementation gate remains open.
+- **Negative control:**
+  - **Single fault:** Reject exactly 256 visits instead of larger totals.
+  - **At-risk precondition:** The exact-256 positive satisfies all other bounds.
+  - **Expected RED:** The exact positive fails, without proving engine allocation bounds.
+
+### AC-7: V7 contract
+
+- **Given:** A caller value and a decoder input buffer.
+- **When:** Mutate each source after the relevant operation.
+- **Then:** **V7, copies and layers:** Mutating the caller's value after encode
+  or the input `Uint8Array` after decode leaves the returned owned
+  result unchanged. Host forwards the opaque byte sequence without
+  knowing value tags; no Rust crate decodes them.
+- **Negative control:**
+  - **Single fault:** Retain mutable input memory as returned data.
+  - **At-risk precondition:** A successful decode precedes source mutation.
+  - **Expected RED:** The returned-owned-result assertion fails.
+
+### AC-8: V8 contract
+
+- **Given:** A small reqId and Error-shaped mainResp fixture.
+- **When:** Round-trip through the codec.
+- **Then:** **V8, consumer:** Independently round-trip small draw.io
+  `rendererReq` args and Error-shaped `mainResp` data with unchanged
+  `reqId`, while GH464's expected-fail product cells remain **fail**
+  until genuine native and listener acceptance.
+- **Negative control:**
+  - **Single fault:** Drop reqId from the result.
+  - **At-risk precondition:** The fixture reaches successful encode/decode.
+  - **Expected RED:** The unchanged reqId assertion fails; native qualification remains separate.
 
 ## 4. Design
 
@@ -384,101 +436,3 @@ result disposition, IPC errors and callback ordering are
 GH467/GH484 continue to own page-world callback proxies
 and the app preload lifetime. No persisted-state migration.
 
-## 5. Boundaries
-
-**Implement after independent approval only:** the single
-`@keld/electron/src/endpoint-value-codec.ts`, its independent
-byte-golden/hostile tests, and minimal cold Bun/browser
-build and generated source-identity checker.
-
-**This PR edits one new document only:**
-`docs/specs/gh544-endpoint-value-codec.md`. No Rust,
-KIPC table/generator, guard, native renderer bridge,
-GH540/GH541 architecture amendment, GH464 conformance
-registry, GH467/GH484 world, GH465/GH543 routing,
-workspace Cargo/Bun locks or other owner's PR/worktree.
-No new dependency, unsafe operation, permission, channel,
-link, resource handle or application-facing API export.
-
-## 6. Tasks (ordered, each independently reviewable)
-
-- [ ] **T1: this draft specification.** Independent exact-head
-  public-API and wire/value security review; resolve §10 with
-  GH540/error-registry owners, and record an explicit
-  `Status: approved` receipt **before any production changes**.
-- [ ] **T2: one TS encoder/decoder.** After a fresh implementation
-  issue claim and dependency disposition, failure-first
-  hand-authored goldens, canonical error-code registration,
-  forbidden-type/prototype/alias/depth/budget tests.
-- [ ] **T3: identical endpoint builds.** Generate renderer from
-  the same source; run full golden corpus separately in
-  Bun and browser-like environment; mutation kills a
-  hand-edited renderer output.
-- [ ] **T4: consumer handoff, not implementation here.**
-  GH465/GH543/GH466 consume tested codec; GH467/GH484
-  prove genuine `rendererReq → mainResp`; GH464 alone
-  updates scored cells on actual passing evidence.
-
-## 7. Test plan
-
-| Criteria | Test | Mutation that must fail |
-|---|---|---|
-| V1 | Two fresh endpoint builds match all independent goldens and checked source identity | Hand-edit renderer artifact without source change |
-| V2 | Every positive §4.3 vector matches full bytes and typed shape in both realms, including `Object.is(decoded,-0)` and `Date(1)` little-endian | Replace tagged encoding with `JSON.stringify`, collapse `-0` to `+0`, flip Date i64 endianness or keep class prototype |
-| V3 | Root+nested forbidden type table, zero sends | Accept Function/Symbol/Map/Buffer or defer failure to Host |
-| V4 | Cycle, `[x,x]`, invalid Date, sparse; each Error own `name`/`message`/`stack` accessor must fail typed with getter counter **0** | Replace descriptor reads with `error.stack`/`error.name`, invoking an accessor |
-| V5 | Independent 16-byte U+E000/U+10000 and 12-byte `aa`/`z` raw UTF-8 positives in both builds; corresponding wrong UTF-16 and wrong length-prefix order `MalformedValue` negatives; other hostile tags/keys and unchanged prototype | Mutate to JS default `.sort()` or length-prefixed-key sort (respective golden fails), or accept either reversed key order (typed negative fails) |
-| V6 | Independent 4096/4097 bytes, depth 16/17 (root included), value nodes 256/257, aggregate value/property visits 255/256/257 (127-key nulls, exact-256-visit positive, 128-key nulls), extra 254-key/509-visit negative, and 16/17 IPC arguments at the selected arguments-root boundary; allow a generic 17-item result array. Encoder/decoder reject over-budget work before dispatch; Proxy traps can run before returning but do not grant Host authority. | Mutations: reject exactly 256 visits instead of only over-limit (the exact positive MUST fail), omit the IPC arguments cap (17 null args must fail), omit property-key charging (128 and 254 null-key objects must fail), retain a property descriptor before budget admission, or treat a Proxy trap as trusted Host admission. |
-| V7 | Encode then mutate caller object and decoder byte source; output unchanged; Host opaque W12 | Retain mutable caller/transport memory or parse value tag in Rust |
-| V8 | Small `reqId`+Error data endpoint fixture, conformance score unchanged | Drop `reqId`, silently map Error to `{}` |
-
-Pure codec tests use no sleeps, ports or native GUI.
-Run Bun tests/typecheck and hosted relevant CI.
-Real native/senderFrame/credit-release/draw.io two-request
-acceptance belongs to GH465/GH543/GH466/GH467/GH484,
-never inferred from a codec-only test.
-
-## 8. Review gates triggered
-
-- **Public API:** yes, Electron-visible value domain and
-  synchronous typed refusal contract.
-- **Wire protocol:** yes, endpoint-private **value** byte
-  format under GH540's unmerged opaque Host envelope;
-  no KIPC frame, channel or version change is claimed.
-- **Permission model:** no change; GH541/GH552 own Host grants.
-- **Unsafe:** none. **Dependency addition:** none.
-- Independent Amisha/nonauthor review required on exact
-  draft; CI-green documentation is **not** spec approval.
-  No self-approval, merge or conformance-cell flip.
-
-## 9. Perf impact
-
-No performance gain claimed. An admitted value uses <=4096
-encoded bytes, <=16 depth (root level 1), <=256 value nodes and <=256
-aggregate value/property visits, with <=16 arguments for IPC callers;
-later code must
-measure transient scratch/renderer bundle size and mutation
-cost. GH540 owns whole-hop quota, envelope and backpressure;
-GH544 cannot raise them or add another Worker/pump/queue.
-
-## 10. Open questions (block implementation)
-
-1. Does the GH540/IPC and canonical error-registry owner
-   approve these **proposed** closed tags `00..09`, signed
-   Date, UTF-8 key sort, reserved keys, Error field own-data-only
-   extraction/defaults, Proxy trap limitations, stack optional
-   flag, caps and noncolliding typed error codes/fix messages?
-   No tags or numeric errors are currently deployed.
-2. GH544 remains blocked by open GH464 and approved-but-
-   **unmerged** GH540. The owner has explicitly authorized
-   **this spec first**, not production T2. Confirm the exact
-   implementation-edge disposition before T2.
-3. Approve the cold renderer source-identity checker and
-   generated artifact path without editing GH467/GH484
-   preload/world or creating a second hand-written codec.
-4. Keep unsupported value types an explicit v0 divergence
-   from full Electron structured clone; only GH464 owns
-   the downstream score and pinned product evidence.
-
-**DRAFT / DO NOT MERGE.** Stop before implementation
-until exact-content owner approval and `Status: approved`.
