@@ -8,55 +8,60 @@
 #[path = "../../src/wv_link.rs"]
 mod production_wv_link;
 
-use production_wv_link::{WvConsumerDisposition, WvLinkEnvelope, decode_wv_link};
+use production_wv_link::{
+    WvConsumerDisposition, WvLinkEnvelope, WvLinkMode, decode_wv_link_for_mode,
+};
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
-    if let Ok(envelope) = decode_wv_link(data) {
-        match envelope {
-            WvLinkEnvelope::Bind => {}
-            WvLinkEnvelope::Invoke {
-                request,
-                channel,
-                payload,
-                ..
-            } => {
-                assert_ne!(request.get(), 0);
-                assert_ne!(channel.get(), 0);
-                assert!(payload.len() <= 4096);
-            }
-            WvLinkEnvelope::Send {
-                document,
-                message,
-                channel,
-                payload,
-            } => {
-                assert_eq!(document.len(), 32);
-                assert!(
-                    document
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-                );
-                assert_ne!(message.get(), 0);
-                assert!(channel.len() <= 256);
-                assert!(payload.len() <= 4096);
-                unreachable!("legacy v1 decoder must never emit v2 envelopes");
-            }
-            WvLinkEnvelope::Consumed {
-                document,
-                delivery,
-                disposition,
-            } => {
-                assert_eq!(document.len(), 32);
-                assert!(
-                    document
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-                );
-                assert_ne!(delivery.get(), 0);
-                if let WvConsumerDisposition::Refused { code, message } = disposition {
-                    assert!(code.len() + message.len() <= 4096);
+    for mode in [WvLinkMode::LegacyV1, WvLinkMode::CompatV2] {
+        if let Ok(envelope) = decode_wv_link_for_mode(data, mode) {
+            match envelope {
+                WvLinkEnvelope::Bind => {}
+                WvLinkEnvelope::Invoke {
+                    request,
+                    channel,
+                    payload,
+                    ..
+                } => {
+                    assert_ne!(request.get(), 0);
+                    assert_ne!(channel.get(), 0);
+                    assert!(payload.len() <= 4096);
                 }
-                unreachable!("legacy v1 decoder must never emit v2 envelopes");
+                WvLinkEnvelope::Send {
+                    document,
+                    message,
+                    channel,
+                    payload,
+                } => {
+                    assert_eq!(document.len(), 32);
+                    assert!(
+                        document
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                    );
+                    assert_ne!(message.get(), 0);
+                    assert!(channel.len() <= 256);
+                    assert!(payload.len() <= 4096);
+                    assert_eq!(mode, WvLinkMode::CompatV2);
+                }
+                WvLinkEnvelope::Consumed {
+                    document,
+                    delivery,
+                    disposition,
+                } => {
+                    assert_eq!(document.len(), 32);
+                    assert!(
+                        document
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                    );
+                    assert_ne!(delivery.get(), 0);
+                    assert!(data.len() <= 4096);
+                    if let WvConsumerDisposition::Refused { code, message } = disposition {
+                        assert!(code.len() + message.len() <= 4096);
+                    }
+                    assert_eq!(mode, WvLinkMode::CompatV2);
+                }
             }
         }
     }
