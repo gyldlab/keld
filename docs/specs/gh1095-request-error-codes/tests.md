@@ -167,6 +167,18 @@ committed effects, so the at-most-once assertion fails. Control with no resend â
 WV-013 page delivery nor persistence across process death. GH-1095 T-2/T-4 must implement and register the hosted WV-013 arm with its own real WebView/page/error receipt and
 first-handler-late-commit negative control; the durable-store owner must separately integrate a persisted-at-most-once test.
 
+Additional planned AT-RS control (not an executed receipt): the original
+handler commits one effect and then returns API-001, with no work left able
+to commit. Without atomic deduplication, a retry guard must refuse a resend
+because the effect already exists; final effect count remains 1. Single
+fault: drop the no-past-commit check while retaining the future-execution
+fence, then resend the same non-idempotent logical action. The second effect
+makes the at-most-once assertion fail (2 effects). Positive finality control:
+establish no committed effect and an enforceable fence preventing every
+original attempt from committing, then one new attempt produces 1 effect.
+These app-level proof obligations do not claim WebView or process-death
+acceptance and do not replace the existing late-commit controls.
+
 ### E-13: AT-B1
 
 - **Run:** Planned AT-B1 scenario at `#throwIfTerminal`; original criterion 9.

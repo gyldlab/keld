@@ -117,8 +117,11 @@ Owns: Dispatch and retry acceptance
 
 - **Given:** WV-012 proved no host write, or API-002 proved no application handler execution.
 - **When:** Perform one new invoke after the specified user/app signal or handler registration.
-- **Then:** The page resends once,
-   as a new invoke, and the handler census for the logical action is exactly 1.
+- **Then:** The page may resend at most once as a new invoke. If that resend
+   completes successfully through the registered handler, the handler census
+   for the logical action is exactly 1. Admission alone is not sufficient:
+   an API-001 decode failure can still have census 0, as AC-5 specifies. If the resend receives WV-012 or
+   API-002, the census may remain 0; surface the refusal and do not resend again.
    The trigger depends on the code:
    - after WV-012, at startup or after a restart: until restart readiness
      exists ([#1098](https://github.com/gyldlab/keld/issues/1098)), the trigger is a later user action or a reliable
@@ -221,8 +224,8 @@ Owns: Dispatch and retry acceptance
     status check that reports "not committed yet" does not authorize a
     non-idempotent resend while the earlier effect could still commit. The app
     must either ensure both attempts share atomic durable duplicate
-    suppression, or prove that the original attempt is permanently unable to
-    commit. AT-RS (§7) exercises the API-001 late-commit arm in portable Bun.
+    suppression, or authoritatively prove both that the original effect has
+    not committed and that the original attempt is permanently unable to commit. AT-RS (§7) exercises the API-001 late-commit arm in portable Bun.
     The WV-013 arm is **pending hosted macOS WebView acceptance**, owned by
     GH-1095 T-2 (native host harness) with T-4 (keld-wv renderer bridge). No
     portable Bun result is evidence of a page receiving WV-013.

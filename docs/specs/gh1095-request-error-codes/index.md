@@ -29,16 +29,18 @@ This revision splits the codes by what Keld can prove:
 | `KELD-API-002` (new) | **Not executed** (asserted by `@keld/api`) | the call reached Bun, but no handler was registered, so no app code ran |
 | `KELD-API-001` (narrowed) | Outcome unknown | the call reached the application stage and failed: decode, handler throw, encode, or oversize reply |
 
-Observable outcome: each renderer invoke settles exactly once with one of these
-codes or a reply. No layer of Keld ever replays a request. The rules for an
+Observable outcome: each decided renderer-invoke outcome settles exactly once
+with one of these codes or a reply. A hung handler can remain pending (S17);
+this contract does not add a reply deadline. No layer of Keld ever replays a request. The rules for an
 app resend are in [historical §4.4](design-4.md):
 
-- only WV-012 or API-002 permits one *automatic* resend of an action that is
-  not idempotent;
+- WV-012 or API-002 permits at most one app-initiated *automatic* resend
+  under its specified trigger and stop rules;
 - WV-011 is never resent automatically, whatever its detail says;
-- WV-013 and API-001 may be resent only with the [historical §4.4](design-4.md) durable duplicate
-  suppression or authoritative no-future-commit proof. An absent status
-  snapshot alone is not proof.
+- WV-013 and API-001 also permit an app-initiated resend of a non-idempotent
+  action, including an automatic resend, only with the [historical §4.4](design-4.md)
+  durable duplicate suppression or authoritative proof of no past or future
+  commit. An absent status snapshot alone is not proof.
 
 The app makes every resend; Keld makes none.
 

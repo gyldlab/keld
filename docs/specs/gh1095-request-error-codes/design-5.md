@@ -32,9 +32,12 @@ its `Quit`. Owner decision Q-3 (§10) applies:
 - The GH-527 falsifier "a caller or contract that must tell `KELD-IPC-024`
   apart from `KELD-IPC-022`" is now met, and T-1 records it as met in GH-527.
   T-1 does not change the close-on-REPLY design. Its cost is now explicit: a
-  call the host answered `KELD-IPC-024` is observed by the role as
-  `KELD-IPC-022`, which is Unknown. Whether to deliver that `024` is a decision
-  for GH-527's owner.
+  call the host answered `KELD-IPC-024` can instead be observed by the role as
+  `KELD-IPC-022` (Unknown) if close wins before that reply is retained. If the
+  Worker retains the Quit reply and following `024` before the role drains
+  the ring, `#drainRing` delivers both before `quitAndCloseLink` resumes and
+  closes; the call observes `024`. No single role-visible code is guaranteed
+  for both schedules. Changes to reply retention belong to GH-527's owner.
 - GH-531's O11 row ("the facade treats the two alike") gets a matching interim
   note.
 - The matching comment at `transport.ts:2571-2572` is production source, so

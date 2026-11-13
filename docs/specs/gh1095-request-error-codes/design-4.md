@@ -11,7 +11,7 @@ Owns: Design 4: Retry rules (normative for apps; Keld itself never resends)
 |---|---|
 | WV-011 | **Never resend automatically**, whatever the detail. A new invoke made from a later user action is a new request, not a resend. The detail helps a developer diagnose the refusal; code MUST NOT branch on it. Until the [historical §4.7](design-7.md) document-scoped result lands (T-4), WV-011 proves "never sent" only for the document that issued the call (F10). |
 | WV-012 | **One resend** after the first (startup) or successor Bun generation is ready (see the rules below). |
-| WV-013 | **Never resend automatically**, unless the app enforces durable duplicate suppression or proves that the original attempt can never commit ([historical §4.4](design-4.md)). A negative status snapshot alone never permits resend. |
+| WV-013 | **Never resend automatically**, unless the app enforces durable duplicate suppression or proves the original effect has not committed and can never commit ([historical §4.4](design-4.md)). A negative status snapshot alone never permits resend. |
 | API-002 | **No app code ran.** Fix the registration order so the error cannot recur, then the page MAY resend once. |
 | API-001 | Same as WV-013: the handler may have started effects that outlive its error; an absent status record is not proof of permanent non-execution. |
 
@@ -46,13 +46,20 @@ resend **only if the app establishes at least one of these conditions**:
   service using that key, or a separately proven transactional protocol.
   Merely recording the key before/after a nontransactional external call is
   **not** an at-most-once guarantee.
-- **(b) Authoritative no-future-commit proof.** Before resending, the app must
-  prove that the preceding attempt is permanently unable to commit, including
-  any spawned tasks, in-flight external calls, and predecessor generations.
-  An acknowledged cancellation with an enforceable execution fence is one
-  possible app-specific proof. A link closure, an error terminal, or an
+- **(b) Authoritative proof of no past or future commit.** Before resending,
+  the app must prove both that the preceding attempt’s effect has not already
+  committed and that it is permanently unable to commit. The proof covers
+  spawned tasks, in-flight external calls, and predecessor generations.
+  An acknowledged cancellation with an enforceable execution fence can prove
+  the future-commit condition, but it must also establish that no effect
+  committed before the fence. The no-effect observation and fence must form
+  one authoritative, race-free proof, not two independent snapshots. A link closure, an error terminal, or an
   app-defined status query that finds no durable effect **does not** establish
   this condition on its own.
+
+An effect may commit before the handler throws API-001. Even if all work has
+ended and no future commit is possible, resending that completed effect is
+unsafe without (a). Condition (b) therefore requires both halves of the proof.
 
 **Unsafe former rule (GH-1132):** a status handler reads an empty record while
 the first handler's deferred effect is still running, reports "not executed",
