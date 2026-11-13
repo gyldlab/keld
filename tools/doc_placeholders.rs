@@ -18,6 +18,10 @@
 )]
 mod markdown_contract;
 
+mod markdown_paths;
+
+use markdown_paths::is_markdown_path;
+
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
@@ -195,12 +199,15 @@ fn collect_markdown(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<(
             entry.map_err(|error| format!("DOC-PLACEHOLDERS: cannot read `{dir:?}`: {error}"))?;
         let path = entry.path();
         if path.is_dir() {
-            let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
             if should_skip_dir(name) {
                 continue;
             }
             collect_markdown(root, &path, out)?;
-        } else if path.extension().is_some_and(|ext| ext == "md") {
+        } else if is_markdown_path(&path) {
             out.push(path);
         }
     }
@@ -358,17 +365,42 @@ mod tests {
         assert!(findings.is_empty(), "{findings:?}");
     }
 
+    /// Both newline forms close the sample before later prose is checked.
+    #[test]
+    fn crlf_fences_close_before_later_prose_is_scanned() {
+        for fence in ["```", "~~~"] {
+            for newline in ["\n", "\r\n"] {
+                let text = format!(
+                    "{fence}rust{newline}{{sample_only}}{newline}{fence}{newline}{{BS}}{newline}{{name}}{newline}"
+                );
+                let (findings, used) = scan("docs/x.md", &text, &known());
+                assert_eq!(findings.len(), 1, "{fence:?} {newline:?}: {findings:?}");
+                assert_eq!(findings[0].line, 4, "{findings:?}");
+                assert!(findings[0].detail.contains("`{BS}`"), "{findings:?}");
+                assert_eq!(used, BTreeSet::from(["name".to_owned()]));
+            }
+        }
+    }
+
     /// Inline code is where the KEL-208 defect landed, so it is scanned, not stripped.
     #[test]
     fn inline_code_is_scanned_because_that_is_where_the_defect_landed() {
         let (findings, _) = scan("docs/x.md", "see `{BS}` there", &known());
-        assert_eq!(findings.len(), 1, "inline code must not be exempt: {findings:?}");
+        assert_eq!(
+            findings.len(),
+            1,
+            "inline code must not be exempt: {findings:?}"
+        );
     }
 
     /// `{}` and format specs are not template slots and are none of this gate's business.
     #[test]
     fn non_identifier_braces_are_ignored() {
-        let (findings, _) = scan("docs/x.md", "use {} and {:?} and { spaced } freely", &known());
+        let (findings, _) = scan(
+            "docs/x.md",
+            "use {} and {:?} and { spaced } freely",
+            &known(),
+        );
         assert!(findings.is_empty(), "{findings:?}");
     }
 
@@ -387,7 +419,13 @@ mod tests {
         ] {
             assert!(should_skip_dir(name), "`{name}` must not be scanned");
         }
-        for name in ["architecture", "agents", "engineering", "onboarding", "specs"] {
+        for name in [
+            "architecture",
+            "agents",
+            "engineering",
+            "onboarding",
+            "specs",
+        ] {
             assert!(!should_skip_dir(name), "`{name}` must be scanned");
         }
     }
@@ -406,7 +444,10 @@ mod tests {
         );
         assert!(findings.is_empty(), "{findings:?}");
         // A brace merely following a `u` is still a slot: only the escape is exempt.
-        assert_eq!(placeholders("menu{unknown}"), vec![("unknown".to_owned(), 4)]);
+        assert_eq!(
+            placeholders("menu{unknown}"),
+            vec![("unknown".to_owned(), 4)]
+        );
     }
 
     #[test]
@@ -427,5 +468,46 @@ mod tests {
         actual.dedup();
         assert_eq!(actual.len(), KNOWN_PLACEHOLDERS.len(), "duplicate entry");
         assert_eq!(sorted, KNOWN_PLACEHOLDERS.to_vec(), "keep the list sorted");
+    }
+
+    #[test]
+    fn actual_document_scan_checks_every_markdown_extension() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "keld-placeholder-extensions-{}-{nonce}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).expect("create exclusive fixture");
+        fs::create_dir(root.join("docs")).unwrap();
+        fs::create_dir(root.join(".agents")).unwrap();
+        let slots = KNOWN_PLACEHOLDERS
+            .iter()
+            .map(|name| format!("{{{name}}}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        fs::write(root.join("README.md"), slots).unwrap();
+        fs::write(root.join("docs/ignored.txt"), "{BS}").unwrap();
+        assert!(check(&root).is_ok());
+        for extension in markdown_paths::MARKDOWN_EXTENSIONS {
+            for spelling in [extension.to_owned(), extension.to_ascii_uppercase()] {
+                let path = root.join(format!("docs/example.{spelling}"));
+                fs::write(&path, "ordinary prose").unwrap();
+                assert!(check(&root).is_ok(), "{spelling}");
+                fs::write(&path, "{BS}").unwrap();
+                let error = check(&root).expect_err("discovered placeholder must fail");
+                assert!(error.contains("unknown template placeholder"), "{error}");
+                assert!(error.contains(&format!("example.{spelling}")), "{error}");
+                fs::remove_file(path).unwrap();
+            }
+        }
+        fs::remove_dir_all(root).expect("remove owned extension fixture");
     }
 }
