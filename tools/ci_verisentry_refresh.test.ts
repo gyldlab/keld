@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { generateRefreshCensus } from "./ci_provenance_codegen";
 
@@ -24,12 +25,33 @@ const execute = new AsyncFunction(
   "process",
   "setTimeout",
   "Date",
+  "require",
   body,
 );
 const base = "b".repeat(40);
 const head = "a".repeat(40);
 const merge = "c".repeat(40);
 const protectedMain = "d".repeat(40);
+const b3Head = "d6cfd149e5b3e78b239c486226c14a276f2ba0a3";
+const b3Manifest =
+  "crates/keld-cli/tests/fixtures/gh1404-minimal-app/package.json";
+const b3Lock =
+  "crates/keld-cli/tests/fixtures/gh1404-minimal-app/package-lock.json";
+const b3ManifestSha = "a801488a2a69f2eebef9d317b103c3f470906d8c";
+const b3LockSha = "0998abb6a189b27eb6bf68847e43b426e286134c";
+const b3ManifestContent =
+  "ewogICJuYW1lIjogImtlbGQtZ2gxNDA0LW1pbmltYWwtYXBwIiwKICAidmVyc2lvbiI6ICIwLjAuMSIsCiAgInByaXZhdGUiOiB0cnVlLAogICJ0eXBlIjogIm1vZHVsZSIsCiAgImRlcGVuZGVuY2llcyI6IHsKICAgICJAa2VsZC9hcGkiOiAiMC4wLjEiLAogICAgIkBrZWxkL2tpcGMiOiAiMC4wLjEiLAogICAgImVsZWN0cm9uIjogIm5wbTpAa2VsZC9lbGVjdHJvbkAwLjAuMSIKICB9Cn0K";
+const b3LockContent =
+  "ewogICJuYW1lIjogImtlbGQtZ2gxNDA0LW1pbmltYWwtYXBwIiwKICAidmVyc2lvbiI6ICIwLjAuMSIsCiAgImxvY2tmaWxlVmVyc2lvbiI6IDMsCiAgInJlcXVpcmVzIjogdHJ1ZSwKICAicGFja2FnZXMiOiB7CiAgICAiIjogewogICAgICAibmFtZSI6ICJrZWxkLWdoMTQwNC1taW5pbWFsLWFwcCIsCiAgICAgICJ2ZXJzaW9uIjogIjAuMC4xIiwKICAgICAgImRlcGVuZGVuY2llcyI6IHsKICAgICAgICAiQGtlbGQvYXBpIjogIjAuMC4xIiwKICAgICAgICAiQGtlbGQva2lwYyI6ICIwLjAuMSIsCiAgICAgICAgImVsZWN0cm9uIjogIm5wbTpAa2VsZC9lbGVjdHJvbkAwLjAuMSIKICAgICAgfQogICAgfSwKICAgICJub2RlX21vZHVsZXMvQGtlbGQvYXBpIjogewogICAgICAibmFtZSI6ICJAa2VsZC9hcGkiLAogICAgICAidmVyc2lvbiI6ICIwLjAuMSIKICAgIH0sCiAgICAibm9kZV9tb2R1bGVzL0BrZWxkL2tpcGMiOiB7CiAgICAgICJuYW1lIjogIkBrZWxkL2tpcGMiLAogICAgICAidmVyc2lvbiI6ICIwLjAuMSIKICAgIH0sCiAgICAibm9kZV9tb2R1bGVzL2VsZWN0cm9uIjogewogICAgICAibmFtZSI6ICJAa2VsZC9lbGVjdHJvbiIsCiAgICAgICJ2ZXJzaW9uIjogIjAuMC4xIgogICAgfQogIH0KfQo=";
+const b3Entries = [
+  { path: b3Manifest, mode: "100644", type: "blob", sha: b3ManifestSha },
+  { path: b3Lock, mode: "100644", type: "blob", sha: b3LockSha },
+];
+const b3Files = [
+  { filename: b3Manifest, status: "added" },
+  { filename: b3Lock, status: "added" },
+  { filename: "docs/b3-fixture.md", status: "added" },
+];
 
 function protectedPathBlock(code: string): string {
   const begin = code.indexOf("const protectedPath = (path) => {");
@@ -82,12 +104,17 @@ function scenario(
     wrongTreeSha?: "base" | "head";
     batchIndex?: string;
     clockMillis?: number;
+    b3?: boolean;
+    mergeParents?: string[];
+    mergeTreeEntries?: Record<string, unknown>[];
+    blobOverrides?: Record<string, Record<string, unknown>>;
+    mergeMovedAfterComparison?: boolean;
   } = {},
 ) {
   const basePR = {
-    number: 345,
+    number: options.b3 ? 1519 : 345,
     state: "open",
-    head: { sha: head },
+    head: { sha: options.b3 ? b3Head : head },
     base: { ref: "main", sha: base, repo: { full_name: "gyldlab/keld" } },
     changed_files: options.changedFiles ?? options.files?.length ?? 1,
     mergeable: options.mergeable === undefined ? true : options.mergeable,
@@ -107,6 +134,7 @@ function scenario(
   const mergeBaseSha = options.comparisonMergeBase ?? "e".repeat(40);
   const baseTreeSha = "f".repeat(40);
   const headTreeSha = "1".repeat(40);
+  const mergeTreeSha = "3".repeat(40);
   const context = {
     repo: { owner: options.owner ?? "gyldlab", repo: options.repo ?? "keld" },
     eventName: options.eventName ?? "schedule",
@@ -119,11 +147,23 @@ function scenario(
       git: {
         getCommit: async (args: Record<string, unknown>) => {
           if (options.failedGitTree) throw Error("Git tree API unavailable");
+          if (options.b3 && args.commit_sha === merge) {
+            return {
+              data: {
+                sha: merge,
+                tree: { sha: mergeTreeSha },
+                parents: (options.mergeParents ?? [base, b3Head]).map(
+                  (sha) => ({ sha }),
+                ),
+              },
+            };
+          }
           const side = args.commit_sha === mergeBaseSha ? "base" : "head";
           expect(args).toEqual({
             owner: "gyldlab",
             repo: "keld",
-            commit_sha: side === "base" ? mergeBaseSha : head,
+            commit_sha:
+              side === "base" ? mergeBaseSha : options.b3 ? b3Head : head,
           });
           return {
             data: {
@@ -135,6 +175,15 @@ function scenario(
         getTree: async (args: Record<string, unknown>) => {
           if (options.failedGitTree) throw Error("Git tree API unavailable");
           treeReads++;
+          if (options.b3 && args.tree_sha === mergeTreeSha) {
+            return {
+              data: {
+                sha: mergeTreeSha,
+                truncated: false,
+                tree: options.mergeTreeEntries ?? b3Entries,
+              },
+            };
+          }
           const side = args.tree_sha === baseTreeSha ? "base" : "head";
           expect(args).toEqual({
             owner: "gyldlab",
@@ -159,6 +208,24 @@ function scenario(
                 side === "base"
                   ? (options.baseTreeEntries ?? [])
                   : (options.headTreeEntries ?? headEntries),
+            },
+          };
+        },
+        getBlob: async (args: Record<string, unknown>) => {
+          const sha = args.file_sha as string;
+          expect(args).toEqual({
+            owner: "gyldlab",
+            repo: "keld",
+            file_sha: sha,
+          });
+          const content =
+            sha === b3ManifestSha ? b3ManifestContent : b3LockContent;
+          return {
+            data: {
+              sha,
+              encoding: "base64",
+              content,
+              ...options.blobOverrides?.[sha],
             },
           };
         },
@@ -191,6 +258,9 @@ function scenario(
           expect(args).toMatchObject({ owner: "gyldlab", repo: "keld" });
           reads++;
           if (options.failedGet) throw Error("PR GET API unavailable");
+          if (options.b3 && options.mergeMovedAfterComparison && reads === 2) {
+            return { data: { ...basePR, merge_commit_sha: "9".repeat(40) } };
+          }
           return {
             data:
               options.readSequence?.[
@@ -294,10 +364,21 @@ function scenario(
   };
   return {
     run: () =>
-      execute(github, context, core, process, (done: () => void) => done(), {
-        now: () => options.clockMillis ?? Date.now(),
-        parse: Date.parse,
-      }),
+      execute(
+        github,
+        context,
+        core,
+        process,
+        (done: () => void) => done(),
+        {
+          now: () => options.clockMillis ?? Date.now(),
+          parse: Date.parse,
+        },
+        (id: string) => {
+          expect(id).toBe("node:crypto");
+          return { createHash };
+        },
+      ),
     statuses,
     messages,
     warnings,
@@ -378,6 +459,113 @@ test("a normal current PR gets exactly one App ID 5550363 success on test merge,
   expect(s.failures).toEqual([]);
   expect(s.getReads()).toBe(4);
   expect(s.getCompareReads()).toBe(1);
+});
+
+function reviewedB3Scenario(options: Parameters<typeof scenario>[0] = {}) {
+  return scenario({
+    b3: true,
+    files: b3Files,
+    headTreeEntries: b3Entries,
+    mergeTreeEntries: b3Entries,
+    ...options,
+  });
+}
+
+test("trusted refresh admits B-3 only after immutable head/merge and reviewed blob SHA256 verification", async () => {
+  const s = reviewedB3Scenario();
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.statuses).toHaveLength(1);
+  expect(s.statuses[0]).toMatchObject({
+    name: "KELD VeriSentry",
+    head_sha: merge,
+    conclusion: "success",
+  });
+  expect(s.statuses[0].output.summary).toContain("PR #1519");
+  expect(s.failures).toEqual([]);
+});
+
+test("trusted refresh never signs B-3 PASS on a shifted head/merge, wrong lock, manifest, mode or hash", async () => {
+  const candidates = [
+    reviewedB3Scenario({ mergeParents: [base, head] }),
+    reviewedB3Scenario({
+      headTreeEntries: [{ ...b3Entries[0], mode: "120000" }, b3Entries[1]],
+    }),
+    reviewedB3Scenario({
+      mergeTreeEntries: [
+        { ...b3Entries[0], sha: "8".repeat(40) },
+        b3Entries[1],
+      ],
+    }),
+    reviewedB3Scenario({
+      mergeTreeEntries: [
+        b3Entries[0],
+        { ...b3Entries[1], sha: "8".repeat(40) },
+      ],
+    }),
+    reviewedB3Scenario({
+      blobOverrides: {
+        [b3ManifestSha]: { content: b3LockContent },
+      },
+    }),
+    reviewedB3Scenario({
+      blobOverrides: {
+        [b3LockSha]: { content: b3ManifestContent },
+      },
+    }),
+    reviewedB3Scenario({ mergeMovedAfterComparison: true }),
+    reviewedB3Scenario({
+      files: [
+        { filename: b3Manifest, status: "added" },
+        { filename: b3Lock, status: "modified" },
+      ],
+    }),
+    reviewedB3Scenario({
+      files: [
+        {
+          filename: b3Manifest,
+          previous_filename: "docs/moved.json",
+          status: "renamed",
+        },
+        { filename: b3Lock, status: "added" },
+      ],
+    }),
+    reviewedB3Scenario({
+      files: [
+        ...b3Files,
+        { filename: "docs/extra/package-lock.json", status: "added" },
+      ],
+    }),
+    reviewedB3Scenario({
+      files: [
+        ...b3Files,
+        { filename: "packages/extra/package.json", status: "added" },
+      ],
+    }),
+  ];
+  for (const s of candidates) {
+    await expect(s.run()).resolves.toBeUndefined();
+    expect(s.statuses.some((status) => status.conclusion === "success")).toBe(
+      false,
+    );
+  }
+});
+
+test("existing trusted VeriSentry FAILURE is never replaced by B-3 admission", async () => {
+  const s = reviewedB3Scenario({
+    checks: [
+      {
+        id: 42,
+        app: { id: 5550363 },
+        head_sha: merge,
+        status: "completed",
+        conclusion: "failure",
+        completed_at: new Date().toISOString(),
+      },
+    ],
+  });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.statuses).toHaveLength(0);
+  expect(s.failures).toHaveLength(1);
 });
 
 test("protected CI path is a real App failure, not an omitted or neutral result", async () => {
