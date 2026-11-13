@@ -144,10 +144,17 @@ length-prefixed key fields: a shorter byte length need not sort
 first. JavaScript default `.sort()` instead compares UTF-16 code
 units. The two independent §4.3 two-key goldens detect these
 separate incorrect comparators.
-Both encoder and decoder reject the own keys `__proto__`,
-`constructor` and `prototype`. The decoder
-constructs ordinary objects with validated own data descriptors
-(`Object.defineProperty`), **never** `obj[key]`. Class instances
+Both encoder and decoder reject own `__proto__` keys. Own
+`constructor` and `prototype` data keys are permitted under the same
+value, canonical ordering and resource rules as other data keys.
+This is a **proposed reconciliation**, not owner approval: it matches
+GH544's JSON-value domain and explicit `__proto__` exclusion without
+adding two otherwise-unapproved exclusions. The decoder constructs
+ordinary objects using captured `Object.defineProperty` with descriptors
+whose `value`, `writable`, `enumerable` and `configurable` fields are own
+data properties and which inherit no `get` or `set` fields, **never**
+`obj[key]`. Inherited setters must not run or replace the decoded data.
+The pre-enumeration resource gate below remains unresolved. Class instances
 and plain objects encode only own enumerable string-keyed **data**
 properties, excluding prototypes; enumerable accessors and symbol
 keys reject before reading getters. Dense arrays have every
@@ -263,6 +270,25 @@ has no other own enumerable properties.
 | `new Date(-1)` | `08 ff ff ff ff ff ff ff ff` | epoch -1 |
 | `Error("x")`, no stack | `09 05 00 45 72 72 6f 72 01 00 78 00` | Error, name/message, no stack |
 | Error with stack `"z"` | `09 05 00 45 72 72 6f 72 01 00 78 01 01 00 7a` | stack `"z"` |
+
+**Proposed ordinary-key golden (pending public-API/wire approval):**
+For the own-data input `{"constructor":42,"prototype":false}`, the
+complete **37-byte** payload is:
+`07 02 00 0b 00 63 6f 6e 73 74 72 75 63 74 6f 72 04 00 00 00 00 00 00 45 40 09 00 70 72 6f 74 6f 74 79 70 65 02`.
+Independent arithmetic: 3 header bytes + (2 + 11 + 9) for
+`constructor`/f64LE(42) + (2 + 9 + 1) for `prototype`/false = 37.
+Both endpoints must encode these exact bytes and decode own data
+properties with values 42 and false, unchanged `Object.prototype`,
+and zero inherited setter calls. A mutant that rejects `constructor`
+or `prototype` must fail this positive; decoder assignment instead of
+own-data definition must fail an inherited-setter negative control.
+The hostile `__proto__` literal below must still refuse in both builds;
+construct its encoder input with `JSON.parse` or an own data descriptor,
+not object-literal prototype syntax. Mutating the forbidden-key check
+to accept `__proto__` must fail both encoder and decoder negatives.
+These fixtures are independent wire contracts, **not** executed endpoint
+or memory-bound evidence. Existing source identity, resource and native
+acceptance gates are unchanged.
 
 The independent `-0` and `Date(1)` literal sentinels kill
 replacement of negative zero by positive zero and accidental
