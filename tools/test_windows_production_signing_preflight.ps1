@@ -82,6 +82,14 @@ $badRoot = Save-Case 'same-root-leaf' ($goodJson.Replace(('A'*40),$testCert))
 Run-Case 'leaf-equals-root-rejected' $badRoot $true 1 'PROD-PRE-019'
 $escaped = Save-Case 'json-escape' ($goodJson.Replace('Keld Company','Keld\u0020Company'))
 Run-Case 'unreviewed-json-escape-rejected' $escaped $true 1 'PROD-PRE-008'
+# A lexical D:\ path can still traverse an NTFS junction (reparse ancestor).
+# The policy verifier must reject it before opening the apparently local file.
+$realParent = Join-Path $root 'real-policy-parent'
+[IO.Directory]::CreateDirectory($realParent) | Out-Null
+[IO.File]::Copy($good, (Join-Path $realParent 'policy.json'))
+$junctionParent = Join-Path $root 'junction-policy-parent'
+New-Item -ItemType Junction -Path $junctionParent -Target $realParent -ErrorAction Stop | Out-Null
+Run-Case 'junction-ancestor-rejected' (Join-Path $junctionParent 'policy.json') $true 1 'PROD-PRE-004'
 Run-Case 'missing-policy-rejected' (Join-Path $root 'absent.json') $true 1 'PROD-PRE-003'
 if ($hasSigner) {
     $wrongTool = Save-Case 'wrong-signtool-hash' ($goodJson.Replace($hash,('c'*64)))

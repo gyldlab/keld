@@ -31,11 +31,26 @@ function LocalAbsoluteFile([string]$path, [string]$what) {
     if ($path -cnotmatch '^[A-Za-z]:[\\/]' -or $path -match '(^|[\\/])\.\.?([\\/]|$)') {
         Refuse '002' ($what + ' must use an absolute local-disk path without dot traversal')
     }
-    if (-not [IO.File]::Exists($path)) { Refuse '003' ($what + ' not present') }
-    $attrs = [IO.File]::GetAttributes($path)
-    if (($attrs -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        Refuse '004' ($what + ' is a reparse point')
+    # Reject directory junction/symlink ancestors as well as a reparse file.
+    # Testing just the leaf allows an otherwise local-looking path to redirect
+    # through a reparse directory before policy/tool bytes are opened.
+    $local = $path.Replace('/', '\')
+    $parts = @($local.Substring(3).Split([char]'\'))
+    $walk = $local.Substring(0, 3)
+    foreach ($part in $parts) {
+        if ([string]::IsNullOrEmpty($part)) {
+            Refuse '002' ($what + ' has empty path segments')
+        }
+        $walk = [IO.Path]::Combine($walk, $part)
+        if (-not ([IO.File]::Exists($walk) -or [IO.Directory]::Exists($walk))) {
+            Refuse '003' ($what + ' path component not present')
+        }
+        $attrs = [IO.File]::GetAttributes($walk)
+        if (($attrs -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Refuse '004' ($what + ' has a reparse-point path component')
+        }
     }
+    if (-not [IO.File]::Exists($path)) { Refuse '003' ($what + ' not present') }
 }
 if (-not (IsHex $ExpectedSourceCommit 40 $false)) { Refuse '005' 'Expected source SHA must be 40 lowercase hex' }
 LocalAbsoluteFile $PolicyPath 'Policy'
