@@ -109,9 +109,29 @@ fn required_json<'a>(members: &'a [Member], name: &str) -> Result<&'a [u8], Buil
 fn quoted(value: &str) -> Result<String, BuildError> {
     serde_json::to_string(value).map_err(refuse)
 }
+/// The developer folder reconstructs a deliberately minimal keld.config.ts.
+/// Do not silently erase auth or change the app identity from the *compiled* boot
+/// recipe. The later Host must never observe a weaker project than was built.
+fn require_replayable_boot_descriptor(
+    descriptor: &serde_json::Value,
+    app_name: &str,
+) -> Result<(), BuildError> {
+    if descriptor.get("auth").is_some() {
+        return Err(refuse(
+            "compiled boot declares auth, which the KEL-96 developer bundle cannot replay safely",
+        ));
+    }
+    if descriptor.get("name").and_then(serde_json::Value::as_str) != Some(app_name) {
+        return Err(refuse(
+            "compiled boot app name differs from the retained authoring identity",
+        ));
+    }
+    Ok(())
+}
 fn bundle_recipe(pair: &PreparedLocalPair, members: &[Member]) -> Result<Vec<u8>, BuildError> {
     let descriptor: serde_json::Value =
         serde_json::from_slice(required_json(members, "keld.boot.json")?).map_err(refuse)?;
+    require_replayable_boot_descriptor(&descriptor, &pair.authoring.app.name)?;
     let entry = descriptor
         .get("entry")
         .and_then(|value| value.as_str())
@@ -331,6 +351,30 @@ mod tests {
         ] {
             assert!(launcher_name(name).is_err(), "accepted {name:?}");
         }
+    }
+    #[test]
+    fn compiled_boot_with_auth_is_not_silently_downgraded() {
+        let no_auth = serde_json::json!({"name": "Example"});
+        assert!(require_replayable_boot_descriptor(&no_auth, "Example").is_ok());
+        let authenticated = serde_json::json!({
+            "name": "Example",
+            "auth": {"providers": [{"type": "oidc", "id": "example"}]}
+        });
+        assert!(require_replayable_boot_descriptor(&authenticated, "Example").is_err());
+        assert!(
+            require_replayable_boot_descriptor(
+                &serde_json::json!({"name": "Example", "auth": null}),
+                "Example"
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn compiled_boot_app_identity_must_match_authoring() {
+        let mismatch = serde_json::json!({"name": "Another Application"});
+        assert!(require_replayable_boot_descriptor(&mismatch, "Example").is_err());
+        let malformed = serde_json::json!([]);
+        assert!(require_replayable_boot_descriptor(&malformed, "Example").is_err());
     }
 
     #[test]
