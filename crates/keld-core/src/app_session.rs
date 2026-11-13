@@ -5880,10 +5880,11 @@ fn finish_direct_primary_output(
     stdout: &mut impl io::Write,
     stderr: &mut impl io::Write,
 ) -> Result<(), HostAppError> {
-    collapse_app_results([
-        result,
-        forward_direct_primary_output_to(output, stdout, stderr),
-    ])
+    let forwarding = forward_direct_primary_output_to(output, stdout, stderr);
+    match result {
+        Ok(()) => forwarding,
+        Err(primary) => Err(append_app_cleanup(primary, [forwarding])),
+    }
 }
 
 #[cfg(any(target_os = "linux", windows))]

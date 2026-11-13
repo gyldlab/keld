@@ -335,6 +335,9 @@ fn terminal_failure_survives_failed_sink_with_output_forwarded_once() {
             )
         }
         .expect_err("owner and read-only sink failures must survive");
+        assert_eq!(error.code, "KELD-CORE-033");
+        assert_eq!(error.phase, "primary supervisor");
+        assert!(super::super::owner_cause_outranks_window(&error));
         let detail = error.to_string();
         let owner = detail
             .find("GH1460_OWNER_FAILURE")
