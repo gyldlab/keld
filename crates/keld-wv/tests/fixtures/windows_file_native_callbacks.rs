@@ -1,6 +1,7 @@
 //! Native callback observations and exact owned-fixture response routing for the Q22 probe.
 //! No shared parser, policy, identity or facade behavior is implemented here.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde_json::{Value, json};
@@ -46,19 +47,30 @@ fn navigation(args: &wv::ICoreWebView2NavigationStartingEventArgs) -> NativeResu
     Ok(json!({"uri":uri,"navigation_id":id,"header":observed_header}))
 }
 
-// Own the real native deferral until it is installed in Session. Every early
-// error (stream, response, duplicate hold) must Complete before returning.
-struct PendingIframeDeferral {
-    value: Option<wv::ICoreWebView2Deferral>,
+// The native WebView2 deferral is always completed on the same STA if a
+// fallible response step fails before Session takes lasting ownership.
+// This trait lets the exact ownership path be fault-injected without faking COM.
+trait DeferralCompletion {
+    fn complete(&self) -> NativeResult<()>;
+}
+
+#[allow(unsafe_code)] // Test-only COM completion on the creating WebResourceRequested STA.
+impl DeferralCompletion for wv::ICoreWebView2Deferral {
+    fn complete(&self) -> NativeResult<()> {
+        // SAFETY: the fixture's callbacks and cleanup retain this object on one STA.
+        unsafe { self.Complete() }
+    }
+}
+
+struct PendingIframeDeferral<D: DeferralCompletion> {
+    value: Option<D>,
     trace: SharedTrace,
 }
 
-#[allow(unsafe_code)] // Test-only COM completion on the callback's creating STA.
-impl Drop for PendingIframeDeferral {
+impl<D: DeferralCompletion> Drop for PendingIframeDeferral<D> {
     fn drop(&mut self) {
         if let Some(deferral) = self.value.take() {
-            // SAFETY: this guard never leaves the original WebResourceRequested STA.
-            let completed = unsafe { deferral.Complete() };
+            let completed = deferral.complete();
             self.trace.borrow_mut().record(
                 "race-child-abort-complete",
                 json!({"completed":completed.is_ok(),
@@ -66,6 +78,37 @@ impl Drop for PendingIframeDeferral {
             );
         }
     }
+}
+
+// This is the production fixture callback's single response/deferral handoff.
+// A live deferral is already guarded before either fallible response operation.
+// The duplicate-held refusal leaves the old slot untouched and completes the new
+// deferral through Drop. Success transfers ownership without completing it early.
+fn respond_with_held_iframe<D: DeferralCompletion, R>(
+    deferral: Option<D>,
+    trace: &SharedTrace,
+    create_response: impl FnOnce() -> NativeResult<R>,
+    set_response: impl FnOnce(&R) -> NativeResult<()>,
+    held_iframe: &Rc<RefCell<Option<D>>>,
+) -> NativeResult<()> {
+    let mut pending = deferral.map(|value| PendingIframeDeferral {
+        value: Some(value),
+        trace: Rc::clone(trace),
+    });
+    let response = create_response()?;
+    set_response(&response)?;
+    if let Some(guard) = pending.as_mut() {
+        let mut slot = held_iframe.borrow_mut();
+        if slot.is_some() {
+            return Err(windows::core::Error::from(E_POINTER));
+        }
+        let retained = guard
+            .value
+            .take()
+            .ok_or_else(|| windows::core::Error::from(E_POINTER))?;
+        slot.replace(retained);
+    }
+    Ok(())
 }
 
 impl Session {
@@ -222,44 +265,39 @@ impl Session {
                         == wv::COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_DOCUMENT
                     && seen_header["state"] == "absent"
                     && trace.borrow().phase == "race-child";
-                let mut deferral = if hold_child {
-                    // SAFETY: exact callback args on the creating STA. The guard
-                    // completes failures until Session takes lasting ownership.
-                    Some(PendingIframeDeferral {
-                        value: Some(unsafe { args.GetDeferral()? }),
-                        trace: Rc::clone(&trace),
-                    })
+                let deferral = if hold_child {
+                    // SAFETY: exact native args on the callback's creating STA.
+                    Some(unsafe { args.GetDeferral()? })
                 } else {
                     None
                 };
-                // SAFETY: memory stream copies live bytes; only this one fixture URI receives them.
-                let response = unsafe {
-                    if is_owned {
-                        let stream = SHCreateMemStream(Some(&document))
-                            .ok_or_else(|| windows::core::Error::from(E_OUTOFMEMORY))?;
-                        environment.CreateWebResourceResponse(&stream, 200, w!("OK"), w!("Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\n"))?
-                    } else {
-                        environment.CreateWebResourceResponse(
-                            None::<&IStream>,
-                            403,
-                            w!("Forbidden"),
-                            w!("Content-Length: 0\r\n"),
-                        )?
-                    }
-                };
-                // SAFETY: response and event args are live on their owning STA for this request.
-                unsafe {
-                    args.SetResponse(&response)?;
-                }
-                if let Some(guard) = deferral.as_mut() {
-                    if held_iframe.borrow().is_some() {
-                        return Err(windows::core::Error::from(E_POINTER));
-                    }
-                    let retained = guard
-                        .value
-                        .take()
-                        .ok_or_else(|| windows::core::Error::from(E_POINTER))?;
-                    held_iframe.borrow_mut().replace(retained);
+                respond_with_held_iframe(
+                    deferral,
+                    &trace,
+                    || {
+                        // SAFETY: the fixture's document and environment live on this STA.
+                        unsafe {
+                            if is_owned {
+                                let stream = SHCreateMemStream(Some(&document))
+                                    .ok_or_else(|| windows::core::Error::from(E_OUTOFMEMORY))?;
+                                environment.CreateWebResourceResponse(&stream, 200, w!("OK"), w!("Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\n"))
+                            } else {
+                                environment.CreateWebResourceResponse(
+                                    None::<&IStream>,
+                                    403,
+                                    w!("Forbidden"),
+                                    w!("Content-Length: 0\r\n"),
+                                )
+                            }
+                        }
+                    },
+                    |response| {
+                        // SAFETY: response and callback args remain on the owning STA.
+                        unsafe { args.SetResponse(response) }
+                    },
+                    &held_iframe,
+                )?;
+                if hold_child {
                     trace.borrow_mut().record(
                         "race-child-held",
                         json!({
@@ -330,5 +368,193 @@ impl Session {
             .borrow_mut()
             .record("race-child-released", json!({"completed":true}));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod ac06_deferral_failure_tests {
+    use super::super::Trace;
+    use super::*;
+    use std::cell::Cell;
+    use std::time::Instant;
+
+    struct CountedDeferral {
+        completions: Rc<Cell<u32>>,
+        fail_complete: bool,
+    }
+
+    impl DeferralCompletion for CountedDeferral {
+        fn complete(&self) -> NativeResult<()> {
+            self.completions.set(self.completions.get() + 1);
+            if self.fail_complete {
+                Err(windows::core::Error::from(E_POINTER))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn fixture_trace() -> SharedTrace {
+        Rc::new(RefCell::new(Trace {
+            started: Instant::now(),
+            phase: "race-child".into(),
+            events: Vec::new(),
+        }))
+    }
+
+    fn abort_observations(trace: &SharedTrace) -> Vec<Value> {
+        trace
+            .borrow()
+            .events
+            .iter()
+            .filter(|row| row["kind"] == "race-child-abort-complete")
+            .cloned()
+            .collect()
+    }
+
+    // Same response/deferral handoff function as the native callback. Each
+    // failure is injected AFTER acquisition; the mock counts the observable
+    // Complete attempt instead of assuming that an error implies cleanup.
+    #[test]
+    fn acquired_deferral_is_completed_once_on_each_fallible_response_stage() {
+        for failure in ["stream", "response", "set-response"] {
+            let completions = Rc::new(Cell::new(0));
+            let trace = fixture_trace();
+            let held: Rc<RefCell<Option<CountedDeferral>>> = Rc::new(RefCell::new(None));
+            let result = respond_with_held_iframe(
+                Some(CountedDeferral {
+                    completions: Rc::clone(&completions),
+                    fail_complete: false,
+                }),
+                &trace,
+                || {
+                    if failure == "stream" || failure == "response" {
+                        return Err(windows::core::Error::from(E_OUTOFMEMORY));
+                    }
+                    Ok(())
+                },
+                |()| {
+                    if failure == "set-response" {
+                        return Err(windows::core::Error::from(E_POINTER));
+                    }
+                    Ok(())
+                },
+                &held,
+            );
+            assert!(
+                result.is_err(),
+                "{failure}: injected failure was not observed"
+            );
+            assert_eq!(
+                completions.get(),
+                1,
+                "{failure}: deferral not completed once"
+            );
+            assert!(
+                held.borrow().is_none(),
+                "{failure}: failed deferral was retained"
+            );
+            let aborts = abort_observations(&trace);
+            assert_eq!(aborts.len(), 1, "{failure}: not exactly one abort record");
+            assert_eq!(aborts[0]["data"]["completed"], json!(true));
+        }
+    }
+
+    #[test]
+    fn duplicate_slot_completes_only_the_newly_acquired_deferral() {
+        let existing_completions = Rc::new(Cell::new(0));
+        let new_completions = Rc::new(Cell::new(0));
+        let trace = fixture_trace();
+        let held = Rc::new(RefCell::new(Some(CountedDeferral {
+            completions: Rc::clone(&existing_completions),
+            fail_complete: false,
+        })));
+        let result = respond_with_held_iframe(
+            Some(CountedDeferral {
+                completions: Rc::clone(&new_completions),
+                fail_complete: false,
+            }),
+            &trace,
+            || Ok(()),
+            |()| Ok(()),
+            &held,
+        );
+        assert!(result.is_err(), "duplicate held deferral was accepted");
+        assert_eq!(new_completions.get(), 1, "new deferral escaped cleanup");
+        assert_eq!(
+            existing_completions.get(),
+            0,
+            "existing hold completed early"
+        );
+        assert_eq!(abort_observations(&trace).len(), 1);
+        held.borrow_mut()
+            .take()
+            .expect("existing slot unchanged")
+            .complete()
+            .unwrap();
+        assert_eq!(existing_completions.get(), 1);
+        assert_eq!(new_completions.get(), 1, "new deferral completed twice");
+    }
+
+    #[test]
+    fn successful_transfer_does_not_complete_until_explicit_release() {
+        let completions = Rc::new(Cell::new(0));
+        let trace = fixture_trace();
+        let held = Rc::new(RefCell::new(None));
+        respond_with_held_iframe(
+            Some(CountedDeferral {
+                completions: Rc::clone(&completions),
+                fail_complete: false,
+            }),
+            &trace,
+            || Ok(()),
+            |()| Ok(()),
+            &held,
+        )
+        .expect("normal overlap transfers ownership to Session");
+        assert_eq!(completions.get(), 0, "held iframe completed before release");
+        assert_eq!(abort_observations(&trace).len(), 0);
+        held.borrow_mut()
+            .take()
+            .expect("native hold")
+            .complete()
+            .unwrap();
+        assert_eq!(completions.get(), 1, "explicit release must complete once");
+    }
+
+    #[test]
+    fn failed_complete_is_recorded_and_never_retried_silently() {
+        let completions = Rc::new(Cell::new(0));
+        let trace = fixture_trace();
+        let held = Rc::new(RefCell::new(None));
+        let result = respond_with_held_iframe(
+            Some(CountedDeferral {
+                completions: Rc::clone(&completions),
+                fail_complete: true,
+            }),
+            &trace,
+            || Err::<(), _>(windows::core::Error::from(E_OUTOFMEMORY)),
+            |()| Ok(()),
+            &held,
+        );
+        assert!(result.is_err());
+        assert_eq!(completions.get(), 1);
+        let aborts = abort_observations(&trace);
+        assert_eq!(aborts.len(), 1);
+        assert_eq!(aborts[0]["data"]["completed"], json!(false));
+        assert!(
+            !aborts[0]["data"]["error"].is_null(),
+            "COM error must be visible"
+        );
+    }
+
+    #[test]
+    fn nonheld_request_never_completes_or_touches_held_slot() {
+        let trace = fixture_trace();
+        let held: Rc<RefCell<Option<CountedDeferral>>> = Rc::new(RefCell::new(None));
+        respond_with_held_iframe(None, &trace, || Ok(()), |()| Ok(()), &held)
+            .expect("normal non-held response");
+        assert!(held.borrow().is_none());
+        assert_eq!(abort_observations(&trace).len(), 0);
     }
 }
