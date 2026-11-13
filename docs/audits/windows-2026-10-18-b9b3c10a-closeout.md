@@ -26,20 +26,28 @@ an automatic semantic-review disposition.
   named-pipe policy, Job lifecycle/native test, LSA observation, updater
   locator/stage/writer native tests, signed-installed acceptance helpers and
   Rust/Just build-cache tooling. A changed blob is *not* automatically reviewed.
-- Exact-blob supported semantic dispositions: **five justified no-change**
-  paths and **one conditional risk**. **339 candidates await independent
-  semantic review; 340 remain not closed** (339 pending plus the conditional
-  risk). There is no claim that every Windows file is already reviewed.
+- Exact-blob supported semantic dispositions after the additional **19 October**
+  independent read-only source review: **seven justified no-change** paths and
+  **two conditional risks**. **336 candidates await independent semantic
+  review; 338 remain not closed** (336 pending plus two conditional risks).
+  Only three exact historical blobs were newly reviewed; no claim that every
+  Windows file, a shipping privilege path or the whole program is complete.
 
-## Review evidence and one bounded open finding
+## Exact source-review evidence and two bounded conditional risks
 
-Six attestations from the earlier [#824 per-file review receipt](https://github.com/gyldlab/keld/issues/824#issuecomment-6248828406)
-carry exact source blob OIDs, reviewer link, owner and independent falsifier in
-`windows-2026-10-18-reviewed-blobs.csv`. The other 339 entries are not silently
-promoted. Two runtime owners (`windows_job.rs`, `windows_lpac.rs`) and four
-updater owners (`windows_baseline.rs`, `windows_baseline/claimant.rs`,
-`windows_baseline/helper.rs`, `windows_extraction.rs`) are the only six
-reconciled claims.
+The original **six** attestations from the earlier
+[#824 per-file review receipt](https://github.com/gyldlab/keld/issues/824#issuecomment-6248828406)
+remain byte-identical; a separate, independently authored
+[19 October pinned-blob review](https://github.com/gyldlab/keld/issues/824#issuecomment-6259406772)
+adds exactly **three** reviews at the same #937 source SHA. All nine rows
+carry exact Git blob OIDs, public reviewer citations, responsible owners and
+independent failure-first falsifiers in
+`windows-2026-10-18-reviewed-blobs.csv`. The remaining 336 paths stay
+pending. Those three new entries are `windows_machine/initiating_token.rs`
+(conditional release-integration risk), `windows_job/process_peer.rs`
+(source-reviewed no-change) and `windows_extraction/lpac_probe.rs`
+(test-fixture-only no-change). Other newer-source reviews did not have the
+same historical blob ID and are **not** implicitly promoted.
 
 `crates/keld-runtime/src/windows_lpac.rs` at blob
 `63e2df931b576bddf7daf4464f897b7e0077f023`, lines 257–336:
@@ -51,6 +59,29 @@ independent falsifier uses two test-owned directories, swaps one pathname
 between the ACL read and write, and observes the unrelated object's DACL.
 A production correction belongs to a separate scoped owner only if native
 reproduction and a real shipping caller warrant it.
+
+`crates/keld-guard/src/windows_machine/initiating_token.rs`, exact blob
+`4d121eff33e67eaed21fde9f65f7f29bba3b313b`, lines 51–63 and
+89–249, has no proven unsafe rights-expansion in its isolated token owner:
+it rejects elevated/non-Medium token facts, opens from an exact host-process
+HANDLE, duplicates narrowly scoped token handles, and aborts if reverting
+thread impersonation fails. However its public initiating-token admission
+and duplication APIs are only called in that module's own `#[cfg(test)]`
+selectors at this pinned source. The Machine-UAC S11 signed helper bootstrap
+and positive elevated/ordinary-user installed acceptance remain **unwired
+and unproven**. This is a conditional **integration risk, not an observed
+shipping exploit or a justification to bypass the existing default-deny gate**.
+
+`crates/keld-runtime/src/windows_job/process_peer.rs` (blob
+`7531c6d93f911406ea5d4e4a057ae03d91f2b373`) retains the exact
+OS process HANDLE for connected pipe PID/session/image/creation-time
+observation and finite waits; callers must independently authenticate the
+executable and lifecycle challenge. `crates/keld-update/src/windows_extraction/lpac_probe.rs`
+(blob `2061a82e6581ca70a721c518649811908f7d61b1`) is test-only and
+probes real LPAC stage mutation denial against positive RolePrivate writes.
+Neither source-only review establishes signed-installed production acceptance.
+The new reviewer **inspected** these native selector contracts but did not
+claim that those tests were rerun in this docs-only review.
 
 ## Existing integration evidence, not new claims
 
@@ -96,3 +127,21 @@ Machine-UAC/AppContainer and true host/Job cleanup acceptance; macOS Guardian
 detached descendants and Linux containment; cross-platform GUI acceptance.
 No architecture PR or integration witness may be merged, squashed, retargeted,
 or auto-merged without explicit owner approval.
+
+## Errata — 9 November 2026 base reconciliation
+
+The updated base corrects the candidate census to 345 paths using the existing
+fixed generator. The nine exact-blob review attestations are unchanged (evidence
+SHA-256 `1da8d0769b408a37c801cb77ad581b6badb2c97dd1e6e418e70e5cfe836f72e7`).
+The regenerated v2 summary therefore records 336 pending, seven no-change and
+two conditional-risk paths: 338 remain not closed. This census correction adds
+no semantic review or native acceptance. Historical prior revisions remain in
+Git ancestry; the corrected ledger manifest SHA-256 is
+`3ad34777f9709cdda4e3203e6c5dd2a1251e82d89a7aae0523afdf3346b18d91`.
+
+### Erratum — exact prose object identity
+
+The census prose edit accidentally altered numeric characters inside an object
+identifier. The initiating-token blob is `4d121eff33e67eaed21fde9f65f7f29bba3b313b`,
+matching the unchanged review CSV and Git object. This restores the original
+identifier; it does not change the source evidence or review disposition.
