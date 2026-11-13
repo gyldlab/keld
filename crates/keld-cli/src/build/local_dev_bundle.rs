@@ -156,6 +156,31 @@ fn render_config(
     }
     Ok(config.into_bytes())
 }
+/// Choose one Windows leaf for a locally signed application entrypoint; a
+/// developer-controlled title must never become a path, device name or CLI.
+fn launcher_name(name: &str) -> Result<String, BuildError> {
+    if name.is_empty()
+        || name.len() > 80
+        || name.ends_with([' ', '.'])
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b' ' | b'-' | b'_' | b'.'))
+    {
+        return Err(refuse("app name is not a safe Windows executable leaf"));
+    }
+    let first = name.split('.').next().unwrap_or_default();
+    let upper = first.trim_end().to_ascii_uppercase();
+    if matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "KELD" | "BUN" | "KELD-HOST"
+    ) || (upper.len() == 4
+        && (upper.starts_with("COM") || upper.starts_with("LPT"))
+        && matches!(upper.as_bytes()[3], b'1'..=b'9'))
+    {
+        return Err(refuse("reserved Windows device or KELD executable name"));
+    }
+    Ok(format!("{name}.exe"))
+}
 const LAUNCH: &[u8] = b"@echo off\r\nsetlocal EnableExtensions DisableDelayedExpansion\r\nset \"PATH=%~dp0;%PATH%\"\r\ncd /d \"%~dp0project\"\r\n\"%~dp0keld.exe\" dev\r\nexit /b %errorlevel%\r\n";
 
 /// Creates one fresh, self-contained LOCAL developer runner using already emitted,
@@ -216,6 +241,16 @@ pub(super) fn emit(pair: &PreparedLocalPair, members: &[Member]) -> Result<PathB
         cli_file.file.metadata().map_err(refuse)?.len(),
     )?;
     write_bytes(&root.join("Run.cmd"), LAUNCH)?;
+    // The same authenticated signer selected for Host/helper signs an
+    // application-named executable. It is a KEL-96 lease entrypoint, not
+    // install authority. The unsigned keld.exe remains the developer CLI.
+    let launcher = root.join(launcher_name(&pair.authoring.app.name)?);
+    copy_file(
+        &launcher,
+        &cli_file.file,
+        cli_file.file.metadata().map_err(refuse)?.len(),
+    )?;
+    let launcher_sha = super::local_images::sign_named_developer_launcher(pair, &launcher)?;
     let host = keld_guard::WindowsAuthenticodeImage::open(&root.join("keld-host.exe"))
         .map_err(refuse)?
         .verify()
@@ -226,8 +261,14 @@ pub(super) fn emit(pair: &PreparedLocalPair, members: &[Member]) -> Result<PathB
         ));
     }
     println!(
-        "Prepared Windows LOCAL DEVELOPER runnable folder: {} (Run.cmd uses KEL-96 dev lease, not installed provenance, Strict or Store)",
-        root.display()
+        "Prepared Windows LOCAL DEVELOPER runnable folder: {} (Run.cmd and {} use KEL-96 dev lease, not installed provenance, Strict or Store)",
+        root.display(),
+        launcher.file_name().unwrap_or_default().to_string_lossy()
+    );
+    println!(
+        "Verified LOCAL DEVELOPER application entrypoint Authenticode: {} SHA256 {}",
+        launcher.display(),
+        super::local_source::observed_hex(&launcher_sha)
     );
     Ok(root)
 }
@@ -255,6 +296,35 @@ mod tests {
             Some("renderer/index.html")
         );
     }
+    #[test]
+    fn app_exe_name_accepts_draw_io_and_refuses_win32_aliases() {
+        assert_eq!(launcher_name("draw.io").unwrap(), "draw.io.exe");
+        assert_eq!(
+            launcher_name("windows-runnable-hello").unwrap(),
+            "windows-runnable-hello.exe"
+        );
+        for name in [
+            "",
+            ".",
+            "bad.",
+            "bad ",
+            "../evil",
+            r"foo\evil",
+            "foo:bar",
+            "CON",
+            "NUL.txt",
+            "COM1",
+            "LPT9",
+            "keld",
+            "keld-host",
+            "bun",
+            "executable<bad>",
+            "literal*wildcard",
+        ] {
+            assert!(launcher_name(name).is_err(), "accepted {name:?}");
+        }
+    }
+
     #[test]
     fn launcher_invokes_only_dev_lease_not_bare_signed_exe() {
         let text = std::str::from_utf8(LAUNCH).unwrap();

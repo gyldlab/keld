@@ -27,6 +27,17 @@ fn main() {
         eprintln!("{error}");
         process::exit(2);
     });
+    // A signer-selected named developer-local EXE is the app entrypoint. It
+    // still enters the existing guarded KEL-96 lease: the signed Host retains
+    // all native runtime and IPC authority. Normal keld.exe CLI is unchanged.
+    #[cfg(windows)]
+    if let Some(result) = run_named_developer_entry(&args) {
+        if let Err(error) = result {
+            eprintln!("{error}");
+            process::exit(1);
+        }
+        return;
+    }
     let verb = args.get(1).map(String::as_str);
 
     let result = match verb {
@@ -102,6 +113,68 @@ fn main() {
         eprintln!("{err}");
         process::exit(1);
     }
+}
+
+/// Only a locally signed, application-named developer bundle enters this path.
+/// This does not activate an installed package and never bypasses the normal
+/// KEL-96 Host's Authenticode, developer lease, profile or IPC checks.
+#[cfg(windows)]
+fn run_named_developer_entry(args: &[String]) -> Option<Result<(), String>> {
+    let executable = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            return Some(Err(format!(
+                "KELD-CLI-048: app executable locator: {error}"
+            )));
+        }
+    };
+    let file_name = executable.file_name()?.to_str()?;
+    if file_name.eq_ignore_ascii_case("keld.exe") {
+        return None;
+    }
+    let Some(name) = executable.file_stem().and_then(std::ffi::OsStr::to_str) else {
+        return Some(Err(String::from(
+            "KELD-CLI-048: non-Unicode application name",
+        )));
+    };
+    Some((|| {
+        if args.len() != 1 {
+            return Err(String::from(
+                "KELD-CLI-044: the signed developer application accepts no command-line arguments",
+            ));
+        }
+        let parent = executable
+            .parent()
+            .ok_or("KELD-CLI-048: application root absent")?;
+        let project = parent.join("project");
+        let config = std::fs::read_to_string(project.join("keld.config.ts"))
+            .map_err(|e| format!("KELD-CLI-032: missing application configuration: {e}"))?;
+        let title = keld_core::title_from_config_ts(&config)
+            .ok_or("KELD-CLI-032: app name must be a quoted literal in config")?;
+        if !title.eq_ignore_ascii_case(name) {
+            return Err(String::from(
+                "KELD-CLI-048: launcher filename and application title disagree",
+            ));
+        }
+        let id = config
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("id:"))
+            .and_then(|literal| {
+                serde_json::from_str::<String>(literal.trim().trim_end_matches(',')).ok()
+            })
+            .ok_or("KELD-CLI-032: missing literal application identity")?;
+        let image = keld_guard::WindowsAuthenticodeImage::open(&executable)
+            .and_then(keld_guard::WindowsAuthenticodeImage::verify)
+            .map_err(|e| format!("KELD-WV-009: developer application image refused: {e}"))?;
+        if image.identity().app_id() != id {
+            return Err(String::from(
+                "KELD-CLI-048: signed launcher app identity differs from project",
+            ));
+        }
+        std::env::set_current_dir(&project)
+            .map_err(|e| format!("KELD-CLI-032: cannot open developer app project: {e}"))?;
+        run_dev(&project).map_err(|e| e.to_string())
+    })())
 }
 
 fn print_usage() {
