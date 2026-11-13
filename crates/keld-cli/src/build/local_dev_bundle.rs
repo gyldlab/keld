@@ -240,10 +240,14 @@ pub(super) fn emit(pair: &PreparedLocalPair, members: &[Member]) -> Result<PathB
         &cli_file.file,
         cli_file.file.metadata().map_err(refuse)?.len(),
     )?;
+    // The included CLI is invoked by the named GUI entrypoint in a child
+    // process with a pinned PATH. Authenticate this child with the SAME
+    // previously captured developer signer; do not ship a mutable unsigned
+    // executable behind a trusted application launcher.
+    let cli_sha = super::local_images::sign_named_developer_launcher(pair, &root.join("keld.exe"))?;
     write_bytes(&root.join("Run.cmd"), LAUNCH)?;
-    // The same authenticated signer selected for Host/helper signs an
-    // application-named executable. It is a KEL-96 lease entrypoint, not
-    // install authority. The unsigned keld.exe remains the developer CLI.
+    // The application-named executable uses only the normal KEL-96 dev lease.
+    // Neither EXE is an installed KEL-53 principal or Store release authority.
     let launcher = root.join(launcher_name(&pair.authoring.app.name)?);
     copy_file(
         &launcher,
@@ -269,6 +273,10 @@ pub(super) fn emit(pair: &PreparedLocalPair, members: &[Member]) -> Result<PathB
         "Verified LOCAL DEVELOPER application entrypoint Authenticode: {} SHA256 {}",
         launcher.display(),
         super::local_source::observed_hex(&launcher_sha)
+    );
+    println!(
+        "Verified LOCAL DEVELOPER co-bundled CLI Authenticode: SHA256 {}",
+        super::local_source::observed_hex(&cli_sha)
     );
     Ok(root)
 }

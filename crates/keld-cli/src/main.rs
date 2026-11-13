@@ -171,9 +171,47 @@ fn run_named_developer_entry(args: &[String]) -> Option<Result<(), String>> {
                 "KELD-CLI-048: signed launcher app identity differs from project",
             ));
         }
-        std::env::set_current_dir(&project)
-            .map_err(|e| format!("KELD-CLI-032: cannot open developer app project: {e}"))?;
-        run_dev(&project).map_err(|e| e.to_string())
+        let cli_path = parent.join("keld.exe");
+        let cli_image = keld_guard::WindowsAuthenticodeImage::open(&cli_path)
+            .and_then(keld_guard::WindowsAuthenticodeImage::verify)
+            .map_err(|e| format!("KELD-WV-009: bundled CLI signature refused: {e}"))?;
+        if cli_image.identity().app_id() != id
+            || cli_image.identity().publisher_scope() != image.identity().publisher_scope()
+        {
+            return Err(String::from(
+                "KELD-CLI-048: the bundled CLI and application entrypoint differ in signed identity",
+            ));
+        }
+        let bun_path = parent.join("bun.exe");
+        let bun_metadata = std::fs::symlink_metadata(&bun_path)
+            .map_err(|e| format!("KELD-CLI-033: bundled Bun missing: {e}"))?;
+        if !bun_metadata.file_type().is_file() {
+            return Err(String::from(
+                "KELD-CLI-033: bundled Bun is not a regular file",
+            ));
+        }
+        // Keld's normal KEL-96 dev lease runs in the child CLI. Give only that
+        // process an explicit bundled-runtime-first PATH; never mutate the
+        // global process environment or select ambient developer Bun.
+        let mut paths = vec![parent.to_owned()];
+        paths.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        let bundled_path = std::env::join_paths(paths)
+            .map_err(|e| format!("KELD-CLI-033: bundled PATH cannot be constructed: {e}"))?;
+        let status = std::process::Command::new(&cli_path)
+            .arg("dev")
+            .current_dir(&project)
+            .env("PATH", bundled_path)
+            .status()
+            .map_err(|e| format!("KELD-CLI-048: bundled developer CLI failed: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "KELD-CLI-048: bundled developer CLI exited with {status}"
+            ))
+        }
     })())
 }
 
