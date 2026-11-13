@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
@@ -136,24 +136,62 @@ function copyCompilerClosure(root: string): void {
   expect(existsSync(join(nodeModules, "@keld/kipc/package.json"))).toBe(true);
 }
 
+function prepareFixture(root: string): void {
+  for (const name of ["kipc", "api"]) {
+    const destination = join(root, "packages/@keld", name);
+    cpSync(join(packages, name), destination, {
+      recursive: true,
+      filter: (source) => basename(source) !== "node_modules",
+    });
+  }
+  copyCompilerClosure(root);
+}
+
 function fixture(check: (root: string) => void): void {
   const root = mkdtempSync(join(tmpdir(), "keld-noemit-"));
   let passed = false;
   try {
-    for (const name of ["kipc", "api"]) {
-      const destination = join(root, "packages/@keld", name);
-      cpSync(join(packages, name), destination, {
-        recursive: true,
-        filter: (source) => basename(source) !== "node_modules",
-      });
-    }
-    copyCompilerClosure(root);
+    prepareFixture(root);
     check(root);
     passed = true;
   } finally {
     if (passed) rmSync(root, { recursive: true, force: true });
     else console.error("NOEMIT_FAILED_FIXTURE " + root);
   }
+}
+
+// Copy the entire pinned compiler snapshot in an independently bounded setup
+// hook. Copying is not the producer's refusal operation: native phase profiling
+// measured ~3 seconds of copying before ~1.3 seconds of refusal/assertions.
+// Each case still owns a fresh full closure, and its action keeps the original
+// five-second bound. No links, shared mutable fixture or I/O deadline override.
+function preparedFixtureTest(
+  name: string,
+  check: (root: string) => void,
+): void {
+  describe("independent pinned compiler fixture", () => {
+    let root: string | undefined;
+    let passed = false;
+    beforeAll(() => {
+      root = mkdtempSync(join(tmpdir(), "keld-noemit-"));
+      prepareFixture(root);
+    }, 15_000);
+    afterAll(() => {
+      if (root === undefined) return;
+      if (passed) rmSync(root, { recursive: true, force: true });
+      else console.error("NOEMIT_FAILED_FIXTURE " + root);
+    }, 15_000);
+    test(
+      name,
+      () => {
+        if (root === undefined)
+          throw new Error("isolated compiler setup did not finish");
+        check(root);
+        passed = true;
+      },
+      5_000,
+    );
+  });
 }
 
 function inventory(root: string): Record<string, string> {
@@ -199,8 +237,9 @@ function refusal(root: string, command: string[], diagnostic: string): void {
   expect(after).toEqual(before);
 }
 
-test("package producer refuses mismatched pinned compiler manifests", () => {
-  fixture((root) => {
+preparedFixtureTest(
+  "package producer refuses mismatched pinned compiler manifests",
+  (root) => {
     const kipcManifest = join(root, "packages/@keld/kipc/package.json");
     const manifest = JSON.parse(readFileSync(kipcManifest, "utf8"));
     manifest.devDependencies.typescript = "7.0.1";
@@ -216,11 +255,11 @@ test("package producer refuses mismatched pinned compiler manifests", () => {
       ],
       "API and KIPC must share the exact pinned TypeScript compiler closure",
     );
-  });
-});
-
-test("package producer refuses a missing pinned compiler closure", () => {
-  fixture((root) => {
+  },
+);
+preparedFixtureTest(
+  "package producer refuses a missing pinned compiler closure",
+  (root) => {
     rmSync(join(root, "packages/@keld/api/node_modules/typescript"), {
       recursive: true,
       force: true,
@@ -236,9 +275,8 @@ test("package producer refuses a missing pinned compiler closure", () => {
       ],
       "Pinned API TypeScript compiler closure is unavailable",
     );
-  });
-});
-
+  },
+);
 for (const seeded of [false, true]) {
   test(`failed API relative-edge build does not ${seeded ? "overwrite" : "create"} sibling files`, () => {
     fixture((root) => {
