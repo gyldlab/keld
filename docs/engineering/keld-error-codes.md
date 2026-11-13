@@ -10,9 +10,9 @@ CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 - Duplicate `## KELD-…` headings fail the test.
 - A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` /
   `keld-runtime` / `keld-native` / `keld-compat` / `keld-core` / `keld-update` /
-  `keld-pack` / `keld-host` / `keld-updater-helper` `src`, `keld-cli` templates, the
-  `@keld/kipc` TypeScript transport `src`, the `@keld/api` public API `src`, or
-  workspace `tools/` that has no heading here fails the test.
+  `keld-pack` / `keld-host` / `keld-updater-helper` `src`, `keld-cli` templates,
+  `@keld/kipc`, `@keld/api`, `@keld/electron` and `@keld/electron-updater`
+  TypeScript `src`, or workspace `tools/` that has no heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
 
@@ -975,6 +975,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: @keld/electron
 - message: The application tried to assign app.name, which this bounded session-facts surface does not support
 - fix: Declare the application name in keld.config.ts and rebuild. The Host owns the admitted name; setName remains separate work.
+
+## KELD-COMPAT-050
+
+- crate: @keld/electron-updater
+- message: A packaged migrated application requested an update check, but the Keld Host does not provide an authenticated updater path, so no feed was contacted and no update was offered
+- fix: Keep updater checks disabled for the migrated application (for draw.io, declare DRAWIO_DISABLE_UPDATE=true in the role environment) until the Host update channel is implemented, authenticated and qualified. Do not fabricate a feed, offer, download or installation.
 
 ## KELD-COMPAT-051
 
