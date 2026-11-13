@@ -22,23 +22,100 @@ const packageJson = JSON.parse(
 const lock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
 const build = readFileSync(join(root, "keld.build.ts"), "utf8");
 
+// This verifier never evaluates authoring TypeScript or imports unapproved
+// application modules. Ignore comments while retaining quoted literals so
+// obsolete configuration examples cannot masquerade as the effective source.
+function withoutComments(source) {
+  let result = "";
+  let quote = "";
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    const next = source[index + 1];
+    if (quote) {
+      result += char;
+      if (char === "\\") {
+        result += next ?? "";
+        index += 1;
+      } else if (char === quote) {
+        quote = "";
+      }
+    } else if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      result += char;
+    } else if (char === "/" && next === "/") {
+      index += 2;
+      while (index < source.length && source[index] !== "\n") index += 1;
+      result += "\n";
+    } else if (char === "/" && next === "*") {
+      index += 2;
+      while (
+        index + 1 < source.length &&
+        !(source[index] === "*" && source[index + 1] === "/")
+      ) {
+        if (source[index] === "\n") result += "\n";
+        index += 1;
+      }
+      index += 1;
+    } else {
+      result += char;
+    }
+  }
+  assert.equal(quote, "", "unterminated source literal");
+  return result;
+}
+
+const activeBuild = withoutComments(build);
+
+function literalObject(source, name) {
+  const matches = [...source.matchAll(new RegExp(`\\b${name}:\\s*\\{`, "g"))];
+  assert.equal(matches.length, 1, `one active ${name} object required`);
+  const start = matches[0].index + matches[0][0].length;
+  let depth = 1;
+  for (let index = start; index < source.length; index += 1) {
+    if (source[index] === "{") depth += 1;
+    if (source[index] === "}") depth -= 1;
+    if (depth === 0) return source.slice(start, index);
+  }
+  assert.fail(`unterminated ${name} object`);
+}
+
+function literalString(source, name) {
+  const matches = [
+    ...source.matchAll(new RegExp(`\\b${name}:\\s*"([^"\\n]*)"`, "g")),
+  ];
+  assert.equal(matches.length, 1, `one active ${name} literal required`);
+  return matches[0][1];
+}
+
 function sha256(relative) {
   return createHash("sha256")
     .update(readFileSync(join(root, relative)))
     .digest("hex");
 }
 
-function declaredCaptureRoots() {
+function declaredCaptureRoots(source = activeBuild) {
   // The production CLI accepts a closed literal resources array. Parse its
   // authored JSON string literals without importing or evaluating TypeScript.
-  const raw = build.match(/^\s*resources:\s*(\[[^\]]*\]),?$/m)?.[1];
-  assert.ok(raw, "closed literal Pack resources array is missing");
+  const matches = [...source.matchAll(/^\s*resources:\s*(\[[^\]]*\]),?$/gm)];
+  assert.equal(
+    matches.length,
+    1,
+    "one active closed Pack resources array required",
+  );
+  const raw = matches[0][1];
   const roots = JSON.parse(raw.replace(/,\s*]$/, "]"));
   assert.ok(Array.isArray(roots));
   assert.ok(
     roots.every((value) => typeof value === "string" && value.length > 0),
   );
   assert.equal(new Set(roots).size, roots.length, "no repeated resource roots");
+  assert.deepEqual(roots, [
+    "src",
+    "web",
+    "package.json",
+    "package-lock.json",
+    "node_modules",
+  ]);
   return roots;
 }
 
@@ -47,16 +124,21 @@ function coversResource(roots, path) {
 }
 
 function expectedRootDependencies(metadata, locked) {
+  const expected = {
+    "@keld/api": "0.0.1",
+    "@keld/kipc": "0.0.1",
+    electron: "npm:@keld/electron@0.0.1",
+  };
   assert.equal(locked.lockfileVersion, 3, "npm lock v3");
   assert.equal(locked.name, metadata.name);
   assert.equal(locked.version, metadata.version);
   assert.equal(locked.packages[""].name, metadata.name);
   assert.equal(locked.packages[""].version, metadata.version);
   assert.deepEqual(locked.packages[""].dependencies, metadata.dependencies);
-  assert.equal(
-    metadata.dependencies.electron,
-    "npm:@keld/electron@0.0.1",
-    "only the explicit first-party Electron alias is selected",
+  assert.deepEqual(
+    metadata.dependencies,
+    expected,
+    "exact first-party dependency selectors",
   );
   for (const [path, name] of [
     ["node_modules/electron", "@keld/electron"],
@@ -85,25 +167,52 @@ test("a changed locked alias is detected independently of the app source", () =>
   );
 });
 
+test("a first-party SDK selector redirected in BOTH manifests is refused", () => {
+  for (const name of ["@keld/api", "@keld/kipc"]) {
+    const changedMetadata = structuredClone(packageJson);
+    const changedLock = structuredClone(lock);
+    changedMetadata.dependencies[name] = "npm:@outsider/redirect@0.0.1";
+    changedLock.packages[""].dependencies[name] =
+      "npm:@outsider/redirect@0.0.1";
+    assert.throws(
+      () => expectedRootDependencies(changedMetadata, changedLock),
+      /deep-equal|Expected values|first-party/,
+      `redirected ${name} must be refused even if lock agrees`,
+    );
+  }
+});
+
 test("package, lock and preload content bind to exact candidate SHA-256 bytes", () => {
   for (const [field, relative] of [
     ["packageSha256", "package.json"],
     ["lockSha256", "package-lock.json"],
   ]) {
     assert.match(
-      build,
+      activeBuild,
       new RegExp(`${field}:\\s*"${sha256(relative)}"`),
       `${field} must match the committed candidate file`,
     );
   }
   assert.match(
-    build,
+    activeBuild,
     new RegExp(`sha256:\\s*"${sha256("src/preload.mjs")}"`),
     "the separately named preload source must be captured",
   );
   assert.ok(existsSync(join(root, "src/main.mjs")));
-  assert.ok(existsSync(join(root, "web/index.html")));
+  assert.ok(existsSync(join(root, "web/pages/index.html")));
   assert.equal(existsSync(join(root, "node_modules")), false);
+});
+
+test("commented capture-root decoys cannot satisfy effective resource selection", () => {
+  const actual = activeBuild.replace(
+    /resources:\s*\[[^\]]*\]/m,
+    'resources: ["src", "web"]',
+  );
+  const commented = `/* resources: ["src", "web", "package.json", "package-lock.json", "node_modules"] */\n${actual}`;
+  assert.throws(
+    () => declaredCaptureRoots(withoutComments(commented)),
+    /deep-equal|Expected values/,
+  );
 });
 
 test("Pack's declared capture roots retain root graph inputs and future provider install", () => {
@@ -189,17 +298,39 @@ test(
 );
 
 test("every pending executable/provider pin is unambiguously invalid", () => {
-  for (const name of [
-    "UNQUALIFIED_HOST_SHA256",
-    "UNQUALIFIED_BUN_SHA256",
-    "UNQUALIFIED_PROVIDER_ELECTRON",
-    "UNQUALIFIED_PROVIDER_API",
-    "UNQUALIFIED_PROVIDER_KIPC",
+  const providers = literalObject(
+    literalObject(activeBuild, "graphSource"),
+    "providerTrees",
+  );
+  for (const [actual, expected] of [
+    [
+      literalString(literalObject(activeBuild, "host"), "sha256"),
+      "UNQUALIFIED_HOST_SHA256",
+    ],
+    [
+      literalString(literalObject(activeBuild, "bun"), "sha256"),
+      "UNQUALIFIED_BUN_SHA256",
+    ],
+    [literalString(providers, "electron"), "UNQUALIFIED_PROVIDER_ELECTRON"],
+    [literalString(providers, "api"), "UNQUALIFIED_PROVIDER_API"],
+    [literalString(providers, "kipc"), "UNQUALIFIED_PROVIDER_KIPC"],
   ]) {
-    assert.ok(build.includes(`"${name}"`), `${name} was replaced`);
-    assert.equal(/^[0-9a-f]{64}$/.test(name), false);
+    assert.equal(actual, expected, `effective ${expected} pin was changed`);
+    assert.equal(/^[0-9a-f]{64}$/.test(actual), false);
   }
   assert.equal(existsSync(join(root, "dist")), false);
+});
+
+test("comment-only stale sentinel text cannot hide an active valid digest", () => {
+  const changed = activeBuild.replace(
+    '"UNQUALIFIED_HOST_SHA256"',
+    `"${"a".repeat(64)}"`,
+  );
+  const commented = `${changed}\n// "UNQUALIFIED_HOST_SHA256"`;
+  assert.notEqual(
+    literalString(literalObject(withoutComments(commented), "host"), "sha256"),
+    "UNQUALIFIED_HOST_SHA256",
+  );
 });
 
 test("the installed graph has exactly one trusted offline window policy", () => {
@@ -212,6 +343,16 @@ test("the installed graph has exactly one trusted offline window policy", () => 
   assert.equal(policy.app, undefined, "the fixture declares no ambient grants");
 });
 
+test("the selected generic renderer is nested and matches the real app source", () => {
+  const config = withoutComments(
+    readFileSync(join(root, "keld.config.ts"), "utf8"),
+  );
+  const selection = literalObject(config, "rendererSource");
+  assert.equal(literalString(selection, "root"), "web");
+  assert.equal(literalString(selection, "entry"), "pages/index.html");
+  assert.ok(existsSync(join(root, "web/pages/index.html")));
+});
+
 test("the real application entry parses without evaluating an unqualified provider", () => {
   const checked = spawnSync(
     process.env.KELD_B3_NODE_BIN || "node",
@@ -222,13 +363,16 @@ test("the real application entry parses without evaluating an unqualified provid
     },
   );
   assert.equal(checked.status, 0, checked.stderr || checked.error?.message);
-  assert.match(
+  const main = withoutComments(
     readFileSync(join(root, "src/main.mjs"), "utf8"),
-    /await app\.whenReady\(\)/,
   );
-  const main = readFileSync(join(root, "src/main.mjs"), "utf8");
-  assert.match(main, /window\.loadURL\(pathToFileURL\(/);
+  assert.match(main, /^import \{ app, BrowserWindow \} from "electron";/m);
+  assert.match(main, /^await app\.whenReady\(\);$/m);
+  assert.match(main, /^const root = app\.getAppPath\(\);$/m);
+  assert.match(main, /^const window = new BrowserWindow\(\{/m);
+  assert.match(main, /await window\.loadURL\(pathToFileURL\(/);
   assert.match(main, /preload: join\(root, "src\/preload\.mjs"\)/);
+  assert.match(main, /join\(root, "web\/pages\/index\.html"\)/);
   assert.doesNotMatch(main, /loadFile\(/);
   assert.doesNotThrow(
     () => new Function(readFileSync(join(root, "src/preload.mjs"), "utf8")),

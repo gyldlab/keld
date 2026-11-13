@@ -12,4 +12,4 @@ const window = new BrowserWindow({
     preload: join(root, "src/preload.mjs"),
   },
 });
-await window.loadURL(pathToFileURL(join(root, "web/index.html")).href);
+await window.loadURL(pathToFileURL(join(root, "web/pages/index.html")).href);

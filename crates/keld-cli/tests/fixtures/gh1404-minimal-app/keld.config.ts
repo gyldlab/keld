@@ -6,6 +6,6 @@ export default {
   initialWindow: "none",
   rendererSource: {
     root: "web",
-    entry: "index.html",
+    entry: "pages/index.html",
   },
 } as const;

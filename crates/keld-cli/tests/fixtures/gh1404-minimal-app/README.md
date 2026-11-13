@@ -15,7 +15,8 @@ shipping build parser must reject these inputs *before* packaging or starting
 application code. No SHA-256 obtained by hashing this candidate grants
 independent source or provider approval.
 
-The immutable source candidates for review are `package.json`,
+The nested selected renderer is `web/pages/index.html`, not a root-level
+page. The immutable source candidates for review are `package.json`,
 `package-lock.json`, `keld.config.ts`, `keld.permissions.jsonc`,
 `src/main.mjs`, `src/preload.mjs` and `web/index.html`. The npm lock records
 the selected first-party **names and versions** only; no producer archive,
@@ -24,6 +25,10 @@ qualified provider graph until the GH-502/API/KIPC owners deliver their
 independently reviewed artifacts and regenerate/verify a real install lock.
 
 Run `node --test verify.test.mjs` for exact-file and negative-control checks.
+The dedicated Rust integration test `gh1404_minimal_fixture` runs this
+source-only Node verifier as part of Cargo's normal test discovery on CI.
+Its optional Pack/CLI native checks are skipped in that source-only invocation
+and require the independently supplied binaries described below.
 An actual Keld packaging-preflight refusal can be checked separately with
 `KELD_B3_CLI=/absolute/path/to/keld node --test verify.test.mjs`, using a
 binary built from the GH-1404 implementation revision. The verifier copies
