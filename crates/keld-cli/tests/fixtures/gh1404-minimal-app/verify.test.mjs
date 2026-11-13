@@ -20,6 +20,39 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(fileURLToPath(import.meta.url));
+// Pack opens capture inputs without following links. Refuse physical root
+// substitutions before any source reads, even if the linked bytes hash equal.
+for (const relative of ["src", "web"]) {
+  const metadata = lstatSync(join(root, relative));
+  assert.equal(
+    metadata.isSymbolicLink(),
+    false,
+    "unreviewed source symlink: " + relative,
+  );
+  assert.equal(
+    metadata.isDirectory(),
+    true,
+    "non-directory captured source root: " + relative,
+  );
+}
+for (const relative of ["package.json", "package-lock.json"]) {
+  const metadata = lstatSync(join(root, relative));
+  assert.equal(
+    metadata.isSymbolicLink(),
+    false,
+    "unreviewed captured root symlink: " + relative,
+  );
+  assert.equal(
+    metadata.isFile(),
+    true,
+    "non-regular captured root: " + relative,
+  );
+}
+assert.equal(
+  readdirSync(root).includes("node_modules"),
+  false,
+  "unreviewed provider-root entry: node_modules must be physically absent",
+);
 const packageJson = JSON.parse(
   readFileSync(join(root, "package.json"), "utf8"),
 );
@@ -103,6 +136,14 @@ test(
         : [
             ["linked source root", "src", () => "linked", "dir"],
             ["linked source member", "src/preload.mjs", () => "linked", "file"],
+            ["linked package root", "package.json", () => "linked", "file"],
+            ["linked lock root", "package-lock.json", () => "linked", "file"],
+            [
+              "dangling provider root",
+              "node_modules",
+              () => "dangling",
+              "missing",
+            ],
           ]),
       [
         "added executable",
@@ -211,7 +252,9 @@ test(
           name + ": intact copied source must pass",
         );
         mkdirSync(dirname(target), { recursive: true });
-        if (linkType) {
+        if (linkType === "missing") {
+          symlinkSync(join(scratch, "absent-provider-tree"), target, "dir");
+        } else if (linkType) {
           renameSync(target, target + ".real");
           symlinkSync(target + ".real", target, linkType);
         } else {
@@ -231,6 +274,10 @@ test(
         const identityError = {
           src: /unreviewed source symlink/,
           "src/preload.mjs": /unreviewed source symlink/,
+          "package.json": /unreviewed captured root symlink: package.json/,
+          "package-lock.json":
+            /unreviewed captured root symlink: package-lock.json/,
+          node_modules: /unreviewed provider-root entry: node_modules/,
           "src/unreviewed-module.mjs": /Pack source member inventory differs/,
           "web/pages/unreviewed.html": /Pack source member inventory differs/,
           "src/nested/extra.mjs": /Pack source member inventory differs/,
