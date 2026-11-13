@@ -104,7 +104,9 @@ specifically to escape a forced override. If #481/#558 expose only the effective
 
 Keep one role-local table keyed by an opaque integer. Registration records a callback and a supported/inert selector. An identical callback subscribed twice gets two
 entries. Subscribe/unsubscribe issue zero host calls. Use the existing facade lifecycle to retire registrations on disconnect and prevent ID collision within the
-same live generation. Validate before allocation. Bound active entries with the facade's approved retention policy; exact budget and exhaustion diagnostic belong in
+same live generation. Dispatch snapshots retain registration identity, not only its reusable numeric ID.
+Before invocation, require the table entry to be that exact registration. A replacement sharing an old numeric ID is ineligible.
+Validate before allocation. Bound active entries with the facade's approved retention policy; exact budget and exhaustion diagnostic belong in
 approval.
 
 An authenticated Host seed establishes the baseline. A subsequent genuine OS change takes a snapshot of eligible IDs in registration order. Recheck membership before
@@ -150,9 +152,9 @@ Attach one projection to the approved #481/#558 apply path. Run forced-theme and
 |---|---|
 | 1, 2 | Count host observer creation and app-link messages before and after two subscriptions. Count callbacks at seed time. Registering a second native observer or firing on seed must fail. |
 | 3, 4 | Drive OS changes and app overrides separately while the other stays fixed. A test listening to effective dark mode alone must miss the forced-light case or spuriously fire on an override. |
-| 5 | Register A and B. A removes B while handling a change. Register C during dispatch. Check exact callback identities on this and the subsequent change. Deliver an old queued callback after role replacement. |
+| 5 | A removes B and registers C during dispatch. Force C to reuse B's numeric ID; C waits for the next transition. A numeric-membership-only mutant wrongly invokes C and must fail. Deliver an old queued callback after role replacement. |
 | 6 | Register a distinct name and null. Inject a verified OS transition and an unrelated native notification. Assert the supported control fires and census shows zero arbitrary platform observers. |
-| 7 | Run the original getSystemColors helper under the typed failure. Assert both the caught diagnostic and the exact fallback. A KELD getter hardcoded to Zettlr green would produce the same color but fail the diagnostic assertion. |
+| 7 | Run original getSystemColors with a transparent spy around the real getter. Record and rethrow its unchanged error; assert the typed diagnostic and exact helper fallback. Do not synthesize failure in the spy. A hardcoded-color mutant must fail the diagnostic assertion. |
 
 Record macOS, app/profile, Electron executable, source revisions, registration counts, OS/effective values and callback sequence. No desktop observation has been run for this proposal.
 
