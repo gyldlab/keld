@@ -4,7 +4,13 @@ export default {
   signing: "adhoc-local",
   bundleVersion: "1",
   minimumSystemVersion: "14.0",
-  resources: ["src", "web"],
+  resources: [
+    "src",
+    "web",
+    "package.json",
+    "package-lock.json",
+    "node_modules",
+  ],
   host: {
     path: "/UNQUALIFIED_GH1404_HOST",
     sha256: "UNQUALIFIED_HOST_SHA256",

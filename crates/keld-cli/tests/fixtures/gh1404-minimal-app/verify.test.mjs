@@ -5,6 +5,7 @@ import {
   cpSync,
   existsSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -25,6 +26,24 @@ function sha256(relative) {
   return createHash("sha256")
     .update(readFileSync(join(root, relative)))
     .digest("hex");
+}
+
+function declaredCaptureRoots() {
+  // The production CLI accepts a closed literal resources array. Parse its
+  // authored JSON string literals without importing or evaluating TypeScript.
+  const raw = build.match(/^\s*resources:\s*(\[[^\]]*\]),?$/m)?.[1];
+  assert.ok(raw, "closed literal Pack resources array is missing");
+  const roots = JSON.parse(raw.replace(/,\s*]$/, "]"));
+  assert.ok(Array.isArray(roots));
+  assert.ok(
+    roots.every((value) => typeof value === "string" && value.length > 0),
+  );
+  assert.equal(new Set(roots).size, roots.length, "no repeated resource roots");
+  return roots;
+}
+
+function coversResource(roots, path) {
+  return roots.some((root) => path === root || path.startsWith(`${root}/`));
 }
 
 function expectedRootDependencies(metadata, locked) {
@@ -87,6 +106,88 @@ test("package, lock and preload content bind to exact candidate SHA-256 bytes", 
   assert.equal(existsSync(join(root, "node_modules")), false);
 });
 
+test("Pack's declared capture roots retain root graph inputs and future provider install", () => {
+  const roots = declaredCaptureRoots();
+  // Pack Capture::plan_mode visits only input.resources plus entry/renderer,
+  // then materializes that exact tree before Core's graph callback. Neither
+  // entry nor renderer rescues these root-level package/provider inputs.
+  for (const path of [
+    "package.json",
+    "package-lock.json",
+    "node_modules/electron/package.json",
+    "node_modules/@keld/api/package.json",
+    "node_modules/@keld/kipc/package.json",
+  ]) {
+    assert.ok(coversResource(roots, path), `Pack would omit ${path}`);
+  }
+  assert.equal(existsSync(join(root, "node_modules")), false);
+  assert.ok(
+    !coversResource(
+      roots.filter((part) => part !== "package-lock.json"),
+      "package-lock.json",
+    ),
+    "missing-lock negative control must not be rescued by another root",
+  );
+});
+
+test(
+  "real Pack graph transaction copies root inputs before intentional pre-sign refusal",
+  {
+    skip:
+      (!process.env.KELD_B3_PACK_RLIB || process.platform !== "darwin") &&
+      "set KELD_B3_PACK_RLIB to the verified GH1404 keld-pack macOS .rlib",
+  },
+  () => {
+    const scratch = mkdtempSync(join(tmpdir(), "keld-gh1404-pack-capture-"));
+    try {
+      const copied = join(scratch, "candidate");
+      cpSync(root, copied, { recursive: true });
+      // No fake provider: an EMPTY root models the future installation path
+      // and tests Pack's declared directory topology before graph admission.
+      mkdirSync(join(copied, "node_modules"));
+      const library = resolve(process.env.KELD_B3_PACK_RLIB);
+      assert.ok(existsSync(library), `Pack library unavailable: ${library}`);
+      const probe = join(scratch, "capture-probe");
+      const compiled = spawnSync(
+        "rustc",
+        [
+          "--edition=2024",
+          "--crate-name=gh1404_b3_capture_probe",
+          join(root, "capture-contract-probe.rs"),
+          "--extern",
+          `keld_pack=${library}`,
+          "-L",
+          `dependency=${dirname(library)}`,
+          "-o",
+          probe,
+        ],
+        { encoding: "utf8", timeout: 60_000 },
+      );
+      assert.equal(
+        compiled.status,
+        0,
+        compiled.stderr || compiled.error?.message,
+      );
+      const captured = spawnSync(probe, [copied, ...declaredCaptureRoots()], {
+        encoding: "utf8",
+        timeout: 30_000,
+      });
+      assert.equal(
+        captured.status,
+        0,
+        `real Pack capture rejected: ${captured.stderr || captured.error?.message}`,
+      );
+      assert.match(
+        captured.stdout,
+        /GH1404_B3_PACK_CAPTURE_PASS_REAL_TRANSACTION/,
+      );
+      assert.equal(existsSync(join(copied, "dist")), false);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
 test("every pending executable/provider pin is unambiguously invalid", () => {
   for (const name of [
     "UNQUALIFIED_HOST_SHA256",
@@ -113,7 +214,7 @@ test("the installed graph has exactly one trusted offline window policy", () => 
 
 test("the real application entry parses without evaluating an unqualified provider", () => {
   const checked = spawnSync(
-    process.execPath,
+    process.env.KELD_B3_NODE_BIN || "node",
     ["--check", join(root, "src/main.mjs")],
     {
       encoding: "utf8",
