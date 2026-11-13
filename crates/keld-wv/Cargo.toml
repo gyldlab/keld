@@ -70,7 +70,8 @@ getrandom = { workspace = true }
 wry = { version = "0.56.1", features = ["devtools"] }
 
 [target.'cfg(target_os="windows")'.dependencies]
-tao = "0.35.3"
+# GH1188: restrict the patched Tao source to Windows; other targets use crates.io.
+tao_windows = { package = "tao", version = "=0.35.3", path = "../../vendor/tao-0.35.3-keld" }
 getrandom = { workspace = true }
 windows-permissions = { workspace = true }
 # --- Dependency review (KEL-65 / AGENTS.md gate) ---

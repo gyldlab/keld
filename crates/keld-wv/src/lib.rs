@@ -12,6 +12,9 @@
 #[cfg(all(feature = "profile-test-hooks", not(debug_assertions)))]
 compile_error!("KEL-135 profile test hooks are available only in debug builds");
 
+#[cfg(target_os = "windows")]
+extern crate tao_windows as tao;
+
 mod engine;
 mod error;
 mod hello;
