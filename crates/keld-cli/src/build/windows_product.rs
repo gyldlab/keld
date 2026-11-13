@@ -198,7 +198,16 @@ pub(super) fn run(session_path: &Path) -> Result<(), BuildError> {
 /// Ordinary Windows developer build: select only an existing signer from the
 /// project's closed public config and create a fresh, unpredictable output leaf.
 /// The existing authenticated source, image and archive owners are reused.
-pub(super) fn run_developer() -> Result<(), BuildError> {
+pub(super) fn run_developer(install: Option<(&Path, &str, bool)>) -> Result<(), BuildError> {
+    // Fail a malformed install request before compiler/source or filesystem work.
+    if let Some((input, published_at, _)) = install {
+        local_archive_command::validate_stamp(published_at)?;
+        if !absolute_local_disk_locator(input) {
+            return Err(refuse(
+                "developer initial-install inputs must be absolute local-disk paths without traversal",
+            ));
+        }
+    }
     let root = std::env::current_dir().map_err(refuse)?;
     let _project = windows_inputs::pin_input_root(&root)?;
     let mut file = local_source::pin_file(&root.join("keld.build.ts"), MAX_INPUT)?;
@@ -246,9 +255,22 @@ pub(super) fn run_developer() -> Result<(), BuildError> {
         tsc_sha256: recipe.tsc.sha256,
     };
     println!(
-        "Building Windows DEVELOPER LOCAL application using the explicitly selected existing certificate; no public release, key creation or installation."
+        "Building Windows DEVELOPER LOCAL application using the explicitly selected existing certificate; no public release or key creation."
     );
-    local_archive_command::run_developer(images, compiler, &recipe.modules)
+    if let Some((inputs, published_at, create_scaffold)) = install {
+        // The external signer must respond to the exact one-use emitted manifest.
+        // Only the retained, authenticated signed Host may commit the baseline.
+        local_archive_command::run_developer_initial_install(
+            images,
+            compiler,
+            &recipe.modules,
+            published_at,
+            inputs,
+            create_scaffold,
+        )
+    } else {
+        local_archive_command::run_developer(images, compiler, &recipe.modules)
+    }
 }
 
 #[cfg(test)]
@@ -307,6 +329,27 @@ mod tests {
         assert!(resolve(Path::new("D:/project"), Path::new(r"\\server\share\out")).is_err());
         assert!(resolve(Path::new("D:/project"), Path::new("E:/out/../other")).is_err());
     }
+    #[test]
+    fn developer_install_refuses_invalid_stamp_or_external_locator_before_project_io() {
+        let bad_stamp = run_developer(Some((
+            Path::new("D:/fresh/inputs.json"),
+            "not-a-utc-timestamp",
+            true,
+        )))
+        .expect_err("invalid publishedAt must refuse before project input");
+        assert!(bad_stamp.to_string().contains("UTC"), "{bad_stamp}");
+
+        for path in [
+            r"\\server\share\inputs.json",
+            "D:/outside/../inputs.json",
+            "D:relative.json",
+        ] {
+            let error = run_developer(Some((Path::new(path), "2026-11-13T15:00:00Z", true)))
+                .expect_err("untrusted install locator must refuse before project input");
+            assert!(error.to_string().contains("local-disk"), "{error}");
+        }
+    }
+
     #[test]
     fn stale_host_commit_cannot_replace_selected_integrated_source() {
         require_source_commit(&"1".repeat(40), &"1".repeat(40)).unwrap();

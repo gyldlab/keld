@@ -173,6 +173,40 @@ pub(super) fn run_developer(
         BuildAudience::Developer,
     )
 }
+/// Explicit developer-local initial install keeps the same produced archive and
+/// authenticated Host pinned while the existing one-use manifest signing
+/// session and verified `PerUserDirect` installer run. No key is created here.
+pub(super) fn run_developer_initial_install(
+    images: local_images::ImageRequest,
+    compiler: CompilerRequest,
+    modules: &[String],
+    published_at: &str,
+    inputs: &Path,
+    create_scaffold: bool,
+) -> Result<(), BuildError> {
+    validate_stamp(published_at)?;
+    if !inputs.is_absolute() {
+        return Err(BuildError::invocation(
+            "developer initial install requires absolute observed inputs",
+        ));
+    }
+    execute(
+        images,
+        compiler,
+        modules,
+        Some(published_at),
+        Some((
+            inputs,
+            if create_scaffold {
+                InitialInstallMode::CreateNew
+            } else {
+                InitialInstallMode::Observed
+            },
+        )),
+        true,
+        BuildAudience::Developer,
+    )
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BuildAudience {
     Developer,
@@ -305,7 +339,7 @@ fn execute(
     Ok(())
 }
 
-fn validate_stamp(stamp: &str) -> Result<(), BuildError> {
+pub(super) fn validate_stamp(stamp: &str) -> Result<(), BuildError> {
     let b = stamp.as_bytes();
     let valid_shape = b.len() == 20
         && [4, 7, 10, 13, 16, 19]
