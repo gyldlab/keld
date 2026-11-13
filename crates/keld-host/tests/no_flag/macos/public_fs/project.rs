@@ -442,6 +442,34 @@ impl PublicFsProject {
         self.prepare_renderer_page(exercise, port, recovery);
     }
 
+    /// GH-1081 round-1 research only: stage a disposable app body and page
+    /// through the same public-index bundle, stock producer and staged-input
+    /// checks. Returns the stage and the independently selected Bun image.
+    pub(super) fn stage_experiment(
+        &self,
+        fixture_name: &str,
+        app_body: &str,
+        page: &str,
+    ) -> (keld_cli::boot::DevBootStage, PathBuf) {
+        let api = serde_json::to_string(
+            &self
+                .repo
+                .join("packages/@keld/api/src/index.ts")
+                .to_string_lossy(),
+        )
+        .expect("public index path JSON");
+        bundle_public_api_entry(
+            &self.project,
+            &self.repo,
+            fixture_name,
+            &format!("import {{ app, channels, echoChannel }} from {api};\n{app_body}"),
+        );
+        fs::write(self.project.join("index.html"), page).expect("experiment renderer");
+        let (stage, _policy_digest, _host_digest) = self.stage_and_verify_inputs();
+        let bun_image = expected_source_bun_image(stage.root());
+        (stage, bun_image)
+    }
+
     fn prepare_renderer_page(
         &self,
         exercise: Exercise,
