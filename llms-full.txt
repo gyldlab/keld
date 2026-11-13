@@ -6282,6 +6282,24 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: `app.quit()` is not yet a cancelable Electron quit sequence with live or not-yet-censused native windows; a direct Host Quit would bypass unsaved-document close veto
 - fix: Close each native window through its cancelable `close` policy before requesting Quit. Full `before-quit`/`will-quit` and OS-initiated quit integration belongs to GH451; do not claim application compatibility until independently reviewed.
 
+## KELD-COMPAT-100
+
+- crate: @keld/kipc
+- message: Unsupported value encountered by the bounded Electron endpoint-value codec
+- fix: Replace the unsupported value with a supported, snapshot-safe endpoint value before sending; do not substitute an unbounded or ambient-authority object.
+
+## KELD-COMPAT-101
+
+- crate: @keld/kipc
+- message: Malformed endpoint value or renderer argument encoding was refused
+- fix: Correct the endpoint value encoding and declared value domain before sending it through the renderer channel.
+
+## KELD-COMPAT-102
+
+- crate: @keld/kipc
+- message: Endpoint value exceeded the codec's bounded byte, depth, or node budget
+- fix: Shrink or simplify the endpoint value to the approved codec limits before sending it.
+
 ## KELD-CORE-030
 
 - crate: keld-core
