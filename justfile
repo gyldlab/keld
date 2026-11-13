@@ -82,6 +82,9 @@ typescript:
     cd packages/@keld/electron && bun install --frozen-lockfile
     cd packages/@keld/electron && bun run typecheck
     cd packages/@keld/electron && bun test
+    cd packages/@keld/electron-updater && bun install --frozen-lockfile
+    cd packages/@keld/electron-updater && bun run typecheck
+    cd packages/@keld/electron-updater && bun test
 
 # Check playbook routing and require crate AGENTS.md wherever Rust opts into unsafe.
 agents-md:
