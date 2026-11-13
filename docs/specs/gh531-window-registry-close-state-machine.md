@@ -2,6 +2,20 @@
 Status: approved
 Linear: GH-531 (#517) · Owner: @0monish · Updated: 2026-10-07
 
+**Scoped amendment approved — 2026-10-23:** the separate
+[owner-delegated approval](https://github.com/gyldlab/keld/pull/657#issuecomment-6371083658)
+binds reviewed technical head `a04e1ed889733a64cc33c1b64535e02b4afb0902` and this
+specification's blob `7b0fdeaf98c847387ea47ffdef9158f64868685b`, together with gh446.
+The status and date above preserve the original approved baseline. The agent made
+the new readiness/replay and recovery decisions under the repository owner's
+explicit delegation, after independent lifecycle/API and authority/custody/wire-order
+review. This commit carries approval metadata only. Neither personal human review
+of these bytes nor runtime acceptance is asserted. Carrier:
+[GH #446](https://github.com/gyldlab/keld/issues/446) /
+[PR #657](https://github.com/gyldlab/keld/pull/657); owning
+[claim](https://github.com/gyldlab/keld/issues/446#issuecomment-6370495240).
+The scoped recovery decision is recorded separately in §5.
+
 ## 1. Goal & non-goals
 
 draw.io's window path cannot run on Keld today. The host creates one primary window,
@@ -106,8 +120,15 @@ fail. "Owner" is the implementing ticket.
    `new BrowserWindow(opts)` returns, then `win.id` equals the `WindowId` in the host's
    `Created` event for that window, and the `Create` request schema has no identity
    field. *NC:* minting the id in the facade, so the id was never delivered by the host,
-   fails the id-equality assertion. **Snapshot source:** `Created.state` is always the
-   `WindowSnapshot` carried by keld-wv's `WindowBuilt`, read from the built native
+   fails the id-equality assertion. **Independent identity control (2026-10-23
+   approved amendment):** the fixture advances and retires host registry entries
+   before starting the fresh facade, so its first host-supplied reference
+   (`HostWindowRef` in the facade, `WindowRef` on the wire) has WindowId 41 while the
+   facade's first local allocation would be 1. Assert the host pair in the mirror
+   and subsequent addressed calls as well as public `win.id`. Substituting the local
+   counter for either host-supplied identity component must fail; coincident counters
+   are not evidence of host ownership. **Snapshot source:** `Created.state` is always
+   the `WindowSnapshot` carried by keld-wv's `WindowBuilt`, read from the built native
    window (with any buffered facts overlaid, §4.e), including when `Create` has `x` and
    `y` as `None`. Given a fake UI port whose `WindowBuilt` snapshot is
    `(x 37, y 91, 800×600, focused, not maximized, not full-screen)` for a `Create` with
@@ -181,11 +202,14 @@ fail. "Owner" is the implementing ticket.
 
 ### (c) Window #1
 
-13. **No host window before the app asks.** Given a facade boot as F01-T2 declares it,
+13. **No host window before the app asks.** Given a fresh facade boot in its initial
+    RoleInstance generation, with no surviving windows, as F01-T2 declares it,
     when Ready is observed, then the host's native window count is 0. After the first
     `new BrowserWindow()` it is 1, and that window's WindowId is 1. *NC:* keeping
     `CreateInitialWindow` for facade boots makes the count 1 at Ready and 2 after the
-    constructor. Owner: F01-T2 (count at Ready); F02-T2 (after construction).
+    constructor. This zero/count-one assertion does not apply to a recovered
+    RoleInstance generation with surviving windows (criterion 46). Owner: F01-T2
+    (count at Ready); F02-T2 (after construction).
 14. **Registry is live at Ready.** Given a facade boot, when `Create` is sent in the
     same task that `whenReady()` resolves in, then it succeeds. *NC:* starting the
     registry after Ready is written makes this first `Create` fail with the registry's
@@ -214,6 +238,13 @@ fail. "Owner" is the implementing ticket.
     `getPosition()`, `isMaximized()` and `isFullScreen()` reads leave the app-link frame
     counter unchanged in both directions. *NC:* implementing any getter as a host round
     trip fails. Owner: F02-T2.
+    Static `BrowserWindow.getAllWindows()` also remains usable before public Ready
+    and returns the currently applied mirror entries without a host call or a wait
+    for Subscribe. Complete replay is promised only by criterion 20's readiness
+    barrier. This is required by the pinned draw.io context-menu initialization
+    (gh446 §4.12). *NC:* applying the constructor's pre-Ready refusal to static
+    enumeration, or waiting synchronously for subscription from that getter, fails
+    the pre-Ready entry fixture. No pre-Ready Host `Create` is authorized by this rule.
 18. **Per-window causal order.** Given the host writes `Bounds(r)` and then
     `CloseRequested` for one window, inside the `'close'` listener `getSize()` and
     `getPosition()` equal `r`. *NC:* dispatching `'close'` before the preceding `Bounds`
@@ -757,17 +788,22 @@ pattern. The channel constant comes from the X05-T4 generated file. Rejected opt
 
 This spec consumes F01-T2's rule (#446) and adds no adoption shim.
 
-- Facade boot (the declaration F01-T2 chooses): the host writes Ready after
+- Fresh facade boot in the initial RoleInstance generation (the declaration F01-T2
+  chooses): the host writes Ready after
   authenticated `HELLO` and creates no window. The registry is constructed before Ready
   is written (criterion 14). Window #1 is the first `Create`, so its WindowId is 1.
+  Public facade readiness additionally waits for criterion 20's accepted subscription
+  and applied complete replay; host Ready alone is not that barrier.
 - Renderer-declared boot: unchanged. The host-created initial window is not entered in
   the registry, no window-channel frame is written, and its `CloseRequested` keeps
   today's teardown and `LastWindowClosed` behaviour (criterion 15).
 - The close path is selected per boot kind, not per window: in one session every
-  window takes one path. Temporary adapter: the legacy teardown arm. Its owner is
-  F01-T2. Removal condition: F01-T2 decision (b) ("whether renderer-declared boots keep
-  `CreateInitialWindow` before Ready"). If those boots move onto the registry, the
-  legacy arm is deleted in that change.
+  window takes one path. The legacy teardown arm is the schema-1 close path, not a
+  temporary adapter. F01-T2 decision (b) keeps `CreateInitialWindow` before Ready for
+  renderer-declared boots (gh446 D2), so the arm stays. Owner: KEL-96, whose §4.5
+  defines schema-1 close and `LastWindowClosed`. Removal condition: an approved spec
+  that registers the schema-1 initial window in this registry or retires schema 1; the
+  arm is deleted in that change. (amended by #657)
 - Ready meaning per RoleInstance generation is F01-T2's. Successor roles (D6, §4.i):
   a retired generation's windows stay alive, and ownership transfers explicitly to the
   recovered successor of the same declared role, which receives a state replay
@@ -1512,8 +1548,8 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
   variants. The primary router writes window frames.
 - Generated contracts: the X05-T4 constant for the channel id.
 - Persisted state: none.
-- Temporary adapter: the legacy teardown arm for renderer-declared boots (owner
-  F01-T2; removal condition in §4.c).
+- Temporary adapter: none. The legacy teardown arm is the permanent schema-1 close
+  path (owner KEL-96; removal condition in §4.c; amended by #657).
 - Permanent compat facade: `@keld/electron` `BrowserWindow`.
 
 ## 5. Boundaries
@@ -1671,3 +1707,6 @@ there (gh527 §10 Q1).
 
 None. The questions raised in the first draft were decided under the orchestrator's
 delegation, and D6 by the owner; all are recorded, with falsifiers, in §4.i.
+This records the approved baseline. The separately identified 2026-10-23 amendment
+has independent technical review and exact-content approval under the explicit
+owner delegation recorded above; its implementation acceptance remains outstanding.
