@@ -4,6 +4,10 @@ This is a committed second application, independent of draw.io. It has a real
 Electron-compatible entry, a local renderer, an explicit Legacy permission
 manifest, and a matched npm lockfile v3 with the three required first-party
 package identities. It does not contain, install or approve provider archives.
+The only current closed offline CSP catalog accepts
+`original-editor-offline`; the generic HTML requires no inline resources,
+and exactly one named window selects that restrictive response policy.
+This selection remains subject to independent Guard/native acceptance.
 
 **Qualification is pending.** Every Host, Bun and provider input in
 `keld.build.ts` is a deliberately non-hex `UNQUALIFIED_*` sentinel. The

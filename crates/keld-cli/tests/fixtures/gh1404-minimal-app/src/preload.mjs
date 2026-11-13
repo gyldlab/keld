@@ -1,2 +1,2 @@
-// The generic fixture has no renderer preload privileges.
-export {};
+// Classic script, with no renderer privileges or side effects.
+void 0;

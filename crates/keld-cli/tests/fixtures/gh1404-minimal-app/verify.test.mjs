@@ -15,7 +15,9 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(fileURLToPath(import.meta.url));
-const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+const packageJson = JSON.parse(
+  readFileSync(join(root, "package.json"), "utf8"),
+);
 const lock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
 const build = readFileSync(join(root, "keld.build.ts"), "utf8");
 
@@ -69,13 +71,15 @@ test("package, lock and preload content bind to exact candidate SHA-256 bytes", 
     ["packageSha256", "package.json"],
     ["lockSha256", "package-lock.json"],
   ]) {
-    assert.ok(
-      build.includes(`${field}: "${sha256(relative)}"`),
+    assert.match(
+      build,
+      new RegExp(`${field}:\\s*"${sha256(relative)}"`),
       `${field} must match the committed candidate file`,
     );
   }
-  assert.ok(
-    build.includes(`sha256: "${sha256("src/preload.mjs")}"`),
+  assert.match(
+    build,
+    new RegExp(`sha256:\\s*"${sha256("src/preload.mjs")}"`),
     "the separately named preload source must be captured",
   );
   assert.ok(existsSync(join(root, "src/main.mjs")));
@@ -97,18 +101,46 @@ test("every pending executable/provider pin is unambiguously invalid", () => {
   assert.equal(existsSync(join(root, "dist")), false);
 });
 
+test("the installed graph has exactly one trusted offline window policy", () => {
+  const policy = JSON.parse(
+    readFileSync(join(root, "keld.permissions.jsonc"), "utf8"),
+  );
+  assert.equal(policy.profile, "legacy");
+  assert.deepEqual(Object.keys(policy.windows ?? {}), ["main"]);
+  assert.equal(policy.windows.main.web.csp, "original-editor-offline");
+  assert.equal(policy.app, undefined, "the fixture declares no ambient grants");
+});
+
 test("the real application entry parses without evaluating an unqualified provider", () => {
-  const checked = spawnSync(process.execPath, ["--check", join(root, "src/main.mjs")], {
-    encoding: "utf8",
-    timeout: 5_000,
-  });
+  const checked = spawnSync(
+    process.execPath,
+    ["--check", join(root, "src/main.mjs")],
+    {
+      encoding: "utf8",
+      timeout: 5_000,
+    },
+  );
   assert.equal(checked.status, 0, checked.stderr || checked.error?.message);
-  assert.match(readFileSync(join(root, "src/main.mjs"), "utf8"), /await app\.whenReady\(\)/);
+  assert.match(
+    readFileSync(join(root, "src/main.mjs"), "utf8"),
+    /await app\.whenReady\(\)/,
+  );
+  const main = readFileSync(join(root, "src/main.mjs"), "utf8");
+  assert.match(main, /window\.loadURL\(pathToFileURL\(/);
+  assert.match(main, /preload: join\(root, "src\/preload\.mjs"\)/);
+  assert.doesNotMatch(main, /loadFile\(/);
+  assert.doesNotThrow(
+    () => new Function(readFileSync(join(root, "src/preload.mjs"), "utf8")),
+  );
 });
 
 test(
   "GH-1404 shipping CLI refuses missing provider approval before publishing",
-  { skip: !process.env.KELD_B3_CLI && "set KELD_B3_CLI to a GH-1404 keld executable" },
+  {
+    skip:
+      !process.env.KELD_B3_CLI &&
+      "set KELD_B3_CLI to a GH-1404 keld executable",
+  },
   () => {
     const workspace = mkdtempSync(join(tmpdir(), "keld-gh1404-b3-"));
     try {

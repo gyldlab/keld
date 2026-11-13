@@ -16,8 +16,10 @@ export default {
     version: "unqualified",
   },
   graphSource: {
-    packageSha256: "bb9e988bc67c7ca000f2ada2d5d9043903b31db54d46f2ff6487a575ae712a55",
-    lockSha256: "dc3a2fa177d9f416bcfc45e663d94d20121282208dbd2b681a797f7314b81652",
+    packageSha256:
+      "bb9e988bc67c7ca000f2ada2d5d9043903b31db54d46f2ff6487a575ae712a55",
+    lockSha256:
+      "dc3a2fa177d9f416bcfc45e663d94d20121282208dbd2b681a797f7314b81652",
     providerTrees: {
       electron: "UNQUALIFIED_PROVIDER_ELECTRON",
       api: "UNQUALIFIED_PROVIDER_API",
@@ -25,7 +27,8 @@ export default {
     },
     preload: {
       path: "src/preload.mjs",
-      sha256: "597854316c80b4da28f891d51d8d4ab18e0ff7d918d417d69b5a6e5f659b37b8",
+      sha256:
+        "5e60627cdf80159858999dbbcd9ff3ccc1589ce596df5e0d00dacea4ed17c457",
     },
   },
   outDir: "dist",
