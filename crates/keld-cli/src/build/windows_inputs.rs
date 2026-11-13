@@ -16,6 +16,15 @@ use crate::boot;
 
 const AUTHORING_LIMIT: u64 = 64 * 1024;
 
+/// Windows has no qualified explicit-profile primary launch yet. Preserve the
+/// original strict authoring/diagnostic lane; a developer-local demo uses only
+/// the already-supported undeclared/unverified Windows profile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ProfileAdmission {
+    ExplicitStrict,
+    UndeclaredDeveloper,
+}
+
 pub(super) struct CapturedInputs {
     _ancestors: Vec<File>,
     config: File,
@@ -66,7 +75,19 @@ impl CapturedInputs {
     }
 
     /// Retain literal authoring bytes and their Windows namespace witnesses.
-    pub(super) fn capture(mut self, root: &Path) -> Result<CapturedAuthoring, BuildError> {
+    pub(super) fn capture(self, root: &Path) -> Result<CapturedAuthoring, BuildError> {
+        self.capture_with_profile(root, ProfileAdmission::ExplicitStrict)
+    }
+
+    pub(super) fn capture_developer(self, root: &Path) -> Result<CapturedAuthoring, BuildError> {
+        self.capture_with_profile(root, ProfileAdmission::UndeclaredDeveloper)
+    }
+
+    fn capture_with_profile(
+        mut self,
+        root: &Path,
+        profile: ProfileAdmission,
+    ) -> Result<CapturedAuthoring, BuildError> {
         let mut source = Vec::new();
         (&mut self.config)
             .take(AUTHORING_LIMIT + 1)
@@ -94,11 +115,22 @@ impl CapturedInputs {
             .map_err(|error| BuildError::input("keld.permissions.jsonc", error))?;
         let manifest = keld_guard::parse_manifest(policy_text)
             .map_err(|error| BuildError::input("keld.permissions.jsonc", error))?;
-        if manifest.declared_profile() != Some(keld_guard::DeclaredProfile::Strict) {
-            return Err(BuildError::input(
-                "Windows declared profile",
-                "explicit /profile:strict is required; a declaration is not runtime qualification",
-            ));
+        match profile {
+            ProfileAdmission::ExplicitStrict
+                if manifest.declared_profile() != Some(keld_guard::DeclaredProfile::Strict) =>
+            {
+                return Err(BuildError::input(
+                    "Windows declared profile",
+                    "explicit /profile:strict is required; a declaration is not runtime qualification",
+                ));
+            }
+            ProfileAdmission::UndeclaredDeveloper if manifest.declared_profile().is_some() => {
+                return Err(BuildError::input(
+                    "Windows developer-local profile",
+                    "Windows primary launch does not qualify explicit Strict or Legacy; developer-local requires an undeclared profile and makes no containment claim",
+                ));
+            }
+            _ => {}
         }
         // The compiler is the sole owner of relative boot paths/schema and the
         // digest of these exact policy bytes. Drop no source pins until it ends.
@@ -328,6 +360,41 @@ mod tests {
             .capture(&fixture.0)
             .unwrap();
         assert!(captured.archive_members().is_err());
+    }
+
+    #[test]
+    fn developer_local_build_matches_supported_undeclared_windows_primary_profile() {
+        let fixture = Fixture::new();
+        assert!(
+            CapturedInputs::open(&fixture.0)
+                .unwrap()
+                .capture_developer(&fixture.0)
+                .is_err(),
+            "explicit Strict must not enter developer-local"
+        );
+        fs::write(fixture.0.join("keld.permissions.jsonc"), b"{}\n").unwrap();
+        let captured = CapturedInputs::open(&fixture.0)
+            .unwrap()
+            .capture_developer(&fixture.0)
+            .expect("undeclared Windows profile is supported for local demonstration");
+        let members = captured.archive_members().unwrap();
+        let Some(super::super::windows_archive::Content::Generated(boot)) = &members[0].content
+        else {
+            panic!("compiler produced boot descriptor");
+        };
+        let boot: serde_json::Value = serde_json::from_slice(boot).unwrap();
+        assert_eq!(
+            boot["schema"],
+            keld_core::app_session::boot_schema(false, None)
+        );
+        drop(captured);
+        for declared in [r#"{"profile":"strict"}"#, r#"{"profile":"legacy"}"#] {
+            fs::write(fixture.0.join("keld.permissions.jsonc"), declared).unwrap();
+            let error = CapturedInputs::open(&fixture.0)
+                .unwrap()
+                .capture_developer(&fixture.0);
+            assert!(error.is_err(), "explicit profile must refuse: {declared}");
+        }
     }
 
     #[test]

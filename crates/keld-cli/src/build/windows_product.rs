@@ -181,6 +181,7 @@ pub(super) fn run(session_path: &Path) -> Result<(), BuildError> {
         sign_tool_sha256: session.sign_tool.sha256,
         certificate_thumbprint: session.certificate_thumbprint,
         publisher_scope: session.publisher_scope,
+        profile_admission: windows_inputs::ProfileAdmission::ExplicitStrict,
     };
     let compiler = local_archive_command::CompilerRequest {
         typescript_root: resolve(&root, &recipe.typescript_root)?,
@@ -235,6 +236,7 @@ pub(super) fn run_developer() -> Result<(), BuildError> {
         sign_tool_sha256: local_source::observed_hex(&signer.sign_tool.sha256),
         certificate_thumbprint: signer.certificate_thumbprint,
         publisher_scope: signer.publisher_scope,
+        profile_admission: windows_inputs::ProfileAdmission::UndeclaredDeveloper,
     };
     let compiler = local_archive_command::CompilerRequest {
         typescript_root: resolve(&root, &recipe.typescript_root)?,
