@@ -3,7 +3,7 @@
 - Status: draft
 - Tracker: GH-1126
 - Owner: Monish Khandelwal (@0monish, approval pending)
-- Updated: 2026-11-05
+- Updated: 2026-11-13
 - Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
 
 ## 1. Goal & non-goals
@@ -139,6 +139,18 @@ All criteria below specify targets. E-2 records that native runs remain unperfor
   - **At-risk precondition:** The migrated app sends a valid evaluation and reaches the native submission call.
   - **Expected RED:** Its bounded caller-result oracle fails. A model callback or imported module cannot satisfy the missing result.
 
+### AC-9: Preserve requested user activation
+
+- **Given:** A qualified Linux page has no physical input or residual activation and a gesture-gated operation with a verified oracle.
+- **When:** Evaluate the same operation with omitted userGesture, explicit false, and explicit true in independent clean page instances.
+- **Then:** Omitted and false grant no synthetic activation. The qualified explicit-true control exercises the requested activation.
+- **Negative control:**
+  - **Single fault:** Route the default-false arm through the pinned forced-gesture native entry.
+  - **At-risk precondition:** The admitted evaluation reaches that entry with all unrelated permission and document checks satisfied.
+  - **Expected RED:** The independent activation/effect oracle detects synthetic activation in the omitted or false arm.
+
+A denied or unsupported arm is not a parity pass. If the explicit-true control fails, native feasibility remains unqualified.
+
 ## 4. Design
 
 ### D-1: Ownership and independent decision atoms
@@ -224,6 +236,17 @@ documents a Promise result reaching the callback. Retrieved 2026-11-05.
 Quote: "The result of the operation can be a Promise".
 Native execution and cancellation behavior still need E-2.
 
+FACT: The pinned [native parameters](https://github.com/WebKit/WebKit/blob/4fb33923db2f945803df49546f75867980365c08/Source/WebKit/UIProcess/API/glib/WebKitWebView.cpp#L4508-L4517)
+set ForceUserGesture::Yes for this async-function entry. Retrieved 2026-11-13; no native execution is claimed.
+The [Electron oracle](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/web-contents.md#L1421-L1435)
+defaults userGesture to false and identifies gesture-gated operations enabled by explicit true.
+Promise/value parity alone therefore cannot qualify this native primitive for default evaluation.
+
+GH-462 owns omitted/false versus explicit-true user activation as part of the shared envelope.
+B-8 blocks native primitive selection until a supported public mechanism preserves both outcomes and passes AC-9.
+Keep unqualified Linux evaluation denied. Never silently force activation, substitute a private WebKit method, or claim denial as parity.
+A JavaScript wrapper or successful result callback cannot establish native activation equivalence.
+
 Use the default page world for application code. Never use the trusted or app-preload world.
 GH-462 owns the execution envelope, source evaluation semantics and public Promise behavior.
 GH-544 owns value encoding, supported types and result limits. Host forwards opaque value bytes.
@@ -276,7 +299,7 @@ Upstream prerequisite evidence does not close this adapter's integrated acceptan
 - **Blocked by:** none
 - Obtain separate scoped test-only approval and a claim before building native probes.
 - Record actual load, redirect, failure, callback and cancellation behavior on the locked binding graph.
-- Exercise the native portions of AC-1, AC-2 and AC-7 without privileged Host/Bun routes.
+- Exercise the native portions of AC-1, AC-2, AC-7 and AC-9 without privileged Host/Bun routes.
 - Leave their integrated facade, application and Host effects unqualified until T-2 and T-4.
 - Freeze B-1 and B-4 decisions from evidence. A failed feasibility arm stays blocked.
 
@@ -290,15 +313,15 @@ Upstream prerequisite evidence does not close this adapter's integrated acceptan
 
 ### T-3: Integrate settled evaluation and bounded retirement
 
-- **Blocked by:** T-2, B-3, B-5
+- **Blocked by:** T-2, B-3, B-5, B-8
 - Integrate the shared envelope, codec and Linux result callback with its actual caller.
-- Run AC-4, AC-5 and AC-6, including retained-native-work negative controls.
+- Run AC-4, AC-5, AC-6 and AC-9, including retained-native-work negative controls.
 - Preserve the existing fire-and-forget API and run its regression tests.
 
 ### T-4: Qualify the actual Linux app path
 
 - **Blocked by:** T-3, B-6
-- Run AC-1 through AC-8 on the final integrated source.
+- Run AC-1 through AC-9 on the final integrated source.
 - Publish Linux-specific evidence through GH-1129 and the existing corpus owners.
 - Keep failed or unrun cells open. Do not infer Wayland support from hosted X11.
 - This task produces B-7's integrated acceptance evidence.
@@ -322,6 +345,7 @@ Upstream prerequisite evidence does not close this adapter's integrated acceptan
 | AC-6 | UI callback/resource owner | Actual retained payload census plus reservation ledger |
 | AC-7 | Existing construction witness | Registration order and partial-failure handle release |
 | AC-8 | GH-1129 product lane | Installed caller result and shipping-registration deletion |
+| AC-9 | GH-462/Linux activation qualification | Clean-page default/false denial of synthetic activation and explicit-true positive control |
 
 Use isolated subprocesses for native crash and teardown arms.
 Use temporary resource roots and observable rendezvous, not sleeps.
@@ -426,6 +450,16 @@ This approval gate does not require downstream B-7 evidence before the isolated 
 - **Owner:** Monish Khandelwal with Linux, facade, security and GH-1129 acceptance owners.
 - **Impact:** Blocks T-5, production enablement and every compatibility claim. It does not block isolated T-2 through T-4 qualification.
 - **Check:** T-4 proves every AC and single-fault control on the final implementation head, including healthy recovery and exact independent review.
+
+### B-8: User-activation contract and public native feasibility
+
+- **Status:** open
+- **Owner:** GH-462 and Linux engine/security owners, coordinated by Monish Khandelwal.
+- **Impact:** Blocks native evaluation primitive selection and T-3. Value/Promise success cannot qualify forced activation.
+- **Check:** Approve the shared activation contract and public mechanism after actual AC-9 native evidence, including the forced-gesture mutant.
+
+T-1 obtains separately approved native feasibility evidence. No supported qualifying mechanism means the Linux case stays denied.
+T-3/T-4 repeat AC-9 through the actual caller before B-7 can close. Existing permission and document gates still apply.
 
 ### U-1: Cancellation and WebProcess quiescence
 
