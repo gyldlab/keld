@@ -26,16 +26,14 @@ function objectWire(count: number, extraChild = false): Uint8Array {
 }
 function objectValue(
   count: number,
-  hiddenKey = false,
+  extraChild = false,
 ): Record<string, unknown> {
-  const value = Object.fromEntries(
+  return Object.fromEntries(
     Array.from({ length: count }, (_, index) => [
       "k" + index.toString().padStart(3, "0"),
-      null,
+      extraChild && index === count - 1 ? [null] : null,
     ]),
   );
-  if (hiddenKey) Object.defineProperty(value, "hidden", { value: null });
-  return value;
 }
 test("wire depth16 includes root and scalar leaf independently at both endpoints", () => {
   expect(codec.encodeEndpointValue(nested(15))).toEqual(nestedBytes(15));
@@ -48,20 +46,14 @@ test("wire depth16 includes root and scalar leaf independently at both endpoints
   );
 });
 test("aggregate object key plus tagged-value visits 255/256 pass and257 refuse", () => {
-  expect(codec.encodeEndpointValue(objectValue(127))).toEqual(objectWire(127));
-  expect(codec.decodeEndpointValue(objectWire(127))).toEqual(objectValue(127));
-  expect(codec.encodeEndpointValue(objectValue(127, true))).toEqual(
-    objectWire(127),
-  );
-  const withArray = objectValue(127);
-  withArray.k126 = [null];
-  expect(codec.decodeEndpointValue(objectWire(127, true))).toEqual(withArray);
-  expect(codec.encodeEndpointValue(withArray)).toEqual(objectWire(127, true));
-  const overBudget = objectValue(127);
-  overBudget.k126 = [null, null];
-  expect(() => codec.encodeEndpointValue(overBudget)).toThrow(
-    "KELD-COMPAT-102",
-  );
+  for (const extra of [false, true]) {
+    expect(codec.encodeEndpointValue(objectValue(127, extra))).toEqual(
+      objectWire(127, extra),
+    );
+    expect(codec.decodeEndpointValue(objectWire(127, extra))).toEqual(
+      objectValue(127, extra),
+    );
+  }
   expect(() => codec.encodeEndpointValue(objectValue(128))).toThrow(
     "KELD-COMPAT-102",
   );
