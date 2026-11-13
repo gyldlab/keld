@@ -182,7 +182,10 @@ fn undeclared_on_host(corpora: &[Corpus], rust: bool) -> Vec<(String, CellKey)> 
                     .targets
                     .iter()
                     .find(|target| target.path == cell.test_path)?;
-                let is_rust = matches!(target.runner, Runner::Libtest { .. });
+                let is_rust = matches!(
+                    target.runner,
+                    Runner::Libtest { .. } | Runner::ExactLibtest { .. }
+                );
                 (is_rust == rust && !cell.platforms.contains(&host_platform()))
                     .then(|| (corpus.id().to_owned(), cell.key.clone()))
             })
