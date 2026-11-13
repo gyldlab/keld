@@ -8,8 +8,29 @@ use std::time::{Duration, Instant};
 
 use crate::support::renderer::{
     expect_renderer_beacon, serve_renderer_beacon_loop_with_clock, serve_renderer_beacon_until,
-    spawn_renderer_beacon,
+    spawn_renderer_beacon, try_expect_renderer_beacon,
 };
+
+#[test]
+fn renderer_beacon_uses_the_callers_kill_switch() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind injected-deadline listener");
+    let beacon = spawn_renderer_beacon(listener);
+    let started = Instant::now();
+    // No request can arrive. An already-expired injected switch must report the
+    // worker's precise deadline failure, rather than wait out the product switch.
+    let result = try_expect_renderer_beacon(beacon, Duration::ZERO, "injected deadline");
+    assert_eq!(
+        result,
+        Err(
+            "injected deadline: renderer beacon deadline elapsed before the exact request; phase=intake_wait"
+                .to_owned()
+        )
+    );
+    assert!(
+        started.elapsed() < crate::PRODUCT_DEADLINE,
+        "the caller's expired kill switch was replaced by the product deadline"
+    );
+}
 
 #[test]
 fn renderer_beacon_rechecks_the_absolute_deadline_before_replying() {
