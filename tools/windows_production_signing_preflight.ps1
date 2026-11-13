@@ -89,7 +89,7 @@ if ($policy.schema -cne 'keld.windows.production-signing-policy/v1') { Refuse '0
 if ($policy.sourceCommit -cne $ExpectedSourceCommit) { Refuse '015' 'Policy source differs from selected build SHA' }
 # Refuse invisible Unicode format controls (including bidi overrides) and C0/C1
 # controls in the claimed publisher identity; keep ordinary Unicode names valid.
-if ($policy.publisherName.Length -lt 2 -or $policy.publisherName.Length -gt 120 -or $policy.publisherName -match '[\p{Cc}\p{Cf}<>]') {
+if ($policy.publisherName.Length -lt 2 -or $policy.publisherName.Length -gt 120 -or $policy.publisherName -match '[\p{Cc}\p{Cf}\p{Zl}\p{Zp}<>]') {
     Refuse '016' 'Publisher name not bounded printable text'
 }
 foreach ($key in @('publisherCertificateThumbprint','trustedRootThumbprint')) {

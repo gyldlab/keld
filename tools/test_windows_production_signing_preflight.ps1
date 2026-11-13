@@ -97,6 +97,12 @@ $bidi = Save-Case 'bidi-publisher-name' ($goodJson.Replace('Keld Company', ('Kel
 Run-Case 'bidi-publisher-name-rejected' $bidi $true 1 'PROD-PRE-016'
 $zeroWidth = Save-Case 'zero-width-publisher-name' ($goodJson.Replace('Keld Company', ('Keld'+[char]0x200b+' Company')))
 Run-Case 'zero-width-publisher-name-rejected' $zeroWidth $true 1 'PROD-PRE-016'
+# Raw U+2028/U+2029 separator characters may be valid in strict UTF-8 JSON
+# without JSON escapes; reject them as invisible publisher identity controls.
+$rawLineSep = Save-Case 'raw-line-separator-publisher' ($goodJson.Replace('Keld Company', ('Keld'+[char]0x2028+' Company')))
+Run-Case 'raw-line-separator-publisher-rejected' $rawLineSep $true 1 'PROD-PRE-016'
+$rawParagraphSep = Save-Case 'raw-paragraph-separator-publisher' ($goodJson.Replace('Keld Company', ('Keld'+[char]0x2029+' Company')))
+Run-Case 'raw-paragraph-separator-publisher-rejected' $rawParagraphSep $true 1 'PROD-PRE-016'
 # Ordinary printable non-ASCII letters remain valid publisher names.
 $accented = Save-Case 'accented-publisher-name' ($goodJson.Replace('Keld Company', ('Keld Caf'+[char]0x00e9)))
 Run-Case 'printable-non-ascii-publisher-accepted' $accented $true 0 'SYNTAX_ONLY_NOT_RELEASE'
