@@ -3,7 +3,7 @@
 - Status: draft
 - Tracker: GH-590
 - Owner: Monish Khandelwal (@0monish; approval pending)
-- Updated: 2026-11-05
+- Updated: 2026-11-13
 - Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
 
 ## 1. Goal & non-goals
@@ -142,6 +142,9 @@ The proposed analyzer preserves the architecture's target direction.
   - **Single fault:** join callers and registrations by channel name alone.
   - **At-risk precondition:** `send('danger')` meets only `handle('danger')`.
   - **Expected RED:** the candidate list contains an unauthorized match.
+- **Independent wrong-side control:** a preload `ipcRenderer.send('x')` and only renderer-side `ipcRenderer.on('x')` produce zero main-bound candidates.
+  A main-side `ipcMain.on('x')` is the healthy static-candidate control, never an automatic grant.
+  Removing only receiver-side validation must make the wrong-side fixture RED.
 
 ### AC-10: reports preserve honesty and deterministic order
 
@@ -287,9 +290,11 @@ Expected lists must not come from the scanner under test.
 | `preload-reexport-cycle` | Literal bridge, renamed exports, cycle | Record provenance or bounded unresolved edge | Compatibility |
 | `computed-channel` | Computed send or registration | Unenumerable, zero grant proposal | Security |
 | `method-channel-mismatch` | Send with handle-only registration | No method-compatible candidate | Security |
-| `webprefs-defaults` | Missing and explicit five security fields | Compare exact pinned defaults separately | Security |
+| `wrong-side-channel` | Preload send with only renderer-side on; main-side on control | Zero main-bound candidates for wrong side; valid side yields static candidate only | Security |
+| `webprefs-defaults` | Missing and explicit five security fields | Record pinned defaults, then classify effective interactions | Security |
+| `node-sandbox-override` | Node integration true, sandbox omitted; default/false controls | Explicit unsandboxed blocker for true; controls retain default sandboxing | Security |
 | `webview-false` | `webviewTag:false` and attachment prevention | No positive webview-use claim | Security |
-| `unsafe-webprefs` | Disabled isolation or web security | Blocker, never an allowed generated setting | Security |
+| `unsafe-webprefs` | Effectively disabled sandbox, isolation, or web security | Blocker, never an allowed generated setting | Security |
 | `engine-scheme` | Custom scheme without proven privilege registration | Engine blocker and source locations | Engine |
 | `addon-version-mismatch` | Native module with unmatched binary/runtime | Unqualified, never package-name support | Native-dependency |
 | `spawn-variable-shell` | Variable program or `shell:true` | Never infer a grant from the expression | Security |
@@ -304,6 +309,17 @@ Expected lists must not come from the scanner under test.
 The five security fields are `nodeIntegration`, `contextIsolation`, `sandbox`, `webviewTag`, and `webSecurity`.
 #498 first records their pinned Electron defaults.
 Do not substitute remembered defaults or another Electron version.
+Classify effective settings after applying interactions, not five independent nominal defaults.
+At the pinned [Electron WebPreferences contract](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/structures/web-preferences.md#L22-L28),
+`nodeIntegration:true` disables renderer sandboxing even when `sandbox` is omitted.
+The `node-sandbox-override` oracle requires an explicit unsandboxed security blocker; ignoring only that interaction must fail it.
+Default options and explicit `nodeIntegration:false` are healthy sandbox controls at that pin, not proof of whole-app safety.
+Unresolved settings or version interactions remain manual/unclassified, never an allowed generated setting.
+
+Main-bound static IPC candidates require a proven main-side `ipcMain` registration and a supported compatible method:
+`send` pairs with `on`/`once`; `invoke` pairs with `handle`/`handleOnce` only where supported by #497.
+Renderer-side listeners cannot satisfy this rule. Dynamic or ambiguous roles remain unresolved.
+Host window/document identity and grant admission remain mandatory and separate from any static candidate.
 
 An updater literal is only a classification.
 #497 still excludes generated build configuration and feed grants.
