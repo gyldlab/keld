@@ -329,7 +329,7 @@ roles follow only after those slices and their shipping integration gates.
 | `keld create` / `create-keld` | templates: vanilla-ts, react, vue, svelte, solid, electron-migration; first window < 60 s from cold |
 | `keld dev` | **Today:** on macOS, Windows, and Linux compiles an owner-private stage and launches its no-flag host; the CLI owns logs, the host handle and a liveness writer but no window, app link, token or Bun supervisor. Linux also stages the strict-role launcher and removes the exact nonce after normal, lease-loss, or observed abnormal host exit. **Destination:** also starts the app's own dev server (delegation, Deno lesson D4) and adds the dev permission recorder, hot-restart on change via Bun watch, and devtools policy. |
 | `keld build` | app bundle via the app's bundler → `keld-pack` → signed installers + update artifacts; `--frozen-permissions` gate |
-| `keld migrate` | Electron analyzer + config generator + compat report (see 04-electron-compat) |
+| `keld migrate` | **Target, not live:** read-only Electron static analysis and classified, owner-attributed report by default; `--write` proposes only reviewed reversible config/permissions/package edits after explicit consent (separate affirmative Legacy security-forfeit consent). No percentage, implicit permission grant or product PASS claim (see 04-electron-compat, GH-497). |
 | `keld doctor` | env checks, native-module DB scan, permission diffs, web-baseline scan (`--web-compat`), Linux GPU matrix probe |
 | `keld gen` | schema → TS/Rust codegen (also runs inside dev/build) |
 | `keld ext` | plugin scaffolding/build (the only cargo touchpoint, plugin authors only) |
