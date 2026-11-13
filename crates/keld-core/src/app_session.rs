@@ -1552,21 +1552,21 @@ impl WindowsDevStageCleanup {
     ///
     /// # Errors
     ///
-    /// Returns `KELD-CORE-037` when the root is not the canonical nonce layout,
+    /// Returns `KELD-CORE-053` when the root is not the canonical nonce layout,
     /// its DACL is not the approved current-user policy, the PID cannot be
     /// opened, or the live process image is not this stage's `keld-host.exe`.
     #[allow(unsafe_code)] // isolated Win32 process-handle acquisition and image readback
     pub fn prepare(root: &Path, host_pid: u32) -> Result<Self, HostAppError> {
         let root = root
             .canonicalize()
-            .map_err(|source| app_io("Windows dev-stage cleanup root", &source))?;
+            .map_err(|source| windows_cleanup_io("Windows dev-stage cleanup root", &source))?;
         validate_windows_cleanup_root(&root)?;
         validate_windows_dev_stage_acl(&root)
-            .map_err(|source| app_io("Windows dev-stage cleanup ACL", &source))?;
+            .map_err(|source| windows_cleanup_io("Windows dev-stage cleanup ACL", &source))?;
         let expected_host = root
             .join("keld-host.exe")
             .canonicalize()
-            .map_err(|source| app_io("Windows dev-stage cleanup host", &source))?;
+            .map_err(|source| windows_cleanup_io("Windows dev-stage cleanup host", &source))?;
 
         // SAFETY: `host_pid` is the PID returned by the CLI's live Child. The
         // requested rights are observation/wait only; a non-null result is one
@@ -1579,7 +1579,7 @@ impl WindowsDevStageCleanup {
             )
         };
         if raw_host.is_null() {
-            return Err(app_io(
+            return Err(windows_cleanup_io(
                 "Windows dev-stage cleanup process open",
                 &io::Error::last_os_error(),
             ));
@@ -1588,9 +1588,11 @@ impl WindowsDevStageCleanup {
         let host = unsafe { OwnedHandle::from_raw_handle(raw_host.cast()) };
         let observed_host = windows_process_image(&host)?
             .canonicalize()
-            .map_err(|source| app_io("Windows dev-stage cleanup process image", &source))?;
+            .map_err(|source| {
+                windows_cleanup_io("Windows dev-stage cleanup process image", &source)
+            })?;
         if observed_host != expected_host {
-            return Err(app_detail(
+            return Err(windows_cleanup_detail(
                 "Windows dev-stage cleanup process identity",
                 format!(
                     "live PID {host_pid} image `{}` does not equal staged host `{}`",
@@ -1608,7 +1610,7 @@ impl WindowsDevStageCleanup {
     ///
     /// # Errors
     ///
-    /// Returns `KELD-CORE-037` if waiting, final ACL validation, or deletion
+    /// Returns `KELD-CORE-053` if waiting, final ACL validation, or deletion
     /// fails. A concurrent orderly CLI deletion is accepted as idempotent.
     #[allow(unsafe_code)] // read-only wait on the owned staged-host process handle
     pub fn wait_and_delete_after_family_exit(
@@ -1622,19 +1624,19 @@ impl WindowsDevStageCleanup {
         if unsafe { WaitForSingleObject(self.host.as_raw_handle().cast(), u32::MAX) }
             != WAIT_OBJECT_0
         {
-            return Err(app_io(
+            return Err(windows_cleanup_io(
                 "Windows dev-stage cleanup host wait",
                 &io::Error::last_os_error(),
             ));
         }
         let active_processes = attempt_job.active_processes().map_err(|source| {
-            app_detail(
+            windows_cleanup_detail(
                 "Windows dev-stage cleanup attempt Job query",
                 source.to_string(),
             )
         })?;
         if active_processes != 0 {
-            return Err(app_detail(
+            return Err(windows_cleanup_detail(
                 "Windows dev-stage cleanup attempt Job proof",
                 format!(
                     "refusing stage deletion while the exact attempt Job reports {active_processes} active processes"
@@ -1642,11 +1644,11 @@ impl WindowsDevStageCleanup {
             ));
         }
         validate_windows_dev_stage_acl(&self.root)
-            .map_err(|source| app_io("Windows dev-stage cleanup final ACL", &source))?;
+            .map_err(|source| windows_cleanup_io("Windows dev-stage cleanup final ACL", &source))?;
         let Self { root, host } = self;
         drop(host);
         remove_windows_dev_stage(&root)
-            .map_err(|source| app_io("Windows dev-stage cleanup deletion", &source))
+            .map_err(|source| windows_cleanup_io("Windows dev-stage cleanup deletion", &source))
     }
 }
 
@@ -1683,12 +1685,14 @@ fn remove_windows_dev_stage_with(
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn validate_windows_cleanup_root(root: &Path) -> Result<(), HostAppError> {
     let nonce = root
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| app_detail("Windows dev-stage cleanup root", "nonce is not UTF-8"))?;
+        .ok_or_else(|| {
+            windows_cleanup_detail("Windows dev-stage cleanup root", "nonce is not UTF-8")
+        })?;
     let exact_nonce = nonce.len() == 32
         && nonce
             .bytes()
@@ -1706,7 +1710,7 @@ fn validate_windows_cleanup_root(root: &Path) -> Result<(), HostAppError> {
             .and_then(|name| name.to_str())
             != Some(".keld")
     {
-        return Err(app_detail(
+        return Err(windows_cleanup_detail(
             "Windows dev-stage cleanup root",
             "expected canonical .keld/dev/<32-lowerhex> nonce layout",
         ));
@@ -1721,7 +1725,7 @@ fn windows_process_image(process: &OwnedHandle) -> Result<PathBuf, HostAppError>
 
     let mut buffer = vec![0_u16; 32_768];
     let mut length = u32::try_from(buffer.len()).map_err(|_| {
-        app_detail(
+        windows_cleanup_detail(
             "Windows dev-stage cleanup process image",
             "image buffer exceeds u32",
         )
@@ -1737,25 +1741,42 @@ fn windows_process_image(process: &OwnedHandle) -> Result<PathBuf, HostAppError>
         )
     } == 0
     {
-        return Err(app_io(
+        return Err(windows_cleanup_io(
             "Windows dev-stage cleanup process image",
             &io::Error::last_os_error(),
         ));
     }
     let length = usize::try_from(length).map_err(|_| {
-        app_detail(
+        windows_cleanup_detail(
             "Windows dev-stage cleanup process image",
             "returned image length exceeds usize",
         )
     })?;
     if length > buffer.len() {
-        return Err(app_detail(
+        return Err(windows_cleanup_detail(
             "Windows dev-stage cleanup process image",
             "returned image length exceeds buffer",
         ));
     }
     buffer.truncate(length);
     Ok(PathBuf::from(OsString::from_wide(&buffer)))
+}
+
+/// Classifies sentinel-owned I/O without borrowing the app-session code.
+#[cfg(any(windows, test))]
+fn windows_cleanup_io(phase: &'static str, source: &io::Error) -> HostAppError {
+    windows_cleanup_detail(phase, source.to_string())
+}
+
+/// Keeps the cleanup diagnostic separate from generic no-flag session failures.
+#[cfg(any(windows, test))]
+fn windows_cleanup_detail(phase: &'static str, detail: impl Into<String>) -> HostAppError {
+    HostAppError::new(
+        "KELD-CORE-053",
+        phase,
+        detail,
+        "Let the staged host exit, remove the named `.keld/dev/<nonce>` stage by hand if it remains, and relaunch through `keld dev`.",
+    )
 }
 
 #[cfg(windows)]

@@ -6395,6 +6395,23 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-core
 - message: This Host session has reached its cumulative distinct-window admission capacity, including destroyed window identities
 - fix: Start a fresh Host session to mint further window identities. Do not retry Create within this session, recycle a retired identity, or bypass the native admission limit. The candidate numeric capacity remains unapproved pending GH1149.
+## KELD-CORE-050
+
+- crate: keld-host
+- message: A private keld-host role was invoked outside its contract: malformed arguments, or a role this build does not carry
+- fix: Never launch a private role by hand. `keld dev` launches the Windows cleanup sentinel, the validated no-flag host launches the macOS guardian, and the KEL-135 acceptance harness launches the profile fixtures and probe, each with its exact arguments; build the debug host with the feature a test role needs.
+
+## KELD-CORE-052
+
+- crate: keld-host
+- message: The macOS guardian refused to run outside its validated private dev stage
+- fix: Relaunch through `keld dev`. The guardian runs only from its own executable's owner-private `.keld/dev/<nonce>` stage and refuses a stage argument that names any other directory; do not copy or move the staged host.
+
+## KELD-CORE-053
+
+- crate: keld-host, keld-core
+- message: The Windows dev-stage cleanup sentinel failed a stage, process-family, or release-pipe step
+- fix: Let the staged host exit, remove the named `.keld/dev/<nonce>` stage by hand if it remains, and relaunch through `keld dev`; the message names the failed step (stage validation, process identity, Job admission, readiness, process-family reap, release pipe, or stage deletion) to report if it repeats.
 
 ## KELD-UPDATE-001
 
