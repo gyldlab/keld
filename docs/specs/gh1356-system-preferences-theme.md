@@ -3,7 +3,7 @@
 - Status: draft
 - Tracker: GH-1356
 - Owner: @0monish
-- Updated: 2026-11-06
+- Updated: 2026-11-13
 - Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
 
 ## 1. Goal & non-goals
@@ -28,8 +28,9 @@ FACT: [Zettlr proof owner #1354](https://github.com/gyldlab/keld/issues/1354) se
 ### AC-1: Record the reference behavior
 
 - **Given:** Electron 44.4.5 runs a main-process fixture.
-- **When:** Register two callbacks, remove an unknown ID, and read accent color.
-- **Then:** Record numeric IDs, callback shape, unsubscribe behavior and RGBA output per tested operation.
+- **When:** Register two callbacks. Deliver a notification, remove one live ID and an unknown ID, then deliver another notification.
+- **Then:** Record distinct numeric IDs and each callback's argument shape. Both registrations receive the first delivery; only the survivor receives the second.
+- Read accent color separately and record RGBA output for that operation.
 - **Negative control:**
   - **Single fault:** Store only the first of two subscriptions in the reference fixture.
   - **At-risk precondition:** Register the same callback twice under distinct IDs.
@@ -67,9 +68,9 @@ FACT: [Zettlr proof owner #1354](https://github.com/gyldlab/keld/issues/1354) se
 
 ### AC-5: Revoke per subscription and generation
 
-- **Given:** Two subscriptions and a queued old-generation delivery exist.
-- **When:** Unsubscribe one live ID and an unknown ID. Reattach a successor and release the queued event.
-- **Then:** Only the surviving live registration is called. The successor receives no previous-generation callback.
+- **Given:** Two subscriptions and two queued old-generation deliveries exist.
+- **When:** Unsubscribe one live ID and an unknown ID. Release the first event. Replace the generation, then release the second event.
+- **Then:** Only the surviving registration receives the first event. Neither old registration nor the successor receives the second event.
 - **Negative control:**
   - **Single fault:** Leave a removed ID eligible during dispatch.
   - **At-risk precondition:** Schedule removal before dispatch reaches that still-referenced callback.
