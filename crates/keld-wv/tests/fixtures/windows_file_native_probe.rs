@@ -198,12 +198,126 @@ fn read_page(native: &session::Session) -> Result<Value, String> {
     Ok(observation["body"].clone())
 }
 
+fn capture_native_same_uri_overlap(
+    native: &session::Session,
+    receipt: &mut Value,
+    attempt: &str,
+) -> Result<(), String> {
+    native.phase("race-child");
+    receipt["race_iframe_action"] = native.evaluate(
+        "(() => { const frame=document.createElement('iframe'); frame.id='w3-ac06-held-iframe'; frame.src=location.href; document.body.appendChild(frame); return 'ac06-frame-dispatched'; })()", false)?;
+    native.wait_event("race-child-held")?;
+    native.phase("race-host");
+    let race_request = native.host_request(attempt)?;
+    if race_request["navigate_hresult"] != "S_OK" {
+        return Err(format!(
+            "AC06 native Host top-level load refused: {race_request}"
+        ));
+    }
+    receipt["race_host_request"] = race_request;
+    native.wait_event("navigation-starting")?;
+    native.wait_event("resource-request")?;
+    native.release_held_iframe()?;
+    native.wait_event("navigation-completed")?;
+    receipt["pages"]["race-host"] = read_page(native)?;
+    let observed = native.events();
+    verify_native_same_uri_overlap(receipt, &observed, attempt)
+}
+
+fn verify_native_same_uri_overlap(
+    receipt: &mut Value,
+    observed: &[Value],
+    attempt: &str,
+) -> Result<(), String> {
+    let single = |phase: &str, kind: &str| -> Result<&Value, String> {
+        let matches: Vec<_> = observed
+            .iter()
+            .filter(|event| event["phase"] == phase && event["kind"] == kind)
+            .collect();
+        if matches.len() != 1 {
+            return Err(format!(
+                "AC06 {phase}/{kind} observed {} events, expected 1",
+                matches.len()
+            ));
+        }
+        Ok(matches[0])
+    };
+    let held = single("race-child", "race-child-held")?;
+    let child = single("race-child", "resource-request")?;
+    let host_start = single("race-host", "navigation-starting")?;
+    let host_resource = single("race-host", "resource-request")?;
+    let release = single("race-host", "race-child-released")?;
+    let top_content = single("race-host", "content-loading")?;
+    let top_completed = single("race-host", "navigation-completed")?;
+    let seq = |event: &Value| event["seq"].as_u64().unwrap_or(0);
+    if !(seq(held) > 0
+        && seq(held) <= seq(child)
+        && seq(child) < seq(host_start)
+        && seq(host_start) < seq(host_resource)
+        && seq(host_resource) < seq(release)
+        && seq(release) < seq(top_completed))
+    {
+        return Err(format!(
+            "AC06 native race did not overlap in required order: held={}, child={}, start={}, top_resource={}, release={}, complete={}",
+            seq(held),
+            seq(child),
+            seq(host_start),
+            seq(host_resource),
+            seq(release),
+            seq(top_completed)
+        ));
+    }
+    let correct = child["data"]["uri"] == receipt["uri"]
+        && child["data"]["resource_context"] == 1
+        && child["data"]["source_kind"] == host_resource["data"]["source_kind"]
+        && child["data"]["header"]["state"] == "absent"
+        && child["data"]["held_iframe"] == true
+        && host_resource["data"]["uri"] == receipt["uri"]
+        && host_resource["data"]["resource_context"] == 1
+        && host_resource["data"]["header"]["state"] == "present"
+        && host_resource["data"]["header"]["value"].as_str() == Some(attempt)
+        && host_start["data"]["header"]["value"].as_str() == Some(attempt)
+        && host_start["data"]["navigation_id"]
+            .as_u64()
+            .is_some_and(|id| {
+                id != 0
+                    && top_content["data"]["navigation_id"].as_u64() == Some(id)
+                    && top_completed["data"]["navigation_id"].as_u64() == Some(id)
+            })
+        && top_content["data"]["is_error_page"] == false
+        && top_completed["data"]["success"] == true
+        && release["data"]["completed"] == true;
+    if !correct {
+        return Err(format!(
+            "AC06 native race source/header/NavigationId mismatch: child={child}, host_start={host_start}, top_resource={host_resource}, content={top_content}, completed={top_completed}"
+        ));
+    }
+    receipt["ac06_native_overlap"] = json!({
+        "same_uri_iframe_no_host_nonce": true,
+        "native_child_document_context": child["data"]["resource_context"],
+        "native_child_source_kind": child["data"]["source_kind"],
+        "child_deferral_held": true,
+        "host_top_document_response_and_navigation_id_while_frame_held": true,
+        "host_nonce_at_top_start_and_resource": true,
+        "same_top_navigation_id_at_content_and_completion": true,
+        "child_deferral_completed": true,
+        "order": {
+            "child_held": seq(held), "child_request": seq(child),
+            "top_start": seq(host_start), "top_response": seq(host_resource),
+            "child_release": seq(release), "top_completion": seq(top_completed)
+        },
+        "scope": "raw native SDK race only; not production Core admission or signed installed Host"
+    });
+    Ok(())
+}
+
 fn scenarios(native: &session::Session, receipt: &mut Value, nonce: &str) -> Result<(), String> {
     native.phase("host-header");
     let attempt = receipt["attempt_nonce"]
         .as_str()
-        .ok_or("missing native attempt marker")?;
-    let request = native.host_request(attempt)?;
+        .ok_or("missing native attempt marker")?
+        .to_owned();
+    let request = native.host_request(&attempt)?;
     receipt["host_request"] = request.clone();
     if request["navigate_hresult"] == "S_OK" {
         native.wait_event("navigation-completed")?;
@@ -224,6 +338,7 @@ fn scenarios(native: &session::Session, receipt: &mut Value, nonce: &str) -> Res
     native.wait_event("frame-navigation-completed")?;
     let page = native.evaluate("window.__w3FrameReady.then(() => window.__w3Fixture)", true)?;
     receipt["pages"]["iframe"] = page["body"]["result"]["value"].clone();
+    capture_native_same_uri_overlap(native, receipt, &attempt)?;
     native.phase("page");
     native.navigate_from_page()?;
     native.wait_event("navigation-completed")?;

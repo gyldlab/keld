@@ -168,6 +168,7 @@ impl Session {
             .clone();
         let document = self.document.clone();
         let owned_uri = self.uri.clone();
+        let held_iframe = Rc::clone(&self.held_iframe);
         let trace = Rc::clone(&self.trace);
         let callback = WebResourceRequestedEventHandler::create(Box::new(move |_, args| {
             let observed = (|| {
@@ -183,8 +184,29 @@ impl Session {
                 }
                 // SAFETY: native request headers remain on this STA.
                 let seen_header = header(&unsafe { request.Headers()? })?;
+                let args2 = args.cast::<wv::ICoreWebView2WebResourceRequestedEventArgs2>()?;
+                let mut requested_kind = wv::COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS(0);
+                // SAFETY: exact native args2 and bounded scalar out-pointer on the creating STA.
+                unsafe {
+                    args2.RequestedSourceKind(&raw mut requested_kind)?;
+                }
                 // This is exact owned-fixture routing, not a file parser or containment mechanism.
                 let is_owned = uri == owned_uri;
+                // Hold a genuine same-URI iframe DOCUMENT response while the Host
+                // starts its distinct top-level NavigationId. No injected nonce.
+                let hold_child = is_owned
+                    && context == wv::COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT
+                    && requested_kind
+                        == wv::COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_DOCUMENT
+                    && seen_header["state"] == "absent"
+                    && trace.borrow().phase == "race-child";
+                let deferral = if hold_child {
+                    // SAFETY: exact callback args on the creating STA, completed
+                    // before any controller/profile teardown even on a failed test.
+                    Some(unsafe { args.GetDeferral()? })
+                } else {
+                    None
+                };
                 // SAFETY: memory stream copies live bytes; only this one fixture URI receives them.
                 let response = unsafe {
                     if is_owned {
@@ -204,8 +226,22 @@ impl Session {
                 unsafe {
                     args.SetResponse(&response)?;
                 }
+                if let Some(deferral) = deferral {
+                    if held_iframe.borrow().is_some() {
+                        return Err(windows::core::Error::from(E_POINTER));
+                    }
+                    held_iframe.borrow_mut().replace(deferral);
+                    trace.borrow_mut().record(
+                        "race-child-held",
+                        json!({
+                            "uri": uri, "header": seen_header, "source_kind": requested_kind.0,
+                            "resource_context": context.0, "real_deferral": true
+                        }),
+                    );
+                }
                 Ok(
-                    json!({"uri":uri,"resource_context":context.0,"header":seen_header,"owned_fixture":is_owned}),
+                    json!({"uri":uri,"resource_context":context.0,"header":seen_header,
+                        "source_kind": requested_kind.0,"owned_fixture":is_owned,"held_iframe":hold_child}),
                 )
             })();
             record_result(&trace, "resource-request", observed);
@@ -226,6 +262,12 @@ impl Session {
             )
         }
         .map_err(|error| failure("register source-kind filter", &error))?;
+        Self::register_guard_denials(view)
+    }
+
+    #[allow(unsafe_code)] // Deny permissions and popups before first navigation.
+    fn register_guard_denials(view: &wv::ICoreWebView2) -> Result<(), String> {
+        let mut token = 0;
         let permission = PermissionRequestedEventHandler::create(Box::new(|_, args| {
             let args = args.ok_or_else(|| windows::core::Error::from(E_POINTER))?;
             // SAFETY: native request is denied, never delegated to a user prompt or app grant.
@@ -242,6 +284,22 @@ impl Session {
         // SAFETY: view retains this popup-denial handler before any navigation.
         unsafe { view.add_NewWindowRequested(&popup, &raw mut token) }
             .map_err(|error| failure("register popup denial", &error))?;
+        Ok(())
+    }
+
+    #[allow(unsafe_code)] // Only complete the exact owned native iframe deferral on this STA.
+    pub(in super::super) fn release_held_iframe(&self) -> Result<(), String> {
+        let deferral = self
+            .held_iframe
+            .borrow_mut()
+            .take()
+            .ok_or_else(|| "missing native held iframe response".to_owned())?;
+        // SAFETY: the exact WebResourceRequested GetDeferral returned this STA-owned object.
+        unsafe { deferral.Complete() }
+            .map_err(|error| failure("complete held native iframe", &error))?;
+        self.trace
+            .borrow_mut()
+            .record("race-child-released", json!({"completed":true}));
         Ok(())
     }
 }
