@@ -28,7 +28,7 @@ const build = readFileSync(join(root, "keld.build.ts"), "utf8");
 // effective property/statement from text in a string. Intentional source
 // changes require independent inspection and a reviewed identity update;
 // never derive these expected values from the files under test.
-test("the generic app source retains all inspected candidate identities", () => {
+test("build selection and executable main retain inspected source identities", () => {
   assert.equal(
     sha256("keld.build.ts"),
     "8c344e570b46473e1b7fab2203af03a6cc88b919f20f4d24362bfc2cf7573638",
