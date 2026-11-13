@@ -174,6 +174,39 @@ fn session_census_ignores_a_stale_directory_from_a_reused_host_pid() {
     assert_eq!(census.dirs_for(pid), [owned.path().to_path_buf()]);
 }
 
+fn leftover_fixture_pid(process_id: u32) -> u32 {
+    0x8000_0000 | process_id
+}
+
+#[test]
+fn leftover_fixture_cleanup_is_independent_between_processes() {
+    let root = tempfile::tempdir().expect("isolated shared session root");
+    let path_for = |pid| root.path().join(format!("kb-{pid:x}-stale-before-launch"));
+    let first = path_for(leftover_fixture_pid(41));
+    let second = path_for(leftover_fixture_pid(42));
+    fs::create_dir_all(&first).expect("first process leaves its fixture");
+    fs::create_dir_all(&second).expect("second process leaves its fixture");
+    fs::remove_dir(&first).expect("first process cleans its fixture");
+    assert!(
+        second.is_dir(),
+        "first cleanup removed the second process fixture"
+    );
+    fs::remove_dir(&second).expect("second process cleans its fixture");
+
+    // Old fixed-PID setup permits two runs to share one path. Schedule the
+    // first cleanup before the second: the second deterministically fails.
+    let shared = path_for(0xdead_beef_u32);
+    fs::create_dir_all(&shared).expect("old first process fixture");
+    fs::create_dir_all(&shared).expect("old second process shared fixture");
+    fs::remove_dir(&shared).expect("old first process cleanup");
+    assert_eq!(
+        fs::remove_dir(&shared)
+            .expect_err("old shared-path cleanup must collide")
+            .kind(),
+        std::io::ErrorKind::NotFound
+    );
+}
+
 #[test]
 fn planting_a_session_directory_survives_a_leftover_from_an_interrupted_run() {
     // A synthetic PID derived from this test process's own real PID, with the
@@ -182,7 +215,7 @@ fn planting_a_session_directory_survives_a_leftover_from_an_interrupted_run() {
     // real PID makes it unique per OS process, so two concurrent runs of this
     // exact test (for example an overlapping retry) plant and clean up two
     // different fixed-name directories instead of racing on one.
-    let synthetic_pid: u32 = 0x8000_0000 | std::process::id();
+    let synthetic_pid = leftover_fixture_pid(std::process::id());
     let leftover = std::env::temp_dir().join(format!("kb-{synthetic_pid:x}-stale-before-launch"));
     // An interrupted run left the fixed name that `PlantedSessionDir` used to
     // create with `fs::create_dir`, which then failed before the census ran.
