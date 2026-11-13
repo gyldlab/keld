@@ -5,6 +5,39 @@
 **Baseline:** Electron v44.4.5  
 **Purpose:** Architecture, compatibility planning, conformance testing, and migration strategy for KELD.
 
+### Entity inventory and source-status lookup
+
+The maintained [180-entity source-status index](electron-entity-status.tsv) is one TSV
+file: GitHub displays a searchable table, and agents can read the same raw rows. The
+[program index](https://github.com/gyldlab/keld/issues/391#issuecomment-6456562807)
+remains navigation; this TSV is the edit target for entity source-status rows, and any
+retained table in the program index is a dated snapshot. Read status at the linked
+evidence revision, not as an automatic claim about later code. A candidate-branch
+copy is not the canonical `main` copy until it lands.
+
+Rows bind the Electron baseline and immutable inventory source separately from the
+Keld `last_verified_sha` and assessment time. Counts include documented fields and
+inherited/overloaded entries, not supported-member totals. `source_status` describes
+only inspected source: `partial`, `absent_current_facade`, `no_expected_root_binding`,
+`unassessed_nonroot_class`, `unassessed_field_contract`, or `unassessed_element`.
+Non-root classes include owned/event-delivered objects and nested constructors
+(including 10 TouchBar constructors), not only returned objects. Their notes
+record selected, non-exhaustive producer paths: `blocked_upstream` means the
+required root/owner is unavailable in the inspected facade; `absent` means a
+selected property or event production is missing on a present owner. Neither is
+a whole-class, member, or native conformance verdict. Dock is macOS-only and
+documented as undefined elsewhere, not an all-platform failure. Evidence links
+pin Keld facade source and Electron producer contracts separately. Root-export
+absence is not a verdict on non-root classes or structure fields.
+`member_scope` and `native_status` retain the limits of the evidence; source/test
+declarations are not executed conformance or native-OS receipts. The source audit
+reproduced the committed inventory, not a fresh hash of the Electron release asset.
+
+This is a detailed evidence index, not another product or behavioral scoreboard.
+[Product status](product-status.tsv) still owns repository Current/Target/Evidence;
+the [compat scoreboard](compat-scoreboard.md) and its existing corpora own conformance
+claims. Family issue links are routing pointers, not copied claims or live issue states.
+
 ---
 
 ## 1. Executive Summary
