@@ -5557,8 +5557,12 @@ impl DirectPrimaryOwner {
                         if session_running {
                             let _ = window_commands.send(AppWindowCommand::Fatal);
                         }
-                        forward_direct_primary_output(&supervisor)?;
-                        return result;
+                        return finish_direct_primary_output(
+                            result,
+                            &supervisor.output(),
+                            &mut io::stdout(),
+                            &mut io::stderr(),
+                        );
                     }
                     match command_rx.recv_timeout(DIRECT_PRIMARY_OWNER_POLL) {
                         Ok(DirectPrimaryOwnerCommand::AttachRouter(attached, reply)) => {
@@ -5867,6 +5871,19 @@ fn recover_retired_fs_generation(
 #[cfg(any(target_os = "linux", windows))]
 fn forward_direct_primary_output(supervisor: &PrimaryRoleSupervisor) -> Result<(), HostAppError> {
     forward_direct_primary_output_to(&supervisor.output(), &mut io::stdout(), &mut io::stderr())
+}
+
+#[cfg(any(target_os = "linux", windows))]
+fn finish_direct_primary_output(
+    result: Result<(), HostAppError>,
+    output: &keld_runtime::CapturedOutput,
+    stdout: &mut impl io::Write,
+    stderr: &mut impl io::Write,
+) -> Result<(), HostAppError> {
+    collapse_app_results([
+        result,
+        forward_direct_primary_output_to(output, stdout, stderr),
+    ])
 }
 
 #[cfg(any(target_os = "linux", windows))]

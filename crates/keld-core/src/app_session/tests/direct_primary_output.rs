@@ -299,3 +299,69 @@ fn stream_failure_preserves_the_other_stream_and_both_errors() {
     assert!(detail.contains("primary stdout forwarding"));
     assert!(detail.contains("primary stderr forwarding"));
 }
+
+#[test]
+fn terminal_failure_survives_failed_sink_with_output_forwarded_once() {
+    // Exercises the production finishing helper, not a natural supervisor fault.
+    let output = keld_runtime::CapturedOutput {
+        stdout: "terminal stdout\n".to_owned(),
+        stderr: "terminal stderr\n".to_owned(),
+        ..Default::default()
+    };
+    for fail_stdout in [true, false] {
+        let sink = tempfile::NamedTempFile::new().expect("read-only sink path");
+        let mut failed = std::fs::File::open(sink.path()).expect("read-only sink");
+        let mut healthy = Vec::new();
+        let owner_error = super::super::app_runtime_fatal(
+            "primary supervisor",
+            &RuntimeError::Lifecycle {
+                phase: "natural terminal fixture",
+                source: std::io::Error::other("GH1460_OWNER_FAILURE"),
+            },
+        );
+        let error = if fail_stdout {
+            super::super::finish_direct_primary_output(
+                Err(owner_error),
+                &output,
+                &mut failed,
+                &mut healthy,
+            )
+        } else {
+            super::super::finish_direct_primary_output(
+                Err(owner_error),
+                &output,
+                &mut healthy,
+                &mut failed,
+            )
+        }
+        .expect_err("owner and read-only sink failures must survive");
+        let detail = error.to_string();
+        let owner = detail
+            .find("GH1460_OWNER_FAILURE")
+            .expect("owner failure retained");
+        let phase = if fail_stdout {
+            "primary stdout forwarding"
+        } else {
+            "primary stderr forwarding"
+        };
+        let forwarding = detail.find(phase).expect("sink failure retained");
+        assert!(owner < forwarding, "owner error must precede cleanup: {detail}");
+        assert!(detail.contains("KELD-RUNTIME-003"));
+        assert_eq!(
+            healthy,
+            if fail_stdout {
+                output.stderr.as_bytes()
+            } else {
+                output.stdout.as_bytes()
+            },
+            "healthy stream must be forwarded exactly once"
+        );
+    }
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    super::super::finish_direct_primary_output(Ok(()), &output, &mut stdout, &mut stderr)
+        .expect("healthy termination");
+    assert_eq!(stdout, output.stdout.as_bytes());
+    assert_eq!(stderr, output.stderr.as_bytes());
+}
