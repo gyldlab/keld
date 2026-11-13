@@ -168,6 +168,16 @@ const PUBLISHED: [PublishedPlatform; 3] = [
     },
 ];
 
+/// Bind each scored board to its source records and platform. A bare
+/// `Scoreboard` has no platform identity or receipt binding of its own.
+#[derive(Clone)]
+struct PlatformBoard {
+    platform: Platform,
+    arch: Arch,
+    records: Vec<EvidenceRecord>,
+    board: Scoreboard,
+}
+
 /// Loads the committed lifecycle corpus through the shared owner.
 fn corpus() -> Corpus {
     Corpus::load(&LIFECYCLE_V0).unwrap_or_else(|error| panic!("{error}"))
@@ -202,11 +212,16 @@ fn platform_board(corpus: &Corpus, published: PublishedPlatform) -> Scoreboard {
         )
 }
 
-/// Validates and scores every published platform, in `PUBLISHED` order.
-fn published_boards(corpus: &Corpus) -> Vec<Scoreboard> {
+/// Validates and scores every published platform, retaining its source identity.
+fn published_boards(corpus: &Corpus) -> Vec<PlatformBoard> {
     PUBLISHED
         .iter()
-        .map(|published| platform_board(corpus, *published))
+        .map(|published| PlatformBoard {
+            platform: published.platform,
+            arch: published.arch,
+            records: parse_records(*published),
+            board: platform_board(corpus, *published),
+        })
         .collect()
 }
 
@@ -243,11 +258,41 @@ fn render_report() -> String {
         .expect("every published board shares one authority profile")
 }
 
-/// Renders the report over `boards`, one per `PUBLISHED` platform. `None` when the
-/// boards share no single authority profile (gh566 C7).
-fn render_report_from(corpus: &Corpus, boards: &[Scoreboard]) -> Option<String> {
+/// Renders the report over exactly the published platforms, in canonical
+/// platform/architecture order. Refuse missing, extra or misordered rows and
+/// boards without one shared authority profile (gh566 C7).
+fn render_report_from(corpus: &Corpus, boards: &[PlatformBoard]) -> Option<String> {
+    if boards.len() != PUBLISHED.len()
+        || !boards
+            .iter()
+            .zip(PUBLISHED.iter())
+            .all(|(board, published)| {
+                board.platform == published.platform && board.arch == published.arch
+            })
+        || !boards
+            .iter()
+            .zip(PUBLISHED.iter())
+            .all(|(board, published)| {
+                let receipt_uri = sha256_uri(published.receipt);
+                board.records.len() == corpus.cells().len()
+                    && board.records.iter().all(|record| {
+                        record.artifact().platform == published.platform
+                            && record.artifact().arch == published.arch
+                            && record.evidence_uri() == receipt_uri.as_str()
+                    })
+                    && score(
+                        corpus.denominator(),
+                        &board.records,
+                        V0_FROZEN.records_as_of,
+                    )
+                    .is_ok_and(|derived| derived == board.board)
+            })
+    {
+        return None;
+    }
     let pin = corpus.pin();
-    let authority = authority_line(boards)?;
+    let scores: Vec<Scoreboard> = boards.iter().map(|entry| entry.board.clone()).collect();
+    let authority = authority_line(&scores)?;
     let mut out = String::new();
 
     writeln!(out, "# Bounded Electron lifecycle evidence report").expect("String write");
@@ -297,7 +342,8 @@ fn render_report_from(corpus: &Corpus, boards: &[Scoreboard]) -> Option<String> 
     .expect("String write");
     writeln!(out, "| --- | --- | ---: | ---: | ---: | --- |").expect("String write");
 
-    for (published, board) in PUBLISHED.iter().zip(boards) {
+    for (published, platform_board) in PUBLISHED.iter().zip(boards) {
+        let board = &platform_board.board;
         let receipt = parse_receipt(published.receipt);
         writeln!(
             out,
@@ -551,8 +597,9 @@ fn lifecycle_evidence_negative_controls_change_score_and_break_receipt_binding()
 fn report_authority_line_comes_from_the_board() {
     let corpus = corpus();
     let boards = published_boards(&corpus);
+    let scores: Vec<Scoreboard> = boards.iter().map(|entry| entry.board.clone()).collect();
     assert_eq!(
-        authority_line(&boards),
+        authority_line(&scores),
         Some(AuthorityProfile::LegacySandboxOff.as_str())
     );
 
@@ -588,11 +635,11 @@ fn report_authority_line_comes_from_the_board() {
     assert_eq!(line, Some("unverified"));
     assert_ne!(
         line,
-        authority_line(&boards),
+        authority_line(&scores),
         "the line follows the records"
     );
 
-    let disagreeing = [boards[0].clone(), scored(&all_unverified)];
+    let disagreeing = [scores[0].clone(), scored(&all_unverified)];
     assert_eq!(
         authority_line(&disagreeing),
         None,
@@ -601,7 +648,7 @@ fn report_authority_line_comes_from_the_board() {
 
     // The rendered report itself follows the boards: an all-`unverified` set renders
     // `unverified` (not the committed bytes), and a disagreeing set renders nothing.
-    let unverified_boards: Vec<Scoreboard> = PUBLISHED
+    let unverified_boards: Vec<PlatformBoard> = PUBLISHED
         .iter()
         .map(|platform| {
             let relabelled: Vec<EvidenceRecord> = platform
@@ -609,7 +656,12 @@ fn report_authority_line_comes_from_the_board() {
                 .iter()
                 .map(|bytes| relabel(bytes))
                 .collect();
-            scored(&relabelled)
+            PlatformBoard {
+                platform: platform.platform,
+                arch: platform.arch,
+                board: scored(&relabelled),
+                records: relabelled,
+            }
         })
         .collect();
     let rendered =
@@ -617,8 +669,39 @@ fn report_authority_line_comes_from_the_board() {
     assert!(rendered.contains("- Authority profile: `unverified` ("));
     assert_ne!(rendered.as_bytes(), REPORT_MD);
     let mut mixed_boards = boards.clone();
-    mixed_boards[1] = scored(&all_unverified);
+    mixed_boards[1].board = scored(&all_unverified);
     assert!(render_report_from(&corpus, &mixed_boards).is_none());
+}
+
+/// A report may not silently omit or relabel platform evidence. The board
+/// score itself is platform-agnostic; its source identity must travel with it.
+#[test]
+fn lifecycle_report_rejects_missing_extra_or_misordered_platform_boards() {
+    let corpus = corpus();
+    let boards = published_boards(&corpus);
+    assert!(render_report_from(&corpus, &boards).is_some());
+
+    assert!(render_report_from(&corpus, &boards[..boards.len() - 1]).is_none());
+
+    let mut extra = boards.clone();
+    extra.push(boards[0].clone());
+    assert!(render_report_from(&corpus, &extra).is_none());
+
+    let mut reordered = boards.clone();
+    reordered.swap(0, 1);
+    assert!(render_report_from(&corpus, &reordered).is_none());
+
+    let mut relabelled = boards.clone();
+    relabelled[1].platform = Platform::Macos;
+    assert!(render_report_from(&corpus, &relabelled).is_none());
+
+    let mut wrong_arch = boards.clone();
+    wrong_arch[0].arch = Arch::X86_64;
+    assert!(render_report_from(&corpus, &wrong_arch).is_none());
+
+    let mut wrong_evidence = boards.clone();
+    wrong_evidence[0].records = boards[1].records.clone();
+    assert!(render_report_from(&corpus, &wrong_evidence).is_none());
 }
 
 /// gh566 C1: every case the host OS's published receipt maps is a live, non-ignored
