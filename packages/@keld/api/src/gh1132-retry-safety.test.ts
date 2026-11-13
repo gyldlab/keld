@@ -82,6 +82,44 @@ describe("GH-1132: a status snapshot is not a replay fence", () => {
   );
 
   test(
+    "no-resend control: API-001 does not cancel the original deferred effect",
+    withSqlite(async (db) => {
+      db.exec(
+        "CREATE TABLE effects (id INTEGER PRIMARY KEY, logical_key TEXT NOT NULL)",
+      );
+      const insert = db.query("INSERT INTO effects (logical_key) VALUES (?1)");
+      const count = db.query(
+        "SELECT COUNT(*) AS n FROM effects WHERE logical_key = ?1",
+      );
+      const committed = (): number =>
+        (count.get(LOGICAL_ACTION) as { n: number }).n;
+      const delayed = latch();
+      const outstanding: Promise<unknown>[] = [];
+      let calls = 0;
+      const first: EchoCallHandler = async () => {
+        calls += 1;
+        outstanding.push(delayed.wait.then(() => insert.run(LOGICAL_ACTION)));
+        throw new Error("handler failed but did not cancel its child task");
+      };
+
+      try {
+        const answer = await resolveEchoCall(ECHO_CHANNEL, PAYLOAD, first);
+        expect(answer.kind).toBe(FrameKind.Err);
+        expect(decodeCallError(answer.payload).code).toBe("KELD-API-001");
+        expect(committed()).toBe(0);
+        // No second CALL: an absent status does not authorize a resend.
+        delayed.release();
+        await Promise.all(outstanding);
+        expect(calls).toBe(1);
+        expect(committed()).toBe(1);
+      } finally {
+        delayed.release();
+        await Promise.allSettled(outstanding);
+      }
+    }),
+  );
+
+  test(
     "safe app control: durable idempotency returns the recorded result in either completion order",
     withSqlite(async (db) => {
       db.exec(
@@ -117,7 +155,7 @@ describe("GH-1132: a status snapshot is not a replay fence", () => {
         const key = `${LOGICAL_ACTION}-${order}`;
         const payload = new TextEncoder().encode(key);
         const delayed = latch();
-        const outstanding: Promise<unknown>[] = [];
+        const outstanding: Promise<Uint8Array>[] = [];
         const first: EchoCallHandler = async (_channel, bytes) => {
           outstanding.push(delayed.wait.then(() => perform(bytes, 66)));
           throw new Error("first handler did not await its deferred effect");
@@ -150,8 +188,9 @@ describe("GH-1132: a status snapshot is not a replay fence", () => {
           expect(retry.kind).toBe(FrameKind.Reply);
 
           delayed.release();
-          await Promise.all(outstanding);
+          const originalResults = await Promise.all(outstanding);
           const expected = order === "retry-first" ? 65 : 66;
+          expect(originalResults).toEqual([Uint8Array.of(expected)]);
           expect(retry.payload).toEqual(Uint8Array.of(expected));
           expect((read.get(key) as { result: number }).result).toBe(expected);
           expect(committed(key)).toBe(1);
