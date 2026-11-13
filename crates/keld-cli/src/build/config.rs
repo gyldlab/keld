@@ -657,6 +657,8 @@ mod tests {
 #[cfg(any(windows, test))]
 #[derive(Debug)]
 pub(super) struct WindowsBuildConfig {
+    pub(super) signing: String,
+    pub(super) developer_signer: Option<WindowsDeveloperSigner>,
     pub(super) channel: String,
     pub(super) out_dir: PathBuf,
     pub(super) source_root: PathBuf,
@@ -672,6 +674,59 @@ pub(super) struct WindowsToolPin {
     pub(super) path: PathBuf,
     pub(super) sha256: [u8; 32],
 }
+#[cfg(any(windows, test))]
+#[derive(Debug)]
+pub(super) struct WindowsDeveloperSigner {
+    pub(super) certificate_thumbprint: String,
+    pub(super) publisher_scope: String,
+    pub(super) release_public_key: PathBuf,
+    pub(super) sign_tool: WindowsToolPin,
+    pub(super) git: PathBuf,
+    pub(super) cargo: PathBuf,
+    pub(super) rustc: PathBuf,
+    pub(super) cargo_home: PathBuf,
+}
+
+#[cfg(any(windows, test))]
+fn windows_developer_signer(source: &mut Fields) -> Result<WindowsDeveloperSigner, BuildError> {
+    let phase = "Windows developer signer";
+    let certificate_thumbprint = required_text(source, "certificateThumbprint", phase)?;
+    if certificate_thumbprint.len() != 40
+        || !certificate_thumbprint
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(invalid(
+            phase,
+            "certificateThumbprint must be exactly40hex characters",
+        ));
+    }
+    let publisher_scope = required_text(source, "publisherScope", phase)?;
+    if parse_sha256(&publisher_scope).is_none() {
+        return Err(invalid(
+            phase,
+            "publisherScope must be exact lowercase SHA256",
+        ));
+    }
+    let release_public_key = required_text(source, "releasePublicKey", phase)?.into();
+    let sign_tool = windows_pin(source, "signTool")?;
+    let git = required_text(source, "git", phase)?.into();
+    let cargo = required_text(source, "cargo", phase)?.into();
+    let rustc = required_text(source, "rustc", phase)?.into();
+    let cargo_home = required_text(source, "cargoHome", phase)?.into();
+    closed(source, phase)?;
+    Ok(WindowsDeveloperSigner {
+        certificate_thumbprint,
+        publisher_scope,
+        release_public_key,
+        sign_tool,
+        git,
+        cargo,
+        rustc,
+        cargo_home,
+    })
+}
+
 #[cfg(any(windows, test))]
 fn windows_object(source: &mut Fields, name: &'static str) -> Result<Fields, BuildError> {
     match source.remove(name) {
@@ -696,14 +751,31 @@ fn windows_pin(source: &mut Fields, name: &'static str) -> Result<WindowsToolPin
 pub(super) fn parse_windows_build(source: &str) -> Result<WindowsBuildConfig, BuildError> {
     let phase = "keld.build.ts Windows test recipe";
     let mut root = fields(source, phase)?;
-    if required_text(&mut root, "target", phase)? != "windows-x64"
-        || required_text(&mut root, "signing", phase)? != "test-local-untimestamped"
-    {
+    if required_text(&mut root, "target", phase)? != "windows-x64" {
+        return Err(invalid(phase, "target must be windows-x64"));
+    }
+    let signing = required_text(&mut root, "signing", phase)?;
+    if !matches!(
+        signing.as_str(),
+        "test-local-untimestamped" | "developer-local"
+    ) {
         return Err(invalid(
             phase,
-            "explicit windows-x64 and test-local-untimestamped required; production signing is not inferred",
+            "explicit developer-local or test-local-untimestamped signing required",
         ));
     }
+    let developer_signer = match root.remove("developerSigner") {
+        Some(LiteralConfigValue::Object(mut value)) if signing == "developer-local" => {
+            Some(windows_developer_signer(&mut value)?)
+        }
+        None if signing == "test-local-untimestamped" => None,
+        _ => {
+            return Err(invalid(
+                phase,
+                "developer-local requires a closed developerSigner; test mode forbids it",
+            ));
+        }
+    };
     let channel = required_text(&mut root, "channel", phase)?;
     if !matches!(channel.as_str(), "stable" | "beta" | "nightly") {
         return Err(invalid(phase, "unsupported release channel"));
@@ -743,6 +815,8 @@ pub(super) fn parse_windows_build(source: &str) -> Result<WindowsBuildConfig, Bu
     }
     closed(&root, phase)?;
     Ok(WindowsBuildConfig {
+        signing,
+        developer_signer,
         channel,
         out_dir,
         source_root,
@@ -769,6 +843,8 @@ mod windows_build_tests {
         let source = recipe();
         let value = parse_windows_build(&source).unwrap();
         assert_eq!(value.modules, ["main.js"]);
+        assert_eq!(value.signing, "test-local-untimestamped");
+        assert!(value.developer_signer.is_none());
         assert_eq!(value.channel, "stable");
         // Cross-platform tests MUST consume the complete Windows schema:
         // otherwise Linux/macOS Clippy -D warnings sees unused Windows fields.
@@ -782,6 +858,52 @@ mod windows_build_tests {
         assert_eq!(value.tsc.sha256, [0x33; 32]);
         assert!(parse_build(&source).is_err());
     }
+    #[test]
+    fn developer_mode_requires_exact_user_selected_public_signer_data() {
+        let signer = format!(
+            "developerSigner:{{certificateThumbprint:'{}',publisherScope:'{}',releasePublicKey:'D:/dev/update.pub',signTool:{{path:'D:/signtool.exe',sha256:'{}'}},git:'D:/git.exe',cargo:'D:/cargo.exe',rustc:'D:/rustc.exe',cargoHome:'D:/cargo'}},",
+            "A".repeat(40),
+            "b".repeat(64),
+            "c".repeat(64)
+        );
+        let source = recipe().replace(
+            "signing:'test-local-untimestamped',",
+            &format!("signing:'developer-local',{signer}"),
+        );
+        let parsed = parse_windows_build(&source).expect("closed developer signer");
+        let dev = parsed.developer_signer.expect("developer signer");
+        assert_eq!(parsed.signing, "developer-local");
+        assert_eq!(dev.certificate_thumbprint, "A".repeat(40));
+        assert_eq!(dev.publisher_scope, "b".repeat(64));
+        assert_eq!(dev.release_public_key, PathBuf::from("D:/dev/update.pub"));
+        assert_eq!(dev.sign_tool.sha256, [0xcc; 32]);
+        assert_eq!(dev.git, PathBuf::from("D:/git.exe"));
+        assert_eq!(dev.cargo, PathBuf::from("D:/cargo.exe"));
+        assert_eq!(dev.rustc, PathBuf::from("D:/rustc.exe"));
+        assert_eq!(dev.cargo_home, PathBuf::from("D:/cargo"));
+        for bad in [
+            source.replace(
+                "certificateThumbprint:'",
+                "privateKey:'secret',certificateThumbprint:'",
+            ),
+            source.replace(
+                "certificateThumbprint:'",
+                "certificateThumbprint:'F',certificateThumbprint:'",
+            ),
+            source.replace(&"b".repeat(64), &"G".repeat(64)),
+            source.replace(
+                "signing:'developer-local'",
+                "signing:'test-local-untimestamped'",
+            ),
+        ] {
+            assert!(parse_windows_build(&bad).is_err(), "accepted {bad}");
+        }
+        assert!(
+            parse_windows_build(&recipe().replace("test-local-untimestamped", "developer-local"))
+                .is_err()
+        );
+    }
+
     #[test]
     fn recipe_refuses_authority_commands_dynamic_or_production_fields() {
         for field in [

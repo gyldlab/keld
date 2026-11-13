@@ -139,8 +139,13 @@ fn is_windows_app_input_check(args: &[String]) -> bool {
         || matches!(args, [flag, target, check] if flag == "--target" && target == "windows-x64" && check == "--check-app-inputs")
 }
 
-/// Recognizes only the ordinary Windows product route after diagnostic routes.
-fn windows_product_session(args: &[String]) -> Result<Option<&str>, BuildError> {
+/// User-facing Windows developer build and the retained explicit local-test route.
+#[derive(Debug, PartialEq, Eq)]
+enum WindowsProductRoute<'a> {
+    Developer,
+    LocalTest(&'a str),
+}
+fn windows_product_session(args: &[String]) -> Result<Option<WindowsProductRoute<'_>>, BuildError> {
     let rest = match args {
         [flag, target, rest @ ..] if flag == "--target" && target == "windows-x64" => Some(rest),
         [target, rest @ ..] if target == "--target=windows-x64" => Some(rest),
@@ -148,9 +153,12 @@ fn windows_product_session(args: &[String]) -> Result<Option<&str>, BuildError> 
     };
     match rest {
         None => Ok(None),
-        Some([flag, path]) if flag == "--local-test-session" && !path.is_empty() => Ok(Some(path)),
+        Some([]) => Ok(Some(WindowsProductRoute::Developer)),
+        Some([flag, path]) if flag == "--local-test-session" && !path.is_empty() => {
+            Ok(Some(WindowsProductRoute::LocalTest(path)))
+        }
         Some(_) => Err(BuildError::invocation(
-            "Windows build requires explicit --local-test-session ABS_JSON and test-local-untimestamped in keld.build.ts; production signing is unavailable, installation is not implied",
+            "Windows build accepts a closed developer-local keld.build.ts or an explicit --local-test-session ABS_JSON; installation and public release are separate",
         )),
     }
 }
@@ -168,14 +176,16 @@ fn parse_args(args: &[String]) -> Result<(), BuildError> {
 const BUILD_USAGE: &str = "usage:
   keld build --target macos-arm64
   keld build --target windows-x64 --check-app-inputs
+  keld build --target windows-x64
   keld build --target windows-x64 --local-test-session ABS_JSON
 
 Targets require their native operating system; macos-arm64 requires Apple Silicon.
 Windows --check-app-inputs validates authoring only; it does not build an app.
-Windows --local-test-session builds a LOCAL TEST package with an existing test signer.
-It requires keld.build.ts with signing: 'test-local-untimestamped' and an absolute
-session JSON path. Production signing is unavailable; installation, app launch,
-and Strict containment qualification are not implied.";
+Windows developer-local builds select an existing certificate through closed
+keld.build.ts authoring (developerSigner); the build never imports private keys.
+Windows --local-test-session preserves the original explicit LOCAL TEST route.
+Public release trust, installer activation and Strict runtime qualification
+are separate from the local developer demonstration.";
 
 /// Builds the selected local cell using the invocation directory.
 ///
@@ -251,14 +261,19 @@ pub fn run_build(args: &[String]) -> Result<(), BuildError> {
             ));
         }
     }
-    if let Some(session) = windows_product_session(args)? {
+    if let Some(route) = windows_product_session(args)? {
         #[cfg(windows)]
         {
-            return windows_product::run(std::path::Path::new(session));
+            return match route {
+                WindowsProductRoute::Developer => windows_product::run_developer(),
+                WindowsProductRoute::LocalTest(session) => {
+                    windows_product::run(std::path::Path::new(session))
+                }
+            };
         }
         #[cfg(not(windows))]
         {
-            let _ = session;
+            let _ = route;
             return Err(BuildError::invocation(
                 "Windows product build requires native Windows; no source was built or signed",
             ));
@@ -496,7 +511,7 @@ mod tests {
             run_build(&[flag.into()]).expect("build help does not require a project");
         }
         assert!(BUILD_USAGE.contains("--target windows-x64 --local-test-session ABS_JSON"));
-        assert!(BUILD_USAGE.contains("Production signing is unavailable"));
+        assert!(BUILD_USAGE.contains("developer-local"));
         assert!(BUILD_USAGE.contains("installation, app launch"));
         assert!(BUILD_USAGE.contains("does not build an app"));
     }
@@ -608,7 +623,7 @@ mod windows_product_route_tests {
         values.iter().map(|s| (*s).to_owned()).collect()
     }
     #[test]
-    fn ordinary_windows_route_is_explicit_test_only_and_closed() {
+    fn ordinary_windows_route_accepts_developer_and_retains_closed_test_mode() {
         for a in [
             args(&[
                 "--target",
@@ -624,11 +639,10 @@ mod windows_product_route_tests {
         ] {
             assert_eq!(
                 windows_product_session(&a).unwrap(),
-                Some("D:/session.json")
+                Some(WindowsProductRoute::LocalTest("D:/session.json"))
             );
         }
         for a in [
-            args(&["--target", "windows-x64"]),
             args(&["--target", "windows-x64", "--sign", "production"]),
             args(&[
                 "--target",
@@ -640,6 +654,14 @@ mod windows_product_route_tests {
         ] {
             assert!(windows_product_session(&a).is_err());
         }
+        assert_eq!(
+            windows_product_session(&args(&["--target", "windows-x64"])).unwrap(),
+            Some(WindowsProductRoute::Developer)
+        );
+        assert_eq!(
+            windows_product_session(&args(&["--target=windows-x64"])).unwrap(),
+            Some(WindowsProductRoute::Developer)
+        );
         assert_eq!(
             windows_product_session(&args(&["--target", "macos-arm64"])).unwrap(),
             None
