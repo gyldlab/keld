@@ -9,7 +9,10 @@
     "typecheck": "tsc --noEmit"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./internal/app": "./src/app.ts",
+    "./internal/link": "./src/link.ts",
+    "./internal/window-codec": "./src/window-codec.ts"
   },
   "files": [
     "src"
@@ -17,5 +20,8 @@
   "devDependencies": {
     "@types/bun": "1.4.0",
     "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "@keld/kipc": "link:../kipc"
   }
 }

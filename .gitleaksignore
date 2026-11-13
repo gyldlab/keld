@@ -2,3 +2,7 @@
 # "unknown key" followed by descriptive text; no credential is present.
 # Keep this suppression fingerprint-specific so other findings still fail CI.
 0ef941a14a40ff7529dc2c6e7cd89dac65a9a517:docs/specs/kel53-full-package-activation.md:generic-api-key:35
+# GH1287: the SHA256 literal is a deterministic hash of the test's emitted
+# transport source, checked by the real package/Source oracle, not a credential.
+# Admit only this exact committed finding; every other scan result still fails.
+2109d6d2ac3468bb1455c4b2a42b4b163cab4119:packages/@keld/api/src/window-source-semantic-release.test-role.ts:generic-api-key:76
