@@ -90,6 +90,8 @@ $realParent = Join-Path $root 'real-policy-parent'
 $junctionParent = Join-Path $root 'junction-policy-parent'
 New-Item -ItemType Junction -Path $junctionParent -Target $realParent -ErrorAction Stop | Out-Null
 Run-Case 'junction-ancestor-rejected' (Join-Path $junctionParent 'policy.json') $true 1 'PROD-PRE-004'
+Run-Case 'trailing-dot-Win32-alias-rejected' ($good+'.') $true 1 'PROD-PRE-002'
+Run-Case 'trailing-space-Win32-alias-rejected' ($good+' ') $true 1 'PROD-PRE-002'
 Run-Case 'missing-policy-rejected' (Join-Path $root 'absent.json') $true 1 'PROD-PRE-003'
 if ($hasSigner) {
     $wrongTool = Save-Case 'wrong-signtool-hash' ($goodJson.Replace($hash,('c'*64)))

@@ -41,6 +41,12 @@ function LocalAbsoluteFile([string]$path, [string]$what) {
         if ([string]::IsNullOrEmpty($part)) {
             Refuse '002' ($what + ' has empty path segments')
         }
+        # Win32 silently aliases trailing-dot and trailing-space names to a
+        # different filesystem object. Reject aliases before opening policy or tool.
+        # A non-drive colon also denotes an alternate data stream, not a file.
+        if ($part -match '[. ]$' -or $part.Contains(':')) {
+            Refuse '002' ($what + ' has a noncanonical Win32 path component')
+        }
         $walk = [IO.Path]::Combine($walk, $part)
         if (-not ([IO.File]::Exists($walk) -or [IO.Directory]::Exists($walk))) {
             Refuse '003' ($what + ' path component not present')
