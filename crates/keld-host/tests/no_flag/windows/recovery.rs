@@ -15,7 +15,8 @@ use crate::support::control::{
 use crate::support::process::{assert_process_signaled_within, open_process_for_wait};
 use crate::support::product::ProductFixture;
 use crate::support::renderer::{
-    HeldRendererRequest, expect_renderer_beacon, spawn_renderer_beacon,
+    HeldRendererRequest, catch_beacon_failure, expect_renderer_beacon, finish_beacon_failure,
+    spawn_renderer_beacon,
 };
 use crate::{
     DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, dev_stage_command, process_exists,
@@ -24,12 +25,12 @@ use crate::{
 
 #[test]
 fn windows_no_flag_host_recovers_bun_in_the_same_native_window() {
-    run_same_window_recovery("CRASH");
+    run_same_window_recovery("CRASH", false);
 }
 
 #[test]
 fn windows_link_only_failure_uses_the_supervisor_owned_restart_path() {
-    run_same_window_recovery("CLOSE_LINK");
+    run_same_window_recovery("CLOSE_LINK", false);
 }
 
 #[test]
@@ -201,7 +202,36 @@ fn windows_crash_loop_keeps_core033_as_the_outer_host_error() {
     assert!(stderr.contains("KELD-RUNTIME-002"), "{stderr}");
 }
 
-fn run_same_window_recovery(failure_command: &str) {
+#[test]
+fn recovery_startup_failure_preserves_beacon_observation_at_the_real_entry() {
+    const CHILD: &str = "KELD_TEST_RECOVERY_BEACON_FAILURE_CHILD";
+    const SELECTOR: &str =
+        "recovery::recovery_startup_failure_preserves_beacon_observation_at_the_real_entry";
+    if std::env::var_os(CHILD).is_some() {
+        // Exercise the same entry as the CRASH/CLOSE_LINK contracts, but use the
+        // existing fixture's deterministic pre-HELLO failure. No recovery
+        // command may be sent and no startup deadline is relaxed.
+        run_same_window_recovery("CLOSE_LINK", true);
+        panic!("pre-HELLO failure unexpectedly completed recovery");
+    }
+    let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        .args([SELECTOR, "--exact", "--nocapture"])
+        .env(CHILD, "1")
+        .output()
+        .expect("run actual recovery startup failure");
+    assert!(!output.status.success(), "original failure disappeared");
+    let stderr = String::from_utf8(output.stderr).expect("failure stderr is UTF-8");
+    assert!(
+        stderr.contains("terminated before its initial authenticated generation bound"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("KELD-BEACON-ON-FAILURE: renderer beacon worker"),
+        "{stderr}"
+    );
+}
+
+fn run_same_window_recovery(failure_command: &str, crash_before_hello: bool) {
     let fixture = ProductFixture::new();
     let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind recovery control");
     let control_port = control_listener
@@ -210,7 +240,7 @@ fn run_same_window_recovery(failure_command: &str) {
         .port();
     let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind recovery beacon");
     let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
-    let beacon = spawn_renderer_beacon(beacon_listener);
+    let mut beacon = Some(spawn_renderer_beacon(beacon_listener));
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -223,7 +253,11 @@ fn run_same_window_recovery(failure_command: &str) {
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
     )
     .expect("stage recovery host");
-    let mut child = dev_stage_command(stage.root(), stage.host())
+    let mut command = dev_stage_command(stage.root(), stage.host());
+    if crash_before_hello {
+        command.env("KELD_T3_CRASH_BEFORE_HELLO", "1");
+    }
+    let mut child = command
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -231,9 +265,25 @@ fn run_same_window_recovery(failure_command: &str) {
         .expect("launch recovery host");
     let host_pid = child.id();
 
-    let (mut g1_reader, mut g1_writer, g1_pid, g1_link) =
-        accept_ready_generation(&control_listener, &mut child);
-    expect_renderer_beacon(beacon, "initial renderer beacon");
+    let (admission, beacon_failure) = catch_beacon_failure(&mut beacon, |_| {
+        accept_ready_generation(&control_listener, &mut child)
+    });
+    let (mut g1_reader, mut g1_writer, g1_pid, g1_link) = match admission {
+        Ok(generation) => generation,
+        Err(failure) => finish_beacon_failure(
+            failure,
+            beacon_failure,
+            || {
+                let _ = child.kill();
+                let _ = child.wait();
+            },
+            std::io::stderr,
+        ),
+    };
+    expect_renderer_beacon(
+        beacon.take().expect("recovery beacon"),
+        "initial renderer beacon",
+    );
     let g1_window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
     writeln!(g1_writer, "{failure_command}").expect("fail g1 app link or process");
     g1_writer.flush().expect("flush g1 failure command");
