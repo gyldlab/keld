@@ -1,0 +1,426 @@
+/**
+ * Main-role `process.*` facts (GH-570, `docs/specs/gh570-main-role-process-facts.md`).
+ *
+ * Each case binds to one spec acceptance criterion. Oracles are independent of the
+ * installer: the launcher's own argument list echoed back by a child process, exact
+ * property descriptors against Electron v44.4.5's `default_app/main.ts:92-96`
+ * and `gin_helper/dictionary.h::SetReadOnly`, the
+ * package manifest bytes, and the pinned oracle release string.
+ *
+ * Negative controls (one mutation each, named per case): defining `defaultApp` as
+ * `undefined` fails the argv cases; defining `sandboxed = false` fails the
+ * undefined-not-false case; `ELECTRON_VERSION_SHIM = "44.4.5"` fails the honesty
+ * case; dropping the preload's import fails the pre-entry case.
+ *
+ * `bun test` shares one module cache across files, so the in-process cases read
+ * the descriptors the single facade import produced; argv-shape cases spawn a
+ * child with the Host guardian's exact flag shape instead of reading this
+ * process's `bun test` argv.
+ */
+import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import "./index";
+import {
+  ELECTRON_VERSION_SHIM,
+  MAIN_PROCESS_TYPE,
+  MAIN_ROLE_UNDEFINED_FLAGS,
+  type ProcessFactsTarget,
+  installMainProcessFacts,
+} from "./process-facts";
+
+const fixtures = join(import.meta.dir, "..", "fixtures");
+
+/**
+ * The flag the macOS guardian always passes before `run <entry>`
+ * (`crates/keld-host/src/main.rs::guardian_bun_command`). `--preload` is added
+ * per case because the guardian adds it only when a sidecar is staged.
+ */
+const GUARDIAN_DEFINE = '--define=process.env.KELD_NATIVE_WINDOW_FACADE:"0"';
+
+/** Kill switch only, below bun's per-test timeout; every fixture exits by itself. */
+const KILL_MS = 4_000;
+
+/** Electron's `defaultApp` descriptor (`default_app/main.ts:92-96`). */
+function frozen(value: string | boolean): PropertyDescriptor {
+  return { value, writable: false, enumerable: true, configurable: false };
+}
+
+/** Electron's native `SetReadOnly` descriptor for `type` and `versions.electron`. */
+function readOnly(value: string | boolean): PropertyDescriptor {
+  return { value, writable: false, enumerable: true, configurable: true };
+}
+
+function spawnFixture(
+  script: string,
+  userArgs: readonly string[],
+  preload?: string,
+): { code: number | null; stderr: string; lines: string[] } {
+  const env: Record<string, string | undefined> = { ...process.env };
+  // Import-only probes: no link is dialled, so the host variable must be absent.
+  delete env.KELD_APP_LINK;
+  const child = Bun.spawnSync({
+    cmd: [
+      process.execPath,
+      GUARDIAN_DEFINE,
+      ...(preload === undefined ? [] : [`--preload=./${preload}`]),
+      "run",
+      `./${script}`,
+      ...userArgs,
+    ],
+    cwd: fixtures,
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: KILL_MS,
+  });
+  return {
+    code: child.exitCode,
+    stderr: child.stderr.toString(),
+    lines: child.stdout
+      .toString()
+      .split("\n")
+      .filter((line) => line.startsWith("GH570_")),
+  };
+}
+
+function descriptors(target: object & { versions: object }) {
+  return {
+    type: Object.getOwnPropertyDescriptor(target, "type"),
+    defaultApp: Object.getOwnPropertyDescriptor(target, "defaultApp"),
+    electron: Object.getOwnPropertyDescriptor(target.versions, "electron"),
+  };
+}
+
+describe("(argv, defaultApp) atom — AC1, AC2", () => {
+  test("process.argv.default-app: a draw.io-shaped main slices exactly the user arguments under the guardian flag shape", () => {
+    const userArgs = ["gh570-alpha", "--disable-update"];
+    expect(spawnFixture("process_facts_drawio_shape.ts", userArgs)).toEqual({
+      code: 0,
+      stderr: "",
+      lines: [
+        "GH570_DEFAULT_APP=true",
+        `GH570_EXEC_ARGV=${JSON.stringify([GUARDIAN_DEFINE])}`,
+        "GH570_ARGV1_IS_ENTRY=true",
+        `GH570_USER_ARGS=${JSON.stringify(userArgs)}`,
+      ],
+    });
+  });
+
+  test("process.argv.default-app.empty-user-args: with no user arguments (the keld dev case) the tokens are empty, not the entry path", () => {
+    expect(spawnFixture("process_facts_drawio_shape.ts", [])).toEqual({
+      code: 0,
+      stderr: "",
+      lines: [
+        "GH570_DEFAULT_APP=true",
+        `GH570_EXEC_ARGV=${JSON.stringify([GUARDIAN_DEFINE])}`,
+        "GH570_ARGV1_IS_ENTRY=true",
+        "GH570_USER_ARGS=[]",
+      ],
+    });
+  });
+});
+
+describe("descriptors — AC3, AC4", () => {
+  test("process.default-app.domain: defaultApp is Electron's frozen enumerable true", () => {
+    expect(Object.getOwnPropertyDescriptor(process, "defaultApp")).toEqual(
+      frozen(true),
+    );
+  });
+
+  test("process.type and process.versions.electron are read-only but configurable, as in Electron", () => {
+    expect(Object.getOwnPropertyDescriptor(process, "type")).toEqual(
+      readOnly(MAIN_PROCESS_TYPE),
+    );
+    expect(MAIN_PROCESS_TYPE).toBe("browser");
+    expect(
+      Object.getOwnPropertyDescriptor(process.versions, "electron"),
+    ).toEqual(readOnly(ELECTRON_VERSION_SHIM));
+    const versions = process.versions as { electron?: string };
+    expect(() => {
+      versions.electron = "44.4.5";
+    }).toThrow(TypeError);
+    expect(versions.electron).toBe(ELECTRON_VERSION_SHIM);
+  });
+
+  test("process.versions.electron.honesty: the shim constant is the package version, never the pinned oracle release", () => {
+    const manifest = JSON.parse(
+      readFileSync(join(import.meta.dir, "..", "package.json"), "utf8"),
+    ) as { version: string };
+    expect(ELECTRON_VERSION_SHIM).toBe(manifest.version);
+    expect(ELECTRON_VERSION_SHIM).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(ELECTRON_VERSION_SHIM).not.toBe("44.4.5");
+    // npm `electron` starts at 0.1.0; the bounded full-list predicate is #569's cell.
+    expect(ELECTRON_VERSION_SHIM.startsWith("0.0.")).toBe(true);
+  });
+});
+
+describe("undefined, not false — AC5", () => {
+  test("process.mas/windows-store/sandboxed/context-isolated/is-main-frame are not own properties and read undefined", () => {
+    expect([...MAIN_ROLE_UNDEFINED_FLAGS]).toEqual([
+      "mas",
+      "windowsStore",
+      "sandboxed",
+      "contextIsolated",
+      "isMainFrame",
+    ]);
+    const facts = process as unknown as Record<string, unknown>;
+    for (const name of MAIN_ROLE_UNDEFINED_FLAGS) {
+      expect(Object.hasOwn(process, name)).toBe(false);
+      expect(typeof facts[name]).toBe("undefined");
+    }
+    expect(Object.hasOwn(process.versions, "chrome")).toBe(false);
+  });
+
+  test("process.resources-path.string today: resourcesPath is absent until the #452 payload delivers it (spec T3 inverts this case)", () => {
+    expect(Object.hasOwn(process, "resourcesPath")).toBe(false);
+    expect(typeof (process as { resourcesPath?: unknown }).resourcesPath).toBe(
+      "undefined",
+    );
+  });
+});
+
+describe("one owner — AC6, AC7", () => {
+  test("a second installation is a no-op with byte-identical descriptors", () => {
+    const before = descriptors(process);
+    expect(() => installMainProcessFacts()).not.toThrow();
+    expect(descriptors(process)).toEqual(before);
+  });
+
+  test("a plain target receives the three facts and nothing else", () => {
+    const target: ProcessFactsTarget & Record<string, unknown> = {
+      versions: {},
+    };
+    installMainProcessFacts(target);
+    expect(descriptors(target as { versions: object })).toEqual({
+      type: readOnly("browser"),
+      defaultApp: frozen(true),
+      electron: readOnly(ELECTRON_VERSION_SHIM),
+    });
+    expect(Object.keys(target).sort()).toEqual([
+      "defaultApp",
+      "type",
+      "versions",
+    ]);
+  });
+
+  test("a foreign non-configurable type refuses with KELD-COMPAT-014 and defines no fact", () => {
+    const target: ProcessFactsTarget = { versions: {} };
+    Object.defineProperty(target, "type", frozen("renderer"));
+    expect(() => installMainProcessFacts(target)).toThrow(
+      /^KELD-COMPAT-014: process\.type /,
+    );
+    expect(Object.hasOwn(target, "defaultApp")).toBe(false);
+    expect(Object.hasOwn(target.versions, "electron")).toBe(false);
+  });
+
+  test("a foreign configurable type with another value refuses too; it is not silently overwritten", () => {
+    const target = { versions: {}, type: "renderer" };
+    expect(() => installMainProcessFacts(target)).toThrow(
+      /^KELD-COMPAT-014: process\.type is already "renderer"/,
+    );
+    expect(target.type).toBe("renderer");
+    expect(Object.hasOwn(target, "defaultApp")).toBe(false);
+  });
+
+  test("a foreign versions.electron refuses before any fact is written", () => {
+    const target: ProcessFactsTarget = { versions: { electron: "44.4.5" } };
+    expect(() => installMainProcessFacts(target)).toThrow(
+      /^KELD-COMPAT-014: process\.versions\.electron is already "44\.4\.5"/,
+    );
+    expect(Object.hasOwn(target, "type")).toBe(false);
+    expect(Object.hasOwn(target, "defaultApp")).toBe(false);
+  });
+
+  test("a null-prototype conflicting value refuses with the typed error and unchanged descriptors", () => {
+    const target = { versions: {}, type: Object.create(null) };
+    const before = descriptors(target);
+    expect(() => installMainProcessFacts(target)).toThrow(
+      /^KELD-COMPAT-014: process\.type is already an object/,
+    );
+    expect(descriptors(target)).toEqual(before);
+  });
+
+  for (const kind of ["object", "function"] as const) {
+    test(`a conflicting ${kind} cannot mutate facts through diagnostic coercion`, () => {
+      const target: ProcessFactsTarget = { versions: {} };
+      let calls = 0;
+      const value = kind === "object" ? {} : () => undefined;
+      Object.defineProperty(value, "toString", {
+        value: () => {
+          calls += 1;
+          Object.defineProperty(target, "type", frozen("browser"));
+          return "foreign";
+        },
+      });
+      Object.defineProperty(target.versions, "electron", { value });
+      const before = descriptors(target);
+      expect(() => installMainProcessFacts(target)).toThrow(
+        /^KELD-COMPAT-014: process\.versions\.electron /,
+      );
+      expect(calls).toBe(0);
+      expect(descriptors(target)).toEqual(before);
+    });
+  }
+
+  test("conflict diagnostics do not inspect primitive-conversion or type-tag getters", () => {
+    const target: ProcessFactsTarget = { versions: {} };
+    let calls = 0;
+    const value = {};
+    for (const key of [Symbol.toPrimitive, Symbol.toStringTag]) {
+      Object.defineProperty(value, key, {
+        get: () => {
+          calls += 1;
+          throw new Error("diagnostics must not execute value hooks");
+        },
+      });
+    }
+    Object.defineProperty(target.versions, "electron", { value });
+    const before = descriptors(target);
+    expect(() => installMainProcessFacts(target)).toThrow(
+      /^KELD-COMPAT-014: process\.versions\.electron is already an object/,
+    );
+    expect(calls).toBe(0);
+    expect(descriptors(target)).toEqual(before);
+  });
+
+  test("a same-value configurable definition is adopted with the native descriptor", () => {
+    const target = { versions: {}, type: "browser" };
+    installMainProcessFacts(target);
+    expect(Object.getOwnPropertyDescriptor(target, "type")).toEqual(
+      readOnly("browser"),
+    );
+    expect(Object.getOwnPropertyDescriptor(target, "defaultApp")).toEqual(
+      frozen(true),
+    );
+  });
+
+  test("native-configurable facts can be deleted; defaultApp cannot", () => {
+    const target: ProcessFactsTarget & Record<string, unknown> = {
+      versions: {},
+    };
+    installMainProcessFacts(target);
+    expect(Reflect.deleteProperty(target, "type")).toBe(true);
+    expect(Reflect.deleteProperty(target.versions, "electron")).toBe(true);
+    expect(Reflect.deleteProperty(target, "defaultApp")).toBe(false);
+  });
+
+  test("a non-configurable same-value type is refused before writing other facts", () => {
+    const target: ProcessFactsTarget = { versions: {} };
+    Object.defineProperty(target, "type", frozen(MAIN_PROCESS_TYPE));
+    const before = descriptors(target);
+    expect(() => installMainProcessFacts(target)).toThrow(
+      /^KELD-COMPAT-014: process\.type /,
+    );
+    expect(descriptors(target)).toEqual(before);
+  });
+
+  test("a non-configurable same-value electron version is refused without partial writes", () => {
+    const target: ProcessFactsTarget = { versions: {} };
+    Object.defineProperty(
+      target.versions,
+      "electron",
+      frozen(ELECTRON_VERSION_SHIM),
+    );
+    const before = descriptors(target);
+    expect(() => installMainProcessFacts(target)).toThrow(
+      /^KELD-COMPAT-014: process\.versions\.electron /,
+    );
+    expect(descriptors(target)).toEqual(before);
+  });
+
+  test("a compatible non-configurable defaultApp is retained while native facts are installed", () => {
+    const target: ProcessFactsTarget = { versions: {} };
+    Object.defineProperty(target, "defaultApp", frozen(true));
+    installMainProcessFacts(target);
+    expect(descriptors(target)).toEqual({
+      type: readOnly(MAIN_PROCESS_TYPE),
+      defaultApp: frozen(true),
+      electron: readOnly(ELECTRON_VERSION_SHIM),
+    });
+    const before = descriptors(target);
+    expect(() => installMainProcessFacts(target)).not.toThrow();
+    expect(descriptors(target)).toEqual(before);
+  });
+
+  // Failure-contract regressions: remove the absent-fact extensibility check
+  // and these cases throw TypeError or permanently freeze earlier facts.
+  for (const [name, versions] of [
+    ["non-extensible", Object.preventExtensions({})],
+    ["frozen", Object.freeze({})],
+  ] as const) {
+    test(`an absent electron fact on ${name} versions refuses before any write`, () => {
+      const target = { versions, type: "browser" };
+      const before = descriptors(target);
+      expect(() => installMainProcessFacts(target)).toThrow(
+        /^KELD-COMPAT-014: process\.versions\.electron /,
+      );
+      expect(descriptors(target)).toEqual(before);
+    });
+  }
+
+  test("a non-extensible target with absent type refuses without changing descriptors", () => {
+    const target = Object.preventExtensions({ versions: {} });
+    const before = descriptors(target);
+    expect(() => installMainProcessFacts(target)).toThrow(
+      /^KELD-COMPAT-014: process\.type /,
+    );
+    expect(descriptors(target)).toEqual(before);
+  });
+
+  test("an absent defaultApp on a non-extensible target refuses before freezing a compatible type", () => {
+    const target = Object.preventExtensions({ versions: {}, type: "browser" });
+    const before = descriptors(target);
+    expect(() => installMainProcessFacts(target)).toThrow(
+      /^KELD-COMPAT-014: process\.defaultApp /,
+    );
+    expect(descriptors(target)).toEqual(before);
+  });
+
+  test("compatible facts on non-extensible owners are adopted and repeated installation is a no-op", () => {
+    const versions = Object.preventExtensions(
+      Object.defineProperty({}, "electron", readOnly(ELECTRON_VERSION_SHIM)),
+    );
+    const target = Object.preventExtensions({
+      versions,
+      type: "browser",
+      defaultApp: true,
+    });
+    installMainProcessFacts(target);
+    expect(descriptors(target)).toEqual({
+      type: readOnly("browser"),
+      defaultApp: frozen(true),
+      electron: readOnly(ELECTRON_VERSION_SHIM),
+    });
+    const before = descriptors(target);
+    expect(() => installMainProcessFacts(target)).not.toThrow();
+    expect(descriptors(target)).toEqual(before);
+  });
+});
+
+describe("pre-entry readiness — AC8", () => {
+  test("process.early.type: with a preload that imports only process-facts, an electron-log-shaped dependency selects its main mode before electron is imported", () => {
+    expect(
+      spawnFixture(
+        "process_facts_early_entry.ts",
+        [],
+        "process_facts_preload.ts",
+      ),
+    ).toEqual({
+      code: 0,
+      stderr: "",
+      lines: ["GH570_EARLY mode=main defaultApp=true facadeType=browser"],
+    });
+  });
+
+  test("negative control: without the preload the dependency sees undefined while the facade import still installs the facts afterwards", () => {
+    expect(spawnFixture("process_facts_early_entry.ts", [])).toEqual({
+      code: 0,
+      stderr: "",
+      lines: [
+        "GH570_EARLY mode=unknown defaultApp=undefined facadeType=browser",
+      ],
+    });
+  });
+});
