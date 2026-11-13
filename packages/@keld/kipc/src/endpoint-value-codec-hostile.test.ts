@@ -102,18 +102,16 @@ test("argument count is bounded from its emitted snapshot and rejects proxy grow
       return descriptor;
     },
   });
+  // The newer snapshot classifier rejects the changed enumerable shape
+  // as malformed before emitting a count; the extra entry never escapes.
   expect(() => encodeEndpointArguments(changingLength)).toThrow(
-    "KELD-COMPAT-102",
+    "KELD-COMPAT-101",
   );
+  expect(lengthReads).toBeGreaterThan(0);
 });
 
-test("native slots survive prototype changes and Dates keep timestamps", () => {
-  for (const value of [
-    new Map([["k", 1]]),
-    new Set([1]),
-    new ArrayBuffer(4),
-    new Error("failure"),
-  ]) {
+test("native brands survive prototype erasure and supported Dates keep timestamps", () => {
+  for (const value of [new Map([["k", 1]]), new Set([1]), new ArrayBuffer(4)]) {
     Object.setPrototypeOf(value, Object.prototype);
     expect(caught(() => encodeEndpointValue(value)).code).toBe(
       "KELD-COMPAT-100",
@@ -125,12 +123,27 @@ test("native slots survive prototype changes and Dates keep timestamps", () => {
       "KELD-COMPAT-100",
     );
   }
+  // Error has no public slot probe after its prototype is replaced. A
+  // data-only record must never leak its non-enumerable stack or message.
+  const erasedError = new Error("failure");
+  Object.setPrototypeOf(erasedError, Object.prototype);
+  expect(decodeEndpointValue(encodeEndpointValue(erasedError))).toEqual({});
 
   const date = new Date("2024-02-03T04:05:06.789Z");
-  Object.setPrototypeOf(date, null);
   const decoded = decodeEndpointValue(encodeEndpointValue(date));
   expect(decoded).toBeInstanceOf(Date);
   expect((decoded as Date).getTime()).toBe(1_706_933_106_789);
+  // The native Date internal slot still authorizes the timestamp even
+  // after the caller removes its prototype.
+  Object.setPrototypeOf(date, null);
+  const stripped = decodeEndpointValue(encodeEndpointValue(date));
+  expect(stripped).toBeInstanceOf(Date);
+  expect((stripped as Date).getTime()).toBe(1_706_933_106_789);
+  const invalid = new Date(NaN);
+  Object.setPrototypeOf(invalid, null);
+  expect(caught(() => encodeEndpointValue(invalid)).code).toBe(
+    "KELD-COMPAT-101",
+  );
 
   const typedArrayProxy = new Proxy(new Uint8Array([1, 2]), {});
   expect(caught(() => encodeEndpointValue(typedArrayProxy)).code).toBe(
@@ -165,12 +178,22 @@ test("GH-544 class instances flatten own enumerable fields with exact wire bytes
   expect(decodeEndpointValue(golden)).toEqual({ label: "OK" });
 });
 
-test("default proxy wrappers over native-slot values stay unsupported", () => {
+test("native Proxy wrappers cannot masquerade as supported records", () => {
+  // The intrinsic %TypedArray% prototype check and the DataView constructor
+  // exclude wrappers whose native slots are otherwise inaccessible.
+  for (const value of [
+    new Proxy(new Uint8Array([1, 2]), {}),
+    new Proxy(new Int16Array([3]), {}),
+    new Proxy(new DataView(new ArrayBuffer(4)), {}),
+  ]) {
+    expect(caught(() => encodeEndpointValue(value)).code).toBe(
+      "KELD-COMPAT-100",
+    );
+  }
+  expect(
+    caught(() => encodeEndpointValue(new Proxy(new Date(1), {}))).code,
+  ).toBe("KELD-COMPAT-100");
   const nativeValues: object[] = [
-    new Uint8Array([1, 2]),
-    new Int16Array([3]),
-    new DataView(new ArrayBuffer(4)),
-    new Date(1),
     new Map([["k", 1]]),
     new Set([1]),
     new ArrayBuffer(4),
@@ -238,9 +261,9 @@ test("genuine codec refusals retain identity while forged and nested throws norm
   const cached = caught(() => encodeEndpointValue(Symbol("cached refusal")));
   expect(cached.code).toBe("KELD-COMPAT-100");
   const replayed = new Proxy(
-    {},
+    { value: 1 },
     {
-      getPrototypeOf() {
+      getOwnPropertyDescriptor() {
         throw cached;
       },
     },
@@ -291,16 +314,19 @@ test("nested public codec calls cannot launder their refusals into a caller", ()
     () => decodeEndpointArguments(validSeventeenWire),
   ];
   for (const nestedOperation of nestedOperations) {
+    let trapCalls = 0;
     const hostile = new Proxy(
-      {},
+      { value: 1 },
       {
-        getPrototypeOf() {
+        getOwnPropertyDescriptor(target, key) {
+          trapCalls += 1;
           nestedOperation();
-          return Object.prototype;
+          return Reflect.getOwnPropertyDescriptor(target, key);
         },
       },
     );
     const error = caught(() => encodeEndpointValue(hostile));
+    expect(trapCalls).toBeGreaterThan(0);
     expect(error.kind).toBe("MalformedValue");
     expect(error.code).toBe("KELD-COMPAT-101");
     let prototypeCalls = 0;
