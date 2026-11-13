@@ -15,7 +15,7 @@ use windows::Win32::System::Com::IStream;
 use windows::Win32::UI::Shell::SHCreateMemStream;
 use windows::core::{BOOL, HSTRING, Interface, w};
 
-use super::{HEADER, NativeResult, Session, failure, read_string, record_result};
+use super::{HEADER, NativeResult, Session, SharedTrace, failure, read_string, record_result};
 
 #[allow(unsafe_code)] // Test-only native getters; every COM pointer remains on its creating STA.
 pub(super) fn header(headers: &wv::ICoreWebView2HttpRequestHeaders) -> NativeResult<Value> {
@@ -44,6 +44,28 @@ fn navigation(args: &wv::ICoreWebView2NavigationStartingEventArgs) -> NativeResu
     // SAFETY: live args; returned headers remain on this STA.
     let observed_header = header(&unsafe { args.RequestHeaders()? })?;
     Ok(json!({"uri":uri,"navigation_id":id,"header":observed_header}))
+}
+
+// Own the real native deferral until it is installed in Session. Every early
+// error (stream, response, duplicate hold) must Complete before returning.
+struct PendingIframeDeferral {
+    value: Option<wv::ICoreWebView2Deferral>,
+    trace: SharedTrace,
+}
+
+#[allow(unsafe_code)] // Test-only COM completion on the callback's creating STA.
+impl Drop for PendingIframeDeferral {
+    fn drop(&mut self) {
+        if let Some(deferral) = self.value.take() {
+            // SAFETY: this guard never leaves the original WebResourceRequested STA.
+            let completed = unsafe { deferral.Complete() };
+            self.trace.borrow_mut().record(
+                "race-child-abort-complete",
+                json!({"completed":completed.is_ok(),
+                    "error":completed.err().map(|error| error.to_string())}),
+            );
+        }
+    }
 }
 
 impl Session {
@@ -200,10 +222,13 @@ impl Session {
                         == wv::COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_DOCUMENT
                     && seen_header["state"] == "absent"
                     && trace.borrow().phase == "race-child";
-                let deferral = if hold_child {
-                    // SAFETY: exact callback args on the creating STA, completed
-                    // before any controller/profile teardown even on a failed test.
-                    Some(unsafe { args.GetDeferral()? })
+                let mut deferral = if hold_child {
+                    // SAFETY: exact callback args on the creating STA. The guard
+                    // completes failures until Session takes lasting ownership.
+                    Some(PendingIframeDeferral {
+                        value: Some(unsafe { args.GetDeferral()? }),
+                        trace: Rc::clone(&trace),
+                    })
                 } else {
                     None
                 };
@@ -226,11 +251,15 @@ impl Session {
                 unsafe {
                     args.SetResponse(&response)?;
                 }
-                if let Some(deferral) = deferral {
+                if let Some(guard) = deferral.as_mut() {
                     if held_iframe.borrow().is_some() {
                         return Err(windows::core::Error::from(E_POINTER));
                     }
-                    held_iframe.borrow_mut().replace(deferral);
+                    let retained = guard
+                        .value
+                        .take()
+                        .ok_or_else(|| windows::core::Error::from(E_POINTER))?;
+                    held_iframe.borrow_mut().replace(retained);
                     trace.borrow_mut().record(
                         "race-child-held",
                         json!({
