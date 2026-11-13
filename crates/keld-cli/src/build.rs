@@ -1,4 +1,4 @@
-//! Native local macOS packaging command (GH-1404).
+//! Native local macOS packaging and Windows local-test build commands.
 //!
 //! This is cold-tool orchestration. Core owns literal extraction, Guard owns
 //! permissions, the existing boot compiler owns the sealed descriptor, and
@@ -12,14 +12,14 @@ mod config;
 mod local_archive;
 #[cfg(windows)]
 mod local_archive_command;
-#[cfg(windows)]
-mod local_initial_install;
-#[cfg(windows)]
-mod local_manifest_session;
 #[cfg(all(windows, test))]
 mod local_baseline;
 #[cfg(windows)]
 mod local_images;
+#[cfg(windows)]
+mod local_initial_install;
+#[cfg(windows)]
+mod local_manifest_session;
 #[cfg(windows)]
 mod local_source;
 #[cfg(windows)]
@@ -140,16 +140,18 @@ fn is_windows_app_input_check(args: &[String]) -> bool {
 }
 
 /// Recognizes only the ordinary Windows product route after diagnostic routes.
-fn windows_product_session(args:&[String])->Result<Option<&str>,BuildError> {
-    let rest=match args {
-        [flag,target,rest @ ..] if flag=="--target" && target=="windows-x64"=>Some(rest),
-        [target,rest @ ..] if target=="--target=windows-x64"=>Some(rest),
-        _=>None,
+fn windows_product_session(args: &[String]) -> Result<Option<&str>, BuildError> {
+    let rest = match args {
+        [flag, target, rest @ ..] if flag == "--target" && target == "windows-x64" => Some(rest),
+        [target, rest @ ..] if target == "--target=windows-x64" => Some(rest),
+        _ => None,
     };
     match rest {
-        None=>Ok(None),
-        Some([flag,path]) if flag=="--local-test-session" && !path.is_empty()=>Ok(Some(path)),
-        Some(_)=>Err(BuildError::invocation("Windows build requires explicit --local-test-session ABS_JSON and test-local-untimestamped in keld.build.ts; production signing is unavailable, installation is not implied")),
+        None => Ok(None),
+        Some([flag, path]) if flag == "--local-test-session" && !path.is_empty() => Ok(Some(path)),
+        Some(_) => Err(BuildError::invocation(
+            "Windows build requires explicit --local-test-session ABS_JSON and test-local-untimestamped in keld.build.ts; production signing is unavailable, installation is not implied",
+        )),
     }
 }
 
@@ -163,7 +165,19 @@ fn parse_args(args: &[String]) -> Result<(), BuildError> {
     }
 }
 
-/// Builds the only implemented local cell using the invocation directory.
+const BUILD_USAGE: &str = "usage:
+  keld build --target macos-arm64
+  keld build --target windows-x64 --check-app-inputs
+  keld build --target windows-x64 --local-test-session ABS_JSON
+
+Targets require their native operating system; macos-arm64 requires Apple Silicon.
+Windows --check-app-inputs validates authoring only; it does not build an app.
+Windows --local-test-session builds a LOCAL TEST package with an existing test signer.
+It requires keld.build.ts with signing: 'test-local-untimestamped' and an absolute
+session JSON path. Production signing is unavailable; installation, app launch,
+and Strict containment qualification are not implied.";
+
+/// Builds the selected local cell using the invocation directory.
 ///
 /// The command validates its target and native platform before any file write.
 /// Successful output is published only by Pack after its signature/DMG checks.
@@ -173,6 +187,10 @@ fn parse_args(args: &[String]) -> Result<(), BuildError> {
 /// missing input pins, invalid permissions and native tool failures. Independent
 /// source/runtime qualification remains the caller's separate evidence obligation.
 pub fn run_build(args: &[String]) -> Result<(), BuildError> {
+    if matches!(args, [flag] if flag == "--help" || flag == "-h") {
+        println!("{BUILD_USAGE}");
+        return Ok(());
+    }
     if args.starts_with(&[
         "--target".into(),
         "windows-x64".into(),
@@ -233,11 +251,18 @@ pub fn run_build(args: &[String]) -> Result<(), BuildError> {
             ));
         }
     }
-    if let Some(session)=windows_product_session(args)? {
+    if let Some(session) = windows_product_session(args)? {
         #[cfg(windows)]
-        {return windows_product::run(std::path::Path::new(session));}
+        {
+            return windows_product::run(std::path::Path::new(session));
+        }
         #[cfg(not(windows))]
-        {let _=session;return Err(BuildError::invocation("Windows product build requires native Windows; no source was built or signed"));}
+        {
+            let _ = session;
+            return Err(BuildError::invocation(
+                "Windows product build requires native Windows; no source was built or signed",
+            ));
+        }
     }
     parse_args(args)?;
     if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
@@ -466,6 +491,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn help_succeeds_without_target_or_project_inputs() {
+        for flag in ["--help", "-h"] {
+            run_build(&[flag.into()]).expect("build help does not require a project");
+        }
+        assert!(BUILD_USAGE.contains("--target windows-x64 --local-test-session ABS_JSON"));
+        assert!(BUILD_USAGE.contains("Production signing is unavailable"));
+        assert!(BUILD_USAGE.contains("installation, app launch"));
+        assert!(BUILD_USAGE.contains("does not build an app"));
+    }
+
+    #[test]
+    fn help_does_not_silently_accept_extra_arguments() {
+        for args in [
+            vec!["--help".into(), "--install".into()],
+            vec!["-h".into(), "garbage".into()],
+        ] {
+            assert_eq!(
+                run_build(&args)
+                    .expect_err("invalid help invocation")
+                    .exit_code(),
+                2
+            );
+        }
+    }
+
+    #[test]
     fn local_package_requires_explicit_legacy_policy_at_guard_boundary() {
         for (source, expect) in [
             ("{}", Some("explicit root /profile")),
@@ -553,13 +604,46 @@ mod tests {
 #[cfg(test)]
 mod windows_product_route_tests {
     use super::*;
-    fn args(values:&[&str])->Vec<String> {values.iter().map(|s|(*s).to_owned()).collect()}
-    #[test] fn ordinary_windows_route_is_explicit_test_only_and_closed() {
-        for a in [args(&["--target","windows-x64","--local-test-session","D:/session.json"]),args(&["--target=windows-x64","--local-test-session","D:/session.json"])] {
-            assert_eq!(windows_product_session(&a).unwrap(),Some("D:/session.json"));
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|s| (*s).to_owned()).collect()
+    }
+    #[test]
+    fn ordinary_windows_route_is_explicit_test_only_and_closed() {
+        for a in [
+            args(&[
+                "--target",
+                "windows-x64",
+                "--local-test-session",
+                "D:/session.json",
+            ]),
+            args(&[
+                "--target=windows-x64",
+                "--local-test-session",
+                "D:/session.json",
+            ]),
+        ] {
+            assert_eq!(
+                windows_product_session(&a).unwrap(),
+                Some("D:/session.json")
+            );
         }
-        for a in [args(&["--target","windows-x64"]),args(&["--target","windows-x64","--sign","production"]),args(&["--target","windows-x64","--local-test-session","D:/s","--install"])] {assert!(windows_product_session(&a).is_err());}
-        assert_eq!(windows_product_session(&args(&["--target","macos-arm64"])).unwrap(),None);
-        parse_args(&args(&["--target","macos-arm64"])).unwrap();
+        for a in [
+            args(&["--target", "windows-x64"]),
+            args(&["--target", "windows-x64", "--sign", "production"]),
+            args(&[
+                "--target",
+                "windows-x64",
+                "--local-test-session",
+                "D:/s",
+                "--install",
+            ]),
+        ] {
+            assert!(windows_product_session(&a).is_err());
+        }
+        assert_eq!(
+            windows_product_session(&args(&["--target", "macos-arm64"])).unwrap(),
+            None
+        );
+        parse_args(&args(&["--target", "macos-arm64"])).unwrap();
     }
 }

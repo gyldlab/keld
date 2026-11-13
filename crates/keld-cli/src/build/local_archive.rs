@@ -25,8 +25,13 @@ pub(super) struct LocalArchiveCandidate<'images> {
     _directories: Vec<File>,
 }
 impl LocalArchiveCandidate<'_> {
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "The retained image owner is read only by the installation path."
+    )]
     pub(super) fn signed_pair(&self) -> Result<&PreparedLocalPair, BuildError> {
-        self._images.ok_or_else(|| refuse("synthetic candidate cannot invoke installation"))
+        self._images
+            .ok_or_else(|| refuse("synthetic candidate cannot invoke installation"))
     }
     pub(super) fn path(&self) -> &std::path::Path {
         &self.path
@@ -86,7 +91,13 @@ pub(super) fn prepare<'images>(
     // Derive code/renderer from the same pinned namespace as config/policy;
     // never accept an independently captured application root.
     let sources = pair.source.compiler_sources()?;
-    let modules = CapturedModules::open(&pair.app_root, module_names, &pair.authoring.app.entry, &pair.authoring.app.name, &sources)?;
+    let modules = CapturedModules::open(
+        &pair.app_root,
+        module_names,
+        &pair.authoring.app.entry,
+        &pair.authoring.app.name,
+        &sources,
+    )?;
     let root = pair.session.join("local-app-archive");
     boot::create_windows_stage_root(&root).map_err(refuse)?;
     let directories = windows_inputs::pin_input_root(&root)?;
@@ -157,49 +168,87 @@ pub(super) fn prepare<'images>(
     })
 }
 
-pub(super) fn reopen_emitted_archive(mut output:File,path:&std::path::Path,expected_size:u64)->Result<File,BuildError> {
+pub(super) fn reopen_emitted_archive(
+    mut output: File,
+    path: &std::path::Path,
+    expected_size: u64,
+) -> Result<File, BuildError> {
     // Retain exact emitted bytes across closing the creation writer. The Host
     // opens with deny-write sharing, so retaining a write-capable handle would
     // make the legitimate installer read fail. Namespace custody stays live.
-    use sha2::{Digest as _,Sha256};
+    use sha2::{Digest as _, Sha256};
     output.seek(SeekFrom::Start(0)).map_err(refuse)?;
-    let mut emitted=Sha256::new();let mut buffer=[0_u8;16*1024];
-    loop {let count=output.read(&mut buffer).map_err(refuse)?;if count==0 {break;}emitted.update(&buffer[..count]);}
-    let expected:[u8;32]=emitted.finalize().into();
+    let mut emitted = Sha256::new();
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        let count = output.read(&mut buffer).map_err(refuse)?;
+        if count == 0 {
+            break;
+        }
+        emitted.update(&buffer[..count]);
+    }
+    let expected: [u8; 32] = emitted.finalize().into();
     // Overlap a read-only bridge with the creation handle. Sharing WRITE here
     // accommodates the still-open creation writer; neither handle shares DELETE.
     // Thus the same named file cannot be replaced during the handoff. The final
     // read-only pin denies WRITE again before the bridge is released.
-    let bridge=OpenOptions::new().read(true).share_mode(FILE_SHARE_READ|FILE_SHARE_WRITE)
-        .open(path).map_err(refuse)?;
+    let bridge = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(path)
+        .map_err(refuse)?;
     drop(output);
-    let reopened=super::local_source::pin_file(path,expected_size)?;
-    if reopened.sha256!=expected || reopened.file.metadata().map_err(refuse)?.len()!=expected_size {
+    let reopened = super::local_source::pin_file(path, expected_size)?;
+    if reopened.sha256 != expected
+        || reopened.file.metadata().map_err(refuse)?.len() != expected_size
+    {
         return Err(refuse("archive changed across read-only reopening"));
     }
     drop(bridge);
     Ok(reopened.file)
-
 }
 #[cfg(test)]
 mod handoff_tests {
     use super::*;
     use std::io::Write as _;
-    fn output(path:&std::path::Path)->File {
-        let mut file=OpenOptions::new().read(true).write(true).create_new(true).share_mode(FILE_SHARE_READ).open(path).unwrap();
-        file.write_all(b"actual emitted bytes").unwrap();file.sync_all().unwrap();file
+    fn output(path: &std::path::Path) -> File {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(path)
+            .unwrap();
+        file.write_all(b"actual emitted bytes").unwrap();
+        file.sync_all().unwrap();
+        file
     }
-    #[test] fn readonly_handoff_preserves_bytes_and_blocks_mutation_until_release() {
-        let root=tempfile::tempdir().unwrap();let path=root.path().join("candidate");
-        let mut pin=reopen_emitted_archive(output(&path),&path,b"actual emitted bytes".len() as u64).unwrap();
-        let mut bytes=Vec::new();pin.read_to_end(&mut bytes).unwrap();assert_eq!(bytes,b"actual emitted bytes");
-        assert!(OpenOptions::new().write(true).share_mode(FILE_SHARE_READ|FILE_SHARE_WRITE).open(&path).is_err());
-        assert!(std::fs::rename(&path,root.path().join("replaced")).is_err());
+    #[test]
+    fn readonly_handoff_preserves_bytes_and_blocks_mutation_until_release() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("candidate");
+        let mut pin =
+            reopen_emitted_archive(output(&path), &path, b"actual emitted bytes".len() as u64)
+                .unwrap();
+        let mut bytes = Vec::new();
+        pin.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"actual emitted bytes");
+        assert!(
+            OpenOptions::new()
+                .write(true)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .open(&path)
+                .is_err()
+        );
+        assert!(std::fs::rename(&path, root.path().join("replaced")).is_err());
         assert!(std::fs::remove_file(&path).is_err());
-        drop(pin);assert!(OpenOptions::new().write(true).open(&path).is_ok());
+        drop(pin);
+        assert!(OpenOptions::new().write(true).open(&path).is_ok());
     }
-    #[test] fn declared_length_mismatch_never_returns_candidate_pin() {
-        let root=tempfile::tempdir().unwrap();let path=root.path().join("candidate");
-        assert!(reopen_emitted_archive(output(&path),&path,21).is_err());
+    #[test]
+    fn declared_length_mismatch_never_returns_candidate_pin() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("candidate");
+        assert!(reopen_emitted_archive(output(&path), &path, 21).is_err());
     }
 }

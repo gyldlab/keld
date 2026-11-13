@@ -2,6 +2,7 @@
 // Ready, native document or CloseRequested EVENT is fabricated or authenticated.
 // The real BrowserWindow/Host/native composition is a separate root-run gate.
 import { expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
@@ -232,10 +233,12 @@ for (const native of ["0", "1"] as const) {
         process.execPath,
         "--no-install",
         "--no-env-file",
-        new URL(
-          "../fixtures/original_quit_handoff_unqualified.ts",
-          import.meta.url,
-        ).pathname,
+        fileURLToPath(
+          new URL(
+            "../fixtures/original_quit_handoff_unqualified.ts",
+            import.meta.url,
+          ),
+        ),
       ],
       env,
       stdout: "pipe",

@@ -78,7 +78,7 @@ impl CapturedInputs {
         let source = std::str::from_utf8(&source)
             .map_err(|error| BuildError::input("keld.config.ts", error))?;
         let app = config::parse_app(source)?;
-        require_windows_authoring_paths(&app.entry,app.renderer.as_deref())?;
+        require_windows_authoring_paths(&app.entry, app.renderer.as_deref())?;
         if app.renderer.is_none() {
             return Err(BuildError::input(
                 "Windows application cell",
@@ -441,21 +441,38 @@ mod tests {
     }
 }
 
-
-fn require_windows_authoring_paths(entry:&str,renderer:Option<&str>)->Result<(),BuildError> {
-    let mut paths=vec![entry];if let Some(renderer)=renderer {paths.push(renderer);}
+fn require_windows_authoring_paths(entry: &str, renderer: Option<&str>) -> Result<(), BuildError> {
+    let mut paths = vec![entry];
+    if let Some(renderer) = renderer {
+        paths.push(renderer);
+    }
     keld_guard::validate_windows_package_paths(&paths)
-        .map_err(|error|BuildError::input("Windows authoring paths",error))
+        .map_err(|error| BuildError::input("Windows authoring paths", error))
 }
 #[cfg(test)]
 mod windows_authoring_path_tests {
     use super::*;
-    #[test] fn actual_windows_grammar_rejects_device_and_normalization_aliases() {
-        require_windows_authoring_paths("main.js",Some("index.html")).unwrap();
-        for bad in ["CON","NUL.txt","aux.js","main.js.","main.js ","dir/../main.js","dir/file:stream"] {
-            assert!(require_windows_authoring_paths(bad,Some("index.html")).is_err(),"entry {bad}");
-            assert!(require_windows_authoring_paths("main.js",Some(bad)).is_err(),"renderer {bad}");
+    #[test]
+    fn actual_windows_grammar_rejects_device_and_normalization_aliases() {
+        require_windows_authoring_paths("main.js", Some("index.html")).unwrap();
+        for bad in [
+            "CON",
+            "NUL.txt",
+            "aux.js",
+            "main.js.",
+            "main.js ",
+            "dir/../main.js",
+            "dir/file:stream",
+        ] {
+            assert!(
+                require_windows_authoring_paths(bad, Some("index.html")).is_err(),
+                "entry {bad}"
+            );
+            assert!(
+                require_windows_authoring_paths("main.js", Some(bad)).is_err(),
+                "renderer {bad}"
+            );
         }
-        assert!(require_windows_authoring_paths("Main.js",Some("main.js")).is_err());
+        assert!(require_windows_authoring_paths("Main.js", Some("main.js")).is_err());
     }
 }

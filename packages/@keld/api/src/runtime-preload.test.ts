@@ -281,7 +281,9 @@ test("actual packed API wrapper captures and ACKs over its same stamped installe
           `keld-${name}-${version}.tgz`,
           "--strip-components=1",
           "-C",
-          join("node_modules", "@keld", name),
+          // tar.exe uses POSIX archive path syntax on Windows too.
+          // The already-created destination remains the exact same directory.
+          join("node_modules", "@keld", name).replaceAll("\\", "/"),
         ],
         { cwd: stage, stdout: "pipe", stderr: "pipe" },
       );

@@ -654,67 +654,147 @@ mod tests {
 
 /// Closed Windows test-only build recipe in the existing keld.build.ts file.
 /// Signing credentials/authority and install actions are not project config.
-#[cfg(any(windows,test))]
+#[cfg(any(windows, test))]
 #[derive(Debug)]
 pub(super) struct WindowsBuildConfig {
-    pub(super) channel:String,
-    pub(super) out_dir:PathBuf,
-    pub(super) source_root:PathBuf,
-    pub(super) source_commit:String,
-    pub(super) typescript_root:PathBuf,
-    pub(super) bun:WindowsToolPin,
-    pub(super) tsc:WindowsToolPin,
-    pub(super) modules:Vec<String>,
+    pub(super) channel: String,
+    pub(super) out_dir: PathBuf,
+    pub(super) source_root: PathBuf,
+    pub(super) source_commit: String,
+    pub(super) typescript_root: PathBuf,
+    pub(super) bun: WindowsToolPin,
+    pub(super) tsc: WindowsToolPin,
+    pub(super) modules: Vec<String>,
 }
-#[cfg(any(windows,test))]
+#[cfg(any(windows, test))]
 #[derive(Debug)]
-pub(super) struct WindowsToolPin {pub(super) path:PathBuf,pub(super) sha256:[u8;32]}
-#[cfg(any(windows,test))]
-fn windows_object(source:&mut Fields,name:&'static str)->Result<Fields,BuildError> {
-    match source.remove(name) {Some(LiteralConfigValue::Object(value))=>Ok(value),_=>Err(invalid("Windows build recipe",format!("{name} must be a closed literal object")))}
+pub(super) struct WindowsToolPin {
+    pub(super) path: PathBuf,
+    pub(super) sha256: [u8; 32],
 }
-#[cfg(any(windows,test))]
-fn windows_pin(source:&mut Fields,name:&'static str)->Result<WindowsToolPin,BuildError> {
-    let mut value=windows_object(source,name)?;let path=required_text(&mut value,"path","Windows build tool")?.into();
-    let digest=required_text(&mut value,"sha256","Windows build tool")?;
-    let sha256=parse_sha256(&digest).ok_or_else(||invalid("Windows build tool","expected64lowercaseSHA256digits"))?;
-    closed(&value,"Windows build tool")?;Ok(WindowsToolPin {path,sha256})
+#[cfg(any(windows, test))]
+fn windows_object(source: &mut Fields, name: &'static str) -> Result<Fields, BuildError> {
+    match source.remove(name) {
+        Some(LiteralConfigValue::Object(value)) => Ok(value),
+        _ => Err(invalid(
+            "Windows build recipe",
+            format!("{name} must be a closed literal object"),
+        )),
+    }
 }
-#[cfg(any(windows,test))]
-pub(super) fn parse_windows_build(source:&str)->Result<WindowsBuildConfig,BuildError> {
-    let phase="keld.build.ts Windows test recipe";let mut root=fields(source,phase)?;
-    if required_text(&mut root,"target",phase)?!="windows-x64" || required_text(&mut root,"signing",phase)?!="test-local-untimestamped" {
-        return Err(invalid(phase,"explicit windows-x64 and test-local-untimestamped required; production signing is not inferred"));
+#[cfg(any(windows, test))]
+fn windows_pin(source: &mut Fields, name: &'static str) -> Result<WindowsToolPin, BuildError> {
+    let mut value = windows_object(source, name)?;
+    let path = required_text(&mut value, "path", "Windows build tool")?.into();
+    let digest = required_text(&mut value, "sha256", "Windows build tool")?;
+    let sha256 = parse_sha256(&digest)
+        .ok_or_else(|| invalid("Windows build tool", "expected64lowercaseSHA256digits"))?;
+    closed(&value, "Windows build tool")?;
+    Ok(WindowsToolPin { path, sha256 })
+}
+#[cfg(any(windows, test))]
+pub(super) fn parse_windows_build(source: &str) -> Result<WindowsBuildConfig, BuildError> {
+    let phase = "keld.build.ts Windows test recipe";
+    let mut root = fields(source, phase)?;
+    if required_text(&mut root, "target", phase)? != "windows-x64"
+        || required_text(&mut root, "signing", phase)? != "test-local-untimestamped"
+    {
+        return Err(invalid(
+            phase,
+            "explicit windows-x64 and test-local-untimestamped required; production signing is not inferred",
+        ));
     }
-    let channel=required_text(&mut root,"channel",phase)?;
-    if !matches!(channel.as_str(),"stable"|"beta"|"nightly") {return Err(invalid(phase,"unsupported release channel"));}
-    let out_dir=required_text(&mut root,"outDir",phase)?.into();
-    let mut source=windows_object(&mut root,"source")?;
-    let source_root=required_text(&mut source,"root",phase)?.into();let source_commit=required_text(&mut source,"commit",phase)?;
-    if source_commit.len()!=40 || !source_commit.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)) {return Err(invalid(phase,"source commit must be exact40lowercasehex"));}
-    closed(&source,phase)?;
-    let mut compiler=windows_object(&mut root,"compiler")?;let typescript_root=required_text(&mut compiler,"typescriptRoot",phase)?.into();
-    let bun=windows_pin(&mut compiler,"bun")?;let tsc=windows_pin(&mut compiler,"tsc")?;closed(&compiler,phase)?;
-    let modules=required_string_array(&mut root,"modules",phase)?;
-    if modules.is_empty() || modules.iter().any(|name|name.is_empty()||name.starts_with("--")) || modules.iter().collect::<std::collections::BTreeSet<_>>().len()!=modules.len() {
-        return Err(invalid(phase,"explicit unique nonempty module inventory required"));
+    let channel = required_text(&mut root, "channel", phase)?;
+    if !matches!(channel.as_str(), "stable" | "beta" | "nightly") {
+        return Err(invalid(phase, "unsupported release channel"));
     }
-    closed(&root,phase)?;
-    Ok(WindowsBuildConfig {channel,out_dir,source_root,source_commit,typescript_root,bun,tsc,modules})
+    let out_dir = required_text(&mut root, "outDir", phase)?.into();
+    let mut source = windows_object(&mut root, "source")?;
+    let source_root = required_text(&mut source, "root", phase)?.into();
+    let source_commit = required_text(&mut source, "commit", phase)?;
+    if source_commit.len() != 40
+        || !source_commit
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(invalid(phase, "source commit must be exact40lowercasehex"));
+    }
+    closed(&source, phase)?;
+    let mut compiler = windows_object(&mut root, "compiler")?;
+    let typescript_root = required_text(&mut compiler, "typescriptRoot", phase)?.into();
+    let bun = windows_pin(&mut compiler, "bun")?;
+    let tsc = windows_pin(&mut compiler, "tsc")?;
+    closed(&compiler, phase)?;
+    let modules = required_string_array(&mut root, "modules", phase)?;
+    if modules.is_empty()
+        || modules
+            .iter()
+            .any(|name| name.is_empty() || name.starts_with("--"))
+        || modules
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != modules.len()
+    {
+        return Err(invalid(
+            phase,
+            "explicit unique nonempty module inventory required",
+        ));
+    }
+    closed(&root, phase)?;
+    Ok(WindowsBuildConfig {
+        channel,
+        out_dir,
+        source_root,
+        source_commit,
+        typescript_root,
+        bun,
+        tsc,
+        modules,
+    })
 }
 #[cfg(test)]
 mod windows_build_tests {
     use super::*;
-    fn recipe()->String {format!("export default {{target:'windows-x64',signing:'test-local-untimestamped',channel:'stable',outDir:'out',source:{{root:'source',commit:'{}'}},compiler:{{typescriptRoot:'typescript',bun:{{path:'bun.exe',sha256:'{}'}},tsc:{{path:'tsc.js',sha256:'{}'}}}},modules:['main.js']}} as const;","1".repeat(40),"2".repeat(64),"3".repeat(64))}
-    #[test] fn explicit_windows_recipe_is_separate_from_mac() {
-        let source=recipe();let value=parse_windows_build(&source).unwrap();assert_eq!(value.modules,["main.js"]);assert_eq!(value.channel,"stable");assert!(parse_build(&source).is_err());
+    fn recipe() -> String {
+        format!(
+            "export default {{target:'windows-x64',signing:'test-local-untimestamped',channel:'stable',outDir:'out',source:{{root:'source',commit:'{}'}},compiler:{{typescriptRoot:'typescript',bun:{{path:'bun.exe',sha256:'{}'}},tsc:{{path:'tsc.js',sha256:'{}'}}}},modules:['main.js']}} as const;",
+            "1".repeat(40),
+            "2".repeat(64),
+            "3".repeat(64)
+        )
     }
-    #[test] fn recipe_refuses_authority_commands_dynamic_or_production_fields() {
-        for field in ["privateKey","certificate","command","install","catalogAuthority"] {
-            let source=recipe().replacen("target:",&format!("{field}:'override',target:"),1);assert!(parse_windows_build(&source).is_err());
+    #[test]
+    fn explicit_windows_recipe_is_separate_from_mac() {
+        let source = recipe();
+        let value = parse_windows_build(&source).unwrap();
+        assert_eq!(value.modules, ["main.js"]);
+        assert_eq!(value.channel, "stable");
+        assert!(parse_build(&source).is_err());
+    }
+    #[test]
+    fn recipe_refuses_authority_commands_dynamic_or_production_fields() {
+        for field in [
+            "privateKey",
+            "certificate",
+            "command",
+            "install",
+            "catalogAuthority",
+        ] {
+            let source = recipe().replacen("target:", &format!("{field}:'override',target:"), 1);
+            assert!(parse_windows_build(&source).is_err());
         }
-        for (old,new) in [("test-local-untimestamped","production"),("windows-x64","macos-arm64"),("modules:['main.js']","modules:['main.js','main.js']"),("root:'source'","root:process.cwd()"),("commit:'1111111111111111111111111111111111111111'","commit:'HEAD'")] {
-            assert!(parse_windows_build(&recipe().replace(old,new)).is_err());
+        for (old, new) in [
+            ("test-local-untimestamped", "production"),
+            ("windows-x64", "macos-arm64"),
+            ("modules:['main.js']", "modules:['main.js','main.js']"),
+            ("root:'source'", "root:process.cwd()"),
+            (
+                "commit:'1111111111111111111111111111111111111111'",
+                "commit:'HEAD'",
+            ),
+        ] {
+            assert!(parse_windows_build(&recipe().replace(old, new)).is_err());
         }
     }
 }
