@@ -960,16 +960,18 @@ route_mermaid_diff() {
     # That tool is not a PE linker; select the known native VC linker when
     # a Windows VS development environment is active. Do not relax -D warnings
     # or classifier failure's existing full-Mermaid fallback.
-    local -a rustc_linker=()
+    # Bash 3.2 with nounset rejects expansion of an empty array. Keep the
+    # common compiler arguments in the array so every platform has entries.
+    local -a rustc_args=(--edition=2024 -D warnings)
     if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
         if [[ -n "${VCToolsInstallDir:-}" ]]; then
             local native_link="${VCToolsInstallDir}bin\\Hostx64\\x64\\link.exe"
             if command -v cygpath >/dev/null 2>&1 && [[ -f "$(cygpath -u "$native_link")" ]]; then
-                rustc_linker=(-C "linker=$native_link")
+                rustc_args+=(-C "linker=$native_link")
             fi
         fi
     fi
-    if ! rustc --edition=2024 -D warnings "${rustc_linker[@]}" "$source_root/tools/mermaid_docs.rs" -o "$binary"; then
+    if ! rustc "${rustc_args[@]}" "$source_root/tools/mermaid_docs.rs" -o "$binary"; then
         echo "ci router: Mermaid diff classifier did not compile; selecting full Mermaid validation/rendering" >&2
         mermaid="$TRUE"
         return
