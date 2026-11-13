@@ -173,7 +173,8 @@ test(
           "keld.build.ts":
             /build config differs from inspected effective field selection/,
           "src/main.mjs": /main differs from inspected executable module/,
-          "keld.config.ts": /app config differs from inspected source selection/,
+          "keld.config.ts":
+            /app config differs from inspected source selection/,
           "keld.permissions.jsonc":
             /permission manifest differs from inspected window grants/,
           "web/pages/index.html":
