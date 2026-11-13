@@ -109,22 +109,23 @@ fn required_json<'a>(members: &'a [Member], name: &str) -> Result<&'a [u8], Buil
 fn quoted(value: &str) -> Result<String, BuildError> {
     serde_json::to_string(value).map_err(refuse)
 }
-/// The developer folder reconstructs a deliberately minimal keld.config.ts.
-/// Do not silently erase auth or change the app identity from the *compiled* boot
-/// recipe. The later Host must never observe a weaker project than was built.
+/// The developer folder reconstructs a minimal keld.config.ts from the
+/// *compiled*, retained boot descriptor. It must never erase auth or change
+/// the app identity: exact parsed auth round-trip is enforced below.
 fn require_replayable_boot_descriptor(
     descriptor: &serde_json::Value,
     app_name: &str,
 ) -> Result<(), BuildError> {
-    if descriptor.get("auth").is_some() {
-        return Err(refuse(
-            "compiled boot declares auth, which the KEL-96 developer bundle cannot replay safely",
-        ));
-    }
     if descriptor.get("name").and_then(serde_json::Value::as_str) != Some(app_name) {
         return Err(refuse(
             "compiled boot app name differs from the retained authoring identity",
         ));
+    }
+    if descriptor
+        .get("auth")
+        .is_some_and(|value| !value.is_object())
+    {
+        return Err(refuse("compiled auth must be a literal object"));
     }
     Ok(())
 }
@@ -146,7 +147,14 @@ fn bundle_recipe(pair: &PreparedLocalPair, members: &[Member]) -> Result<Vec<u8>
         ));
     }
     let app = &pair.authoring.app;
-    render_config(&app.id, &app.version, &app.name, entry, renderer)
+    render_config(
+        &app.id,
+        &app.version,
+        &app.name,
+        entry,
+        renderer,
+        descriptor.get("auth"),
+    )
 }
 
 /// Generate syntax that the existing Core configuration selectors ACTUALLY read.
@@ -158,20 +166,43 @@ fn render_config(
     name: &str,
     entry: &str,
     renderer: &str,
+    compiled_auth: Option<&serde_json::Value>,
 ) -> Result<Vec<u8>, BuildError> {
-    let config = format!(
-        "export default {{\n  id: {},\n  version: {},\n  name: {},\n  entry: {},\n  renderer: {},\n}} as const;\n",
+    let mut config = format!(
+        "export default {{\n  id: {},\n  version: {},\n  name: {},\n  entry: {},\n  renderer: {},\n",
         quoted(id)?,
         quoted(version)?,
         quoted(name)?,
         quoted(entry)?,
         quoted(renderer)?
     );
+    if let Some(auth) = compiled_auth {
+        if !auth.is_object() {
+            return Err(refuse("compiled auth is not an object"));
+        }
+        config.push_str("  auth: ");
+        config.push_str(&serde_json::to_string(auth).map_err(refuse)?);
+        config.push_str(",\n");
+    }
+    config.push_str("} as const;\n");
     if keld_core::entry_from_config_ts(&config).as_deref() != Some(entry)
         || keld_core::renderer_from_config_ts(&config).as_deref() != Some(renderer)
     {
         return Err(refuse(
             "generated developer config is not understood by Core's actual selectors",
+        ));
+    }
+    // Core and Native own auth parsing/policy. Reparse through the exact
+    // production Core reader; comparing JSON prevents changed/dropped fields
+    // or silent provider credential downgrades at the developer bundle boundary.
+    let replayed = keld_core::auth_configuration_from_config_ts(&config).map_err(refuse)?;
+    let replayed = serde_json::to_value(replayed).map_err(refuse)?;
+    let expected = compiled_auth
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    if replayed != expected {
+        return Err(refuse(
+            "generated developer config does not preserve compiled auth configuration",
         ));
     }
     Ok(config.into_bytes())
@@ -312,6 +343,7 @@ mod tests {
             "windows-runnable-hello",
             "code/main.js",
             "renderer/index.html",
+            None,
         )
         .expect("literal generated config must parse");
         let config = String::from_utf8(bytes).unwrap();
@@ -353,21 +385,58 @@ mod tests {
         }
     }
     #[test]
-    fn compiled_boot_with_auth_is_not_silently_downgraded() {
+    fn compiled_auth_replays_exactly_through_the_production_core_reader() {
         let no_auth = serde_json::json!({"name": "Example"});
         assert!(require_replayable_boot_descriptor(&no_auth, "Example").is_ok());
-        let authenticated = serde_json::json!({
-            "name": "Example",
-            "auth": {"providers": [{"type": "oidc", "id": "example"}]}
+        let auth = serde_json::json!({
+            "entra-common": {
+                "clientId": "public-client",
+                "fixedRedirect": "http://localhost:53161/callback"
+            },
+            "future-provider": {"asRedirect": "registered-return"}
         });
-        assert!(require_replayable_boot_descriptor(&authenticated, "Example").is_err());
-        assert!(
-            require_replayable_boot_descriptor(
-                &serde_json::json!({"name": "Example", "auth": null}),
-                "Example"
-            )
-            .is_err()
+        let descriptor = serde_json::json!({"name": "Example", "auth": auth});
+        assert!(require_replayable_boot_descriptor(&descriptor, "Example").is_ok());
+        let bytes = render_config(
+            "com.example.keld",
+            "1.0.0",
+            "Example",
+            "code/main.js",
+            "renderer/index.html",
+            descriptor.get("auth"),
+        )
+        .expect("compiled auth must round-trip");
+        let config = String::from_utf8(bytes).unwrap();
+        assert_eq!(
+            serde_json::to_value(keld_core::auth_configuration_from_config_ts(&config).unwrap())
+                .unwrap(),
+            descriptor["auth"]
         );
+    }
+    #[test]
+    fn malformed_or_unreplayable_compiled_auth_fails_closed() {
+        for auth in [
+            serde_json::json!(null),
+            serde_json::json!([]),
+            serde_json::json!({"entra-common": {"clientID": "unknown-field"}}),
+            serde_json::json!({"entra-common": {"clientId": 123}}),
+            serde_json::json!({"entra-common": {"clientId": "x", "secret": "forbidden"}}),
+        ] {
+            let descriptor = serde_json::json!({"name": "Example", "auth": auth});
+            assert!(
+                require_replayable_boot_descriptor(&descriptor, "Example").is_err()
+                    || render_config(
+                        "com.example.keld",
+                        "1.0.0",
+                        "Example",
+                        "code/main.js",
+                        "renderer/index.html",
+                        descriptor.get("auth")
+                    )
+                    .is_err(),
+                "invalid compiled auth was admitted: {auth:?}"
+            );
+        }
     }
     #[test]
     fn compiled_boot_app_identity_must_match_authoring() {
