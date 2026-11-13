@@ -126,7 +126,7 @@ fn quiet_first_peer_cannot_block_a_valid_second_callback() {
         thread::yield_now();
     }
     let accepted = flow.accepted.as_ref().expect("actual quiet accepted owner");
-    assert!(accepted.request.is_empty());
+    assert_eq!(accepted.request.len(), 0);
     assert!(accepted.reply.is_none());
     let mut callback = client(&flow);
     let wire = request(

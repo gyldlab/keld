@@ -33,7 +33,9 @@ pub(crate) fn media_label_from_hex(value: &str) -> String {
     let bytes = value.as_bytes();
     assert_eq!(bytes.len() % 2, 0, "device label hex has an odd length");
     let decoded = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let pair = std::str::from_utf8(pair).expect("ASCII device label hex");
             u8::from_str_radix(pair, 16).expect("valid device label hex")

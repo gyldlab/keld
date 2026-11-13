@@ -46,7 +46,10 @@ const firstErr = await app.whenReady().then(
   (err: unknown) => err,
 );
 
-if (!(firstErr instanceof Error) || !String(firstErr).includes("KELD-IPC-001")) {
+if (
+  !(firstErr instanceof Error) ||
+  !String(firstErr).includes("KELD-IPC-001")
+) {
   writeSync(2, `KEL72_SYNC_DEAD_SHOULD_REJECT=${String(firstErr)}\n`);
   process.exit(1);
 }

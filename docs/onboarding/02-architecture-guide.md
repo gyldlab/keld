@@ -1,9 +1,9 @@
 # Keld Architecture — A Guide for New Engineers
 
 This is the readable version of the normative specs in [`docs/architecture/`](../architecture/).
-It exists because those seven documents describe the system Keld is *going to be*, and the
-code in `crates/` is roughly 2,200 lines of the system Keld *is* — mostly two crates. Both
-facts matter, and reading the specs alone will give you a badly calibrated mental model.
+It exists because those seven documents describe the system Keld is *going to be*, while
+the current Rust crates and TypeScript packages implement selected slices. Both facts
+matter, and reading the specs alone will give you a badly calibrated mental model.
 
 **The specs are normative; this document is not.** Where they disagree, the spec wins and the
 mismatch is a bug (root [`AGENTS.md`](../../AGENTS.md): "Code/spec mismatch = bug in one; fix
@@ -192,9 +192,9 @@ every fallible operation in `keld-wv` returns `Result` rather than asserting.
 ### 4a. The designed flow
 
 This is the target architecture from [`01` §1](../architecture/01-overview.md) and
-[`02` §2](../architecture/02-ipc.md), traced as a sequence rather than a box diagram. **Nothing
-in this diagram past the "app-link" transport is wired up today** — see §4b for what actually
-runs.
+[`02` §2](../architecture/02-ipc.md), traced as a sequence rather than a box diagram.
+The shared app-link and guarded filesystem calls exist; the specific `dialog.open` request
+and its UI dispatch shown here remain planned. See §4b for what currently runs.
 
 ```mermaid
 sequenceDiagram
@@ -206,7 +206,7 @@ sequenceDiagram
     }
     autonumber
     participant Main as main.ts<br/>(Bun child, unprivileged)
-    participant API as @keld/api<br/>(TS, specified only)
+    participant API as @keld/api<br/>(TS link live, dialog planned)
     participant AppLink as app-link<br/>UDS / named pipe
     participant Rdr as host IPC reader thread
     participant Core as keld-core<br/>(dispatch)
@@ -298,7 +298,7 @@ sequenceDiagram
 
 The honest reading of that diagram:
 
-- **The Bun child is a kipc peer for echo (KEL-30) and `@keld/electron` lifecycle (KEL-72).** `@keld/api` does not exist yet; the hello template embeds its wire-tested kipc client into the self-contained `src/main.ts` entry, and `@keld/electron` speaks `LIFECYCLE_CHANNEL` directly.
+- **The Bun child is a kipc peer for echo (KEL-30) and the Electron-compatible lifecycle (KEL-72).** The hello template embeds its wire-tested kipc client into the self-contained `src/main.ts` entry. Separately, `@keld/electron` delegates lifecycle to `@keld/api`'s singleton link, backed by `@keld/kipc`'s Worker transport for `LIFECYCLE_CHANNEL`; the shim does not open another socket.
 - **The macOS, Windows, and Linux windows/IPC sessions are concurrent and host-owned.** The stock
   entry makes one echo call and remains alive with its authenticated stream while the native window
   is live. The product acceptance observer proves a second call on that same stream; a fresh stream

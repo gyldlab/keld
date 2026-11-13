@@ -70,7 +70,17 @@ while the expected browser process handle, opened before `Close`, is unsignaled,
 there only by a measured shutdown hang guard (240 s) that fails closed while the browser
 stays alive; a measured 85 s post-exit grace bounds the event once the process is gone,
 because WebView2 raises it after the collection has released the user-data folder. A launch
-deadline bounds environment and controller creation only. A predecessor dev-ephemeral
+deadline bounds environment and controller creation only. Three `keld-wv` constants own the
+sums of these bounds: `keld_wv::webview2::WEBVIEW2_UI_END_BOUND` (the hang guard plus the
+grace) bounds a healthy UI end; `keld_wv::webview2::WEBVIEW2_TEARDOWN_BOUND` bounds a
+healthy teardown after a terminal command, which is that UI end and then, on a dev-ephemeral
+profile, one exclusive-UDF probe (launch deadline and release barrier) for each predecessor
+leaf that the post-release scavenge may try; and `keld_wv::webview2::WEBVIEW2_STARTUP_BOUND`
+bounds a healthy startup to `Ready` as its sequential phases (a quarantined profile's
+recovery probe launch and release barrier, environment and controller creation, and the
+initial-navigation deadline of `KELD-WV-005`). A caller that must outlast one of these
+phases, such as a test harness kill switch, reads the constant rather than restating its
+parts. A predecessor dev-ephemeral
 leaf whose exclusive-UDF probe is busy or cannot prove release is retained for a later
 pass and never fails the current host's own release.
 
@@ -252,9 +262,14 @@ report any cancellation, deadline, or I/O failure after create/truncate as
 `KELD-NATIVE-007` with acknowledged content-byte counts. The five-second clock is a
 cooperative progress budget, not a promise to preempt a wedged kernel call. `FsBroker`
 alone owns the roots; calls and `serve_fs_session` borrow it, and dropping a wrapper is
-not broker destruction while another owner remains. The channel is library-tested but
-remains unreachable from the shipping no-flag host until KEL-102/T3 supplies admission,
-in-flight cancellation/drain, and ordered broker destruction.
+not broker destruction while another owner remains. The retained filesystem broker and
+guarded production host route are implemented (KEL-102/T3), exposing a public Bun
+`fs.read`/`write` slice on the canonical app link with macOS explicit project-policy
+capture and absent-policy all-denied fallback. This manifest guard applies strictly
+to brokered app-link calls; direct Bun `node:fs` calls do not pass through this broker
+and are not denied by it, as OS sandbox containment remains a separate, not-yet-fully-qualified
+guarantee. Renderer-action forwarding, non-macOS project-policy producers, and full
+hostile/deadline/quiescence qualification remain open.
 
 v0 is still a skeleton: its `MODULES` registry does not yet include the destination
 `process`, `pty`, or `auth` rows below, and none of them has implementation. KEL-76 must

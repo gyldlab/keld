@@ -25,8 +25,8 @@ from evidence-backed implementation without freezing source counts or branch his
 |---|---|---|
 | Version | `0.0.1`, pre-alpha | [`Cargo.toml`](../../Cargo.toml) `[workspace.package]` |
 | License | MIT OR Apache-2.0 | [`Cargo.toml`](../../Cargo.toml), [`deny.toml`](../../deny.toml) |
-| Language / edition | Rust, edition 2024, MSRV 1.97 | [`Cargo.toml`](../../Cargo.toml) |
-| Toolchain | pinned `1.97.1` + rustfmt + clippy | [`rust-toolchain.toml`](../../rust-toolchain.toml) |
+| Language / edition | Rust, edition 2024, MSRV 1.99.1 | [`Cargo.toml`](../../Cargo.toml) |
+| Toolchain | pinned `1.99.1` + rustfmt + clippy | [`rust-toolchain.toml`](../../rust-toolchain.toml) |
 | Workspace status | Current crates, packages, phases, platform slices, and evidence | [`product-status.md`](../engineering/product-status.md) |
 
 ## The problem Keld exists to solve

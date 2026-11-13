@@ -353,7 +353,7 @@ fn cancellation_keeps_actual_terminal_and_drop_receipts() {
             assert_eq!(error.primary, HttpFailure::Cancelled);
             assert_eq!(error.platform_code, Some(-999));
             assert!(operation.shared.delegate_dropped.load(Ordering::Acquire));
-            assert!(operation.shared.lock().body.is_empty());
+            assert_eq!(operation.shared.lock().body.len(), 0);
         },
     );
 }
@@ -460,7 +460,7 @@ fn actual_foundation_advertised_metadata_uses_existing_delegate_cap_without_copy
                             "literal typed-failure oracle"
                         );
                         assert_eq!(state.cleanup, None);
-                        assert!(state.body.is_empty());
+                        assert_eq!(state.body.len(), 0);
                         assert_eq!(state.body.capacity(), 0);
                         // These facts remain absent: this case never invents lifecycle receipts.
                         assert!(state.complete_at.is_none());
@@ -518,7 +518,7 @@ fn response_state_cap_uses_existing_wire_ceiling_and_preserves_cleanup_faults() 
     assert_eq!(state.body.len(), keld_ipc::MAX_FRAME_LEN);
     assert!(!state.append_body(&[1]));
     assert_eq!(state.primary, Some(HttpFailure::ResponseTooLarge));
-    assert!(state.body.is_empty());
+    assert_eq!(state.body.len(), 0);
     state.note_cleanup(HttpCleanupFailure::QuiescenceUnproven);
     state.protocol_fault();
     assert_eq!(state.primary, Some(HttpFailure::ResponseTooLarge));

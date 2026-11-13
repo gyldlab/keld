@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::path::PathBuf;
 
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
-use rmcp::model::{Implementation, ProtocolVersion, ServerCapabilities, ServerInfo};
+use rmcp::model::{Implementation, ProtocolVersion, ServerCapabilities, ServerConfig};
 use rmcp::{Json, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -97,8 +97,8 @@ impl KeldMcpServer {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for KeldMcpServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("keld", env!("CARGO_PKG_VERSION")))
             .with_instructions(
                 "Keld MCP server (stdio). Tools: keld_doctor, keld_docs_search, \
@@ -111,9 +111,9 @@ impl ServerHandler for KeldMcpServer {
     }
 
     /// Fixed order for prompt-cache stability (spec AC2) — router sorts alphabetically.
-    // Preserve the async handler's evaluation timing; `unknown_lints` keeps this Rust 1.99-only
-    // Clippy allowance source-compatible with the Rust 1.97.1 MSRV.
-    #[allow(unknown_lints, clippy::unused_async_trait_impl)]
+    // Preserve the async handler's evaluation timing: the body runs when rmcp polls the
+    // returned future, not when the trait method is called.
+    #[allow(clippy::unused_async_trait_impl)]
     async fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,

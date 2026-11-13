@@ -73,7 +73,7 @@ impl AuthSession {
             return Err(app_detail("auth admission", "closed or duplicate caller"));
         }
         self.used
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
                 (used < AUTH_CALL_CAPACITY).then(|| used + 1)
             })
             .map_err(|_| app_detail("auth admission", "bounded caller capacity exhausted"))?;
@@ -184,7 +184,7 @@ impl Drop for CallerTicket {
         if let Some(session) = self.session.upgrade()
             && session
                 .used
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
                     used.checked_sub(1)
                 })
                 .is_err()

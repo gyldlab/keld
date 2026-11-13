@@ -123,15 +123,21 @@ disk — the first production capability to use it. Cross-platform by constructi
 architecture 05 §3's "all three OS implementations" without per-platform code.
 `..` traversal denial falls out of `keld-guard::evaluate` for free (already rejects any
 `..` segment) — proved with a real OS oracle (`dotdot_segment_is_denied_even_inside_a_granted_scope`,
-removed by b4634076. CI now runs only the `evaluate`-level `keld-guard` `tests/acl.rs` case
-`slash traversal`; the real-OS proof is the ignored macOS device acceptance
-`macos_retained_filesystem_acceptance_emitter`, case `path-parent-component`: `KELD-GUARD002`
-with zero traversal, open or content I/O),
+removed by b4634076. Since #673, CI runs the real-OS proof on macOS, Linux and Windows:
+`crates/keld-native/tests/retained_fs.rs`
+`parent_component_inside_a_granted_scope_never_reaches_the_outside` asserts `KELD-GUARD002`
+from the dispatch boundary and an untouched sentinel outside the scope, a 15-form table
+covers every climbing spelling and permanent fixtures cover links that climb out. The `evaluate`-level
+`keld-guard` `tests/acl.rs` case `slash traversal` and the ignored macOS device acceptance
+(`path-parent-component`, zero traversal/open/content I/O counters) remain),
 not re-implemented here. Verified end-to-end over a real kipc session
 (`crates/keld-native/tests/fs_session.rs`): allow writes-then-reads-back identical bytes
-on disk; deny (empty manifest, out-of-scope path, `..`, or a non-`AppProcess` principal)
-leaves the file completely unwritten, each checked with a real `std::path::Path::exists()`
-stat, not a stub return. Negative control verified manually twice: bypassing
+on disk, and a deny under an empty manifest leaves the file unwritten, checked with a
+real `std::path::Path::exists()` stat, not a stub return. (Correction, #673 review: that
+file never sent an out-of-scope, `..` or non-`AppProcess` request over kipc. Those
+denials are proved below the wire instead: out-of-scope in `keld-guard` `tests/acl.rs`,
+non-`AppProcess` in `keld-guard`'s unit tests, and `..` at the broker in
+`crates/keld-native/tests/retained_fs.rs`.) Negative control verified manually twice: bypassing
 `dispatch_privileged` inside `fs_write` made three fs-specific tests fail; separately,
 temporarily adding a `node:fs` import to the hello template made the new
 `template_never_imports_node_fs` static check fail (`crates/keld-cli/src/template.rs`) —
@@ -343,7 +349,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace --profile ci
 ```
 
-Toolchain pin: `rust-toolchain.toml` (`1.97.1`, rustfmt + clippy). Nextest CI
+Toolchain pin: `rust-toolchain.toml` (`1.99.1`, rustfmt + clippy). Nextest CI
 profile: `.config/nextest.toml`, deliberately empty — the mandated gate MUST NOT
 retry, because a retry reports a flaky test green and hides its first failure
 (KEL-112). Workspace clippy is already pedantic; do not re-enable it per crate
@@ -358,11 +364,21 @@ composition test exceeded its fixed five-second deadline under the policy batch'
 load and passed in 0.687 seconds alone, so it has its own serial phase. Direct
 recipe invocations retain their prerequisites. `ci-full` additionally forces Mermaid.
 
-`tools/ci_inputs.py` owns the reviewed consumer scopes in `tools/ci-inputs.json`.
-Each consumer binds its reader/helper source inventory and contents by digest. A new,
-removed or changed reader invalidates its exclusions until the input scope is reviewed
-and rebound; unknown, deleted, untracked or unavailable comparison inputs select all.
-This fallback intentionally costs more work. `ci_inputs.py --check`, run by the router contract tests, fails on a stale digest so the fallback cannot persist unnoticed; `just ci-inputs-rebind` renews digests after the readers are reviewed. It avoids guessing dependencies from
+`tools/ci_inputs.py` owns the reviewed consumer scopes in `tools/ci-inputs.json`
+(schema `keld.ci-inputs/v2`, GH-1275). Each consumer names its input edges and the
+reader-source patterns that implement it. Routing is stateless: a change that touches a
+reader source runs every consumer behind it, and a Rust reader change selects all lanes;
+a `crates/*` path that the comparison base did not track, or that the change removes,
+selects all lanes; unknown, deleted, untracked or unavailable comparison inputs select
+all. A reader that gains a new cross-tree read registers its input edge in the same
+change; the router prints that review prompt whenever a reader changes. Nothing is
+recorded between changes. Rejected alternative: schema v1 recorded a SHA-256 of every
+reader set and of `crates/*` membership and failed `--check` until a `just
+ci-inputs-rebind` commit renewed it. On a protected base the digest was therefore
+always fresh at merge time and never widened a later change, while October 2026 saw 346
+commits touch the file, 318 of them digest-only, plus repeated merge conflicts on the
+digest lines and every such diff forced all lanes. The v1 cross-change widening test is
+replaced by the explicit stateless contract test. It avoids guessing dependencies from
 filename extensions or source-text mentions. Rust's cross-tree readers and Bun's reads
 of IPC constants and CLI templates are included. Live workspace, audit-history,
 product-status and advisory checks still run with an empty Git diff; their expensive

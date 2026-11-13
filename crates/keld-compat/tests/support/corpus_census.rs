@@ -1,7 +1,8 @@
 //! The owner and fixture censuses (gh532 AC10, gh566 C2 and D10 rules 1–6). They are
 //! split from the owner under the gh566 D1 review condition (the owner passed 1,500
 //! lines). The census has its own invariant: exactly one corpus owner exists among
-//! keld-compat's test sources, and every committed corpus is registered. Every pattern
+//! keld-compat's test sources, every committed corpus is registered, and no corpus
+//! directory holds its own doc-snapshot copy (gh566 D5 A5). Every pattern
 //! is assembled with `concat!`, so this file never matches itself. It holds no test
 //! function, and it needs the owner module `corpus_manifest` beside it at the crate root.
 // Each including target uses a different subset of this module (keld-ipc precedent).
@@ -14,8 +15,8 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::corpus_manifest::{
-    CorpusError, MANIFEST_FILE, OWNER_PATH, Registration, collect_files, crate_root, io_error,
-    workspace_root,
+    CorpusError, MANIFEST_FILE, OWNER_PATH, Registration, SNAPSHOT_DIR, collect_files, crate_root,
+    io_error, join_rel, workspace_root,
 };
 
 /// Directories under `crates/keld-compat/fixtures/` that hold a `corpus.json`.
@@ -68,6 +69,40 @@ pub fn fixture_census(found: &[String], registry: &[Registration]) -> Result<(),
         }
     }
     Ok(())
+}
+
+/// Snapshot-store census (gh566 D5 A5): a cited page is committed once, in the shared
+/// store, so no committed corpus directory holds its own `doc-snapshots/`. Lists every
+/// offending directory. `has_local` answers for one corpus directory, relative to
+/// `crates/keld-compat`; [`has_local_snapshots`] is the filesystem answer. A probe
+/// error fails the census rather than counting as "no copy".
+pub fn snapshot_store_census(
+    found: &[String],
+    has_local: &dyn Fn(&str) -> Result<bool, CorpusError>,
+) -> Result<(), CorpusError> {
+    let mut dirs = Vec::new();
+    for dir in found {
+        if has_local(dir)? {
+            dirs.push(dir.clone());
+        }
+    }
+    if dirs.is_empty() {
+        Ok(())
+    } else {
+        Err(CorpusError::CorpusLocalSnapshot { dirs })
+    }
+}
+
+/// Whether the corpus directory `dir` (`/`-separated, relative to `root`) holds a
+/// `doc-snapshots` entry of its own. Only a missing entry is "no"; any other I/O
+/// error (an unreadable directory, say) is returned, so the census fails closed.
+pub fn has_local_snapshots(root: &Path, dir: &str) -> Result<bool, CorpusError> {
+    let path = join_rel(root, dir).join(SNAPSHOT_DIR);
+    match fs::symlink_metadata(&path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(io_error(&path)(error)),
+    }
 }
 
 /// keld-compat test sources as (`/`-separated path relative to the crate, text).

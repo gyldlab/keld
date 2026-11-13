@@ -16,6 +16,7 @@ pub(crate) mod profile_origin;
 pub(crate) mod profile_renderer;
 pub(crate) mod recovery_cycle;
 pub(crate) mod renderer;
+pub(crate) mod signal_wait;
 #[cfg(feature = "profile-test-hooks")]
 pub(crate) mod signed_app;
 pub(crate) mod unix_descriptors;

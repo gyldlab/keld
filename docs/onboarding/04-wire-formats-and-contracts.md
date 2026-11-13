@@ -156,9 +156,10 @@ pub fn write_frame<S: Write>(
 ) -> Result<(), IpcError>
 ```
 
-`write_frame` flushes after every frame, so a header and its payload always reach the peer
-together. `read_frame` does a `read_exact` of 16 bytes, decodes, then a `read_exact` of `len`
-bytes.
+`write_frame` writes the header and payload separately, then flushes. Flushing does not make
+delivery atomic: the peer can receive a partial frame if a write fails or the link closes.
+`read_frame` uses `read_exact` for the 16-byte header and then for the declared `len` bytes;
+an incomplete header or payload is an I/O error.
 
 **Know what this is not.** `crates/keld-ipc/AGENTS.md` requires the eventual implementation to be a
 state machine with no steady-state allocation, and says so bluntly: "State-machine readers/writers.
@@ -398,15 +399,17 @@ proves nor claims default denial for those cases; they block full KEL-132
 closure until the approved [KEL-135 profile lifecycle](../specs/kel135-persistent-profile-identity.md)
 and oldest-supported-macOS evidence land.
 
-**The FS library is gated but not shipping-routed.** `FS_CHANNEL`
+**The guarded FS route is implemented on the app link.** `FS_CHANNEL`
 (`keld-native::fs`, KEL-130) runs every admitted `fs.read` / `fs.write` `Call`
 through `keld_ipc::guard_dispatch::dispatch_privileged`, borrows its first-match
 permit, and uses the matching retained `FsBroker` scope before touching disk.
 A deny or broker failure is a `FrameKind::Err` carrying a postcard
 `CallError { code, message }` (spec 02 §2) whose `code` is the guard's
 `KELD-GUARD*` or one of `KELD-NATIVE-001..008` — read as a field, never parsed
-out of the text. The no-flag host does not register this channel yet;
-KEL-102/T3 owns reachable routing and in-flight lifecycle. Echo remaining
+out of the text. The guarded app-link filesystem route is implemented
+(KEL-102/T3 landed); macOS project-policy verification and absent-policy broker-deny
+fallback are verified, while non-macOS policy producers, renderer forwarding, and
+full hostile/deadline/quiescence qualification remain incomplete. Echo remaining
 ungated does not mean privileged frames skip the guard.
 
 **Lifecycle is session control, not an OS grant.** `LIFECYCLE_CHANNEL` (KEL-72)

@@ -264,7 +264,6 @@ fn owned_token(
 #[cfg(test)]
 mod tests {
     use std::io::Read as _;
-    use std::os::windows::io::AsHandle as _;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::process::{Command, Stdio};
 
