@@ -129,9 +129,38 @@ function expectedRootDependencies(metadata, locked) {
     "@keld/kipc": "0.0.1",
     electron: "npm:@keld/electron@0.0.1",
   };
+  // The protected-manifest decision request is for an inert, closed source
+  // candidate. A matching digest is insufficient if an executable npm hook,
+  // alternate dependency namespace, or extra installed lock row is added.
+  assert.deepEqual(
+    Object.keys(metadata).sort(),
+    ["name", "version", "private", "type", "dependencies"].sort(),
+    "root manifest must remain inert and closed",
+  );
+  assert.deepEqual(
+    Object.keys(locked).sort(),
+    ["name", "version", "lockfileVersion", "requires", "packages"].sort(),
+    "candidate lock must remain closed",
+  );
   assert.equal(locked.lockfileVersion, 3, "npm lock v3");
+  assert.equal(locked.requires, true, "npm lock requires explicit metadata");
   assert.equal(locked.name, metadata.name);
   assert.equal(locked.version, metadata.version);
+  assert.deepEqual(
+    Object.keys(locked.packages).sort(),
+    [
+      "",
+      "node_modules/electron",
+      "node_modules/@keld/api",
+      "node_modules/@keld/kipc",
+    ].sort(),
+    "candidate lock must have exactly three first-party installed rows",
+  );
+  assert.deepEqual(
+    Object.keys(locked.packages[""]).sort(),
+    ["name", "version", "dependencies"].sort(),
+    "root lock entry must be closed",
+  );
   assert.equal(locked.packages[""].name, metadata.name);
   assert.equal(locked.packages[""].version, metadata.version);
   assert.deepEqual(locked.packages[""].dependencies, metadata.dependencies);
@@ -145,6 +174,11 @@ function expectedRootDependencies(metadata, locked) {
     ["node_modules/@keld/api", "@keld/api"],
     ["node_modules/@keld/kipc", "@keld/kipc"],
   ]) {
+    assert.deepEqual(
+      Object.keys(locked.packages[path]).sort(),
+      ["name", "version"].sort(),
+      `installed lock row ${path} must contain no executable or foreign metadata`,
+    );
     assert.equal(locked.packages[path].name, name);
     assert.equal(locked.packages[path].version, "0.0.1");
     assert.equal(locked.packages[path].resolved, undefined);
@@ -180,6 +214,32 @@ test("a first-party SDK selector redirected in BOTH manifests is refused", () =>
       `redirected ${name} must be refused even if lock agrees`,
     );
   }
+});
+
+test("unreviewed npm lifecycle hooks and extra locked providers are refused", () => {
+  const hooked = structuredClone(packageJson);
+  hooked.scripts = { postinstall: "echo UNQUALIFIED_HOOK_DO_NOT_RUN" };
+  assert.throws(
+    () => expectedRootDependencies(hooked, lock),
+    /root manifest must remain inert and closed/,
+  );
+
+  const hookedProvider = structuredClone(lock);
+  hookedProvider.packages["node_modules/@keld/api"].hasInstallScript = true;
+  assert.throws(
+    () => expectedRootDependencies(packageJson, hookedProvider),
+    /installed lock row .* must contain no executable or foreign metadata/,
+  );
+
+  const extraProvider = structuredClone(lock);
+  extraProvider.packages["node_modules/unreviewed"] = {
+    name: "unreviewed",
+    version: "0.0.1",
+  };
+  assert.throws(
+    () => expectedRootDependencies(packageJson, extraProvider),
+    /exactly three first-party installed rows/,
+  );
 });
 
 test("package, lock and preload content bind to exact candidate SHA-256 bytes", () => {
