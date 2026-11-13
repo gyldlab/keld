@@ -1224,6 +1224,16 @@ where
             return Err(BootCompileError::new("kipc transport", source.to_string()));
         }
     }
+    // A locally built compiled JS entry imports this exact generated transport
+    // beside itself. The ordinary KEL-96 stage still owns the path/owner checks.
+    // Do not treat this dev-lease copy as KEL-53 installed provenance.
+    #[cfg(windows)]
+    if entry == "code/main.js" {
+        let relative = "code/kipc-transport.js";
+        let source = contained_source(&project_root, relative, "compiled kipc transport")?;
+        owner_check(&source)?;
+        stage_project_file(&root, relative, &source, "compiled kipc transport")?;
+    }
     write_new_file(
         &root.join(PERMISSIONS_FILE),
         permissions_bytes,

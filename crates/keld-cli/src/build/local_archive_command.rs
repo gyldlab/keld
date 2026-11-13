@@ -259,7 +259,12 @@ fn execute(
     }
     let app_id = pair.authoring.app.id.clone();
     let version = pair.authoring.app.version.clone();
-    let mut candidate = local_archive::prepare(&pair, &compiler, modules)?;
+    let mut candidate = local_archive::prepare(
+        &pair,
+        &compiler,
+        modules,
+        audience == BuildAudience::Developer,
+    )?;
     let stored_size = candidate
         .retained_reader()
         .and_then(|mut reader| reader.seek(SeekFrom::End(0)))
@@ -296,22 +301,7 @@ fn execute(
             )?,
         }
     }
-    println!(
-        "Selected integrated Host source commit: {}",
-        pair.source.source_commit
-    );
-    match pair.source.cache_sha256 {
-        Some(digest) => println!(
-            "Offline dependency snapshot SHA256: {}",
-            super::local_source::observed_hex(&digest)
-        ),
-        None => println!(
-            "NONHERMETIC: mutable developer Cargo cache reused without copying, measuring or pinning dependency contents."
-        ),
-    }
-    println!(
-        "Source preparation remains nonhermetic; selected commit is not an official release/source-trust claim."
-    );
+    report_source_receipt(&pair);
     println!(
         "Prepared {} application archive candidate: {}",
         audience.label(),
@@ -337,6 +327,26 @@ fn execute(
         "nonhermetic":true,"launchedOrStrictQualified":false})
     );
     Ok(())
+}
+
+/// Keep the exact source and dependency-mode warning in one bounded receipt.
+fn report_source_receipt(pair: &local_images::PreparedLocalPair) {
+    println!(
+        "Selected integrated Host source commit: {}",
+        pair.source.source_commit
+    );
+    match pair.source.cache_sha256 {
+        Some(digest) => println!(
+            "Offline dependency snapshot SHA256: {}",
+            super::local_source::observed_hex(&digest)
+        ),
+        None => println!(
+            "NONHERMETIC: mutable developer Cargo cache reused without copying, measuring or pinning dependency contents."
+        ),
+    }
+    println!(
+        "Source preparation remains nonhermetic; selected commit is not an official release/source-trust claim."
+    );
 }
 
 pub(super) fn validate_stamp(stamp: &str) -> Result<(), BuildError> {

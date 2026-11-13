@@ -15,6 +15,8 @@ mod local_archive_command;
 #[cfg(all(windows, test))]
 mod local_baseline;
 #[cfg(windows)]
+mod local_dev_bundle;
+#[cfg(windows)]
 mod local_images;
 #[cfg(windows)]
 mod local_initial_install;
