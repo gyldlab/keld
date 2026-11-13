@@ -64,9 +64,9 @@ elsewhere never wins and is a conflict. GitHub mechanics: `.agents/coordination.
 
 1. **Pick up and refresh.** Fetch the Linear issue (team KELD, current milestone first),
    including its description, comments, status and relations. Reconcile it with the
-   checked-out code and specs; read its spec, the governing `docs/architecture/*`
-   sections and target crate `AGENTS.md`; query only relevant-area entries from
-   `docs/agents/learnings.md` (query/slice only). Set only
+   checked-out code and specs; read its spec index and needed parts, the governing
+   `docs/architecture/*` sections and target crate `AGENTS.md`; query only
+   relevant-area entries from `docs/agents/learnings.md`. Set only
    the agent's own issue to `In Progress` and post scope, expected paths, non-goals,
    dependencies and the first falsifiable acceptance check. An agent MAY pick up only a
    `Todo` and unassigned issue, unless a human or the orchestration explicitly assigns
@@ -93,8 +93,8 @@ elsewhere never wins and is a conflict. GitHub mechanics: `.agents/coordination.
    owner, boundary and inputs/outputs, failure mode, observable contract, independence
    from the other atoms, and first falsifier. This is the working model before a design
    or fix is selected, not a rationale added after implementation.
-2. **Spec gate.** Larger than a bug fix and no spec? Write one from
-   `docs/agents/spec-template.md` and stop for human approval. Never implement from an
+2. **Spec gate.** Larger than a bug fix and no spec? Write one per
+   `.agents/specs.md` and stop for human approval. Never implement from an
    unapproved spec. Bug fixes skip the spec but not the regression test.
 3. **Isolate.** `just work-start kel-<n> <slug> --session <id>` creates a task;
    coordination owns `.keld-work/worktrees/` placement. Use `agent/kel-<n>-<slug>`

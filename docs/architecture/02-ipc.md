@@ -415,8 +415,11 @@ the KEL-89 auth allocation = 4, and the GH-531 window allocation = 5;
 every production id derives from it, the TypeScript ids are a generated, drift-checked
 region of `transport.ts`. Window uses the existing structured Call/Reply/Event
 frame shape; its allocation and payload declarations do not change the frame or
-ordinary `HELLO` version. The managed registry remains a held implementation
-until validated facade boot and native acceptance are complete. Handshake-time name resolution and
+ordinary `HELLO` version. The managed registry and bounded macOS Host-backed
+`BrowserWindow` subset landed in [PR #1181](https://github.com/gyldlab/keld/pull/1181);
+[PR #1285](https://github.com/gyldlab/keld/pull/1285) corrected facade boot-mode provenance.
+These scoped landings are not full Electron, cross-platform native, Quit,
+physical Retina or product acceptance. Handshake-time name resolution and
 full `keld gen` emission remain destination work that needs a `HELLO` change, a protocol
 bump and wire review.
 

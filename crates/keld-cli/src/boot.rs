@@ -379,9 +379,9 @@ where
         .unwrap_or_else(|| keld_core::DEFAULT_ENTRY.to_owned());
     let facade = keld_core::initial_window_from_config_ts(&config)
         .map_err(|source| BootCompileError::new("project config", source.to_string()))?;
-    // macOS owns the initial facade implementation; Linux and Windows must
-    // refuse an unsupported declaration before staging a bootable descriptor.
-    #[cfg(not(target_os = "macos"))]
+    // Linux must refuse an unsupported declaration before staging a bootable
+    // descriptor. Windows stages it: its host owns the boot admission (GH-1188 D2).
+    #[cfg(target_os = "linux")]
     if facade {
         return Err(BootCompileError::new(
             "project config",

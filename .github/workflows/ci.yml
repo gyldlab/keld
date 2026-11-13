@@ -328,7 +328,7 @@ jobs:
         run: |
           $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $HOME '.cargo' }
           New-Item -ItemType Directory -Force -Path (Join-Path $cargoHome 'bin') | Out-Null
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
         with:
           tool: nextest@0.9.149,just@1.58.0
           fallback: none
@@ -473,7 +473,7 @@ jobs:
         run: |
           $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $HOME '.cargo' }
           New-Item -ItemType Directory -Force -Path (Join-Path $cargoHome 'bin') | Out-Null
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
         with:
           tool: nextest@0.9.149
           fallback: none
@@ -949,6 +949,18 @@ jobs:
           target/doc-placeholders/doc-placeholders-test
           rustc --edition=2024 -D warnings tools/doc_placeholders.rs -o target/doc-placeholders/doc-placeholders
           target/doc-placeholders/doc-placeholders check .
+      # spec-structure reads the baseline seal and spec pins from Git, which is why
+      # this job keeps fetch-depth: 0. A missing commit fails the gate (#1321). Its
+      # ratchet compares with the PR base or, on push, the previous tip.
+      - name: Spec structure contracts
+        env:
+          KELD_CI_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          mkdir -p target/spec-structure
+          rustc --edition=2024 -D warnings --test tools/spec_structure.rs -o target/spec-structure/spec-structure-test
+          target/spec-structure/spec-structure-test
+          rustc --edition=2024 -D warnings tools/spec_structure.rs -o target/spec-structure/spec-structure
+          target/spec-structure/spec-structure check .
       # The `hygiene` recipe's hello-command regression reads the justfile and
       # two onboarding docs, both of which select this job (#650).
       - name: Hello command contract
@@ -1054,12 +1066,12 @@ jobs:
       # pull_request runners without secrets or repository write permission.
       # macOS avoids another GTK apt lane; this is not all-OS containment proof.
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0, bundle 2.27.2
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1, bundle 2.27.3
         with:
           languages: rust
           build-mode: none
       - name: Analyze and upload CodeQL results
-        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0, bundle 2.27.2
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1, bundle 2.27.3
         with:
           category: /language:rust
           upload: always
@@ -1080,12 +1092,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0, bundle 2.27.2
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1, bundle 2.27.3
         with:
           languages: javascript-typescript
           build-mode: none
       - name: Analyze and upload CodeQL results
-        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0, bundle 2.27.2
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1, bundle 2.27.3
         with:
           category: /language:javascript-typescript
           upload: always
@@ -1106,12 +1118,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0, bundle 2.27.2
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1, bundle 2.27.3
         with:
           languages: actions
           build-mode: none
       - name: Analyze and upload CodeQL results
-        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0, bundle 2.27.2
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1, bundle 2.27.3
         with:
           category: /language:actions
           upload: always

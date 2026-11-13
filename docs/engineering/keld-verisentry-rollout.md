@@ -1,8 +1,18 @@
-# KELD VeriSentry — source-authenticated CI admission
+# KELD VeriSentry — retired enforcement and diagnostic telemetry
 
-**Release state (31 October 2026):** trusted workflow is merged into `main`;
-production App-required ruleset is created but **disabled** pending backfill and
-final deployment qualification. No new server or private repository is needed.
+**Current state (1 November 2026):** native VeriSentry merge enforcement is
+**retired**. Ruleset **26261486** is **disabled**, not awaiting activation.
+The [owner decision](https://github.com/gyldlab/keld/issues/1341#issuecomment-6548280246)
+keeps the trusted verifier and App checks as diagnostic telemetry only. Existing
+required CI and review protections remain in force. This document preserves the
+implementation and historical evidence; it is not a deployment checklist.
+
+Ordinary KELD pull requests do not depend on activating a merge queue or migrating
+`ROBOKELD_TOKEN`. Stateless CI input routing landed separately in
+[PR #1350](https://github.com/gyldlab/keld/pull/1350): schema v2 has no recorded reader
+digests or rebind step. Retirement does **not** solve the broader
+[KEL-169](https://linear.app/gyldlab-keld/issue/KEL-169) risk that a candidate workflow
+can mint its own CI result; do not describe telemetry as enforced provenance.
 
 ## Identity and protected-main configuration
 
@@ -11,25 +21,30 @@ final deployment qualification. No new server or private repository is needed.
 | Repository | `gyldlab/keld` (public, GitHub Free organization) |
 | Trusted default-branch source | PR [#1253](https://github.com/gyldlab/keld/pull/1253), merged as `c820452ebbcec975f786e69f175b6d74b9b726ee` |
 | Dedicated GitHub App | **KELD VeriSentry**, App ID **5550363**, installation ID **177084226**, selected `keld` only |
-| GitHub Actions App (untrusted for this gate) | App ID **15368** |
-| Expected required check | `KELD VeriSentry` from **App ID 5550363**, not any matching check name |
+| GitHub Actions App | App ID **15368**; source of the three existing required checks, not the dedicated verifier |
+| Diagnostic check identity | `KELD VeriSentry` from **App ID 5550363**, not a matching Actions job name; **not required for merge** |
 | Credential | Encrypted `VERISENTRY_APP_PRIVATE_KEY` in `verisentry-publisher` GitHub Actions environment, branch rule **main** |
 | Actions execution policy | Repository policy **10173**, active, `.github/workflows/ci-provenance.yml` with only `pull_request_target` allowed; refresh is a **separate** protected-main `push`/`schedule`/trusted `workflow_dispatch` workflow |
-| Native App ruleset | [**26261486**](https://github.com/gyldlab/keld/rules/26261486), `KELD VeriSentry trusted App admission`, branch `main`, **disabled until final release** |
-| Native bypass actors | `0monish` ID **155816356** and `amishabenramani` ID **130687844**, both `User` with `bypass_mode: pull_request` (never exempt/direct-push) |
+| Native App ruleset | [**26261486**](https://github.com/gyldlab/keld/rules/26261486), `KELD VeriSentry trusted App admission`, branch `main`, **retired/disabled** |
+| Stored actors in the disabled ruleset | `0monish` ID **155816356** and `amishabenramani` ID **130687844**, both `User` with `bypass_mode: pull_request` (never exempt/direct-push) |
 
 The existing protected `main` status checks `gatekeeper`, `title-lint` and
 `CI required` are still required with source **GitHub Actions App ID 15368**.
-Existing CODEOWNERS, last-push review, existing GitHub review-bypass allowances,
-active PR-required ruleset and normal CI remain unchanged.
+Strict base freshness, one approving review, CODEOWNERS, last-push approval,
+stale-review dismissal, conversation resolution and admin enforcement remain
+configured. Force pushes and branch deletion remain prohibited. Existing GitHub
+review-bypass allowances and the active PR-required ruleset are unchanged; this
+retirement does not authorize bypassing any remaining check or review requirement.
 
-## Why App identity is a security boundary
+## Verifier identity and the limit of diagnostic checks
 
 A candidate PR can create its own workflow and job named `KELD VeriSentry`.
 Both a genuine and a forged **name** may appear green. GitHub's expected-source
-rule distinguishes the **GitHub App identity**. An attacker-controlled Actions
-job runs as App ID 15368 and must never satisfy a required check whose source
-is VeriSentry App ID 5550363.
+rule distinguishes the **GitHub App identity** when that rule is enforced.
+The historical source-isolation probes below distinguish App 15368 from App
+5550363, but the retired production rule no longer makes that distinction a
+merge-admission condition. Authentic check publication alone does not prove that
+GitHub will admit or reject the final merge.
 
 `.github/workflows/ci-provenance.yml` runs trusted **default-branch** bytes with
 `pull_request_target` and never checks out or executes candidate PR code. Its
@@ -49,11 +64,12 @@ candidate-supplied SHA. It refuses stale, closed, moved, invalid and
 unmergeable PRs, incomplete evidence and API failures rather than publishing a
 false PASS. The key is never stored in Git, a candidate PR, caches or logs.
 
-## Trusted periodic backfill and aging protection
+## Retained telemetry refresh implementation
 
 The source-only `pull_request_target` workflow runs when the PR changes, not
 necessarily when the base `main` branch advances. GitHub required checks can
-also become too old after seven days. A protected-default-main-only
+also become too old after seven days. That limit is not an additional ordinary
+merge requirement for the now-unrequired VeriSentry check. A protected-default-main-only
 `.github/workflows/ci-verisentry-refresh.yml` runs on **every protected main
 push** (to refresh changed test-merge SHAs promptly) and also **daily at
 02:17 UTC** (to renew aging checks). No server or private repository is needed.
@@ -89,10 +105,10 @@ is verified as App ID 5550363 on the current test-merge SHA.
 
 The first trusted-source dry-run over **56 open `main`-targeting PRs** on
 31 October 2026 (not all 152 open PRs across other base branches) classified
-**35 PASS and 21 DENY**. It loaded no App key and wrote no checks. Before
-activation, run this workflow on protected `main` and confirm signed-check
-coverage for current mergeable PRs. The `push` trigger refreshes base SHA
-changes, and the daily schedule renews aging results without PR-body edits.
+**35 PASS and 21 DENY**. It loaded no App key and wrote no checks. This is historical
+verifier evidence, not approval to activate enforcement. The retained `push`
+trigger refreshes base SHA changes, and the daily schedule renews diagnostic
+results without PR-body edits.
 
 To defeat public PR open/close churn, batching is **stable by immutable PR
 number**, never by a changing rank or bucket count. With up to 120 open main
@@ -111,7 +127,10 @@ many IDs land in one modulo bucket, and adjust scheduling well before a
 seven-day check expires. GitHub cron may be delayed or dropped; use the
 trusted manual dispatch for immediate recovery, not a PR-authored fake check.
 
-## Real hosted proof receipts
+## Historical hosted proof receipts (31 October 2026)
+
+These receipts prove only their stated verifier or isolated-rule observations.
+They do not qualify the retired native production gate's positive merge path.
 
 Temporary security PRs were opened against `main`, then closed and their
 branches deleted. Genuine App ID **5550363** source and exact check SHA were
@@ -147,81 +166,57 @@ from App ID 5550363, `conclusion=success`, on GitHub test merge
 It was closed **without merge**, and the fork branch was not modified or
 deleted. No additional public fork, server or local worktree was created.
 
-## Legitimate CI maintenance without a mutable App PASS
+## Why enforcement was retired
 
-**Use the native ruleset's audited PR-only bypass**, not an additional
-secret-owning manual workflow. Rule [26261486](https://github.com/gyldlab/keld/rules/26261486)
-allows exactly `0monish` and `amishabenramani` to request an audited PR-only
-ruleset bypass for a legitimate protected-CI maintenance merge. Ordinary
-contributors cannot do so; no bypass applies to direct pushes. Existing
-branch review, CODEOWNERS and other required CI rules still apply. **Warning:**
-GitHub's PR-only bypass is an exceptional admin-merge operation and can elect
-to bypass other branch protections in that PR, not *only* the VeriSentry
-check. Before any bypass, document the independent reviewer, current PR
-base/head and why it is a legitimate CI maintenance change; verify
-`gatekeeper`, `title-lint`, `CI required` and security review evidence.
-Inspect GitHub's rule suite bypass audit and PR merge actor/commit afterward.
-Never use bypass for routine green application changes.
+The [GH #1341 native-rule investigation](https://github.com/gyldlab/keld/issues/1341#issuecomment-6541527912)
+found that ordinary merge attempts evaluated a final commit different from the
+previously signed synthetic test-merge commit, despite identical parent commits
+and file trees. A genuine App success on the preview therefore did not establish
+successful non-bypass admission. The owner retired the requirement rather than
+publish a reusable success on the PR's HEAD commit or keep legitimate development
+blocked by an unqualified gate.
 
-An earlier Stage-2 prototype, [#1330](https://github.com/gyldlab/keld/pull/1330),
-is deliberately **closed and unmerged**. Independent adversarial proof showed
-that concurrent GitHub `workflow_dispatch` APPROVE and REVOKE runs can race:
-a delayed old approval could overwrite a newer App FAIL because the Checks
-API has no documented atomic conditional PATCH. GitHub repository-wide Actions
-concurrency also permits collisions from PR-owned workflows. This was a
-confirmed security reason **not** to deploy that prototype. The native
-ruleset replaces it using GitHub's own actor identity and bypass audit trail.
-Do not reintroduce mutable manual release checks or broaden the bypass list.
+[PR #1344](https://github.com/gyldlab/keld/pull/1344), the HEAD-publication prototype,
+and [PR #1345](https://github.com/gyldlab/keld/pull/1345), the staged merge-queue
+candidate, are **closed without merge** under the simplified retirement decision.
+Their branches, review findings and test evidence are retained as research, not
+release dependencies. Do not deploy the HEAD-PASS prototype: a commit-scoped check
+can be reused by another PR or after its base changes.
 
-## Before activating the required rule on main
+The earlier [PR #1330](https://github.com/gyldlab/keld/pull/1330) manual-approval
+prototype also remains closed and unmerged. Its adversarial proof found an
+APPROVE/REVOKE race in which a delayed old approval could overwrite a newer App
+failure. That rejection remains relevant; retirement does not validate the design.
 
-1. Preserve the current main protection snapshot and ruleset definition.
-   Require the **complete** `bypass_actors` array to contain **exactly** two
-   `User` entries: `0monish` (ID `155816356`) and `amishabenramani`
-   (ID `130687844`), both with `bypass_mode: pull_request`. Reject every
-   additional actor, actor type or bypass mode. Confirm required context
-   `KELD VeriSentry` and `integration_id: 5550363` exactly, and check
-   enforcement remains `disabled` until qualification.
-2. Existing open PRs predate the workflow and may have no VeriSentry check.
-   Run the protected-main scheduled/manual refresh **once** after its exact
-   source and security tests land. Backfill only from trusted default-main
-   verifier bytes, not PR code. Re-fetch head/base/test merge before the App
-   check; reject unknown/300+ file lists, protected authority and failed APIs.
-   Exclude closed/moved PRs; leave unmergeable PRs blocked, never fake PASS.
-   Confirm the protected-main `push` trigger, next daily schedule, first-run
-   protection and four-day renewal threshold; test stale-workflow rerun
-   rejection against a newer main commit.
-3. Confirm the genuine existing-fork isolation [#1334](https://github.com/gyldlab/keld/pull/1334)
-   receipt, independent App source 5550363 and exact test-merge SHA. That
-   hosted security proof passed; requalify after key rotation or material
-   changes to event/environment isolation.
-   Reconfirm default-main source, restricted environment, stale PR handling,
-   duplicate PR head/merge identity, the forged-same-name scenario and a
-   live PR-only authorized bypass. Do not claim absent evidence as verified.
-4. Activate **only** ruleset 26261486, keeping existing three checks and
-   review rules intact. Immediately inspect actual merge admission of a clean
-   App-verified PR, a denied protected PR and an Actions-only fake-green PR.
-   Any failure or unexpected mass PR block means **disable the new ruleset**,
-   leaving existing main protections unchanged.
-5. After successful end-to-end qualification, the owner generates a new App
-   private key. Replace the environment-scoped GitHub secret from the local
-   file via stdin, revoke the old key, then run fresh benign/hostile checks.
+## Ordinary maintenance after retirement
 
-## Safe rollback and key rotation
+Use the existing required CI and independent review process for application,
+documentation and CI-maintenance PRs. A diagnostic VeriSentry denial on a protected
+path is not an additional required gate while rule 26261486 is disabled. It is also
+not permission to ignore a failing required check, unresolved review or security
+finding. Do not request an admin merge merely to bypass retired enforcement.
 
-To roll back this gate, set ruleset **26261486** enforcement to `disabled`.
-Do **not** turn off the preexisting main required checks or relax CODEOWNERS.
-The automatic verifier may remain deployed but no longer blocks merges unless
-its App check is required. If a key is exposed, revoke and rotate the GitHub
-App key and replace `VERISENTRY_APP_PRIVATE_KEY` in the restricted environment.
-Never print the `.pem` contents or save them in the repository.
+Keep ruleset 26261486 disabled. Do not silently replace it with a required HEAD
+check, activate a queue, change credential scope, or remove existing protections.
+The stored bypass actors in its disabled definition are historical configuration,
+not a new exception to the remaining protections.
 
-Example rotation by the authorized owner, with a freshly generated key:
+A future signed merge gate requires a **separately authorized and reviewed** design.
+Exact staged-commit identity, genuine App5550363 positive and hostile-negative
+admission, credential isolation, and requeue/replay evidence would be requirements
+of that future scope. They are not unfinished activation steps for this retirement
+or prerequisites for unrelated KELD merges.
 
-```sh
-gh secret set VERISENTRY_APP_PRIVATE_KEY --repo gyldlab/keld \
-  --env verisentry-publisher < /trusted/private/location/NEW_APP_KEY.pem
-```
+## Retained credentials and incident handling
+
+No credential migration or rotation is required merely to keep the gate retired.
+Retain existing bot credentials until their consumers have a separately reviewed
+migration; do not delete `ROBOKELD_TOKEN` to close this task. The App signing key
+remains in the restricted `verisentry-publisher` environment for telemetry.
+
+If a key is exposed, the authorized owner must revoke and rotate that key and
+requalify the affected publisher. Never print its contents or store it in Git,
+PR text, logs or caches. Retirement does not relax credential handling.
 
 ## Primary GitHub verification references
 

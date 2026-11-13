@@ -37,8 +37,33 @@ const generationOutputs = [
 ];
 
 function withGeneratorCheckout(run: (root: string) => void): void {
-  const root = mkdtempSync(resolve(tmpdir(), "keld-generation-contract-"));
+  const parent = mkdtempSync(resolve(tmpdir(), "keld-generation-contract-"));
+  const root = resolve(parent, "fixture");
+  const initializeRepository = (cwd: string) => {
+    const env = { ...process.env };
+    for (const key of [
+      "GIT_DIR",
+      "GIT_COMMON_DIR",
+      "GIT_WORK_TREE",
+      "GIT_INDEX_FILE",
+      "GIT_OBJECT_DIRECTORY",
+    ])
+      delete env[key];
+    for (const args of [
+      ["init", "--quiet"],
+      ["config", "maintenance.auto", "false"],
+    ]) {
+      const result = Bun.spawnSync(["git", ...args], { cwd, env });
+      expect(result.exitCode, result.stderr.toString()).toBe(0);
+    }
+  };
   try {
+    mkdirSync(root);
+    // Reproduce managed scratch: the enclosing repository ignores this checkout.
+    // Its own Git root must keep native formatting from returning ignored input unchanged.
+    initializeRepository(parent);
+    writeFileSync(resolve(parent, ".gitignore"), "fixture/\n");
+    initializeRepository(root);
     for (const path of [
       ...generationOutputs,
       "packages/@keld/kipc/scripts/echo-codegen.ts",
@@ -56,7 +81,7 @@ function withGeneratorCheckout(run: (root: string) => void): void {
     writeFileSync(resolve(root, "bunfig.toml"), "[fmt]\nignorePatterns = []\n");
     run(root);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(parent, { recursive: true, force: true });
   }
 }
 
