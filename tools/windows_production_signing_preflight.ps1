@@ -87,7 +87,9 @@ foreach ($property in $policy.PSObject.Properties) {
 }
 if ($policy.schema -cne 'keld.windows.production-signing-policy/v1') { Refuse '014' 'Unsupported policy schema' }
 if ($policy.sourceCommit -cne $ExpectedSourceCommit) { Refuse '015' 'Policy source differs from selected build SHA' }
-if ($policy.publisherName.Length -lt 2 -or $policy.publisherName.Length -gt 120 -or $policy.publisherName -match '[\x00-\x1f<>]') {
+# Refuse invisible Unicode format controls (including bidi overrides) and C0/C1
+# controls in the claimed publisher identity; keep ordinary Unicode names valid.
+if ($policy.publisherName.Length -lt 2 -or $policy.publisherName.Length -gt 120 -or $policy.publisherName -match '[\p{Cc}\p{Cf}<>]') {
     Refuse '016' 'Publisher name not bounded printable text'
 }
 foreach ($key in @('publisherCertificateThumbprint','trustedRootThumbprint')) {
@@ -107,6 +109,7 @@ if (-not [Uri]::TryCreate($policy.rfc3161TimestampUrl, [UriKind]::Absolute, [ref
     $uri.Port -ne 443 -or
     $uri.HostNameType -ne [UriHostNameType]::Dns -or
     $uri.Host -notmatch '\.' -or
+    $uri.Host.EndsWith('.') -or
     $uri.UserInfo.Length -gt 0 -or
     $uri.Fragment.Length -gt 0 -or
     $uri.Query.Length -gt 0) {

@@ -92,6 +92,17 @@ New-Item -ItemType Junction -Path $junctionParent -Target $realParent -ErrorActi
 Run-Case 'junction-ancestor-rejected' (Join-Path $junctionParent 'policy.json') $true 1 'PROD-PRE-004'
 Run-Case 'trailing-dot-Win32-alias-rejected' ($good+'.') $true 1 'PROD-PRE-002'
 Run-Case 'trailing-space-Win32-alias-rejected' ($good+' ') $true 1 'PROD-PRE-002'
+# A release publisher name must never contain bidi overrides or invisible controls.
+$bidi = Save-Case 'bidi-publisher-name' ($goodJson.Replace('Keld Company', ('Keld'+[char]0x202e+' Company')))
+Run-Case 'bidi-publisher-name-rejected' $bidi $true 1 'PROD-PRE-016'
+$zeroWidth = Save-Case 'zero-width-publisher-name' ($goodJson.Replace('Keld Company', ('Keld'+[char]0x200b+' Company')))
+Run-Case 'zero-width-publisher-name-rejected' $zeroWidth $true 1 'PROD-PRE-016'
+# Ordinary printable non-ASCII letters remain valid publisher names.
+$accented = Save-Case 'accented-publisher-name' ($goodJson.Replace('Keld Company', ('Keld Caf'+[char]0x00e9)))
+Run-Case 'printable-non-ascii-publisher-accepted' $accented $true 0 'SYNTAX_ONLY_NOT_RELEASE'
+# Require canonical HTTPS DNS spelling for the timestamp-policy origin.
+$dotHost = Save-Case 'timestamp-trailing-dot' ($goodJson.Replace('timestamp.example.com','timestamp.example.com.'))
+Run-Case 'timestamp-trailing-dot-rejected' $dotHost $true 1 'PROD-PRE-020'
 Run-Case 'missing-policy-rejected' (Join-Path $root 'absent.json') $true 1 'PROD-PRE-003'
 if ($hasSigner) {
     $wrongTool = Save-Case 'wrong-signtool-hash' ($goodJson.Replace($hash,('c'*64)))
