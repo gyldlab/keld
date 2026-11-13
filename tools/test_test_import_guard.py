@@ -338,6 +338,101 @@ class TestDiffGuard(unittest.TestCase):
         head = self.commit()
         self.assertEqual([], guard.violations(self.repo, base, head))
 
+    def test_scope_header_comments_and_helper_rename_keep_legacy_glob(self):
+        self.put(EXISTING, (
+            "pub mod items { pub fn f() {} }\n"
+            "#[rustfmt::skip]\n"
+            "mod tests { /* old header */\n"
+            "    pub(crate) use crate::items::{/* old import */ *};\n"
+            "    fn previous() {}\n"
+            "}\n"
+        ))
+        base = self.commit()
+        self.put(EXISTING, (
+            "pub mod items { pub fn f() {} }\n"
+            "#[rustfmt::skip]\n"
+            "mod tests { /* new header */\n"
+            "    pub(crate) use crate::items::{/* new import */ *};\n"
+            "    fn renamed() {}\n"
+            "}\n"
+        ))
+        head = self.commit()
+        self.assertEqual([], guard.violations(self.repo, base, head))
+
+    def test_changed_cfg_string_does_not_inherit_old_glob(self):
+        self.put(EXISTING, (
+            "pub mod items { pub fn f() {} }\n"
+            "#[rustfmt::skip]\n"
+            '#[cfg(feature = "before")]\n'
+            "const _: () = { /* old comment */\n"
+            "    use crate::items::*; // old import\n"
+            "    let _before = f;\n"
+            "};\n"
+        ))
+        base = self.commit()
+        self.put(EXISTING, (
+            "pub mod items { pub fn f() {} }\n"
+            "#[rustfmt::skip]\n"
+            '#[cfg(feature = "after")]\n'
+            "const _: () = { /* new comment */\n"
+            "    use crate::items::*; // new import\n"
+            "    let _after = f;\n"
+            "};\n"
+        ))
+        head = self.commit()
+        self.assertEqual([(EXISTING, 5)], guard.violations(self.repo, base, head))
+
+    def test_cfg_literal_whitespace_is_not_trivia(self):
+        for before_literal, after_literal in [('"a b"', '"ab"'),
+                                               ('r#"a b"#', 'r#"ab"#')]:
+            for rename_helper in (False, True):
+                with self.subTest(literal=before_literal, rename=rename_helper):
+                    def source(literal, comment, helper):
+                        return (f'#[cfg(feature = {literal})]\n'
+                                f'const _: () = {{ /* {comment} */\n'
+                                f'    use crate::items::*; // {comment}\n'
+                                f'    let _{helper} = f;\n'
+                                '};\n')
+                    self.put(EXISTING, source(before_literal, 'old', 'before'))
+                    base = self.commit()
+                    self.put(EXISTING, source(after_literal, 'new',
+                                             'after' if rename_helper else 'before'))
+                    head = self.commit()
+                    self.assertEqual([(EXISTING, 3)], guard.violations(self.repo, base, head))
+
+    def test_literal_text_separators_do_not_shift_git_line_identity(self):
+        for separator in ('\u2028', '\u0085', '\v'):
+            with self.subTest(separator=repr(separator)):
+                prefix = f'const TEXT: &str = "a{separator}b";\n'
+                self.put(EXISTING, prefix + 'use super::f;\n')
+                base = self.commit()
+                self.put(EXISTING, prefix + 'use super::*;\n')
+                head = self.commit()
+                self.assertEqual([(EXISTING, 2)], guard.violations(self.repo, base, head))
+
+    def test_unchanged_cfg_string_keeps_comment_only_legacy_glob(self):
+        self.put(EXISTING, (
+            "pub mod items { pub fn f() {} }\n"
+            "#[rustfmt::skip]\n"
+            '#[cfg(feature = "before")]\n'
+            "const _: () = { /* old comment */\n"
+            "    use crate::items::*; // old import\n"
+            "    let _before = f;\n"
+            "};\n"
+        ))
+        base = self.commit()
+        self.put(EXISTING, (
+            "pub mod items { pub fn f() {} }\n"
+            "#[rustfmt::skip]\n"
+            '#[cfg(feature = "before")]\n'
+            "const _: () = { /* new comment */\n"
+            "    use crate::items::*; // new import comment\n"
+            "    let _after = f;\n"
+            "};\n"
+        ))
+        head = self.commit()
+        self.assertEqual([], guard.violations(self.repo, base, head))
+
     def test_shifted_unchanged_scope_maps_legacy_glob_with_other_code_edits(self):
         self.put(EXISTING, (
             "pub mod items { pub fn f() {} }\n"

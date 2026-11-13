@@ -7,6 +7,7 @@ not a retroactive build gate. This is part of the test-layout acceptance check.
 import argparse
 import re
 import subprocess
+from collections import Counter
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -34,18 +35,20 @@ def is_owner_test(path):
            or any(p == "tests" or p.endswith("_tests") for p in parts[3:-1]))
 
 
-def masked_code(content):
-    """Mask comments and Rust string literals, retaining source line numbers."""
+def masked_code(content, literal_spans=None):
+    """Mask comments/literals, optionally recording exact literal byte spans."""
     code = []
     i = 0
     state = "normal"
     depth = 0
     end_raw = ""
+    literal_start = 0
     while i < len(content):
         ch = content[i]
         if state == "normal":
             raw = RAW.match(content, i)
             if raw:
+                literal_start = i
                 end_raw = '"' + raw.group(1)
                 code.extend(" " * len(raw.group()))
                 i = raw.end()
@@ -53,6 +56,8 @@ def masked_code(content):
                 continue
             char = CHAR.match(content, i)
             if char:
+                if literal_spans is not None:
+                    literal_spans.append((i, char.end()))
                 code.extend(" " * len(char.group()))
                 i = char.end()
                 continue
@@ -68,6 +73,7 @@ def masked_code(content):
                 state = "block"
                 continue
             if ch == '"':
+                literal_start = i
                 code.append(" ")
                 state = "string"
                 i += 1
@@ -78,6 +84,8 @@ def masked_code(content):
             if content.startswith(end_raw, i):
                 code.extend(" " * len(end_raw))
                 i += len(end_raw)
+                if literal_spans is not None:
+                    literal_spans.append((literal_start, i))
                 state = "normal"
             else:
                 code.append("\n" if ch == "\n" else " ")
@@ -92,6 +100,8 @@ def masked_code(content):
             elif ch == '"':
                 code.append(" ")
                 i += 1
+                if literal_spans is not None:
+                    literal_spans.append((literal_start, i))
                 state = "normal"
             else:
                 code.append("\n" if ch == "\n" else " ")
@@ -117,7 +127,26 @@ def masked_code(content):
             else:
                 code.append("\n" if ch == "\n" else " ")
                 i += 1
+    if state in ("raw", "string") and literal_spans is not None:
+        literal_spans.append((literal_start, len(content)))
     return "".join(code)
+
+
+def source_identity(masked, content, literal_spans, start, end):
+    """Ignore trivia outside literals; preserve exact literal bytes inside a slice."""
+    pieces = []
+    cursor = start
+    for left, right in literal_spans:
+        if right <= start:
+            continue
+        if left >= end:
+            break
+        left, right = max(left, start), min(right, end)
+        pieces.append(re.sub(r"\s+", "", masked[cursor:left]))
+        pieces.append(content[left:right])
+        cursor = right
+    pieces.append(re.sub(r"\s+", "", masked[cursor:end]))
+    return "".join(pieces)
 
 
 def glob_imports(masked):
@@ -141,7 +170,7 @@ def active_glob_lines(content, code_lines_only=False):
     if code_lines_only:
         # A comment-only insertion inside a legacy multiline import is not
         # a new source import, even though its line lies inside the match.
-        lines = masked.splitlines()
+        lines = masked.split("\n")
         found = {line for line in found if lines[line - 1].strip()}
     return found
 
@@ -149,7 +178,7 @@ def active_glob_lines(content, code_lines_only=False):
 def added_lines(diff):
     current = None
     selected = set()
-    for line in diff.splitlines():
+    for line in diff.split("\n"):
         if line.startswith("@@ "):
             found = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)", line)
             if not found:
@@ -164,7 +193,7 @@ def added_lines(diff):
     return selected
 
 
-def block_scopes(masked):
+def block_scopes(masked, content=None, literal_spans=()):
     """Track enclosing brace opening lines and headers in the current revision."""
     scopes = {1: ()}
     blocks = []
@@ -175,7 +204,8 @@ def block_scopes(masked):
             line += 1
             scopes[line] = tuple(blocks)
         elif ch == "{":
-            header = re.sub(r"\s+", "", masked[start:offset])
+            header = source_identity(masked, content if content is not None else masked,
+                                     literal_spans, start, offset)
             blocks.append((line, header))
             start = offset + 1
         elif ch == "}":
@@ -191,7 +221,7 @@ def unchanged_line_provenance(diff, old_count, new_count):
     """Map Git's unchanged before-lines to their positions after the patch."""
     mapped = {}
     old_next = new_next = 1
-    for line in diff.splitlines():
+    for line in diff.split("\n"):
         if not line.startswith("@@ "):
             continue
         hunk = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))?", line)
@@ -221,10 +251,29 @@ def trivia_only_changed_lines(diff, before, after):
     Matching only inside a Git replacement hunk prevents a removed legacy
     import from excusing a new identical import in a different module.
     """
-    old_raw, new_raw = before.splitlines(), after.splitlines()
-    before_code, after_code = masked_code(before), masked_code(after)
-    old_code, new_code = before_code.splitlines(), after_code.splitlines()
-    old_scopes, new_scopes = block_scopes(before_code), block_scopes(after_code)
+    old_raw, new_raw = before.split("\n"), after.split("\n")
+    old_literals, new_literals = [], []
+    before_code = masked_code(before, literal_spans=old_literals)
+    after_code = masked_code(after, literal_spans=new_literals)
+    old_code, new_code = before_code.split("\n"), after_code.split("\n")
+    old_scopes = block_scopes(before_code, before, old_literals)
+    new_scopes = block_scopes(after_code, after, new_literals)
+    def line_identities(masked, content, spans):
+        result, offset = [], 0
+        # Git hunks count LF physical lines, not Unicode text separators.
+        for line in content.split("\n"):
+            end = min(offset + len(line) + 1, len(content))
+            result.append(source_identity(masked, content, spans, offset, end))
+            offset = end
+        return result
+    old_identity = line_identities(before_code, before, old_literals)
+    new_identity = line_identities(after_code, after, new_literals)
+    old_headers = Counter(header for _, header in {
+        item for chain in old_scopes.values() for item in chain
+    })
+    new_headers = Counter(header for _, header in {
+        item for chain in new_scopes.values() for item in chain
+    })
     retained_lines = unchanged_line_provenance(diff, len(old_code), len(new_code))
     old_glob = set().union(*(lines for lines, _ in glob_imports(before_code)))
     new_glob = set().union(*(lines for lines, _ in glob_imports(after_code)))
@@ -235,8 +284,8 @@ def trivia_only_changed_lines(diff, before, after):
         # If an entire replacement hunk has the same source tokens after
         # masking comments and trivia, it cannot introduce a glob import.
         # This also covers a comment-only change on an enclosing brace line.
-        old_hunk = "".join(re.sub(r"\s+", "", old_code[n - 1]) for n in old_changed)
-        new_hunk = "".join(re.sub(r"\s+", "", new_code[n - 1]) for n in new_changed)
+        old_hunk = "".join(old_identity[n - 1] for n in old_changed)
+        new_hunk = "".join(new_identity[n - 1] for n in new_changed)
         if old_hunk == new_hunk:
             unchanged.update(n for n in new_changed if n in new_glob)
             old_changed.clear()
@@ -262,7 +311,11 @@ def trivia_only_changed_lines(diff, before, after):
                 old_line = old_changed[old_index]
                 old_chain, new_chain = old_scopes[old_line], new_scopes[new_line]
                 if len(old_chain) != len(new_chain) or any(
-                    retained_lines.get(old_open) != new_open or old_header != new_header
+                    old_header != new_header or (
+                        retained_lines.get(old_open) != new_open
+                        and (not old_header or old_headers[old_header] != 1
+                             or new_headers[new_header] != 1)
+                    )
                     for (old_open, old_header), (new_open, new_header) in zip(
                         old_chain, new_chain)
                 ):
@@ -285,7 +338,7 @@ def trivia_only_changed_lines(diff, before, after):
         new_changed.clear()
 
     old_line = new_line = None
-    for line in diff.splitlines():
+    for line in diff.split("\n"):
         if line.startswith("@@ "):
             finish_hunk()
             header = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)", line)
