@@ -1,0 +1,15 @@
+{
+  "scope": "explicit fixture parameter only, not the authoritative application input census",
+  "inputs": [
+    "renderer.js",
+    "main.cjs",
+    "keld.permissions.jsonc",
+    "package.json",
+    "helper.cjs",
+    "keld.config.ts"
+  ],
+  "declared_preloads": [
+    "preload-a.js",
+    "preload-b.js"
+  ]
+}

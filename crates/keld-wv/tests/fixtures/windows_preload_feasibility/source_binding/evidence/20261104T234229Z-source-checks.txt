@@ -1,0 +1,206 @@
+Preparation-only source fixture checks on Ramani; no product/native admission claim.
+CASE=omit-other-preload EXIT=1 EXPECTED=1 DISCRIMINATING=True
+test_other_preload_changes_paired_input_binding (test_source_audit.SourceAuditTests.test_other_preload_changes_paired_input_binding) ... FAIL
+System.Management.Automation.RemoteException
+======================================================================
+FAIL: test_other_preload_changes_paired_input_binding (test_source_audit.SourceAuditTests.test_other_preload_changes_paired_input_binding)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\WORK\keld\.keld-work\worktrees\gh-1184-w1-feasibility-20261105\crates\keld-wv\tests\fixtures\windows_preload_feasibility\source_binding\test_source_audit.py", line 80, in test_other_preload_changes_paired_input_binding
+    self.assertNotEqual(self.compute()["fixture_digest"], before)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '753c3173112623ab175fda65aac0ae3e031ff8a3f0784a2fd8e99451941acca0' == '753c3173112623ab175fda65aac0ae3e031ff8a3f0784a2fd8e99451941acca0'
+System.Management.Automation.RemoteException
+----------------------------------------------------------------------
+Ran 1 test in 0.025s
+System.Management.Automation.RemoteException
+FAILED (failures=1)
+CASE=omit-helper EXIT=1 EXPECTED=1 DISCRIMINATING=True
+test_helper_changes_paired_input_binding (test_source_audit.SourceAuditTests.test_helper_changes_paired_input_binding) ... FAIL
+System.Management.Automation.RemoteException
+======================================================================
+FAIL: test_helper_changes_paired_input_binding (test_source_audit.SourceAuditTests.test_helper_changes_paired_input_binding)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\WORK\keld\.keld-work\worktrees\gh-1184-w1-feasibility-20261105\crates\keld-wv\tests\fixtures\windows_preload_feasibility\source_binding\test_source_audit.py", line 86, in test_helper_changes_paired_input_binding
+    self.assertNotEqual(self.compute()["fixture_digest"], before)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'f21b0a52a495f1487b411acac44b39e91a6137e5bb4b80fb0b7d31b605e5389c' == 'f21b0a52a495f1487b411acac44b39e91a6137e5bb4b80fb0b7d31b605e5389c'
+System.Management.Automation.RemoteException
+----------------------------------------------------------------------
+Ran 1 test in 0.021s
+System.Management.Automation.RemoteException
+FAILED (failures=1)
+CASE=ignore-preload-digest EXIT=1 EXPECTED=1 DISCRIMINATING=True
+test_preload_tamper_refused_by_input_auditor (test_source_audit.SourceAuditTests.test_preload_tamper_refused_by_input_auditor) ... FAIL
+System.Management.Automation.RemoteException
+======================================================================
+FAIL: test_preload_tamper_refused_by_input_auditor (test_source_audit.SourceAuditTests.test_preload_tamper_refused_by_input_auditor)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\WORK\keld\.keld-work\worktrees\gh-1184-w1-feasibility-20261105\crates\keld-wv\tests\fixtures\windows_preload_feasibility\source_binding\test_source_audit.py", line 140, in test_preload_tamper_refused_by_input_auditor
+    with self.assertRaisesRegex(ValueError, "source identity mismatch"):
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ValueError not raised
+System.Management.Automation.RemoteException
+----------------------------------------------------------------------
+Ran 1 test in 0.125s
+System.Management.Automation.RemoteException
+FAILED (failures=1)
+CASE=ignore-main-digest EXIT=1 EXPECTED=1 DISCRIMINATING=True
+test_main_tamper_refused_by_input_auditor (test_source_audit.SourceAuditTests.test_main_tamper_refused_by_input_auditor) ... FAIL
+System.Management.Automation.RemoteException
+======================================================================
+FAIL: test_main_tamper_refused_by_input_auditor (test_source_audit.SourceAuditTests.test_main_tamper_refused_by_input_auditor)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\WORK\keld\.keld-work\worktrees\gh-1184-w1-feasibility-20261105\crates\keld-wv\tests\fixtures\windows_preload_feasibility\source_binding\test_source_audit.py", line 147, in test_main_tamper_refused_by_input_auditor
+    with self.assertRaisesRegex(ValueError, "source identity mismatch"):
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ValueError not raised
+System.Management.Automation.RemoteException
+----------------------------------------------------------------------
+Ran 1 test in 0.100s
+System.Management.Automation.RemoteException
+FAILED (failures=1)
+CASE=include-permissions-self-reference EXIT=1 EXPECTED=1 DISCRIMINATING=True
+test_permissions_metadata_is_excluded (test_source_audit.SourceAuditTests.test_permissions_metadata_is_excluded) ... FAIL
+System.Management.Automation.RemoteException
+======================================================================
+FAIL: test_permissions_metadata_is_excluded (test_source_audit.SourceAuditTests.test_permissions_metadata_is_excluded)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\WORK\keld\.keld-work\worktrees\gh-1184-w1-feasibility-20261105\crates\keld-wv\tests\fixtures\windows_preload_feasibility\source_binding\test_source_audit.py", line 70, in test_permissions_metadata_is_excluded
+    self.assertEqual(self.compute()["fixture_digest"], before)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '2a127e546e08452cb8e6a4ad073ed200469dd499601433230a430f3c8f525882' != '05a6bcb5b18bb4ec32339ed8ad771ee53035d486499a32287fcaf79d4a901981'
+- 2a127e546e08452cb8e6a4ad073ed200469dd499601433230a430f3c8f525882
++ 05a6bcb5b18bb4ec32339ed8ad771ee53035d486499a32287fcaf79d4a901981
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+----------------------------------------------------------------------
+Ran 1 test in 0.048s
+System.Management.Automation.RemoteException
+FAILED (failures=1)
+CASE=omit-rest-only EXIT=1 EXPECTED=1 DISCRIMINATING=True
+Ô£û F-B forwards every argument after the channel (6.0038ms)
+Ôä╣ tests 1
+Ôä╣ suites 0
+Ôä╣ pass 0
+Ôä╣ fail 1
+Ôä╣ cancelled 0
+Ôä╣ skipped 0
+Ôä╣ todo 0
+Ôä╣ duration_ms 174.9299
+
+Ô£û failing tests:
+
+test at D:\WORK\keld\.keld-work\worktrees\gh-1184-w1-feasibility-20261105\crates\keld-wv\tests\fixtures\windows_preload_feasibility\source_binding\source_behavior.test.mjs:17:1
+Ô£û F-B forwards every argument after the channel (6.0038ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    [
+      [
+        'fixture-channel',
+        {
+          tag: 'first'
+        },
+  -     'second',
+  -     {
+  -       tag: 'third'
+  -     }
+      ]
+    ]
+  
+      at TestContext.<anonymous> (file:///D:/WORK/keld/.keld-work/worktrees/gh-1184-w1-feasibility-20261105/crates/keld-wv/tests/fixtures/windows_preload_feasibility/source_binding/source_behavior.test.mjs:21:10)
+      at Test.runInAsyncScope (node:async_hooks:213:14)
+      at Test.run (node:internal/test_runner/test:1106:25)
+      at Test.start (node:internal/test_runner/test:1003:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:358:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ [ 'fixture-channel', [Object] ] ],
+    expected: [ [ 'fixture-channel', [Object], 'second', [Object] ] ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+CASE=mislabel-omitted-arguments EXIT=1 EXPECTED=1 DISCRIMINATING=True
+Ô£û F-C omission and F-J truncation visibly lose supplied arguments (7.4181ms)
+Ôä╣ tests 1
+Ôä╣ suites 0
+Ôä╣ pass 0
+Ôä╣ fail 1
+Ôä╣ cancelled 0
+Ôä╣ skipped 0
+Ôä╣ todo 0
+Ôä╣ duration_ms 150.4097
+
+Ô£û failing tests:
+
+test at D:\WORK\keld\.keld-work\worktrees\gh-1184-w1-feasibility-20261105\crates\keld-wv\tests\fixtures\windows_preload_feasibility\source_binding\source_behavior.test.mjs:31:1
+Ô£û F-C omission and F-J truncation visibly lose supplied arguments (7.4181ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + []
+  - [
+  -   'a'
+  - ]
+  
+      at TestContext.<anonymous> (file:///D:/WORK/keld/.keld-work/worktrees/gh-1184-w1-feasibility-20261105/crates/keld-wv/tests/fixtures/windows_preload_feasibility/source_binding/source_behavior.test.mjs:35:10)
+      at Test.runInAsyncScope (node:async_hooks:213:14)
+      at Test.run (node:internal/test_runner/test:1106:25)
+      at Test.start (node:internal/test_runner/test:1003:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:358:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [],
+    expected: [ 'a' ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+CASE=python-healthy-recovery EXIT=0 EXPECTED=0 DISCRIMINATING=True
+test_authentic_source_identities_and_review_anchors (__main__.SourceAuditTests.test_authentic_source_identities_and_review_anchors) ... ok
+test_census_never_executes_project_or_config (__main__.SourceAuditTests.test_census_never_executes_project_or_config) ... ok
+test_empty_vector (__main__.SourceAuditTests.test_empty_vector) ... ok
+test_fixed_census_bytes_and_digest (__main__.SourceAuditTests.test_fixed_census_bytes_and_digest) ... ok
+test_helper_changes_paired_input_binding (__main__.SourceAuditTests.test_helper_changes_paired_input_binding) ... ok
+test_input_order_does_not_change_digest (__main__.SourceAuditTests.test_input_order_does_not_change_digest) ... ok
+test_main_changes_paired_input_binding (__main__.SourceAuditTests.test_main_changes_paired_input_binding) ... ok
+test_main_tamper_refused_by_input_auditor (__main__.SourceAuditTests.test_main_tamper_refused_by_input_auditor) ... ok
+test_missing_declared_preload_is_not_ignored (__main__.SourceAuditTests.test_missing_declared_preload_is_not_ignored) ... ok
+test_noncanonical_fixture_paths_refuse (__main__.SourceAuditTests.test_noncanonical_fixture_paths_refuse) ... ok
+test_other_preload_changes_paired_input_binding (__main__.SourceAuditTests.test_other_preload_changes_paired_input_binding) ... ok
+test_permissions_metadata_is_excluded (__main__.SourceAuditTests.test_permissions_metadata_is_excluded) ... ok
+test_preload_tamper_refused_by_input_auditor (__main__.SourceAuditTests.test_preload_tamper_refused_by_input_auditor) ... ok
+test_report_does_not_promote_preparation_to_product_acceptance (__main__.SourceAuditTests.test_report_does_not_promote_preparation_to_product_acceptance) ... ok
+test_review_anchor_drift_refused (__main__.SourceAuditTests.test_review_anchor_drift_refused) ... ok
+test_utf8_byte_order_is_explicit (__main__.SourceAuditTests.test_utf8_byte_order_is_explicit) ... ok
+System.Management.Automation.RemoteException
+----------------------------------------------------------------------
+Ran 16 tests in 0.398s
+System.Management.Automation.RemoteException
+OK
+CASE=node-healthy-recovery EXIT=0 EXPECTED=0 DISCRIMINATING=True
+Ô£ö manual corpus retains the 32 pinned source-shape cases (2.0692ms)
+Ô£ö F-B forwards every argument after the channel (1.7573ms)
+Ô£ö F-B1 literal sink forwards every argument (1.3647ms)
+Ô£ö F-C omission and F-J truncation visibly lose supplied arguments (3.8787ms)
+Ô£ö F-B2 excludes only the event and preserves all inbound values (1.4849ms)
+Ô£ö inbound filter and field selection have different callback outputs (2.8219ms)
+Ô£ö constant false contextIsolated reaches only public branch (1.5768ms)
+Ô£ö private state and deferred callbacks control actual sink reachability (6.5555ms)
+Ô£ö authentic mainResp routes success data and consumes each request record (3.1253ms)
+Ô£ö authentic mainResp error selects msg and e instead of whole response (1.8627ms)
+Ô£ö authentic fileChanged filters unmatched path and selects curr/prev (1.7825ms)
+Ô£ö authentic registerMsgListener drops trailing inbound values (1.5044ms)
+Ô£ö authentic listenOnce drops trailing values and delivers once (1.6604ms)
+Ôä╣ tests 13
+Ôä╣ suites 0
+Ôä╣ pass 13
+Ôä╣ fail 0
+Ôä╣ cancelled 0
+Ôä╣ skipped 0
+Ôä╣ todo 0
+Ôä╣ duration_ms 234.0243
