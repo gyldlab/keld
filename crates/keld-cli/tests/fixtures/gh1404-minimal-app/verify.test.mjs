@@ -4,10 +4,14 @@ import { createHash } from "node:crypto";
 import {
   cpSync,
   existsSync,
+  lstatSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
+  renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,6 +33,36 @@ const build = readFileSync(join(root, "keld.build.ts"), "utf8");
 // changes require independent inspection and a reviewed identity update;
 // never derive these expected values from the files under test.
 test("build selection and executable main retain inspected source identities", () => {
+  // Pack captures whole roots, so entry-point hashes alone cannot close them.
+  // Walk without following links before reading any of the pinned source bytes.
+  const capturedMembers = [];
+  const visit = (relative) => {
+    const metadata = lstatSync(join(root, relative));
+    assert.equal(
+      metadata.isSymbolicLink(),
+      false,
+      "unreviewed source symlink: " + relative,
+    );
+    if (metadata.isDirectory()) {
+      for (const name of readdirSync(join(root, relative))) {
+        visit(relative + "/" + name);
+      }
+    } else {
+      assert.equal(
+        metadata.isFile(),
+        true,
+        "non-regular captured source: " + relative,
+      );
+      capturedMembers.push(relative);
+    }
+  };
+  visit("src");
+  visit("web");
+  assert.deepEqual(
+    capturedMembers.sort(),
+    ["src/main.mjs", "src/preload.mjs", "web/pages/index.html"],
+    "Pack source member inventory differs from independently inspected candidate",
+  );
   assert.equal(
     sha256("keld.build.ts"),
     "8c344e570b46473e1b7fab2203af03a6cc88b919f20f4d24362bfc2cf7573638",
@@ -63,6 +97,24 @@ test(
   },
   () => {
     const mutations = [
+      // Windows symlink creation needs privileges unavailable in ordinary CI.
+      ...(process.platform === "win32"
+        ? []
+        : [
+            ["linked source root", "src", () => "linked", "dir"],
+            ["linked source member", "src/preload.mjs", () => "linked", "file"],
+          ]),
+      [
+        "added executable",
+        "src/unreviewed-module.mjs",
+        () => "export const unreviewed = true;\n",
+      ],
+      [
+        "added renderer",
+        "web/pages/unreviewed.html",
+        () => "<h1>Unreviewed</h1>\n",
+      ],
+      ["added nested executable", "src/nested/extra.mjs", () => "export {};\n"],
       [
         "host digest decoy",
         "keld.build.ts",
@@ -134,12 +186,13 @@ test(
       ],
     ];
     const outcomes = [];
-    for (const [name, file, mutate] of mutations) {
+    for (const [name, file, mutate, linkType] of mutations) {
       const scratch = mkdtempSync(join(tmpdir(), "keld-b3-oracle-"));
       try {
         cpSync(root, scratch, { recursive: true });
         const target = join(scratch, file);
-        const before = readFileSync(target, "utf8");
+        const before =
+          !linkType && existsSync(target) ? readFileSync(target, "utf8") : "";
         const after = mutate(before);
         assert.notEqual(after, before, name + " mutation must apply");
         const env = { ...process.env, KELD_B3_MUTANT: "1" };
@@ -157,7 +210,13 @@ test(
           0,
           name + ": intact copied source must pass",
         );
-        writeFileSync(target, after);
+        mkdirSync(dirname(target), { recursive: true });
+        if (linkType) {
+          renameSync(target, target + ".real");
+          symlinkSync(target + ".real", target, linkType);
+        } else {
+          writeFileSync(target, after);
+        }
         const result = spawnSync(
           process.env.KELD_B3_NODE_BIN || "node",
           ["--test", "verify.test.mjs"],
@@ -170,6 +229,11 @@ test(
         );
         assert.equal(result.error, undefined, name + ": child must run");
         const identityError = {
+          src: /unreviewed source symlink/,
+          "src/preload.mjs": /unreviewed source symlink/,
+          "src/unreviewed-module.mjs": /Pack source member inventory differs/,
+          "web/pages/unreviewed.html": /Pack source member inventory differs/,
+          "src/nested/extra.mjs": /Pack source member inventory differs/,
           "keld.build.ts":
             /build config differs from inspected effective field selection/,
           "src/main.mjs": /main differs from inspected executable module/,
