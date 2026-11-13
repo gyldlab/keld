@@ -28,7 +28,7 @@ const build = readFileSync(join(root, "keld.build.ts"), "utf8");
 // effective property/statement from text in a string. Intentional source
 // changes require independent inspection and a reviewed identity update;
 // never derive these expected values from the files under test.
-test("build selection and executable main retain inspected source identities", () => {
+test("the generic app source retains all inspected candidate identities", () => {
   assert.equal(
     sha256("keld.build.ts"),
     "8c344e570b46473e1b7fab2203af03a6cc88b919f20f4d24362bfc2cf7573638",
@@ -38,6 +38,21 @@ test("build selection and executable main retain inspected source identities", (
     sha256("src/main.mjs"),
     "9bc44dfa873b4d49bec979414da45edfc4e1b5912cfaf24604c01d11dbd897b2",
     "main differs from inspected executable module",
+  );
+  assert.equal(
+    sha256("keld.config.ts"),
+    "5ad4f4072112f6a7c27d9f21e234048e835e7b68ed2fc17b81d66a28ea5488ed",
+    "app config differs from inspected source selection",
+  );
+  assert.equal(
+    sha256("keld.permissions.jsonc"),
+    "5b2bde7049d9258ad2ea78720f481cb986f113e8c8db56f5f5805bc49abf5223",
+    "permission manifest differs from inspected window grants",
+  );
+  assert.equal(
+    sha256("web/pages/index.html"),
+    "e17fd49bf4786a70beeb5e167621fdd2b279508b241e35109ecd93096efb8a46",
+    "renderer HTML differs from inspected offline document",
   );
 });
 
@@ -90,6 +105,33 @@ test(
         "src/main.mjs",
         (text) => "const inert = `\n" + text + "\n`;\n",
       ],
+      [
+        "unreviewed app ID",
+        "keld.config.ts",
+        (text) =>
+          text.replace(
+            'id: "dev.keld.gh1404.minimal"',
+            'id: "dev.keld.unreviewed.app"',
+          ),
+      ],
+      [
+        "inline renderer script",
+        "web/pages/index.html",
+        (text) =>
+          text.replace(
+            "  </body>",
+            "    <script>window.unreviewed = true;</script>\n  </body>",
+          ),
+      ],
+      [
+        "extra permission channel",
+        "keld.permissions.jsonc",
+        (text) =>
+          text.replace(
+            '"main": {\n      "web": {',
+            '"main": {\n      "channels": ["el:unreviewed-topic"],\n      "web": {',
+          ),
+      ],
     ];
     const outcomes = [];
     for (const [name, file, mutate] of mutations) {
@@ -127,11 +169,19 @@ test(
           },
         );
         assert.equal(result.error, undefined, name + ": child must run");
+        const identityError = {
+          "keld.build.ts":
+            /build config differs from inspected effective field selection/,
+          "src/main.mjs": /main differs from inspected executable module/,
+          "keld.config.ts": /app config differs from inspected source selection/,
+          "keld.permissions.jsonc":
+            /permission manifest differs from inspected window grants/,
+          "web/pages/index.html":
+            /renderer HTML differs from inspected offline document/,
+        }[file];
         assert.match(
           result.stdout + result.stderr,
-          file === "src/main.mjs"
-            ? /main differs from inspected executable module/
-            : /build config differs from inspected effective field selection/,
+          identityError,
           name +
             ": refusal must come from source identity, not an unrelated failure",
         );
