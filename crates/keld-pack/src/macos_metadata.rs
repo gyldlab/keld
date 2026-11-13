@@ -21,6 +21,8 @@ pub const MAX_MACOS_METADATA_BYTES: usize = 64 * 1024;
 
 const XML_HEADER: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>";
 const XML_DOCTYPE: &str = "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">";
+// XML 1.0 production S, not Unicode's broader whitespace class.
+const XML_WHITESPACE: [char; 4] = [' ', '\t', '\r', '\n'];
 
 /// Metadata sealed by the outer application signature.
 ///
@@ -166,7 +168,7 @@ impl MacosBundleMetadata {
         parser.expect("<plist version=\"1.0\">")?;
         let mut fields = parser.dictionary(0)?;
         parser.expect("</plist>")?;
-        if !parser.rest.trim().is_empty() {
+        if !parser.rest.trim_start_matches(XML_WHITESPACE).is_empty() {
             return Err(invalid("unexpected content after plist"));
         }
         if take_text(&mut fields, "CFBundlePackageType")? != "APPL"
@@ -293,7 +295,7 @@ struct Parser<'a> {
 
 impl Parser<'_> {
     fn consume(&mut self, token: &str) -> bool {
-        self.rest = self.rest.trim_start_matches([' ', '\t', '\r', '\n']);
+        self.rest = self.rest.trim_start_matches(XML_WHITESPACE);
         if let Some(rest) = self.rest.strip_prefix(token) {
             self.rest = rest;
             true
@@ -505,6 +507,32 @@ mod tests {
             "<dict><key>a</key><dict></dict></dict>",
         );
         assert!(MacosBundleMetadata::from_plist(nested.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn trailing_non_xml_whitespace_is_content_not_padding() {
+        let xml = encoded();
+        for suffix in [
+            "\u{000b}", "\u{000c}", "\u{0085}", "\u{00a0}", "\u{2003}", "\u{2028}", "\u{3000}",
+        ] {
+            let input = format!("{xml} {suffix}\r\n");
+            let error = MacosBundleMetadata::from_plist(input.as_bytes())
+                .expect_err("non-XML trailing content must refuse");
+            assert_eq!(error.code(), "KELD-PACK-013", "suffix {suffix:?}");
+        }
+    }
+
+    #[test]
+    fn xml_padding_and_unicode_field_text_remain_distinct() {
+        let mut wanted = metadata();
+        wanted.name = "Editor\u{00a0}\u{2003}\u{3000}".to_owned();
+        let xml = String::from_utf8(wanted.to_plist().expect("valid name")).expect("UTF-8");
+        for suffix in ["", " ", "\t", "\r", "\n", " \t\r\n"] {
+            assert_eq!(
+                MacosBundleMetadata::from_plist(format!("{xml}{suffix}").as_bytes()),
+                Ok(wanted.clone())
+            );
+        }
     }
 
     #[test]
