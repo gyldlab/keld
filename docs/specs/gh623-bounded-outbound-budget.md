@@ -3,7 +3,7 @@
 - Status: draft
 - Tracker: GH-623
 - Owner: Monish Khandelwal (@0monish, proposed approval owner)
-- Updated: 2026-11-05
+- Updated: 2026-11-13
 - Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
 
 ## 1. Goal & non-goals
@@ -183,6 +183,17 @@ B-3 gates runtime qualification, not the work needed to produce that qualificati
   - **At-risk precondition:** The new CALL has valid role, framing, handler and record capacity. Its answer-byte allowance is exhausted.
   - **Expected RED:** The independently observed handler effect occurs without a reserved answer ceiling. Later answer refusal cannot hide that effect.
 
+### AC-14: Retire permanent CALL tombstone saturation
+
+- **Given:** The smallest legal CALL capacity, with other partitions occupied, and a peer that reads but never replies.
+- **When:** CALL timeouts reach the selected B-1 terminal threshold or fill eligible record capacity while heartbeats continue.
+- **Then:** The B-1 terminal rule retires the link within its approved bound, without a new CALL or main-thread callback.
+  Preserve retained correlations until actual retirement. Separately, late replies before terminal commitment restore admission, and a healthy successor completes a CALL.
+- **Negative control:**
+  - **Single fault:** Disable the selected B-1 tombstone terminal transition while preserving local refusal.
+  - **At-risk precondition:** Tombstones fill eligible record capacity. The peer never replies, and no further CALL is submitted.
+  - **Expected RED:** The retirement bound expires while the link stays OPEN and no CALL can be admitted.
+
 ## 4. Design
 
 ### D-1: Atoms and their independence
@@ -281,6 +292,9 @@ CALL record credit remains until both sides retire their operation state.
 The caller must settle, and the Worker must retire its pending or abandonment entry.
 A reply retained for later main delivery still owns a record.
 Caller timeout alone does not release a Worker tombstone.
+B-1 must couple record capacities with abandonment termination for every legal partition, including occupied answer/control reservations.
+Permanent tombstone saturation must not leave an OPEN link indefinitely refusing CALLs.
+Never restore capacity by dropping tombstones, reusing correlations, or claiming that timeout proves nonexecution.
 
 For a Host CALL, reserve its record before invoking application code.
 Reserve the approved maximum answer size before granting that invocation.
@@ -300,7 +314,9 @@ Do not reuse the Host admission-capacity constructor without its documented disp
 
 For sendEvent and callBlocking, local refusal throws before dispatch.
 For call, local refusal rejects without creating a pending transport record.
-The failed request writes no bytes and leaves a healthy link usable.
+The failed request writes no bytes and leaves a healthy link usable during recoverable saturation.
+Permanent tombstone saturation instead follows the B-1 approved terminal rule, preserving unknown-effect semantics for earlier CALLs.
+Termination must remain reachable without another admission or main-thread delivery. This introduces no automatic resend or reconnect.
 Code alone never authorizes automatic replay.
 
 Reuse existing I/O and caller deadlines.
@@ -364,7 +380,7 @@ Do not add a schema, dependency, or Host wire message for local accounting.
 ### T-2: Add failure-first admission and lifetime fixtures
 
 - **Blocked by:** T-1, B-1, B-2
-- Register AC-1 through AC-13 before the implementation change.
+- Register AC-1 through AC-14 before the implementation change.
 - Use an independent peer transcript and retained-object census.
 - Prove the baseline crosses the intended bound in the stalled-peer case.
 - Keep expected failure explicit. Do not classify the future feature as passing.
@@ -391,6 +407,7 @@ Do not add a schema, dependency, or Host wire message for local accounting.
 | Stalled peer and all producers | AC-1, AC-3, AC-10, AC-11, AC-13 | Peer bytes, actual admission, handler effects/count and separate retained-object census |
 | Sliced, pooled, mutable, empty, maximum buffers | AC-2, AC-4 | Backing-store sizes and peer digest |
 | Deadline, reply, close, poison, and retirement cuts | AC-5, AC-6, AC-7, AC-9, AC-12 | Distinct caller/Worker retirement events and terminal errors |
+| Permanent tombstone saturation and late-reply recovery | AC-14 | Actual link retirement, retained correlations and healthy successor response |
 | Blocking caller with an active Worker | AC-8 | Barrier-controlled progress and original call deadline |
 
 Test zero, exact capacity, and capacity-plus-one for bytes and records independently.
@@ -441,6 +458,9 @@ A lower queue count does not alone prove lower resident memory.
 - **Owner:** Monish Khandelwal with the GH527 transport owner
 - **Impact:** Blocks production limit values, shared-layout approval, and implementation after T-1.
 - **Check:** Publish measured demand, exact byte/record ceilings, answer/control partitions, and a conservative copy-accounting rule.
+  Prove a capacity/terminal invariant for every legal configuration, including the smallest ceiling and competing reservations.
+  Either keep the existing abandonment termination reachable, or specify bounded fail-closed retirement when tombstones prevent further admission.
+  Select the bound and termination trigger with GH527 before implementation. Require AC-14, without releasing retained state early.
 
 ### B-2: Local refusal and shared-contract amendment
 
