@@ -38,6 +38,9 @@ const KIPC_TRANSPORT_REL: &str = "src/kipc-transport.ts";
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
 
+#[cfg(target_os = "macos")]
+mod macos_stage;
+
 /// One completed owner-private non-release app stage.
 #[derive(Debug)]
 pub struct DevBootStage {
@@ -200,6 +203,10 @@ impl std::error::Error for BootCompileError {}
 struct StageGuard {
     root: PathBuf,
     keep: bool,
+    #[cfg(target_os = "macos")]
+    namespace: macos_stage::StageNamespace,
+    #[cfg(target_os = "macos")]
+    root_identity: Option<File>,
     #[cfg(windows)]
     launch_guards: Vec<File>,
 }
@@ -208,6 +215,16 @@ struct StageGuard {
 impl Drop for StageGuard {
     fn drop(&mut self) {
         if !self.keep {
+            #[cfg(target_os = "macos")]
+            if !self.root_identity.as_ref().is_some_and(|directory| {
+                self.namespace
+                    .recheck_launch_root(&self.root, directory)
+                    .is_ok()
+            }) {
+                // A changed or unknown namespace cannot authorize deletion at
+                // the old pathname. Retain the incomplete owned stage instead.
+                return;
+            }
             #[cfg(windows)]
             self.launch_guards.clear();
             let _ = fs::remove_dir_all(&self.root);
@@ -425,10 +442,12 @@ where
         "developer launcher",
     )?;
 
-    let dev_root = project_root.join(".keld/dev");
     #[cfg(target_os = "macos")]
-    fs::create_dir_all(&dev_root)
-        .map_err(|source| BootCompileError::new("dev root", source.to_string()))?;
+    let stage_namespace = macos_stage::prepare(&project_root)?;
+    #[cfg(target_os = "macos")]
+    let dev_root = stage_namespace.root().to_owned();
+    #[cfg(not(target_os = "macos"))]
+    let dev_root = project_root.join(".keld/dev");
     #[cfg(target_os = "linux")]
     prepare_linux_dev_root(&project_root, &dev_root)?;
     #[cfg(windows)]
@@ -437,9 +456,17 @@ where
     let mut guard = StageGuard {
         root: root.clone(),
         keep: false,
+        #[cfg(target_os = "macos")]
+        namespace: stage_namespace,
+        #[cfg(target_os = "macos")]
+        root_identity: None,
         #[cfg(windows)]
         launch_guards,
     };
+    #[cfg(target_os = "macos")]
+    {
+        guard.root_identity = Some(guard.namespace.retain_launch_root(&root)?);
+    }
     #[cfg(windows)]
     {
         guard.launch_guards.push(open_windows_launch_guard(&root)?);
@@ -585,6 +612,17 @@ where
                 "locked staged host digest differs from the already-open source bytes",
             ));
         }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        guard.namespace.recheck()?;
+        let directory = guard.root_identity.as_ref().ok_or_else(|| {
+            BootCompileError::new(
+                "macOS dev namespace",
+                "allocated nonce identity was not retained",
+            )
+        })?;
+        guard.namespace.recheck_launch_root(&root, directory)?;
     }
     #[cfg(windows)]
     let launch_guards = std::mem::take(&mut guard.launch_guards);
@@ -1020,7 +1058,48 @@ mod tests {
 
     use super::*;
 
-    pub(super) fn fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    #[cfg(target_os = "macos")]
+    pub(super) struct FixtureRoot {
+        temporary: tempfile::TempDir,
+        stage_namespace: PathBuf,
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    type FixtureRoot = tempfile::TempDir;
+
+    #[cfg(target_os = "macos")]
+    impl FixtureRoot {
+        pub(super) fn path(&self) -> &Path {
+            self.temporary.path()
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for FixtureRoot {
+        fn drop(&mut self) {
+            // Test-owned fallback after each explicit cleanup oracle. Production
+            // stage deletion remains exclusively the existing lease/Host owner.
+            let _ = fs::remove_dir_all(&self.stage_namespace);
+        }
+    }
+
+    pub(super) fn fixture_dev_root(project: &Path) -> PathBuf {
+        #[cfg(target_os = "macos")]
+        {
+            macos_stage::project_namespace(
+                &project.canonicalize().expect("canonical test project"),
+                &std::env::temp_dir()
+                    .canonicalize()
+                    .expect("canonical system temp"),
+                rustix::process::geteuid().as_raw(),
+            )
+            .join(".keld/dev")
+        }
+        #[cfg(not(target_os = "macos"))]
+        project.join(".keld/dev")
+    }
+
+    pub(super) fn fixture() -> (FixtureRoot, std::path::PathBuf, std::path::PathBuf) {
         let temp = tempfile::tempdir().expect("temp root");
         let project = temp.path().join("project");
         fs::create_dir_all(project.join("src")).expect("project src");
@@ -1041,7 +1120,18 @@ mod tests {
             fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700))
                 .expect("launcher mode");
         }
-        (temp, project, host)
+        #[cfg(target_os = "macos")]
+        let temporary = FixtureRoot {
+            temporary: temp,
+            stage_namespace: fixture_dev_root(&project)
+                .parent()
+                .and_then(Path::parent)
+                .expect("test-owned project namespace")
+                .to_owned(),
+        };
+        #[cfg(not(target_os = "macos"))]
+        let temporary = temp;
+        (temporary, project, host)
     }
 
     #[test]
@@ -1258,7 +1348,7 @@ mod tests {
         assert!(error.to_string().starts_with("KELD-CLI-047"), "{error}");
         assert!(error.to_string().contains("initialWindow"), "{error}");
         assert!(error.to_string().contains("renderer"), "{error}");
-        assert!(!project.join(".keld/dev").exists());
+        assert!(!fixture_dev_root(&project).exists());
     }
 
     #[test]
@@ -1275,7 +1365,7 @@ mod tests {
                 .expect_err("ambiguous root must refuse before staging");
             assert!(error.to_string().starts_with("KELD-CLI-047"), "{error}");
             assert!(error.to_string().contains("initialWindow"), "{error}");
-            assert!(!project.join(".keld/dev").exists(), "{source}");
+            assert!(!fixture_dev_root(&project).exists(), "{source}");
         }
     }
 
@@ -1292,7 +1382,7 @@ mod tests {
             let error = stage_dev_boot(&project, &source_host)
                 .expect_err("ambiguous root requires refusal before staging");
             assert!(error.to_string().starts_with("KELD-CLI-047"), "{error}");
-            assert!(!project.join(".keld/dev").exists(), "{source}");
+            assert!(!fixture_dev_root(&project).exists(), "{source}");
         }
     }
 
@@ -1336,6 +1426,304 @@ mod tests {
             .expect("independent missing-client JSON literal");
         assert_eq!(descriptor["schema"], 1);
         assert_eq!(descriptor.get("auth"), Some(&expected_auth));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn staged_entry_cannot_resolve_live_project_ancestors() {
+        use std::process::Command;
+
+        for (route, specifier) in [
+            ("package", "gh1037-ancestor-probe"),
+            ("paths", "gh1037-path-probe"),
+            ("imports", "#gh1037-probe"),
+        ] {
+            let (_temp, project, host) = fixture();
+            let marker = "LIVE_PROJECT_SOURCE_EVALUATED";
+            let dependency = format!("console.log('{marker}'); export const value = 1;\n");
+            match route {
+                "package" => {
+                    let package = project.join("node_modules/gh1037-ancestor-probe");
+                    fs::create_dir_all(&package).expect("live-only installed package");
+                    fs::write(
+                        package.join("package.json"),
+                        r#"{"name":"gh1037-ancestor-probe","type":"module","main":"index.js"}"#,
+                    )
+                    .expect("package selection");
+                    fs::write(package.join("index.js"), &dependency).expect("package source");
+                }
+                "paths" => {
+                    fs::write(project.join("mapped.js"), &dependency).expect("mapped source");
+                    fs::write(
+                        project.join("tsconfig.json"),
+                        r#"{"compilerOptions":{"paths":{"gh1037-path-probe":["./mapped.js"]}}}"#,
+                    )
+                    .expect("live path mapping");
+                }
+                "imports" => {
+                    fs::write(project.join("mapped.js"), &dependency).expect("mapped source");
+                    fs::write(
+                        project.join("package.json"),
+                        r##"{"name":"gh1037-project-probe","type":"module","imports":{"#gh1037-probe":"./mapped.js"}}"##,
+                    )
+                    .expect("live subpath mapping");
+                }
+                _ => panic!("unknown resolver route"),
+            }
+            fs::write(
+                project.join("src/main.ts"),
+                format!(
+                    "import {{ value }} from '{specifier}'; console.log('ENTRY_RAN', value);\n"
+                ),
+            )
+            .expect("entry importing only live-project bytes");
+            let stage = stage_dev_boot(&project, &host).expect("ordinary produced stage");
+            let output = Command::new("bun")
+                .args(["--no-install", "--no-env-file", "run"])
+                .arg(stage.root().join("src/main.ts"))
+                .current_dir(stage.root())
+                .env_remove("BUN_OPTIONS")
+                .env_remove("BUN_INSPECT_PRELOAD")
+                .env_remove("NODE_PATH")
+                .output()
+                .expect("run real Bun resolver against the produced stage");
+            fs::remove_dir_all(stage.root()).expect("remove only this test-owned nonce");
+            assert!(
+                !output.status.success(),
+                "{route}: stage reached live project source: {output:?}"
+            );
+            assert!(
+                !String::from_utf8_lossy(&output.stdout).contains(marker)
+                    && !String::from_utf8_lossy(&output.stdout).contains("ENTRY_RAN"),
+                "{route}: refusal must precede source and entry evaluation: {output:?}"
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("Cannot find package"),
+                "{route}: the negative must be a missing captured target: {output:?}"
+            );
+        }
+        let (_temp, project, host) = fixture();
+        fs::write(
+            project.join("src/main.ts"),
+            "console.log('CAPTURED_ENTRY_RAN');\n",
+        )
+        .expect("healthy captured entry");
+        let stage = stage_dev_boot(&project, &host).expect("healthy following stage");
+        let output = Command::new("bun")
+            .args(["--no-install", "--no-env-file", "run"])
+            .arg(stage.root().join("src/main.ts"))
+            .current_dir(stage.root())
+            .env_remove("BUN_OPTIONS")
+            .env_remove("BUN_INSPECT_PRELOAD")
+            .env_remove("NODE_PATH")
+            .output()
+            .expect("healthy captured-entry execution");
+        fs::remove_dir_all(stage.root()).expect("remove healthy test-owned nonce");
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(output.stdout, b"CAPTURED_ENTRY_RAN\n");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn late_namespace_input_refuses_and_cleans_only_the_incomplete_nonce() {
+        let (_temp, project, host) = fixture();
+        let earlier = stage_dev_boot(&project, &host).expect("earlier completed stage");
+        fs::write(project.join(KIPC_TRANSPORT_REL), b"export {};\n")
+            .expect("transport creates a source-capture boundary");
+        let dev_root = earlier.root().parent().expect("producer-selected parent");
+        let input = dev_root.join("package.json");
+        let error = stage_dev_boot_platform_with_owner_check(&project, &host, |candidate| {
+            ensure_current_principal_owns(candidate)?;
+            if candidate.ends_with(KIPC_TRANSPORT_REL) {
+                fs::write(&input, b"{}").expect("resolver input added after initial census");
+            }
+            Ok(())
+        })
+        .expect_err("capture-finalization census must reject the new input");
+        assert!(error.to_string().contains("package.json"), "{error}");
+        assert!(earlier.host().is_file(), "completed sibling stage survives");
+        assert_eq!(
+            fs::read(&input).expect("foreign input is not deleted"),
+            b"{}"
+        );
+        let stages: Vec<_> = fs::read_dir(dev_root)
+            .expect("stage census")
+            .map(|entry| entry.expect("stage entry").path())
+            .filter(|path| path.is_dir())
+            .collect();
+        assert_eq!(stages, [earlier.root()]);
+        fs::remove_file(input).expect("restore test-owned ancestor");
+        let following = stage_dev_boot(&project, &host).expect("healthy following capture");
+        assert!(following.host().is_file());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn replaced_namespace_parent_refuses_without_deleting_the_replacement_nonce() {
+        use std::os::unix::fs::DirBuilderExt as _;
+
+        let (_temp, project, host) = fixture();
+        let earlier = stage_dev_boot(&project, &host).expect("earlier completed stage");
+        let earlier_host = fs::read(earlier.host()).expect("completed Host bytes");
+        let earlier_descriptor =
+            fs::read(earlier.root().join("keld.boot.json")).expect("completed descriptor");
+        fs::write(project.join(KIPC_TRANSPORT_REL), b"export {};\n")
+            .expect("transport creates a source-capture boundary");
+        let dev_root = earlier.root().parent().expect("producer-selected parent");
+        let selected_parent = dev_root.parent().expect("selected .keld directory");
+        let retained_parent = selected_parent.with_file_name(".keld-before-substitution");
+        let mut replacement_nonce = None;
+        let error = stage_dev_boot_platform_with_owner_check(&project, &host, |candidate| {
+            ensure_current_principal_owns(candidate)?;
+            if candidate.ends_with(KIPC_TRANSPORT_REL) {
+                let incomplete: Vec<_> = fs::read_dir(dev_root)
+                    .expect("live producer stage census")
+                    .map(|entry| entry.expect("stage entry").path())
+                    .filter(|path| path.as_path() != earlier.root())
+                    .collect();
+                assert_eq!(incomplete.len(), 1, "one allocated incomplete nonce");
+                let nonce = incomplete[0].file_name().expect("allocated nonce");
+                fs::rename(selected_parent, &retained_parent)
+                    .expect("replace the selected parent during source capture");
+                let replacement = dev_root.join(nonce);
+                fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(&replacement)
+                    .expect("private replacement with the exact same nonce name");
+                fs::write(replacement.join("sentinel"), b"replacement must survive")
+                    .expect("replacement sentinel");
+                replacement_nonce = Some(replacement);
+            }
+            Ok(())
+        })
+        .expect_err("capture-finalization check must reject the replaced parent");
+        assert!(
+            error.to_string().contains("changed during source capture"),
+            "{error}"
+        );
+        let retained_earlier = retained_parent
+            .join("dev")
+            .join(earlier.root().file_name().expect("completed nonce"));
+        assert_eq!(
+            fs::read(retained_earlier.join("keld-host")).expect("earlier Host survives"),
+            earlier_host
+        );
+        assert_eq!(
+            fs::read(retained_earlier.join("keld.boot.json"))
+                .expect("earlier completed descriptor survives"),
+            earlier_descriptor
+        );
+        let replacement = replacement_nonce.expect("full producer crossed the capture hook");
+        let retained_incomplete = retained_parent
+            .join("dev")
+            .join(replacement.file_name().expect("incomplete nonce"));
+        assert_eq!(
+            fs::read(retained_incomplete.join("keld-host"))
+                .expect("moved original incomplete stage is retained for safe disposition"),
+            earlier_host
+        );
+        assert_eq!(
+            fs::read(replacement.join("sentinel"))
+                .expect("refusal cleanup must preserve the same-nonce replacement"),
+            b"replacement must survive"
+        );
+
+        // Restore only this test's namespace after the preservation oracles.
+        fs::remove_dir_all(selected_parent).expect("remove test-owned replacement");
+        fs::rename(&retained_parent, selected_parent).expect("restore test-owned selected parent");
+        if replacement.exists() {
+            fs::remove_dir_all(&replacement).expect("remove test-owned incomplete nonce");
+        }
+        let following = stage_dev_boot(&project, &host).expect("healthy following capture");
+        assert!(following.host().is_file());
+        assert_eq!(
+            fs::read(earlier.host()).expect("earlier Host"),
+            earlier_host
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn replaced_nonce_refuses_before_publishing_a_completed_stage() {
+        use std::os::unix::fs::DirBuilderExt as _;
+
+        let (_temp, project, host) = fixture();
+        let earlier = stage_dev_boot(&project, &host).expect("earlier completed stage");
+        let earlier_host = fs::read(earlier.host()).expect("completed Host bytes");
+        let earlier_descriptor =
+            fs::read(earlier.root().join("keld.boot.json")).expect("completed descriptor");
+        fs::write(project.join(KIPC_TRANSPORT_REL), b"export {};\n")
+            .expect("transport creates a source-capture boundary");
+        let dev_root = earlier.root().parent().expect("producer-selected parent");
+        let mut substituted = None;
+        let error = stage_dev_boot_platform_with_owner_check(&project, &host, |candidate| {
+            ensure_current_principal_owns(candidate)?;
+            if candidate.ends_with(KIPC_TRANSPORT_REL) {
+                let incomplete: Vec<_> = fs::read_dir(dev_root)
+                    .expect("live producer stage census")
+                    .map(|entry| entry.expect("stage entry").path())
+                    .filter(|path| path.as_path() != earlier.root())
+                    .collect();
+                assert_eq!(incomplete.len(), 1, "one allocated incomplete nonce");
+                let allocated = &incomplete[0];
+                let mut retained_name = allocated.file_name().expect("allocated nonce").to_owned();
+                retained_name.push("-before-substitution");
+                let retained = dev_root.join(retained_name);
+                fs::write(
+                    allocated.join("sentinel"),
+                    b"original incomplete must survive",
+                )
+                .expect("original incomplete sentinel");
+                fs::rename(allocated, &retained).expect("move only the selected nonce leaf");
+                fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(allocated)
+                    .expect("replacement nonce has valid mode and unchanged parents");
+                fs::write(allocated.join("sentinel"), b"replacement must survive")
+                    .expect("replacement sentinel");
+                substituted = Some((allocated.clone(), retained));
+            }
+            Ok(())
+        })
+        .expect_err("a replaced nonce must not publish a completed stage");
+        let (replacement, retained) = substituted.expect("full producer crossed the capture hook");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("changed during source capture"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(&replacement.display().to_string()),
+            "{rendered}"
+        );
+        assert_eq!(
+            fs::read(replacement.join("sentinel"))
+                .expect("replacement survives refused publication"),
+            b"replacement must survive"
+        );
+        assert_eq!(
+            fs::read(retained.join("sentinel")).expect("original incomplete stage survives"),
+            b"original incomplete must survive"
+        );
+        assert_eq!(
+            fs::read(retained.join("keld-host")).expect("captured original Host survives"),
+            earlier_host
+        );
+        assert_eq!(
+            fs::read(earlier.host()).expect("earlier Host survives"),
+            earlier_host
+        );
+        assert_eq!(
+            fs::read(earlier.root().join("keld.boot.json")).expect("earlier descriptor survives"),
+            earlier_descriptor
+        );
+        // Only test-owned disposal follows all explicit preservation oracles.
+        fs::remove_dir_all(&replacement).expect("remove test-owned replacement");
+        fs::remove_dir_all(&retained).expect("remove test-owned incomplete nonce");
+        let following = stage_dev_boot(&project, &host).expect("healthy following capture");
+        assert!(following.host().is_file());
+        assert!(earlier.host().is_file());
     }
 
     #[test]
@@ -1389,6 +1777,7 @@ mod tests {
         .expect_err("foreign-owned project input must fail before staging");
 
         assert!(error.to_string().contains("KELD-CLI-049"), "{error}");
+        assert!(!fixture_dev_root(&project).exists());
         assert!(
             !project.join(".keld").exists(),
             "ownership refusal must precede every staging side effect"
@@ -1413,6 +1802,7 @@ mod tests {
 
         assert!(error.to_string().contains("KELD-CLI-049"), "{error}");
         assert!(error.to_string().contains("src/main.ts"), "{error}");
+        assert!(!fixture_dev_root(&project).exists());
         assert!(
             !project.join(".keld").exists(),
             "entry ownership refusal must precede every staging side effect"
@@ -1475,7 +1865,7 @@ mod tests {
         let error = stage_dev_boot(&project, &source_host)
             .expect_err("fixed permissions destination collision must fail");
         assert!(error.to_string().contains("permissions"), "{error}");
-        let dev_root = project.join(".keld/dev");
+        let dev_root = fixture_dev_root(&project);
         let children = fs::read_dir(&dev_root).map_or(0, std::iter::Iterator::count);
         assert_eq!(
             children, 0,

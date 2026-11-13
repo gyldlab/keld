@@ -38,5 +38,10 @@ tempfile = { workspace = true }
 # optional dependencies: no new crate and no Cargo.lock change.
 windows-sys = { workspace = true, features = ["Win32_UI_WindowsAndMessaging"] }
 
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# Independent native-stage observer; reuse existing pins, not production policy.
+rustix = { workspace = true, features = ["process"] }
+sha2 = { workspace = true }
+
 [lints]
 workspace = true

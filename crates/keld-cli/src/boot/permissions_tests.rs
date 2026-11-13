@@ -12,14 +12,14 @@ use std::time::Duration;
 use keld_guard::{ManifestError, read_manifest_bytes};
 use sha2::{Digest as _, Sha256};
 
-use super::tests::fixture;
+use super::tests::{fixture, fixture_dev_root};
 use super::{
     BootCompileError, PERMISSIONS_FILE, ProjectOwnershipError, ProjectPermissionsSource,
     ensure_unix_metadata_owned_by, stage_dev_boot,
 };
 
 fn assert_failed_stage_is_empty(project: &Path) {
-    let root = project.join(".keld/dev");
+    let root = fixture_dev_root(project);
     assert_eq!(
         fs::read_dir(root)
             .expect("stage parent survives failed launch")
