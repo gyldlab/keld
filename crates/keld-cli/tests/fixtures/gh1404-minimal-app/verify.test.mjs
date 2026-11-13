@@ -22,6 +22,131 @@ const packageJson = JSON.parse(
 const lock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
 const build = readFileSync(join(root, "keld.build.ts"), "utf8");
 
+// This is an immutable source candidate, not a second TypeScript authoring
+// parser. Bind the inspected config and executable main bytes before using
+// the descriptive checks below. Regex matches alone cannot distinguish an
+// effective property/statement from text in a string. Intentional source
+// changes require independent inspection and a reviewed identity update;
+// never derive these expected values from the files under test.
+test("build selection and executable main retain inspected source identities", () => {
+  assert.equal(
+    sha256("keld.build.ts"),
+    "8c344e570b46473e1b7fab2203af03a6cc88b919f20f4d24362bfc2cf7573638",
+    "build config differs from inspected effective field selection",
+  );
+  assert.equal(
+    sha256("src/main.mjs"),
+    "9bc44dfa873b4d49bec979414da45edfc4e1b5912cfaf24604c01d11dbd897b2",
+    "main differs from inspected executable module",
+  );
+});
+
+test(
+  "source verifier rejects active-field decoys and inert entry",
+  {
+    skip: process.env.KELD_B3_MUTANT === "1",
+  },
+  () => {
+    const mutations = [
+      [
+        "host digest decoy",
+        "keld.build.ts",
+        (text) =>
+          text
+            .replace('"UNQUALIFIED_HOST_SHA256"', "'" + "a".repeat(64) + "'")
+            .replace(
+              'version: "unqualified"',
+              "version: 'unqualified sha256: \"UNQUALIFIED_HOST_SHA256\"'",
+            ),
+      ],
+      ...[
+        ["packageSha256", "package.json"],
+        ["lockSha256", "package-lock.json"],
+      ].map(([field, file]) => [
+        field + " decoy",
+        "keld.build.ts",
+        (text) =>
+          text
+            .replace(
+              new RegExp(field + ':\\s*"[^"]+"'),
+              field + ": '" + "0".repeat(64) + "'",
+            )
+            .replace(
+              'version: "unqualified"',
+              "version: 'unqualified " + field + ': "' + sha256(file) + "\"'",
+            ),
+      ]),
+      [
+        "preload path",
+        "keld.build.ts",
+        (text) =>
+          text.replace(
+            'path: "src/preload.mjs"',
+            'path: "web/pages/index.html"',
+          ),
+      ],
+      [
+        "inert main",
+        "src/main.mjs",
+        (text) => "const inert = `\n" + text + "\n`;\n",
+      ],
+    ];
+    const outcomes = [];
+    for (const [name, file, mutate] of mutations) {
+      const scratch = mkdtempSync(join(tmpdir(), "keld-b3-oracle-"));
+      try {
+        cpSync(root, scratch, { recursive: true });
+        const target = join(scratch, file);
+        const before = readFileSync(target, "utf8");
+        const after = mutate(before);
+        assert.notEqual(after, before, name + " mutation must apply");
+        const env = { ...process.env, KELD_B3_MUTANT: "1" };
+        delete env.KELD_B3_PACK_RLIB;
+        delete env.KELD_B3_CLI;
+        delete env.NODE_TEST_CONTEXT;
+        const intact = spawnSync(
+          process.env.KELD_B3_NODE_BIN || "node",
+          ["--test", "verify.test.mjs"],
+          { cwd: scratch, env, encoding: "utf8", timeout: 20_000 },
+        );
+        assert.equal(intact.error, undefined, name + ": intact child must run");
+        assert.equal(
+          intact.status,
+          0,
+          name + ": intact copied source must pass",
+        );
+        writeFileSync(target, after);
+        const result = spawnSync(
+          process.env.KELD_B3_NODE_BIN || "node",
+          ["--test", "verify.test.mjs"],
+          {
+            cwd: scratch,
+            env,
+            encoding: "utf8",
+            timeout: 20_000,
+          },
+        );
+        assert.equal(result.error, undefined, name + ": child must run");
+        assert.match(
+          result.stdout + result.stderr,
+          file === "src/main.mjs"
+            ? /main differs from inspected executable module/
+            : /build config differs from inspected effective field selection/,
+          name +
+            ": refusal must come from source identity, not an unrelated failure",
+        );
+        outcomes.push([name, result.status]);
+      } finally {
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    }
+    assert.deepEqual(
+      outcomes,
+      mutations.map(([name]) => [name, 1]),
+    );
+  },
+);
+
 // This verifier never evaluates authoring TypeScript or imports unapproved
 // application modules. Ignore comments while retaining quoted literals so
 // obsolete configuration examples cannot masquerade as the effective source.
@@ -243,6 +368,14 @@ test("unreviewed npm lifecycle hooks and extra locked providers are refused", ()
 });
 
 test("package, lock and preload content bind to exact candidate SHA-256 bytes", () => {
+  assert.equal(
+    literalString(
+      literalObject(literalObject(activeBuild, "graphSource"), "preload"),
+      "path",
+    ),
+    "src/preload.mjs",
+    "selected preload must match the main module and digest witness",
+  );
   for (const [field, relative] of [
     ["packageSha256", "package.json"],
     ["lockSha256", "package-lock.json"],

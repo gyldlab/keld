@@ -18,7 +18,7 @@ independent source or provider approval.
 The nested selected renderer is `web/pages/index.html`, not a root-level
 page. The immutable source candidates for review are `package.json`,
 `package-lock.json`, `keld.config.ts`, `keld.permissions.jsonc`,
-`src/main.mjs`, `src/preload.mjs` and `web/index.html`. The npm lock records
+`src/main.mjs`, `src/preload.mjs` and `web/pages/index.html`. The npm lock records
 the selected first-party **names and versions** only; no producer archive,
 resolved URL or integrity is asserted. It cannot be used to install a
 qualified provider graph until the GH-502/API/KIPC owners deliver their
