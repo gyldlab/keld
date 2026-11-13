@@ -5610,6 +5610,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: the keld-attempt claim wait was cancelled by its owner before a claimant was accepted (the launched candidate's handle signaled, or the owner ended the wait); the endpoint is closed
 - fix: Roll the attempt back: health cannot commit, and end the candidate family if any of it still runs.
 
+## KELD-IPC-029
+
+- crate: @keld/kipc
+- message: A present Host launch-facts record is malformed, unsupported or oversized, or installed startup has no installed record
+- fix: Rebuild and launch through the qualified Host. Do not substitute application globals, environment values or mixed development/installed records for the private Host data.
+
 ## KELD-WV-001
 
 - crate: keld-wv
