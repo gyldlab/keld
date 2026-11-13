@@ -90,27 +90,36 @@ fn immediate_shutdown_guardian_role() {
     let post_s_spawn_denial = std::env::var_os(POST_S_SPAWN_DENIAL_ENV);
     let result = run_guarded_primary(
         io::stdin().lock(),
-        move |_link| {
-            if factory_fault {
-                // Only reached after the real host minted and replied to
-                // initial KGC1 PREPARE. Release once the host sent real S.
-                hold_guardian_at_stage_gate(FACTORY_ERROR_GATE_ENV, "PREPARED")?;
-                return Err(super::super::lifecycle_error(
-                    "test native factory failure after PREPARED",
-                    // A local factory can also return UnexpectedEof. Its I/O
-                    // kind must never be confused with the host-rejected
-                    // first PREPARE transport EOF after valid PREPARED.
-                    io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "intentional native factory startup failure",
-                    ),
-                ));
-            }
-            let mut command = Command::new(&bun);
-            command
+        move || {
+            let selection_marker = std::path::Path::new(&marker).with_extension("selection");
+            let mut receipt = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(selection_marker)
+                .expect("selection occurs exactly once after authenticated bootstrap");
+            receipt.write_all(b"SELECTED").expect("selection observer");
+            Ok(move |_link: &str| {
+                if factory_fault {
+                    // Only reached after the real host minted and replied to
+                    // initial KGC1 PREPARE. Release once the host sent real S.
+                    hold_guardian_at_stage_gate(FACTORY_ERROR_GATE_ENV, "PREPARED")?;
+                    return Err(super::super::lifecycle_error(
+                        "test native factory failure after PREPARED",
+                        // A local factory can also return UnexpectedEof. Its I/O
+                        // kind must never be confused with the host-rejected
+                        // first PREPARE transport EOF after valid PREPARED.
+                        io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "intentional native factory startup failure",
+                        ),
+                    ));
+                }
+                let mut command = Command::new(&bun);
+                command
                 .args(["-e", "require('node:fs').writeFileSync(process.env.KELD_TEST_GUARDED_EARLY_BUN_MARKER, 'EXECUTED')"])
                 .env(BUN_MARKER_ENV, &marker);
-            Ok(command)
+                Ok(command)
+            })
         },
         ack,
     );
@@ -276,6 +285,19 @@ fn assert_native_held_shutdown(gate_env: &str, marker: &str) {
         !bun_marker.exists(),
         "early shutdown permitted the Bun JavaScript marker"
     );
+    let selection_marker = bun_marker.with_extension("selection");
+    if gate_env == GATE_ENV {
+        assert!(
+            !selection_marker.exists(),
+            "shutdown accepted before selection must not capture startup inputs"
+        );
+    } else {
+        assert_eq!(
+            std::fs::read(selection_marker).expect("selection after admitted idle probe"),
+            b"SELECTED",
+            "the existing post-probe race still reaches the one-shot selector"
+        );
+    }
 }
 
 #[test]
@@ -327,13 +349,16 @@ fn pre_generation_duplicate_orderly_control_cannot_acknowledge_twice() {
 
 #[test]
 fn malformed_pre_auth_liveness_has_priority_over_private_registration() {
+    type CommandFactory = fn(&str) -> Result<Command, RuntimeError>;
     let (reader, writer) = nix::unistd::pipe().expect("native host-only liveness pipe");
     rustix::io::write(&writer, &[SUPERVISED_ORDERLY_SHUTDOWN])
         .expect("attempt S before authenticated KGC1");
     let reader = File::from(reader);
     let result = run_guarded_primary(
         reader,
-        |_link| panic!("no private auth or Bun factory may start for malformed bootstrap"),
+        || -> Result<CommandFactory, RuntimeError> {
+            panic!("no selection or Bun factory may start for malformed bootstrap")
+        },
         io::sink(),
     );
     let error = result.expect_err("unattributed pre-auth S cannot become valid shutdown");
