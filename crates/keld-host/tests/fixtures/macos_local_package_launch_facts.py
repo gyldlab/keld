@@ -215,7 +215,7 @@ def verify_facts(app: Path, roles: list[smoke.ProcessFact], witness: dict[str, o
                   "launch record immutability or unchanged Bun argv was not proved")
 
 
-def bounded_logs(paths: tuple[Path, Path]) -> str:
+def bounded_logs(paths: tuple[Path, ...]) -> str:
     pieces = []
     for path in paths:
         smoke.require(path.stat().st_size <= LOG_LIMIT, f"application evidence log exceeds bound: {path}")
@@ -257,9 +257,16 @@ def launch_facts(evidence: smoke.Evidence, app: Path, census: Path, witness_dir:
         smoke.require(all(smoke.current_exact_role(role) for role in roles), "observed process family changed before Quit")
         evidence.record(step=phase + "-facts-and-window", app=str(app), window_ids=windows,
                         roles=[asdict(role) for role in roles], decoys=DECOYS)
-        native_reply = smoke.request_native_quit(evidence, app, host_fact, phase)
-        smoke.wait_roles_gone(host, bun, roles, evidence, phase)
+        exit_observer = smoke.NativeExitStatus(host_fact)
+        try:
+            native_reply = smoke.request_native_quit(evidence, app, host_fact, phase)
+            smoke.wait_roles_gone(host, bun, roles, evidence, phase)
+            host_exit = exit_observer.wait()
+        finally:
+            exit_observer.close()
         output = bounded_logs(logs)
+        smoke.require_clean_host_exit(host_exit, bounded_logs((logs[1],)))
+        evidence.record(step=phase + "-kernel-host-success", **host_exit)
         smoke.require(one_record(output, FIRST) == witness["facts"]["early"], "final early log differs from live witness")
         smoke.require(one_record(output, BEFORE_READY) == witness["facts"], "final fact log differs from live witness")
         ready = one_record(output, READY)
@@ -278,7 +285,8 @@ def launch_facts(evidence: smoke.Evidence, app: Path, census: Path, witness_dir:
         return {"phase": phase, "app": str(app), "window_ids": windows,
                 "roles": [asdict(role) for role in roles], "witness": witness,
                 "application_quit_reply": True, "unsignaled_retirement": True,
-                "broker_allowed_and_denied_verified": True, "native_quit": native_reply}
+                "broker_allowed_and_denied_verified": True, "native_quit": native_reply,
+                "host_exit": host_exit}
     finally:
         observer.close()
 
