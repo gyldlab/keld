@@ -74,6 +74,12 @@ impl<P> OriginalCallQueue<P> {
                     RendererBridgeOperation::PreflightAborted,
                     Vec::new(),
                 );
+                #[cfg(windows)]
+                let request = {
+                    let mut request = request;
+                    request.role_witness = call.role_witness().cloned();
+                    request
+                };
                 if Self::enqueue_control(endpoint, request)? {
                     self.clear_entered()?;
                     needs_service_wake = true;
@@ -93,6 +99,12 @@ impl<P> OriginalCallQueue<P> {
                 RendererBridgeOperation::PreflightAborted,
                 Vec::new(),
             );
+            #[cfg(windows)]
+            let request = {
+                let mut request = request;
+                request.role_witness = pending.queued.role_witness.clone();
+                request
+            };
             if Self::enqueue_control(endpoint, request)?
                 && let Some(pending) = self.pending_call.take()
             {
@@ -144,6 +156,12 @@ impl<P> OriginalCallQueue<P> {
                 RendererBridgeOperation::PreflightAborted,
                 Vec::new(),
             );
+            #[cfg(windows)]
+            let request = {
+                let mut request = request;
+                request.role_witness = record.queued.role_witness.clone();
+                request
+            };
             if Self::enqueue_control(endpoint, request)?
                 && let Some(ActiveOriginalRecord::Preparing(record)) = self.active_call.as_mut()
             {
