@@ -1209,53 +1209,36 @@ impl WkWebViewEngine {
         // Late requests still cancel but cannot reach the ended UI loop.
         drop(native_quit);
         let mut drained = !resource_unproved;
-        while drained {
-            let progress = {
-                let mut resolve = || {
-                    anchor
-                        .and_then(|id| views.get(&id.0))
-                        .and_then(|view| view.webview.webview().window())
-                };
-                let mut resolve_view = |id: WebviewId| {
-                    views
-                        .get(&id.0)
-                        .and_then(|view| view.registry_managed.then_some(view))
-                        .and_then(|view| view.webview.webview().window())
-                };
-                let mut request_close = |window: &NSWindow| {
-                    managed_windows::request_native_close(&views, &events, window, true)
-                };
-                service(
-                    main_thread,
-                    &mut resolve,
-                    &mut resolve_view,
-                    &mut request_close,
-                    true,
-                )
-            };
-            let progress = match progress {
-                Ok(progress) => progress,
-                Err(error) => {
-                    tail_failure.get_or_insert(error);
-                    drained = false;
-                    break;
-                }
-            };
-            if progress.0 {
-                break;
-            }
-            let Some(original_deadline) = progress.1 else {
-                tail_failure = Some(WvError::EventLoop(String::from(
-                    "native main tail custody remains unproved",
-                )));
-                break;
-            };
-            if let Err(error) =
-                macos_bridge::service_main_tail_before(main_thread, original_deadline)
-            {
-                tail_failure = Some(error);
-                break;
-            }
+        if drained
+            && let Err(error) = crate::engine::drain_main_tail(
+                || {
+                    let mut resolve = || {
+                        anchor
+                            .and_then(|id| views.get(&id.0))
+                            .and_then(|view| view.webview.webview().window())
+                    };
+                    let mut resolve_view = |id: WebviewId| {
+                        views
+                            .get(&id.0)
+                            .and_then(|view| view.registry_managed.then_some(view))
+                            .and_then(|view| view.webview.webview().window())
+                    };
+                    let mut request_close = |window: &NSWindow| {
+                        managed_windows::request_native_close(&views, &events, window, true)
+                    };
+                    service(
+                        main_thread,
+                        &mut resolve,
+                        &mut resolve_view,
+                        &mut request_close,
+                        true,
+                    )
+                },
+                |deadline| macos_bridge::service_main_tail_before(main_thread, deadline),
+            )
+        {
+            tail_failure.get_or_insert(error);
+            drained = false;
         }
         if drained {
             destroy_renderer_bridges(&mut renderer_bridges);

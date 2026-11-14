@@ -615,6 +615,101 @@ pub struct AppDesktopFacts {
     pub should_use_dark_colors: bool,
 }
 
+/// Service the existing main-thread owner until it supplies a drain receipt.
+/// Missing deadlines and failed native servicing are errors, never quiescence.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn drain_main_tail(
+    mut service: impl FnMut() -> Result<(bool, Option<std::time::Instant>), WvError>,
+    mut service_before: impl FnMut(std::time::Instant) -> Result<(), WvError>,
+) -> Result<(), WvError> {
+    loop {
+        let (drained, deadline) = service()?;
+        if drained {
+            return Ok(());
+        }
+        let deadline = deadline.ok_or_else(|| {
+            WvError::EventLoop(String::from("native main tail custody remains unproved"))
+        })?;
+        service_before(deadline)?;
+    }
+}
+
+#[cfg(test)]
+mod main_tail_tests {
+    use std::time::Instant;
+
+    use super::{WvError, drain_main_tail};
+
+    #[test]
+    fn pending_without_deadline_never_authorizes_release() {
+        let mut serviced = false;
+        let result = drain_main_tail(
+            || Ok((false, None)),
+            |_| {
+                serviced = true;
+                Ok(())
+            },
+        );
+        assert!(matches!(result, Err(WvError::EventLoop(_))));
+        assert!(!serviced);
+    }
+
+    #[test]
+    fn native_tail_failure_never_authorizes_release() {
+        let deadline = Instant::now();
+        let mut calls = 0;
+        let result = drain_main_tail(
+            || {
+                calls += 1;
+                Ok((false, Some(deadline)))
+            },
+            |actual| {
+                assert_eq!(actual, deadline);
+                Err(WvError::EventLoop(String::from("tail service failed")))
+            },
+        );
+        assert!(
+            matches!(result, Err(WvError::EventLoop(message)) if message == "tail service failed")
+        );
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn service_error_is_not_a_drain_receipt() {
+        let result = drain_main_tail(
+            || Err(WvError::EventLoop(String::from("owner failed"))),
+            |_| unreachable!("failed owner must not be serviced again"),
+        );
+        assert!(matches!(result, Err(WvError::EventLoop(message)) if message == "owner failed"));
+    }
+
+    #[test]
+    fn only_actual_drained_receipt_finishes_after_pending_turn() {
+        let deadline = Instant::now();
+        let mut calls = 0;
+        let mut serviced = 0;
+        let result = drain_main_tail(
+            || {
+                calls += 1;
+                Ok((calls == 2, Some(deadline)))
+            },
+            |actual| {
+                assert_eq!(actual, deadline);
+                serviced += 1;
+                Ok(())
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(calls, 2);
+        assert_eq!(serviced, 1);
+        let immediate = drain_main_tail(
+            || Ok((true, None)),
+            |_| unreachable!("already drained owner must not be serviced again"),
+        );
+        assert!(immediate.is_ok());
+    }
+}
+
 /// Only the initial renderer owns the original startup navigation deadline.
 /// Registry-created pages can appear arbitrarily later and never rearm it.
 #[cfg(any(target_os = "macos", test))]
