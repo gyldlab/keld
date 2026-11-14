@@ -84,6 +84,22 @@ fn malformed_unknown_duplicate_and_authority_fields_fail_closed() {
     );
 }
 
+/// Unknown JSON fields resembling the old overflow sentinel must remain malformed.
+#[test]
+fn unknown_field_name_cannot_spoof_payload_overflow() {
+    for bytes in [
+        br#"{"v":1,"kind":"bind","keld-wv-link-payload-too-large":0}"#.as_slice(),
+        br#"{"v":1,"kind":"bind","keld-wv-link-payload-\u0074oo-large":0}"#.as_slice(),
+    ] {
+        assert_eq!(
+            decode_wv_link(bytes),
+            Err(WvLinkRejectReason::MalformedEnvelope),
+            "unknown fields cannot become payload-overflow reports: {}",
+            String::from_utf8_lossy(bytes)
+        );
+    }
+}
+
 #[test]
 fn version_and_nonzero_identifiers_have_distinct_rejections() {
     assert_eq!(
@@ -147,6 +163,49 @@ fn payload_boundary_is_exact_and_large_envelopes_are_prebounded() {
     assert!(huge.len() > MAX_WV_LINK_ENVELOPE_LEN);
     assert_eq!(
         decode_wv_link(huge.as_bytes()),
+        Err(WvLinkRejectReason::MalformedEnvelope)
+    );
+}
+
+#[test]
+fn private_compat_payload_errors_use_typed_state_not_json_diagnostics() {
+    use keld_wv::wv_link::{WvLinkMode, decode_app_wv_link, decode_wv_link_for_mode};
+    let overflow = repeated_byte_json(0, CONTRACT_PAYLOAD_MAX + 1);
+    for kind in ["invoke", "send"] {
+        let fields = if kind == "invoke" {
+            r#""request":1,"channel":1"#
+        } else {
+            r#""message":1,"channel":"event""#
+        };
+        let valid = format!(
+            r#"{{"v":2,"kind":"{kind}","document":"0123456789abcdef0123456789abcdef",{fields},"payload":[{overflow}]}}"#
+        );
+        assert_eq!(
+            decode_wv_link_for_mode(valid.as_bytes(), WvLinkMode::CompatV2),
+            Err(WvLinkRejectReason::PayloadTooLarge)
+        );
+        assert_eq!(
+            decode_app_wv_link(valid.as_bytes()).map(|_| ()),
+            Err(WvLinkRejectReason::PayloadTooLarge)
+        );
+        // A malformed byte after the retained boundary must not masquerade as overflow.
+        let malformed = valid.replace(&format!("[{overflow}]"), &format!("[{overflow},256]"));
+        assert_eq!(
+            decode_wv_link_for_mode(malformed.as_bytes(), WvLinkMode::CompatV2),
+            Err(WvLinkRejectReason::MalformedEnvelope)
+        );
+        assert_eq!(
+            decode_app_wv_link(malformed.as_bytes()).map(|_| ()),
+            Err(WvLinkRejectReason::MalformedEnvelope)
+        );
+    }
+    let forged = br#"{"v":2,"kind":"bind","keld-wv-link-payload-too-large":0}"#;
+    assert_eq!(
+        decode_wv_link_for_mode(forged, WvLinkMode::CompatV2),
+        Err(WvLinkRejectReason::MalformedEnvelope)
+    );
+    assert_eq!(
+        decode_app_wv_link(forged).map(|_| ()),
         Err(WvLinkRejectReason::MalformedEnvelope)
     );
 }

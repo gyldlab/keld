@@ -212,6 +212,13 @@ fn mcp_missing_subcommand_exits_2() {
 }
 
 #[test]
+fn mcp_discovery_only_eof_exits_successfully() {
+    let response = mcp_request("server/discover", &serde_json::json!({}));
+    assert_eq!(response["id"], 2, "{response}");
+    assert_eq!(response["result"]["resultType"], "complete", "{response}");
+}
+
+#[test]
 fn mcp_server_discover_advertises_versions_and_identity() {
     let response = mcp_request(
         "server/discover",
@@ -236,6 +243,41 @@ fn mcp_server_discover_advertises_versions_and_identity() {
             "version": env!("CARGO_PKG_VERSION")
         })
     );
+}
+
+#[test]
+fn mcp_legacy_initialize_negotiates_only_handshake_versions() {
+    // MCP 2026-07-28 replaced initialize with per-request metadata.  A client
+    // that still sends initialize must negotiate 2025-11-25, not claim to
+    // have negotiated a stateless version by using a legacy handshake.
+    for requested in ["2025-11-25", "2026-07-28"] {
+        let response =
+            mcp_request_with_lifecycle("tools/list", &serde_json::json!({}), Some(requested));
+        assert_eq!(response["id"], 2);
+        // Session-mode results use the legacy tools/list grammar.  Modern
+        // stateless results add resultType and cache controls instead.
+        assert!(response["result"].is_object(), "{requested}: {response}");
+        assert_eq!(response["result"]["resultType"], Value::Null, "{response}");
+        assert_eq!(response["result"]["ttlMs"], Value::Null);
+        assert_eq!(response["result"]["cacheScope"], Value::Null);
+        let tools = response["result"]["tools"]
+            .as_array()
+            .expect("legacy tool list");
+        assert_eq!(tools.len(), 3);
+        assert_eq!(tools[0]["name"], "keld_doctor");
+        assert_eq!(tools[1]["name"], "keld_docs_search");
+        assert_eq!(tools[2]["name"], "keld_permissions_explain");
+    }
+}
+
+#[test]
+fn mcp_modern_2026_request_without_required_meta_is_rejected() {
+    // A modern request missing required version/capabilities must not inherit
+    // authenticated session privileges from a made-up default.
+    let response = mcp_request("tools/list", &serde_json::json!({"_meta": {}}));
+    assert_eq!(response["id"], 2, "{response}");
+    assert_eq!(response["error"]["code"], -32602, "{response}");
+    assert!(response["result"].is_null(), "no tools on invalid metadata");
 }
 
 #[test]
@@ -608,10 +650,21 @@ fn mcp_tools_call(params: &Value) -> Value {
     mcp_request("tools/call", params)
 }
 
-/// Initialize a 2026-07-28 stdio MCP session and send one request.
+/// Send one stateless 2026-07-28 stdio request with required per-request
+/// metadata; legacy initialize is a separate, explicitly tested path.
 ///
 /// Awaits complete newline-delimited JSON-RPC frames (no sleep).
 fn mcp_request(method: &str, params: &Value) -> Value {
+    mcp_request_with_lifecycle(method, params, None)
+}
+
+/// The optional legacy path must never agree to a stateless 2026 protocol
+/// through initialize; modern callers always provide a complete request meta.
+fn mcp_request_with_lifecycle(
+    method: &str,
+    params: &Value,
+    legacy_initialize: Option<&str>,
+) -> Value {
     // Drive newline-delimited JSON-RPC over stdio — await complete response lines,
     // never sleep (AGENTS.md anti-flake).
     let mut child = Command::new(keld_bin())
@@ -651,45 +704,37 @@ fn mcp_request(method: &str, params: &Value) -> Value {
         }
     });
 
-    let init = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2026-07-28",
-            "capabilities": {},
-            "clientInfo": { "name": "keld-test", "version": "0.0.1" }
-        }
-    });
-    writeln!(stdin, "{init}").expect("write init");
-    stdin.flush().expect("flush");
-    let init_resp = read_json_line(&line_rx, &mut child);
-    assert_eq!(init_resp["id"], 1, "{init_resp}");
-    assert_eq!(
-        init_resp["result"]["protocolVersion"], "2026-07-28",
-        "{init_resp}"
-    );
-    assert_eq!(init_resp["result"]["serverInfo"]["name"], "keld");
-    assert_eq!(
-        init_resp["result"]["serverInfo"]["version"],
-        env!("CARGO_PKG_VERSION")
-    );
+    if let Some(version) = legacy_initialize {
+        assert_legacy_initialize(&mut stdin, &line_rx, &mut child, version);
+    }
 
-    let initialized = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "notifications/initialized"
-    });
-    writeln!(stdin, "{initialized}").expect("write initialized");
-
+    let mut request_params = params.clone();
+    if legacy_initialize.is_none() {
+        let object = request_params
+            .as_object_mut()
+            .expect("modern MCP params must be a JSON object");
+        object.entry("_meta").or_insert_with(|| {
+            serde_json::json!({
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientInfo": {
+                    "name": "keld-test", "version": "0.0.1"
+                },
+                "io.modelcontextprotocol/clientCapabilities": {}
+            })
+        });
+    }
     let call = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 2,
         "method": method,
-        "params": params
+        "params": request_params
     });
     writeln!(stdin, "{call}").expect("write call");
     stdin.flush().expect("flush");
     let resp = read_json_line(&line_rx, &mut child);
+    if legacy_initialize.is_none() && resp["error"].is_object() {
+        assert_modern_bootstrap_completes(&mut stdin, &line_rx, &mut child);
+    }
 
     drop(stdin);
     let status = child.wait().expect("wait for mcp serve");
@@ -700,4 +745,79 @@ fn mcp_request(method: &str, params: &Value) -> Value {
         String::from_utf8_lossy(&stderr_buf)
     );
     resp
+}
+
+fn assert_legacy_initialize(
+    stdin: &mut impl Write,
+    lines: &mpsc::Receiver<std::io::Result<String>>,
+    child: &mut Child,
+    requested_version: &str,
+) {
+    // A legacy request must never agree to a stateless 2026 version.
+    let init = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": requested_version,
+            "capabilities": {},
+            "clientInfo": { "name": "keld-test", "version": "0.0.1" }
+        }
+    });
+    writeln!(stdin, "{init}").expect("write legacy init");
+    stdin.flush().expect("flush legacy init");
+    let init_resp = read_json_line(lines, child);
+    assert_eq!(init_resp["id"], 1, "{init_resp}");
+    assert_eq!(
+        init_resp["result"]["protocolVersion"], "2025-11-25",
+        "no modern protocol can be negotiated by a legacy initialize: {init_resp}"
+    );
+    assert_eq!(init_resp["result"]["serverInfo"]["name"], "keld");
+    assert_eq!(
+        init_resp["result"]["serverInfo"]["version"],
+        env!("CARGO_PKG_VERSION")
+    );
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        })
+    )
+    .expect("write legacy initialized");
+}
+
+fn assert_modern_bootstrap_completes(
+    stdin: &mut impl Write,
+    lines: &mpsc::Receiver<std::io::Result<String>>,
+    child: &mut Child,
+) {
+    // Discovery and rejected bootstrap requests leave the transport open.
+    // A valid first non-discover request must then establish modern lifecycle
+    // before EOF, without treating a failed initialization as success.
+    let valid = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/list",
+        "params": {
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+                "io.modelcontextprotocol/clientInfo": {
+                    "name": "keld-test", "version": "0.0.1"
+                }
+            }
+        }
+    });
+    writeln!(stdin, "{valid}").expect("write post-bootstrap modern request");
+    stdin.flush().expect("flush post-bootstrap request");
+    let accepted = read_json_line(lines, child);
+    assert_eq!(accepted["id"], 3, "{accepted}");
+    assert_eq!(accepted["result"]["resultType"], "complete", "{accepted}");
+    assert_eq!(
+        accepted["result"]["tools"].as_array().map(Vec::len),
+        Some(3),
+        "{accepted}"
+    );
 }

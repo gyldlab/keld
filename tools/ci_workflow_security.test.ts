@@ -1609,7 +1609,7 @@ test("both Nextest installers pin 0.9.149 and reject unpinned or downgraded rele
     );
     expect(installer).toBeDefined();
     expect(installer!.uses).toBe(
-      "taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91",
+      "taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b",
     );
     expect((installer!.with as Step).tool).toBe(reviewed);
     expect((installer!.with as Step).fallback).toBe("none");
