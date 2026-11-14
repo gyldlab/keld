@@ -3,7 +3,7 @@
 - Status: draft
 - Tracker: GH-1189
 - Owner: Monish Khandelwal (@0monish; approval pending)
-- Updated: 2026-11-10
+- Updated: 2026-11-11
 - Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
 
 ## 1. Goal & non-goals
@@ -330,12 +330,16 @@ native/FFI amendment precedes production calls.
 
 ### T-1: qualify the deferred native primitive
 
-- **Blocked by:** B-5
-- Obtain separate scoped test-only approval for this mechanism fixture.
-- Use an independently scoped Windows mechanism fixture.
-- Prove callback exit, visible native UI, cancellation delivery, and subsequent healthy presentation.
-- Exercise AC-7, AC-8, and AC-10 without enabling product dispatch.
-- Use that evidence to resolve Q-1 before full B-1 approval.
+- **Blocked by:** B-5; the integrated qualification additionally requires B-4's committed interface handback.
+- Obtain separate scoped test-only approval; this does not approve production integration or resolve B-1.
+- A standalone native API or message-hook fixture may discover mechanism behavior, but cannot close Q-1 or B-2.
+- Qualify the actual Core/W2/native route using the accepted interface commits and the intended modal entry point.
+  Bind the fixture, integration diff, binaries, parent generation, role/profile admission and independent witnesses to those exact inputs.
+- Observe the originating WebView2 callback exit before native entry; issue cancellation and retirement through the actual Core owner.
+  Do not replace that delivery edge or modal entry point with a fixture-only signal or message hook.
+- Exercise AC-7, AC-8 and AC-10, with physical quiescence, separate original-CALL settlement and a healthy subsequent operation.
+  A one-fault control suppressing the actual cancellation/dismissal edge must fail the independent native witness.
+- Keep this integrated experiment test-only. Its evidence may resolve Q-1/B-2; full B-1 approval still precedes T-2.
 
 ### T-2: deliver guarded Open/Save end to end
 
@@ -430,7 +434,8 @@ path fails, compare a dedicated apartment with W2. Record the new handle and cra
 - **Status:** open
 - **Owner:** W2 UI-loop owner and the #1189 Windows native implementer.
 - **Impact:** T-2 and public presentation remain blocked.
-- **Check:** T-1 proves AC-7, AC-8, and AC-10 on the exact Windows source.
+- **Check:** T-1's integrated qualification proves AC-7, AC-8 and AC-10 on the exact Core/W2/native route.
+  Standalone mechanism evidence, Cancel ACK alone, or source presence cannot close this blocker.
 
 ### B-3: Windows option, parent, and path oracle
 
@@ -442,10 +447,19 @@ path fails, compare a dedicated apartment with W2. Record the new handle and cra
 ### B-4: W2 and role/profile integration
 
 - **Status:** open
-- **Owner:** #1188 W2 and #1187 W6 owners.
+- **Owner:** #1188 W2, #1187 W6 and #478/#564 shared Core dialog owners.
 - **Impact:** a standalone panel cannot establish product admission, parent identity, or role teardown.
-- **Check:** accept the exact-head W2 parent and W6 profile artifacts and their approved integration interfaces before T-2.
-  T-2 produces the later real dialog integration proof. That proof is not this prerequisite.
+- **Check:** before T-1's integrated qualification, the W2/Core/W6 owners hand back accepted committed interface inputs:
+  W2 parent retention/generation and retirement; Core admission/custody, cancellation delivery and original settlement;
+  authenticated role admission with its profile state and refusal behavior disclosed. Name each owning path, commit and
+  acceptance record, including the test-only bridge scope.
+  For T-1, the admission may be an owner-accepted committed test-only interface: it preserves authenticated identity,
+  the actual Guard and custody path, and explicit refusals; it does not fabricate a Strict/Legacy qualification receipt.
+  This test-only admission does not satisfy the W6 production admission/qualification required by T-2 and product claims.
+  Uncommitted/private candidates are not reproducible inputs and cannot satisfy this handback.
+  This handback is independent of W5's later integrated native PASS and does not require T-2 production implementation.
+  Before T-2, accept the production W2/Core/W6 interfaces and profile artifacts. A changed admission, dispatch or lifetime
+  edge requires fresh integrated qualification; unchanged test-only evidence alone cannot approve production admission.
 
 ### B-5: native safety and operator scope
 
