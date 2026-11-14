@@ -1,0 +1,223 @@
+{
+  "schema": "keld.w4-hosted-failure-diagnosis/v1",
+  "observed_at": "2026-11-05T12:04:13Z",
+  "head": "48e3f168716ea8ba25ac6c1bfb35ab213c022b2e",
+  "pr": 1401,
+  "draft": true,
+  "open": true,
+  "ci_run": 42022556245,
+  "attempt": 1,
+  "event": "pull_request",
+  "checked_out_merge": "285dc9e4600898ba5c9e227f29ea638cda589f42",
+  "base": "df99602ef10abd2cd6f3b5c633ba6d1cffee97bc",
+  "head_tree": "c2dd1e8108e62d54e3684fc69c9718bf7369bfda",
+  "merge_tree": "c2dd1e8108e62d54e3684fc69c9718bf7369bfda",
+  "merge_tree_equals_head": true,
+  "router": {
+    "job": 127228663403,
+    "url": "https://github.com/gyldlab/keld/actions/runs/42022556245/job/127228663403",
+    "conclusion": "failure",
+    "test": "TempRepositoryMaintenanceTests.test_every_temp_repository_disables_background_maintenance",
+    "offending_site": "tools/windows_desktop_facts/verify_init_seam.py:49",
+    "group_tests": 38,
+    "group_failures": 1,
+    "matcher": "\\bconfig\\W+maintenance\\.auto\\W+false\\b",
+    "following_line_window": 4,
+    "recommended_immediate_next_line": "        checked(name + \"-git-maintenance-off\", [\"git\", \"config\", \"maintenance.auto\", \"false\"], case)",
+    "reuse": "Existing repository #670 policy and checked subprocess helper; no scan exception or workflow change."
+  },
+  "codeowners": {
+    "job": 127228831816,
+    "url": "https://github.com/gyldlab/keld/actions/runs/42022556245/job/127228831816",
+    "conclusion": "failure",
+    "failed_step": "Agent instruction context budget",
+    "base_bytes": 65279,
+    "head_bytes": 65764,
+    "imported_row_bytes": 485,
+    "cap": 65280,
+    "over": 484,
+    "manifest_row": "docs/agents/learnings.md\tevidence\t65280\tlearning-evidence-log\tquery:area",
+    "imported_row": "- 2026-11-03 [test] A standalone Cargo fixture below managed repository scratch must declare its own `[workspace]`; otherwise Cargo can adopt the ancestor workspace and fail before the behavior under test. A nested valid parent workspace plus an unchanged parent-source sentinel makes this regression independent of the operator's temporary-directory location. (evidence: tools/test_ci_local.py::ExecutorTests::test_fmt_repairs_rust_before_codegen_and_restamps_native_output, GH-1188)\n",
+    "base_blob": "4cc79673476a4a0d01439855533efac4a2503b28",
+    "head_blob": "e132bce4d7f1b8358eec269b208a484854380480",
+    "base_sha256": "a6e0cae146b1ea2e9e48b15eff5d2ede7ce7ab9ad10254ccf16401961e3d28c1",
+    "head_sha256": "89c27276f9c913c20edd5b1beebcd606c487c77c18c66716208a3bebd355303f",
+    "exact_owner_fix": "9a9fbbcfa1fb65c2cb922c680fcdcedc80af06de",
+    "exact_owner_fix_url": "https://github.com/gyldlab/keld/commit/9a9fbbcfa1fb65c2cb922c680fcdcedc80af06de",
+    "owner_fix_relevance": "Exact owner commit removes this same Cargo fixture row plus a W2-only runtime row absent from W4. Reuse the one matching removal, preserving 05 test source and durable provenance. The resulting W4 file is byte-identical to b18 (65279 bytes).",
+    "owner_fix_row_equal": true,
+    "w2_current_head": "f7b5848556154aa1c356a214270e342369267c0e",
+    "w2_current_bytes": 65255,
+    "w2_latest_compression_not_needed": "f7b58485 changes six separate Windows entries; do not import it merely for this one-row W4 overage."
+  },
+  "requested_follow_up_gates": {
+    "maintenance": [
+      "python3",
+      "-B",
+      "tools/test_ci_local.py",
+      "TempRepositoryMaintenanceTests.test_every_temp_repository_disables_background_maintenance",
+      "-v"
+    ],
+    "agent_context_compile": [
+      "rustc",
+      "--edition=2024",
+      "-D",
+      "warnings",
+      "tools/agent_context.rs",
+      "-o",
+      "OWN_EVIDENCE/agent-context"
+    ],
+    "agent_context_run": [
+      "OWN_EVIDENCE/agent-context",
+      "check",
+      "."
+    ],
+    "helper": [
+      "python3",
+      "-B",
+      "tools/windows_desktop_facts/verify_init_seam.py",
+      "--repo",
+      "SOURCE_REPOSITORY",
+      "--source-ref",
+      "ec493b0bc16250a19dd4cc0d8615d7870a364748",
+      "--expected-source-sha256",
+      "03bc98199f767d24cce99e9f1db3c242301491ad07ddca7fb91d3d2e8a53c370",
+      "--patch",
+      "tools/windows_desktop_facts/integration.patch",
+      "--red-patch",
+      "tools/windows_desktop_facts/integration-v2-negative.patch",
+      "--harness",
+      "tools/windows_desktop_facts/init_seam_harness.rs",
+      "--out",
+      "FRESH_OWN_EVIDENCE_DIRECTORY"
+    ],
+    "helper_expected": "v2 fails one timing test; v3 passes eight; before-sample fails one; no-op fails eight; compiler/selection errors are not accepted negatives."
+  },
+  "log_excerpts": {
+    "router": [
+      {
+        "line": 806,
+        "text": "2026-11-05T11:53:18.1867696Z "
+      },
+      {
+        "line": 807,
+        "text": "2026-11-05T11:53:18.1888107Z HEAD is now at 285dc9e4 Merge 48e3f168716ea8ba25ac6c1bfb35ab213c022b2e into df99602ef10abd2cd6f3b5c633ba6d1cffee97bc"
+      },
+      {
+        "line": 808,
+        "text": "2026-11-05T11:53:18.1891845Z ##[endgroup]"
+      },
+      {
+        "line": 809,
+        "text": "2026-11-05T11:53:18.1893810Z [command]/usr/bin/git log -1 --format=%H"
+      },
+      {
+        "line": 1501,
+        "text": "2026-11-05T11:55:33.0484712Z ======================================================================"
+      },
+      {
+        "line": 1502,
+        "text": "2026-11-05T11:55:33.0486905Z FAIL: test_every_temp_repository_disables_background_maintenance (__main__.TempRepositoryMaintenanceTests.test_every_temp_repository_disables_background_maintenance)"
+      },
+      {
+        "line": 1503,
+        "text": "2026-11-05T11:55:33.0489146Z ----------------------------------------------------------------------"
+      },
+      {
+        "line": 1504,
+        "text": "2026-11-05T11:55:33.0490070Z Traceback (most recent call last):"
+      },
+      {
+        "line": 1509,
+        "text": "2026-11-05T11:55:33.0494915Z                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"
+      },
+      {
+        "line": 1510,
+        "text": "2026-11-05T11:55:33.0495571Z AssertionError: Lists differ: ['tools/windows_desktop_facts/verify_init_seam.py:49'] != []"
+      },
+      {
+        "line": 1511,
+        "text": "2026-11-05T11:55:33.0496056Z "
+      },
+      {
+        "line": 1512,
+        "text": "2026-11-05T11:55:33.0496196Z First list contains 1 additional elements."
+      },
+      {
+        "line": 1519,
+        "text": "2026-11-05T11:55:33.0498542Z ----------------------------------------------------------------------"
+      },
+      {
+        "line": 1520,
+        "text": "2026-11-05T11:55:33.0498969Z Ran 38 tests in 26.727s"
+      },
+      {
+        "line": 1521,
+        "text": "2026-11-05T11:55:33.0499140Z "
+      },
+      {
+        "line": 1522,
+        "text": "2026-11-05T11:55:33.0499250Z FAILED (failures=1)"
+      },
+      {
+        "line": 1523,
+        "text": "2026-11-05T11:55:33.3795159Z ##[error]Process completed with exit code 1."
+      },
+      {
+        "line": 1524,
+        "text": "2026-11-05T11:55:33.3964164Z Post job cleanup."
+      },
+      {
+        "line": 1525,
+        "text": "2026-11-05T11:55:33.4927440Z [command]/usr/bin/git version"
+      }
+    ],
+    "codeowners": [
+      {
+        "line": 807,
+        "text": "2026-11-05T11:53:41.3037831Z "
+      },
+      {
+        "line": 808,
+        "text": "2026-11-05T11:53:41.3038283Z HEAD is now at 285dc9e4 Merge 48e3f168716ea8ba25ac6c1bfb35ab213c022b2e into df99602ef10abd2cd6f3b5c633ba6d1cffee97bc"
+      },
+      {
+        "line": 809,
+        "text": "2026-11-05T11:53:41.3074061Z ##[endgroup]"
+      },
+      {
+        "line": 810,
+        "text": "2026-11-05T11:53:41.3124437Z [command]/usr/bin/git log -1 --format=%H"
+      },
+      {
+        "line": 1219,
+        "text": "2026-11-05T11:53:55.2902757Z "
+      },
+      {
+        "line": 1220,
+        "text": "2026-11-05T11:53:55.5980627Z AGENT-CONTEXT: `docs/agents/learnings.md` is 65764 bytes, over its 65280 byte budget. Move conditional detail; do not raise the budget without approved measured evidence."
+      },
+      {
+        "line": 1221,
+        "text": "2026-11-05T11:53:55.5995002Z ##[error]Process completed with exit code 1."
+      },
+      {
+        "line": 1222,
+        "text": "2026-11-05T11:53:55.6124689Z Post job cleanup."
+      },
+      {
+        "line": 1223,
+        "text": "2026-11-05T11:53:55.7038950Z [command]/usr/bin/git version"
+      }
+    ]
+  },
+  "scope": {
+    "source_changes": false,
+    "tests_executed": false,
+    "windows_actions": false,
+    "workflow_or_gate_changes": false,
+    "ci_provenance_or_verisentry_reinvestigated": false,
+    "existing_05_test_blob_preserved": "94c6fae629286faf6914662ea382e4e9e2bb3527",
+    "notes": "Only read-only API/Git reads and own evidence-file writes. Initial gh raw-log reads refused terminal escape sequences; retained those retrieval errors and read decoded logs through the GitHub connector instead; no checks were rerun."
+  }
+}

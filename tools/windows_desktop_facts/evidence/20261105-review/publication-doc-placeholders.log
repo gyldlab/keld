@@ -1,0 +1,5 @@
+mkdir -p target/doc-placeholders
+rustc --edition=2024 -D warnings tools/doc_placeholders.rs -o target/doc-placeholders/doc-placeholders
+target/doc-placeholders/doc-placeholders check .
+doc-placeholders ok: 100 document(s), 13 known placeholder(s) all in use
+WORKSPACE evidence: D:\WORK\keld\.keld-work\sessions\chatgpt-w4-desktop-20261105\evidence\run-6d90572f02354aa6bc87f1c72f38d196

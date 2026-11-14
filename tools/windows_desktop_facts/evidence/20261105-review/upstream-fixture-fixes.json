@@ -1,0 +1,20 @@
+{
+  "leadHead": "2aed1f944a072d2c84469924c107b3ca5df9bc13",
+  "w4Head": "29f99d62cf227e5244672cef6094c6a31a240e94",
+  "appliedToW4": false,
+  "fixes": [
+    {
+      "commit": "984a5d59e7a088c306c4dfa6dc9a33dc87db4448",
+      "leadAncestorExit": 0,
+      "w4AncestorExit": 1,
+      "diffSha256": "df5b13e90d57de5b4a57e7ce1a43d337b85e70c643b84b5113e820e33210bcb3"
+    },
+    {
+      "commit": "05f87d5d23770119f751edc2cffb657249339331",
+      "leadAncestorExit": 0,
+      "w4AncestorExit": 1,
+      "diffSha256": "fdae1f371a51dc33cc7b4f95e86a2711c7a5b5439f6e2a8874886960cd055749"
+    }
+  ],
+  "coordination": "https://github.com/gyldlab/keld/issues/1188#issuecomment-6647389326"
+}

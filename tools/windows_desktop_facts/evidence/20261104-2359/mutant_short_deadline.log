@@ -1,0 +1,27 @@
+bun test v1.4.4 (38afee6c8)
+
+tools\windows_desktop_facts\subscribe_contract.test.ts:
+121 |       await peer.hello();
+122 |       await peer.subscribe();
+123 |       await assertPending(peer);
+124 |       const rejected = await peer.notice("rejected");
+125 |       assert.equal(rejected.code, "KELD-IPC-006");
+126 |       assert.ok(
+                   ^
+AssertionError: observe the original 5 s call bound, never a replacement or renewed deadline
+ generatedMessage: false,
+     actual: false,
+   expected: true,
+   operator: "==",
+       diff: "simple",
+       code: "ERR_ASSERTION"
+
+      at D:\WORK\keld\.keld-work\worktrees\gh-1186-windows-desktop-feasibility-20261105\tools\windows_desktop_facts\subscribe_contract.test.ts:126:14
+      at withFixture (D:\WORK\keld\.keld-work\worktrees\gh-1186-windows-desktop-feasibility-20261105\tools\windows_desktop_facts\subscribe_support\host.ts:237:11)
+      at D:\WORK\keld\.keld-work\worktrees\gh-1186-windows-desktop-feasibility-20261105\tools\windows_desktop_facts\subscribe_contract.test.ts:119:11
+(fail) W4 shared client contract; scripted Host, real named pipe > the original 5000 ms caller deadline retires an unsatisfied subscription [1417.22ms]
+
+ 0 pass
+ 8 filtered out
+ 1 fail
+Ran 1 test across 1 file. [1453.00ms]

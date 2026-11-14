@@ -1,0 +1,30 @@
+{
+  "schema": "keld.w4-init-seam-head-equivalence/v1",
+  "observed_at": "2026-11-05T11:36:57.616241+00:00",
+  "current_pr": {
+    "autoMergeRequest": null,
+    "headRefName": "agent/gh-1188-managed-browser-window-20261105",
+    "headRefOid": "f7b5848556154aa1c356a214270e342369267c0e",
+    "isDraft": true,
+    "state": "OPEN",
+    "updatedAt": "2026-11-05T11:32:08Z",
+    "url": "https://github.com/gyldlab/keld/pull/1403"
+  },
+  "requested_head": "f7b5848556154aa1c356a214270e342369267c0e",
+  "requested_head_matches_current_pr": true,
+  "source_path": "crates/keld-wv/src/webview2/mod.rs",
+  "git_blob": "ec493b0bc16250a19dd4cc0d8615d7870a364748",
+  "sha256": "03bc98199f767d24cce99e9f1db3c242301491ad07ddca7fb91d3d2e8a53c370",
+  "size": 232946,
+  "api_html_url": "https://github.com/gyldlab/keld/blob/f7b5848556154aa1c356a214270e342369267c0e/crates/keld-wv/src/webview2/mod.rs",
+  "tested_head": "fe9a4ab8d69823c8ead58281ab1715a811a75835",
+  "byte_equal_to_tested_source": true,
+  "v3_patch_sha256": "e0b5ceca8c735e57d03f4088550d4de40cfebbc719572c16985fcc6543a76a27",
+  "patch_only_targets_this_source": true,
+  "prior_execution_receipt": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/execution-publication-01/receipt.json",
+  "prior_execution_receipt_sha256": "b3a1dca8b4d5c0515e82a0d01d1084cb327d521d556f78b7b082ad39804b7693",
+  "v3_applicability_equivalent": true,
+  "new_test_execution": false,
+  "product_worktree_edits": false,
+  "build_or_native_launch": false
+}

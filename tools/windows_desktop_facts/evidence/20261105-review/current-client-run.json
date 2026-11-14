@@ -1,0 +1,26 @@
+{
+  "schema": "keld.workspace-run/v1",
+  "task": "gh-1186-windows-desktop-feasibility-20261105",
+  "session": "chatgpt-w4-desktop-20261105",
+  "state": "complete",
+  "source_head": "29f99d62cf227e5244672cef6094c6a31a240e94",
+  "exit_code": 0,
+  "runner_exit_code": 0,
+  "scratch": "D:\\WORK\\keld\\.keld-work\\tmp\\nevmfb39",
+  "log_limit_bytes": 4194304,
+  "elapsed_seconds": 5.9048675000085495,
+  "stdout": {
+    "total_bytes": 28,
+    "retained_bytes": 28,
+    "omitted_bytes": 0,
+    "truncated": false,
+    "capture_error": null
+  },
+  "stderr": {
+    "total_bytes": 3144,
+    "retained_bytes": 3144,
+    "omitted_bytes": 0,
+    "truncated": false,
+    "capture_error": null
+  }
+}

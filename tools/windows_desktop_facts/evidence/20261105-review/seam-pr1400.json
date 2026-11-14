@@ -1,0 +1,15 @@
+{
+  "lead": {
+    "baseRefName": "agent/gh-1188-release-receipt-drain-20261104",
+    "headRefName": "agent/gh-1188-exit-wake-retirement-20261105",
+    "headRefOid": "2aed1f944a072d2c84469924c107b3ca5df9bc13",
+    "isDraft": true,
+    "state": "OPEN"
+  },
+  "leadSourceBlob": "922c33231a1c96298cf0a48f0806ba8958dcfd22",
+  "patchSha256": "14ffc09e134dfee41d2038a44d6942128b1f7f20ae576b98ae659ef011c4664d",
+  "applyCheckExit": 0,
+  "stdout": "",
+  "stderr": "",
+  "productDiff": ""
+}

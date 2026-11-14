@@ -1,0 +1,18 @@
+{
+  "bootstrapPid": 18920,
+  "targetPid": 1816,
+  "targetExit": 1,
+  "enrolled": true,
+  "targetWaitTimedOut": false,
+  "setupError": null,
+  "argv": [
+    "bun",
+    "test",
+    "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-run-04-control\\native-control.test.ts"
+  ],
+  "bootstrapExit": 0,
+  "jobActiveAfter": 0,
+  "timedOut": false,
+  "forcedCleanup": false,
+  "elapsedSeconds": 0.19483389999368228
+}

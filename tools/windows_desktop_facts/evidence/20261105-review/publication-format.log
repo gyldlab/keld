@@ -1,0 +1,8 @@
+bun packages/@keld/kipc/scripts/echo-codegen.ts check
+bun fmt --no-script --check "**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}"
+All 126 files are formatted.
+cargo fmt --all --check
+tools/fmt_included.sh test
+fmt_included self-test: ok
+tools/fmt_included.sh --check
+WORKSPACE evidence: D:\WORK\keld\.keld-work\sessions\chatgpt-w4-desktop-20261105\evidence\run-749d921a29ec4a3eb3dd798083c933a9

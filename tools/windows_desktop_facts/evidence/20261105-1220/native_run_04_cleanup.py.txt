@@ -1,0 +1,39 @@
+from pathlib import Path
+import hashlib,json,os,shutil,stat,time
+base=Path(r"D:\WORK\keld\.git\keld-closeout\chatgpt-w4-desktop-20261105")
+out=base/"native-run-04"
+driver=json.loads((base/"native-run-04-driver.json").read_text(encoding="utf-8"))
+assert driver["exit"]==0,"retain failed-run resources for diagnosis"
+before=json.loads((base/"native-run-04-pre-census.json").read_text(encoding="utf-8"))
+after=json.loads((base/"native-run-04-post-census.json").read_text(encoding="utf-8"))
+assert before["ownNativeCount"]==after["ownNativeCount"]==0
+identity=lambda x:(x["ProcessId"],x["CreationDate"],x.get("ExecutablePath"))
+prior={identity(x) for x in before["existingWebviews"]}
+remaining={identity(x) for x in after["existingWebviews"]}
+assert prior<=remaining,"a baseline WebView identity is not present; preserve resources and inspect"
+processes={p.stem:json.loads(p.read_text(encoding="utf-8")) for p in sorted(out.glob("*.process.json"))}
+assert len(processes)==8,len(processes)
+for name,r in processes.items():
+ assert r["jobActiveAfter"]==0 and not r["timedOut"] and not r["forcedCleanup"] and not r["setupError"],name
+ assert r["exit"] is not None and r["bootstrapExit"]==0,name
+profile=out/"userdata-44.4.5"
+assert profile.is_dir()
+def identity_stat(path):
+ s=path.lstat()
+ assert not (s.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT),str(path)
+ return {"device":s.st_dev,"inode":s.st_ino,"creationTimeNs":getattr(s,"st_birthtime_ns",s.st_ctime_ns)}
+profile_id=identity_stat(profile)
+assert profile_id["creationTimeNs"]/1e9>=driver["startedUnix"]-1
+entries=list(profile.rglob("*"))
+for p in entries:identity_stat(p)
+sentinel=base/"native-run-04-cleanup-sentinel.txt"
+assert sentinel.is_file()
+sentinel_bytes=sentinel.read_bytes()
+assert sentinel_bytes==b"W4 native-run-04 owned cleanup sentinel; preserve.\n"
+assert identity_stat(profile)==profile_id
+shutil.rmtree(profile)
+assert not profile.exists()
+assert sentinel.read_bytes()==sentinel_bytes
+result={"utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"head":driver["head"],"driverExit":driver["exit"],"emptyInvocationJobs":len(processes),"forcedCleanup":False,"ownNativeProcessesBefore":before["ownNativeCount"],"ownNativeProcessesAfter":after["ownNativeCount"],"baselineWebviews":len(prior),"baselineWebviewsPreserved":True,"removedProfile":str(profile),"profileCreationIdentity":profile_id,"checkedNonReparseEntries":len(entries)+1,"profileAbsent":True,"outsideSentinel":str(sentinel),"outsideSentinelSha256":hashlib.sha256(sentinel_bytes).hexdigest(),"globalSettingsChanged":False,"foreignProcessSignals":False,"existingCachesPreserved":True}
+(base/"native-run-04-cleanup.json").write_text(json.dumps(result,indent=2)+"\n",encoding="utf-8",newline="\n")
+print(json.dumps(result,indent=2))

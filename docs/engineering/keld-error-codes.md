@@ -988,6 +988,13 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: This Host session has reached its cumulative distinct-window admission capacity, including destroyed window identities
 - fix: Start a fresh Host session to mint further window identities. Do not retry Create within this session, recycle a retired identity, or bypass the native admission limit. The candidate numeric capacity remains unapproved pending GH1149.
 
+## KELD-CORE-049
+
+- crate: keld-core
+- message: The native desktop snapshot is unavailable
+- fix: Use a live session whose admitted Ready barrier completed. After an Init or native capture failure, correct the Host display/appearance error and relaunch. Do not fabricate a monitor or theme.
+- scope: GH481 macOS S1 current-primary desktop Subscribe and post-Ready local desktop getters; a 5-second caller timeout keeps its existing transport error instead of being relabeled 049.
+
 ## KELD-UPDATE-001
 
 - crate: keld-update
