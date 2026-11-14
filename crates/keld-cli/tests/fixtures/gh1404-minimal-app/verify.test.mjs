@@ -3,7 +3,6 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   closeSync,
-  constants,
   cpSync,
   existsSync,
   lstatSync,
@@ -15,6 +14,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -297,15 +297,20 @@ test(
           renameSync(target, target + ".real");
           symlinkSync(target + ".real", target, linkType);
         } else {
-          // Never follow a copied symlink while preparing a negative case,
-          // including if an authoring path is replaced after source preflight.
-          // Exclusive creation also refuses dangling symlinks for new files.
-          const flags = existsSync(target)
-            ? constants.O_WRONLY |
-              constants.O_TRUNC |
-              (constants.O_NOFOLLOW ?? 0)
-            : constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL;
-          const fd = openSync(target, flags, 0o600);
+          // Replace only this disposable directory entry, never truncate its
+          // referent. Windows rejects O_TRUNC without O_CREAT; adding O_CREAT
+          // would follow links there because O_NOFOLLOW is unavailable.
+          // unlink does not follow the final component, and wx refuses any
+          // replacement entry (including dangling links) racing the creation.
+          const metadata = lstatSync(target, { throwIfNoEntry: false });
+          if (metadata) {
+            assert.ok(
+              metadata.isFile(),
+              "mutation target must be a regular file",
+            );
+            unlinkSync(target);
+          }
+          const fd = openSync(target, "wx", 0o600);
           try {
             writeFileSync(fd, after);
           } finally {
