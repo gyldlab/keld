@@ -108,6 +108,7 @@ fn guard_snapshot_drops_only_after_ordered_cleanup() {
     fs::write(root.join(PERMISSIONS_FILE), b"{}\n").expect("permissions");
     fs::write(root.join(BOOT_FILE), valid_boot("main.ts", "index.html")).expect("boot");
     let ValidatedBootSelection {
+        schema: _,
         app,
         permissions_file,
         permissions_digest,
@@ -200,6 +201,74 @@ fn dev_lease_reader_is_nonblocking_cloexec_and_read_only() {
 
     let error = configure_dev_lease_fd(&writer).expect_err("writer is not a lease reader");
     assert!(error.to_string().contains("read-only end"), "{error}");
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn installed_origin_rejects_all_dev_lease_markers_before_touching_inherited_pipe_flags() {
+    use std::ffi::OsStr;
+
+    use super::macos_lease_before_runtime;
+
+    let (reader, _writer) = nix::unistd::pipe().expect("owned lease reader");
+    let status =
+        || OFlag::from_bits_truncate(fcntl(&reader, FcntlArg::F_GETFL).expect("real pipe status"));
+    let descriptor = || {
+        FdFlag::from_bits_truncate(
+            fcntl(&reader, FcntlArg::F_GETFD).expect("real descriptor flags"),
+        )
+    };
+    let original_status = status();
+    let original_descriptor = descriptor();
+    assert!(!original_status.contains(OFlag::O_NONBLOCK));
+
+    // The injected stage callback would modify the real shared pipe if called.
+    // It must not execute for a local installed origin, whether the inherited
+    // marker is absent, empty, the valid dev lease name, or malformed.
+    assert!(
+        macos_lease_before_runtime(true, None, || {
+            configure_dev_lease_fd(&reader)?;
+            Ok(None)
+        })
+        .expect("local bundle without marker")
+        .is_none()
+    );
+    for marker in ["", "stdin-v1", "incorrect"] {
+        let error = macos_lease_before_runtime(true, Some(OsStr::new(marker)), || {
+            configure_dev_lease_fd(&reader)?;
+            Ok(None)
+        })
+        .err()
+        .expect("even an invalid marker refuses before invoking the stage path");
+        assert_eq!(error.code(), "KELD-CORE-036");
+        assert!(
+            error.to_string().contains("local bundle lease admission"),
+            "{error}"
+        );
+        assert_eq!(
+            status(),
+            original_status,
+            "installed refusal changed pipe status"
+        );
+        assert_eq!(
+            descriptor(),
+            original_descriptor,
+            "installed refusal changed descriptor flags"
+        );
+    }
+
+    // Preserve the existing developer-stage side effect: this path really
+    // configures the read-only pipe when the admitted origin is a dev stage.
+    assert!(
+        macos_lease_before_runtime(false, Some(OsStr::new("stdin-v1")), || {
+            configure_dev_lease_fd(&reader)?;
+            Ok(None)
+        })
+        .expect("developer stage may acquire the lease")
+        .is_none()
+    );
+    assert!(status().contains(OFlag::O_NONBLOCK));
+    assert!(descriptor().contains(FdFlag::FD_CLOEXEC));
 }
 
 #[test]

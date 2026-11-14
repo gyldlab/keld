@@ -1,37 +1,18 @@
-# keld-wv — adds root AGENTS.md
+# keld-wv — extends root AGENTS.md
 
-Spec: `docs/architecture/05-webview-and-native.md`; platform truth: `docs/research/library/host-platforms/06-webview-reality.md`; v0 trait: `src/engine.rs`.
+Owner/load: webview/always. Spec: docs/architecture/05-webview-and-native.md; tao0.35.3/wry0.56.1; API src/engine.rs. macOS paths: src/wkwebview/.
 
-- Backend `unsafe` MUST deny `unsafe_op_in_unsafe_fn`; each block needs `// SAFETY:`. Windows FFI: folders/files/volumes/windows/ACL/WebView2/process (`OpenProcess` SYNCHRONIZE, `WaitForSingleObject`, one `RegisterWaitForSingleObject`/`UnregisterWaitEx` exit wake whose pool callback only posts via tao `EventLoopProxy`). macOS `wkwebview/{macos_profile,macos_bridge}.rs` only (KEL-142 bridge): WK store/config, CFRunLoop, boot sysctl, self-PID proc info, Keld metadata and parent ACL reads (`acl_get_fd_np`, `acl_get_entry`, `acl_get_tag_type`, `acl_free`), rejecting `ACL_EXTENDED_ALLOW` and read errors. Debug `profile-test-hooks` may read host camera/mic status and observe public sheets with owned blocks on UI thread. No module-wide allow. Core SecCode FFI: `keld-core/AGENTS.md`.
-- Engine/window mutations MUST stay on tao UI thread (later core queue); platform handles MUST NOT be touched on I/O/pool threads.
-- `WebEngine` trait changes require design review; backends MUST use its API. No new method until a live backend implements it in the same PR (root YAGNI).
-- Platform quirks MUST cite OS, version, source; revert uncited workarounds.
-- Linux MUST probe and apply GPU safe-mode before GTK/WebKit; never ask users to export env vars. `detect_gpu_safe_mode` is pure; `prepare_gpu_safe_mode_process` exact-self-reexecs before non-repeatable state with explicit argv/envp for NVIDIA proprietary + Wayland on WebKitGTK ≤2.54 (`WEBKIT_DISABLE_DMABUF_RENDERER=1`). Engine init fails closed if skipped. Emit `degraded-rendering`; `gpu_safe_mode().is_degraded()` reports applied state. Upstream: [#9394](https://github.com/tauri-apps/tauri/issues/9394), [#14924](https://github.com/tauri-apps/tauri/issues/14924).
-- Cross-engine diffs MUST go to the baseline matrix; polyfill pack + doctor smooth. Agents MUST NOT silently paper over them.
-- Tests MUST follow `.agents/testing.md`.
-- Camera/microphone capture MUST go through `keld-guard` (`web.camera`/
-  `web.microphone`) as the requesting `Principal::Webview` when the host
-  has minted that webview's id. Agents MUST NOT evaluate capture as
-  `Principal::AppProcess` — that applies `/app` media grants to every
-  webview, including remote/other windows. If that webview principal is
-  not minted yet, deny (`KELD-GUARD007`); never fall back to AppProcess. v0 `evaluate` still denies webview principals
-  (`KELD-GUARD006`) until window-level grants exist — that is fail-closed,
-  not a reason to present AppProcess. Per backend:
-  - macOS 12+ (wry interim): agents MUST NOT omit wry `with_permission_handler`;
-    wry auto-grants new media requests when absent. Older debug hosts lose
-    that delegate; oldest-OS proof is open (`src/media.rs`).
-  - Linux (wry interim): WebKitGTK 2.52.6 and wry 0.56.1 default-deny an
-    unhandled new request, but that fallback is not proof Keld evaluated the
-    right principal/manifest ([source](https://webkitgtk.org/reference/webkit2gtk/stable/class.UserMediaPermissionRequest.html)); explicit callback provenance stays mandatory.
-  - Windows (direct COM, KEL-65): agents MUST register guarded
-    `add_PermissionRequested` and deny-all `add_NewWindowRequested` before
-    minting `GuardInstalled`; first navigation MUST require that proof. WebView2
-    defaults to media prompts and unguarded popups. Agents MUST NOT bypass
-    either handler or the first-navigation proof (KEL-168).
-- Architecture 01 §5 **first paint** is the KEL-64 external double-rAF image
-  beacon on a pre-spawn monotonic clock — not wry `PageLoadEvent::Finished`,
-  not `WindowBuilder::build`, nor titled HWND / `window-visible` (KEL-62,
-  KEL-64). `PageLoadEvent::Finished` is navigation completion only; the macOS
-  `startup` trace records it as `nav_finished` for construction diagnostics.
-  Dump it with `KELD_STARTUP_TRACE=1`. `startup` is macOS-only; never
-  compile it on Linux/Windows (CodeRabbit #10).
+- Production unsafe: deny unsafe_op_in_unsafe_fn; local // SAFETY: per block. Only listed paths/operations. No module-wide allow, general ObjC escape, unlisted delegate swaps, arbitrary JS, second loop or new wire.
+- Windows: existing folders/files/volumes/windows/ACL/WebView2/process FFI, OpenProcess SYNCHRONIZE, WaitForSingleObject, one RegisterWaitForSingleObject/UnregisterWaitEx exit wake. Pool callback only posts via tao EventLoopProxy.
+- macos_profile.rs: WK store/config, CFRunLoop, boot sysctl, self-PID proc info, Keld metadata/parent ACL (acl_get_fd_np, acl_get_entry, acl_get_tag_type, acl_free); deny ACL_EXTENDED_ALLOW/read failure. configuration_for_view may set applicationNameForUserAgent only per GH476.
+- macos_bridge.rs: NSObject/MainThreadOnly KeldScriptMessageHandler/WKScriptMessageHandler callbacks; page/app WKContentWorld, controller scripts/handlers, document-start WKUserScript: fixed admitted app/facade/bootstrap scripts only. evaluateJavaScript:inFrame:inContentWorld:completionHandler: fixed KEL-142 __keldBridgeNativeResult replies: no completion; original-app evaluations: current Host document/native lease, private main frame/world, retained completion owner. Main-owned CFRunLoop::perform_block, common/default modes.
+- macos_resource_native.rs: sole WKURLSchemeHandler class/delegate; selected private scheme: setURLSchemeHandler before WK creation; matching live WKWebView, bounded WKURLSchemeTask.request/getters; didReceiveResponse/Data/Finish/Fail require ticket/document lease, no RefCell borrow across WebKit reentry; fixed NSError. No extra reader/UI-thread file open.
+- macos_navigation_owner.rs: main-owned WKNavigationDelegate proxy via setNavigationDelegate; retain Wry delegate, WKNavigation and committed URL; forward seven Wry policy/finish/download callbacks; didFail/didFailProvisional only for correlated current attempt. No fabricated success.
+- macos_termination.rs: class_addMethod ONLY for absent Tao applicationShouldTerminate: with exact ABI; keep Tao class/delegate/ivars. Main-thread weak session callback: cancelable NSWindow.performClose; unknown/retired owners cancel. No direct termination, forged Quit reply or veto bypass.
+- Debug + profile-test-hooks only: camera/mic status, public sheets/native fixture observations with owned UI blocks; callback-local NSError scalar code only; no retained NSError. No release hooks.
+- Engine/window/native mutations: Tao UI thread only; no AppKit/WebKit handles on I/O/pool threads. WebEngine trait changes need owner review + live backend in same PR; no unimplemented API.
+- Quirks: cite OS/version/source, update baseline matrix; keep polyfill/doctor; no uncited workaround.
+- Linux: detect_gpu_safe_mode is pure; prepare_gpu_safe_mode_process exact-self reexec: explicit argv/envp before threads/nonrepeatable state/GTK/WebKit. NVIDIA proprietary + Wayland + WebKitGTK <=2.54: WEBKIT_DISABLE_DMABUF_RENDERER=1; skip denies startup. No user env export. Emit structured degraded-rendering from applied gpu_safe_mode().is_degraded(). Ref tauri-apps/tauri#9394/#14924.
+- Camera/mic: Guard web.camera/web.microphone as Host-minted Principal::Webview only, never AppProcess/fallback. Before mint deny KELD-GUARD007; v0 Webview denies KELD-GUARD006. macOS 12+: wry with_permission_handler mandatory; older debug delegate unproved. Linux WebKitGTK2.52.6 default deny is not requester/manifest proof. Windows: guarded add_PermissionRequested and deny-all add_NewWindowRequested before GuardInstalled; first navigation requires that proof.
+- First paint: external double-rAF image beacon on pre-spawn monotonic clock only; never PageLoadEvent::Finished, window build/title/visibility. KELD_STARTUP_TRACE=1: macOS-only nav_finished; never build on Linux/Windows.
+- Tests: .agents/testing.md. Unsafe/native changes need independent exact-diff review + real Mac acceptance before shipping claims.

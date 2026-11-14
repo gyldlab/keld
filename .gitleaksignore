@@ -2,3 +2,8 @@
 # "unknown key" followed by descriptive text; no credential is present.
 # Keep this suppression fingerprint-specific so other findings still fail CI.
 0ef941a14a40ff7529dc2c6e7cd89dac65a9a517:docs/specs/kel53-full-package-activation.md:generic-api-key:35
+# False positive: an all-zero 32-character placeholder token in a preload
+# fixture. The literal is gone from the current tree (it is built with
+# "0".repeat(32)); this fingerprint only covers the historical commit that
+# introduced and removed it, so any real credential still fails the scan.
+69ce0730c2b23a631dc8324bafb4264f90a4e394:packages/@keld/electron/src/preload-runtime.test.ts:generic-api-key:21

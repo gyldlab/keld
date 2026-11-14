@@ -97,6 +97,7 @@ impl GuardedPrimary {
         quit_ack_reader: ChildStdout,
         control: std::os::unix::net::UnixStream,
         first_record_deadline: Instant,
+        require_runtime_process_facts: bool,
         #[cfg(test)] registration_fence: Option<
             super::generation_host::GenerationRegistrationFence,
         >,
@@ -125,7 +126,8 @@ impl GuardedPrimary {
         let recovery_for_worker = Arc::clone(&recovery_decision);
         // Bind every later KGC1 SPAWNED record to this retained OS child.
         // A valid control token alone does not authorize an arbitrary PGID.
-        let admission = GenerationHostAdmission::new(child.id(), first_record_deadline);
+        let mut admission = GenerationHostAdmission::new(child.id(), first_record_deadline);
+        admission.require_runtime_process_facts = require_runtime_process_facts;
         let worker = match thread::Builder::new()
             .name("keld-runtime-guardian-generation-host".to_owned())
             .spawn(move || {

@@ -191,6 +191,7 @@ fn assert_denial_is_the_calls_only_signal(
                 );
                 *joiner_slot.lock().expect("joiner slot") = Some(fresh);
             }
+            TestGroupSignalPoint::AfterDelivery => {}
         }),
     );
 

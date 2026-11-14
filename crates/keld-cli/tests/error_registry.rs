@@ -47,6 +47,11 @@ const SCAN_REL: &[&str] = &[
     // Public Electron facade errors must not be silently invisible just
     // because no Rust binary emits the same KELD-COMPAT identifier.
     "packages/@keld/electron/src",
+    // The compatibility updater emits KELD-COMPAT-050 (its own module comment
+    // promises registry coverage); without this entry the code shipped with no
+    // heading, and the registry test failed on the missing document entry only
+    // from the TypeScript side.
+    "packages/@keld/electron-updater/src",
     "tools",
 ];
 

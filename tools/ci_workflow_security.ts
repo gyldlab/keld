@@ -1138,6 +1138,10 @@ const reviewedWorkflowActionRefs = new Set([
   "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
   "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
   "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+  // The installed-package oracle needs Node 26 (GH-502) and the hosted runner
+  // ships Node 24. This SHA is the commit actions/setup-node v7.1.0 resolves to
+  // (verified against the tag), pinned the same way as setup-bun above.
+  "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1",
   "taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b",
   `github/codeql-action/init@${approvedCodeqlActionSha}`,
   `github/codeql-action/analyze@${approvedCodeqlActionSha}`,
@@ -1872,7 +1876,7 @@ export function checkWorkflowSecurity(source: string): void {
     fmt: "5021013ee751a651b110df9c3f45d96425b8a51ca5f6b7e13ce107c4a0042ea9",
     "windows-media":
       "385b68e1ef567912453c5a08eaa7e7d678f48444956115ade2ad110ffac2b0d8",
-    check: "8bd943e6da9daab6bb0e34469a3d7db55feac9f5e23e20b8e455a08f6ed4228c",
+    check: "1f2aa467629a8c2125e5427c6b154faac3bc275c81cc38a1dcfc5471bd1f3a32",
     "codeql-rust":
       "513d4978b886a9f8d3b5ce09fc9022a953114fa3cadec43be6c06d8ef39cce41",
     "codeql-javascript-typescript":

@@ -9,8 +9,10 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use keld_guard::{Principal, parse_manifest};
-use keld_ipc::guard_dispatch::dispatch_privileged;
+use keld_guard::{Principal, RendererChannelQuery, parse_manifest};
+use keld_ipc::guard_dispatch::{
+    dispatch_privileged, dispatch_privileged_query, preflight_privileged_query,
+};
 
 struct CountingAllocator;
 
@@ -52,13 +54,12 @@ unsafe impl GlobalAlloc for CountingAllocator {
 static GLOBAL: CountingAllocator = CountingAllocator;
 
 #[test]
-fn privileged_filesystem_allow_path_allocates_nothing() {
+fn privileged_filesystem_allow_path_allocates_nothing() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(windows)]
     let (scope, requested) = ("C:/safe/**", "C:/safe/file.txt");
     #[cfg(not(windows))]
     let (scope, requested) = ("/safe/**", "/safe/file.txt");
-    let manifest =
-        parse_manifest(&format!(r#"{{"app":{{"fs":{{"read":["{scope}"]}}}}}}"#)).expect("manifest");
+    let manifest = parse_manifest(&format!(r#"{{"app":{{"fs":{{"read":["{scope}"]}}}}}}"#))?;
 
     ALLOCATIONS.store(0, Ordering::Relaxed);
     TRACKING.store(true, Ordering::SeqCst);
@@ -77,4 +78,31 @@ fn privileged_filesystem_allow_path_allocates_nothing() {
         0,
         "filesystem validation plus Allow must remain allocation-free"
     );
+
+    let channels = parse_manifest(r#"{"windows":{"editor":{"channels":["el:rendererReq"]}}}"#)?;
+    let query = RendererChannelQuery {
+        channel: "rendererReq",
+        current_window: channels.window_channel_grants("editor"),
+    };
+    let principal = Principal::Webview {
+        id: 7,
+        generation: 3,
+    };
+    // Warm both generic instantiations independently before counting Guard only.
+    preflight_privileged_query(&channels, principal, query).expect("exact grant permits preflight");
+    dispatch_privileged_query(&channels, principal, query, |_| ())
+        .expect("exact grant permits final dispatch");
+    ALLOCATIONS.store(0, Ordering::Relaxed);
+    TRACKING.store(true, Ordering::SeqCst);
+    let preflight = preflight_privileged_query(&channels, principal, query);
+    let channel = dispatch_privileged_query(&channels, principal, query, |_| 17);
+    TRACKING.store(false, Ordering::SeqCst);
+    assert_eq!(preflight, Ok(()));
+    assert_eq!(channel, Ok(17));
+    assert_eq!(
+        ALLOCATIONS.load(Ordering::Relaxed),
+        0,
+        "warmed channel Guard preflight plus final callback dispatch must allocate nothing"
+    );
+    Ok(())
 }

@@ -198,3 +198,38 @@ describe("window-all-closed Electron default quit", () => {
     expect(stdout).toContain("KEL72_QUIT_CALLS=2");
   }, 10_000);
 });
+
+describe("GH451 D2 local before-quit preflight", () => {
+  for (const [scenario, native] of [
+    ["veto", "0"],
+    ["repeated-veto", "0"],
+    ["reentrant-veto", "0"],
+    ["throw-retry", "0"],
+    ["listener-snapshot", "0"],
+    ["coalesced-terminal-failure", "0"],
+    ["missing-link-refusal", "0"],
+    ["native-pre-ready-veto", "1"],
+    ["native-pre-ready-refusal", "1"],
+  ] as const) {
+    test(scenario, async () => {
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        KELD_NATIVE_WINDOW_FACADE: native,
+      };
+      delete env.KELD_APP_LINK;
+      delete env.BUN_OPTIONS;
+      delete env.NODE_OPTIONS;
+      child = Bun.spawn({
+        cmd: [process.execPath, "./quit_before_event_preflight.ts", scenario],
+        cwd: fixtures,
+        stdout: "pipe",
+        stderr: "pipe",
+        env,
+      });
+      const { stdout, stderr, code } = await waitChildOrKill(child, 4_000);
+      expect(code).toBe(0);
+      expect(stderr).toBe("");
+      expect(JSON.parse(stdout)).toMatchObject({ scenario, status: "PASS" });
+    });
+  }
+});
