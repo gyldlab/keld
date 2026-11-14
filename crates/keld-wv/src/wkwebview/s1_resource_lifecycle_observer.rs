@@ -25,7 +25,7 @@ pub(super) enum LifecycleEvent {
     FanoutSnapshot(String),
 }
 
-pub(super) struct ReadGate {
+pub(crate) struct ReadGate {
     pub(super) path: String,
     wake: EventLoopProxy<WkUserEvent>,
     release: mpsc::Receiver<()>,

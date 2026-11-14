@@ -30,9 +30,10 @@ fn emit(value: &Value) -> Result<(), WvError> {
     writeln!(std::io::stdout().lock(), "{value}").map_err(|error| failure(error.to_string()))
 }
 
-pub(super) use super::s1_resource_lifecycle_observer::{
-    CallbackCensus, HeldRead, LifecycleEvent, ReadGate,
-};
+pub(super) use super::s1_resource_lifecycle_observer::{CallbackCensus, HeldRead, LifecycleEvent};
+// The shared crate-owned resource source stores this debug gate's typed handle;
+// it does not construct it or use it as a grant.
+pub(crate) use super::s1_resource_lifecycle_observer::ReadGate;
 
 #[derive(Default)]
 struct BaselineObservation {
