@@ -309,6 +309,7 @@ fn validate_releases(releases: Vec<WireRelease>) -> Result<Vec<ValidRelease>, Up
     let mut validated = Vec::with_capacity(releases.len());
     for release in releases {
         let version = parse_version("release.version", &release.version)?;
+        validate_feed_relative_path("release.full.url", &release.full.url)?;
         let full = ValidFull {
             url: release.full.url,
             size: parse_size("release.full.size", &release.full.size)?,
@@ -359,7 +360,27 @@ fn validate_deltas(deltas: &[WireDelta]) -> Result<(), UpdateError> {
         }
         parse_size("release.deltas[].size", &delta.size)?;
         parse_digest("release.deltas[].blake3", &delta.blake3)?;
-        let _ = &delta.url;
+        validate_feed_relative_path("release.deltas[].url", &delta.url)?;
+    }
+    Ok(())
+}
+
+/// Keep the signed artifact locator a literal feed-relative path. No URL
+/// parsing, percent-decoding, host switching, or filesystem normalization is
+/// permitted at manifest admission; every release is checked before selection.
+fn validate_feed_relative_path(field: &str, path: &str) -> Result<(), UpdateError> {
+    let plain = !path.is_empty()
+        && path.len() <= 2048
+        && path.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.' | b'+')
+        })
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != ".." && !part.ends_with('.'));
+    if !plain {
+        return Err(invalid(format!(
+            "{field} must be a plain, nonempty feed-relative path"
+        )));
     }
     Ok(())
 }

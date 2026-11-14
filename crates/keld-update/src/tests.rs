@@ -478,6 +478,73 @@ fn manifest_selects_highest_precedence_and_ignores_present_delta() {
 }
 
 #[test]
+fn signed_artifact_urls_remain_plain_feed_relative_paths_in_every_release() {
+    let release = release_json("2.0.0", "1", ZERO_DIGEST, "1", ZERO_DIGEST, "");
+    let valid = manifest_json(&release);
+    assert!(verify_manifest(&valid, "1.0.0").is_ok());
+
+    let mut with_delta: serde_json::Value =
+        serde_json::from_slice(&valid).expect("valid release fixture");
+    with_delta["releases"][0]["deltas"] = serde_json::json!([{
+        "fromVersion": "1.0.0",
+        "url": "2.0.0/from-1.0.0.delta.zst",
+        "size": 1,
+        "blake3": ZERO_DIGEST,
+    }]);
+    assert!(
+        verify_manifest(
+            &serde_json::to_vec(&with_delta).expect("delta fixture"),
+            "1.0.0"
+        )
+        .is_ok()
+    );
+
+    // All URLs are interpreted by a later feed downloader. The signed
+    // manifest may identify files within that feed, never another origin,
+    // an ancestor, or a client-dependent encoded spelling of the path.
+    for invalid in [
+        "",
+        ".",
+        "..",
+        "../outside",
+        "2.0.0/../outside",
+        "/root/full.zst",
+        "//other.host/full.zst",
+        "https://other.host/full.zst",
+        "C:/root",
+        r"2.0.0ull.zst",
+        "2.0.0//full.zst",
+        "2.0.0/full.zst/",
+        "2.0.0/%2e%2e/full.zst",
+        "2.0.0/full.zst?query=1",
+        "2.0.0/full.zst#fragment",
+        "2.0.0/?.zst",
+    ] {
+        let mut full: serde_json::Value = serde_json::from_slice(&valid).expect("fixture");
+        full["releases"][0]["full"]["url"] = invalid.into();
+        let signed = serde_json::to_vec(&full).expect("exact signed input");
+        assert!(
+            matches!(
+                verify_manifest(&signed, "1.0.0"),
+                Err(UpdateError::ManifestInvalid { .. })
+            ),
+            "full URL must refuse: {invalid:?}"
+        );
+
+        let mut delta = with_delta.clone();
+        delta["releases"][0]["deltas"][0]["url"] = invalid.into();
+        let signed = serde_json::to_vec(&delta).expect("exact signed input");
+        assert!(
+            matches!(
+                verify_manifest(&signed, "1.0.0"),
+                Err(UpdateError::ManifestInvalid { .. })
+            ),
+            "delta URL must refuse: {invalid:?}"
+        );
+    }
+}
+
+#[test]
 fn empty_eligible_set_is_successful_no_update() {
     let releases = [
         release_json("1.0.0", "1", ZERO_DIGEST, "1", ZERO_DIGEST, ""),
