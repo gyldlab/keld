@@ -521,3 +521,28 @@ fn failed_host_navigation_preserves_valid_numeric_identity() {
         "valid negative native terminal must remain observable, not be promoted to success"
     );
 }
+
+#[test]
+fn failed_host_terminal_cannot_precede_its_start_with_resequenced_events() {
+    let mut receipt = sample();
+    let events = receipt["events"].as_array_mut().expect("fixture events");
+    let start = events
+        .iter()
+        .position(|row| row["phase"] == "host-header" && row["kind"] == "navigation-starting")
+        .expect("host start");
+    let completed = events
+        .iter()
+        .position(|row| row["phase"] == "host-header" && row["kind"] == "navigation-completed")
+        .expect("host completion");
+    events[completed]["data"]["success"] = json!(false);
+    events.swap(start, completed);
+    // Preserve the global sequence invariant: the only injected fault is a
+    // failed Host terminal arriving before its matching native start.
+    for (index, row) in events.iter_mut().enumerate() {
+        row["seq"] = json!(index + 1);
+    }
+    assert!(
+        assess(&receipt).is_err(),
+        "failed Host terminal before its native start was accepted"
+    );
+}
