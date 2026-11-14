@@ -946,6 +946,9 @@ mod tests {
         for (path, expected) in [
             ("index.html", "text/html; charset=utf-8"),
             ("js/app.min.js", "text/javascript; charset=utf-8"),
+            ("js/app.mjs", "text/javascript; charset=utf-8"),
+            ("js/app.MJS", "text/javascript; charset=utf-8"),
+            ("js/app.unknown", "application/octet-stream"),
             ("styles/grapheditor.css", "text/css; charset=utf-8"),
             ("resources/dia.txt", "text/plain; charset=utf-8"),
             ("stencils/aws4.xml", "application/xml"),
