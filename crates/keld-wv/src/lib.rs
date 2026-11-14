@@ -131,13 +131,15 @@ pub mod wkwebview;
 #[doc(hidden)]
 pub mod wv_link;
 
+#[cfg(windows)]
+pub use engine::AppDesktopCapture;
 #[cfg(any(target_os = "macos", windows))]
 pub use engine::DialogUiOutcome;
 #[cfg(target_os = "macos")]
 pub use engine::MacOriginalNavigationFact;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use engine::OriginalEntryQuery;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub use engine::{AppDesktopDisplay, AppDesktopFacts, AppDesktopRect};
 pub use engine::{
     AppWindowCommand, AppWindowEvent, ApplicationNameForUserAgent, BuildStage, DevtoolsAction,
@@ -160,8 +162,8 @@ pub use webview2::TEST_WINDOWS_BARRIER_GRACE_EXPIRY_ENV;
     target_os = "windows"
 ))]
 pub use webview2::{
-    TEST_STALL_BEFORE_INIT_ENV, TEST_WINDOWS_FAIL_BUILD_ENV, TEST_WINDOWS_NATIVE_HOLD_ENV,
-    TEST_WINDOWS_PAGE_READBACK_ENV, TEST_WINDOWS_T2_OBSERVE_ENV,
+    TEST_STALL_BEFORE_INIT_ENV, TEST_WINDOWS_FAIL_BUILD_ENV, TEST_WINDOWS_FRAME_INGRESS_ENV,
+    TEST_WINDOWS_NATIVE_HOLD_ENV, TEST_WINDOWS_PAGE_READBACK_ENV, TEST_WINDOWS_T2_OBSERVE_ENV,
     TEST_WINDOWS_WITHHOLD_LATER_GENERATION_RECEIPT_ENV,
 };
 

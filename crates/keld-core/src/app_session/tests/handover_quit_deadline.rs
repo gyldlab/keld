@@ -190,10 +190,10 @@ fn start_handover(
     window_rx: &Receiver<AppWindowCommand>,
 ) -> (JoinHandle<Result<(), HostAppError>>, Instant) {
     assert!(handle.request_handover().expect("handover request"));
-    assert_eq!(
+    assert!(matches!(
         window_rx.recv_timeout(Duration::from_secs(2)),
         Ok(AppWindowCommand::Quit)
-    );
+    ));
     let main = handle.clone();
     let before_write = Instant::now();
     let waiter = thread::spawn(move || complete_profile_handover(&main, &main.shutdown, TEST_D));

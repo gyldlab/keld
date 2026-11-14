@@ -1,0 +1,211 @@
+"use strict";
+// This is the first author script. The unchanged selected original preload must
+// already have run at document start. Later ready events cannot repair first.
+(() => {
+  const names = ["request", "registerMsgListener", "sendMessage", "listenOnce"];
+  let configuration = null,
+    configurationError = null;
+  try {
+    const text = localStorage.getItem(".configuration");
+    configuration = text === null ? null : JSON.parse(text);
+  } catch (error) {
+    configurationError = String(error);
+  }
+  const first = Object.freeze({
+    readyState: document.readyState,
+    firstAuthorScript: document.currentScript === document.scripts[0],
+    authorScriptCount: document.scripts.length,
+    top: window === window.top,
+    href: location.href,
+    processType:
+      typeof window.process === "object" ? window.process.type : null,
+    versions:
+      typeof window.process === "object" && window.process.versions
+        ? { ...window.process.versions }
+        : null,
+    methods: Object.fromEntries(
+      names.map((name) => [name, typeof window.electron?.[name]]),
+    ),
+    adaptiveColors: configuration?.defaultAdaptiveColors ?? null,
+    configurationError,
+  });
+  const mode = new URL(location.href).searchParams.get("mode");
+  const state = {
+    first,
+    mode,
+    registered: false,
+    routeMarker: null,
+    ready: false,
+    issued: false,
+    rawChallenge: null,
+    expectedCall: mode === "raw" ? 2 : 1,
+    rawRecords: [],
+    terminal: null,
+    error: null,
+  };
+  const publish = () => {
+    const text = JSON.stringify(state);
+    if (text.length > 32768) throw new Error("bounded probe snapshot exceeded");
+    document.documentElement.setAttribute("data-keld-original-probe", text);
+  };
+  const fail = (error) => {
+    state.error = String(error).slice(0, 1024);
+    publish();
+  };
+  publish();
+  window.addEventListener("error", (event) => fail(event.message));
+  window.addEventListener("unhandledrejection", (event) => fail(event.reason));
+
+  const native = window.chrome?.webview;
+  if (
+    !native ||
+    typeof native.addEventListener !== "function" ||
+    typeof native.postMessage !== "function"
+  ) {
+    fail("actual Windows native port is missing");
+    return;
+  }
+  // Exact endpoint-value bytes for the one fixed ASCII argument in the
+  // public args-obj marker. This is an observation, never a caller credential.
+  const routeMarkerPayload = [
+    6, 1, 0, 5, 28, 0, 107, 101, 108, 100, 45, 111, 114, 105, 103, 105, 110, 97,
+    108, 45, 114, 111, 117, 116, 101, 45, 114, 101, 97, 100, 121, 45, 118, 49,
+  ];
+  let rawQueued = false;
+  native.addEventListener("message", (event) => {
+    try {
+      // Observe actual port bytes independently of the installed runtime's
+      // decoder. This listener cannot grant source, document or IPC authority.
+      if (typeof event.data !== "string" || event.data.length > 2048)
+        throw new Error("unexpected native observation shape/bound");
+      if (state.rawRecords.length === 12)
+        throw new Error("native observation capacity exhausted");
+      state.rawRecords.push({
+        sourceIsNativePort: event.source === native,
+        text: event.data,
+      });
+      const value = JSON.parse(event.data);
+      if (
+        value.v === 2 &&
+        value.kind === "event" &&
+        value.channel === "args-obj"
+      ) {
+        if (
+          state.routeMarker !== null ||
+          event.source !== native ||
+          typeof value.document !== "string" ||
+          !/^[0-9a-f]{32}$/.test(value.document) ||
+          !Number.isInteger(value.delivery) ||
+          value.delivery < 1 ||
+          value.delivery > 0xffff_ffff ||
+          !Array.isArray(value.payload) ||
+          value.payload.length !== routeMarkerPayload.length ||
+          !value.payload.every(
+            (byte, index) => byte === routeMarkerPayload[index],
+          )
+        )
+          throw new Error(
+            "actual native route marker is duplicate or malformed",
+          );
+        state.routeMarker = value.document;
+        // The installed runtime receives this event first and posts its normal
+        // consumed/no-listener receipt before this handler's microtask runs.
+        queueMicrotask(begin);
+      }
+      if (
+        mode === "raw" &&
+        value.v === 2 &&
+        value.kind === "app-call" &&
+        value.call === 1 &&
+        value.method === "registerMsgListener"
+      ) {
+        if (rawQueued || !/^[0-9a-f]{32}$/.test(value.document))
+          throw new Error("raw challenge is duplicate or malformed");
+        rawQueued = true;
+        state.rawChallenge = value.document;
+        // The installed handler was registered at document start and runs
+        // first. Its original registerMsgListener Function returns normally
+        // before this microtask posts call 2 on the SAME actual native port.
+        queueMicrotask(() => {
+          try {
+            const text = JSON.stringify({
+              v: 1,
+              kind: "call",
+              document: state.rawChallenge,
+              call: 2,
+              method: "sendMessage",
+              args: [
+                "app-load-finished",
+                {
+                  k: "object",
+                  entries: [
+                    ["probe", "keld-original-x4"],
+                    ["path", "raw"],
+                  ],
+                },
+              ],
+            });
+            state.issued = true;
+            native.postMessage(text);
+            publish();
+          } catch (error) {
+            fail(error);
+          }
+        });
+      }
+      if (
+        state.issued &&
+        value.v === 2 &&
+        ((value.kind === "app-refused" && value.call === state.expectedCall) ||
+          (value.kind === "send-result" && value.message === 1))
+      ) {
+        if (state.terminal !== null)
+          throw new Error("duplicate native terminal");
+        if (value.document !== state.routeMarker)
+          throw new Error("terminal changed the native marker document");
+        if (mode === "raw" && value.document !== state.rawChallenge)
+          throw new Error("raw terminal changed the observed document");
+        state.terminal = value;
+      }
+      publish();
+    } catch (error) {
+      fail(error);
+    }
+  });
+  let started = false;
+  const begin = () => {
+    if (started || !state.registered || state.routeMarker === null) return;
+    started = true;
+    state.ready = true;
+    try {
+      if (mode === "facade") {
+        state.issued = true;
+        // This executes the exact selected original Function; its ipcRenderer
+        // send uses the unchanged canonical endpoint-value codec.
+        window.electron.sendMessage("app-load-finished", {
+          probe: "keld-original-x4",
+          path: "facade",
+        });
+      } else if (mode === "raw") {
+        // A harmless original local registration supplies an actual Host
+        // app-call observation even if the earlier bound event predated HTML.
+        window.electron.registerMsgListener("mainResp", () => {});
+      } else {
+        throw new Error("fixed fixture mode is missing");
+      }
+      publish();
+    } catch (error) {
+      fail(error);
+    }
+  };
+  document.addEventListener(
+    "__keld_app_ready_data_v1",
+    () => {
+      state.registered = true;
+      publish();
+      queueMicrotask(begin);
+    },
+    { once: true },
+  );
+  document.dispatchEvent(new CustomEvent("__keld_page_ready_query_v1"));
+})();

@@ -123,16 +123,54 @@ impl Fixture {
 #[test]
 fn absent_production_qualification_refuses_before_stage() {
     let f = Fixture::new();
-    let error = stage_for_project(&f.project, &f.host).expect_err("no shipping qualification");
+    let error = stage_with_qualification(&f.project, &f.host, None)
+        .expect_err("explicit absent qualification");
     assert!(
         error
             .to_string()
             .contains("no independently qualified Windows Host/provider tuple"),
         "{error}"
     );
+    #[cfg(all(target_arch = "x86_64", target_env = "msvc"))]
+    {
+        let production = qualified_framework().expect("reviewed production Host/provider tuple");
+        let core = keld_core::app_session::qualified_windows_distribution()
+            .expect("reviewed production provider tuple");
+        assert_eq!(production.target, core.target());
+        assert_eq!(production.provider_trees, *core.provider_trees());
+        assert_eq!(Some(production.host_sha256), QUALIFIED_WINDOWS_HOST_IMAGE);
+        let error = capture_host(&f.host, &production)
+            .expect_err("inert fixture Host is foreign to the actual production tuple");
+        assert!(
+            error
+                .to_string()
+                .contains("adjacent Host bytes differ from the independent qualification"),
+            "{error}"
+        );
+        let error = stage_for_project(&f.project, &f.host)
+            .expect_err("inert provider tuple is foreign to the actual production tuple");
+        assert!(
+            error.to_string().contains(
+                "target/provider expectations differ from the compiled qualification tuple"
+            ),
+            "{error}"
+        );
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_env = "msvc")))]
+    {
+        assert!(qualified_framework().is_none());
+        let error =
+            stage_for_project(&f.project, &f.host).expect_err("unqualified target must refuse");
+        assert!(
+            error
+                .to_string()
+                .contains("no independently qualified Windows Host/provider tuple"),
+            "{error}"
+        );
+    }
     assert!(
         !f.project.join(".keld").exists(),
-        "refusal must precede stage creation"
+        "every refusal must precede stage creation"
     );
 }
 #[test]
@@ -169,6 +207,25 @@ fn qualified_fixture_copies_non_default_source_and_emits_closed_boot8() {
     }
     let graph =
         fs::read(stage.root().join(keld_core::app_session::GRAPH_FILE)).expect("published graph");
+    let runtime = keld_core::app_session::ORIGINAL_RUNTIME_ENTRY_PATH;
+    let expected = keld_core::app_session::original_entry_bootstrap_source("main/app.mjs")
+        .expect("the one canonical renderer");
+    assert_eq!(
+        fs::read(stage.root().join(runtime)).expect("generated member"),
+        expected
+    );
+    let document: serde_json::Value = serde_json::from_slice(&graph).expect("same graph");
+    let row = document["files"]
+        .as_array()
+        .expect("canonical members")
+        .iter()
+        .find(|row| row["path"] == runtime)
+        .expect("generated before the only capture");
+    assert_eq!(row["size"], expected.len());
+    assert_eq!(
+        row["sha256"],
+        format!("sha256:{:x}", Sha256::digest(&expected))
+    );
     let root = open_windows_launch_guard(stage.root()).expect("retained stage");
     let selected = SelectedRendererSource::new(
         "client/assets",
@@ -245,11 +302,8 @@ fn closed_preparation_profile_and_unavailable_metadata_fail_before_stage() {
     for (name, bytes) in [
         (
             "keld.config.ts",
-            APP.replace(
-                "initialWindow:'none',",
-                "initialWindow:'none',version:'1.2.3',",
-            )
-            .into_bytes(),
+            APP.replace("initialWindow:'none',", "initialWindow:'none',version:'',")
+                .into_bytes(),
         ),
         (
             "keld.config.ts",
@@ -421,3 +475,28 @@ fn ordinary_one_to_four_descriptors_remain_byte_exact() {
         drop(stage);
     }
 }
+
+#[test]
+fn generated_entry_collision_refuses_instead_of_overwriting_app_source() {
+    let f = Fixture::new();
+    write(
+        &f.project,
+        keld_core::app_session::ORIGINAL_RUNTIME_ENTRY_PATH,
+        b"app-owned collision",
+    );
+    let error = f
+        .stage()
+        .expect_err("canonical entry cannot replace an app member");
+    assert!(error.to_string().contains("graph runtime entry"), "{error}");
+    assert_eq!(
+        fs::read(
+            f.project
+                .join(keld_core::app_session::ORIGINAL_RUNTIME_ENTRY_PATH)
+        )
+        .expect("original project retained"),
+        b"app-owned collision",
+    );
+}
+
+#[path = "version_tests.rs"]
+mod version_tests;

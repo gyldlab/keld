@@ -25,6 +25,10 @@ const report = (kind: string, value: unknown = {}) =>
       ) +
       "\n",
   );
+// Keep the fixture's existing raw-call reporters alive through ordinary Quit.
+// Link closure may settle them after Quit itself; their results are not native
+// release receipts. No new request is started while this terminal join runs.
+const rawReports: Promise<unknown>[] = [];
 const code = (error: unknown) =>
   /KELD-[A-Z]+-\d+/.exec(String(error))?.[0] ?? "untyped:" + String(error);
 const creationEvents: string[] = [];
@@ -163,6 +167,8 @@ const factCounts = new Map<
   { focusTrue: number; focusFalse: number; maximized: number; bounds: number }
 >();
 onWindowFactApplied((fact) => {
+  // The canonical global desktop fact has no per-window identity or counters.
+  if (fact.variant === "DesktopSnapshot") return;
   const count = factCounts.get(fact.window.id) ?? {
     focusTrue: 0,
     focusFalse: 0,
@@ -484,18 +490,22 @@ try {
         y: 91,
       });
       report("RAW_SENT", { token });
-      void pending.then(
-        (reply) => report("RAW_CREATED", { token, reply }),
-        (error) => report("RAW_ERROR", { token, code: code(error) }),
+      rawReports.push(
+        pending.then(
+          (reply) => report("RAW_CREATED", { token, reply }),
+          (error) => report("RAW_ERROR", { token, code: code(error) }),
+        ),
       );
     } else if (verb === "RAW_DESTROY") {
       const value = item(first);
       const pending = invokeWindow({ variant: "Destroy", window: value.ref });
       report("RAW_DESTROY_SENT", { id: value.ref.id });
-      void pending.then(
-        (reply) =>
-          report("DESTROY_REPLY", { id: value.ref.id, reply: reply.variant }),
-        (error) => report("RAW_ERROR", { token: first, code: code(error) }),
+      rawReports.push(
+        pending.then(
+          (reply) =>
+            report("DESTROY_REPLY", { id: value.ref.id, reply: reply.variant }),
+          (error) => report("RAW_ERROR", { token: first, code: code(error) }),
+        ),
       );
     } else if (verb === "CRASH") {
       await new Promise<void>((resolve, reject) =>
@@ -508,11 +518,13 @@ try {
     } else if (verb === "QUIT") {
       await app.quit();
       report("QUIT_ACCEPTED");
+      await Promise.all(rawReports);
       control.end();
       break;
     } else if (verb === "QUIT_RAW") {
       await hostApp.quit();
       report("QUIT_ACCEPTED");
+      await Promise.all(rawReports);
       control.end();
       break;
     } else {

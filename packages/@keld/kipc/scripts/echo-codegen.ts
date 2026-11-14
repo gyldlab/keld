@@ -415,8 +415,36 @@ function parseNativeEnum(
   lines: readonly string[],
   name: NativeEnumName,
 ): NativeVariant[] {
+  const canonicalName =
+    name === "WindowEvent"
+      ? "WindowEventValue"
+      : name === "CompatControlEvent"
+        ? "CompatControlEventValue"
+        : name;
+  const ownedAlias =
+    name === "WindowEvent"
+      ? "pub type WindowEvent = WindowEventValue<String>;"
+      : name === "CompatControlEvent"
+        ? "pub type CompatControlEvent = CompatControlEventValue<String, Vec<u8>>;"
+        : undefined;
+  if (ownedAlias !== undefined) {
+    const aliasDeclaration = new RegExp(
+      "^\\s*(?:pub(?:\\([^)]*\\))?\\s+)?(?:enum|type)\\s+" + name + "\\b",
+    );
+    const aliases = lines.flatMap((line, index) =>
+      aliasDeclaration.test(line) ? [index] : [],
+    );
+    if (aliases.length !== 1 || lines[aliases[0]] !== ownedAlias)
+      fail("native " + name + " requires its exact canonical owned alias");
+    for (let index = aliases[0] - 1; index >= 0; index -= 1) {
+      const line = lines[index];
+      if (line.length === 0 || /^\/\/\/(?: |$)/.test(line)) continue;
+      if (line === "}") break;
+      fail("native " + name + " alias has an unsupported declaration prefix");
+    }
+  }
   const declaration = new RegExp(
-    "^\\s*(?:pub(?:\\([^)]*\\))?\\s+)?enum\\s+" + name + "\\b",
+    "^\\s*(?:pub(?:\\([^)]*\\))?\\s+)?enum\\s+" + canonicalName + "\\b",
   );
   const starts = lines.flatMap((line, index) =>
     declaration.test(line) ? [index] : [],
@@ -424,7 +452,13 @@ function parseNativeEnum(
   if (starts.length !== 1)
     fail("native " + name + " requires exactly one public enum declaration");
   const start = starts[0];
-  if (lines[start] !== "pub enum " + name + " {")
+  const expectedDeclaration =
+    name === "WindowEvent"
+      ? "pub enum WindowEventValue<T> {"
+      : name === "CompatControlEvent"
+        ? "pub enum CompatControlEventValue<S, P> {"
+        : "pub enum " + name + " {";
+  if (lines[start] !== expectedDeclaration)
     fail("native " + name + " must use the rustfmt-normalized named enum form");
   let derives = 0;
   for (let index = start - 1; index >= 0; index -= 1) {
@@ -551,7 +585,7 @@ function parseNativeEnum(
         )
           continue;
         const field =
-          /^        ([A-Za-z_][A-Za-z0-9_]*): (String|Vec<u8>|Vec<String>|Option<String>|Option<Vec<String>>|u64|u32|CallError|ConsumerDisposition|TerminalDisposition|DispatchCertainty|WindowRef|WindowState|Rect|bool|Option<i32>|CloseVerdict|Option<u64>|Option<DesktopFacts>|u16|RuntimeProcessFacts|SubscribeRefusal),$/.exec(
+          /^        ([A-Za-z_][A-Za-z0-9_]*): (String|T|S|P|Vec<u8>|Vec<String>|Option<String>|Option<Vec<String>>|u64|u32|CallError|ConsumerDisposition|TerminalDisposition|DispatchCertainty|WindowRef|WindowState|Rect|bool|Option<i32>|CloseVerdict|Option<u64>|Option<DesktopFacts>|u16|RuntimeProcessFacts|SubscribeRefusal),$/.exec(
             fieldLine,
           );
         if (!field)
@@ -572,7 +606,44 @@ function parseNativeEnum(
               " has duplicate field " +
               field[1],
           );
-        fields.push({ name: field[1], rustType: field[2] as NativeFieldType });
+        const borrowedUrl =
+          name === "WindowEvent" &&
+          (variantName === "NavigationCommitted" ||
+            variantName === "DocumentRecovered") &&
+          field[1] === "native_url";
+        const borrowedText =
+          name === "CompatControlEvent" &&
+          variantName === "RendererMessage" &&
+          ["url", "origin", "topic"].includes(field[1]);
+        const borrowedBytes =
+          name === "CompatControlEvent" &&
+          variantName === "RendererMessage" &&
+          field[1] === "payload";
+        const parameter = borrowedUrl
+          ? "T"
+          : borrowedText
+            ? "S"
+            : borrowedBytes
+              ? "P"
+              : undefined;
+        if (
+          parameter === undefined
+            ? ["T", "S", "P"].includes(field[2])
+            : field[2] !== parameter
+        )
+          fail(
+            "native " +
+              name +
+              " borrowing differs from its canonical owned alias",
+          );
+        fields.push({
+          name: field[1],
+          rustType: (borrowedBytes
+            ? "Vec<u8>"
+            : borrowedUrl || borrowedText
+              ? "String"
+              : field[2]) as NativeFieldType,
+        });
       }
       if (!closed || fields.length === 0)
         fail(

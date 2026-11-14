@@ -8,7 +8,6 @@ use crate::WvError;
 use crate::engine::WebEngine as _;
 use crate::profile::{ProfileIdentity, WebProfileSelection};
 use crate::webview2 as backend;
-use crate::webview2::startup_retirement::NativeViewBuild;
 use std::cell::{Cell, RefCell};
 use std::time::Instant;
 
@@ -19,6 +18,10 @@ enum Outcome {
     QueuedFault,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "This one native preparation fixture retains its exact engine/profile through observation, cleanup and the final semantic verdict."
+)]
 fn verify_persistent(outcome: Outcome) -> Result<Result<(), WvError>, WvError> {
     let root = profile_fixture_root("unstarted-persistent");
     std::fs::create_dir_all(&root).map_err(failure)?;
@@ -30,7 +33,7 @@ fn verify_persistent(outcome: Outcome) -> Result<Result<(), WvError>, WvError> {
     let mut engine = profile_fixture_engine(&root, selection)?;
     let initial = raw_phase(&plan)?;
     let zero = engine.views.is_empty()
-        && engine.view_build_attempt == NativeViewBuild::NotAttempted
+        && !engine.view_build_attempt.was_attempted()
         && !engine.browser_binding.load().is_bound();
     if outcome == Outcome::QueuedFault {
         let receipt = backend::browser_instance::browser_exit_receipt(
@@ -61,6 +64,35 @@ fn verify_persistent(outcome: Outcome) -> Result<Result<(), WvError>, WvError> {
         }
     });
     let sealed = engine.event_loop.is_none();
+    let retained = engine
+        .retained_run
+        .as_ref()
+        .is_some_and(|run| run.release.is_some());
+    let should_retain = outcome != Outcome::Healthy;
+    if retained != should_retain || (should_retain && engine.profile.is_none()) {
+        return Err(failure(
+            "unstarted failure lost actual loop, release or profile custody",
+        ));
+    }
+    if should_retain {
+        let original = engine
+            .retained_run
+            .as_ref()
+            .and_then(|run| run.release.as_ref())
+            .map(std::rc::Rc::as_ptr);
+        let attempted_restart = engine.retire_unstarted_app(|_| Ok::<(), WvError>(()));
+        let preserved = engine
+            .retained_run
+            .as_ref()
+            .and_then(|run| run.release.as_ref())
+            .map(std::rc::Rc::as_ptr);
+        if attempted_restart.is_ok() || preserved != original {
+            return Err(failure(
+                "failed unstarted retirement retried or replaced its original owner",
+            ));
+        }
+    }
+    println!("KELD_T3_PREPARED_CUSTODY outcome={outcome:?} retained={retained} sealed={sealed}");
     let final_phase = raw_phase(&plan)?;
     let witness_phase = at_witness.into_inner();
     println!(
@@ -181,7 +213,7 @@ fn windows_attempted_build_refusal_preserves_engine_for_ordinary_retirement() ->
         let mut engine = profile_fixture_engine(&root, selection)?;
         // This is a direct custody-fact refusal control, not an actual SDK failure.
         // All native resources are the real zero-controller fixture's resources.
-        engine.view_build_attempt = NativeViewBuild::Attempted;
+        engine.view_build_attempt.mark_attempted();
         let called = Cell::new(false);
         let refused = engine.retire_unstarted_app(|_| {
             called.set(true);
@@ -249,7 +281,7 @@ fn windows_retired_preparation_refuses_create_before_state_changes() -> Result<(
         let direct_result = engine.create(&super::blank_spec());
         let app = engine.create_app(&super::blank_spec(), std::sync::mpsc::channel().0);
         let after = raw_phase(&plan)?;
-        let unchanged = engine.view_build_attempt == NativeViewBuild::NotAttempted
+        let unchanged = !engine.view_build_attempt.was_attempted()
             && engine
                 .navigation_ready
                 .load(std::sync::atomic::Ordering::Acquire)

@@ -51,4 +51,4 @@ impl RetainedNavigationWitness {
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 mod recovery_fixture;
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-pub use recovery_fixture::MacNativeDocumentFixture;
+pub use recovery_fixture::NativeDocumentFixture as MacNativeDocumentFixture;

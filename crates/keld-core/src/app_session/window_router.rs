@@ -5,18 +5,36 @@
 //! because retirement re-enters it to fence the old owner. No native handle,
 //! frame parser, output queue, principal or subscription policy is minted here.
 
+mod native_outcome;
+#[cfg(windows)]
+mod native_scope;
+#[cfg(windows)]
+mod publication;
+mod request;
+#[cfg(windows)]
+pub(in crate::app_session) use publication::{
+    NativePublicationDisposition, PublicationError, PublicationResult,
+};
+#[cfg(windows)]
+mod publication_turn;
+#[cfg(windows)]
+pub(in crate::app_session) use publication_turn::WindowPublicationTurn;
+
+#[cfg(any(not(windows), test))]
 use std::io::Write as _;
 
+#[cfg(any(not(windows), test))]
+use super::{encode, write_frame};
+use keld_ipc::SubscribeRefusal;
 use keld_ipc::channel_table::{Authority, ReceiveClass};
-use keld_ipc::window::{
-    DESKTOP_EVENT_STORAGE_BYTES, Rect, WindowEvent, WindowRequest, WindowResponse, WindowState,
-};
 #[cfg(target_os = "macos")]
 use keld_ipc::window::{DesktopFact, DesktopFacts};
-use keld_ipc::{ChannelId, SubscribeRefusal};
+use keld_ipc::window::{Rect, WindowEvent, WindowRequest, WindowResponse, WindowState};
+#[cfg(any(not(windows), test))]
+use keld_ipc::{ChannelId, window::DESKTOP_EVENT_STORAGE_BYTES};
 use keld_wv::{BuildStage, WindowSnapshot};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use super::window_registry::OriginalLoadAdmission;
 use super::window_registry::{
     AbandonedClose, BuildFailureOutcome, BuildOutcome, CloseOutcome, CreateOutcome, FactOutcome,
@@ -27,7 +45,7 @@ use super::{
     ActivePrimaryGeneration, AppWindowCommand, AppWindowEvent, CallError, CorrelationId, FrameKind,
     HostAppError, IpcError, LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleResponse, Ordering,
     PrimaryCallerContext, PrimaryRouterHandle, app_detail, app_ipc, append_app_cleanup,
-    collapse_app_results, decode, encode, with_primary_caller_locked, write_frame,
+    collapse_app_results, decode, with_primary_caller_locked,
 };
 
 // Current maximum payloads: WindowEvent Created = 50 bytes, WindowResponse
@@ -35,14 +53,14 @@ use super::{
 // codec vectors and maximum Created socket test qualify the current schema.
 const WINDOW_PAYLOAD_STORAGE_BYTES: usize = 64;
 /// GH481's event-specific body cap; the existing control frame limit is unchanged.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const MAX_DESKTOP_EVENT_BYTES: usize = 32 * 1024;
 
 /// Core alone increments native observation epochs. Epoch zero has no authority.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct DesktopEpoch(pub(super) u64);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl DesktopEpoch {
     pub(super) fn advance(&mut self) -> Result<u64, HostAppError> {
         let next = self.0.checked_add(1).ok_or_else(|| {
@@ -56,7 +74,7 @@ impl DesktopEpoch {
     }
 }
 /// Check the complete encoded postcard event body, not its outer KIPC header.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub(super) fn admit_desktop_payload_bytes(bytes: usize) -> Result<(), HostAppError> {
     if bytes > MAX_DESKTOP_EVENT_BYTES {
         return Err(app_detail(
@@ -67,7 +85,7 @@ pub(super) fn admit_desktop_payload_bytes(bytes: usize) -> Result<(), HostAppErr
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn desktop_rect(native: keld_wv::AppDesktopRect) -> Rect {
     Rect {
         x: native.x,
@@ -127,13 +145,15 @@ struct PendingDesktopSubscribe {
 
 #[derive(Default)]
 struct WindowBuildResources {
-    #[cfg(target_os = "macos")]
-    preload_image: Option<std::sync::Arc<keld_wv::wkwebview::AppPreloadImage>>,
-    #[cfg(target_os = "macos")]
-    original_source: Option<std::sync::Arc<keld_wv::wkwebview::AdmittedWebAppSource>>,
+    #[cfg(any(target_os = "macos", windows))]
+    preload_image: Option<std::sync::Arc<keld_wv::preload_image::AppPreloadImage>>,
+    #[cfg(any(target_os = "macos", windows))]
+    original_source: Option<std::sync::Arc<keld_wv::resource_source::AdmittedWebAppSource>>,
+    #[cfg(windows)]
+    original_role: Option<keld_wv::renderer_bridge::RendererRoleWitness>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn original_refusal_detail(error: keld_wv::NativeNavigationRefusal) -> &'static str {
     match error {
         keld_wv::NativeNavigationRefusal::UnknownView => "native view is unavailable",
@@ -149,25 +169,41 @@ fn original_refusal_detail(error: keld_wv::NativeNavigationRefusal) -> &'static 
 
 /// One optional facade service for the whole app session. None in the parent is
 /// the permanent renderer mode; current production boot constructors pass None.
+#[cfg_attr(
+    windows,
+    expect(
+        clippy::struct_excessive_bools,
+        reason = "Native support, desktop selection, sample observation, and initial publication closure are independent facts in this existing retained owner."
+    )
+)]
 pub(super) struct WindowSession {
     registry: WindowRegistry,
     native_supported: bool,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     original_selection: Option<std::sync::Arc<super::original_webapp::OriginalLoadSelection>>,
     // The one subscription owner is this live link, not the window instances.
     subscribed: Option<WindowOwner>,
-    #[cfg(target_os = "macos")]
+    #[cfg(windows)]
+    publication: publication_turn::WindowPublicationState,
+    #[cfg(any(target_os = "macos", windows))]
     desktop_required: bool,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     desktop_seen: bool,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     desktop_epoch: DesktopEpoch,
     #[cfg(target_os = "macos")]
     desktop_latest: Option<DesktopFacts>,
+    #[cfg(windows)]
+    desktop_latest: Option<std::sync::Arc<WindowEvent>>,
+    #[cfg(windows)]
+    initial_desktop_closed: bool,
     #[cfg(target_os = "macos")]
     pending_desktop: Option<PendingDesktopSubscribe>,
+    #[cfg(windows)]
+    pending_desktop: Option<publication::desktop::PendingDesktopSubscribe>,
     // One cold allocation, reused under the existing windows lock. The IPC
     // owner supplies the exact cap; no per-event allocation or extra queue.
+    #[cfg(any(not(windows), test))]
     navigation_payload: Box<[u8]>,
 }
 impl WindowSession {
@@ -175,33 +211,38 @@ impl WindowSession {
         Self {
             registry: WindowRegistry::new(),
             native_supported,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             original_selection: None,
             subscribed: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(windows)]
+            publication: publication_turn::WindowPublicationState::default(),
+            #[cfg(any(target_os = "macos", windows))]
             desktop_required: false,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             desktop_seen: false,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             desktop_epoch: DesktopEpoch(0),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             desktop_latest: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(windows)]
+            initial_desktop_closed: false,
+            #[cfg(any(target_os = "macos", windows))]
             pending_desktop: None,
+            #[cfg(any(not(windows), test))]
             navigation_payload: vec![0_u8; keld_ipc::window::NAVIGATION_EVENT_STORAGE_BYTES]
                 .into_boxed_slice(),
         }
     }
-    /// Actual macOS facade boot selects S1; old component and other OS paths
-    /// keep the existing baseline subscription semantics.
-    #[cfg(target_os = "macos")]
+    /// Actual selected native facade boot enables S1; old component fixtures
+    /// retain the baseline only when they explicitly use `new`.
+    #[cfg(any(target_os = "macos", windows))]
     pub(super) fn with_desktop(native_supported: bool) -> Self {
         let mut session = Self::new(native_supported);
         session.desktop_required = true;
         session
     }
     /// Cold boot supplies only the existing verified graph/source/policy result.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     pub(super) fn install_original_selection(
         &mut self,
         selection: super::original_webapp::OriginalLoadSelection,
@@ -223,7 +264,7 @@ impl WindowSession {
     }
     /// A later generation cannot silently change the canonical versions already
     /// captured in the original immutable preload image/source selection.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     pub(super) fn validate_runtime_versions(
         &self,
         versions: Option<&std::collections::BTreeMap<String, String>>,
@@ -238,7 +279,7 @@ impl WindowSession {
         }
         Ok(())
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     pub(super) fn admitted_renderer_window(
         &self,
         owner: WindowOwner,
@@ -252,17 +293,31 @@ impl WindowSession {
         }
         self.registry.admitted_renderer_window(owner, view)
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, test)))]
+    #[cfg_attr(
+        all(windows, test),
+        expect(
+            dead_code,
+            reason = "Keep the existing macOS/legacy route adapter type-checked in Windows tests; live Windows publication uses its captured-caller path."
+        )
+    )]
     pub(super) fn admit_renderer_route(
         &mut self,
         owner: WindowOwner,
         view: keld_wv::WebviewId,
-        document: keld_wv::wkwebview::MacNativeDocumentLease,
+        document: keld_wv::renderer_contract::CheckedNativeDocumentLease,
     ) -> Result<super::window_registry::RendererRoute, WindowError> {
         self.admitted_renderer_window(owner, view)?;
         self.registry.admit_renderer_route(owner, view, document)
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, test)))]
+    #[cfg_attr(
+        all(windows, test),
+        expect(
+            dead_code,
+            reason = "Keep the existing macOS/legacy route adapter type-checked in Windows tests; live Windows publication uses its captured-caller path."
+        )
+    )]
     pub(super) fn renderer_route(
         &self,
         owner: WindowOwner,
@@ -272,15 +327,45 @@ impl WindowSession {
         self.admitted_renderer_window(owner, view)?;
         self.registry.renderer_route(owner, view, navigation)
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(windows)]
+    pub(super) fn retains_retiring_renderer_route(
+        &self,
+        owner: WindowOwner,
+        allocation: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+        window: keld_ipc::window::WindowRef,
+        document: &keld_wv::renderer_contract::CheckedNativeDocumentLease,
+    ) -> bool {
+        self.registry
+            .retains_retiring_renderer_route(owner, allocation, window, document)
+    }
+    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(windows)]
+    pub(super) fn renderer_route_for_caller(
+        &self,
+        caller: &PrimaryCallerContext,
+        view: keld_wv::WebviewId,
+        navigation: Option<u32>,
+    ) -> Result<super::window_registry::RendererRoute, WindowError> {
+        self.admitted_renderer_window(WindowOwner::new(caller.identity, caller.attempt), view)?;
+        self.registry
+            .renderer_route_for_caller(caller, view, navigation)
+    }
+    #[cfg(any(target_os = "macos", windows))]
     pub(super) fn note_renderer_registered(
         &mut self,
         view: keld_wv::WebviewId,
-        document: keld_wv::wkwebview::MacNativeDocumentLease,
+        document: keld_wv::renderer_contract::CheckedNativeDocumentLease,
     ) -> Result<(), WindowError> {
         self.registry.note_renderer_registered(view, document)
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, test)))]
+    #[cfg_attr(
+        all(windows, test),
+        expect(
+            dead_code,
+            reason = "Keep the existing macOS/legacy route adapter type-checked in Windows tests; live Windows publication uses its captured-caller path."
+        )
+    )]
     pub(super) fn for_each_registered_renderer_route(
         &self,
         owner: WindowOwner,
@@ -289,9 +374,41 @@ impl WindowSession {
         self.registry
             .for_each_registered_renderer_route(owner, callback)
     }
+    #[cfg(windows)]
+    pub(in crate::app_session) fn observed_registered_renderer_route(
+        &self,
+        caller: &PrimaryCallerContext,
+        view: keld_wv::WebviewId,
+        document: &keld_wv::renderer_contract::CheckedNativeDocumentLease,
+    ) -> Option<super::window_registry::RendererRoute> {
+        self.admitted_renderer_window(WindowOwner::new(caller.identity, caller.attempt), view)
+            .ok()?;
+        self.registry
+            .observed_registered_renderer_route(caller, view, document)
+    }
+    #[cfg(windows)]
+    pub(in crate::app_session) fn next_retired_renderer_route_after(
+        &self,
+        caller: &PrimaryCallerContext,
+        after: u32,
+    ) -> Option<super::window_registry::RendererRoute> {
+        self.registry
+            .next_retired_renderer_route_after(caller, after)
+    }
+    /// One creation-ordered step under the existing Registry guard. This
+    /// observation grants no native liveness or caller permission by itself.
+    #[cfg(windows)]
+    pub(super) fn next_registered_renderer_route_after(
+        &self,
+        owner: WindowOwner,
+        after: u32,
+    ) -> Option<super::window_registry::RendererRoute> {
+        self.registry
+            .next_registered_renderer_route_after(owner, after)
+    }
     /// The existing current/shutdown fence authenticates this fresh Subscribe.
     /// Native Registered and window enumeration never call this role transition.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     pub(super) fn rebind_recovered_renderer_documents(&mut self, owner: WindowOwner) -> bool {
         self.native_supported
             && self.subscribed == Some(owner)
@@ -334,6 +451,7 @@ fn subscription_refusal(
 fn owner(active: &ActivePrimaryGeneration) -> WindowOwner {
     WindowOwner::new(active.identity, active.attempt)
 }
+#[cfg(any(not(windows), test))]
 fn active_owner(
     current: &mut Option<ActivePrimaryGeneration>,
     expected: WindowOwner,
@@ -342,6 +460,7 @@ fn active_owner(
         .as_mut()
         .filter(|active| owner(active) == expected && !active.reader_stop.load(Ordering::Acquire))
 }
+#[cfg(any(not(windows), test))]
 fn write_payload(
     active: &mut ActivePrimaryGeneration,
     kind: FrameKind,
@@ -355,6 +474,7 @@ fn write_payload(
         app_ipc("window ordered writer", &source)
     })
 }
+#[cfg(any(not(windows), test))]
 fn window_reply(
     active: &mut ActivePrimaryGeneration,
     correlation: CorrelationId,
@@ -373,6 +493,7 @@ fn window_reply(
         failed,
     )
 }
+#[cfg(any(not(windows), test))]
 fn lifecycle_reply(
     active: &mut ActivePrimaryGeneration,
     correlation: CorrelationId,
@@ -391,6 +512,7 @@ fn lifecycle_reply(
         failed,
     )
 }
+#[cfg(any(not(windows), test))]
 fn call_error(
     active: &mut ActivePrimaryGeneration,
     correlation: CorrelationId,
@@ -458,6 +580,7 @@ fn desktop_unavailable(
         failed,
     )
 }
+#[cfg(any(not(windows), test))]
 fn navigation_committed_event(
     active: &mut ActivePrimaryGeneration,
     window: keld_ipc::window::WindowRef,
@@ -482,7 +605,8 @@ fn navigation_committed_event(
         failed,
     )
 }
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(not(windows), test))]
 fn recovered_document_snapshots(
     registry: &WindowRegistry,
     active: &mut ActivePrimaryGeneration,
@@ -513,7 +637,8 @@ fn recovered_document_snapshots(
         )
     })
 }
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(not(windows), test))]
 fn original_native_failure(
     current: &mut Option<ActivePrimaryGeneration>,
     subscribed: Option<WindowOwner>,
@@ -541,28 +666,8 @@ fn original_native_failure(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-fn original_native_finished(
-    session: &mut WindowSession,
-    current: &mut Option<ActivePrimaryGeneration>,
-    context: keld_wv::NativeNavigationContext,
-    stamp: keld_wv::wkwebview::MacNativeDocumentStamp,
-    failed: &mut Option<u32>,
-) -> Result<(), HostAppError> {
-    let Some(completed) = session.registry.original_load_finished(context, stamp) else {
-        return Ok(());
-    };
-    owned_event(
-        current,
-        session.subscribed,
-        &completed.fact,
-        &mut session.navigation_payload,
-        failed,
-    )?;
-    owned_reply(current, session.subscribed, completed.reply, failed)
-}
-
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(not(windows), test))]
 fn original_close_refusal(
     active: &mut ActivePrimaryGeneration,
     correlation: CorrelationId,
@@ -571,6 +676,7 @@ fn original_close_refusal(
     let error = WindowError::OriginalDocumentCloseRefused;
     call_error(active, correlation, error.code(), error.to_string(), failed)
 }
+#[cfg(any(not(windows), test))]
 fn event(
     active: &mut ActivePrimaryGeneration,
     fact: &keld_ipc::window::WindowEvent,
@@ -645,6 +751,7 @@ fn event(
         failed,
     )
 }
+#[cfg(any(not(windows), test))]
 fn owned_event(
     current: &mut Option<ActivePrimaryGeneration>,
     subscribed: Option<WindowOwner>,
@@ -659,6 +766,7 @@ fn owned_event(
     }
     Ok(())
 }
+#[cfg(any(not(windows), test))]
 fn owned_reply(
     current: &mut Option<ActivePrimaryGeneration>,
     subscribed: Option<WindowOwner>,
@@ -672,6 +780,7 @@ fn owned_reply(
     }
     Ok(())
 }
+#[cfg(any(not(windows), test))]
 fn last_window_locked(
     current: &mut Option<ActivePrimaryGeneration>,
     subscribed: Option<WindowOwner>,
@@ -699,6 +808,7 @@ fn last_window_locked(
     Ok(())
 }
 
+#[cfg(any(not(windows), test))]
 fn window_build_failed_locked(
     current: &mut Option<ActivePrimaryGeneration>,
     subscribed: Option<WindowOwner>,
@@ -731,6 +841,7 @@ fn window_build_failed_locked(
     }
     last_window_locked(current, subscribed, outcome.last_window, failed)
 }
+#[cfg(any(not(windows), test))]
 fn window_released_locked(
     current: &mut Option<ActivePrimaryGeneration>,
     subscribed: Option<WindowOwner>,
@@ -936,6 +1047,28 @@ fn desktop_observed_locked(
 impl PrimaryRouterHandle {
     /// Caller already holds the shutdown transition. Ready publication cannot
     /// overtake terminal end or the registry's serviceability transition.
+    #[cfg(not(windows))]
+    pub(super) fn subscribe_window(
+        &self,
+        caller: &PrimaryCallerContext,
+        correlation: CorrelationId,
+        channel: u16,
+    ) -> Result<(), HostAppError> {
+        self.subscribe_window_legacy_policy(caller, correlation, channel)
+    }
+    #[cfg(not(windows))]
+    pub(super) fn dispatch_window(
+        &self,
+        caller: &PrimaryCallerContext,
+        correlation: CorrelationId,
+        payload: &[u8],
+    ) -> Result<(), HostAppError> {
+        self.dispatch_window_legacy_policy(caller, correlation, payload)
+    }
+    #[cfg(not(windows))]
+    pub(super) fn window_native_event(&self, event: AppWindowEvent) -> Result<(), HostAppError> {
+        self.window_native_event_legacy_policy(event)
+    }
     pub(super) fn mark_window_registry_ready_guarded(&self) -> Result<bool, HostAppError> {
         let _current = self
             .current
@@ -970,6 +1103,15 @@ impl PrimaryRouterHandle {
             {
                 session.pending_desktop = None;
             }
+            #[cfg(windows)]
+            if session.desktop_required {
+                // The retained epoch belongs to the Host, but eligibility belongs
+                // to the actual current reader. Replacement must resample.
+                session.pending_desktop = None;
+                session.initial_desktop_closed = true;
+                session.desktop_seen = false;
+                session.desktop_latest = None;
+            }
             session.registry.role_lost(retired, report_abandoned);
             Ok(())
         });
@@ -982,6 +1124,7 @@ impl PrimaryRouterHandle {
             window_retirement
         }
     }
+    #[cfg(any(not(windows), test))]
     fn finish_window_write(
         &self,
         current: &mut Option<ActivePrimaryGeneration>,
@@ -1004,7 +1147,8 @@ impl PrimaryRouterHandle {
             (_, result) => result,
         }
     }
-    pub(super) fn subscribe_window(
+    #[cfg(any(not(windows), test))]
+    pub(super) fn subscribe_window_legacy_policy(
         &self,
         caller: &PrimaryCallerContext,
         correlation: CorrelationId,
@@ -1078,7 +1222,7 @@ impl PrimaryRouterHandle {
                     for fact in registry.replay(caller_owner) {
                         event(active, &fact, navigation_payload, &mut failed)?;
                     }
-                    #[cfg(target_os = "macos")]
+                    #[cfg(any(target_os = "macos", windows))]
                     recovered_document_snapshots(
                         registry,
                         active,
@@ -1105,7 +1249,8 @@ impl PrimaryRouterHandle {
             result
         }
     }
-    pub(super) fn dispatch_window(
+    #[cfg(any(not(windows), test))]
+    pub(super) fn dispatch_window_legacy_policy(
         &self,
         caller: &PrimaryCallerContext,
         correlation: CorrelationId,
@@ -1117,54 +1262,36 @@ impl PrimaryRouterHandle {
                 let active = current.as_mut().ok_or_else(|| {
                     app_detail("window request", "validated generation disappeared")
                 })?;
-                let caller_owner = WindowOwner::new(caller.identity, caller.attempt);
-                let unavailable = || {
-                    "KELD-CORE-045: window link is not subscribed. Complete the accepted window subscription and replay before issuing window calls.".to_owned()
+                let mut session = self
+                    .windows
+                    .as_ref()
+                    .map(|windows| {
+                        windows
+                            .lock()
+                            .map_err(|_| app_detail("window request", "registry lock poisoned"))
+                    })
+                    .transpose()?;
+                let input = self.prepare_window_request_input_locked(
+                    session.as_deref(),
+                    active,
+                    correlation,
+                    payload,
+                )?;
+                let request = match input {
+                    request::WindowRequestInput::Request(request) => request,
+                    request::WindowRequestInput::Refused(refusal) => {
+                        let (code, message) = refusal.into_parts();
+                        return call_error(active, correlation, code, message, &mut failed);
+                    }
+                    request::WindowRequestInput::DuplicateCorrelation => {
+                        failed = Some(active.attempt);
+                        return Err(request::duplicate_correlation());
+                    }
                 };
-                let Some(windows) = &self.windows else {
-                    return call_error(
-                        active,
-                        correlation,
-                        "KELD-CORE-045",
-                        unavailable(),
-                        &mut failed,
-                    );
-                };
-                let mut session = windows
-                    .lock()
-                    .map_err(|_| app_detail("window request", "registry lock poisoned"))?;
-                //045 precedes readiness, platform and even body decoding. A refused
-                //call cannot allocate a pair, enqueue work or mutate adoption marks.
-                if session.subscribed != Some(caller_owner) {
-                    return call_error(
-                        active,
-                        correlation,
-                        "KELD-CORE-045",
-                        unavailable(),
-                        &mut failed,
-                    );
-                }
-                if !self.window_ready.load(Ordering::Acquire) {
-                    return call_error(active, correlation, "KELD-CORE-040", "KELD-CORE-040: registry is not ready. Wait for host Ready and accepted subscription/replay.".to_owned(), &mut failed);
-                }
-                if !session.native_supported {
-                    return call_error(active, correlation, "KELD-CORE-042", "KELD-CORE-042: native window calls are unsupported by this platform adapter. Use a qualified window backend.".to_owned(), &mut failed);
-                }
-                if session.registry.has_pending_call(caller_owner, correlation) {
-                    failed = Some(active.attempt);
-                    return Err(app_ipc(
-                        "window correlation admission",
-                        &IpcError::Protocol {
-                            detail: "window CALL reuses an already-pending correlation",
-                        },
-                    ));
-                }
-                if payload.len() > keld_ipc::window::MAX_ORIGINAL_LOAD_REQUEST_BYTES {
-                    return call_error(active, correlation, "KELD-CORE-051", "KELD-CORE-051: window call exceeds the bounded original-load request size; send the exact selected original URI.".to_owned(), &mut failed);
-                }
-                let request: WindowRequest =
-                    decode(payload).map_err(|source| app_ipc("window request decode", &source))?;
-                self.window_request_locked(&mut session, active, correlation, request, &mut failed)
+                let session = session.as_deref_mut().ok_or_else(|| {
+                    app_detail("window request", "validated Registry disappeared")
+                })?;
+                self.window_request_locked(session, active, correlation, request, &mut failed)
             })();
             self.finish_window_write(current, failed, result)
         });
@@ -1174,6 +1301,7 @@ impl PrimaryRouterHandle {
             result
         }
     }
+    #[cfg(any(not(windows), test))]
     fn window_request_locked(
         &self,
         session: &mut WindowSession,
@@ -1182,166 +1310,20 @@ impl PrimaryRouterHandle {
         request: WindowRequest,
         failed: &mut Option<u32>,
     ) -> Result<(), HostAppError> {
-        let caller = owner(active);
-        match request {
-            WindowRequest::Create {
-                width,
-                height,
-                x,
-                y,
-            } => {
-                let outcome = session
-                    .registry
-                    .create(caller, correlation, width, height, x, y);
-                self.window_create_result(
-                    active,
-                    correlation,
-                    outcome,
-                    WindowBuildResources::default(),
-                    failed,
-                )
-            }
-            #[cfg(target_os = "macos")]
-            request @ WindowRequest::CreateWithPreload { .. } => self
-                .window_create_with_original_locked(session, active, correlation, request, failed),
-            #[cfg(not(target_os = "macos"))]
-            request @ WindowRequest::CreateWithPreload { .. } => {
-                Self::window_create_with_original_locked(
-                    session,
-                    active,
-                    correlation,
-                    request,
-                    failed,
-                )
-            }
-            #[cfg(target_os = "macos")]
-            WindowRequest::LoadUrl { window, uri } => {
-                self.window_original_load_locked(session, active, correlation, window, &uri, failed)
-            }
-            #[cfg(not(target_os = "macos"))]
-            WindowRequest::LoadUrl { window, uri } => Self::window_original_load_locked(
-                session,
-                active,
-                correlation,
-                window,
-                &uri,
-                failed,
-            ),
-            WindowRequest::SetMaximized { window, maximized } => {
-                let outcome = session.registry.set_maximized(caller, window, maximized);
-                self.window_setter_result(active, correlation, outcome, failed)
-            }
-            WindowRequest::SetFullScreen {
-                window,
-                full_screen,
-            } => {
-                let outcome = session
-                    .registry
-                    .set_full_screen(caller, window, full_screen);
-                self.window_setter_result(active, correlation, outcome, failed)
-            }
-            WindowRequest::RequestClose { window } => {
-                let outcome = session.registry.request_close(caller, window);
-                self.window_close_result(
-                    active,
-                    correlation,
-                    outcome,
-                    &mut session.navigation_payload,
-                    failed,
-                )
-            }
-            request @ WindowRequest::CloseReply { .. } => {
-                self.window_close_reply_locked(session, active, correlation, &request, failed)
-            }
-            WindowRequest::DestroyOriginalDocument {
-                window,
-                document_generation,
-            } => {
-                #[cfg(target_os = "macos")]
-                {
-                    self.window_destroy_original_document_locked(
-                        session,
-                        active,
-                        correlation,
-                        window,
-                        document_generation,
-                        failed,
-                    )
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    let _ = (window, document_generation);
-                    call_error(active, correlation, "KELD-CORE-042", "KELD-CORE-042: original-document teardown requires its qualified native adapter.".to_owned(), failed)
-                }
-            }
-            WindowRequest::Destroy { window } => {
-                self.window_destroy_locked(session, active, correlation, window, failed)
-            }
-        }
-    }
-    fn window_destroy_locked(
-        &self,
-        session: &mut WindowSession,
-        active: &mut ActivePrimaryGeneration,
-        correlation: CorrelationId,
-        window: keld_ipc::window::WindowRef,
-        failed: &mut Option<u32>,
-    ) -> Result<(), HostAppError> {
-        let caller = owner(active);
-        #[cfg(target_os = "macos")]
-        let mut availability = Ok(());
-        let outcome = session.registry.destroy_with_retirement(
-            caller,
-            window,
+        let outcome = self.prepare_window_request_locked(
+            session,
+            active,
             correlation,
-            report_abandoned,
-            |registry| {
-                #[cfg(target_os = "macos")]
-                {
-                    availability =
-                        self.window_registered_route_retirement_locked(registry, active, window);
-                }
-                #[cfg(not(target_os = "macos"))]
-                let _ = registry;
-            },
-        );
-        #[cfg(not(target_os = "macos"))]
-        let availability = Ok(());
-        let destruction = match outcome {
-            Ok(CloseOutcome::Teardown(teardown)) => {
-                #[cfg(target_os = "macos")]
-                let scoped = {
-                    let outcome = session.registry.cancel_original_document_destroy(window);
-                    Self::window_original_destroy_resolution(active, &outcome, failed)
-                };
-                #[cfg(not(target_os = "macos"))]
-                let scoped = Ok(());
-                let interrupted = {
-                    #[cfg(target_os = "macos")]
-                    {
-                        session.registry.take_interrupted_original_load(window)
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        None
-                    }
-                };
-                let interruption = Self::window_original_interruption(active, interrupted, failed);
-                let teardown = self.send_window_teardown(teardown, "window teardown");
-                collapse_app_results([scoped, interruption, teardown])
-            }
-            Ok(CloseOutcome::AlreadyClosing) => Ok(()),
-            Ok(_) => Err(app_detail(
-                "window Destroy",
-                "registry returned an invalid destruction effect",
-            )),
-            Err(error) => call_error(active, correlation, error.code(), error.to_string(), failed),
-        };
-        collapse_app_results([availability, destruction])
+            request,
+            #[cfg(windows)]
+            &mut request::WindowCloseControl::LegacyPolicy,
+        )?;
+        self.publish_window_request_locked(session, active, correlation, outcome, failed)
     }
     /// Caller holds transition/current/windows. The Registry invokes this only
     /// for its admitted logical closing cut, before clearing that exact Entry.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(not(windows), test))]
     fn window_registered_route_retirement_locked(
         &self,
         registry: &WindowRegistry,
@@ -1360,139 +1342,8 @@ impl PrimaryRouterHandle {
             Ok(())
         })
     }
-    fn window_close_reply_locked(
-        &self,
-        session: &mut WindowSession,
-        active: &mut ActivePrimaryGeneration,
-        correlation: CorrelationId,
-        request: &WindowRequest,
-        failed: &mut Option<u32>,
-    ) -> Result<(), HostAppError> {
-        let &WindowRequest::CloseReply {
-            window,
-            close_seq,
-            verdict,
-        } = request
-        else {
-            return Err(app_detail(
-                "window close dispatch",
-                "shared decoder routed a non-close request to close admission",
-            ));
-        };
-        let caller = owner(active);
-        #[cfg(target_os = "macos")]
-        let mut availability = Ok(());
-        let outcome = session.registry.close_reply_with_retirement(
-            caller,
-            window,
-            close_seq,
-            verdict,
-            |registry| {
-                #[cfg(target_os = "macos")]
-                {
-                    availability =
-                        self.window_registered_route_retirement_locked(registry, active, window);
-                }
-                #[cfg(not(target_os = "macos"))]
-                let _ = registry;
-            },
-        );
-        #[cfg(not(target_os = "macos"))]
-        let availability = Ok(());
-        #[cfg(target_os = "macos")]
-        let scoped = if matches!(outcome, Ok(CloseOutcome::Teardown(_))) {
-            let resolution = session.registry.cancel_original_document_destroy(window);
-            Self::window_original_destroy_resolution(active, &resolution, failed)
-        } else {
-            Ok(())
-        };
-        #[cfg(not(target_os = "macos"))]
-        let scoped = Ok(());
-        let interrupted = if matches!(outcome, Ok(CloseOutcome::Teardown(_))) {
-            {
-                #[cfg(target_os = "macos")]
-                {
-                    session.registry.take_interrupted_original_load(window)
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        let interruption = Self::window_original_interruption(active, interrupted, failed);
-        let closing = self.window_close_result(
-            active,
-            correlation,
-            outcome,
-            &mut session.navigation_payload,
-            failed,
-        );
-        collapse_app_results([availability, scoped, interruption, closing])
-    }
-    #[cfg(target_os = "macos")]
-    fn window_destroy_original_document_locked(
-        &self,
-        session: &mut WindowSession,
-        active: &mut ActivePrimaryGeneration,
-        correlation: CorrelationId,
-        window: keld_ipc::window::WindowRef,
-        document_generation: u32,
-        failed: &mut Option<u32>,
-    ) -> Result<(), HostAppError> {
-        let caller = owner(active);
-        let view = match session.registry.admitted_dialog_view(caller, window) {
-            Ok(view) => view,
-            Err(error) => {
-                return call_error(active, correlation, error.code(), error.to_string(), failed);
-            }
-        };
-        let expected = if document_generation == 0 {
-            None
-        } else {
-            session
-                .registry
-                .renderer_route(caller, view, Some(document_generation))
-                .ok()
-                .map(|route| route.document)
-        };
-        let Some(expected) = expected else {
-            return original_close_refusal(active, correlation, failed);
-        };
-        let admission =
-            std::sync::Arc::new(keld_wv::wkwebview::OriginalDocumentDestroyAdmission::new());
-        if let Err(error) = session.registry.reserve_original_document_destroy(
-            caller,
-            correlation,
-            window,
-            std::sync::Arc::clone(&admission),
-        ) {
-            return call_error(active, correlation, error.code(), error.to_string(), failed);
-        }
-        if self
-            .window_commands
-            .send(AppWindowCommand::DestroyOriginalDocument {
-                view,
-                expected,
-                admission: std::sync::Arc::clone(&admission),
-            })
-            .is_err()
-        {
-            // A lost cancellation can mean native already accepted; the next
-            // call reconciles that exact retained object's actual decision.
-            let _ = admission.cancel_before_admission();
-            let outcome = session
-                .registry
-                .original_document_destroy_decision(view, &admission);
-            return Self::window_original_destroy_resolution(active, &outcome, failed);
-        }
-        // A queued conditional request changes no phase/document/Ready state.
-        // Native owns admission; actual Released remains the sole success input.
-        Ok(())
-    }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(not(windows), test))]
     fn window_original_destroy_resolution(
         active: &mut ActivePrimaryGeneration,
         outcome: &super::window_registry::OriginalDocumentDestroyResolution,
@@ -1510,45 +1361,9 @@ impl PrimaryRouterHandle {
         let interrupted = Self::window_original_interruption(active, outcome.interrupted, failed);
         collapse_app_results([refused, interrupted])
     }
-    #[cfg(target_os = "macos")]
-    fn window_original_destroy_native_locked(
-        session: &mut WindowSession,
-        current: &mut Option<ActivePrimaryGeneration>,
-        view: keld_wv::WebviewId,
-        admission: std::sync::Arc<keld_wv::wkwebview::OriginalDocumentDestroyAdmission>,
-        failed: &mut Option<u32>,
-    ) -> Result<(), HostAppError> {
-        let outcome = session
-            .registry
-            .original_document_destroy_decision(view, &admission);
-        if let Some(close) = outcome.abandoned {
-            report_abandoned(close);
-        }
-        let refused = if let Some(call) = outcome.refused
-            && session.subscribed == Some(call.owner)
-            && let Some(active) = active_owner(current, call.owner)
-        {
-            original_close_refusal(active, call.correlation, failed)
-        } else {
-            Ok(())
-        };
-        let interrupted = if let Some(call) = outcome.interrupted
-            && session.subscribed == Some(call.owner)
-            && let Some(active) = active_owner(current, call.owner)
-        {
-            Self::window_original_interruption(active, Some(call), failed)
-        } else {
-            Ok(())
-        };
-        let result = collapse_app_results([refused, interrupted]);
-        // The native receipt transfers this exact ticket. Keep it through both
-        // reply paths, then release at the existing end-of-event ownership cut.
-        drop(admission);
-        result
-    }
     /// Caller holds transition/current. This common cut precedes current.take,
     /// reader-stop and any successor publication; it touches no native handle.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     pub(super) fn cancel_window_native_admissions(
         &self,
         owner: WindowOwner,
@@ -1575,6 +1390,7 @@ impl PrimaryRouterHandle {
             .cancel_native_admissions(owner, report_abandoned);
         locked
     }
+    #[cfg(any(not(windows), test))]
     fn window_original_interruption(
         active: &mut ActivePrimaryGeneration,
         pending: Option<super::window_registry::PendingWindowCall>,
@@ -1584,355 +1400,6 @@ impl PrimaryRouterHandle {
             call_error(active, call.correlation, "KELD-CORE-053", "KELD-CORE-053: the window closed before its admitted original load finished; use a current live window for a new explicit load.".to_owned(), failed)?;
         }
         Ok(())
-    }
-    #[cfg(not(target_os = "macos"))]
-    fn window_original_load_locked(
-        _session: &mut WindowSession,
-        active: &mut ActivePrimaryGeneration,
-        correlation: CorrelationId,
-        _window: keld_ipc::window::WindowRef,
-        _uri: &str,
-        failed: &mut Option<u32>,
-    ) -> Result<(), HostAppError> {
-        call_error(
-            active,
-            correlation,
-            "KELD-CORE-042",
-            "KELD-CORE-042: original editor loading requires its qualified macOS native adapter."
-                .to_owned(),
-            failed,
-        )
-    }
-    #[cfg(target_os = "macos")]
-    fn window_original_load_locked(
-        &self,
-        session: &mut WindowSession,
-        active: &mut ActivePrimaryGeneration,
-        correlation: CorrelationId,
-        window: keld_ipc::window::WindowRef,
-        uri: &str,
-        failed: &mut Option<u32>,
-    ) -> Result<(), HostAppError> {
-        // Validate the real pair/owner before source information or native work.
-        if let Err(error) = session.registry.admitted_dialog_view(owner(active), window) {
-            return call_error(active, correlation, error.code(), error.to_string(), failed);
-        }
-        let selection = match session
-            .registry
-            .original_window_source(owner(active), window)
-        {
-            Ok(selection) => selection,
-            Err(error) => {
-                return call_error(active, correlation, error.code(), error.to_string(), failed);
-            }
-        };
-        let query = match selection.qualify_uri(uri) {
-            Ok(query) => query,
-            Err(error) => {
-                return call_error(
-                    active,
-                    correlation,
-                    "KELD-CORE-051",
-                    format!(
-                        "KELD-CORE-051: {error}; prepare the verified original source and send its exact selected entry URI"
-                    ),
-                    failed,
-                );
-            }
-        };
-        let (operation, view) =
-            match session
-                .registry
-                .admit_original_load(owner(active), correlation, window)
-            {
-                Ok(OriginalLoadAdmission::Dispatch {
-                    operation, view, ..
-                }) => (operation, view),
-                Ok(OriginalLoadAdmission::Busy) => {
-                    let error = WindowError::OriginalLoadBusy;
-                    return call_error(
-                        active,
-                        correlation,
-                        error.code(),
-                        error.to_string(),
-                        failed,
-                    );
-                }
-                Err(error) => {
-                    return call_error(
-                        active,
-                        correlation,
-                        error.code(),
-                        error.to_string(),
-                        failed,
-                    );
-                }
-            };
-        let Some(operation_id) = std::num::NonZeroU64::new(operation) else {
-            session.registry.abandon_original_dispatch(operation);
-            return Err(app_detail(
-                "original load correlation",
-                "checked operation was zero",
-            ));
-        };
-        let context = keld_wv::NativeNavigationContext::new(operation_id, view);
-        if self
-            .window_commands
-            .send(AppWindowCommand::LoadAdmittedOriginal { context, query })
-            .is_err()
-        {
-            session.registry.abandon_original_dispatch(operation);
-            return call_error(active, correlation, "KELD-CORE-051", "KELD-CORE-051: native UI admission is unavailable; restart the Host before another original load.".to_owned(), failed);
-        }
-        // A queued command is no native milestone. Actual Finished owns Loaded.
-        Ok(())
-    }
-    #[cfg(target_os = "macos")]
-    fn window_original_native_locked(
-        &self,
-        session: &mut WindowSession,
-        current: &mut Option<ActivePrimaryGeneration>,
-        context: keld_wv::NativeNavigationContext,
-        fact: keld_wv::MacOriginalNavigationFact,
-        failed: &mut Option<u32>,
-    ) -> Result<(), HostAppError> {
-        use keld_wv::MacOriginalNavigationFact;
-        let subscribed = session.subscribed;
-        let failure = match fact {
-            MacOriginalNavigationFact::Started { attempt } => {
-                session.registry.original_load_started(context, attempt);
-                return Ok(());
-            }
-            MacOriginalNavigationFact::Committed {
-                stamp,
-                native_url,
-                document,
-            } => {
-                let Some(super::window_registry::CommittedOriginalLoad {
-                    owner,
-                    window,
-                    document_generation,
-                    native_url,
-                }) = session
-                    .registry
-                    .original_load_committed(context, stamp, document, native_url)
-                else {
-                    return Ok(());
-                };
-                if subscribed == Some(owner)
-                    && let Some(active) = active_owner(current, owner)
-                {
-                    // The same Entry owns this credited native observation.
-                    // Borrow through the writer without detaching its bytes.
-                    navigation_committed_event(
-                        active,
-                        window,
-                        document_generation,
-                        native_url.as_str(),
-                        &mut session.navigation_payload,
-                        failed,
-                    )?;
-                    let caller = PrimaryCallerContext {
-                        identity: active.identity,
-                        attempt: active.attempt,
-                        reader_stop: std::sync::Arc::clone(&active.reader_stop),
-                    };
-                    session
-                        .registry
-                        .for_each_registered_renderer_route(owner, |route| {
-                            if route.window == window {
-                                self.compat_registered_route_ready_locked(&caller, active, route)?;
-                            }
-                            Ok(())
-                        })?;
-                }
-                return Ok(());
-            }
-            MacOriginalNavigationFact::Finished { stamp } => {
-                return original_native_finished(session, current, context, stamp, failed);
-            }
-            MacOriginalNavigationFact::Refused { error } => {
-                let detail = original_refusal_detail(error);
-                (
-                    session.registry.original_load_failed(context, None),
-                    "KELD-CORE-051",
-                    detail,
-                )
-            }
-            MacOriginalNavigationFact::Failed { attempt, revoked } => {
-                if let Some(previous) = revoked {
-                    session
-                        .registry
-                        .renderer_document_revoked(context.view(), previous);
-                }
-                (
-                    session
-                        .registry
-                        .original_load_failed(context, Some(attempt)),
-                    "KELD-CORE-052",
-                    "the actual admitted native navigation failed",
-                )
-            }
-            MacOriginalNavigationFact::Revoked { previous } => {
-                let Some(previous) = previous else {
-                    return Ok(());
-                };
-                session
-                    .registry
-                    .renderer_document_revoked(context.view(), previous);
-                (
-                    session
-                        .registry
-                        .original_load_failed(context, Some(previous.attempt())),
-                    "KELD-CORE-052",
-                    "the admitted native document was revoked",
-                )
-            }
-        };
-        original_native_failure(current, subscribed, failure, failed)
-    }
-    #[cfg(not(target_os = "macos"))]
-    fn window_create_with_original_locked(
-        _session: &mut WindowSession,
-        active: &mut ActivePrimaryGeneration,
-        correlation: CorrelationId,
-        _request: WindowRequest,
-        failed: &mut Option<u32>,
-    ) -> Result<(), HostAppError> {
-        call_error(
-            active,
-            correlation,
-            "KELD-CORE-042",
-            "KELD-CORE-042: original preload creation requires its qualified macOS adapter."
-                .to_owned(),
-            failed,
-        )
-    }
-    #[cfg(target_os = "macos")]
-    fn window_create_with_original_locked(
-        &self,
-        session: &mut WindowSession,
-        active: &mut ActivePrimaryGeneration,
-        correlation: CorrelationId,
-        request: WindowRequest,
-        failed: &mut Option<u32>,
-    ) -> Result<(), HostAppError> {
-        let WindowRequest::CreateWithPreload {
-            width,
-            height,
-            x,
-            y,
-            preload_absolute,
-            additional_arguments,
-        } = request
-        else {
-            return Err(app_detail(
-                "original Create dispatch",
-                "shared decoder routed a non-preload request to preload admission",
-            ));
-        };
-        let Some(selection) = session
-            .original_selection
-            .as_ref()
-            .map(std::sync::Arc::clone)
-        else {
-            return call_error(active, correlation, "KELD-CORE-051", "KELD-CORE-051: verified source and original preload selection are unavailable; prepare the graph and resolved window policy before CreateWithPreload.".to_owned(), failed);
-        };
-        let preload_image = match selection.prepare_preload(&preload_absolute, additional_arguments)
-        {
-            Ok(image) => image,
-            Err(error) => {
-                return call_error(
-                    active,
-                    correlation,
-                    "KELD-CORE-051",
-                    format!(
-                        "KELD-CORE-051: {error}; use the exact original preload and bounded captured arguments"
-                    ),
-                    failed,
-                );
-            }
-        };
-        let outcome = session.registry.create_with_original_preload(
-            super::window_registry::PendingWindowCall {
-                owner: owner(active),
-                correlation,
-            },
-            (width, height),
-            (x, y),
-            std::sync::Arc::clone(&selection),
-            std::sync::Arc::clone(&preload_image),
-        );
-        let resources = WindowBuildResources {
-            preload_image: Some(preload_image),
-            original_source: Some(std::sync::Arc::clone(selection.source())),
-        };
-        self.window_create_result(active, correlation, outcome, resources, failed)
-    }
-    fn window_create_result(
-        &self,
-        active: &mut ActivePrimaryGeneration,
-        correlation: CorrelationId,
-        outcome: Result<CreateOutcome, WindowError>,
-        #[cfg(target_os = "macos")] resources: WindowBuildResources,
-        #[cfg(not(target_os = "macos"))] _resources: WindowBuildResources,
-        failed: &mut Option<u32>,
-    ) -> Result<(), HostAppError> {
-        match outcome {
-            Ok(CreateOutcome::Build {
-                build,
-                width,
-                height,
-                x,
-                y,
-                ..
-            }) => self
-                .window_commands
-                .send(AppWindowCommand::CreateWindow {
-                    build,
-                    width,
-                    height,
-                    x,
-                    y,
-                    #[cfg(target_os = "macos")]
-                    preload_image: resources.preload_image,
-                    #[cfg(target_os = "macos")]
-                    original_source: resources.original_source,
-                })
-                .map_err(|_| app_detail("window native build", "UI command owner is unavailable")),
-            Ok(CreateOutcome::Adopted(window)) => window_reply(
-                active,
-                correlation,
-                WindowResponse::Adopted { window },
-                failed,
-            ),
-            Err(error) => call_error(active, correlation, error.code(), error.to_string(), failed),
-        }
-    }
-    fn window_setter_result(
-        &self,
-        active: &mut ActivePrimaryGeneration,
-        correlation: CorrelationId,
-        outcome: Result<NativeSetter, WindowError>,
-        failed: &mut Option<u32>,
-    ) -> Result<(), HostAppError> {
-        match outcome {
-            Ok(setter) => self.send_window_setter(active, correlation, setter, failed),
-            Err(error) => call_error(active, correlation, error.code(), error.to_string(), failed),
-        }
-    }
-    fn window_close_result(
-        &self,
-        active: &mut ActivePrimaryGeneration,
-        correlation: CorrelationId,
-        outcome: Result<CloseOutcome, WindowError>,
-        scratch: &mut [u8],
-        failed: &mut Option<u32>,
-    ) -> Result<(), HostAppError> {
-        match outcome {
-            Ok(close) => self.window_close_call_locked(active, correlation, close, scratch, failed),
-            Err(error) => call_error(active, correlation, error.code(), error.to_string(), failed),
-        }
     }
     fn send_window_teardown(
         &self,
@@ -1949,6 +1416,7 @@ impl PrimaryRouterHandle {
             })
             .map_err(|_| app_detail(phase, "UI command owner is unavailable"))
     }
+    #[cfg(any(not(windows), test))]
     fn window_close_call_locked(
         &self,
         active: &mut ActivePrimaryGeneration,
@@ -1993,26 +1461,7 @@ impl PrimaryRouterHandle {
         };
         window_reply(active, correlation, response, failed)
     }
-    fn send_window_setter(
-        &self,
-        active: &mut ActivePrimaryGeneration,
-        correlation: CorrelationId,
-        setter: NativeSetter,
-        failed: &mut Option<u32>,
-    ) -> Result<(), HostAppError> {
-        let command = match setter {
-            NativeSetter::Maximized { view, maximized } => {
-                AppWindowCommand::SetMaximized { view, maximized }
-            }
-            NativeSetter::FullScreen { view, full_screen } => {
-                AppWindowCommand::SetFullScreen { view, full_screen }
-            }
-        };
-        self.window_commands
-            .send(command)
-            .map_err(|_| app_detail("window setter", "UI command owner is unavailable"))?;
-        window_reply(active, correlation, WindowResponse::Accepted, failed)
-    }
+    #[cfg(any(not(windows), test))]
     fn window_build_outcome_locked(
         &self,
         current: &mut Option<ActivePrimaryGeneration>,
@@ -2037,6 +1486,7 @@ impl PrimaryRouterHandle {
             }
         }
     }
+    #[cfg(any(not(windows), test))]
     fn window_native_close_locked(
         current: &mut Option<ActivePrimaryGeneration>,
         subscribed: Option<WindowOwner>,
@@ -2071,56 +1521,10 @@ impl PrimaryRouterHandle {
             }
         }
     }
-    // The caller retains transition/current/windows and the same subscribed
-    // snapshot. Only scalar physical build/release completion facts enter here.
-    fn window_completion_locked(
-        &self,
-        session: &mut WindowSession,
-        current: &mut Option<ActivePrimaryGeneration>,
-        subscribed: Option<WindowOwner>,
-        event: &AppWindowEvent,
-        failed: &mut Option<u32>,
-    ) -> Result<(), HostAppError> {
-        match *event {
-            AppWindowEvent::WindowBuilt {
-                build,
-                view,
-                snapshot,
-            } => {
-                let outcome = session
-                    .registry
-                    .native_built(build, view, native_state(snapshot));
-                self.window_build_outcome_locked(
-                    current,
-                    subscribed,
-                    outcome,
-                    &mut session.navigation_payload,
-                    failed,
-                )
-            }
-            AppWindowEvent::WindowBuildFailed { build, stage } => {
-                let outcome = session.registry.native_failed(build);
-                window_build_failed_locked(current, subscribed, outcome, stage, failed)
-            }
-            AppWindowEvent::WindowReleased { view } => {
-                let outcome = session.registry.native_released(view);
-                window_released_locked(
-                    current,
-                    subscribed,
-                    outcome,
-                    &mut session.navigation_payload,
-                    failed,
-                )
-            }
-            _ => Err(app_detail(
-                "window native completion",
-                "shared dispatcher routed a non-completion native fact",
-            )),
-        }
-    }
 
     // Caller owns transition -> current -> windows. This dispatch performs the
     // registry transition and its ordered effects without changing lock custody.
+    #[cfg(any(not(windows), test))]
     fn window_native_event_locked(
         &self,
         session: &mut WindowSession,
@@ -2128,99 +1532,18 @@ impl PrimaryRouterHandle {
         native_event: AppWindowEvent,
         failed: &mut Option<u32>,
     ) -> Result<(), HostAppError> {
-        let subscribed = session.subscribed;
-        let fact = match native_event {
-            #[cfg(target_os = "macos")]
+        #[cfg(target_os = "macos")]
+        let native_event = match native_event {
             AppWindowEvent::DesktopObserved { facts } => {
                 return desktop_observed_locked(session, current, facts, failed);
             }
-            #[cfg(target_os = "macos")]
-            AppWindowEvent::OriginalDocumentDestroyDecision { view, admission } => {
-                return Self::window_original_destroy_native_locked(
-                    session, current, view, admission, failed,
-                );
-            }
-            #[cfg(target_os = "macos")]
-            AppWindowEvent::MacOriginalNavigation { context, fact } => {
-                return self.window_original_native_locked(session, current, context, fact, failed);
-            }
-            event @ (AppWindowEvent::WindowBuilt { .. }
-            | AppWindowEvent::WindowBuildFailed { .. }
-            | AppWindowEvent::WindowReleased { .. }) => {
-                return self.window_completion_locked(session, current, subscribed, &event, failed);
-            }
-            AppWindowEvent::WindowCloseRequested { view } => {
-                return Self::window_native_close_locked(
-                    current,
-                    subscribed,
-                    session.registry.native_close(view),
-                    &mut session.navigation_payload,
-                    failed,
-                );
-            }
-            AppWindowEvent::WindowBounds {
-                view,
-                x,
-                y,
-                width,
-                height,
-            } => session.registry.native_bounds(
-                view,
-                Rect {
-                    x,
-                    y,
-                    width,
-                    height,
-                },
-            ),
-            AppWindowEvent::WindowFocus { view, focused } => {
-                session.registry.native_focus(view, focused)
-            }
-            AppWindowEvent::WindowMaximized { view, maximized } => {
-                session.registry.native_maximized(view, maximized)
-            }
-            AppWindowEvent::WindowFullScreen { view, full_screen } => {
-                session.registry.native_full_screen(view, full_screen)
-            }
-            AppWindowEvent::NavigationReady | AppWindowEvent::LastWindowClosed => {
-                return Err(app_detail(
-                    "window native event",
-                    "legacy lifecycle fact entered managed registry dispatch",
-                ));
-            }
-            #[cfg(any(target_os = "macos", windows))]
-            AppWindowEvent::HostInitialized { .. } => {
-                return Err(app_detail(
-                    "window native event",
-                    "the first host Init milestone belongs only to the lifecycle coordinator",
-                ));
-            }
-            #[cfg(any(target_os = "macos", windows))]
-            AppWindowEvent::DialogFinished { .. } => {
-                return Err(app_detail(
-                    "window native event",
-                    "dialog completion must be dispatched by the event coordinator",
-                ));
-            }
+            other => other,
         };
-        match fact {
-            FactOutcome::Event(fact) => owned_event(
-                current,
-                subscribed,
-                &fact,
-                &mut session.navigation_payload,
-                failed,
-            ),
-            FactOutcome::Unmapped => {
-                eprintln!(
-                    "KELD-CORE-038: native state references an unmapped view; inspect UI event ordering"
-                );
-                Ok(())
-            }
-            FactOutcome::Coalesced | FactOutcome::Suppressed | FactOutcome::Dropped => Ok(()),
-        }
+        let outcome = Self::prepare_window_native_locked(session, native_event)?;
+        self.publish_window_native_locked(session, current, outcome, failed)
     }
-    pub(super) fn window_native_event(
+    #[cfg(any(not(windows), test))]
+    pub(super) fn window_native_event_legacy_policy(
         &self,
         native_event: AppWindowEvent,
     ) -> Result<(), HostAppError> {
@@ -2262,7 +1585,7 @@ impl PrimaryRouterHandle {
             result
         }
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     pub(super) fn cancel_current_window_native_admissions_guarded(
         &self,
     ) -> Result<(), HostAppError> {
@@ -2287,7 +1610,7 @@ impl PrimaryRouterHandle {
         let _transition = self.shutdown.transition_guard();
         // Retire the actual authenticated current caller before stop_reader
         // removes its authority to publish terminal renderer dispositions.
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         let retirement = self
             .current
             .lock()
@@ -2299,7 +1622,7 @@ impl PrimaryRouterHandle {
                     collapse_app_results([admission, compat])
                 })
             });
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         let retirement = Ok(());
         // Ending and physical cleanup are still attempted if retirement failed.
         self.shutdown.stop_reader();
@@ -2319,7 +1642,7 @@ impl PrimaryRouterHandle {
         let mut session = windows
             .lock()
             .map_err(|_| app_detail("window session end", "registry lock poisoned"))?;
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             // Host termination discards an outstanding pre-Init Subscribe
             // without inventing ERR or Subscribed on a retired writer.
@@ -2339,7 +1662,7 @@ impl PrimaryRouterHandle {
                     call.correlation.0
                 );
             }
-            #[cfg(any(target_os = "macos", test))]
+            #[cfg(any(target_os = "macos", windows, test))]
             SessionEffect::OriginalLoadInterrupted(call) => {
                 eprintln!("admitted original load {} interrupted by session end; native custody drains under its existing owner", call.correlation.0);
             }

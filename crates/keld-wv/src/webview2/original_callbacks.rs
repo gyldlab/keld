@@ -20,7 +20,8 @@ use windows::core::{BOOL, HSTRING};
 use super::guarded_navigation::canonical_webview_identity;
 use super::native_text::read_task_text;
 use super::original_navigation::{HOST_ATTEMPT_HEADER, OriginalNavigation};
-use crate::engine::OriginalNavigationFact;
+use super::original_resource::ResourceSession;
+use crate::engine::{NativeNavigationContext, OriginalNavigationFact};
 use crate::native_document::NativeAttempt;
 use crate::renderer_contract::{NativeAttemptObservation, NativeDocumentStamp};
 use crate::resource_intake::{
@@ -28,268 +29,321 @@ use crate::resource_intake::{
 };
 use crate::resource_source::NativeNavigationUrl;
 
-type Observation = Rc<dyn Fn(OriginalNavigationFact)>;
+type Observation = Rc<dyn Fn(Option<NativeNavigationContext>, OriginalNavigationFact)>;
+
+pub(in crate::webview2) mod boundary;
+mod lifetime;
+pub(in crate::webview2) mod registration;
+
+use boundary::{CallbackTurn, FailureSink, boundary, callback, capture_failure, fail_observed};
+use registration::Registration;
 
 pub(super) struct NavigationCallbacks {
     view: ICoreWebView2,
-    starting: Option<i64>,
-    loading: Option<i64>,
-    completed: Option<i64>,
+    navigation: Rc<RefCell<OriginalNavigation>>,
+    failure: FailureSink,
+    _session: Rc<ResourceSession>,
+    starting: Registration,
+    loading: Registration,
+    completed: Registration,
+    install_attempted: Cell<bool>,
+    installing: Cell<bool>,
+    retired: Cell<bool>,
+    controller_closed: Cell<bool>,
 }
 
-impl NavigationCallbacks {
-    pub(super) fn install(
-        view: &ICoreWebView2,
-        navigation: &Rc<RefCell<OriginalNavigation>>,
-        observe: Observation,
-    ) -> windows::core::Result<Self> {
-        let identity = canonical_webview_identity(view)?;
-        let mut installed = Self {
-            view: view.clone(),
-            starting: None,
-            loading: None,
-            completed: None,
-        };
-        installed.starting = Some(install_starting(
-            view,
-            navigation,
-            identity,
-            Rc::clone(&observe),
-        )?);
-        installed.loading = Some(install_loading(
-            view,
-            navigation,
-            identity,
-            Rc::clone(&observe),
-        )?);
-        installed.completed = Some(install_completed(view, navigation, identity, observe)?);
-        Ok(installed)
-    }
+#[derive(Clone, Copy)]
+struct FailureObservation {
+    context: Option<NativeNavigationContext>,
+    attempt: Option<NativeAttempt>,
+    previous: Option<NativeDocumentStamp>,
 }
 
-#[allow(unsafe_code)] // Exact callback getters/subscription, retained only on the creating STA.
+#[allow(unsafe_code)] // Same creating-STA subscription, getters and cancellation.
 fn install_starting(
-    view: &ICoreWebView2,
-    navigation: &Rc<RefCell<OriginalNavigation>>,
+    owner: &NavigationCallbacks,
     identity: usize,
     observe: Observation,
-) -> windows::core::Result<i64> {
-    let state = Rc::downgrade(navigation);
-    let handler = NavigationStartingEventHandler::create(Box::new(move |sender, args| {
-        let Some(args) = args else {
-            return Err(E_POINTER.into());
-        };
-        let Some(state) = state.upgrade() else {
-            // SAFETY: live event args; a released owner never admits navigation.
-            return unsafe { args.SetCancel(true) };
-        };
-        let failure = capture_failure(&state)?;
-        let result = callback(&state, || {
-            let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                starting(&state, identity, sender.as_ref(), &args)
-            }))
-            .unwrap_or_else(|_| Err(E_UNEXPECTED.into()));
-            if !matches!(&observed, Ok((_, true))) {
-                let id = observed.as_ref().ok().map(|(id, _)| *id);
-                cancel_start(&state, &args, id)?;
-            }
-            observed.map(|_| ())
-        });
-        let retired = failure.attempt.is_some()
-            && state
-                .try_borrow()
-                .is_ok_and(|state| state.active_attempt() != failure.attempt);
-        if retired {
-            // Denying an owned start or failing cancellation settles that exact
-            // Started attempt. A successfully canceled page request preserves A.
-            fail_observed(&state, &observe, failure);
-        }
-        result
-    }));
-    let mut token = 0;
-    // SAFETY: view and out-token are live on their owning STA. The native
-    // view retains the handler; partial installation is removed by Drop.
-    unsafe { view.add_NavigationStarting(&handler, &raw mut token) }?;
-    Ok(token)
-}
-
-#[allow(unsafe_code)] // Exact callback getters/subscription, retained only on the creating STA.
-fn install_loading(
-    view: &ICoreWebView2,
-    navigation: &Rc<RefCell<OriginalNavigation>>,
-    identity: usize,
-    observe: Observation,
-) -> windows::core::Result<i64> {
-    let mut token = 0;
-    let state = Rc::downgrade(navigation);
-    let observations = Rc::clone(&observe);
-    let handler = ContentLoadingEventHandler::create(Box::new(move |sender, args| {
-        let state = state.upgrade().ok_or(E_POINTER)?;
-        let failure = capture_failure(&state)?;
-        let result = callback(&state, || {
-            let sender = checked_sender(identity, sender.as_ref())?;
-            let args = args.ok_or(E_POINTER)?;
-            let _credit = callback_credit(&state)?;
-            let mut id = 0;
-            let mut error = BOOL(1);
-            // SAFETY: callback-owned args and valid stack outputs on this STA.
-            unsafe {
-                args.NavigationId(&raw mut id)?;
-                args.IsErrorPage(&raw mut error)?;
-            }
-            let id = NonZeroU64::new(id).ok_or(E_INVALIDARG)?;
-            let uri = source_uri(sender)?;
-            let source = state
-                .try_borrow()
-                .map_err(|_| E_UNEXPECTED)?
-                .source()
-                .clone();
-            let native_url = NativeNavigationUrl::capture_bounded(
-                &uri,
-                uri.encode_utf16().count(),
-                &source.retained_credit_account(),
-            )
-            .map_err(|_| E_INVALIDARG)?;
-            let (stamp, document) = {
-                let mut state = state.try_borrow_mut().map_err(|_| E_UNEXPECTED)?;
-                let stamp = state
-                    .content_loading(id, &uri, error.as_bool(), Instant::now())
-                    .map_err(|_| E_INVALIDARG)?;
-                let document = state.current_document().ok_or(E_UNEXPECTED)?;
-                (stamp, document)
-            };
-            observations(OriginalNavigationFact::Committed {
-                stamp: NativeDocumentStamp(stamp),
-                native_url,
-                document,
-            });
-            Ok(())
-        });
-        if result.is_err() {
-            fail_observed(&state, &observations, failure);
-        }
-        result
-    }));
-    // SAFETY: same retained creating-STA view and a live writable event token.
-    unsafe { view.add_ContentLoading(&handler, &raw mut token) }?;
-    Ok(token)
-}
-
-#[allow(unsafe_code)] // Exact callback getters/subscription, retained only on the creating STA.
-fn install_completed(
-    view: &ICoreWebView2,
-    navigation: &Rc<RefCell<OriginalNavigation>>,
-    identity: usize,
-    observe: Observation,
-) -> windows::core::Result<i64> {
-    let mut token = 0;
-    let state = Rc::downgrade(navigation);
-    let handler = NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
-        let state = state.upgrade().ok_or(E_POINTER)?;
-        let failure = Cell::new(None);
-        let result = callback(&state, || {
-            checked_sender(identity, sender.as_ref())?;
-            let args = args.ok_or(E_POINTER)?;
-            let mut id = 0;
-            let mut success = BOOL(0);
-            // SAFETY: actual native completion args and stack outputs on this STA.
-            unsafe { args.NavigationId(&raw mut id) }?;
-            let id = NonZeroU64::new(id).ok_or(E_INVALIDARG)?;
-            if !state
-                .try_borrow()
-                .map_err(|_| E_UNEXPECTED)?
-                .owns_native_id(id)
-            {
-                return Ok(()); // Late A never borrows B's failure correlation.
-            }
-            failure.set(Some(capture_failure(&state)?));
-            // SAFETY: the actual completion is now correlated before this getter.
-            unsafe { args.IsSuccess(&raw mut success) }?;
-            let (attempt, previous, result) = {
-                let mut state = state.try_borrow_mut().map_err(|_| E_UNEXPECTED)?;
-                let attempt = state.active_attempt();
-                let previous = state.current_document().map(|lease| lease.stamp());
-                (
-                    attempt,
-                    previous,
-                    state.navigation_completed(id, success.as_bool()),
-                )
-            };
-            match result {
-                Some(Ok(stamp)) => observe(OriginalNavigationFact::Finished {
-                    stamp: NativeDocumentStamp(stamp),
-                }),
-                Some(Err(_)) => {
-                    if let Some(attempt) = attempt {
-                        observe(OriginalNavigationFact::Failed {
-                            attempt: NativeAttemptObservation(attempt),
-                            revoked: previous,
-                        });
-                    }
-                }
-                None => {}
-            }
-            Ok(())
-        });
-        if result.is_err()
-            && let Some(failure) = failure.get()
-        {
-            fail_observed(&state, &observe, failure);
-        }
-        result
-    }));
-    // SAFETY: same creating-STA view retains the callback until removal/close.
-    unsafe { view.add_NavigationCompleted(&handler, &raw mut token) }?;
-    Ok(token)
-}
-
-impl Drop for NavigationCallbacks {
-    #[allow(unsafe_code)] // Remove only this owner's successful registrations on its STA.
-    fn drop(&mut self) {
-        // SAFETY: the retained view outlives these exact native subscription tokens.
-        // Controller Close is the final fallback if the runtime rejects removal.
-        unsafe {
-            if let Some(token) = self.starting.take() {
-                let _ = self.view.remove_NavigationStarting(token);
-            }
-            if let Some(token) = self.loading.take() {
-                let _ = self.view.remove_ContentLoading(token);
-            }
-            if let Some(token) = self.completed.take() {
-                let _ = self.view.remove_NavigationCompleted(token);
-            }
-        }
-    }
-}
-
-struct CallbackTurn(Rc<RefCell<OriginalNavigation>>);
-
-impl CallbackTurn {
-    fn enter(state: &Rc<RefCell<OriginalNavigation>>) -> windows::core::Result<Self> {
-        state
-            .try_borrow_mut()
-            .map_err(|_| E_UNEXPECTED)?
-            .enter_navigation_callback();
-        Ok(Self(Rc::clone(state)))
-    }
-}
-
-impl Drop for CallbackTurn {
-    fn drop(&mut self) {
-        if let Ok(mut state) = self.0.try_borrow_mut() {
-            state.leave_navigation_callback();
-        }
-    }
-}
-
-fn callback(
-    state: &Rc<RefCell<OriginalNavigation>>,
-    run: impl FnOnce() -> windows::core::Result<()>,
 ) -> windows::core::Result<()> {
-    // Pure state hold precedes QI/getters; no Rust borrow crosses native entry.
-    let _turn = CallbackTurn::enter(state)?;
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(run))
-        .unwrap_or_else(|_| Err(E_UNEXPECTED.into()))
+    let state = Rc::downgrade(&owner.navigation);
+    let sink = owner.failure.clone();
+    let handler = NavigationStartingEventHandler::create(Box::new(move |sender, args| {
+        let failed = |detail| sink.latch(detail);
+        boundary(&failed, || {
+            let captured = (sender, args); // Native argument disposal stays inside the barrier.
+            let Some(state) = state.upgrade() else {
+                failed("navigation callback lost its retained document owner");
+                let args = captured.1.ok_or(E_POINTER)?;
+                // SAFETY: actual live starting args; a missing owner never admits navigation.
+                return unsafe { args.SetCancel(true) };
+            };
+            let failure = match capture_failure(&state) {
+                Ok(failure) => failure,
+                Err(error) => {
+                    failed("navigation failure capture met a held document-owner borrow");
+                    if let Some(args) = captured.1 {
+                        // SAFETY: same callback args, no Rust source borrow is held.
+                        let _ = unsafe { args.SetCancel(true) };
+                    }
+                    return Err(error);
+                }
+            };
+            let turn = match CallbackTurn::enter(&state, &failed) {
+                Ok(turn) => turn,
+                Err(error) => {
+                    if let Some(args) = captured.1 {
+                        // SAFETY: failure was latched before cancellation; the same actual args are live.
+                        let _ = unsafe { args.SetCancel(true) };
+                    }
+                    return Err(error);
+                }
+            };
+            let result = {
+                let (sender, args) = captured; // Released before CallbackTurn leaves.
+                let Some(args) = args else {
+                    failed("native starting callback omitted its event arguments");
+                    return Err(E_POINTER.into());
+                };
+                let observed = boundary(&failed, || {
+                    starting_result(&state, identity, sender.as_ref(), &args, &failed)
+                });
+                let retired = failure.attempt.is_some()
+                    && state
+                        .try_borrow()
+                        .is_ok_and(|state| state.active_attempt() != failure.attempt);
+                let settled = if retired {
+                    fail_observed(&state, &observe, failure, &failed)
+                } else {
+                    Ok(())
+                };
+                observed.and(settled)
+            };
+            drop(turn);
+            result
+        })
+    }));
+    owner.require_live()?;
+    owner.starting.add(
+        |token| {
+            // SAFETY: this attached Cell owns the writable token for the entire STA call.
+            unsafe { owner.view.add_NavigationStarting(&handler, token.as_ptr()) }
+        },
+        || {
+            owner
+                .failure
+                .latch("native navigation-starting registration panicked");
+        },
+    )
+}
+
+fn starting_result(
+    state: &Rc<RefCell<OriginalNavigation>>,
+    identity: usize,
+    sender: Option<&ICoreWebView2>,
+    args: &ICoreWebView2NavigationStartingEventArgs,
+    failed: &dyn Fn(&'static str),
+) -> windows::core::Result<()> {
+    // Catch the observation itself so denial still runs after any getter panic.
+    let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        starting(state, identity, sender, args)
+    }))
+    .unwrap_or_else(|_| {
+        failed("navigation starting observation panicked");
+        Err(E_UNEXPECTED.into())
+    });
+    if !matches!(&observed, Ok((_, true))) {
+        let id = observed.as_ref().ok().map(|(id, _)| *id);
+        cancel_start(state, args, id)?;
+    }
+    observed.map(|_| ())
+}
+
+#[allow(unsafe_code)] // Same creating-STA subscription and actual native getters.
+fn install_loading(
+    owner: &NavigationCallbacks,
+    identity: usize,
+    observe: Observation,
+) -> windows::core::Result<()> {
+    let state = Rc::downgrade(&owner.navigation);
+    let sink = owner.failure.clone();
+    let handler = ContentLoadingEventHandler::create(Box::new(move |sender, args| {
+        let failed = |detail| sink.latch(detail);
+        boundary(&failed, || {
+            let captured = (sender, args);
+            let Some(state) = state.upgrade() else {
+                failed("content callback lost its retained document owner");
+                return Err(E_POINTER.into());
+            };
+            let failure = capture_failure(&state).inspect_err(|_| {
+                failed("content failure capture met a held document-owner borrow");
+            })?;
+            callback(&state, &failed, || {
+                let (sender, args) = captured;
+                let result = boundary(&failed, || {
+                    let sender = checked_sender(identity, sender.as_ref())?;
+                    let args = args.as_ref().ok_or(E_POINTER)?;
+                    let _credit = callback_credit(&state)?;
+                    let mut id = 0;
+                    let mut error = BOOL(1);
+                    // SAFETY: actual callback-owned args and writable stack outputs.
+                    unsafe {
+                        args.NavigationId(&raw mut id)?;
+                        args.IsErrorPage(&raw mut error)?;
+                    }
+                    let id = NonZeroU64::new(id).ok_or(E_INVALIDARG)?;
+                    let uri = source_uri(sender)?;
+                    let source = state
+                        .try_borrow()
+                        .map_err(|_| E_UNEXPECTED)?
+                        .source()
+                        .clone();
+                    let native_url = NativeNavigationUrl::capture_bounded(
+                        &uri,
+                        uri.encode_utf16().count(),
+                        &source.retained_credit_account(),
+                    )
+                    .map_err(|_| E_INVALIDARG)?;
+                    let (stamp, document) = {
+                        let mut state = state.try_borrow_mut().map_err(|_| E_UNEXPECTED)?;
+                        let stamp = state
+                            .content_loading(id, &uri, error.as_bool(), Instant::now())
+                            .map_err(|_| E_INVALIDARG)?;
+                        let document = state.current_document().ok_or(E_UNEXPECTED)?;
+                        (stamp, document)
+                    };
+                    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                    super::managed_test_control::navigation_post::navigation(
+                        &state,
+                        "content-committed",
+                        Some(id.get()),
+                        Some(true),
+                    );
+                    observe(
+                        failure.context,
+                        OriginalNavigationFact::Committed {
+                            stamp: NativeDocumentStamp(stamp),
+                            native_url,
+                            document,
+                        },
+                    );
+                    Ok(())
+                });
+                if result.is_err() {
+                    let settled = fail_observed(&state, &observe, failure, &failed);
+                    result.and(settled)
+                } else {
+                    result
+                }
+            })
+        })
+    }));
+    owner.require_live()?;
+    owner.loading.add(
+        |token| {
+            // SAFETY: this attached Cell owns the writable token throughout native entry.
+            unsafe { owner.view.add_ContentLoading(&handler, token.as_ptr()) }
+        },
+        || {
+            owner
+                .failure
+                .latch("native content-loading registration panicked");
+        },
+    )
+}
+
+#[allow(unsafe_code)] // Same creating-STA subscription and actual native getters.
+fn install_completed(
+    owner: &NavigationCallbacks,
+    identity: usize,
+    observe: Observation,
+) -> windows::core::Result<()> {
+    let state = Rc::downgrade(&owner.navigation);
+    let sink = owner.failure.clone();
+    let handler = NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
+        let failed = |detail| sink.latch(detail);
+        boundary(&failed, || {
+            let captured = (sender, args);
+            let Some(state) = state.upgrade() else {
+                failed("completion callback lost its retained document owner");
+                return Err(E_POINTER.into());
+            };
+            callback(&state, &failed, || {
+                let (sender, args) = captured;
+                let failure = Cell::new(None);
+                let result = boundary(&failed, || {
+                    checked_sender(identity, sender.as_ref())?;
+                    let args = args.as_ref().ok_or(E_POINTER)?;
+                    let mut id = 0;
+                    let mut success = BOOL(0);
+                    // SAFETY: actual completion args and live stack outputs.
+                    unsafe { args.NavigationId(&raw mut id) }?;
+                    let id = NonZeroU64::new(id).ok_or(E_INVALIDARG)?;
+                    if !state
+                        .try_borrow()
+                        .map_err(|_| E_UNEXPECTED)?
+                        .owns_native_id(id)
+                    {
+                        return Ok(()); // Late A cannot borrow B's failure correlation.
+                    }
+                    failure.set(Some(capture_failure(&state)?));
+                    // SAFETY: actual native ID is correlated before this fallible getter.
+                    unsafe { args.IsSuccess(&raw mut success) }?;
+                    let (context, attempt, previous, result) = {
+                        let mut state = state.try_borrow_mut().map_err(|_| E_UNEXPECTED)?;
+                        let attempt = state.active_attempt();
+                        let previous = state.current_document().map(|lease| lease.stamp());
+                        (
+                            state.host_context(),
+                            attempt,
+                            previous,
+                            state.navigation_completed(id, success.as_bool()),
+                        )
+                    };
+                    match result {
+                        Some(Ok(stamp)) => observe(
+                            context,
+                            OriginalNavigationFact::Finished {
+                                stamp: NativeDocumentStamp(stamp),
+                            },
+                        ),
+                        Some(Err(_)) => {
+                            if let Some(attempt) = attempt {
+                                observe(
+                                    context,
+                                    OriginalNavigationFact::Failed {
+                                        attempt: NativeAttemptObservation(attempt),
+                                        revoked: previous,
+                                    },
+                                );
+                            }
+                        }
+                        None => {}
+                    }
+                    Ok(())
+                });
+                if result.is_err()
+                    && let Some(failure) = failure.get()
+                {
+                    let settled = fail_observed(&state, &observe, failure, &failed);
+                    result.and(settled)
+                } else {
+                    result
+                }
+            })
+        })
+    }));
+    owner.require_live()?;
+    owner.completed.add(
+        |token| {
+            // SAFETY: same actual STA view and attached out-token storage.
+            unsafe { owner.view.add_NavigationCompleted(&handler, token.as_ptr()) }
+        },
+        || {
+            owner
+                .failure
+                .latch("native navigation-completed registration panicked");
+        },
+    )
 }
 
 fn checked_sender(
@@ -384,6 +438,13 @@ fn starting(
             redirected.as_bool(),
             Instant::now(),
         );
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    super::managed_test_control::navigation_post::navigation(
+        state,
+        "navigation-starting",
+        Some(id.get()),
+        Some(admitted),
+    );
     Ok((id, admitted))
 }
 
@@ -393,6 +454,11 @@ fn cancel_start(
     args: &ICoreWebView2NavigationStartingEventArgs,
     id: Option<NonZeroU64>,
 ) -> windows::core::Result<()> {
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    let cancellation =
+        super::original_navigation::cancellation_observation::PendingCancellation::capture(
+            state, id,
+        );
     // SAFETY: same live callback args, no Rust borrow crosses the COM call.
     let result = unsafe { args.SetCancel(true) };
     let mut state = state.try_borrow_mut().map_err(|_| E_UNEXPECTED)?;
@@ -404,49 +470,17 @@ fn cancel_start(
         // Cancellation could not be proven; A must not resume posting.
         state.fail_attempt(attempt);
     }
-    result
-}
-
-#[derive(Clone, Copy)]
-struct FailureObservation {
-    attempt: Option<NativeAttempt>,
-    previous: Option<NativeDocumentStamp>,
-}
-
-fn capture_failure(
-    state: &Rc<RefCell<OriginalNavigation>>,
-) -> windows::core::Result<FailureObservation> {
-    let state = state.try_borrow().map_err(|_| E_UNEXPECTED)?;
-    Ok(FailureObservation {
-        attempt: state.active_attempt(),
-        previous: state.current_document().map(|lease| lease.stamp()),
-    })
-}
-
-fn fail_observed(
-    state: &Rc<RefCell<OriginalNavigation>>,
-    observe: &Observation,
-    failure: FailureObservation,
-) {
-    let Ok(mut navigation) = state.try_borrow_mut() else {
-        return;
-    };
-    let previous = failure.previous;
-    if let Some(attempt) = failure.attempt {
-        navigation.fail_attempt(attempt);
-        drop(navigation);
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            observe(OriginalNavigationFact::Failed {
-                attempt: NativeAttemptObservation(attempt),
-                revoked: previous,
-            });
-        }));
-    } else {
-        drop(navigation);
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            observe(OriginalNavigationFact::Revoked { previous });
-        }));
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    {
+        let record = cancellation.map(|before| before.complete(&state, result.is_ok()));
+        // Neither the observer's read borrow nor this existing mutation borrow
+        // crosses native entry or output. The observation grants no authority.
+        drop(state);
+        if let Some(record) = record {
+            super::original_navigation::cancellation_observation::emit(&record);
+        }
     }
+    result
 }
 
 #[cfg(test)]

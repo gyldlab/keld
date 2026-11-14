@@ -17,6 +17,7 @@
  *   missing facts remain a typed refusal, not an unpackaged default.
  */
 import electronUpdater, { AppUpdater, type Logger } from "../src/index.ts";
+import { app } from "electron";
 
 const { autoUpdater } = electronUpdater;
 
@@ -174,8 +175,23 @@ if (!disableUpdate) {
 await new Promise<void>((resolve) => setImmediate(resolve));
 await new Promise<void>((resolve) => setImmediate(resolve));
 
+// Observe the canonical facade only after the unchanged updater sequence.
+// These are explicit fixture inputs, never a native Host admission receipt.
+function launchFactsReadback(): Record<string, unknown> {
+  try {
+    return {
+      name: app.getName(),
+      root: app.getAppPath(),
+      packaged: app.isPackaged,
+    };
+  } catch (error) {
+    return { code: codeOf(error) };
+  }
+}
+
 process.stdout.write(
   `GH491_RESULT ${JSON.stringify({
+    launchFacts: launchFactsReadback(),
     disableUpdate,
     packagedFacts: process.env.GH491_PACKAGED === "1",
     loggerIdentity,

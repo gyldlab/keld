@@ -72,6 +72,8 @@ impl ResourceSession {
             view.controller_closed.get()
         };
         let worker_quiescent = pending.body_credit.is_some() || pending.completed.is_some();
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        self.observe_pending("cancel-settled", &pending);
         if settled && worker_quiescent {
             let delivered = pending.completed.is_some();
             self.release_pending(pending, delivered);
@@ -82,7 +84,9 @@ impl ResourceSession {
     }
 
     /// One Host-wide worker is retired only at Host shutdown, never per window.
-    pub(super) fn retire_on_ui(&self) -> Result<(), WvError> {
+    pub(in crate::webview2) fn retire_on_ui(&self) -> Result<(), WvError> {
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let first_retirement = !self.retiring.get();
         self.retiring.set(true);
         self.state.borrow_mut().ledger.stop_all();
         let mut after = None;
@@ -96,7 +100,11 @@ impl ResourceSession {
             view.revoke_navigation();
             self.cancel_view(&view);
         }
-        self.reader.borrow_mut().retire();
+        self.reader.borrow_mut().retire()?;
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        if first_retirement {
+            self.observe_resources("session-retiring", None);
+        }
         self.drain_ui()
     }
 }
@@ -115,7 +123,7 @@ impl ResourceView {
 
     /// On Err, the caller MUST retain this owner and must not bypass it with
     /// an unconditional Close: it may be preserving the environment's last guard.
-    pub(super) fn retire_on_ui(&self) -> Result<(), WvError> {
+    pub(in crate::webview2) fn retire_on_ui(&self) -> Result<(), WvError> {
         self.retired.set(true);
         self.revoke_navigation();
         self.session.cancel_view(self);
@@ -134,7 +142,7 @@ impl ResourceView {
 
     /// The caller has just observed this exact retained controller's successful
     /// Close. This is not a worker-exit receipt and never releases active I/O.
-    pub(super) fn controller_closed_on_ui(&self) {
+    pub(in crate::webview2) fn controller_closed_on_ui(&self) {
         if self.controller_closed.replace(true) {
             return;
         }
@@ -144,6 +152,9 @@ impl ResourceView {
         let emergency = self.emergency.borrow_mut().take();
         drop(emergency);
         self.release_closed_registration();
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        self.session
+            .observe_resources("controller-closed", Some(self.id));
     }
 
     pub(super) fn release_closed_registration(&self) {

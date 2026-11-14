@@ -14,6 +14,8 @@ pub(crate) struct PendingOriginalEvent {
     consumed_sent: bool,
     quiesced: Option<bool>,
     quiesced_sent: bool,
+    #[cfg(windows)]
+    original_role: Option<crate::renderer_bridge::RendererRoleWitness>,
 }
 
 impl PendingOriginalEvent {
@@ -36,7 +38,33 @@ impl PendingOriginalEvent {
             consumed_sent: false,
             quiesced: None,
             quiesced_sent: false,
+            #[cfg(windows)]
+            original_role: None,
         })
+    }
+
+    /// Retain this already-admitted Windows event's original caller. This is
+    /// metadata only; actual publication still needs that same Core fence.
+    #[cfg(windows)]
+    pub(crate) fn begin_windows(
+        owner: &NativeDocumentOwner,
+        id: u32,
+        lease: CheckedNativeDocumentLease,
+        credential: String,
+        role: crate::renderer_bridge::RendererRoleWitness,
+    ) -> Result<Self, &'static str> {
+        if !role.is_live() {
+            return Err("original event caller is already retired");
+        }
+        let mut event = Self::begin(owner, id, lease, credential)?;
+        event.original_role = Some(role);
+        Ok(event)
+    }
+
+    /// Original allocation survives logical retirement for cleanup only.
+    #[cfg(windows)]
+    pub(crate) fn original_role(&self) -> Option<&crate::renderer_bridge::RendererRoleWitness> {
+        self.original_role.as_ref()
     }
 
     pub(crate) const fn id(&self) -> u32 {
@@ -120,16 +148,29 @@ impl PendingOriginalEvent {
         Ok(true)
     }
 
+    #[cfg(any(target_os = "macos", test))]
     pub(crate) fn retirement_controls_quiesced(&self) -> bool {
         self.quiesced_sent && (self.consumed_sent || !self.lease.is_current())
     }
 
+    #[cfg(any(
+        test,
+        all(target_os = "macos", feature = "profile-test-hooks", debug_assertions)
+    ))]
     pub(crate) const fn consumed_sent(&self) -> bool {
         self.consumed_sent
     }
+    #[cfg(any(
+        test,
+        all(target_os = "macos", feature = "profile-test-hooks", debug_assertions)
+    ))]
     pub(crate) const fn native_quiescence(&self) -> Option<bool> {
         self.quiesced
     }
+    #[cfg(any(
+        test,
+        all(target_os = "macos", feature = "profile-test-hooks", debug_assertions)
+    ))]
     pub(crate) const fn quiescence_sent(&self) -> bool {
         self.quiesced_sent
     }

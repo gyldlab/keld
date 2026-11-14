@@ -106,6 +106,8 @@ fn router_for_bound(
     // Deliberately empty: no paired-stream fixture current or fabricated identity
     // is installed and then relabeled as Runtime-authenticated.
     let handle = PrimaryRouterHandle {
+        #[cfg(windows)]
+        primary_writer: None,
         current: Arc::new(Mutex::new(None)),
         readers: Arc::new(Mutex::new(HashMap::new())),
         window_ready: Arc::new(AtomicBool::new(false)),

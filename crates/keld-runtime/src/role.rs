@@ -41,6 +41,11 @@ const STAGED_LAUNCH_PHASE: &str = "staged Bun launch admission";
 /// would run before the qualified canonical capture. Every staged launch removes it.
 pub const BUN_OPTIONS_ENV: &str = "BUN_OPTIONS";
 
+#[cfg(windows)]
+mod source_recheck;
+#[cfg(windows)]
+pub use source_recheck::RoleSourceRecheck;
+
 fn staged_launch_refusal(detail: String) -> RuntimeError {
     RuntimeError::Lifecycle {
         phase: STAGED_LAUNCH_PHASE,
@@ -565,6 +570,8 @@ pub struct RoleConfig {
     current_dir: Option<PathBuf>,
     staged_bun_launch: Option<(PathBuf, bool)>,
     #[cfg(windows)]
+    source_recheck: Option<Arc<dyn RoleSourceRecheck>>,
+    #[cfg(windows)]
     windows_primary_families: Option<crate::windows_job::WindowsPrimaryFamilies>,
     restart_policy: RestartPolicy,
     admission_timeout: Duration,
@@ -612,6 +619,8 @@ impl RoleConfig {
             env_remove: Vec::new(),
             current_dir: None,
             staged_bun_launch: None,
+            #[cfg(windows)]
+            source_recheck: None,
             #[cfg(windows)]
             windows_primary_families: None,
             restart_policy: RestartPolicy::default(),
@@ -966,6 +975,13 @@ impl ChildPreparer for RolePreparer {
     type Lease = RoleGenerationLease;
 
     fn prepare(&mut self, attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError> {
+        #[cfg(windows)]
+        if let Some(source) = &self.config.source_recheck {
+            source.recheck().map_err(|source| RuntimeError::Lifecycle {
+                phase: "retained role source recheck",
+                source,
+            })?;
+        }
         #[cfg(all(target_os = "linux", debug_assertions))]
         if let Some(witness) = &self.config.debug_primary_attempt_witness {
             use std::io::Write as _;

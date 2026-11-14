@@ -115,6 +115,7 @@ impl AdmittedWebAppSource {
         self.source
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn scheme(&self) -> &str {
         &self.scheme
     }
@@ -167,6 +168,21 @@ impl NativeNavigationUrl {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.allocation.text
+    }
+
+    /// Observe whether two credited carriers retain the same URL allocation.
+    /// This is storage identity only: it does not establish source authority,
+    /// native document liveness, or permission to publish for a current role.
+    #[must_use]
+    pub fn same_allocation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.allocation, &other.allocation)
+    }
+
+    /// Observe the existing URL allocation's actual source-account charge.
+    /// This is storage custody only, never source/document/route authority.
+    #[cfg(windows)]
+    pub(crate) fn charged_to(&self, account: &Arc<AtomicUsize>) -> bool {
+        self.allocation.credit.covers(account, 1)
     }
 
     /// Admit another shared URL alias against the same source budget.

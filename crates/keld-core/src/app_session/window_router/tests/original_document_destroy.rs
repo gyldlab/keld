@@ -1,6 +1,6 @@
 //! Actual Core writer/registry proof with state-only modeled native decisions.
 //! No forged lease, real native admission, Runtime auth or physical OS proof.
-use super::{Fixture, TestResult, fact, owner_from, reply};
+use super::{LegacyPolicyFixture, TestResult, fact, owner_from, reply};
 use keld_ipc::CorrelationId;
 use keld_ipc::codec::decode;
 use keld_ipc::link::read_frame;
@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 #[test]
 fn original_document_destroy_waits_for_release_and_keeps_fact_reply_order() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let window = fixture.build(1, 700)?;
@@ -32,12 +32,12 @@ fn original_document_destroy_waits_for_release_and_keeps_fact_reply_order() -> T
             window,
             Arc::clone(&admission),
         )?;
-    fixture
-        .handle
-        .window_native_event(AppWindowEvent::OriginalDocumentDestroyDecision {
+    fixture.handle.window_native_event_legacy_policy(
+        AppWindowEvent::OriginalDocumentDestroyDecision {
             view: WebviewId(700),
             admission,
-        })?;
+        },
+    )?;
     assert!(
         fixture.commands.try_recv().is_err(),
         "native admission already owns physical release"
@@ -47,7 +47,7 @@ fn original_document_destroy_waits_for_release_and_keeps_fact_reply_order() -> T
     reply(&mut fixture, 21, WindowResponse::AlreadyClosing)?;
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowReleased {
+        .window_native_event_legacy_policy(AppWindowEvent::WindowReleased {
             view: WebviewId(700),
         })?;
     fact(&mut fixture, &WindowEvent::Destroyed { window })?;
@@ -67,7 +67,7 @@ fn original_document_destroy_waits_for_release_and_keeps_fact_reply_order() -> T
 #[test]
 fn original_document_destroy_missing_source_is_nonfatal_and_generic_destroy_unchanged() -> TestResult
 {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let window = fixture.build(1, 700)?;
@@ -93,7 +93,7 @@ fn original_document_destroy_missing_source_is_nonfatal_and_generic_destroy_unch
 
 #[test]
 fn original_document_destroy_is_cancelled_before_current_take_interleaving() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let window = fixture.build(1, 700)?;
@@ -142,7 +142,7 @@ fn original_document_destroy_is_cancelled_before_current_take_interleaving() -> 
 fn poisoned_registry_cancels_native_ticket_before_current_take_and_keeps_failure() -> TestResult {
     use std::io::Read as _;
     use std::sync::atomic::Ordering;
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let window = fixture.build(1, 700)?;

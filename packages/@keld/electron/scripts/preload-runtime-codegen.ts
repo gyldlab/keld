@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createHash } from "node:crypto";
+import { ECHO_CHANNEL } from "@keld/kipc";
 
 // Same package-owned Bun generation pattern as the canonical kipc codegen.
 // The generated browser code is never hand-edited or read from the app tree.
@@ -25,6 +26,7 @@ const result = await Bun.build({
   format: "iife",
   minify: false,
   sourcemap: "none",
+  define: { __KELD_ECHO_CHANNEL__: JSON.stringify(ECHO_CHANNEL) },
 });
 if (!result.success || result.outputs.length !== 1)
   throw new Error("browser preload bundle failed: " + result.logs.join("; "));

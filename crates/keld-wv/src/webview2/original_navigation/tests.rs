@@ -1,5 +1,5 @@
 //! Component discrimination using real retained files plus modeled native facts.
-//! These tests do not stand in for actual WebView2 callback/race qualification.
+//! These tests do not stand in for actual `WebView2` callback/race qualification.
 
 use super::*;
 use crate::resource_intake::{ORIGINAL_WEBAPP_LIMITS, TaskLedger};
@@ -29,7 +29,11 @@ impl Harness {
         let prepared = self.navigation.prepare(&query).unwrap();
         let uri = prepared.uri().to_owned();
         let header = prepared.header_value().to_owned();
+        let actual_input = Rc::clone(&prepared);
         let attempt = self.navigation.begin_load(prepared, self.now).unwrap();
+        // Explicitly model the same native invocation entering and returning S_OK.
+        assert!(actual_input.begin_native_call());
+        assert!(actual_input.native_returned(true));
         let lease = self.navigation.resource_lease().unwrap();
         assert!(self.navigation.current_document().is_none());
         (attempt, uri, header, lease)
@@ -61,7 +65,7 @@ impl Harness {
                 &AtomicBool::new(false),
             )
             .unwrap();
-        assert!(!bytes.bytes.is_empty());
+        assert_ne!(bytes.bytes, [] as [u8; 0]);
         // Models the native adapter's successful SetResponse(200) observation.
         assert!(self.navigation.document_served(ticket, lease, self.now));
         ticket
@@ -70,7 +74,12 @@ impl Harness {
     fn committed(&mut self, native: u64) -> (String, CheckedNativeDocumentLease) {
         let (_, uri, header, lease) = self.begin(None);
         self.start(native, &uri, &header);
-        self.serve(native as usize, lease, &uri, &header);
+        self.serve(
+            usize::try_from(native).expect("modeled native identity fits task key"),
+            lease,
+            &uri,
+            &header,
+        );
         self.navigation
             .content_loading(id(native), &uri, false, self.now)
             .unwrap();
@@ -325,3 +334,5 @@ fn callback_reentry_before_post_admission_suppresses_the_call() {
     assert!(h.navigation.begin_post(&a));
     assert!(h.navigation.finish_post());
 }
+
+mod native_call;

@@ -4,8 +4,9 @@
 //! No marker, native callback or fake Monitor observation is accepted as OS proof.
 
 use super::{
-    AppWindowEvent, CallError, CorrelationId, Fixture, FrameKind, LifecycleResponse, Rect,
-    TestResult, WindowEvent, fact, install_successor, native_state, snapshot, subscription_refusal,
+    AppWindowEvent, CallError, CorrelationId, FrameKind, LegacyPolicyFixture, LifecycleResponse,
+    Rect, TestResult, WindowEvent, fact, install_successor, native_state, snapshot,
+    subscription_refusal,
 };
 use keld_ipc::channel_table::{Authority, ReceiveClass};
 use keld_ipc::codec::decode;
@@ -14,8 +15,8 @@ use keld_ipc::window::{DesktopFact, DesktopFacts};
 use keld_ipc::{LIFECYCLE_CHANNEL, SubscribeRefusal};
 use keld_wv::{AppDesktopDisplay, AppDesktopFacts, AppDesktopRect};
 
-fn desktop_fixture() -> TestResult<Fixture> {
-    let fixture = Fixture::new(Some(true))?;
+fn desktop_fixture() -> TestResult<LegacyPolicyFixture> {
+    let fixture = LegacyPolicyFixture::new(Some(true))?;
     // Existing GH531 component fixtures intentionally keep their legacy
     // Subscribe behavior. Select approved S1 explicitly for these new cases.
     fixture
@@ -78,17 +79,17 @@ fn expected(epoch: u64, value: Option<bool>) -> WindowEvent {
     }
 }
 
-fn sample(fixture: &Fixture, value: Option<bool>) -> TestResult {
+fn sample(fixture: &LegacyPolicyFixture, value: Option<bool>) -> TestResult {
     fixture
         .handle
-        .window_native_event(AppWindowEvent::DesktopObserved {
+        .window_native_event_legacy_policy(AppWindowEvent::DesktopObserved {
             facts: value.map(observed),
         })?;
     Ok(())
 }
 
-fn pending(fixture: &Fixture, correlation: u32) -> TestResult {
-    fixture.handle.subscribe_window(
+fn pending(fixture: &LegacyPolicyFixture, correlation: u32) -> TestResult {
+    fixture.handle.subscribe_window_legacy_policy(
         &fixture.caller()?,
         CorrelationId(correlation),
         keld_ipc::channel_table::WINDOW.wire_id(),
@@ -96,7 +97,7 @@ fn pending(fixture: &Fixture, correlation: u32) -> TestResult {
     Ok(())
 }
 
-fn accepted(fixture: &mut Fixture, correlation: u32) -> TestResult {
+fn accepted(fixture: &mut LegacyPolicyFixture, correlation: u32) -> TestResult {
     let (header, bytes) = read_frame(&mut fixture.peer)?;
     assert_eq!(
         (header.kind, header.channel, header.corr),
@@ -113,7 +114,7 @@ fn accepted(fixture: &mut Fixture, correlation: u32) -> TestResult {
     Ok(())
 }
 
-fn unavailable(fixture: &mut Fixture, correlation: u32) -> TestResult {
+fn unavailable(fixture: &mut LegacyPolicyFixture, correlation: u32) -> TestResult {
     let (header, bytes) = read_frame(&mut fixture.peer)?;
     assert_eq!(
         (header.kind, header.channel, header.corr),
@@ -127,7 +128,7 @@ fn unavailable(fixture: &mut Fixture, correlation: u32) -> TestResult {
     Ok(())
 }
 
-fn duplicate_refusal(fixture: &mut Fixture, correlation: u32) -> TestResult {
+fn duplicate_refusal(fixture: &mut LegacyPolicyFixture, correlation: u32) -> TestResult {
     let (header, bytes) = read_frame(&mut fixture.peer)?;
     assert_eq!(
         (header.kind, header.channel, header.corr),
@@ -182,7 +183,7 @@ fn desktop_duplicate_of_original_pending_correlation_retires_the_link() -> TestR
     drop(fixture.owner_commands);
     let failure = fixture
         .handle
-        .subscribe_window(
+        .subscribe_window_legacy_policy(
             &caller,
             CorrelationId(51),
             keld_ipc::channel_table::WINDOW.wire_id(),
@@ -214,7 +215,7 @@ fn desktop_duplicate_of_original_pending_correlation_retires_the_link() -> TestR
     // no old-generation writer and cannot complete the retired c.
     fixture
         .handle
-        .window_native_event(AppWindowEvent::DesktopObserved {
+        .window_native_event_legacy_policy(AppWindowEvent::DesktopObserved {
             facts: Some(observed(false)),
         })?;
     Ok(())

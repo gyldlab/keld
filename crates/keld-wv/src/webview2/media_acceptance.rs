@@ -1184,7 +1184,7 @@ mod tests {
     /// The renderer-boot loop of every fixture here: Ready is the navigation milestone,
     /// so loop entry arms no Init watch.
     fn run_renderer_until_quit(
-        engine: WebView2Engine,
+        mut engine: WebView2Engine,
         commands: mpsc::Receiver<crate::AppWindowCommand>,
         events: mpsc::Sender<crate::AppWindowEvent>,
     ) -> Result<(), WvError> {
@@ -1304,14 +1304,12 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("fixture clock")
             .as_nanos();
-        super::super::known_local_app_data()
-            .expect("resolve fixture LocalAppData")
-            .join("Keld")
-            .join("test-fixtures")
-            .join(format!(
-                "keld-profile-acceptance-{label}-{}-{nonce}",
-                std::process::id()
-            ))
+        // The managed test runner owns TEMP/TMP. Keep fixture profiles in
+        // that task directory instead of writing into the real user profile.
+        std::env::temp_dir().join(format!(
+            "keld-profile-acceptance-{label}-{}-{nonce}",
+            std::process::id()
+        ))
     }
 
     fn profile_fixture_engine(

@@ -12,6 +12,9 @@ use super::{TestResult, owner, ready, snapshot};
 use crate::app_session::tests::gh499_graph::original_selection_with_versions;
 use keld_ipc::CorrelationId;
 use keld_ipc::window::WindowRef;
+#[cfg(windows)]
+use keld_wv::renderer_contract::NativeDocumentFixture as MacNativeDocumentFixture;
+#[cfg(target_os = "macos")]
 use keld_wv::wkwebview::MacNativeDocumentFixture;
 use keld_wv::{NativeNavigationContext, WebviewId};
 
@@ -210,7 +213,7 @@ fn recovery_refuses_incomplete_or_pending_effects_before_retirement_normalizes_s
                     owner(1),
                     CorrelationId(3),
                     window,
-                    Arc::new(keld_wv::wkwebview::OriginalDocumentDestroyAdmission::new()),
+                    Arc::new(keld_wv::renderer_contract::OriginalDocumentDestroyAdmission::new()),
                 )?;
                 registry.cancel_native_admissions(owner(1), |_| {});
             }

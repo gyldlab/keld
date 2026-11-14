@@ -9,10 +9,12 @@
  * per case, never inherited (#491 note: the macOS non-strict spawn inherits the
  * operator shell).
  */
-import { join } from "node:path";
+import { join, toNamespacedPath } from "node:path";
 import { expect, test } from "bun:test";
 
 const fixtures = join(import.meta.dir, "..", "fixtures");
+const fixtureRoot =
+  process.platform === "win32" ? toNamespacedPath(fixtures) : fixtures;
 
 /** Kill switch only; every fixture exits by itself once its sequence settles. */
 const FIXTURE_KILL_MS = 10_000;
@@ -98,13 +100,17 @@ function runFixture(
     cmd: [
       process.execPath,
       // Fixture data through the canonical facts reader, not native Host proof.
+      // Windows uses its explicit target selector and native namespace spelling.
       ...(launchFacts === "development"
         ? [
+            ...(process.platform === "win32"
+              ? ["--define=__KELD_WINDOWS_HOST__:true"]
+              : []),
             `--define=__KELD_HOST_LAUNCH_FACTS__:${JSON.stringify({
               schema: 1,
               kind: "development",
               name: "GH491 replay fixture",
-              root: fixtures,
+              root: fixtureRoot,
             })}`,
           ]
         : []),
@@ -264,6 +270,11 @@ test("electron-updater.replay.env-absent-unpackaged: with the variable absent an
   expect(run.result).toMatchObject({
     disableUpdate: false,
     packagedFacts: false,
+    launchFacts: {
+      name: "GH491 replay fixture",
+      root: fixtureRoot,
+      packaged: false,
+    },
     loggerIdentity: true,
     levelsLanded: true,
     setFeedURLReturn: "undefined",

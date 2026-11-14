@@ -796,5 +796,8 @@ mod original_load_context;
 #[cfg(all(target_os = "macos", debug_assertions))]
 mod original_document_destroy;
 
-#[cfg(all(target_os = "macos", debug_assertions))]
+#[cfg(all(any(target_os = "macos", windows), debug_assertions))]
 mod original_recovery;
+
+#[cfg(windows)]
+mod owner_allocation;

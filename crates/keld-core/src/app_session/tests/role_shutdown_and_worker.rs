@@ -202,8 +202,8 @@ fn retire_answers_are_bounded_when_the_peer_stops_reading() {
 /// named pipe, so the host-to-role direction is filled by writes under a
 /// short deadline until one cannot complete, while nothing reads it. A
 /// Windows write deadline is per handle, so no clone can read the writer's;
-/// the router records the deadline on the writer itself before each
-/// answer. The one 023 ran under `HOST_ANSWER_BUDGET`, retirement still
+/// the exact retained `WriterLink` observes the physical writer's configured
+/// remaining absolute budget before entry. The one 023 ran under `HOST_ANSWER_BUDGET`, retirement still
 /// succeeds and closes the link, and the role reads exactly the pattern
 /// bytes accepted before retirement, then the close: no `ERR` byte, and
 /// no byte of a timed-out write. *Negative controls:* leaving the writer's
@@ -241,15 +241,38 @@ fn retire_answers_are_bounded_when_the_peer_stops_reading() {
         .recv_timeout(Duration::from_secs(5))
         .expect("worker took the FS job");
 
+    let (observed, deadline) = mpsc::sync_channel(1);
+    t.router
+        .handle()
+        .current_primary_writer_target()
+        .expect("canonical writer target")
+        .expect("original A")
+        .observe_next_write_deadline_for_test(observed);
     ANSWER_WRITE_DEADLINES.with_borrow_mut(|seen| *seen = Some(Vec::new()));
+    let started = Instant::now();
     t.router
         .handle()
         .retire_generation(1)
         .expect("retirement succeeds although its ERR cannot be written");
+    let actual = deadline
+        .recv_timeout(Duration::from_secs(1))
+        .expect("the sole writer observed its actual configured handle deadline")
+        .expect("the answer has a finite native write deadline");
+    assert!(
+        !actual.is_zero() && actual <= HOST_ANSWER_BUDGET,
+        "the 023 native write uses only the remaining original answer budget: {actual:?}"
+    );
+    assert!(
+        started.elapsed()
+            < APP_LINK_IO_DEADLINE
+                .checked_sub(Duration::from_secs(1))
+                .expect("the app-link deadline exceeds the one-second fixture margin"),
+        "a non-reading peer cannot hold retirement for the ordinary writer deadline"
+    );
     assert_eq!(
         ANSWER_WRITE_DEADLINES.with_borrow_mut(Option::take),
-        Some(vec![Some(HOST_ANSWER_BUDGET)]),
-        "the one 023 write ran under the answer budget, not the writer's deadline"
+        Some(Vec::new()),
+        "the Windows retirement must not enter the legacy raw writer"
     );
     let mut received = Vec::new();
     client

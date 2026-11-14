@@ -33,12 +33,22 @@ pub struct EchoResponse {
 ///
 /// Returns [`IpcError::Codec`] if the request cannot be decoded or the response encoded.
 pub fn handle_echo(payload: &[u8]) -> Result<Vec<u8>, IpcError> {
+    encode(&prepare_echo(payload)?)
+}
+
+/// Prepare the same canonical Echo reply without allocating an encoded output.
+/// Bounded writer owners reserve ordinary custody before calling this function,
+/// then count and encode this reply into their exact caller-owned storage.
+///
+/// # Errors
+///
+/// Returns the existing codec error for malformed, padded or truncated input.
+pub fn prepare_echo(payload: &[u8]) -> Result<EchoResponse, IpcError> {
     let req: EchoRequest = decode(payload)?;
-    let res = EchoResponse {
+    Ok(EchoResponse {
         message: req.message,
         count: req.count,
-    };
-    encode(&res)
+    })
 }
 
 #[cfg(test)]
@@ -91,6 +101,31 @@ mod tests {
         let res: EchoResponse = decode(&out).expect("decode");
         assert_eq!(res.message, "héllo 🦀");
         assert_eq!(res.count, u32::MAX);
+    }
+
+    #[test]
+    fn prepared_reply_preserves_canonical_bytes_and_all_decode_refusals() {
+        for (message, count) in [("", 0), ("h?llo ??", u32::MAX)] {
+            let input = encode(&EchoRequest {
+                message: message.to_owned(),
+                count,
+            })
+            .expect("request");
+            let prepared = prepare_echo(&input).expect("same existing semantic owner");
+            assert_eq!(
+                encode(&prepared).expect("canonical output"),
+                handle_echo(&input).expect("existing API")
+            );
+            assert_eq!(prepared.message, message);
+            assert_eq!(prepared.count, count);
+            let mut padded = input.clone();
+            padded.push(0);
+            assert!(prepare_echo(&padded).is_err());
+            assert!(handle_echo(&padded).is_err());
+            assert!(prepare_echo(&input[..input.len() - 1]).is_err());
+        }
+        assert!(prepare_echo(&[]).is_err());
+        assert!(prepare_echo(&[0xff, 0xff]).is_err());
     }
 
     #[test]

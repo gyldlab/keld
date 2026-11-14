@@ -37,7 +37,9 @@ impl ResourceSession {
             }
         };
         let mut staged = Some(work);
-        let accepted = self.reader.borrow_mut().submit(&mut staged, &self.proxy);
+        let accepted = reader::with_reader_on_ui(&self.reader, |reader| {
+            reader.submit(&mut staged, &self.proxy)
+        });
         if accepted.is_err() {
             let Some(work) = staged else {
                 self.fault.set(Some(
@@ -147,6 +149,15 @@ impl ResourceSession {
             return self.refuse_pending(pending);
         };
         let policy = pending.document.then(|| pending.source.response_policy());
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let policy = policy.map(|ordinary| {
+            if pending.view_id == view.id && Arc::ptr_eq(&pending.source, &view.source) {
+                view.fixture_inline
+                    .select(ordinary, &pending.selected, body)
+            } else {
+                ordinary
+            }
+        });
         native.response = match native::response(&native.environment, body, policy) {
             Ok(response) => Some(response),
             Err(_) => return self.refuse_pending(pending),
@@ -253,6 +264,8 @@ impl ResourceSession {
     pub(super) fn release_pending(&self, pending: Pending, delivery: bool) {
         let ticket = pending.ticket;
         let view = pending.view_id;
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let observed = self.snapshot_pending(&pending);
         // All native releases and owned buffer/credit drops occur outside the
         // RefCell while this ledger ticket still blocks another native delivery.
         drop(pending);
@@ -264,6 +277,8 @@ impl ResourceSession {
             }
             state.ledger.release(ticket)
         };
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        self.observe_released(observed, result.is_ok());
         if result.is_err() {
             self.latch_failure(
                 "resource credit released before its real work quiesced",

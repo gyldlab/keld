@@ -3,7 +3,7 @@
 use super::profile_release::raw_phase;
 use super::{
     FIXTURE_DEADLINE, blank_spec, failure, profile_fixture_engine, profile_fixture_root,
-    run_renderer_until_quit, run_with_watchdog,
+    run_with_watchdog,
 };
 use crate::profile::{ProfileIdentity, WebProfileSelection};
 use crate::webview2::media_acceptance::{exit_wake_control, release_receipt_control};
@@ -37,6 +37,10 @@ fn cleanup_live_parent(hwnd: HWND, owner_thread: u32) -> Result<(), WvError> {
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep the actual native wait, frozen product observations and same owned cleanup together in this bounded fixture case."
+)]
 fn case(hello: bool, inject_error: bool) -> Result<(), WvError> {
     let root = profile_fixture_root("exit-wake-retirement");
     std::fs::create_dir_all(&root).map_err(failure)?;
@@ -69,17 +73,30 @@ fn case(hello: bool, inject_error: bool) -> Result<(), WvError> {
         }
         let (commands, receiver) = mpsc::channel();
         let (events, _events_alive) = mpsc::channel();
+        let mut retained_engine = Some(engine);
         let result = if hello {
             // SAFETY: queue WM_CLOSE on our own live native window, on its owning
             // thread. No pointer payload; the real hello event loop performs Close.
             // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-postmessagew
             unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) }.map_err(failure)?;
-            engine.run_until_closed()
+            retained_engine
+                .take()
+                .ok_or_else(|| failure("missing fixture engine"))?
+                .run_until_closed()
         } else {
             commands.send(AppWindowCommand::Quit).map_err(failure)?;
-            run_renderer_until_quit(engine, receiver, events)
+            retained_engine
+                .as_mut()
+                .ok_or_else(|| failure("missing fixture engine"))?
+                .run_app_until_quit(
+                    receiver,
+                    events,
+                    crate::webview2::AppReadyTrigger::NavigationReady,
+                    || {},
+                    |_| Ok::<(), WvError>(()),
+                )
         };
-        // First operation after the consumed engine returns: no pump or
+        // First operation after the engine call returns: no pump or
         // profile read can turn an eventually-destroyed HWND into a pass.
         // SAFETY: read-only query of the captured fixture HWND.
         let hwnd_live_at_return = unsafe { IsWindow(Some(hwnd)) }.as_bool();
@@ -91,6 +108,45 @@ fn case(hello: bool, inject_error: bool) -> Result<(), WvError> {
             cleanup_live_parent(hwnd, owner_thread)?;
         }
         let phase = raw_phase(&plan)?;
+        if !hello {
+            let engine = retained_engine
+                .as_ref()
+                .ok_or_else(|| failure("missing actual engine"))?;
+            if inject_error {
+                let run = engine
+                    .retained_run
+                    .as_ref()
+                    .ok_or_else(|| failure("failed retirement dropped the actual run owner"))?;
+                let release = run.release.as_ref().ok_or_else(|| {
+                    failure("failed retirement dropped the original release owner")
+                })?;
+                let original = std::rc::Rc::as_ptr(release);
+                let weak = std::rc::Rc::downgrade(release);
+                if !matches!(&*release.process.borrow(),
+                    Some(crate::webview2::BrowserProcess::Watched(wake))
+                    if matches!(wake.wait, crate::webview2::WaitRegistration::Unproved))
+                    || release.retire_loop_wait().is_ok()
+                    || weak
+                        .upgrade()
+                        .is_none_or(|same| std::rc::Rc::as_ptr(&same) != original)
+                    || engine.event_loop.is_some()
+                    || engine.profile.is_none()
+                    || run.bridge.is_none()
+                    || !run.managed_drained()
+                {
+                    return Err(failure(
+                        "failed wait lost custody, retried or granted restart authority",
+                    ));
+                }
+                println!(
+                    "KELD_WAKE_CUSTODY original_run=true original_release=true phase=unproved second_retirement=refused"
+                );
+            } else if engine.retained_run.is_some() || engine.event_loop.is_some() {
+                return Err(failure(
+                    "healthy retirement retained a run or granted restart authority",
+                ));
+            }
+        }
         let facts = exit_wake_control::Scope::observations()?;
         let (receipts, injected_receipts) = release_receipt_control::Scope::observations();
         println!(

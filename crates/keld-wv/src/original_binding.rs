@@ -67,16 +67,19 @@ impl OriginalBinding {
     /// The adapter observed an actual native change, but cannot prove that its
     /// prepared metadata still describes it. An ordinary rejected pre-native
     /// request must not discard an otherwise valid prepared attempt.
+    #[cfg(any(target_os = "macos", test))]
     pub(crate) fn invalidate_prepared(&mut self) {
         self.prepared = None;
     }
 
     /// Keep this after the adapter replaces its retained native script owners,
     /// and before its existing queue cancellation. No native object is dropped.
+    #[cfg(any(target_os = "macos", test))]
     pub(crate) fn clear_for_attempt(&mut self) {
         self.committed = None;
         self.clear_credentials();
     }
+    #[cfg(any(target_os = "macos", test))]
     pub(crate) fn clear_credentials(&mut self) {
         self.app_credential = None;
         self.trusted_credential = None;
@@ -141,6 +144,10 @@ impl OriginalBinding {
             OriginalCredentialSlot::Trusted => self.trusted_credential.as_deref(),
         }
     }
+    #[cfg(any(
+        test,
+        all(target_os = "macos", feature = "profile-test-hooks", debug_assertions)
+    ))]
     pub(crate) const fn has_prepared_attempt(&self) -> bool {
         self.prepared.is_some()
     }

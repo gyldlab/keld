@@ -1,4 +1,4 @@
-//! Native filesystem component tests; no JavaScript or WebView success is claimed.
+//! Native filesystem component tests; no JavaScript or `WebView` success is claimed.
 
 use super::*;
 use sha2::{Digest as _, Sha256};

@@ -1,7 +1,7 @@
 //! GH542 single checked native document/attempt owner.
 //!
 //! This is a *state* authority, not an IPC, source, URL or file grant. One
-//! `NativeDocumentOwner` belongs to one real native WebView lifetime. The platform native
+//! `NativeDocumentOwner` belongs to one real native `WebView` lifetime. The platform native
 //! navigation adapter supplies the actual main-frame commit evidence; Bun,
 //! page-supplied URLs and bridge credentials cannot call these transitions.
 
@@ -126,6 +126,10 @@ pub(crate) struct NativeDocumentOwner {
 }
 
 impl NativeDocumentOwner {
+    pub(crate) const fn view(&self) -> WebviewId {
+        self.view
+    }
+
     pub(crate) fn lease_for(&self, expected: NativeCommittedStamp) -> Option<NativeDocumentLease> {
         if self.current_stamp() != Some(expected) {
             return None;
