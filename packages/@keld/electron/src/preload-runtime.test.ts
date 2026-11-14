@@ -292,6 +292,107 @@ describe("original preload runtime only", () => {
       f.restore();
     }
   });
+  test("replacing completed same-path watches retires prior callbacks without losing other paths", () => {
+    const f = fixture();
+    try {
+      const path = "/test/owned.xml";
+      const other = "/test/other.xml";
+      let oldEvents = 0;
+      let latestEvents = 0;
+      let otherEvents = 0;
+      const acknowledge = (delivery: number) => {
+        const send = f.sends().at(-1)!;
+        const request = decodeEndpointArguments(
+          new Uint8Array(send.payload as number[]),
+        )[0] as { reqId: number };
+        f.event("mainResp", [{ reqId: request.reqId, data: true }], delivery);
+      };
+      f.call(
+        "request",
+        { action: "watchFile", path: other, listener: () => otherEvents++ },
+        () => {},
+        () => {},
+      );
+      acknowledge(1);
+      for (let i = 0; i < 85; i++) {
+        const before = f.sends().length;
+        f.call(
+          "request",
+          {
+            action: "watchFile",
+            path,
+            listener: i === 84 ? () => latestEvents++ : () => oldEvents++,
+          },
+          () => {},
+          () => {},
+        );
+        expect(f.sends()).toHaveLength(before + 1);
+        acknowledge(i + 2);
+      }
+      f.event(
+        "fileChanged",
+        [{ path, curr: { size: 1 }, prev: { size: 0 } }],
+        100,
+      );
+      f.event(
+        "fileChanged",
+        [{ path: other, curr: { size: 2 }, prev: { size: 1 } }],
+        101,
+      );
+      expect(oldEvents).toBe(0);
+      expect(latestEvents).toBe(1);
+      expect(otherEvents).toBe(1);
+      const before = f.sends().length;
+      f.call(
+        "request",
+        { action: "isFullscreen" },
+        () => {},
+        () => {},
+      );
+      expect(f.sends()).toHaveLength(before + 1);
+    } finally {
+      f.restore();
+    }
+  });
+  test("a replaced watch retains its response callbacks until the older response completes", () => {
+    const f = fixture();
+    try {
+      const path = "/test/pending.xml";
+      let oldResponse = 0;
+      let oldEvents = 0;
+      let latestEvents = 0;
+      f.call(
+        "request",
+        { action: "watchFile", path, listener: () => oldEvents++ },
+        () => oldResponse++,
+        () => {},
+      );
+      const first = decodeEndpointArguments(
+        new Uint8Array(f.sends().at(-1)!.payload as number[]),
+      )[0] as { reqId: number };
+      f.call(
+        "request",
+        { action: "watchFile", path, listener: () => latestEvents++ },
+        () => {},
+        () => {},
+      );
+      const second = decodeEndpointArguments(
+        new Uint8Array(f.sends().at(-1)!.payload as number[]),
+      )[0] as { reqId: number };
+      f.event("mainResp", [{ reqId: second.reqId, data: true }], 1);
+      f.event("mainResp", [{ reqId: first.reqId, data: true }], 2);
+      expect(oldResponse).toBe(1);
+      f.event(
+        "fileChanged",
+        [{ path, curr: { size: 3 }, prev: { size: 2 } }],
+        3,
+      );
+      expect(oldEvents).toBe(0);
+      expect(latestEvents).toBe(1);
+    } finally {
+      f.restore();
+    }
+  });
   test("local registration has no send dependency and once removes before reentry", () => {
     const f = fixture();
     try {
