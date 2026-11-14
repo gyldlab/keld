@@ -459,6 +459,64 @@ class SelectionTests(unittest.TestCase):
             missing = "\n".join(line for line in self.route().splitlines() if not line.startswith("local_" + gate + "="))
             self.assertTrue(ci_local.selection(missing, ["fmt-check", "clippy", "test"])[gate])
 
+class RouterPythonCompatibilityTests(unittest.TestCase):
+    """Execute the router fixture's real edits with the other interpreter poisoned."""
+
+    def test_mermaid_edits_use_platform_selected_python(self):
+        source = Path(__file__).resolve().parent / "ci_changes_test.sh"
+        script = source.read_text(encoding="utf-8")
+        selectors = re.findall(r'case "\$\(uname -s\)" in\n.*?\nesac', script, re.DOTALL)
+        selectors = [selector for selector in selectors if "python_command=" in selector]
+        self.assertEqual(len(selectors), 2, "both interpreter selection sites must be covered")
+        self.assertEqual(selectors[0], selectors[1], "fixture selection must stay consistent")
+        blocks = re.findall(
+            r"""^[^\n]+ - "\$temp_dir/(?:diagram|renamed)\.md" <<'PY'\n.*?^PY$""",
+            script, re.MULTILINE | re.DOTALL)
+        self.assertEqual(len(blocks), 3, "exercise all three actual Mermaid edit commands")
+        bash = native_ci_bash()
+        self.assertTrue(Path(bash).is_file(), "router compatibility coverage requires native Bash")
+        original = '# Diagram\nA["external"]\n```mermaid\n'
+        prose = '# Prose-only edit\nA["external"]\n```mermaid\n'
+        changed = '# Prose-only edit\nA["changed external"]\n```mermaid\n'
+        malformed = '# Prose-only edit\nA["changed external"]\n```mermaidx\n'
+        cases = (("diagram.md", original, prose), ("diagram.md", prose, changed),
+                 ("renamed.md", changed, malformed))
+        setup = r'''set -euo pipefail
+uname() { printf '%s\n' "$KELD_TEST_UNAME"; }
+python() {
+    printf '%s\n' python >> "$KELD_TEST_TRACE"
+    [[ "$KELD_TEST_SELECTED" == python ]] || return 97
+    "$KELD_TEST_PYTHON" "$@"
+}
+python3() {
+    printf '%s\n' python3 >> "$KELD_TEST_TRACE"
+    [[ "$KELD_TEST_SELECTED" == python3 ]] || return 97
+    "$KELD_TEST_PYTHON" "$@"
+}
+temp_dir="$KELD_TEST_ROOT"
+'''
+        for system, selected in (("MINGW64_NT-10.0", "python"), ("MSYS_NT-10.0", "python"),
+                                 ("Darwin", "python3"), ("Linux", "python3")):
+            for block, (filename, before, after) in zip(blocks, cases):
+                with self.subTest(system=system, filename=filename, expected=after):
+                    with tempfile.TemporaryDirectory(prefix="keld-router-python-") as temporary:
+                        root = Path(temporary)
+                        edited = root / filename
+                        edited.write_text(before, encoding="utf-8", newline="\n")
+                        trace = root / "interpreter-trace"
+                        environment = os.environ.copy()
+                        environment.update(KELD_TEST_UNAME=system, KELD_TEST_SELECTED=selected,
+                                           KELD_TEST_PYTHON=Path(sys.executable).as_posix(),
+                                           KELD_TEST_ROOT=root.as_posix(),
+                                           KELD_TEST_TRACE=trace.as_posix())
+                        result = subprocess.run(
+                            [bash, "--noprofile", "--norc", "-c", setup + selectors[0] + "\n" + block],
+                            env=environment, capture_output=True, text=True, encoding="utf-8", timeout=30)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(trace.read_text(encoding="utf-8").splitlines(), [selected])
+                        self.assertEqual(edited.read_text(encoding="utf-8"), after)
+
+
 class FmtIncludedBashCompatibilityTests(unittest.TestCase):
     """Exercise the production Rust discovery helper without Bash's mapfile builtin."""
 
