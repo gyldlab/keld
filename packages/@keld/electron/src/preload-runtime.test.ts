@@ -292,6 +292,94 @@ describe("original preload runtime only", () => {
       f.restore();
     }
   });
+  test("successive completed watches retire superseded callbacks but keep other paths", () => {
+    const f = fixture();
+    try {
+      const received: number[] = [];
+      const repeated = "/test/replaced.xml";
+      const other = "/test/other.xml";
+      const watch = (path: string, tag: number): number => {
+        const before = f.sends().length;
+        f.call(
+          "request",
+          { action: "watchFile", path, listener: () => received.push(tag) },
+          () => {},
+          () => {},
+        );
+        expect(f.sends()).toHaveLength(before + 1);
+        const sent = decodeEndpointArguments(
+          new Uint8Array(f.sends().at(-1)!.payload as number[]),
+        )[0] as { reqId: number };
+        return sent.reqId;
+      };
+      f.event("mainResp", [{ reqId: watch(other, -1), data: true }], 1);
+      for (let i = 0; i < 75; i++) {
+        const id = watch(repeated, i);
+        f.event("mainResp", [{ reqId: id, data: true }], i + 2);
+      }
+      expect(
+        f.event(
+          "fileChanged",
+          [{ path: repeated, curr: { size: 3 }, prev: { size: 2 } }],
+          100,
+        ).disposition,
+      ).toEqual({ status: "consumed" });
+      expect(received).toEqual([74]);
+      expect(
+        f.event(
+          "fileChanged",
+          [{ path: other, curr: { size: 8 }, prev: { size: 7 } }],
+          101,
+        ).disposition,
+      ).toEqual({ status: "consumed" });
+      expect(received).toEqual([74, -1]);
+      f.call("request", { action: "isFullscreen" }, () => {}, () => {});
+      const last = decodeEndpointArguments(
+        new Uint8Array(f.sends().at(-1)!.payload as number[]),
+      )[0] as { reqId: number };
+      f.event("mainResp", [{ reqId: last.reqId, data: false }], 102);
+    } finally {
+      f.restore();
+    }
+  });
+  test("superseded pending watch retains its real response before callback retirement", () => {
+    const f = fixture();
+    try {
+      const acknowledgements: number[] = [];
+      const changes: number[] = [];
+      const request = (tag: number) => {
+        f.call(
+          "request",
+          {
+            action: "watchFile",
+            path: "/test/pending.xml",
+            listener: () => changes.push(tag),
+          },
+          () => acknowledgements.push(tag),
+          () => {},
+        );
+        return (
+          decodeEndpointArguments(
+            new Uint8Array(f.sends().at(-1)!.payload as number[]),
+          )[0] as { reqId: number }
+        ).reqId;
+      };
+      const old = request(1);
+      const current = request(2);
+      f.event("mainResp", [{ reqId: old, data: true }], 1);
+      expect(acknowledgements).toEqual([1]);
+      f.event("mainResp", [{ reqId: current, data: true }], 2);
+      expect(acknowledgements).toEqual([1, 2]);
+      f.event(
+        "fileChanged",
+        [{ path: "/test/pending.xml", curr: { size: 2 }, prev: { size: 1 } }],
+        3,
+      );
+      expect(changes).toEqual([2]);
+    } finally {
+      f.restore();
+    }
+  });
   test("local registration has no send dependency and once removes before reentry", () => {
     const f = fixture();
     try {
