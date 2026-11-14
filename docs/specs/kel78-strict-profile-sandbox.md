@@ -563,7 +563,7 @@ Electron `sandbox` / `appSandbox: "off"` while `requested` is `Strict` is
 returning an error: no replacement child. T1 implements this state machine
 without claiming OS containment.
 
-Profile [amendment](kel78-explicit-legacy-profile/index.md):
+[amendment](kel78-explicit-legacy-profile/index.md):
 `keld.permissions.jsonc.profile` (`strict`/`legacy`; absence != legacy).
 No config/sandbox alias or failed-Strict fallback.
 GH #588 integrates; 1/2 no-profile, 3/4 profiled.
