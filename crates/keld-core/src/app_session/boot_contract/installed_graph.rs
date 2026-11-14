@@ -47,9 +47,14 @@ fn deserialize_optional_version<'de, D>(deserializer: D) -> Result<Option<String
 where
     D: Deserializer<'de>,
 {
-    // A declared value cannot disappear. Windows runtime version consumption
-    // remains unavailable, so every present string is refused below.
-    String::deserialize(deserializer).map(Some)
+    // Only omission selects None; null/non-string/empty/oversize cannot vanish.
+    let value = String::deserialize(deserializer)?;
+    if value.is_empty() || value.contains('\0') || value.len() > 4096 {
+        return Err(serde::de::Error::custom(
+            "declared version must be nonempty, NUL-free and at most 4096 UTF-8 bytes",
+        ));
+    }
+    Ok(Some(value))
 }
 
 fn deserialize_optional_single_instance<'de, D>(
@@ -95,6 +100,8 @@ struct PreloadDocument {
 pub(in crate::app_session) struct SelectedGraphBoot {
     pub(in crate::app_session) graph_sha256: [u8; 32],
     pub(in crate::app_session) source: SelectedRendererSource,
+    #[cfg(windows)]
+    pub(in crate::app_session) version: Option<String>,
     #[cfg(target_os = "macos")]
     pub(in crate::app_session) single_instance: Option<SingleInstanceDeclaration>,
     #[cfg(target_os = "macos")]
@@ -135,13 +142,10 @@ pub(super) fn parse_selected_graph_shape(
         ));
     }
     #[cfg(windows)]
-    if document.version.is_some()
-        || document.single_instance.is_some()
-        || document.application_name_for_user_agent.is_some()
-    {
+    if document.single_instance.is_some() || document.application_name_for_user_agent.is_some() {
         return Err(boot_error(
             "selected-graph native runtime metadata is unavailable on Windows",
-            "A declared version, singleInstance or applicationNameForUserAgent requires its qualified Windows runtime owner.",
+            "singleInstance or applicationNameForUserAgent requires its qualified Windows runtime owner.",
         ));
     }
     let source = SelectedRendererSource::new(
@@ -169,6 +173,7 @@ pub(super) fn parse_selected_graph_shape(
         development_graph: Some(SelectedGraphBoot {
             graph_sha256: decode_digest(&document.graph.content_sha256)?,
             source,
+            version: document.version,
         }),
     })
 }
@@ -413,3 +418,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, windows))]
+#[path = "installed_graph/windows_version_tests.rs"]
+mod windows_version_tests;

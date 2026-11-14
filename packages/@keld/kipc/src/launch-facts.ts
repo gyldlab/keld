@@ -10,6 +10,63 @@ import { isProxy as isLaunchFactsProxy } from "node:util/types";
 // The qualified Host fixes this parse-time constant before application imports.
 declare const __KELD_HOST_LAUNCH_FACTS__: unknown;
 
+// The same Windows Host launch pins this literal before imports. It selects
+// only bounded development schemas1–3; it grants no role or resource access.
+declare const __KELD_WINDOWS_HOST__: boolean;
+declare const __KELD_WINDOWS_DESKTOP_SNAPSHOT__: boolean;
+
+/** @internal Captured by the canonical preload before any preprocessed app bundle. */
+export const windowsHostSelected =
+  typeof __KELD_WINDOWS_HOST__ === "boolean" && __KELD_WINDOWS_HOST__;
+
+/** @internal Host-selected native capability; no environment or app setter. */
+export const windowsDesktopSnapshotSelected =
+  windowsHostSelected &&
+  typeof __KELD_WINDOWS_DESKTOP_SNAPSHOT__ === "boolean" &&
+  __KELD_WINDOWS_DESKTOP_SNAPSHOT__;
+
+/** Exact retained Windows local-drive spelling; never normalize or probe it. */
+function windowsDevelopmentRoot(value: string): boolean {
+  return value.startsWith("\\\\?\\") && windowsDrivePath(value.slice(4));
+}
+
+function windowsDrivePath(value: string): boolean {
+  if (
+    value.length < 3 ||
+    !/^[A-Za-z]$/.test(value.slice(0, 1)) ||
+    value[1] !== ":" ||
+    value[2] !== "\\"
+  )
+    return false;
+  const tail = value.slice(3);
+  return tail === "" || tail.split("\\").every(windowsPathComponent);
+}
+
+function windowsPathComponent(value: string): boolean {
+  return (
+    value !== "" &&
+    value !== "." &&
+    value !== ".." &&
+    !/[\u0000-\u001f/:*?"<>|]/.test(value)
+  );
+}
+
+/** Actual KnownFolder metadata may be redirected to a native UNC path. */
+function windowsKnownFolderPath(value: string): boolean {
+  const unc = value.startsWith("\\\\?\\UNC\\")
+    ? value.slice(8)
+    : value.startsWith("\\\\") && !value.startsWith("\\\\?\\")
+      ? value.slice(2)
+      : undefined;
+  if (unc !== undefined) {
+    const parts = unc.split("\\");
+    return parts.length >= 2 && parts.every(windowsPathComponent);
+  }
+  return value.startsWith("\\\\?\\")
+    ? windowsDrivePath(value.slice(4))
+    : windowsDrivePath(value);
+}
+
 export interface DevelopmentHostLaunchFacts {
   readonly schema: 1 | 2 | 3 | 4 | 5;
   readonly kind: "development";
@@ -138,7 +195,10 @@ export function captureHostLaunchFacts(
   if (
     !validText(record.name) ||
     !validText(record.root) ||
-    !record.root.startsWith("/")
+    !(windowsHostSelected
+      ? (schema === 1 || schema === 2 || schema === 3) &&
+        windowsDevelopmentRoot(record.root)
+      : record.root.startsWith("/"))
   )
     return invalidLaunchFacts();
 
@@ -203,7 +263,9 @@ export function captureHostLaunchFacts(
       const path: unknown = descriptor.value;
       if (
         !validText(path) ||
-        !path.startsWith("/") ||
+        (windowsHostSelected
+          ? !windowsKnownFolderPath(path)
+          : !path.startsWith("/")) ||
         (schema === 7 && !canonicalPath(path))
       )
         return invalidLaunchFacts();

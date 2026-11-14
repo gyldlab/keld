@@ -578,7 +578,12 @@ fn installed_user_agent_reader_uses_the_native_value_bound_without_fallback() {
 #[test]
 fn renderer_source_presence_uses_the_existing_exported_root_scanner() {
     use super::renderer_source_declared_from_config_ts as declared;
-    assert!(declared("export default {initialWindow:'none',rendererSource:{root:'web',entry:'index.html'}}").expect("literal selection"));
+    assert!(
+        declared(
+            "export default {initialWindow:'none',rendererSource:{root:'web',entry:'index.html'}}"
+        )
+        .expect("literal selection")
+    );
     assert!(!declared("export default {initialWindow:'none',nested:{rendererSource:{root:'x'}},name:'rendererSource'}").expect("nested and string decoys"));
     assert!(declared("export default {initialWindow:'none',rendererSource:{root:'a'},rendererSource:{root:'b'}}").is_err());
     assert!(declared("export default {initialWindow:'none',...dynamic}").is_err());

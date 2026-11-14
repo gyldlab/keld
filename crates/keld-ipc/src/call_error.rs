@@ -147,6 +147,26 @@ impl From<&DenyReason> for CallError {
     }
 }
 
+/// Encode the canonical privileged `Err` body into its reserved writer storage.
+///
+/// This is the bounded preparation counterpart of [`write_call_error`]. It uses
+/// the same `CallError` serializer and preserves code/message bytes unchanged;
+/// it adds no broker-specific error shape, validation or permission authority.
+/// The owning writer reserves capacity before calling it, retains the encoded
+/// allocation through its original physical completion, and supplies the exact
+/// admitted channel and correlation when it writes the final `Err` frame.
+///
+/// # Errors
+///
+/// Returns [`IpcError::Codec`] if encoding fails or the reserved buffer is small.
+/// Partial output after an error must never be admitted to the physical writer.
+pub fn encode_call_error_into<'buffer>(
+    error: &CallError,
+    buffer: &'buffer mut [u8],
+) -> Result<&'buffer [u8], IpcError> {
+    crate::codec::encode_into(error, buffer)
+}
+
 /// Writes `error` as the correlated `Err` reply to one privileged `Call`.
 ///
 /// This is the sanctioned `Err` writer for every privileged channel; brokers
@@ -186,6 +206,40 @@ mod tests {
         0x0d, b'K', b'E', b'L', b'D', b'-', b'G', b'U', b'A', b'R', b'D', b'0', b'0', b'1', 0x01,
         b'x',
     ];
+
+    #[test]
+    fn bounded_error_body_matches_sanctioned_physical_writer_and_refuses_small_storage() {
+        for error in [
+            pinned_value(),
+            CallError::admission_capacity(),
+            CallError::generation_retired(),
+            CallError::quit_drained(),
+        ] {
+            let mut wire = Vec::new();
+            write_call_error(
+                &mut wire,
+                crate::channel_table::FS.id(),
+                CorrelationId(17),
+                &error,
+            )
+            .expect("canonical privileged Err writer");
+            let length = crate::codec::encoded_len(&error).expect("canonical size");
+            let mut exact = vec![0; length].into_boxed_slice();
+            let pointer = exact.as_ptr();
+            let encoded = encode_call_error_into(&error, &mut exact).expect("reserved error body");
+            assert_eq!(
+                encoded.as_ptr(),
+                pointer,
+                "encode into the existing allocation"
+            );
+            assert_eq!(&wire[crate::HEADER_LEN..], encoded);
+            assert_eq!(
+                decode::<CallError>(encoded).expect("exact error schema"),
+                error
+            );
+            assert!(encode_call_error_into(&error, &mut exact[..length - 1]).is_err());
+        }
+    }
 
     fn pinned_value() -> CallError {
         CallError {

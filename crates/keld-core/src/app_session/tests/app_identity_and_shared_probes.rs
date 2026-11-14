@@ -130,6 +130,8 @@ fn stale_and_foreign_link_contexts_are_inert_before_echo_decode() {
     let (writer, _peer) = UnixStream::pair().expect("actual app link pair");
     let current_stop = Arc::new(AtomicBool::new(false));
     let current = Mutex::new(Some(ActivePrimaryGeneration {
+        #[cfg(windows)]
+        writer_link: None,
         identity: PrimaryLinkIdentity::Fixture,
         attempt: 2,
         writer,
@@ -167,6 +169,8 @@ fn current_g2_context_dispatches_original_echo_and_stopped_context_is_inert() {
         .expect("existing observer bound");
     let stop = Arc::new(AtomicBool::new(false));
     let current = Mutex::new(Some(ActivePrimaryGeneration {
+        #[cfg(windows)]
+        writer_link: None,
         identity: PrimaryLinkIdentity::Fixture,
         attempt: 2,
         writer,

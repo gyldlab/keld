@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { ECHO_CHANNEL } from "@keld/kipc";
 import * as runtime from "./preload-runtime";
 import {
   encodeEndpointArguments,
@@ -39,6 +40,15 @@ function fixture(
   options: { frame?: boolean; missingPort?: boolean; numeric?: boolean } = {},
 ) {
   const previous = globalThis.window;
+  const previousEchoChannel = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "__KELD_ECHO_CHANNEL__",
+  );
+  // Raw-module tests supply the same canonical input as the browser bundler.
+  Object.defineProperty(globalThis, "__KELD_ECHO_CHANNEL__", {
+    value: ECHO_CHANNEL,
+    configurable: true,
+  });
   const dom = new EventTarget();
   const lifecycle = new EventTarget();
   const posted: Message[] = [];
@@ -106,12 +116,20 @@ function fixture(
   const receive = (text: unknown, source: unknown = port) => {
     for (const fn of callbacks) fn({ data: text, source });
   };
-  const restore = () =>
+  const restore = () => {
     Object.defineProperty(globalThis, "window", {
       value: previous,
       writable: true,
       configurable: true,
     });
+    if (previousEchoChannel)
+      Object.defineProperty(
+        globalThis,
+        "__KELD_ECHO_CHANNEL__",
+        previousEchoChannel,
+      );
+    else Reflect.deleteProperty(globalThis, "__KELD_ECHO_CHANNEL__");
+  };
   return {
     page,
     port,

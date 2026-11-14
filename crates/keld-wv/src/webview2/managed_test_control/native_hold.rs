@@ -18,16 +18,42 @@ const FILE_RECHECK: Duration = Duration::from_millis(10);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HoldPoint {
     Destroyed,
+    OriginalResourceResult,
+    RendererOutcomes,
+    RendererAfterEvent,
+    RendererFreshOffers,
+    OriginalPostSynthetic,
     BuildPump,
+    BuildPumpPrefill,
+    BuildPumpPrefillConsumed,
 }
 
 #[derive(Debug)]
 pub(super) struct NativeHold {
-    point: HoldPoint,
+    point: Cell<HoldPoint>,
     directory: PathBuf,
 }
 
 impl NativeHold {
+    pub(super) fn outcome_hold(&self) -> Option<super::outcome_hold::OutcomeHold> {
+        use super::outcome_hold::{HoldMode, OutcomeHold};
+        let mode = match self.point.get() {
+            HoldPoint::RendererOutcomes | HoldPoint::RendererFreshOffers => HoldMode::BeforeIntake,
+            HoldPoint::RendererAfterEvent => HoldMode::AfterNextEvent,
+            _ => return None,
+        };
+        Some(OutcomeHold::new(self.directory.clone(), mode))
+    }
+
+    pub(super) fn synthetic_post_directory(&self) -> Option<&Path> {
+        (self.point.get() == HoldPoint::OriginalPostSynthetic).then_some(&self.directory)
+    }
+
+    /// Captured test-control metadata only. The existing Reader owns held work.
+    pub(super) fn original_resource_result_directory(&self) -> Option<&Path> {
+        (self.point.get() == HoldPoint::OriginalResourceResult).then_some(&self.directory)
+    }
+
     pub(super) fn parse(value: &str) -> Result<Self, WvError> {
         let (point, directory) = value.split_once(':').ok_or_else(|| {
             invalid_hook(
@@ -37,11 +63,17 @@ impl NativeHold {
         })?;
         let point = match point {
             "destroyed" => HoldPoint::Destroyed,
+            "original-resource-result" => HoldPoint::OriginalResourceResult,
+            "renderer-outcomes" => HoldPoint::RendererOutcomes,
+            "renderer-after-event" => HoldPoint::RendererAfterEvent,
+            "renderer-fresh-offers" => HoldPoint::RendererFreshOffers,
+            "original-post-synthetic" => HoldPoint::OriginalPostSynthetic,
             "build-pump" => HoldPoint::BuildPump,
+            "build-pump-prefill" => HoldPoint::BuildPumpPrefill,
             _ => {
                 return Err(invalid_hook(
                     TEST_WINDOWS_NATIVE_HOLD_ENV,
-                    "expected destroyed or build-pump",
+                    "expected destroyed, build-pump, build-pump-prefill, original-resource-result, renderer-outcomes, renderer-after-event, renderer-fresh-offers or original-post-synthetic",
                 ));
             }
         };
@@ -52,13 +84,35 @@ impl NativeHold {
                 "expected an absolute directory",
             ));
         }
-        Ok(Self { point, directory })
+        Ok(Self {
+            point: Cell::new(point),
+            directory,
+        })
+    }
+
+    /// Select only the first actual parked Destroy command in this fixture.
+    /// The existing releasing row owns the receipt and all later observations.
+    pub(super) fn take_destroyed_prefill(&self) -> bool {
+        if self.point.get() != HoldPoint::BuildPumpPrefill {
+            return false;
+        }
+        self.point.set(HoldPoint::BuildPumpPrefillConsumed);
+        true
+    }
+
+    fn holds_builds(&self) -> bool {
+        matches!(
+            self.point.get(),
+            HoldPoint::BuildPump
+                | HoldPoint::BuildPumpPrefill
+                | HoldPoint::BuildPumpPrefillConsumed
+        )
     }
 
     /// Select a real native first-show stimulus for one exact held build.
     /// This never supplies or repairs the independent Created snapshot.
     pub(super) fn initially_focused(&self, build: u64) -> Result<bool, WvError> {
-        let inactive = self.point == HoldPoint::BuildPump
+        let inactive = self.holds_builds()
             && control_file_exists(&self.directory.join(format!("{build}.initially-inactive")))?;
         if inactive {
             eprintln!("BUILD_INITIAL_INACTIVE {build}");
@@ -67,7 +121,7 @@ impl NativeHold {
     }
 
     pub(super) fn destroyed(&self, hwnd: isize) -> Result<(), WvError> {
-        if self.point != HoldPoint::Destroyed {
+        if self.point.get() != HoldPoint::Destroyed {
             return Ok(());
         }
         let release = self.directory.join("release");
@@ -87,7 +141,7 @@ impl NativeHold {
     }
 
     pub(super) fn build_pump(&self, build: u64, deadline: Instant) -> Result<(), WvError> {
-        if self.point != HoldPoint::BuildPump {
+        if !self.holds_builds() {
             return Ok(());
         }
         check_launch_deadline(deadline)?;
@@ -124,7 +178,7 @@ impl NativeHold {
     }
 }
 
-fn control_file_exists(path: &Path) -> Result<bool, WvError> {
+pub(super) fn control_file_exists(path: &Path) -> Result<bool, WvError> {
     match std::fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(true),
         Ok(_) => Err(invalid_hook(

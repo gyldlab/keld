@@ -34,11 +34,12 @@ fn validate_limits(max_utf16_units: usize, max_utf8_bytes: usize) -> windows::co
 
 impl TaskText {
     #[allow(unsafe_code)] // Same bounded scan/conversion for one or paired native outputs.
-    fn copy_bounded(
+    fn copy_bounded_admitted<T>(
         &self,
         max_utf16_units: usize,
         max_utf8_bytes: usize,
-    ) -> windows::core::Result<String> {
+        admit: impl FnOnce(usize, usize) -> windows::core::Result<T>,
+    ) -> windows::core::Result<(String, T)> {
         if self.0.is_null() {
             return Err(E_POINTER.into());
         }
@@ -67,12 +68,21 @@ impl TaskText {
                 return Err(E_INVALIDARG.into());
             }
         }
+        let admitted = admit(length, bytes)?;
         let mut result = String::new();
         result.try_reserve_exact(bytes).map_err(|_| E_OUTOFMEMORY)?;
         for ch in char::decode_utf16(units.iter().copied()) {
             result.push(ch.map_err(|_| windows::core::Error::from(E_INVALIDARG))?);
         }
-        Ok(result)
+        if result.capacity() > bytes {
+            return Err(E_OUTOFMEMORY.into());
+        }
+        Ok((result, admitted))
+    }
+
+    fn copy_bounded(&self, units: usize, bytes: usize) -> windows::core::Result<String> {
+        self.copy_bounded_admitted(units, bytes, |_, _| Ok(()))
+            .map(|(text, ())| text)
     }
 }
 
@@ -85,6 +95,22 @@ pub(super) fn read_task_text(
     let mut text = TaskText(PWSTR::null());
     get(&raw mut text.0)?;
     text.copy_bounded(max_utf16_units, max_utf8_bytes)
+}
+
+/// Same task-allocation owner and strict scan; the pure admission hook runs
+/// after measuring but BEFORE any owned UTF8 allocation. The caller prepays its
+/// permitted native UTF16 snapshot before invoking the getter. This cannot
+/// control an oversized allocation performed internally by `WebView2` itself.
+pub(super) fn read_task_text_admitted<T>(
+    get: impl FnOnce(*mut PWSTR) -> windows::core::Result<()>,
+    max_utf16_units: usize,
+    max_utf8_bytes: usize,
+    admit: impl FnOnce(usize, usize) -> windows::core::Result<T>,
+) -> windows::core::Result<(String, T)> {
+    validate_limits(max_utf16_units, max_utf8_bytes)?;
+    let mut text = TaskText(PWSTR::null());
+    get(&raw mut text.0)?;
+    text.copy_bounded_admitted(max_utf16_units, max_utf8_bytes, admit)
 }
 
 /// `GetCurrentHeader` returns two independent task allocations in one call. Keep
@@ -214,5 +240,76 @@ mod tests {
         );
         assert!(malformed.is_err());
         assert_eq!(FREED_TASK_STRINGS.get(), 4);
+    }
+    #[allow(unsafe_code)] // Writes only the same initialized task-text output.
+    fn single_getter(out: *mut PWSTR, units: &[u16]) {
+        // SAFETY: read_task_text_admitted supplies this live writable output.
+        unsafe {
+            out.write(native_text(units));
+        }
+    }
+
+    #[test]
+    fn pre_copy_admission_sees_exact_lengths_and_refusal_frees_native_snapshot() {
+        FREED_TASK_STRINGS.set(0);
+        let seen = std::cell::Cell::new(None);
+        let refused = read_task_text_admitted(
+            |out| {
+                single_getter(out, &[0x00e9]);
+                Ok(())
+            },
+            1,
+            2,
+            |units, bytes| {
+                seen.set(Some((units, bytes)));
+                Err::<(), _>(E_OUTOFMEMORY.into())
+            },
+        );
+        assert!(refused.is_err());
+        assert_eq!(seen.get(), Some((1, 2)));
+        assert_eq!(FREED_TASK_STRINGS.get(), 1);
+        let (copied, marker) = read_task_text_admitted(
+            |out| {
+                single_getter(out, &[0xd83d, 0xde00]);
+                Ok(())
+            },
+            2,
+            4,
+            |units, bytes| Ok((units, bytes)),
+        )
+        .unwrap();
+        assert_eq!(marker, (2, 4));
+        assert_eq!(copied.as_bytes(), &[0xf0, 0x9f, 0x98, 0x80]);
+        assert_eq!(copied.capacity(), 4);
+        assert_eq!(
+            FREED_TASK_STRINGS.get(),
+            2,
+            "native snapshot is gone before caller receives text"
+        );
+    }
+
+    #[test]
+    fn native_bounds_and_bad_utf16_refuse_before_pre_copy_admission() {
+        FREED_TASK_STRINGS.set(0);
+        let calls = std::cell::Cell::new(0);
+        for units in [&[0xd800][..], &[u16::from(b'a'), u16::from(b'b')][..]] {
+            assert!(
+                read_task_text_admitted(
+                    |out| {
+                        single_getter(out, units);
+                        Ok(())
+                    },
+                    1,
+                    4,
+                    |_, _| {
+                        calls.set(calls.get() + 1);
+                        Ok(())
+                    },
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(calls.get(), 0);
+        assert_eq!(FREED_TASK_STRINGS.get(), 2);
     }
 }

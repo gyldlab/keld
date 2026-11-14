@@ -1,7 +1,7 @@
 # Original Windows bridge
 Owner/load: webview-windows-original-bridge/always.
-Extends ../AGENTS.md. GH1184; keep the parent native-boundary invariants.
+Extends ../AGENTS.md; GH1184. Keep parent invariants.
 
-- post.rs only: creating-STA ICoreWebView2::PostWebMessageAsString on the retained view, with bounded immutable NUL-terminated UTF16 and the same Core CONTROL reservation. Reuse the parent's bounded Source/identity helpers before the final exact Core role/document/epoch fence; release guards, then enter the retained API without intervening native work, allocation or wait.
-- Only the fixed ready:false carrier accepts RouteRetirementPermit. Native return is not the renderer's consumer receipt; an entered or outcome-unknown operation cannot become a never-written cancellation.
-- installer.rs only: creating-STA AddScriptToExecuteOnDocumentCreated and raw completion. Retain counted UTF16 through return plus callback, or actual same-controller Close; no nested pump. Real ACK gates navigation; retired/late/duplicate completions cannot promote.
+- post/entry.rs alone: retained STA PostWebMessageAsString. Immutable bounded UTF16 stays on its existing CONTROL/DATA/call charge. Exact Core role/document/epoch fence; drop guards, then immediate API: no allocation, native work or wait. Only fixed ready:false accepts RouteRetirementPermit. Return is not consumption; entered/unknown is never never-written.
+- callbacks.rs: attached WebMessageReceived/DOMContentLoaded tokens, actual NavigationId; retain through same Close and callback exit. capture.rs: actual Source/WebMessageAsJson via bounded task-string owner; prepay controlled copies, decode full outer String then canonical envelope. No guard across native entry.
+- installer.rs: STA AddScript/raw completion; counted UTF16 through return+callback or same Close, never in-call disposal. No nested pump. ACK gates navigation; late/retired completion cannot promote.

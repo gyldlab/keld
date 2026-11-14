@@ -175,7 +175,7 @@ impl TaskTicket {
 
     /// Read-only existing resource-ticket ordinal for dedicated Root diagnostics.
     /// It is neither a document identifier nor a new counter or authority.
-    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    #[cfg(all(target_os = "macos", feature = "profile-test-hooks", debug_assertions))]
     pub(crate) const fn diagnostic_incarnation(self) -> u64 {
         self.incarnation
     }
@@ -209,7 +209,44 @@ pub(crate) struct TaskLedger {
     retained_bytes: usize,
 }
 
+/// Read-only scalars from the existing ticket; no reservation or release authority.
+#[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+pub(crate) struct TaskObservation {
+    phase: Phase,
+    pub(crate) worker_active: bool,
+    pub(crate) queued_read: bool,
+    pub(crate) delivery_active: bool,
+    pub(crate) retained_bytes: usize,
+    pub(crate) ledger_retained_bytes: usize,
+    pub(crate) ledger_tasks: usize,
+}
+
+#[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+impl TaskObservation {
+    pub(crate) const fn stopped(&self) -> bool {
+        matches!(self.phase, Phase::Stopped)
+    }
+
+    pub(crate) const fn terminal(&self) -> bool {
+        matches!(self.phase, Phase::Terminal)
+    }
+}
+
 impl TaskLedger {
+    #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+    pub(crate) fn observe_ticket(&self, ticket: TaskTicket) -> Option<TaskObservation> {
+        let task = self.current(ticket).ok()?;
+        Some(TaskObservation {
+            phase: task.phase,
+            worker_active: task.worker_active,
+            queued_read: task.queued_read,
+            delivery_active: task.delivery_active,
+            retained_bytes: task.retained_bytes,
+            ledger_retained_bytes: self.retained_bytes,
+            ledger_tasks: self.tasks.len(),
+        })
+    }
+
     pub(crate) fn new(limits: IntakeLimits) -> Self {
         Self {
             limits,
@@ -387,6 +424,7 @@ impl TaskLedger {
         Ok(())
     }
 
+    #[cfg(any(target_os = "macos", test))]
     pub(crate) fn worker_quiesced(&mut self, ticket: TaskTicket) -> Result<(), IntakeReject> {
         self.current_mut(ticket)?.worker_active = false;
         Ok(())
@@ -826,6 +864,13 @@ pub(crate) struct RetainedByteCredit {
 }
 
 impl RetainedByteCredit {
+    /// Observe this still-owned RAII charge without reserving or moving credit.
+    /// A valid borrow keeps the actual charge alive; only Drop releases it.
+    #[cfg(windows)]
+    pub(crate) fn covers(&self, account: &Arc<AtomicUsize>, minimum_bytes: usize) -> bool {
+        Arc::ptr_eq(&self.account, account) && self.bytes >= minimum_bytes
+    }
+
     pub(crate) fn reserve_more(&self, bytes: usize) -> Result<Self, IntakeReject> {
         Self::reserve(&self.account, bytes)
     }

@@ -1,6 +1,11 @@
 //! Pure call/send transitions; native inputs are modeled. This does not qualify
 //! any Windows post or WK callback. Source custody uses the real file fixture.
 
+#![allow(
+    clippy::expect_used,
+    reason = "Test fixture prerequisites must fail immediately before exercising active-call custody."
+)]
+
 use super::{ActiveOriginalCall, PendingOriginalSend};
 use crate::WebviewId;
 use crate::native_document::{NativeCommitIdentity, NativeDocumentOwner, VerifiedSourceId};
@@ -229,4 +234,19 @@ fn pending_send_result_keeps_original_generation_and_id_after_successor_commit()
         pending.matches_result(generation, 11),
         "original cleanup does not acquire the successor"
     );
+}
+#[test]
+fn windows_post_return_never_substitutes_for_function_even_after_revoke() {
+    let fixture = Fixture::new();
+    let (mut owner, lease) = bound(&fixture);
+    let (_foreign, other) = bound(&fixture);
+    let mut call = ActiveOriginalCall::entered(9, lease.clone(), "original".into(), None, 37, None);
+    owner.destroy();
+    assert!(!call.observe_native_return(10, &lease));
+    assert!(!call.observe_native_return(9, &other));
+    assert!(call.observe_native_return(9, &lease));
+    assert!(call.native_finished() && !call.function_finished());
+    assert!(!call.ready_to_release());
+    call.observe_function_finished(9, "original").unwrap();
+    assert!(call.ready_to_release());
 }

@@ -10,7 +10,7 @@ use std::sync::mpsc;
 #[path = "publication_tests.rs"]
 mod publication;
 
-fn with_manifest(
+pub(super) fn with_manifest(
     source: &str,
 ) -> (
     DialogSession,

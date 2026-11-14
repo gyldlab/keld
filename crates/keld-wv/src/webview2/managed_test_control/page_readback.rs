@@ -13,7 +13,7 @@ use super::{TEST_WINDOWS_PAGE_READBACK_ENV, invalid_hook, read_env};
 use crate::{WebviewId, WvError};
 
 // The hook accepts only an interval. No caller or environment can supply script.
-const SCRIPT: &str = "({screenX:window.screenX,screenY:window.screenY,innerWidth:window.innerWidth,visibilityState:document.visibilityState,hasFocus:document.hasFocus()})";
+const SCRIPT: &str = "(()=>{const p=document.documentElement?.getAttribute('data-keld-original-probe')??null;return {screenX:window.screenX,screenY:window.screenY,innerWidth:window.innerWidth,visibilityState:document.visibilityState,hasFocus:document.hasFocus(),originalProbe:typeof p==='string'&&p.length<=32768?p:null,originalProbeOversize:typeof p==='string'&&p.length>32768}})()";
 
 type Reply = Receiver<windows::core::Result<String>>;
 

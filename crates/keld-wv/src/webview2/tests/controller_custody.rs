@@ -183,3 +183,22 @@ fn failed_adopted_close_cannot_be_retried_or_upgraded_to_success() {
     assert!(!super::close_once(&state, || false));
     assert!(!super::close_once(&state, || panic!("retry after failure")));
 }
+
+#[test]
+fn actual_close_observation_never_enters_or_promotes_a_pending_or_failed_close() {
+    let state = Cell::new(super::CloseState::Open);
+    assert!(!state.get().actual_closed());
+    let calls = Cell::new(0);
+    assert!(!super::close_once(&state, || {
+        calls.set(calls.get() + 1);
+        assert!(!state.get().actual_closed(), "InProgress is not Closed");
+        false
+    }));
+    assert!(!state.get().actual_closed());
+    assert!(!state.get().actual_closed());
+    assert_eq!(calls.get(), 1);
+    let succeeded = Cell::new(super::CloseState::Open);
+    assert!(super::close_once(&succeeded, || true));
+    assert!(succeeded.get().actual_closed());
+    assert!(succeeded.get().actual_closed());
+}

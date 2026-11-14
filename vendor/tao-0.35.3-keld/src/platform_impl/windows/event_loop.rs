@@ -4,6 +4,7 @@
 
 #![allow(non_snake_case)]
 
+mod delivery;
 mod runner;
 
 use crossbeam_channel::{self as channel, Receiver, Sender};
@@ -577,8 +578,7 @@ impl<T: 'static> EventLoopProxy<T> {
       )
       .is_ok()
       {
-        self.event_send.send(event).ok();
-        Ok(())
+        delivery::send(&self.event_send, event)
       } else {
         Err(EventLoopClosed(event))
       }

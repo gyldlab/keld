@@ -6,6 +6,8 @@ pub(crate) mod cross_user;
 pub(crate) mod facade_fixture;
 pub(crate) mod handles;
 pub(crate) mod installed;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+pub(crate) mod original_bridge_run;
 pub(crate) mod process;
 pub(crate) mod product;
 pub(crate) mod product_cycle;

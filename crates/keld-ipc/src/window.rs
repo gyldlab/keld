@@ -89,8 +89,10 @@ pub struct DesktopFacts {
 pub const DESKTOP_EVENT_STORAGE_BYTES: usize = 1 + 10 + 1 + 5 + 1 + 32 * (5 + 40 + 8) + 1;
 
 /// Host-to-app window facts; discriminants are append-only, starting at zero.
+/// The URL representation may borrow an already retained native observation.
+/// [`WindowEvent`] remains the owned app decoder and public event type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum WindowEvent {
+pub enum WindowEventValue<T> {
     /// First fact for a window, or its complete state in a recovery replay.
     Created {
         /// Host-minted identity of the window.
@@ -154,7 +156,7 @@ pub enum WindowEvent {
         /// Generation observed from the sole native document owner.
         document_generation: u32,
         /// Actual qualified native URL, never reconstructed from the request.
-        native_url: String,
+        native_url: T,
     },
     /// Actual native finish for the same admitted committed document.
     NavigationFinished {
@@ -171,9 +173,12 @@ pub enum WindowEvent {
         /// Actual committed generation whose native finish was already observed.
         document_generation: u32,
         /// Retained credited native URL from that exact qualified commit.
-        native_url: String,
+        native_url: T,
     },
 }
+
+/// Owned app decoder for the canonical host-to-app window facts.
+pub type WindowEvent = WindowEventValue<String>;
 
 /// App-to-host window calls; discriminants are append-only, starting at zero.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -362,9 +367,8 @@ fn preload_arguments<'de, D: serde::Deserializer<'de>>(
 
 /// Encode a charged native URL by borrow, without detaching or cloning its bytes.
 ///
-/// This is the borrowed encoder view of `WindowEvent::NavigationCommitted`, at
-/// the same append-only ledger position. The owned event remains the app decoder
-/// schema; shared literal vectors qualify their byte equality.
+/// The same canonical enum and derive encode the borrowed and owned views;
+/// shared literal vectors qualify their byte equality.
 ///
 /// # Errors
 /// Returns the owning postcard codec error when output storage is insufficient.
@@ -374,24 +378,8 @@ pub fn encode_navigation_committed_into<'buffer>(
     native_url: &str,
     buffer: &'buffer mut [u8],
 ) -> Result<&'buffer [u8], crate::IpcError> {
-    struct BorrowedCommit<'url> {
-        window: WindowRef,
-        document_generation: u32,
-        native_url: &'url str,
-    }
-    impl Serialize for BorrowedCommit<'_> {
-        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            use serde::ser::SerializeStructVariant as _;
-            let mut value =
-                serializer.serialize_struct_variant("WindowEvent", 8, "NavigationCommitted", 3)?;
-            value.serialize_field("window", &self.window)?;
-            value.serialize_field("document_generation", &self.document_generation)?;
-            value.serialize_field("native_url", self.native_url)?;
-            value.end()
-        }
-    }
     crate::codec::encode_into(
-        &BorrowedCommit {
+        &WindowEventValue::NavigationCommitted {
             window,
             document_generation,
             native_url,
@@ -411,24 +399,8 @@ pub fn encode_document_recovered_into<'buffer>(
     native_url: &str,
     buffer: &'buffer mut [u8],
 ) -> Result<&'buffer [u8], crate::IpcError> {
-    struct BorrowedRecovery<'url> {
-        window: WindowRef,
-        document_generation: u32,
-        native_url: &'url str,
-    }
-    impl Serialize for BorrowedRecovery<'_> {
-        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            use serde::ser::SerializeStructVariant as _;
-            let mut value =
-                serializer.serialize_struct_variant("WindowEvent", 10, "DocumentRecovered", 3)?;
-            value.serialize_field("window", &self.window)?;
-            value.serialize_field("document_generation", &self.document_generation)?;
-            value.serialize_field("native_url", self.native_url)?;
-            value.end()
-        }
-    }
     crate::codec::encode_into(
-        &BorrowedRecovery {
+        &WindowEventValue::DocumentRecovered {
             window,
             document_generation,
             native_url,

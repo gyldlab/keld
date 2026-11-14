@@ -4,6 +4,7 @@
 
 use crate::dev_stage_command;
 use crate::support::product::ProductFixture;
+use crate::support::profile_run::{apply_dev_profiles, isolated_dev_profiles, remove_dev_profiles};
 use std::fs;
 use std::io::Write as _;
 use std::path::Path;
@@ -137,11 +138,14 @@ fn retired_facade_admission_switch_is_absent_from_every_host_image() {
 #[test]
 fn windows_primary_rechecks_the_stage_for_every_generation() {
     let fixture = ProductFixture::new();
+    let profiles = isolated_dev_profiles();
     let stage = stage_boot(&fixture.project);
     let control = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind recheck control");
     let port = control.local_addr().expect("control address").port();
+    let mut command = dev_stage_command(stage.root(), stage.host());
+    apply_dev_profiles(&mut command, stage.host(), profiles.as_ref());
     let mut host = crate::support::signed_process::SignedStateProcessGuard::new(
-        dev_stage_command(stage.root(), stage.host())
+        command
             .env("KELD_T1B_CONTROL", port.to_string())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -168,6 +172,7 @@ fn windows_primary_rechecks_the_stage_for_every_generation() {
         &control,
         "no successor generation may start",
     );
+    remove_dev_profiles(profiles);
 }
 
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]

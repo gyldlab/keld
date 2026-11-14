@@ -482,6 +482,9 @@ pub enum GuardedCallAdmission {
     RejectSession,
 }
 
+mod primary_admission;
+pub use primary_admission::read_primary_app_frame_interruptible_with_payload_admission;
+
 /// One complete primary frame plus the host-selected guarded admission outcome.
 /// This is trusted local metadata, never a field or schema on the wire.
 pub struct PrimaryAppFrame {
@@ -557,45 +560,14 @@ pub fn read_primary_app_frame_interruptible_with_admission<S: Read>(
     privileged_calls: &[&'static ChannelEntry],
     admission: impl Fn(&'static ChannelEntry, CorrelationId) -> GuardedCallAdmission,
 ) -> Result<Option<PrimaryAppFrame>, IpcError> {
-    read_frame_interruptible_validated_with(
+    read_primary_app_frame_interruptible_with_payload_admission(
         stream,
         stop,
-        None,
-        None,
-        APP_LINK_IO_DEADLINE,
-        |header| {
-            let validated = validate_primary_app_header_with_privileged_calls(
-                pending_echo_reply(),
-                privileged_calls,
-                header,
-            )?;
-            let outcome = if header.kind == FrameKind::Call {
-                privileged_calls
-                    .iter()
-                    .copied()
-                    .find(|entry| header.channel == entry.id())
-                    .map_or(GuardedCallAdmission::Admit, |entry| {
-                        admission(entry, header.corr)
-                    })
-            } else {
-                GuardedCallAdmission::Admit
-            };
-            if outcome == GuardedCallAdmission::RejectSession {
-                return Err(IpcError::Protocol {
-                    // Preserve the singular FS wrapper's public diagnostic.
-                    detail: "privileged Call is already outstanding for this session",
-                });
-            }
-            Ok((validated, outcome))
-        },
+        pending_echo_reply,
+        privileged_calls,
+        admission,
+        |_| Ok(()),
     )
-    .map(|frame| {
-        frame.map(|((header, admission), payload)| PrimaryAppFrame {
-            header,
-            payload,
-            admission,
-        })
-    })
 }
 
 /// Host-side reader for the drain after an accepted `Quit` (GH-527 §4.9).
@@ -746,7 +718,7 @@ fn read_frame_interruptible_validated_with<S: Read, T>(
     deadline: Option<Instant>,
     idle_deadline: Option<Instant>,
     stall_limit: Duration,
-    validate: impl Fn(FrameHeader) -> Result<T, IpcError>,
+    mut validate: impl FnMut(FrameHeader) -> Result<T, IpcError>,
 ) -> Result<Option<(T, Vec<u8>)>, IpcError> {
     let mut stall_deadline = None;
     let mut header_bytes = [0u8; HEADER_LEN];

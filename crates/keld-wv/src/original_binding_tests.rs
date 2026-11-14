@@ -1,6 +1,12 @@
 //! Binding transitions use the existing living owner and real retained source.
 //! Native attempts/commits are modeled; these are not native bootstrap receipts.
 
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "Test fixture prerequisites must fail immediately before exercising retained-source transitions."
+)]
+
 use super::{OriginalBinding, OriginalCredentialSlot};
 use crate::WebviewId;
 use crate::native_document::{NativeCommitIdentity, NativeDocumentOwner};

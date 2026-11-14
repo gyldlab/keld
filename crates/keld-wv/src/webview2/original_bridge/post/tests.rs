@@ -65,8 +65,8 @@ fn charge(allow: bool) -> (NativeControlReservation, Arc<Observation>) {
         observation,
     )
 }
-fn current_authority() -> ControlAuthority {
-    ControlAuthority::Current(RendererRoleWitness::with_fence(
+fn current_authority() -> PostAuthority {
+    PostAuthority::Current(RendererRoleWitness::with_fence(
         Arc::new(AtomicBool::new(false)),
         Arc::new(NoAdmission),
     ))
@@ -129,6 +129,10 @@ fn canonical_control_golden_grows_same_charge_before_native_encoding() {
 fn failed_storage_growth_preserves_existing_control_custody() {
     let (_owner, lease) = lease();
     let (charge, observation) = charge(false);
+    #[expect(
+        clippy::manual_let_else,
+        reason = "Preserve the existing full-carrier match and its success-owner destruction during the negative-control panic."
+    )]
     let failure = match PreparedControl::prepare(
         &HostRendererMessage::AppRegistered,
         EPOCH,
@@ -164,6 +168,10 @@ fn posting_and_unknown_cannot_extract_or_release_native_backing() {
         .unwrap_or_else(|error| panic!("{}", error.detail));
         let backing = prepared.wide.as_ptr();
         prepared.phase = phase; // Deliberate pure custody fault injection.
+        #[expect(
+            clippy::manual_let_else,
+            reason = "Preserve the existing full-carrier match and its success-owner destruction during the negative-control panic."
+        )]
         let mut retained = match prepared.into_charge() {
             Err(retained) => retained,
             Ok(_) => panic!("unknown native operation lost its backing"),
@@ -196,13 +204,15 @@ fn retirement_authority_and_data_never_expand_the_control_carrier() {
     ] {
         let (_owner, lease) = lease();
         let (charge, observation) = charge(true);
+        #[expect(
+            clippy::manual_let_else,
+            reason = "Preserve the existing full-carrier match and its success-owner destruction during the negative-control panic."
+        )]
         let failure = match PreparedControl::prepare(
             &carrier,
             EPOCH,
             lease,
-            ControlAuthority::RetiredRoute(RouteRetirementPermit::from_owner(Arc::new(
-                NoAdmission,
-            ))),
+            PostAuthority::RetiredRoute(RouteRetirementPermit::from_owner(Arc::new(NoAdmission))),
             charge,
         ) {
             Err(failure) => failure,
@@ -218,7 +228,7 @@ fn retirement_authority_and_data_never_expand_the_control_carrier() {
         &HostRendererMessage::RouteState { ready: false },
         EPOCH,
         lease,
-        ControlAuthority::RetiredRoute(RouteRetirementPermit::from_owner(Arc::new(NoAdmission))),
+        PostAuthority::RetiredRoute(RouteRetirementPermit::from_owner(Arc::new(NoAdmission))),
         charge,
     )
     .unwrap_or_else(|error| panic!("{}", error.detail));

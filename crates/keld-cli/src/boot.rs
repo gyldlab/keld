@@ -1410,6 +1410,16 @@ where
     #[cfg(windows)]
     let compiled_boot = if let Some(input) = graph.as_ref() {
         input.recheck()?;
+        let runtime_entry = keld_core::app_session::original_entry_bootstrap_source(&entry)
+            .map_err(|source| BootCompileError::new("graph runtime entry", source.to_string()))?;
+        // Create the one canonical entry before the existing sole graph capture.
+        // A project-owned collision refuses; it is never overwritten or aliased.
+        write_new_file(
+            &root.join(keld_core::app_session::ORIGINAL_RUNTIME_ENTRY_PATH),
+            &runtime_entry,
+            0o600,
+            "graph runtime entry",
+        )?;
         let graph_bytes = keld_core::app_session::make_graph_leaf_from_retained_root(
             &root,
             guard

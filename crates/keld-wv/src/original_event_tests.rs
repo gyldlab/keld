@@ -1,6 +1,11 @@
 //! Pure event transitions with actual retained source custody. Native commit
 //! and completion inputs are modeled, not WebView2/WK acceptance evidence.
 
+#![allow(
+    clippy::expect_used,
+    reason = "Test fixture prerequisites must fail immediately before exercising event custody."
+)]
+
 use super::PendingOriginalEvent;
 use crate::WebviewId;
 use crate::native_document::{NativeCommitIdentity, NativeDocumentOwner, VerifiedSourceId};
@@ -185,4 +190,67 @@ fn live_native_completion_does_not_manufacture_consumer_or_core_release() {
     owner.destroy();
     assert!(event.retirement_controls_quiesced());
     assert!(!event.consumed_sent());
+}
+#[test]
+fn windows_event_cleanup_keeps_original_stopped_role_through_full() {
+    use crate::original_binding::OriginalBinding;
+    use crate::original_call::queue::OriginalCallQueue;
+    use crate::renderer_bridge::{RendererBridgeOperation, RendererRoleWitness};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    let fixture = Fixture::new();
+    let source = fixture.source_arc();
+    let mut owner = NativeDocumentOwner::new(WebviewId(7));
+    owner.bind_source(&source).unwrap();
+    let lease = committed(&mut owner, source.source_id());
+    let stop = Arc::new(AtomicBool::new(false));
+    let role = RendererRoleWitness::new(Arc::clone(&stop));
+    let mut event = Some(
+        PendingOriginalEvent::begin_windows(
+            &owner,
+            9,
+            lease.clone(),
+            "original".into(),
+            role.clone(),
+        )
+        .unwrap(),
+    );
+    stop.store(true, Ordering::Release);
+    owner.destroy();
+    event
+        .as_mut()
+        .unwrap()
+        .observe_native_quiescence(9, &lease, false);
+    let (send, recv) = mpsc::sync_channel(1);
+    send.try_send(crate::original_call::request_for_lease(
+        lease.clone(),
+        99,
+        RendererBridgeOperation::Registered,
+        Vec::new(),
+    ))
+    .unwrap();
+    let mut queue = OriginalCallQueue::<String>::new().unwrap();
+    let mut binding = OriginalBinding::default();
+    queue
+        .flush_controls(&mut binding, &owner, &mut event, &send)
+        .unwrap();
+    assert!(!event.as_ref().unwrap().quiescence_sent());
+    drop(recv.try_recv().unwrap());
+    queue
+        .flush_controls(&mut binding, &owner, &mut event, &send)
+        .unwrap();
+    let request = recv.try_recv().unwrap();
+    assert!(matches!(
+        request.operation(),
+        RendererBridgeOperation::EventQuiesced { completed: false }
+    ));
+    assert!(request.role_witness().unwrap().same_role(&role));
+    assert!(!request.role_witness().unwrap().is_live());
+    assert!(request.document_lease().unwrap().same_binding(&lease));
+    assert_eq!(request.payload.capacity(), 0);
+    assert!(request.native_facts.is_none() && request.numeric_result.is_none());
+    assert!(!event.as_ref().unwrap().consumed_sent());
 }

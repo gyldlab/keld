@@ -36,6 +36,10 @@ fn one_router_carries_ready_two_echo_calls_and_ordered_quit() {
             }
             TestPrimaryOwnerCommand::ArmRecovery(_, _) => panic!("unexpected recovery arm"),
             TestPrimaryOwnerCommand::DenyRecovery => panic!("unexpected recovery denial"),
+            #[cfg(windows)]
+            TestPrimaryOwnerCommand::FailPrimaryWriter(_, _) => panic!("unexpected writer failure"),
+            #[cfg(windows)]
+            TestPrimaryOwnerCommand::FailPrimaryReader(_, _) => panic!("unexpected reader failure"),
         };
         guardian_prepared_in_thread.store(true, Ordering::Release);
         prepare_reply
@@ -56,6 +60,10 @@ fn one_router_carries_ready_two_echo_calls_and_ordered_quit() {
             }
             TestPrimaryOwnerCommand::ArmRecovery(_, _) => panic!("unexpected recovery arm"),
             TestPrimaryOwnerCommand::DenyRecovery => panic!("unexpected recovery denial"),
+            #[cfg(windows)]
+            TestPrimaryOwnerCommand::FailPrimaryWriter(_, _) => panic!("unexpected writer failure"),
+            #[cfg(windows)]
+            TestPrimaryOwnerCommand::FailPrimaryReader(_, _) => panic!("unexpected reader failure"),
         };
         eof_rx
             .recv_timeout(Duration::from_secs(5))

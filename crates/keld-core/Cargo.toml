@@ -51,7 +51,9 @@ keld-update = { workspace = true }
 # Windows graph-v1 digest validation reuses the existing workspace SHA-256 pin.
 sha2 = { workspace = true }
 windows-permissions = { workspace = true }
-windows-sys = { workspace = true }
+# GH1184: read-only current-user UI-language/KnownFolder observations and the
+# documented task-memory release, using the existing windows-sys pin only.
+windows-sys = { workspace = true, features = ["Win32_Globalization", "Win32_UI_Shell", "Win32_System_Com"] }
 
 [dev-dependencies]
 # #528 T5: the guarded router tests digest their permissions manifest on every

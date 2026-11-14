@@ -60,8 +60,9 @@ pub enum CompatControlRequest {
 }
 
 /// Authenticated Host → Bun event on the same allocated channel.
+/// Generic fields permit borrowed encoding without another serializer or tag table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CompatControlEvent {
+pub enum CompatControlEventValue<S, P> {
     /// Renderer DATA, stamped by Host after native document authentication.
     RendererMessage {
         /// Host-registered `WebView` identity.
@@ -75,13 +76,13 @@ pub enum CompatControlEvent {
         /// Exact existing Core WindowRef.incarnation, selected by Host.
         window_incarnation: u64,
         /// Host-stamped committed URL.
-        url: String,
+        url: S,
         /// Host-stamped origin serialization, including opaque `null`.
-        origin: String,
+        origin: S,
         /// Literal application topic.
-        topic: String,
+        topic: S,
         /// Opaque endpoint bytes.
-        payload: Vec<u8>,
+        payload: P,
     },
     /// Native document retirement: no new admitted work for this document.
     DocumentRetired {
@@ -104,6 +105,9 @@ pub enum CompatControlEvent {
         window_incarnation: u64,
     },
 }
+
+/// Owned decode/consumer form of the one canonical Host event schema.
+pub type CompatControlEvent = CompatControlEventValue<String, Vec<u8>>;
 
 /// One first-terminal-wins response per admitted CALL correlation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,9 +265,11 @@ pub fn validate_request(request: &CompatControlRequest) -> Result<(), IpcError> 
 /// # Errors
 ///
 /// Returns the canonical codec error for a bad selector or oversized field.
-pub fn validate_event(event: &CompatControlEvent) -> Result<(), IpcError> {
+pub fn validate_event<S: AsRef<str>, P: AsRef<[u8]>>(
+    event: &CompatControlEventValue<S, P>,
+) -> Result<(), IpcError> {
     let good = match event {
-        CompatControlEvent::RendererMessage {
+        CompatControlEventValue::RendererMessage {
             webview,
             navigation,
             message,
@@ -279,16 +285,16 @@ pub fn validate_event(event: &CompatControlEvent) -> Result<(), IpcError> {
                 && valid_identity(*message)
                 && valid_identity(*window_id)
                 && *window_incarnation != 0
-                && url.len() <= 4096
-                && origin.len() <= 1024
-                && valid_topic(topic)
-                && valid_payload(payload)
+                && url.as_ref().len() <= 4096
+                && origin.as_ref().len() <= 1024
+                && valid_topic(topic.as_ref())
+                && valid_payload(payload.as_ref())
         }
-        CompatControlEvent::DocumentRetired {
+        CompatControlEventValue::DocumentRetired {
             webview,
             navigation,
         } => valid_identity(*webview) && valid_identity(*navigation),
-        CompatControlEvent::DocumentBound {
+        CompatControlEventValue::DocumentBound {
             webview,
             navigation,
             window_id,
@@ -502,3 +508,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod borrowed_tests;

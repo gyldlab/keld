@@ -9,7 +9,12 @@ import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { mock } from "bun:test";
-import { hostLaunchFacts, nativeFacadeBootSelected } from "@keld/kipc";
+import {
+  hostLaunchFacts,
+  nativeFacadeBootSelected,
+  windowsHostSelected,
+  windowsDesktopSnapshotSelected,
+} from "@keld/kipc";
 import { encodeWindowEvent } from "./window-codec.ts";
 import { WindowSource } from "./window-source.ts";
 import type { LifecycleHandler } from "./link.ts";
@@ -20,6 +25,12 @@ assert.ok(
   [
     "other-facade",
     "other-renderer",
+    "windows-facts",
+    "windows-no-mirror",
+    "windows-desktop-valid",
+    "windows-desktop-missing",
+    "windows-desktop-invalidated",
+    "windows-desktop-no-mirror",
     "mac-valid",
     "mac-missing",
     "mac-no-mirror",
@@ -37,8 +48,22 @@ for (const name of ["screen.ts", "native-theme.ts", "unsupported.ts"]) {
   assert.ok(metadata.isFile() && !metadata.isSymbolicLink());
   assert.equal(realpathSync(path), path);
 }
-assert.equal(hostLaunchFacts !== undefined, mode?.startsWith("mac-"));
+assert.equal(
+  hostLaunchFacts !== undefined,
+  mode?.startsWith("mac-") || mode?.startsWith("windows-"),
+);
+if (mode?.startsWith("windows-")) {
+  assert.equal(hostLaunchFacts?.schema, 3);
+  assert.equal(hostLaunchFacts?.name, "gh1184-windows-s1");
+  assert.equal(hostLaunchFacts?.version, "31.7.0");
+  assert.equal(hostLaunchFacts?.locale, "en-US");
+}
 assert.equal(nativeFacadeBootSelected, mode !== "other-renderer");
+assert.equal(windowsHostSelected, mode?.startsWith("windows-"));
+assert.equal(
+  windowsDesktopSnapshotSelected,
+  mode?.startsWith("windows-desktop-"),
+);
 
 let callbacks: LifecycleHandler | undefined;
 let linkCloses = 0;
@@ -46,7 +71,10 @@ let hostCalls = 0;
 const source = new WindowSource(() => {});
 const session = {
   get windowSource() {
-    return mode === "mac-no-mirror" || mode === "other-renderer"
+    return mode === "mac-no-mirror" ||
+      mode === "windows-no-mirror" ||
+      mode === "windows-desktop-no-mirror" ||
+      mode === "other-renderer"
       ? undefined
       : source;
   },
@@ -78,7 +106,9 @@ mock.module("./link.ts", () => ({
 process.env.KELD_APP_LINK = `/controlled-no-socket#${"a".repeat(64)}`;
 const { app, getDesktopSnapshot, isDesktopS1Selected } =
   await import("./app.ts");
-assert.equal(isDesktopS1Selected(), mode?.startsWith("mac-"));
+const selectedDesktop =
+  mode?.startsWith("mac-") || mode?.startsWith("windows-desktop-");
+assert.equal(isDesktopS1Selected(), selectedDesktop);
 const ready = app.whenReady();
 assert.ok(callbacks, "the real app installs exactly one lifecycle handler");
 
@@ -103,10 +133,15 @@ const apply = (event: Parameters<typeof encodeWindowEvent>[0]): void => {
   source.apply(fact);
 };
 
-if (mode === "mac-valid" || mode === "mac-invalidated") {
+if (
+  mode === "mac-valid" ||
+  mode === "mac-invalidated" ||
+  mode === "windows-desktop-valid" ||
+  mode === "windows-desktop-invalidated"
+) {
   apply(captured(1n, false));
 }
-if (mode === "mac-invalidated") {
+if (mode === "mac-invalidated" || mode === "windows-desktop-invalidated") {
   apply({ variant: "DesktopSnapshot", epoch: 2n, snapshot: null });
 }
 
@@ -116,10 +151,18 @@ assert.equal(app.isReady(), false, "raw Ready cannot commit synchronously");
 if (
   mode === "mac-missing" ||
   mode === "mac-invalidated" ||
-  mode === "mac-no-mirror"
+  mode === "mac-no-mirror" ||
+  mode === "windows-no-mirror" ||
+  mode === "windows-desktop-missing" ||
+  mode === "windows-desktop-invalidated" ||
+  mode === "windows-desktop-no-mirror"
 ) {
   const expectedCode =
-    mode === "mac-no-mirror" ? "KELD-CORE-045" : "KELD-CORE-049";
+    mode === "mac-no-mirror" ||
+    mode === "windows-no-mirror" ||
+    mode === "windows-desktop-no-mirror"
+      ? "KELD-CORE-045"
+      : "KELD-CORE-049";
   await assert.rejects(
     ready,
     (error: unknown) =>
@@ -128,7 +171,7 @@ if (
   assert.equal(
     app.isReady(),
     false,
-    "unavailable S1 facts never authorize Ready",
+    "missing required Host state never authorizes Ready",
   );
   assert.equal(linkCloses, 1, "failed current role's one link is closed");
   await assert.rejects(
@@ -142,10 +185,13 @@ if (
   assert.equal(linkCloses, 0);
 }
 
-if (mode === "other-facade" || mode === "other-renderer") {
-  // Windows/Linux facade (or renderer) without the macOS-only immutable
-  // development record MUST preserve the previous public Ready contract.
-  // It does not manufacture desktop support on these platforms.
+if (
+  mode === "other-facade" ||
+  mode === "other-renderer" ||
+  (mode?.startsWith("windows-") && !selectedDesktop)
+) {
+  // Unselected desktop getters still refuse even when Windows carries real
+  // launch facts. Readiness is not a fabricated desktop snapshot.
   const { screen } = await import(
     pathToFileURL(join(privateElectronSource, "screen.ts")).href
   );
@@ -163,7 +209,7 @@ if (mode === "other-facade" || mode === "other-renderer") {
         (error as { code?: string } | null)?.code === "KELD-COMPAT-013",
     );
   }
-} else if (mode === "mac-valid") {
+} else if (mode === "mac-valid" || mode === "windows-desktop-valid") {
   const { screen } = await import(
     pathToFileURL(join(privateElectronSource, "screen.ts")).href
   );

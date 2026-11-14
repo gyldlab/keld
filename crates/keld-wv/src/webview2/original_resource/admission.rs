@@ -50,8 +50,18 @@ impl ResourceView {
         let id = self.id;
         let handler = WebResourceRequestedEventHandler::create(Box::new(move |sender, args| {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let Some(args) = args else {
-                    if let Some(view) = view.upgrade() {
+                // The SAME ResourceView is held before every native prefix call.
+                // Sender/args are moved into this whole-handler barrier so their
+                // native releases precede this retained callback Rc's disposal.
+                let retained = view.upgrade();
+                let incoming = (sender, args);
+                if retained.is_none()
+                    && let Some(session) = session.upgrade()
+                {
+                    session.latch_failure("resource callback lost its retained view owner", id);
+                }
+                let Some(args) = incoming.1 else {
+                    if let Some(view) = retained.as_ref() {
                         view.emergency_close("resource callback omitted native args");
                     }
                     return Err(E_POINTER.into());
@@ -60,7 +70,7 @@ impl ResourceView {
                 // Install a fixed denial before any fallible metadata conversion.
                 // It is provisional until return/Complete, never a served witness.
                 if native::refuse(&environment, &args, native::Refusal::Forbidden).is_err() {
-                    if let Some(view) = view.upgrade() {
+                    if let Some(view) = retained.as_ref() {
                         view.hold_then_emergency_close(
                             &args,
                             "native refusal response could not be installed",
@@ -83,7 +93,7 @@ impl ResourceView {
                     }
                     return Err(E_UNEXPECTED.into());
                 }
-                let Some(view) = view.upgrade() else {
+                let Some(view) = retained.as_ref() else {
                     return Ok(());
                 };
                 let Ok(kind) = kind else {
@@ -94,7 +104,7 @@ impl ResourceView {
                 if !view.owns_source_kind(kind) {
                     return Ok(());
                 }
-                view.admit(sender.as_ref(), &args, kind)?;
+                view.admit(incoming.0.as_ref(), &args, kind)?;
                 view.session.dispatch_waiting();
                 Ok(())
             }));
@@ -121,12 +131,15 @@ impl ResourceView {
     }
 
     fn reserve(&self, native_identity: usize) -> Result<Admission<'_>, native::Refusal> {
+        let policy_bytes = self.source.response_policy().len();
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let policy_bytes = self.fixture_inline.maximum_header_len(policy_bytes);
         pending_metadata_charge(
             ORIGINAL_WEBAPP_LIMITS.max_url_utf16_units
                 + ORIGINAL_WEBAPP_LIMITS.max_header_utf16_units,
             4 * ORIGINAL_WEBAPP_LIMITS.max_url_utf16_units,
             1024,
-            4 * self.source.response_policy().len(),
+            4 * policy_bytes,
             ORIGINAL_WEBAPP_LIMITS,
         )
         .map_err(|_| native::Refusal::Forbidden)?;

@@ -6,18 +6,22 @@
 //! the same-URI frame race and production path still require native acceptance.
 
 use std::num::NonZeroU64;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
 use crate::WebviewId;
-use crate::engine::{NativeNavigationRefusal, OriginalEntryQuery};
+use crate::engine::{NativeNavigationContext, NativeNavigationRefusal, OriginalEntryQuery};
 use crate::native_document::{
     NativeAttempt, NativeCommitIdentity, NativeCommittedStamp, NativeDocumentOwner, ResourceLease,
 };
+use crate::renderer_bridge::RendererRoleWitness;
 use crate::renderer_contract::CheckedNativeDocumentLease;
 use crate::resource_intake::TaskTicket;
 use crate::resource_source::AdmittedWebAppSource;
 
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+pub(super) mod cancellation_observation;
 mod prepared;
 pub(super) use prepared::PreparedLoad;
 
@@ -26,14 +30,17 @@ pub(super) const HOST_ATTEMPT_HEADER: &str = "X-Keld-Host-Attempt";
 
 struct HostAttempt {
     attempt: NativeAttempt,
-    prepared: PreparedLoad,
+    prepared: Rc<PreparedLoad>,
+    context: Option<NativeNavigationContext>,
+    role: Option<RendererRoleWitness>,
+    qualified_at: Option<Instant>,
     deadline: Instant,
     native_id: Option<NonZeroU64>,
     requested: Option<TaskTicket>,
     served: Option<TaskTicket>,
 }
 
-/// One adapter retains the sole NativeDocumentOwner for this actual native view.
+/// One adapter retains the sole `NativeDocumentOwner` for this actual native view.
 /// It owns no independent document generation, resource queue or IPC authority.
 pub(super) struct OriginalNavigation {
     source: Arc<AdmittedWebAppSource>,
@@ -43,6 +50,8 @@ pub(super) struct OriginalNavigation {
     callback_depth: u32,
     posting: bool,
     reentry_failed: bool,
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    post_observer: Rc<super::managed_test_control::navigation_post::Probe>,
 }
 
 impl OriginalNavigation {
@@ -62,6 +71,8 @@ impl OriginalNavigation {
             callback_depth: 0,
             posting: false,
             reentry_failed: false,
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            post_observer: Rc::new(super::managed_test_control::navigation_post::Probe::new()),
         })
     }
 
@@ -69,25 +80,74 @@ impl OriginalNavigation {
         &self.source
     }
 
-    /// All allocation/entropy/native request construction precedes begin_load.
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    pub(super) fn post_observer(&self) -> &Rc<super::managed_test_control::navigation_post::Probe> {
+        &self.post_observer
+    }
+
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    pub(super) fn post_observation(
+        &self,
+    ) -> super::managed_test_control::navigation_post::NavigationState {
+        let stamp = self.document.current_stamp();
+        super::managed_test_control::navigation_post::NavigationState {
+            view: self.document.view().0,
+            generation: stamp.map(|value| value.generation.get()),
+            native_commit: stamp.map(|value| value.native_commit.0.get()),
+            callback_depth: self.callback_depth,
+            posting: self.posting,
+            reentry_failed: self.reentry_failed,
+        }
+    }
+
+    /// All allocation/entropy/native request construction precedes `begin_load`.
     pub(super) fn prepare(
         &self,
         query: &OriginalEntryQuery,
-    ) -> Result<PreparedLoad, NativeNavigationRefusal> {
+    ) -> Result<Rc<PreparedLoad>, NativeNavigationRefusal> {
         PreparedLoad::new(&self.source, query)
     }
 
-    /// Called only after CreateWebResourceRequest succeeds and immediately
-    /// before the retained view's NavigateWithWebResourceRequest call.
+    /// Called only after `CreateWebResourceRequest` succeeds and immediately
+    /// before the retained view's `NavigateWithWebResourceRequest` call.
+    #[cfg(test)]
     pub(super) fn begin_load(
         &mut self,
-        prepared: PreparedLoad,
+        prepared: Rc<PreparedLoad>,
+        now: Instant,
+    ) -> Result<NativeAttempt, NativeNavigationRefusal> {
+        self.begin_with_context(prepared, None, None, now)
+    }
+
+    /// The actual Core operation is correlation only, retained by this same attempt.
+    pub(super) fn begin_host_load(
+        &mut self,
+        prepared: Rc<PreparedLoad>,
+        context: NativeNavigationContext,
+        role: RendererRoleWitness,
+        now: Instant,
+    ) -> Result<NativeAttempt, NativeNavigationRefusal> {
+        if context.view() != self.document.view() {
+            return Err(NativeNavigationRefusal::UnknownView);
+        }
+        if !role.is_live() {
+            return Err(NativeNavigationRefusal::Unavailable);
+        }
+        self.begin_with_context(prepared, Some(context), Some(role), now)
+    }
+
+    fn begin_with_context(
+        &mut self,
+        prepared: Rc<PreparedLoad>,
+        context: Option<NativeNavigationContext>,
+        role: Option<RendererRoleWitness>,
         now: Instant,
     ) -> Result<NativeAttempt, NativeNavigationRefusal> {
         if self.reentry_failed
             || self.posting
             || self.callback_depth != 0
             || !prepared.belongs_to(&self.source)
+            || !prepared.is_prepared()
             || self
                 .active
                 .as_ref()
@@ -102,10 +162,18 @@ impl OriginalNavigation {
             .document
             .begin_host_load(self.source.source_id())
             .map_err(|_| NativeNavigationRefusal::Unavailable)?;
+        if !prepared.admit_native_call() {
+            self.document.fail_attempt(attempt);
+            self.active = None;
+            return Err(NativeNavigationRefusal::Unavailable);
+        }
         self.page_pending = None;
         self.active = Some(HostAttempt {
             attempt,
             prepared,
+            context,
+            role,
+            qualified_at: None,
             deadline,
             native_id: None,
             requested: None,
@@ -114,7 +182,7 @@ impl OriginalNavigation {
         Ok(attempt)
     }
 
-    /// Observe actual top-level NavigationStarting before calling SetCancel.
+    /// Observe actual top-level `NavigationStarting` before calling `SetCancel`.
     /// False requires native cancellation. Pending page navigation holds posts
     /// but does not revoke the existing document until replacement is observed.
     pub(super) fn navigation_starting(
@@ -162,7 +230,7 @@ impl OriginalNavigation {
     }
 
     /// Called only for the native GET/no-body DOCUMENT request after bounded
-    /// metadata capture. The existing TaskLedger supplied this unique ticket.
+    /// metadata capture. The existing `TaskLedger` supplied this unique ticket.
     /// An ordinary frame/resource may read admitted bytes but cannot record a
     /// top-level served witness by matching URI, order or resource-context alone.
     pub(super) fn claim_document_request(
@@ -197,7 +265,7 @@ impl OriginalNavigation {
 
     /// Called after SetResponse(verified 200) succeeds and before completing
     /// that request's deferral. Neither verified bytes nor the reader can call
-    /// commit_admitted; only actual ContentLoading may do so below.
+    /// `commit_admitted`; only actual `ContentLoading` may do so below.
     pub(super) fn document_served(
         &mut self,
         ticket: TaskTicket,
@@ -219,8 +287,8 @@ impl OriginalNavigation {
         true
     }
 
-    /// Only the real top-level ContentLoading callback supplies this identity.
-    /// Observe IsErrorPage and the retained view's actual Source before entry.
+    /// Only the real top-level `ContentLoading` callback supplies this identity.
+    /// Observe `IsErrorPage` and the retained view's actual Source before entry.
     pub(super) fn content_loading(
         &mut self,
         native_id: NonZeroU64,
@@ -237,7 +305,8 @@ impl OriginalNavigation {
             self.active = None;
             return Err("native main-frame identity mismatch");
         }
-        if is_error
+        if !active.prepared.native_succeeded()
+            || is_error
             || (self.document.current_stamp().is_none() && now >= active.deadline)
             || active.served.is_none()
             || active.served != active.requested
@@ -256,6 +325,9 @@ impl OriginalNavigation {
             .map_err(|_| "native document owner refused commit");
         if result.is_ok() {
             self.page_pending = None;
+            if let Some(active) = &mut self.active {
+                active.qualified_at.get_or_insert(now);
+            }
         }
         result
     }
@@ -310,6 +382,39 @@ impl OriginalNavigation {
             .is_some_and(|active| active.native_id == Some(id))
     }
 
+    pub(super) fn host_context(&self) -> Option<NativeNavigationContext> {
+        self.active.as_ref().and_then(|active| active.context)
+    }
+
+    /// The exact accepted load caller fences its first bound challenge; never
+    /// substitute the View's original creator or a later global current role.
+    pub(super) fn host_role(&self) -> Option<&RendererRoleWitness> {
+        self.active.as_ref().and_then(|active| active.role.as_ref())
+    }
+
+    /// The first actual successful native qualification starts registration's
+    /// original bound. Duplicate callbacks and later service turns never renew it.
+    pub(super) fn qualified_at(&self) -> Option<Instant> {
+        self.active.as_ref().and_then(|active| active.qualified_at)
+    }
+
+    pub(super) fn next_deadline(&self) -> Option<Instant> {
+        if self.document.current_stamp().is_some() {
+            return None;
+        }
+        self.active.as_ref().map(|active| active.deadline)
+    }
+
+    /// Borrow the sole document owner; no parallel owner is minted for the bridge.
+    pub(super) fn document(&self) -> &NativeDocumentOwner {
+        &self.document
+    }
+
+    #[cfg(test)]
+    pub(super) fn document_mut(&mut self) -> &mut NativeDocumentOwner {
+        &mut self.document
+    }
+
     pub(super) fn active_attempt(&self) -> Option<NativeAttempt> {
         self.active.as_ref().map(|active| active.attempt)
     }
@@ -320,6 +425,11 @@ impl OriginalNavigation {
 
     pub(super) fn is_current_resource(&self, lease: ResourceLease) -> bool {
         self.document.is_current_lease(lease)
+    }
+
+    /// Observation of the existing callback hold, never document or role authority.
+    pub(super) fn callbacks_inactive(&self) -> bool {
+        self.callback_depth == 0
     }
 
     pub(super) fn posts_held(&self) -> bool {
@@ -352,9 +462,23 @@ impl OriginalNavigation {
     }
 
     /// Caller also validates the canonical current-role fence and native view.
-    /// Drop this Rust borrow, then immediately enter PostWebMessageAsString:
+    /// Drop this Rust borrow, then immediately enter `PostWebMessageAsString`:
     /// no getters, callbacks, waits or native operations may intervene.
+    #[cfg(test)]
     pub(super) fn begin_post(&mut self, expected: &CheckedNativeDocumentLease) -> bool {
+        self.begin_post_with(expected, &mut |_| true)
+    }
+
+    /// Same final predicate and post hold. The callback may commit only its
+    /// already-retained operation using this SAME living owner; no native call,
+    /// allocation, wait, interior guard retention or document mutation.
+    /// A false callback leaves posting unchanged. After true no fallible step
+    /// remains before this owner fixes the same posting hold.
+    pub(super) fn begin_post_with(
+        &mut self,
+        expected: &CheckedNativeDocumentLease,
+        enter: &mut dyn FnMut(&NativeDocumentOwner) -> bool,
+    ) -> bool {
         if self.reentry_failed
             || self.posts_held()
             || !expected.is_current()
@@ -363,6 +487,9 @@ impl OriginalNavigation {
                 .current_document()
                 .is_some_and(|current| current.same_binding(expected))
         {
+            return false;
+        }
+        if !enter(&self.document) {
             return false;
         }
         self.posting = true;
@@ -408,3 +535,7 @@ impl OriginalNavigation {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "original_navigation/post_entry_tests.rs"]
+mod post_entry_tests;

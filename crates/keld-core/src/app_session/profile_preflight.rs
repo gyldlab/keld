@@ -41,6 +41,24 @@ pub(super) fn validate_installed_profile(
     keld_guard::admit_uncontained(ProfileState::Legacy).map_err(HostAppError::admission)
 }
 
+/// BOOT8 is admitted only through the retained Windows development graph path.
+/// The declared profile is checked here before native/child/listener resources.
+#[cfg(windows)]
+pub(super) fn validate_windows_graph_profile(
+    schema: u8,
+    verified: &keld_guard::verified_manifest::VerifiedManifest,
+) -> Result<ProfileState, HostAppError> {
+    if schema != 8
+        || verified.manifest().declared_profile() != Some(keld_guard::DeclaredProfile::Legacy)
+    {
+        return Err(super::boot_error(
+            "Windows graph boot requires schema 8 and an explicit Legacy permission manifest",
+            "Rebuild the same qualified graph and explicit Legacy policy; never strip the declaration or downgrade the schema.",
+        ));
+    }
+    keld_guard::admit_uncontained(ProfileState::Legacy).map_err(HostAppError::admission)
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 pub(super) fn validate_profile(
     schema: u8,

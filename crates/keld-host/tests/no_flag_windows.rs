@@ -36,6 +36,28 @@ mod facade_ready;
 #[path = "no_flag/windows/facade_window.rs"]
 mod facade_window;
 
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+#[path = "no_flag/windows/support/original_bridge_observation.rs"]
+mod original_bridge_observation;
+
+#[path = "no_flag/windows/original_bridge.rs"]
+mod original_bridge;
+
+#[path = "no_flag/windows/original_frame.rs"]
+mod original_frame;
+
+#[path = "no_flag/windows/original_startup.rs"]
+mod original_startup;
+
+#[path = "no_flag/windows/original_resource_work.rs"]
+mod original_resource_work;
+
+#[path = "no_flag/windows/original_queued_close.rs"]
+mod original_queued_close;
+
+#[path = "no_flag/windows/original_cancelled_navigation.rs"]
+mod original_cancelled_navigation;
+
 #[path = "no_flag/windows/recovery.rs"]
 mod recovery;
 

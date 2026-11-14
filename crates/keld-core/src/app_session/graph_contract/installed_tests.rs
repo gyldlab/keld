@@ -98,7 +98,7 @@ fn untrusted_alias(source: &Path, target: &Path) {
 }
 
 struct Fixture {
-    _owned: tempfile::TempDir,
+    owned: tempfile::TempDir,
     root: PathBuf,
     held: File,
     selected: SelectedRendererSource,
@@ -151,7 +151,7 @@ impl Fixture {
         )
         .expect("independent selected source data");
         Self {
-            _owned: owned,
+            owned,
             root,
             held,
             selected,
@@ -223,6 +223,13 @@ fn retained_installed_graph_compiles_and_binds_an_unrelated_nested_editor() {
         .into_parts();
     assert_eq!(root, fixture.root);
     assert_eq!(entry, Path::new("client/assets/nested/editor.html"));
+    #[cfg_attr(
+        windows,
+        expect(
+            clippy::useless_conversion,
+            reason = "The same conversion consumes the macOS OwnedFd; Windows already supplies File, so retain one unchanged custody expression."
+        )
+    )]
     let retained = super::file_metadata(&File::from(code_root)).expect("actual retained code root");
     let selected =
         super::path_metadata(root.join("client/assets")).expect("selected source directory");
@@ -432,7 +439,7 @@ fn selected_preload_replacement_with_identical_bytes_refuses_graph_recheck() {
     let fixture = Fixture::new();
     let graph = fixture.admitted();
     graph.recheck().expect("original selected identity");
-    let replacement = fixture._owned.path().join("new-preload");
+    let replacement = fixture.owned.path().join("new-preload");
     fs::write(&replacement, PRELOAD_BYTES).expect("independently allocated identical bytes");
     fs::rename(&replacement, fixture.root.join(PRELOAD)).expect("replace selected inode");
     assert!(
@@ -445,7 +452,7 @@ fn selected_preload_replacement_with_identical_bytes_refuses_graph_recheck() {
 #[test]
 fn retained_graph_root_identity_rejects_an_unrelated_locator() {
     let fixture = Fixture::new();
-    let other = fixture._owned.path().join("other-root");
+    let other = fixture.owned.path().join("other-root");
     fs::create_dir(&other).expect("unrelated real directory");
     assert!(super::borrow_retained_root(&other, &fixture.held).is_err());
     assert!(super::borrow_retained_root(&fixture.root, &fixture.held).is_ok());
@@ -509,13 +516,13 @@ fn core_prepares_windows_source_and_selected_preload_from_the_same_graph_owner()
     use keld_wv::preload_image::AppPreloadBudget;
     use std::sync::Arc;
 
-    let fixture = Fixture::new();
-    let graph = Arc::new(fixture.admitted());
     const POLICY: &str = "{\"profile\":\"legacy\",\"app\":{},\"windows\":{\"fixture\":{\"web\":{\"csp\":\"original-editor-offline\"}}}}\n";
     const EXPECTED: [u8; 32] = [
         215, 46, 191, 72, 140, 173, 92, 255, 48, 59, 90, 236, 196, 197, 67, 68, 75, 213, 119, 101,
         68, 44, 13, 125, 203, 40, 242, 147, 25, 32, 233, 33,
     ];
+    let fixture = Fixture::new();
+    let graph = Arc::new(fixture.admitted());
     let policy_path = fixture.root.join("keld.permissions.jsonc");
     fs::write(&policy_path, POLICY).expect("fixed independently pinned policy");
     let policy = keld_guard::verified_manifest::load_verified_manifest(
@@ -579,3 +586,12 @@ fn core_prepares_windows_source_and_selected_preload_from_the_same_graph_owner()
     drop(image);
     assert_eq!(budget.retained_bytes(), Some(0));
 }
+
+#[cfg(windows)]
+mod windows_boot;
+
+#[cfg(windows)]
+mod windows_preload_selector;
+
+#[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+mod real_windows_providers;

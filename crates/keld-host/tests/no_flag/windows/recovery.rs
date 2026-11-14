@@ -14,6 +14,7 @@ use crate::support::control::{
 };
 use crate::support::process::{assert_process_signaled_within, open_process_for_wait};
 use crate::support::product::ProductFixture;
+use crate::support::profile_run::{apply_dev_profiles, isolated_dev_profiles, remove_dev_profiles};
 use crate::support::renderer::{
     HeldRendererRequest, expect_renderer_beacon, spawn_renderer_beacon,
 };
@@ -210,6 +211,7 @@ fn windows_explicit_legacy_recovery_retains_captured_policy() {
 
 fn run_same_window_recovery(failure_command: &str, legacy: bool) {
     let fixture = ProductFixture::new();
+    let profiles = isolated_dev_profiles();
     if legacy {
         fs::write(
             fixture.project.join("keld.permissions.jsonc"),
@@ -237,7 +239,9 @@ fn run_same_window_recovery(failure_command: &str, legacy: bool) {
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
     )
     .expect("stage recovery host");
-    let mut child = dev_stage_command(stage.root(), stage.host())
+    let mut command = dev_stage_command(stage.root(), stage.host());
+    apply_dev_profiles(&mut command, stage.host(), profiles.as_ref());
+    let mut child = command
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -304,6 +308,7 @@ fn run_same_window_recovery(failure_command: &str, legacy: bool) {
             "{stderr}"
         );
     }
+    remove_dev_profiles(profiles);
 }
 
 #[test]

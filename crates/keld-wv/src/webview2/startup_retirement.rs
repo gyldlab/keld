@@ -6,17 +6,14 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use super::{
-    PersistentStopTransition, ProfileErrorKind, ProfileReleaseWait, ReleaseSite, WebView2Engine,
-    commit_profile_stop, ephemeral_scavenge_root, profile_failure_with, scavenge_after_release,
-    synchronize_profile_stop,
+    AppRunCustody, PersistentStopTransition, ProfileErrorKind, ProfileReleaseWait, ReleaseSite,
+    WebView2Engine, commit_profile_stop, ephemeral_scavenge_root, profile_failure_with,
+    scavenge_after_release, synchronize_profile_stop,
 };
 use crate::WvError;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum NativeViewBuild {
-    NotAttempted,
-    Attempted,
-}
+mod build_owner;
+pub(super) use build_owner::NativeViewBuild;
 
 impl WebView2Engine {
     /// Retires a prepared zero-controller application engine before loop entry.
@@ -39,7 +36,7 @@ impl WebView2Engine {
         release_witness: impl FnOnce(Instant) -> Result<(), E>,
     ) -> Result<(), WvError> {
         if self.event_loop.is_none()
-            || self.view_build_attempt != NativeViewBuild::NotAttempted
+            || self.view_build_attempt.was_attempted()
             || !self.views.is_empty()
             || self.app_window_created
             || self.pending_app_events.is_some()
@@ -50,31 +47,58 @@ impl WebView2Engine {
                 "pre-run retirement requires an unstarted engine with no native view build attempt",
             ));
         }
-        // Preconditions above are read-only. Keep the native loop alive during
-        // checked callback retirement, but remove future construction authority.
-        let _unrun_loop = self.event_loop.take();
-        let scavenge_root = ephemeral_scavenge_root(self.profile.as_ref());
-        let stop = PersistentStopTransition::from_profile(self.profile.as_ref());
-        commit_profile_stop(stop.as_ref());
-        let release = Rc::new(ProfileReleaseWait::new(
-            self.browser_exit.take(),
-            Arc::clone(&self.browser_binding),
-            None,
-            ReleaseSite::Host,
-        ));
-        // The existing no-controller exemption needs no invented native receipt.
-        // Arming still drains the one receipt source and starts the witness budget.
-        release.arm();
-        if let Some(fault) = release.fault() {
+        // Remove construction authority, then retain the actual unrun loop and
+        // release owner before any setup, observation or witness can fail.
+        let Some(event_loop) = self.event_loop.take() else {
             return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
-                fault.context(release.site),
+                "pre-run retirement has no original event loop",
             ));
+        };
+        let mut run = AppRunCustody::new(event_loop);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let scavenge_root = ephemeral_scavenge_root(self.profile.as_ref());
+            let stop = PersistentStopTransition::from_profile(self.profile.as_ref());
+            commit_profile_stop(stop.as_ref());
+            run.release = Some(Rc::new(ProfileReleaseWait::new(
+                self.browser_exit.take(),
+                Arc::clone(&self.browser_binding),
+                None,
+                ReleaseSite::Host,
+            )));
+            let release = run.release.as_ref().ok_or_else(|| {
+                profile_failure_with(
+                    ProfileErrorKind::LifecycleUnproven,
+                    "pre-run retirement has no retained release owner",
+                )
+            })?;
+            // The existing no-controller exemption invents no native receipt.
+            release.arm();
+            if let Some(fault) = release.fault() {
+                return Err(profile_failure_with(
+                    ProfileErrorKind::LifecycleUnproven,
+                    fault.context(release.site),
+                ));
+            }
+            synchronize_profile_stop(stop.as_ref(), self.profile.as_mut())?;
+            release.retire_loop_wait()?;
+            self.finish_app_profile_release(release, release_witness)?;
+            scavenge_after_release(scavenge_root)
+        }));
+        match outcome {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
+                self.retained_run = Some(run);
+                Err(error)
+            }
+            Err(_) => {
+                self.retained_run = Some(run);
+                Err(profile_failure_with(
+                    ProfileErrorKind::LifecycleUnproven,
+                    "pre-run retirement unwound; original engine custody is retained",
+                ))
+            }
         }
-        synchronize_profile_stop(stop.as_ref(), self.profile.as_mut())?;
-        let release = release.retire_loop_wait()?;
-        self.finish_app_profile_release(&release, release_witness)?;
-        scavenge_after_release(scavenge_root)
     }
 
     /// Check before any creation-side lifecycle or observation mutation.

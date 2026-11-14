@@ -7,26 +7,60 @@
 //! current Runtime caller fence, ordered writer and native endpoint. No new
 //! reader, transport, principal, policy parser or native document owner is created.
 
+#[cfg(all(test, windows))]
+pub(in crate::app_session) mod owned_tests;
+#[cfg(windows)]
+mod publication;
+#[cfg(windows)]
+pub(in crate::app_session) use publication::{
+    RendererFailureDisposition, RendererRequestDisposition,
+};
+#[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+pub(in crate::app_session) mod fresh_offer_observation;
+#[cfg(windows)]
+mod native_control;
+#[cfg(windows)]
+mod native_data;
+#[cfg(windows)]
+mod native_event_retirement;
+#[cfg(windows)]
+mod native_input_failure;
+#[cfg(windows)]
+mod native_scope;
+#[cfg(windows)]
+mod primary_terminal;
+#[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+pub(in crate::app_session) mod queued_close_observation;
+#[cfg(windows)]
+mod retirement;
+#[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+pub(in crate::app_session) mod x11_pressure;
+#[cfg(windows)]
+pub(super) use retirement::{CompatRetirementReply, PreparedCompatRetirement};
+
 use super::PrimaryCallerContext;
 use super::window_registry::{RendererRoute, WindowOwner};
 use super::{
-    ActivePrimaryGeneration, HostAppError, PrimaryRouterHandle, app_detail, app_ipc, encode,
-    with_primary_caller_locked, write_frame,
+    ActivePrimaryGeneration, HostAppError, PrimaryRouterHandle, app_detail, app_ipc,
+    with_primary_caller_locked,
 };
+#[cfg(any(not(windows), test))]
+use super::{encode, write_frame};
 use keld_guard::verified_manifest::VerifiedManifest;
 use keld_guard::{Principal, RendererChannelQuery};
+#[cfg(any(not(windows), test))]
+use keld_ipc::compat_control::CompatControlEvent;
 use keld_ipc::compat_control::{
-    self, CompatControlEvent, CompatControlRequest, CompatControlResponse, ConsumerDisposition,
-    TerminalDisposition,
+    self, CompatControlRequest, CompatControlResponse, ConsumerDisposition, TerminalDisposition,
 };
 use keld_ipc::frame::{CorrelationId, FrameKind};
 use keld_ipc::guard_dispatch::{dispatch_privileged_query, preflight_privileged_query};
 use keld_ipc::{CallError, LifecycleResponse, SubscribeRefusal};
 use keld_wv::WebviewId;
-use keld_wv::wkwebview::{
-    MacNativeDocumentLease, RendererBridgeOperation, RendererBridgeOutcome, RendererBridgeRequest,
-    RendererRoleWitness,
+use keld_wv::renderer_bridge::{
+    RendererBridgeOperation, RendererBridgeOutcome, RendererBridgeRequest, RendererRoleWitness,
 };
+use keld_wv::renderer_contract::CheckedNativeDocumentLease as MacNativeDocumentLease;
 use keld_wv::wv_link::{WvConsumerDisposition, WvTerminalDisposition};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -67,7 +101,18 @@ enum Admission {
 }
 const MAX_DATA_RETAINED_BYTES: usize = 262_144;
 const MAX_CONTROL_BYTES: usize = compat_control::COMPAT_CONTROL_FRAME_BYTES;
+#[cfg(windows)]
+const MAX_ALL_CONTROL_RETAINED_BYTES: usize = native_control::CONTROL_ACCOUNTED_BYTES;
+#[cfg(not(windows))]
+const MAX_ALL_CONTROL_RETAINED_BYTES: usize = 4 * MAX_CONTROL_BYTES;
 
+#[cfg_attr(
+    windows,
+    expect(
+        clippy::struct_excessive_bools,
+        reason = "Independent native, consumer, preparation and storage facts share the fixed charged record."
+    )
+)]
 struct Charge {
     key: NativeRouteKey,
     owner: PrimaryCallerContext,
@@ -79,8 +124,49 @@ struct Charge {
     document: Option<MacNativeDocumentLease>,
     pending_reply: Option<CorrelationId>,
     terminal: Option<ConsumerDisposition>,
+    #[cfg(windows)]
+    terminal_preparing: bool,
+    // Diagnostic-only bounded sequence; never a permission or custody predicate.
+    #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+    selected_source_sequence: u32,
+    #[cfg(windows)]
+    terminal_deadline: Option<std::time::Instant>,
+    #[cfg(windows)]
+    primary_write: Option<super::primary_writer::RetainedWrite>,
+    #[cfg(windows)]
+    retirement_write: Option<super::primary_writer::WriteObservation>,
+    // Native backing belongs to this SAME DATA record through EventReleased.
+    #[cfg(windows)]
+    native_storage: Option<Arc<std::sync::atomic::AtomicBool>>,
+    #[cfg(windows)]
+    native_window: Option<keld_ipc::window::WindowRef>,
+    #[cfg(windows)]
+    event_release_sent: bool,
+    // Alternative sealed native retirement, never a fabricated consumer/function receipt.
+    #[cfg(windows)]
+    native_retirement: Option<compat_control::DispatchCertainty>,
+    // Exact metadata-only failed Host completion moved here after stale-source
+    // classification. No second slot/queue or native DATA token is held here.
+    #[cfg(windows)]
+    retained_native_failure: Option<keld_wv::renderer_bridge::RetainedRendererEventFailure>,
 }
 impl Charge {
+    fn event_obligations_settled(&self) -> bool {
+        #[cfg(windows)]
+        if self.native_retirement.is_some() {
+            return true;
+        }
+        self.consumer_done && self.native_done
+    }
+
+    #[cfg(windows)]
+    fn has_unadmitted_terminal(&self) -> bool {
+        self.pending_reply.is_some()
+            && (self.terminal_preparing
+                || self.terminal.is_some()
+                || self.native_retirement.is_some())
+    }
+
     fn owned_by(&self, caller: &PrimaryCallerContext) -> bool {
         self.owner.attempt == caller.attempt
             && self.owner.identity == caller.identity
@@ -91,6 +177,20 @@ struct ControlCharge {
     owner: PrimaryCallerContext,
     correlation: u32,
     retained: usize,
+    // A non-clone native lease owns this exact release notification. It is
+    // accounting custody only, never a role/document permission observation.
+    #[cfg(windows)]
+    native_release: Option<Arc<std::sync::atomic::AtomicBool>>,
+    #[cfg(windows)]
+    application_done: bool,
+    #[cfg(windows)]
+    encoded: usize,
+    // The original correlated writer remains physically pending after a source
+    // timeout. This observes its SAME slot/serial; it owns no payload or receipt.
+    #[cfg(windows)]
+    primary_write: Option<super::primary_writer::WriteObservation>,
+    #[cfg(windows)]
+    native_window: Option<keld_ipc::window::WindowRef>,
 }
 impl ControlCharge {
     fn owned_by(&self, caller: &PrimaryCallerContext) -> bool {
@@ -106,6 +206,8 @@ struct CompatLedger {
     data: [Option<Charge>; 2],
     controls: [Option<ControlCharge>; 4],
     preflight: Option<PreflightAdmission>,
+    #[cfg(windows)]
+    control_progress: Option<super::primary_writer::PrimaryWriter>,
 }
 impl CompatLedger {
     const fn new() -> Self {
@@ -113,6 +215,8 @@ impl CompatLedger {
             data: [None, None],
             controls: [None, None, None, None],
             preflight: None,
+            #[cfg(windows)]
+            control_progress: None,
         }
     }
 
@@ -130,7 +234,7 @@ impl CompatLedger {
         }
         if retained > MAX_DATA_RETAINED_BYTES
             || self.retained_bytes().saturating_add(retained)
-                > 2 * MAX_DATA_RETAINED_BYTES + 4 * MAX_CONTROL_BYTES
+                > 2 * MAX_DATA_RETAINED_BYTES + MAX_ALL_CONTROL_RETAINED_BYTES
         {
             return Err(Admission::TooLarge);
         }
@@ -148,6 +252,26 @@ impl CompatLedger {
             document: None,
             pending_reply: None,
             terminal: None,
+            #[cfg(windows)]
+            terminal_preparing: false,
+            #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+            selected_source_sequence: 0,
+            #[cfg(windows)]
+            terminal_deadline: None,
+            #[cfg(windows)]
+            primary_write: None,
+            #[cfg(windows)]
+            retirement_write: None,
+            #[cfg(windows)]
+            native_storage: None,
+            #[cfg(windows)]
+            native_window: None,
+            #[cfg(windows)]
+            event_release_sent: false,
+            #[cfg(windows)]
+            native_retirement: None,
+            #[cfg(windows)]
+            retained_native_failure: None,
         });
         Ok(())
     }
@@ -184,6 +308,7 @@ impl CompatLedger {
         self.clear_if_complete(direction);
     }
 
+    #[cfg(any(not(windows), test))]
     fn document_retired(&mut self, webview: u32, navigation: u32) {
         if self.preflight.as_ref().is_some_and(|p| {
             p.document.stamp().view().0 == webview
@@ -234,10 +359,28 @@ impl CompatLedger {
     }
 
     fn clear_if_complete(&mut self, direction: Direction) {
-        if self.data[direction.index()]
-            .as_ref()
-            .is_some_and(|c| c.consumer_done && c.native_done)
-        {
+        if self.data[direction.index()].as_ref().is_some_and(|c| {
+            #[cfg(windows)]
+            if c.terminal_preparing || c.primary_write.is_some() || c.retirement_write.is_some() {
+                return false;
+            }
+            #[cfg(windows)]
+            if let Some(storage) = &c.native_storage
+                && (!storage.load(Ordering::Acquire)
+                    || (direction == Direction::MainToRenderer && !c.event_release_sent))
+            {
+                return false;
+            }
+            if direction == Direction::MainToRenderer {
+                #[cfg(windows)]
+                if c.pending_reply.is_some() {
+                    return false;
+                }
+                c.event_obligations_settled()
+            } else {
+                c.consumer_done && c.native_done
+            }
+        }) {
             self.data[direction.index()] = None;
         }
     }
@@ -248,7 +391,18 @@ impl CompatLedger {
         correlation: u32,
         retained: usize,
     ) -> Result<(), Admission> {
+        #[cfg(windows)]
+        self.reap_native_controls();
         if retained > MAX_CONTROL_BYTES {
+            return Err(Admission::TooLarge);
+        }
+        #[cfg(windows)]
+        if self
+            .control_accounted_bytes()
+            .saturating_add(retained)
+            .saturating_add(native_control::CONTROL_RECORD_BYTES)
+            > native_control::CONTROL_ACCOUNTED_BYTES
+        {
             return Err(Admission::TooLarge);
         }
         if correlation == 0 {
@@ -272,6 +426,16 @@ impl CompatLedger {
             owner: caller.clone(),
             correlation,
             retained,
+            #[cfg(windows)]
+            native_release: None,
+            #[cfg(windows)]
+            application_done: false,
+            #[cfg(windows)]
+            encoded: retained,
+            #[cfg(windows)]
+            primary_write: None,
+            #[cfg(windows)]
+            native_window: None,
         });
         Ok(())
     }
@@ -281,8 +445,17 @@ impl CompatLedger {
             slot.as_ref()
                 .is_some_and(|c| c.owned_by(caller) && c.correlation == correlation)
         }) {
-            *slot = None;
+            #[cfg(windows)]
+            if let Some(charge) = slot.as_mut() {
+                charge.application_done = true;
+            }
+            #[cfg(not(windows))]
+            {
+                *slot = None;
+            }
         }
+        #[cfg(windows)]
+        self.reap_native_controls();
     }
 
     #[cfg(test)]
@@ -334,6 +507,10 @@ pub(super) struct CompatSession {
     outcomes: Sender<RendererBridgeOutcome>,
     subscribed: Option<PrimaryCallerContext>,
     ledger: CompatLedger,
+    #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+    x11_pressure: x11_pressure::PressureControl,
+    #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+    x11_watch: Option<x11_pressure::PressureWatch>,
 }
 impl CompatSession {
     pub(super) fn new(verified: VerifiedManifest, outcomes: Sender<RendererBridgeOutcome>) -> Self {
@@ -342,6 +519,10 @@ impl CompatSession {
             outcomes,
             subscribed: None,
             ledger: CompatLedger::new(),
+            #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+            x11_pressure: x11_pressure::PressureControl::capture(),
+            #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+            x11_watch: None,
         }
     }
     fn send(&self, outcome: RendererBridgeOutcome) -> Result<(), HostAppError> {
@@ -432,6 +613,14 @@ fn terminal(disposition: ConsumerDisposition) -> TerminalDisposition {
         ConsumerDisposition::Refused { error } => TerminalDisposition::Refused { error },
     }
 }
+#[cfg(any(not(windows), test))]
+#[cfg_attr(
+    all(windows, test),
+    expect(
+        dead_code,
+        reason = "Keep the existing legacy publication path type-checked in Windows tests; its runtime callers are non-Windows."
+    )
+)]
 fn write_response(
     active: &mut ActivePrimaryGeneration,
     correlation: CorrelationId,
@@ -449,6 +638,14 @@ fn write_response(
     )
     .map_err(|source| app_ipc("compat response writer", &source))
 }
+#[cfg(any(not(windows), test))]
+#[cfg_attr(
+    all(windows, test),
+    expect(
+        dead_code,
+        reason = "Keep the existing legacy publication path type-checked in Windows tests; its runtime callers are non-Windows."
+    )
+)]
 fn write_error(
     active: &mut ActivePrimaryGeneration,
     correlation: CorrelationId,
@@ -465,6 +662,7 @@ fn write_error(
 
 /// The caller retains the current primary and a Registry-qualified route.
 /// This observation grants no channel permission or renderer DATA credit.
+#[cfg(any(not(windows), test))]
 fn write_document_bound(
     active: &mut ActivePrimaryGeneration,
     route: &RendererRoute,
@@ -492,10 +690,37 @@ fn write_document_bound(
 }
 
 impl PrimaryRouterHandle {
+    #[cfg(not(windows))]
+    pub(super) fn dispatch_renderer_request(
+        &self,
+        request: RendererBridgeRequest,
+    ) -> Result<Option<RendererBridgeRequest>, HostAppError> {
+        self.dispatch_renderer_request_legacy_policy(request)
+    }
+    #[cfg(not(windows))]
+    pub(super) fn dispatch_compat(
+        &self,
+        caller: &PrimaryCallerContext,
+        correlation: CorrelationId,
+        payload: Vec<u8>,
+    ) -> Result<(), HostAppError> {
+        self.dispatch_compat_legacy_policy(caller, correlation, payload)
+    }
+    #[cfg(not(windows))]
+    pub(super) fn subscribe_compat(
+        &self,
+        caller: &PrimaryCallerContext,
+        correlation: CorrelationId,
+        channel: u16,
+    ) -> Result<bool, HostAppError> {
+        self.subscribe_compat_legacy_policy(caller, correlation, channel)
+    }
+
     /// Called only with transition/current held and a Registry-qualified native
     /// Registered route for that exact current `WindowOwner`. Windows may be held:
     /// this final availability producer acquires only compat, never current or
     /// windows. It carries no topic permit and cannot authorize any delivery.
+    #[cfg(any(not(windows), test))]
     pub(super) fn compat_registered_route_ready_locked(
         &self,
         caller: &PrimaryCallerContext,
@@ -510,6 +735,7 @@ impl PrimaryRouterHandle {
     /// False is published only while that native lease is physically current;
     /// an already-revoked document is retired by its native owner, never by
     /// selecting a successor route from a late old navigation observation.
+    #[cfg(any(not(windows), test))]
     pub(super) fn compat_registered_route_retired_locked(
         &self,
         caller: &PrimaryCallerContext,
@@ -518,6 +744,7 @@ impl PrimaryRouterHandle {
         self.compat_registered_route_state_locked(caller, route, false, None)
     }
 
+    #[cfg(any(not(windows), test))]
     fn compat_registered_route_state_locked(
         &self,
         caller: &PrimaryCallerContext,
@@ -539,11 +766,28 @@ impl PrimaryRouterHandle {
         if let Some(active) = binding_writer {
             write_document_bound(active, &route)?;
         }
+        #[cfg(windows)]
+        let mut state = state;
+        #[cfg(windows)]
+        let control = state
+            .reserve_native_control(caller, 1, 1025, Arc::clone(compat))
+            .ok_or_else(|| {
+                app_detail(
+                    "compat availability",
+                    "existing CONTROL storage is occupied",
+                )
+            })?;
         let result = state.send(RendererBridgeOutcome::RouteState {
             webview: route.document.stamp().view(),
             navigation: u64::from(route.document.stamp().observed_generation()),
             ready,
-            role: RendererRoleWitness::new(Arc::clone(&caller.reader_stop)),
+            role: self.renderer_role_witness(caller),
+            #[cfg(windows)]
+            retirement: (!ready)
+                .then(|| self.renderer_route_retirement(caller, &route))
+                .flatten(),
+            #[cfg(windows)]
+            control: Some(control),
         });
         // Preserve the owned route snapshot through the send, then release it
         // at the existing local-lock-before-parameter end-of-call cut.
@@ -557,6 +801,14 @@ impl PrimaryRouterHandle {
     /// Window admission proves that this owner completed its window replay and
     /// could admit the matching load/commit. Only explicit Subscribe may rebind
     /// a separately retained, fully qualified physical document observation.
+    #[cfg(any(not(windows), test))]
+    #[cfg_attr(
+        all(windows, test),
+        expect(
+            dead_code,
+            reason = "Keep the existing legacy publication path type-checked in Windows tests; its runtime callers are non-Windows."
+        )
+    )]
     fn compat_registered_document_bounds_locked(
         &self,
         caller: &PrimaryCallerContext,
@@ -586,6 +838,14 @@ impl PrimaryRouterHandle {
 
     /// Caller owns transition/current. Enumerate existing registered Entries;
     /// there is no second document list, retained readiness map or new epoch.
+    #[cfg(any(not(windows), test))]
+    #[cfg_attr(
+        all(windows, test),
+        expect(
+            dead_code,
+            reason = "Keep the existing legacy publication path type-checked in Windows tests; its runtime callers are non-Windows."
+        )
+    )]
     fn compat_registered_routes_state_locked(
         &self,
         caller: &PrimaryCallerContext,
@@ -613,7 +873,15 @@ impl PrimaryRouterHandle {
 
     /// Native Registered is an authenticated identity observation, independent
     /// of whether a Bun link already exists. It consumes no DATA/preflight credit.
-    fn note_renderer_registered(
+    #[cfg(any(not(windows), test))]
+    #[cfg_attr(
+        all(windows, test),
+        expect(
+            dead_code,
+            reason = "Keep the existing legacy publication path type-checked in Windows tests; its runtime callers are non-Windows."
+        )
+    )]
+    fn note_renderer_registered_legacy_policy(
         &self,
         request: &RendererBridgeRequest,
         key: NativeRouteKey,
@@ -670,7 +938,15 @@ impl PrimaryRouterHandle {
     /// The existing actor transfers custody of its actual native input here.
     /// Only legacy Invoke is returned; named input is physically dropped before
     /// native-input quiescence can release its DATA charge.
-    pub(super) fn dispatch_renderer_request(
+    #[cfg(any(not(windows), test))]
+    #[cfg_attr(
+        all(windows, test),
+        expect(
+            dead_code,
+            reason = "Keep the existing legacy publication path type-checked in Windows tests; its runtime callers are non-Windows."
+        )
+    )]
+    pub(super) fn dispatch_renderer_request_legacy_policy(
         &self,
         request: RendererBridgeRequest,
     ) -> Result<Option<RendererBridgeRequest>, HostAppError> {
@@ -683,7 +959,7 @@ impl PrimaryRouterHandle {
         } else {
             None
         };
-        let result = self.dispatch_named_renderer_request(&request);
+        let result = self.dispatch_named_renderer_request_legacy_policy(&request);
         drop(request); // releases the actual native payload and charged frame facts
         if let (Some(compat), Some((key, document))) = (&self.compat, physical_input) {
             let mut state = compat.lock().map_err(|_| {
@@ -708,7 +984,15 @@ impl PrimaryRouterHandle {
 
     /// Operates on borrowed input while this owner retains its physical charge.
     #[allow(clippy::too_many_lines)] // one native endpoint dispatch keeps final writer/Guard and both release witnesses visible
-    fn dispatch_named_renderer_request(
+    #[cfg(any(not(windows), test))]
+    #[cfg_attr(
+        all(windows, test),
+        expect(
+            dead_code,
+            reason = "Keep the existing legacy publication path type-checked in Windows tests; its runtime callers are non-Windows."
+        )
+    )]
+    fn dispatch_named_renderer_request_legacy_policy(
         &self,
         request: &RendererBridgeRequest,
     ) -> Result<bool, HostAppError> {
@@ -725,7 +1009,7 @@ impl PrimaryRouterHandle {
             ));
         };
         if matches!(request.operation(), RendererBridgeOperation::Registered) {
-            self.note_renderer_registered(request, key)?;
+            self.note_renderer_registered_legacy_policy(request, key)?;
             return Ok(true);
         }
         let caller = {
@@ -777,6 +1061,12 @@ impl PrimaryRouterHandle {
                     })?;
                 }
                 RendererBridgeOperation::Send { .. } => {
+                    #[cfg(windows)]
+                    return Err(app_detail(
+                        "compat retired terminal",
+                        "original pending-record settlement authority is unavailable",
+                    ));
+                    #[cfg(not(windows))]
                     state.send(RendererBridgeOutcome::SendResult {
                         webview: request.webview(),
                         navigation: request.navigation(),
@@ -937,10 +1227,28 @@ impl PrimaryRouterHandle {
                         accepted,
                     })
                 }
-                RendererBridgeOperation::Send { channel } => {
+                RendererBridgeOperation::Send {
+                    channel,
+                    original_call,
+                } => {
+                    #[cfg(windows)]
+                    let native_control = state
+                        .reserve_native_control(
+                            &caller,
+                            1,
+                            MAX_CONTROL_BYTES + 1024,
+                            Arc::clone(compat),
+                        )
+                        .ok_or_else(|| {
+                            app_detail(
+                                "compat send terminal",
+                                "existing CONTROL storage is occupied",
+                            )
+                        })?;
                     let admitted = accepted
                         && state.ledger.preflight.as_ref().is_some_and(|p| {
-                            same_caller(&p.caller, &caller)
+                            p.call == *original_call
+                                && same_caller(&p.caller, &caller)
                                 && p.channel == *channel
                                 && route.as_ref().is_some_and(|route| {
                                     p.document.stamp() == route.document.stamp()
@@ -957,6 +1265,8 @@ impl PrimaryRouterHandle {
                                     "original send no longer has its admitted role and document",
                                 ),
                             },
+                            #[cfg(windows)]
+                            control: Some(native_control),
                         });
                     }
                     let route = route.as_ref().ok_or_else(|| {
@@ -1057,6 +1367,8 @@ impl PrimaryRouterHandle {
                                         code: error.code,
                                         message: error.message,
                                     },
+                                    #[cfg(windows)]
+                                    control: Some(native_control),
                                 })
                                 .map_err(|_| {
                                     app_detail(
@@ -1084,6 +1396,12 @@ impl PrimaryRouterHandle {
                     })?;
                 }
                 RendererBridgeOperation::Send { .. } => {
+                    #[cfg(windows)]
+                    return Err(app_detail(
+                        "compat retired terminal",
+                        "original pending-record settlement authority is unavailable",
+                    ));
+                    #[cfg(not(windows))]
                     state.send(RendererBridgeOutcome::SendResult {
                         webview: request.webview(),
                         navigation: request.navigation(),
@@ -1100,8 +1418,17 @@ impl PrimaryRouterHandle {
     }
 
     /// Called by the sole canonical primary reader after shared header admission.
-    #[allow(clippy::too_many_lines)] // sole canonical CALL dispatch keeps role fence, final Guard, and deferred terminal ownership together
-    pub(super) fn dispatch_compat(
+    #[allow(clippy::too_many_lines)]
+    // sole canonical CALL dispatch keeps role fence, final Guard, and deferred terminal ownership together
+    #[cfg(any(not(windows), test))]
+    #[cfg_attr(
+        all(windows, test),
+        expect(
+            dead_code,
+            reason = "Keep the existing legacy publication path type-checked in Windows tests; its runtime callers are non-Windows."
+        )
+    )]
+    pub(super) fn dispatch_compat_legacy_policy(
         &self,
         caller: &PrimaryCallerContext,
         correlation: CorrelationId,
@@ -1156,6 +1483,15 @@ impl PrimaryRouterHandle {
                 // This request is the actual WorkerLink post-R_BYTES/R_RECS
                 // receipt. Unknown/stale/duplicate receipts free nothing.
                 if matched {
+                    #[cfg(windows)]
+                    let control = state
+                        .lease_existing_control(caller, correlation.0, 0, Arc::clone(compat))
+                        .ok_or_else(|| {
+                            app_detail(
+                                "compat consumer terminal",
+                                "original CONTROL custody is unavailable",
+                            )
+                        })?;
                     state
                         .ledger
                         .consumer_released(Direction::RendererToMain, key, caller);
@@ -1164,6 +1500,8 @@ impl PrimaryRouterHandle {
                         navigation: u64::from(navigation),
                         request: message,
                         disposition: native_terminal(disposition),
+                        #[cfg(windows)]
+                        control: Some(control),
                     })?;
                 }
                 let result = write_response(active, correlation, &CompatControlResponse::Released);
@@ -1270,6 +1608,12 @@ impl PrimaryRouterHandle {
                                 request: key.message,
                                 channel: topic.clone(),
                                 payload: value,
+                                #[cfg(windows)]
+                                document: route.document.clone(),
+                                #[cfg(windows)]
+                                role: self.renderer_role_witness_for_window(caller, route.window),
+                                #[cfg(windows)]
+                                storage: None,
                             })
                             .map_err(|_| {
                                 app_detail(
@@ -1310,20 +1654,47 @@ impl PrimaryRouterHandle {
                     charge
                         .document
                         .as_ref()
-                        .is_some_and(|held| held.stamp() == lease.stamp())
+                        .is_some_and(|held| held.same_binding(lease))
                 })
             {
                 return Ok(());
             }
+            #[cfg(windows)]
+            if !native_event_retirement::request_has_original_role(request, charge) {
+                return Ok(());
+            }
             match request.operation() {
                 RendererBridgeOperation::Consumed { disposition } => {
+                    #[cfg(windows)]
+                    if charge.native_retirement.is_some() {
+                        return Ok(()); // first actual retirement terminal cannot be rewritten
+                    }
                     if charge.consumer_done {
                         return Ok(());
+                    }
+                    #[cfg(windows)]
+                    if let WvConsumerDisposition::Refused { code, message } = disposition {
+                        let retained = charge
+                            .retained
+                            .checked_add(code.len())
+                            .and_then(|bytes| bytes.checked_add(message.len()))
+                            .filter(|bytes| *bytes <= MAX_DATA_RETAINED_BYTES)
+                            .ok_or_else(|| {
+                                app_detail(
+                                    "compat consumer terminal",
+                                    "original DATA storage cannot retain its terminal",
+                                )
+                            })?;
+                        charge.retained = retained; // charge before cloning the copied native diagnostic
                     }
                     charge.consumer_done = true;
                     charge.terminal = Some(consumer(disposition));
                 }
                 RendererBridgeOperation::EventQuiesced { completed } => {
+                    #[cfg(windows)]
+                    if charge.native_retirement.is_some() {
+                        return Ok(()); // sealed cancellation/Close already selected its terminal
+                    }
                     if charge.native_done {
                         return Ok(());
                     }
@@ -1340,9 +1711,27 @@ impl PrimaryRouterHandle {
                 }
                 _ => return Ok(()),
             }
-            if !charge.consumer_done || !charge.native_done {
+            if !charge.event_obligations_settled() {
                 return Ok(());
             }
+            #[cfg(windows)]
+            if charge.terminal_deadline.is_none() {
+                charge.terminal_deadline =
+                    Some(std::time::Instant::now() + keld_ipc::APP_LINK_IO_DEADLINE);
+            }
+            #[cfg(windows)]
+            if charge.terminal_preparing
+                || charge.primary_write.is_some()
+                || charge.retirement_write.is_some()
+            {
+                drop(state);
+                return self.service_compat_writer_progress();
+            }
+            #[cfg(windows)]
+            if charge.pending_reply.is_none() {
+                return state.release_completed_native_event();
+            }
+            #[cfg(not(windows))]
             if charge.pending_reply.is_none() {
                 // Retirement has already written its real terminal. Both physical
                 // witnesses now allow this exact native pending-event to release.
@@ -1355,6 +1744,9 @@ impl PrimaryRouterHandle {
                 return Ok(());
             }
         }
+        #[cfg(windows)]
+        return self.service_compat_writer_progress();
+        #[cfg(not(windows))]
         with_primary_caller_locked(&self.current, &self.shutdown, caller, |current| {
             let active = current.as_mut().ok_or_else(|| {
                 app_detail("compat native completion", "validated role disappeared")
@@ -1396,7 +1788,15 @@ impl PrimaryRouterHandle {
     }
 
     /// Table-derived supported guarded-event subscription, before window fallback.
-    pub(super) fn subscribe_compat(
+    #[cfg(any(not(windows), test))]
+    #[cfg_attr(
+        all(windows, test),
+        expect(
+            dead_code,
+            reason = "Keep the existing legacy publication path type-checked in Windows tests; its runtime callers are non-Windows."
+        )
+    )]
+    pub(super) fn subscribe_compat_legacy_policy(
         &self,
         caller: &PrimaryCallerContext,
         correlation: CorrelationId,
@@ -1475,8 +1875,57 @@ impl PrimaryRouterHandle {
         Ok(true)
     }
 
+    /// Physical primary-write failure cannot append any further frame to the
+    /// damaged stream or wait on its own worker. The enclosing canonical role
+    /// owner revokes/closes the same generation immediately after this cut.
+    /// Native/ring storage is retained until its actual independent completion;
+    /// clearing a dead-link reply correlation does not refund that DATA charge.
+    #[cfg(windows)]
+    pub(super) fn retire_compat_after_write_failure_locked(
+        &self,
+        active: &ActivePrimaryGeneration,
+    ) -> Result<(), HostAppError> {
+        let Some(compat) = &self.compat else {
+            return Ok(());
+        };
+        let caller = PrimaryCallerContext {
+            attempt: active.attempt,
+            identity: active.identity,
+            reader_stop: Arc::clone(&active.reader_stop),
+        };
+        let mut state = compat
+            .lock()
+            .map_err(|_| app_detail("compat failed writer retirement", "session lock poisoned"))?;
+        if state
+            .subscribed
+            .as_ref()
+            .is_some_and(|owner| same_caller(owner, &caller))
+        {
+            state.subscribed = None;
+        }
+        state.ledger.role_retired(&caller);
+        let mut retained_selection = false;
+        for charge in state.ledger.data.iter_mut().flatten() {
+            if charge.owned_by(&caller) {
+                if charge.has_unadmitted_terminal() {
+                    retained_selection = true;
+                } else {
+                    charge.pending_reply = None;
+                }
+            }
+        }
+        if retained_selection {
+            return Err(app_detail(
+                "compat failed writer retirement",
+                "selected original terminal remains retained without a qualified dead-link publication",
+            ));
+        }
+        Ok(())
+    }
+
     /// Parent already holds transition/current and calls BEFORE reader-stop/close.
     /// A terminal answer never recycles ambiguous native or ring work.
+    #[cfg(not(windows))]
     pub(super) fn retire_compat_locked(
         &self,
         active: &mut ActivePrimaryGeneration,
@@ -1525,6 +1974,12 @@ impl PrimaryRouterHandle {
                     charge.pending_reply = None;
                 }
                 if direction == Direction::RendererToMain {
+                    #[cfg(windows)]
+                    return Err(app_detail(
+                        "compat retired terminal",
+                        "retired native terminal requires its exact pending-record settlement owner",
+                    ));
+                    #[cfg(not(windows))]
                     state.send(RendererBridgeOutcome::SendResult {
                         webview: WebviewId(key.webview),
                         navigation: u64::from(key.navigation),
@@ -1596,6 +2051,9 @@ impl PrimaryRouterHandle {
 }
 
 #[cfg(test)]
+mod test_fixture;
+
+#[cfg(all(test, target_os = "macos"))]
 mod availability_tests;
 
 #[cfg(test)]

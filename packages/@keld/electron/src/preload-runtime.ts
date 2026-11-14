@@ -4,6 +4,9 @@ import {
   decodeEndpointArguments,
 } from "@keld/kipc/endpoint-value-codec";
 
+// The browser bundle substitutes the canonical channel at build time.
+declare const __KELD_ECHO_CHANNEL__: number;
+
 type Local =
   | null
   | boolean
@@ -676,7 +679,7 @@ function installWindowsNumeric(
           kind: "invoke",
           document,
           request: call.request,
-          channel: 1,
+          channel: __KELD_ECHO_CHANNEL__,
           payload: call.payload,
         }),
       );
@@ -694,7 +697,7 @@ function installWindowsNumeric(
     opts?: unknown,
   ): Promise<Uint8Array> {
     if (opts !== undefined) return fail("opts is not supported by this bridge");
-    if (channel !== 1)
+    if (channel !== __KELD_ECHO_CHANNEL__)
       return fail("renderer channel is not declared by this build");
     if (!(payload instanceof Bytes))
       return fail("payload must be a Uint8Array");

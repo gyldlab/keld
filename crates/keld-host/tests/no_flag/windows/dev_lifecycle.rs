@@ -12,7 +12,8 @@ use crate::support::process::{
     wait_child, wait_for_child_process, wait_for_cleanup_sentinel, wait_process_gone,
 };
 use crate::support::product::ProductFixture;
-use crate::support::product_cycle::run_product_cycle;
+use crate::support::product_cycle::run_product_cycle_with_profiles;
+use crate::support::profile_run::{apply_dev_profiles, isolated_dev_profiles, remove_dev_profiles};
 use crate::support::renderer::{expect_renderer_beacon, spawn_renderer_beacon};
 use crate::support::window::wait_for_host_window;
 use crate::{
@@ -29,6 +30,7 @@ use std::time::Instant;
 #[test]
 fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
     let fixture = ProductFixture::new();
+    let profiles = isolated_dev_profiles();
     let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind shipping control");
     let control_port = control_listener
         .local_addr()
@@ -49,16 +51,21 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
     )
     .expect("write shipping renderer");
     let helper = prepare_keld_dev_helper(&fixture);
-    let mut cli = Command::new(&helper)
+    let mut command = Command::new(&helper);
+    command
         .arg("keld_dev_windows_helper")
         .arg("--exact")
         .arg("--nocapture")
         .env("KELD_T4_HELPER_PROJECT", &fixture.project)
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("launch shipping keld dev helper");
+        .stderr(Stdio::piped());
+    apply_dev_profiles(
+        &mut command,
+        &helper.with_file_name("keld-host.exe"),
+        profiles.as_ref(),
+    );
+    let mut cli = command.spawn().expect("launch shipping keld dev helper");
     let host_pid =
         wait_for_child_process(&mut cli, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
     let (mut reader, mut writer, bun_pid, _) = accept_ready_generation(&control_listener, &mut cli);
@@ -95,6 +102,7 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
         "delegated Bun survived orderly exit"
     );
     assert_eq!(dev_stage_count(&fixture.project), 0, "orderly stage leaked");
+    remove_dev_profiles(profiles);
 }
 
 /// AC19 product admission: real CLI delegation reaches zero-window Ready and
@@ -102,9 +110,11 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
 #[test]
 fn shipping_windows_keld_dev_runs_a_facade_and_retires_the_stage() {
     let fixture = ProductFixture::schema_two();
+    let profiles = isolated_dev_profiles();
     let control = TcpListener::bind(("127.0.0.1", 0)).expect("facade control");
     let helper = prepare_keld_dev_helper(&fixture);
-    let mut cli = Command::new(&helper)
+    let mut command = Command::new(&helper);
+    command
         .args(["keld_dev_windows_helper", "--exact", "--nocapture"])
         .env("KELD_T4_HELPER_PROJECT", &fixture.project)
         .env(
@@ -116,9 +126,13 @@ fn shipping_windows_keld_dev_runs_a_facade_and_retires_the_stage() {
                 .to_string(),
         )
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("facade keld dev");
+        .stderr(Stdio::piped());
+    apply_dev_profiles(
+        &mut command,
+        &helper.with_file_name("keld-host.exe"),
+        profiles.as_ref(),
+    );
+    let mut cli = command.spawn().expect("facade keld dev");
     let host_pid =
         wait_for_child_process(&mut cli, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
     let host = open_process_for_wait(host_pid, false);
@@ -139,6 +153,7 @@ fn shipping_windows_keld_dev_runs_a_facade_and_retires_the_stage() {
     assert_process_signaled(&host, "delegated facade Host");
     assert_process_signaled(&bun, "delegated facade Bun");
     wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
+    remove_dev_profiles(profiles);
 }
 
 /// AC19: on Windows only the `keld dev` cleanup process deletes the stage, once the
@@ -150,6 +165,7 @@ fn shipping_windows_keld_dev_runs_a_facade_and_retires_the_stage() {
 fn shipping_windows_keld_dev_cleans_a_facade_stage_after_the_attempt_job_empties() {
     for stalled in [false, true] {
         let fixture = ProductFixture::schema_two();
+        let profiles = isolated_dev_profiles();
         let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind facade control");
         let control_port = control_listener
             .local_addr()
@@ -165,6 +181,11 @@ fn shipping_windows_keld_dev_cleans_a_facade_stage_after_the_attempt_job_empties
             .env("KELD_T1B_CONTROL", control_port.to_string())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        apply_dev_profiles(
+            &mut command,
+            &helper.with_file_name("keld-host.exe"),
+            profiles.as_ref(),
+        );
         if stalled {
             command.env("KELD_T1B_STALL_BEFORE_INIT", "1");
         }
@@ -226,6 +247,7 @@ fn shipping_windows_keld_dev_cleans_a_facade_stage_after_the_attempt_job_empties
         println!(
             "KELD_GH1188_AC19 stalled={stalled} host_pid={host_pid} bun_pid={bun_pid} sentinel_pid={cleanup_pid} stage_count=0"
         );
+        remove_dev_profiles(profiles);
     }
 }
 
@@ -251,6 +273,7 @@ fn accept_hello(
 #[test]
 fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
     let fixture = ProductFixture::new();
+    let profiles = isolated_dev_profiles();
     let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind lease control");
     let control_port = control_listener
         .local_addr()
@@ -267,7 +290,8 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
     )
     .expect("write lease renderer");
     let helper = prepare_keld_dev_helper(&fixture);
-    let mut cli = Command::new(&helper)
+    let mut command = Command::new(&helper);
+    command
         .arg("keld_dev_windows_helper")
         .arg("--exact")
         .arg("--nocapture")
@@ -275,9 +299,13 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .env("KELD_TEST_WINDOWS_LEASE_CENSUS", "1")
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("launch leased keld dev helper");
+        .stderr(Stdio::piped());
+    apply_dev_profiles(
+        &mut command,
+        &helper.with_file_name("keld-host.exe"),
+        profiles.as_ref(),
+    );
+    let mut cli = command.spawn().expect("launch leased keld dev helper");
     let cli_pid = cli.id();
     let host_pid =
         wait_for_child_process(&mut cli, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
@@ -319,11 +347,13 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
         handle_census.bun_count,
         handle_census.lease_host_handle,
     );
+    remove_dev_profiles(profiles);
 }
 
 #[test]
 fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches() {
     let fixture = ProductFixture::new();
+    let profiles = isolated_dev_profiles();
     let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind host-death control");
     let control_port = control_listener
         .local_addr()
@@ -343,7 +373,8 @@ fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches
     )
     .expect("write host-death renderer");
     let helper = prepare_keld_dev_helper(&fixture);
-    let mut cli = Command::new(&helper)
+    let mut command = Command::new(&helper);
+    command
         .arg("keld_dev_windows_helper")
         .arg("--exact")
         .arg("--nocapture")
@@ -351,9 +382,13 @@ fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .env("KELD_T4_JOB_DESCENDANT", "1")
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("launch host-death keld dev helper");
+        .stderr(Stdio::piped());
+    apply_dev_profiles(
+        &mut command,
+        &helper.with_file_name("keld-host.exe"),
+        profiles.as_ref(),
+    );
+    let mut cli = command.spawn().expect("launch host-death keld dev helper");
     let cli_pid = cli.id();
     let host_pid =
         wait_for_child_process(&mut cli, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
@@ -378,11 +413,13 @@ fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches
     wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
     wait_process_gone(cleanup_pid, Instant::now() + PRODUCT_DEADLINE);
 
-    let relaunched = run_product_cycle(&fixture, "post-host-death");
+    let relaunched =
+        run_product_cycle_with_profiles(&fixture, "post-host-death", profiles.as_ref());
     println!(
         "KELD_WINDOWS_HOST_DEATH cli_pid={cli_pid} host_pid={host_pid} bun_pid={bun_pid} \
          descendant_pid={descendant_pid} sentinel_pid={cleanup_pid} stage_count=0 \
          relaunch_host_pid={} relaunch_bun_pid={}",
         relaunched.host_pid, relaunched.bun_pid
     );
+    remove_dev_profiles(profiles);
 }

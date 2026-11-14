@@ -143,6 +143,8 @@ fn fs_worker_reply_write_failure_retires_generation_and_notifies_owner() {
     drop(peer);
     let reader_stop = Arc::new(AtomicBool::new(false));
     let current = Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
+        #[cfg(windows)]
+        writer_link: None,
         identity: PrimaryLinkIdentity::Fixture,
         attempt: 1,
         writer: server,
@@ -154,6 +156,8 @@ fn fs_worker_reply_write_failure_retires_generation_and_notifies_owner() {
     let (window_tx, window_rx) = mpsc::channel();
     let shutdown = SessionShutdownState::new();
     let handle = PrimaryRouterHandle {
+        #[cfg(windows)]
+        primary_writer: None,
         current: Arc::clone(&current),
         readers: Arc::new(Mutex::new(HashMap::new())),
         pending_echo: Arc::new(Mutex::new(None)),
@@ -177,7 +181,7 @@ fn fs_worker_reply_write_failure_retires_generation_and_notifies_owner() {
         dialog: None,
         #[cfg(target_os = "macos")]
         menu: None,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         compat: None,
         guardian: GuardianOwnerHandle {
             command_tx: guardian_tx,
@@ -289,6 +293,8 @@ fn successor_install_does_not_wait_for_retired_fs_recovery_ack() {
     drop(g1_peer);
     let reader_stop = Arc::new(AtomicBool::new(false));
     let current = Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
+        #[cfg(windows)]
+        writer_link: None,
         identity: PrimaryLinkIdentity::Fixture,
         attempt: 1,
         writer: g1_server,
@@ -300,6 +306,8 @@ fn successor_install_does_not_wait_for_retired_fs_recovery_ack() {
     let (window_tx, window_rx) = mpsc::channel();
     let (commands, receiver) = mpsc::sync_channel(1);
     let handle = PrimaryRouterHandle {
+        #[cfg(windows)]
+        primary_writer: None,
         current: Arc::clone(&current),
         readers: Arc::new(Mutex::new(HashMap::new())),
         pending_echo: Arc::new(Mutex::new(None)),
@@ -323,7 +331,7 @@ fn successor_install_does_not_wait_for_retired_fs_recovery_ack() {
         dialog: None,
         #[cfg(target_os = "macos")]
         menu: None,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         compat: None,
         guardian: GuardianOwnerHandle {
             command_tx: guardian_tx,
@@ -333,6 +341,8 @@ fn successor_install_does_not_wait_for_retired_fs_recovery_ack() {
         quit_drain_hooks: Arc::default(),
     };
     let router = PrimaryRouter {
+        #[cfg(windows)]
+        primary_writer_worker: None,
         handle: handle.clone(),
         fs_worker: None,
         #[cfg(target_os = "macos")]

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use keld_guard::verified_manifest::load_verified_manifest;
 use keld_guard::{ProfileState, WindowCspProfile};
-use keld_wv::wkwebview::AppPreloadBudget;
+use keld_wv::preload_image::AppPreloadBudget;
 use sha2::{Digest as _, Sha256};
 
 use super::super::graph_contract::{
@@ -79,12 +79,20 @@ fn write(root: &Path, relative: &str, bytes: &[u8]) {
 /// Exercise the real sealed-graph + resolved policy constructor selected by
 /// both current menu and window-router quit-component tests. Returning the
 /// `TempDir` keeps every graph descriptor and manifest path in its live scope.
+#[cfg(target_os = "macos")]
 pub(in crate::app_session) fn original_quit_selection() -> (tempfile::TempDir, OriginalLoadSelection)
 {
     original_selection_with_versions(BTreeMap::new())
 }
 
 /// Supply explicit inert process facts when a component test builds the preload.
+#[cfg_attr(
+    windows,
+    expect(
+        clippy::too_many_lines,
+        reason = "Keep the independently pinned graph/provider fixtures and same retained source construction together."
+    )
+)]
 pub(in crate::app_session) fn original_selection_with_versions(
     versions: BTreeMap<String, String>,
 ) -> (tempfile::TempDir, OriginalLoadSelection) {
@@ -132,7 +140,28 @@ pub(in crate::app_session) fn original_selection_with_versions(
         sha(PIN_PRELOAD),
     )
     .expect("canonical generic editor and pinned preload paths");
+    #[cfg(not(windows))]
     let retained_root = File::open(&root).expect("retained directory for real graph owner");
+    #[cfg(windows)]
+    let retained_root = {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+            FILE_SHARE_WRITE,
+        };
+        let parent = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(owned.path())
+            .expect("retain owned fixture directory");
+        keld_update::open_retained_graph_child(
+            &parent,
+            "app",
+            keld_update::WindowsGraphChildKind::Directory,
+        )
+        .expect("canonical retained fixture child")
+    };
     let graph_bytes = make_graph_leaf_from_retained_root(
         &root,
         &retained_root,

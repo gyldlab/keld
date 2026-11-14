@@ -1,6 +1,8 @@
 //! KEL-97 authenticated identity proof; no OS-containment or grant claim.
 #[cfg(target_os = "macos")]
 use super::super::MacBoundStart;
+#[cfg(windows)]
+use super::super::WindowsBoundStart;
 #[cfg(not(windows))]
 use super::super::{PrimaryCallerContext, dispatch_primary_echo};
 use super::*;
@@ -131,7 +133,11 @@ fn accepted_app_bound_identity_is_refused_by_primary_admission() {
         SessionShutdownState::new(),
         None,
         #[cfg(windows)]
-        None,
+        WindowsBoundStart {
+            window_native_support: None,
+            original_selection: None,
+            renderer_outcomes: None,
+        },
         #[cfg(target_os = "macos")]
         MacBoundStart {
             auth_configuration: AuthConfiguration::new(),
@@ -179,7 +185,11 @@ fn accepted_primary_identity_fences_caller_context_before_healthy_echo() {
         SessionShutdownState::new(),
         None,
         #[cfg(windows)]
-        None,
+        WindowsBoundStart {
+            window_native_support: None,
+            original_selection: None,
+            renderer_outcomes: None,
+        },
         #[cfg(target_os = "macos")]
         MacBoundStart {
             auth_configuration: AuthConfiguration::new(),
@@ -336,7 +346,11 @@ fn windows_authenticated_generations_bind_retained_admission_to_the_current_prin
         PlatformPrimaryOwnerHandle { command_tx: owner },
         SessionShutdownState::new(),
         Some(&snapshot),
-        None, // No managed window registry in this primary-identity fixture.
+        WindowsBoundStart {
+            window_native_support: None,
+            original_selection: None,
+            renderer_outcomes: None,
+        },
     )
     .expect("authenticated initial generation");
     let handle = router.handle();

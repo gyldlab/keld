@@ -399,7 +399,7 @@ use super::{
 };
 
 include!("tests/app_identity_and_shared_probes.rs");
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[path = "tests/gh499_graph.rs"]
 pub(in crate::app_session) mod gh499_graph;
 include!("tests/session_handover.rs");

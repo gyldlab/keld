@@ -427,6 +427,13 @@ fn bun_role_blocking_quit_returns_the_real_reply_then_the_link_closes() {
 /// and asks its owner to fail generation 1, KEL-75's natural-crash entry,
 /// and the role throws `KELD-IPC-025`.
 #[test]
+#[cfg_attr(
+    windows,
+    expect(
+        clippy::too_many_lines,
+        reason = "Keep actual Bun worker death, retained FS work, generation failure and real cleanup in one scenario."
+    )
+)]
 fn bun_worker_death_is_link_loss_that_fails_the_generation() {
     let (_temp_target, target) = {
         let temp = tempfile::tempdir().expect("target root");
@@ -442,15 +449,42 @@ fn bun_worker_death_is_link_loss_that_fails_the_generation() {
     t.taken
         .recv_timeout(Duration::from_secs(20))
         .expect("the role's FS call reached the held worker");
-    let TestPrimaryOwnerCommand::FailGeneration(attempt, reply) = t
+    let failure_command = t
         .guardian
         .recv_timeout(Duration::from_secs(20))
-        .expect("the host reports the lost link to its owner")
-    else {
-        panic!("Worker death did not take the link-failure path");
-    };
-    assert_eq!(attempt, 1);
-    reply.send(Ok(())).expect("acknowledge link failure");
+        .expect("the host reports the lost link to its owner");
+    #[cfg(windows)]
+    {
+        let TestPrimaryOwnerCommand::FailPrimaryReader(failure, reply) = failure_command else {
+            panic!("Worker death did not carry its actual reader failure to the owner");
+        };
+        let mut restarted = None;
+        let disposition = t
+            .router
+            .handle()
+            .apply_primary_read_failure(&failure, |attempt| restarted = Some(attempt))
+            .expect("the actual exact-caller reader failure decision");
+        assert_eq!(
+            disposition,
+            crate::app_session::primary_writer::FailureDisposition::RestartRequested
+        );
+        assert_eq!(
+            restarted,
+            Some(1),
+            "the original failed generation is requested"
+        );
+        reply
+            .send(Ok(()))
+            .expect("acknowledge actual reader failure");
+    }
+    #[cfg(not(windows))]
+    {
+        let TestPrimaryOwnerCommand::FailGeneration(attempt, reply) = failure_command else {
+            panic!("Worker death did not take the link-failure path");
+        };
+        assert_eq!(attempt, 1);
+        reply.send(Ok(())).expect("acknowledge link failure");
+    }
     let report = role.finish();
     assert_eq!(
         report_value(&report, "call-code"),
@@ -461,23 +495,56 @@ fn bun_worker_death_is_link_loss_that_fails_the_generation() {
     // This fixture owns the primary command receiver. Let the entered FS call
     // take its terminal-write failure path, then acknowledge its retirement
     // before joining the worker which still owns that pending receipt.
-    let TestPrimaryOwnerCommand::FailRetiredGeneration(retired, receipt) = t
+    let terminal_command = t
         .guardian
         .recv_timeout(Duration::from_secs(20))
-        .expect("failed FS terminal write reports its retired generation")
-    else {
-        panic!("failed FS terminal write skipped retired-generation recovery");
-    };
-    assert_eq!(retired, 1);
-    // The macOS guardian's receipt carries the retirement instant; the Linux
-    // and Windows direct owner's receipt carries none.
-    #[cfg(target_os = "macos")]
-    let acknowledged = Ok(Instant::now());
-    #[cfg(not(target_os = "macos"))]
-    let acknowledged = Ok(());
-    receipt
-        .send(acknowledged)
-        .expect("acknowledge the retired FS generation");
+        .expect("failed FS terminal write reports its exact retired generation");
+    #[cfg(windows)]
+    {
+        let TestPrimaryOwnerCommand::FailPrimaryWriter(failure, receipt) = terminal_command else {
+            panic!("failed FS terminal write skipped actual sealed writer evidence");
+        };
+        assert!(matches!(
+            &failure,
+            crate::app_session::primary_writer::PrimaryWriterFailure::Write(_)
+        ));
+        let mut restarted = None;
+        let mut denied = false;
+        let disposition = t
+            .router
+            .handle()
+            .apply_primary_writer_failure(
+                &failure,
+                |attempt| restarted = Some(attempt),
+                || denied = true,
+            )
+            .expect("the actual exact failed-writer owner decision");
+        assert_eq!(
+            disposition,
+            crate::app_session::primary_writer::FailureDisposition::RestartRequested
+        );
+        assert_eq!(restarted, Some(1));
+        assert!(!denied, "after-Ready failure cannot become startup denial");
+        receipt
+            .send(Ok(()))
+            .expect("acknowledge exact failed FS generation");
+    }
+    #[cfg(not(windows))]
+    {
+        let TestPrimaryOwnerCommand::FailRetiredGeneration(retired, receipt) = terminal_command
+        else {
+            panic!("failed FS terminal write skipped retired-generation recovery");
+        };
+        assert_eq!(retired, 1);
+        // The macOS receipt carries the retirement instant; Linux carries none.
+        #[cfg(target_os = "macos")]
+        let acknowledged = Ok(Instant::now());
+        #[cfg(not(target_os = "macos"))]
+        let acknowledged = Ok(());
+        receipt
+            .send(acknowledged)
+            .expect("acknowledge the retired FS generation");
+    }
     t.router.shutdown().expect("router shutdown");
 }
 

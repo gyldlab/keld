@@ -11,6 +11,7 @@ use tao::platform::windows::EventLoopBuilderExtWindows as _;
 use windows::Win32::Foundation::HWND;
 
 use super::managed_app::ManagedWindows;
+use super::managed_owner::ManagedWindowsShared;
 use super::{
     ProfileErrorKind, ProfileReleaseFault, ProfileReleaseWait, WindowsLoopEvent,
     profile_failure_with, view_host,
@@ -45,7 +46,7 @@ impl EngineEventLoop {
 }
 
 struct ActivationBinding {
-    windows: Weak<RefCell<ManagedWindows>>,
+    windows: Weak<RefCell<Option<ManagedWindows>>>,
     release: Weak<ProfileReleaseWait>,
     // Tao's proxy carries a sender/target HWND, not ownership of the event loop.
     // It also remains usable when the resource owner is already borrowed.
@@ -62,7 +63,7 @@ pub(super) struct ActivationObserver {
 impl ActivationObserver {
     pub(super) fn attach(
         &self,
-        windows: &Rc<RefCell<ManagedWindows>>,
+        windows: &ManagedWindowsShared,
         release: &Rc<ProfileReleaseWait>,
         wake: EventLoopProxy<WindowsLoopEvent>,
     ) -> Result<(), WvError> {
@@ -101,7 +102,11 @@ impl ActivationObserver {
         let failed = self
             .observe_sample(active, |active| {
                 let windows = windows.try_borrow().map_err(|_| ())?;
-                windows.observe_activation(active).map_err(|_| ())
+                windows
+                    .as_ref()
+                    .ok_or(())?
+                    .observe_activation(active)
+                    .map_err(|_| ())
             })
             .is_err();
         if failed {

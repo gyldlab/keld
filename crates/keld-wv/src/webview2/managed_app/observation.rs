@@ -58,6 +58,8 @@ impl ManagedWindows {
                 eprintln!("KELD_WV_DESTROYED_UNOWNED {window_id:?}");
             }
             StageResult::AlreadyStaged => {}
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            StageResult::Withheld => {}
             StageResult::Staged { .. } =>
             {
                 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -213,6 +215,9 @@ impl ManagedWindows {
         {
             self.stage_destroyed(key);
         }
+        if let Some(key) = self.custody.take_prefilled_destroyed() {
+            self.stage_destroyed(key);
+        }
     }
 
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -224,15 +229,21 @@ impl ManagedWindows {
         if let Some(control) = self.test_control.as_mut() {
             control.post_deferred_destroyed(terminal_has_run, barrier_ready_or_faulted)?;
         }
-        Ok(())
+        self.custody.post_prefilled_destroyed(|| {
+            self.proxy
+                .send_event(WindowsLoopEvent::ProfileReleaseWake)
+                .is_ok()
+        })
     }
 
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
     pub(in crate::webview2) fn live_webviews(
         &self,
     ) -> impl Iterator<Item = (WebviewId, &super::super::ICoreWebView2)> {
+        // Retained retirement obligations may outlive the actual controller Close.
         self.views
             .iter()
+            .filter(|(_, view)| !view.close_custody.actual_closed())
             .map(|(id, view)| (WebviewId(*id), &view.webview))
     }
 }

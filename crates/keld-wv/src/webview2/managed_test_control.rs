@@ -1,4 +1,6 @@
 //! Approved GH1188 U7/U18 child-only native fault and observation controls.
+//! H4 prefill explicitly adapts the former Tao prefill to the retained bridge;
+//! it retains a genuine receipt and does not claim the old schedule unchanged.
 //!
 //! Construct once on the UI thread. The Host launch must scrub these names from
 //! Bun. Both the module declaration and every call site are debug/test-feature
@@ -7,6 +9,7 @@
 #![cfg(all(feature = "profile-test-hooks", debug_assertions))]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+use std::path::Path;
 use std::time::Instant;
 
 use tao::event_loop::EventLoopProxy;
@@ -16,8 +19,12 @@ use super::WindowsLoopEvent;
 use crate::WvError;
 
 mod failure;
+pub(in crate::webview2) mod frame_ingress;
 mod native_hold;
+pub(in crate::webview2) mod navigation_post;
+pub(in crate::webview2) mod outcome_hold;
 mod page_readback;
+pub(in crate::webview2) mod queued_close_observation;
 
 pub(super) use failure::{BuildAttempt, BuildPoint};
 pub(super) use native_hold::observe_pump_message;
@@ -25,19 +32,47 @@ pub(super) use page_readback::PageReadback;
 
 /// One next-build failure: `hwnd|webview|view[:swallow|defer]`.
 pub const TEST_WINDOWS_FAIL_BUILD_ENV: &str = "KELD_TEST_WINDOWS_FAIL_BUILD";
-/// Native-order hold: `destroyed:<dir>` or `build-pump:<dir>`.
+/// Native-order hold: `destroyed:<dir>`, `build-pump:<dir>`,
+/// `build-pump-prefill:<dir>`, `original-resource-result:<dir>`,
+/// `renderer-outcomes:<dir>`, `renderer-after-event:<dir>` or `original-post-synthetic:<dir>`.
 pub const TEST_WINDOWS_NATIVE_HOLD_ENV: &str = "KELD_TEST_WINDOWS_NATIVE_HOLD";
 /// Fixed page observation interval in positive whole milliseconds.
 pub const TEST_WINDOWS_PAGE_READBACK_ENV: &str = "KELD_TEST_WINDOWS_PAGE_READBACK";
+/// Passive actual child-frame observation; exactly "1" enables the fixed fixture.
+pub const TEST_WINDOWS_FRAME_INGRESS_ENV: &str = "KELD_TEST_WINDOWS_FRAME_INGRESS";
 
 pub(super) struct TestControl {
     failure: failure::FailureControl<WindowId>,
     native_hold: Option<native_hold::NativeHold>,
+    frame_ingress: bool,
     withhold_later_generation_receipt: bool,
     deferred_destroyed_proxy: EventLoopProxy<WindowsLoopEvent>,
 }
 
 impl TestControl {
+    /// Fixed scheduling metadata only; no payload, native or release authority.
+    pub(super) fn outcome_hold(&self) -> Option<outcome_hold::OutcomeHold> {
+        self.native_hold
+            .as_ref()
+            .and_then(native_hold::NativeHold::outcome_hold)
+    }
+
+    /// One closed synthetic callback turn; no wait, timer or native callback is created.
+    pub(super) fn synthetic_post_directory(&self) -> Option<&Path> {
+        self.native_hold
+            .as_ref()
+            .and_then(native_hold::NativeHold::synthetic_post_directory)
+    }
+
+    /// Copy the once-captured barrier directory into the existing resource reader.
+    /// This metadata carries no source, task, native or release authority.
+    pub(super) fn original_resource_result_directory(&self) -> Option<std::path::PathBuf> {
+        self.native_hold
+            .as_ref()
+            .and_then(native_hold::NativeHold::original_resource_result_directory)
+            .map(Path::to_path_buf)
+    }
+
     /// The proxy belongs to this hook, not the browser wait or a dying HWND.
     pub(super) fn from_env(
         deferred_destroyed_proxy: EventLoopProxy<WindowsLoopEvent>,
@@ -53,12 +88,28 @@ impl TestControl {
             .as_deref()
             .map(native_hold::NativeHold::parse)
             .transpose()?;
+        let frame_ingress = match read_env(TEST_WINDOWS_FRAME_INGRESS_ENV)?.as_deref() {
+            None => false,
+            Some("1") => true,
+            Some(_) => {
+                return Err(invalid_hook(
+                    TEST_WINDOWS_FRAME_INGRESS_ENV,
+                    "expected 1 or absence",
+                ));
+            }
+        };
         Ok(Self {
             failure: failure::FailureControl::new(failure),
             native_hold,
+            frame_ingress,
             withhold_later_generation_receipt,
             deferred_destroyed_proxy,
         })
+    }
+
+    /// Read the once-captured observation switch; it never admits an app source.
+    pub(super) const fn observes_frame_ingress(&self) -> bool {
+        self.frame_ingress
     }
 
     /// Apply the captured receipt test control to the existing release owner.
@@ -118,6 +169,13 @@ impl TestControl {
                     .send_event(WindowsLoopEvent::ProfileReleaseWake)
                     .is_ok()
             })
+    }
+
+    /// Arm only the first actual Destroy selected by the fixed prefill fixture.
+    pub(super) fn take_destroyed_prefill(&self) -> bool {
+        self.native_hold
+            .as_ref()
+            .is_some_and(native_hold::NativeHold::take_destroyed_prefill)
     }
 
     /// Last in an actual `Destroyed` arm after staging. Deliberately no pumping:

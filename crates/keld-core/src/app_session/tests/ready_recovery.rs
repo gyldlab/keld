@@ -1,5 +1,5 @@
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-fn primary_test_stream_pair() -> (BootstrapStream, BootstrapStream) {
+pub(in crate::app_session) fn primary_test_stream_pair() -> (BootstrapStream, BootstrapStream) {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         std::os::unix::net::UnixStream::pair().expect("primary stream pair")
@@ -48,7 +48,11 @@ pub(in crate::app_session) fn initial_ready_router_with_window_loop() -> (
     let (command_tx, command_rx) = mpsc::channel();
     let (window_tx, window_rx) = mpsc::channel();
     let handle = PrimaryRouterHandle {
+        #[cfg(windows)]
+        primary_writer: None,
         current: Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
+            #[cfg(windows)]
+            writer_link: None,
             identity: PrimaryLinkIdentity::Fixture,
             #[cfg(windows)]
             profile_binding: None,
@@ -60,13 +64,13 @@ pub(in crate::app_session) fn initial_ready_router_with_window_loop() -> (
             pending_quit: None,
         }))),
         readers: Arc::new(Mutex::new(HashMap::new())),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         pending_echo: Arc::new(Mutex::new(None)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         pending_echo_attempt: Arc::new(AtomicU32::new(0)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         pending_echo_corr: Arc::new(AtomicU32::new(0)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         next_host_corr: Arc::new(AtomicU32::new(1)),
         window_ready: Arc::new(AtomicBool::new(false)),
         last_window_closed: Arc::new(AtomicBool::new(false)),
@@ -85,7 +89,7 @@ pub(in crate::app_session) fn initial_ready_router_with_window_loop() -> (
         dialog: None,
         #[cfg(target_os = "macos")]
         menu: None,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         compat: None,
         guardian: PlatformPrimaryOwnerHandle { command_tx },
         window_commands: window_tx,
@@ -137,6 +141,8 @@ fn failed_successor_ready_replay_requests_its_retired_attempt_restart() {
     // same transition used by teardown. Once teardown wins afterward, a
     // late successor is closed without publishing current or a reader.
     let mut router = PrimaryRouter {
+        #[cfg(windows)]
+        primary_writer_worker: None,
         handle: handle.clone(),
         fs_worker: None,
         #[cfg(target_os = "macos")]
@@ -169,6 +175,8 @@ fn failed_successor_ready_replay_cannot_restart_after_router_teardown() {
         .expect_err("closed g2 replay");
     assert_eq!(failure.retired_after_failed_ready, Some(2));
     let mut router = PrimaryRouter {
+        #[cfg(windows)]
+        primary_writer_worker: None,
         handle: handle.clone(),
         fs_worker: None,
         #[cfg(target_os = "macos")]
@@ -234,6 +242,8 @@ fn failed_ready_restart_overlapping_router_teardown_has_only_serial_outcomes() {
     });
     let teardown_start = std::sync::Arc::clone(&start);
     let mut router = PrimaryRouter {
+        #[cfg(windows)]
+        primary_writer_worker: None,
         handle: handle.clone(),
         fs_worker: None,
         #[cfg(target_os = "macos")]
@@ -282,6 +292,8 @@ fn failed_bound_restart_rejects_unowned_or_terminal_transitions() {
         handle.last_revoked_attempt.store(1, Ordering::Release);
         handle.retire_generation(1).expect("retire g1");
         let mut failure = PrimaryGenerationFailure {
+            #[cfg(windows)]
+            writer_failure: None,
             error: app_detail("lifecycle event", "forced failed replay"),
             retired_after_failed_ready: Some(2),
         };
@@ -294,6 +306,8 @@ fn failed_bound_restart_rejects_unowned_or_terminal_transitions() {
             "successor" | "misordered" => {
                 let (writer, _peer) = primary_test_stream_pair();
                 *handle.current.lock().expect("generation lock") = Some(ActivePrimaryGeneration {
+                    #[cfg(windows)]
+                    writer_link: None,
                     identity: PrimaryLinkIdentity::Fixture,
                     #[cfg(windows)]
                     profile_binding: None,

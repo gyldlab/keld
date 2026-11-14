@@ -6,8 +6,12 @@
 mod admission;
 mod delivery;
 mod filters;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+mod fixture_policy;
 mod lifecycle;
 mod native;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+mod observation;
 mod reader;
 
 pub(super) use native::require_get_without_body;
@@ -69,10 +73,12 @@ pub(super) struct ResourceSession {
     custody: Arc<Source>,
     proxy: EventLoopProxy<WindowsLoopEvent>,
     state: RefCell<State>,
-    reader: RefCell<reader::Reader>,
+    reader: RefCell<reader::ReaderCustody>,
     retiring: Cell<bool>,
     fault: Cell<Option<&'static str>>,
     _metadata_credit: RetainedByteCredit,
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    test_resource_observation: bool,
 }
 
 pub(super) struct ResourceView {
@@ -93,7 +99,12 @@ pub(super) struct ResourceView {
     emergency: RefCell<Option<NativePending>>,
     emergency_acquiring: Cell<bool>,
     _metadata_credit: RetainedByteCredit,
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    fixture_inline: fixture_policy::InlineFixture,
 }
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+const _: () =
+    assert!(std::mem::size_of::<ResourceView>() + 2 * std::mem::size_of::<usize>() <= 2048);
 
 fn failure(detail: &'static str) -> WvError {
     WvError::EventLoop(detail.to_owned())
@@ -103,9 +114,19 @@ impl ResourceSession {
     pub(super) fn new(
         source: Arc<Source>,
         proxy: EventLoopProxy<WindowsLoopEvent>,
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))] test_hold_directory: Option<
+            std::path::PathBuf,
+        >,
     ) -> Result<Rc<Self>, WvError> {
         let credit = RetainedByteCredit::reserve(&source.retained_credit_account(), 4096)
             .map_err(|_| failure("resource session metadata budget exhausted"))?;
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let test_resource_observation = test_hold_directory.is_some();
+        let reader = RefCell::new(reader::ReaderCustody::new());
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        reader
+            .borrow_mut()
+            .configure_test_hold(test_hold_directory)?;
         Ok(Rc::new(Self {
             custody: source,
             proxy,
@@ -118,20 +139,23 @@ impl ResourceSession {
                 filter_transition: BTreeSet::new(),
                 closing_filter_owner: BTreeMap::new(),
             }),
-            reader: RefCell::new(reader::Reader::new()),
+            reader,
             retiring: Cell::new(false),
             fault: Cell::new(None),
             _metadata_credit: credit,
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            test_resource_observation,
         }))
     }
 
-    fn latch_failure(&self, detail: &'static str, view: WebviewId) {
+    // Fault and notification are Host-wide; callers retain exact view custody.
+    pub(super) fn latch_failure(&self, detail: &'static str, _view: WebviewId) {
         if self.fault.get().is_some() {
             return;
         }
         self.fault.set(Some(detail));
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = self.proxy.send_event(WindowsLoopEvent::OriginalWake(view));
+            let _ = self.proxy.send_event(WindowsLoopEvent::OriginalWake);
         }));
     }
 
@@ -150,13 +174,13 @@ impl ResourceSession {
             .map(|(id, view)| (WebviewId(*id), view.upgrade()))
     }
 
-    /// Root drives this singleton even when a wake's original view has closed.
+    /// Root drives this singleton on every loop turn, including unscoped wakes.
     pub(super) fn drain_ui(&self) -> Result<(), WvError> {
         let completed = self.reader.borrow_mut().take_result()?;
         if let Some(completed) = completed {
             self.deliver(completed);
         }
-        self.reader.borrow_mut().poll_termination()?;
+        reader::with_reader_on_ui(&self.reader, reader::Reader::poll_termination)?;
         if let Some(detail) = self.fault.get() {
             return Err(failure(detail));
         }
@@ -191,6 +215,8 @@ impl ResourceView {
         session: Rc<ResourceSession>,
         id: WebviewId,
         close: Rc<AdoptedControllerClose>,
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        image: &crate::preload_image::AppPreloadImage,
     ) -> Result<Rc<Self>, WvError> {
         if session.retiring.get() || session.fault.get().is_some() {
             return Err(failure("resource session is unavailable"));
@@ -234,6 +260,8 @@ impl ResourceView {
             emergency: RefCell::new(None),
             emergency_acquiring: Cell::new(false),
             _metadata_credit: credit,
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            fixture_inline: fixture_policy::InlineFixture::capture(image),
         });
         view.session
             .state
@@ -268,10 +296,6 @@ impl ResourceView {
         installed
     }
 
-    pub(super) fn drain_ui(&self) -> Result<(), WvError> {
-        self.session.drain_ui()
-    }
-
     pub(super) fn is_drained(&self) -> bool {
         self.retired.get()
             && self.controller_closed.get()
@@ -293,6 +317,27 @@ impl ResourceView {
                 .values()
                 .any(|id| *id == self.id)
             && !self.session.state.borrow().ledger.has_active_delivery()
+            && !self.session.state.borrow().views.contains_key(&self.id.0)
+            && self
+                .session
+                .state
+                .borrow()
+                .worker_filter_owner
+                .get(&self.environment_identity)
+                != Some(&self.id)
+            && self
+                .session
+                .state
+                .borrow()
+                .closing_filter_owner
+                .get(&self.environment_identity)
+                != Some(&self.id)
+            && !self
+                .session
+                .state
+                .borrow()
+                .filter_transition
+                .contains(&self.environment_identity)
     }
 
     fn is_live_resource(&self, lease: ResourceLease) -> bool {

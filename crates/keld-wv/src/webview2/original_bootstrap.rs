@@ -31,7 +31,7 @@ fn emit(image: &AppPreloadImage, output: &mut impl std::fmt::Write) -> Result<()
             versions: image.versions(),
         },
     )
-    .map_err(|_| write_failed())?;
+    .map_err(|()| write_failed())?;
     output.write_str(FUNCTION).map_err(|_| write_failed())?;
     output
         .write_str(image.source())
@@ -47,18 +47,21 @@ fn measure(image: &AppPreloadImage) -> Result<Measured, WvError> {
 
 /// One fixed native registration input; this is not a CONTROL carrier or an
 /// addition to the immutable source-image quota. The native View retains this
-/// separately counted allocation through AddScript completion or actual Close.
+/// separately counted allocation through `AddScript` completion or actual Close.
 pub(super) struct NativeBootstrapText {
     wide: Vec<u16>,
+    #[cfg(test)]
     utf8_bytes: usize,
 }
 impl NativeBootstrapText {
     pub(super) fn as_nul_terminated_utf16(&self) -> &[u16] {
         &self.wide
     }
+    #[cfg(test)]
     pub(super) fn allocated_bytes(&self) -> usize {
         self.wide.capacity() * std::mem::size_of::<u16>()
     }
+    #[cfg(test)]
     pub(super) fn emitted_utf8_bytes(&self) -> usize {
         self.utf8_bytes
     }
@@ -69,13 +72,14 @@ impl NativeBootstrapText {
 pub(super) fn render_native(image: &AppPreloadImage) -> Result<NativeBootstrapText, WvError> {
     let measured = measure(image)?;
     let mut output = NativeWide::reserve(measured.utf16_units)
-        .map_err(|_| preload_error("native bootstrap storage reservation refused"))?;
+        .map_err(|()| preload_error("native bootstrap storage reservation refused"))?;
     emit(image, &mut output)?;
     let wide = output
         .finish()
-        .map_err(|_| preload_error("native bootstrap capacity changed after reservation"))?;
+        .map_err(|()| preload_error("native bootstrap capacity changed after reservation"))?;
     Ok(NativeBootstrapText {
         wide,
+        #[cfg(test)]
         utf8_bytes: measured.utf8_bytes,
     })
 }
@@ -177,6 +181,87 @@ for (const main of [false, true]) {{
   }}
 }}
 console.log("exact bootstrap wrapper and main-frame guard passed");
+"#
+        );
+        run_bun(&program);
+    }
+
+    #[test]
+    fn emitted_windows_numeric_runtime_owns_its_canonical_channel() {
+        let original: String = serde_json::from_str(include_str!(
+            "../../tests/fixtures/drawio-original-preload.json"
+        ))
+        .expect("existing unchanged original preload fixture");
+        let source = render(&native_fixture(&original)).expect("actual generated runtime wrapper");
+        let input = serde_json::json!({
+            "source": source,
+            "transport": concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../packages/@keld/kipc/src/transport.ts"
+            ),
+        });
+        // Execute the real factory and installWindows, without the build symbol
+        // in the isolated context. The outer Bun process reads the canonical
+        // transport constant, independently of the generator's substituted value.
+        let program = format!(
+            r#"
+const assert = require("node:assert/strict");
+const vm = require("node:vm");
+const input = {input};
+const {{ ECHO_CHANNEL }} = require(input.transport);
+process.exitCode = 1;
+(async () => {{
+  const context = vm.createContext({{
+    TextEncoder, TextDecoder, EventTarget, CustomEvent, Event, URL, URLSearchParams, console
+  }});
+  assert.equal(Object.hasOwn(context, "__KELD_ECHO_CHANNEL__"), false);
+  vm.runInContext(`
+    globalThis.window = globalThis;
+    window.top = window;
+    window.document = new EventTarget();
+    const lifecycle = new EventTarget();
+    window.addEventListener = lifecycle.addEventListener.bind(lifecycle);
+    const stored = new Map();
+    window.localStorage = {{
+      getItem: key => stored.get(key) ?? null,
+      setItem: (key, value) => stored.set(key, value)
+    }};
+    globalThis.posted = [];
+    const listeners = new Set();
+    const port = {{
+      postMessage: text => posted.push(JSON.parse(text)),
+      addEventListener: (_name, fn) => listeners.add(fn),
+      removeEventListener: (_name, fn) => listeners.delete(fn)
+    }};
+    window.chrome = {{ webview: port }};
+    globalThis.receive = value => {{
+      for (const fn of listeners)
+        fn({{ data: JSON.stringify(value), source: port }});
+    }};
+  `, context);
+  vm.runInContext(input.source, context, {{ timeout: 1000 }});
+  assert.equal(Object.hasOwn(context, "__keldOriginalPreloadRuntime"), false);
+  assert.equal(Object.hasOwn(context, "__KELD_ECHO_CHANNEL__"), false);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.posted)), [{{ v: 2, kind: "bind" }}]);
+  const pending = vm.runInContext(
+    `window.keld.invoke(${{ECHO_CHANNEL}}, new Uint8Array([4, 5]))`, context
+  );
+  const observed = Promise.resolve(pending).then(
+    value => ({{ value: Array.from(value) }}),
+    error => ({{ error: String(error) }})
+  );
+  const document = "0123456789abcdef0123456789abcdef";
+  context.receive({{ v: 2, kind: "bound", document, ready: true }});
+  const calls = JSON.parse(JSON.stringify(context.posted)).filter(row => row.kind === "invoke");
+  assert.deepEqual(calls, [{{
+    v: 2, kind: "invoke", document, request: 1,
+    channel: ECHO_CHANNEL, payload: [4, 5]
+  }}]);
+  context.receive({{ v: 2, kind: "reply", document, request: 1, ok: true, payload: [7, 6] }});
+  assert.deepEqual(await observed, {{ value: [7, 6] }});
+  console.log("generated numeric channel and reply passed without ambient build input");
+  process.exitCode = 0;
+}})().catch(error => {{ console.error(error); process.exitCode = 1; }});
 "#
         );
         run_bun(&program);

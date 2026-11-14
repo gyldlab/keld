@@ -4,7 +4,6 @@
 //! Native admission happens only in a non-page content world handler installed
 //! on one per-view user-content controller.
 
-use std::collections::VecDeque;
 use std::panic::AssertUnwindSafe;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
@@ -18,15 +17,19 @@ use objc2_web_kit::{
     WKUserScript, WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration,
 };
 use serde::Serialize;
-#[cfg(test)]
 use sha2::{Digest as _, Sha256};
 
 use crate::WebviewId;
 use crate::error::WvError;
 use crate::original_binding::{OriginalBinding, OriginalCredentialSlot};
 use crate::original_call::active::{ActiveOriginalCall, PendingOriginalSend};
-use crate::original_call::{LocalCallBudget, original_call_channel};
+use crate::original_call::queue::{
+    OriginalCallInput, OriginalCallQueue, OriginalControlFault, OriginalInvocationKind,
+    OriginalQueueProgress, PreparingOriginalInvocation,
+};
+use crate::original_call::{original_call_channel, request_for_lease};
 use crate::original_event::PendingOriginalEvent;
+use crate::renderer_bridge::credential;
 use crate::wv_link::{AppPageCall, AppWvLinkEnvelope, decode_app_wv_link};
 use crate::wv_link::{
     WvLinkEnvelope, WvLinkMode, WvLinkRejectReason, decode_wv_link, decode_wv_link_for_mode,
@@ -518,8 +521,9 @@ impl MacRendererBridge {
             .as_ref()
             .map(|original| render_original_scripts(&original.image))
             .transpose()?;
-        let app =
-            original.map(|original| Self::original_state(original, endpoint.requests.clone()));
+        let app = original
+            .map(|original| Self::original_state(original, endpoint.requests.clone()))
+            .transpose()?;
         let handler = KeldScriptMessageHandler::new(
             Arc::clone(&state),
             endpoint.requests,
@@ -580,30 +584,28 @@ impl MacRendererBridge {
     fn original_state(
         original: OriginalBridgeInputs,
         requests: SyncSender<RendererBridgeRequest>,
-    ) -> SharedAppState {
+    ) -> Result<SharedAppState, WvError> {
+        let calls = OriginalCallQueue::new()?;
         let OriginalBridgeInputs {
             image: _image,
             document,
             wake,
         } = original;
-        std::rc::Rc::new(std::cell::RefCell::new(AppNativeState {
+        Ok(std::rc::Rc::new(std::cell::RefCell::new(AppNativeState {
             document,
             binding: OriginalBinding::default(),
             bootstrap_scripts: Vec::new(),
-            pending_call: None,
-            active_call: None,
-            local_calls: VecDeque::new(),
-            local_budget: LocalCallBudget::default(),
+            calls,
             pending_send: None,
             pending_event: None,
             evaluations: 0,
             retiring_at: None,
-            control_fault: false,
+            control_fault: OriginalControlFault::default(),
             wake,
             requests,
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
             fixture: PreloadFixtureState::default(),
-        }))
+        })))
     }
 
     fn document_start_script(
@@ -738,7 +740,8 @@ impl MacRendererBridge {
             }
             state.binding.clear_for_attempt();
             state.cancel_queued_originals();
-            state.flush_controls();
+            drop(state);
+            flush_app_controls(&app);
             prepared.map_err(bridge_error)
         }))
     }
@@ -793,7 +796,7 @@ impl MacRendererBridge {
                 .all(|(actual, expected)| Retained::as_ptr(&actual) == Retained::as_ptr(expected));
         if install.is_err() || !identity_preserved {
             let mut state = app.borrow_mut();
-            state.control_fault = true;
+            state.control_fault.latch();
             state.document.borrow_mut().destroy();
             return Err(bridge_error(
                 "WebKit rejected native attempt bootstrap installation; close this poisoned view",
@@ -908,13 +911,14 @@ impl MacRendererBridge {
                 .get_or_insert_with(std::time::Instant::now);
             state.binding.clear_credentials();
             state.cancel_queued_originals();
-            state.flush_controls();
+            drop(state);
+            flush_app_controls(app);
         }
         lock_state(&self.state).destroy();
     }
     pub(super) fn flush_controls(&self) {
         if let Some(app) = &self.app {
-            app.borrow_mut().flush_controls();
+            flush_app_controls(app);
         }
     }
     pub(super) fn service_original_calls(&self, webview: &wry::WryWebView) -> Result<(), WvError> {
@@ -943,12 +947,12 @@ impl MacRendererBridge {
         let Some(app) = &self.app else {
             return Ok(true);
         };
-        let mut state = app.borrow_mut();
-        state.flush_controls();
+        flush_app_controls(app);
+        let state = app.borrow();
         if state.evaluations_drained() {
             return Ok(true);
         }
-        if state.control_fault
+        if state.control_fault.is_faulted()
             || state
                 .retiring_at
                 .is_some_and(|started| started.elapsed() >= std::time::Duration::from_secs(5))
@@ -974,7 +978,7 @@ impl MacRendererBridge {
         let Some(world) = &self.app_world else {
             return Err(bridge_error("original bridge lacks app world"));
         };
-        app.borrow_mut().flush_controls();
+        flush_app_controls(app);
         let navigation = outcome.navigation();
         match outcome {
             RendererBridgeOutcome::Preflight {
@@ -998,41 +1002,24 @@ impl MacRendererBridge {
         accepted: bool,
     ) -> Result<(), WvError> {
         let mut state = app.borrow_mut();
-        if state.pending_call.as_ref().is_none_or(|pending| {
-            pending.queued.invocation.id != request
-                || u64::from(
-                    pending
-                        .queued
-                        .invocation
-                        .lease
-                        .stamp()
-                        .observed_generation(),
-                ) != navigation
-                || pending.admission != AppCallAdmission::Waiting
-        }) {
-            return Ok(());
+        let AppNativeState {
+            calls,
+            binding,
+            document,
+            control_fault,
+            ..
+        } = &mut *state;
+        let result =
+            calls.deliver_preflight(navigation, request, accepted, binding, &document.borrow());
+        if result.is_err() {
+            control_fault.latch();
         }
-        if accepted {
-            if let Some(pending) = state.pending_call.as_mut() {
-                pending.admission = AppCallAdmission::Accepted;
-            }
-            // The original Function may enter only after its earlier local
-            // registrations have both finished and physically left WebKit.
-            return Ok(());
-        }
-        let Some(pending) = state.pending_call.take() else {
-            return Ok(());
-        };
-        let queued = pending.queued;
-        if state.original_current(&queued.invocation.lease, &queued.credential) {
-            // Reuse the same charged record through the actual private refusal
-            // evaluation. A denied call cannot turn its budget into an unbounded
-            // sequence of outstanding control evaluations.
-            state.retain_cancelled_original(queued, pending.locals_before)?;
-        } else {
-            state.drop_queued_call(queued);
-        }
-        Ok(())
+        let needs_service_wake = result
+            .as_ref()
+            .is_ok_and(|progress| progress.needs_service_wake);
+        drop(state);
+        post_original_service_wake(app, needs_service_wake);
+        result.map(|_| ())
     }
 
     fn deliver_event(
@@ -1046,7 +1033,7 @@ impl MacRendererBridge {
     ) -> Result<(), WvError> {
         let mut state = app.borrow_mut();
         if state.retiring_at.is_some()
-            || state.control_fault
+            || state.control_fault.is_faulted()
             || state.pending_event.is_some()
             || request == 0
             || channel.len() > 256
@@ -1155,11 +1142,11 @@ impl MacRendererBridge {
                         })?,
                 )
                 .map_err(|_| bridge_error("route state serialization failed"))?;
-                if !ready && let Some(pending) = state.pending_call.as_mut() {
-                    pending.admission = AppCallAdmission::Cancelled;
+                if !ready {
+                    state.calls.cancel_pending();
                 }
-                state.flush_controls();
                 drop(state);
+                flush_app_controls(app);
                 evaluate_owned(
                     webview,
                     world,
@@ -1795,15 +1782,12 @@ struct AppNativeState {
     // retirement and source-image custody remain in this platform adapter.
     binding: OriginalBinding,
     bootstrap_scripts: Vec<Retained<WKUserScript>>,
-    pending_call: Option<PendingAppCall>,
-    active_call: Option<ActiveOriginalCall>,
-    local_calls: VecDeque<QueuedLocalCall>,
-    local_budget: LocalCallBudget,
+    calls: OriginalCallQueue<String>,
     pending_send: Option<PendingOriginalSend>,
     pending_event: Option<PendingOriginalEvent>,
     evaluations: usize,
     retiring_at: Option<std::time::Instant>,
-    control_fault: bool,
+    control_fault: OriginalControlFault,
     wake: tao::event_loop::EventLoopProxy<super::WkUserEvent>,
     requests: SyncSender<RendererBridgeRequest>,
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -1837,18 +1821,6 @@ impl AppNativeState {
         self.binding
             .authentic(&self.document.borrow(), supplied, slot)
     }
-}
-
-fn credential() -> Result<String, WvError> {
-    use std::fmt::Write as _;
-    let mut bytes = [0_u8; 16];
-    getrandom::fill(&mut bytes)
-        .map_err(|_| bridge_error("Host credential randomness unavailable"))?;
-    let mut value = String::with_capacity(32);
-    for byte in bytes {
-        let _ = write!(&mut value, "{byte:02x}");
-    }
-    Ok(value)
 }
 
 fn render_original_scripts(image: &AppPreloadImage) -> Result<(String, String), WvError> {
@@ -1898,8 +1870,8 @@ fn handle_app_call(
         .app
         .as_ref()
         .ok_or_else(|| bridge_error("app handler has no source image"))?;
+    flush_app_controls(app);
     let mut state = app.borrow_mut();
-    state.flush_controls();
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
     {
         state.fixture.call_ingress = state.fixture.call_ingress.saturating_add(1);
@@ -1927,7 +1899,9 @@ fn handle_app_call(
         ));
     }
     let channel = original_call_channel(&call)?;
-    if state.control_fault || (channel.is_some() && lock_state(&ivars.state).pending.is_some()) {
+    if state.control_fault.is_faulted()
+        || (channel.is_some() && lock_state(&ivars.state).pending.is_some())
+    {
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         if std::env::var_os("KELD_KEL142_ACCEPTANCE_REPORT").is_some() {
             eprintln!(
@@ -1935,15 +1909,15 @@ fn handle_app_call(
                 call.call,
                 call.method,
                 channel,
-                state.pending_call.is_some(),
-                state.active_call.as_ref().map(ActiveOriginalCall::id),
+                state.calls.has_pending(),
+                state.calls.active().map(ActiveOriginalCall::id),
                 state
-                    .active_call
-                    .as_ref()
+                    .calls
+                    .active()
                     .is_some_and(ActiveOriginalCall::send_forwarded),
                 state.pending_send.is_some(),
                 state.pending_event.is_some(),
-                state.control_fault,
+                state.control_fault.is_faulted(),
             );
         }
         return Err(bridge_error("bounded renderer admission is occupied"));
@@ -1984,35 +1958,47 @@ fn handle_app_call(
             "local-function-scheduled"
         };
     }
-    queue_original(&mut state, call, lease, channel, facts)?;
+    let progress = queue_original(&mut state, call, lease, channel, facts)?;
     drop(state);
+    post_original_service_wake(app, progress.needs_service_wake);
     pump_original_call(webview, &ivars.world, app)
 }
 
-struct PreparedOriginalInvocation {
-    id: u32,
-    lease: super::MacNativeDocumentLease,
-    source: String,
+/// Ephemeral service notification only. The proxy is cloned under the existing
+/// owner, then every RefCell guard ends before the same original wake is posted.
+fn post_original_service_wake(app: &SharedAppState, needs_service_wake: bool) {
+    if needs_service_wake {
+        let wake = app.borrow().wake.clone();
+        let _ = wake.send_event(super::WkUserEvent::RendererCustody);
+    }
 }
+fn flush_app_controls(app: &SharedAppState) {
+    let needs_service_wake = app.borrow_mut().flush_controls();
+    post_original_service_wake(app, needs_service_wake);
+}
+
 fn pump_original_call(
     webview: &WKWebView,
     world: &WKContentWorld,
     app: &SharedAppState,
 ) -> Result<(), WvError> {
-    let prepared = app.borrow_mut().prepare_next_original()?;
-    if let Some(prepared) = prepared {
-        evaluate_owned(
-            webview,
-            world,
-            &prepared.source,
-            app.clone(),
-            EvaluationPurpose::Call {
-                id: prepared.id,
-                lease: prepared.lease,
-            },
-        );
+    flush_app_controls(app);
+    let progress = app.borrow_mut().prepare_next_original()?;
+    post_original_service_wake(app, progress.needs_service_wake);
+    let result = match progress.value {
+        Some(prepared) => {
+            let purpose = EvaluationPurpose::Call {
+                id: prepared.identity().id(),
+                lease: prepared.identity().lease().clone(),
+            };
+            evaluate_owned_inner(webview, world, "", app.clone(), purpose, Some(prepared))
+        }
+        None => Ok(()),
+    };
+    if result.is_err() {
+        app.borrow_mut().control_fault.latch();
     }
-    Ok(())
+    result
 }
 fn queue_original(
     state: &mut AppNativeState,
@@ -2020,9 +2006,9 @@ fn queue_original(
     lease: super::MacNativeDocumentLease,
     channel: Option<String>,
     facts: Option<NativeMessageFacts>,
-) -> Result<(), WvError> {
-    // Observe the existing native role BEFORE retaining an effectful call. A
-    // delayed preflight cannot silently attach to a successor Bun generation.
+) -> Result<OriginalQueueProgress<()>, WvError> {
+    // Capture only the actual existing ingress role. No later preflight or
+    // native preparation can silently attach to a successor Bun generation.
     let role_witness = if channel.is_some() {
         Some(
             state
@@ -2047,45 +2033,139 @@ fn queue_original(
     } else {
         format!("globalThis.__keldAppNativeCall({json});")
     };
-    let credential = call.document;
-    let bytes = source
-        .capacity()
-        .checked_add(credential.capacity())
-        .and_then(|value| value.checked_add(channel.as_ref().map_or(0, String::capacity)))
-        .and_then(|value| value.checked_add(std::mem::size_of::<QueuedLocalCall>()))
-        .ok_or_else(|| bridge_error("original call retained-byte count overflow"))?;
-    // Native callback facts already carry their owning source-account charge.
-    // Do not copy URL/origin strings or invent facts when the queue is serviced.
-    state.local_budget.reserve(bytes)?;
-    let queued = QueuedLocalCall {
-        invocation: PreparedOriginalInvocation { id, lease, source },
-        credential,
-        bytes,
-        channel,
-        role_witness,
-        facts,
-        cancelled: false,
-    };
-    if queued.channel.is_some()
-        && state.pending_call.is_none()
-        && state.pending_send.is_none()
-        && state
-            .active_call
-            .as_ref()
-            .is_none_or(|active| active.channel().is_none())
-        && !state
-            .local_calls
-            .iter()
-            .any(|entry| entry.channel.is_some())
-    {
-        let locals_before = state.local_calls.len();
-        if let Some(queued) = state.begin_original_preflight(queued, locals_before)? {
-            state.local_calls.push_back(queued);
-        }
-    } else {
-        state.local_calls.push_back(queued);
+    // Native facts retain their existing source-account charge; move them
+    // unchanged through this same queue and never reconstruct them on service.
+    state.calls.enqueue(
+        OriginalCallInput {
+            id,
+            lease,
+            payload_bytes: source.capacity(),
+            payload: source,
+            credential: call.document,
+            channel,
+            role_witness,
+            facts,
+        },
+        &state.binding,
+        &state.document.borrow(),
+        &state.requests,
+        state.pending_send.as_ref(),
+        &mut state.control_fault,
+    )
+}
+
+/// Render only the existing private refusal in the original String allocation.
+/// The canonical JSON serializer writes into a bounded adapter, without a new
+/// UTF-8 rendering buffer. Any partial/error result stays retained as Unproved.
+fn prepare_original_payload(
+    source: &mut String,
+    kind: OriginalInvocationKind,
+    id: u32,
+    credential: &str,
+    charged_bytes: usize,
+) -> Result<usize, WvError> {
+    if source.capacity() > charged_bytes {
+        return Err(bridge_error(
+            "original source allocation exceeds its existing charge",
+        ));
     }
-    Ok(())
+    if kind == OriginalInvocationKind::Refusal {
+        use std::io::Write as _;
+        source.clear();
+        let mut output = ExistingOriginalString(source);
+        output
+            .write_all(b"globalThis.__keldAppNativeRefusal(")
+            .map_err(|_| bridge_error("private refusal exceeds its retained source allocation"))?;
+        serde_json::to_writer(&mut output, credential)
+            .map_err(|_| bridge_error("cancelled call credential serialization failed"))?;
+        write!(&mut output, ",{id});")
+            .map_err(|_| bridge_error("private refusal exceeds its retained source allocation"))?;
+    }
+    Ok(source.capacity())
+}
+struct ExistingOriginalString<'a>(&'a mut String);
+impl std::io::Write for ExistingOriginalString<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let text = std::str::from_utf8(bytes)
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+        if bytes.len() > self.0.capacity().saturating_sub(self.0.len()) {
+            return Err(std::io::ErrorKind::WriteZero.into());
+        }
+        self.0.push_str(text);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod original_source_carrier_tests {
+    use super::*;
+    #[test]
+    fn original_source_keeps_its_bytes_and_allocation() {
+        let mut source = String::from("globalThis.__keldAppNativeCall({});");
+        let before = source.clone();
+        let pointer = source.as_ptr();
+        let capacity = source.capacity();
+        assert_eq!(
+            prepare_original_payload(
+                &mut source,
+                OriginalInvocationKind::Original,
+                7,
+                "credential",
+                capacity,
+            )
+            .unwrap(),
+            capacity
+        );
+        assert_eq!(source, before);
+        assert_eq!(source.as_ptr(), pointer);
+    }
+    #[test]
+    fn refusal_uses_canonical_escaping_in_the_existing_allocation() {
+        let mut source = String::with_capacity(256);
+        source.push_str("original admitted invocation");
+        let capacity = source.capacity();
+        let pointer = source.as_ptr();
+        let credential = "quoted\\\"\\ncredential";
+        prepare_original_payload(
+            &mut source,
+            OriginalInvocationKind::Refusal,
+            u32::MAX,
+            credential,
+            capacity,
+        )
+        .unwrap();
+        assert_eq!(
+            source,
+            format!(
+                "globalThis.__keldAppNativeRefusal({},{});",
+                serde_json::to_string(credential).unwrap(),
+                u32::MAX
+            )
+        );
+        assert_eq!(source.capacity(), capacity);
+        assert_eq!(source.as_ptr(), pointer);
+    }
+    #[test]
+    fn refusal_cannot_grow_a_source_beyond_its_original_charge() {
+        let mut source = String::from("x");
+        let capacity = source.capacity();
+        let pointer = source.as_ptr();
+        assert!(
+            prepare_original_payload(
+                &mut source,
+                OriginalInvocationKind::Refusal,
+                1,
+                "credential",
+                capacity,
+            )
+            .is_err()
+        );
+        assert_eq!(source.capacity(), capacity);
+        assert_eq!(source.as_ptr(), pointer);
+    }
 }
 
 fn handle_app_control(
@@ -2102,8 +2182,8 @@ fn handle_app_control(
     match control {
         AppWvLinkEnvelope::CallFinished { document, call } => {
             state
-                .active_call
-                .as_mut()
+                .calls
+                .active_mut()
                 .ok_or_else(|| {
                     bridge_error(
                         "original invocation completion does not match retained physical custody",
@@ -2115,8 +2195,8 @@ fn handle_app_control(
             {
                 state.fixture.finished_calls += 1;
             }
-            state.flush_controls();
             drop(state);
+            flush_app_controls(app);
             pump_original_call(webview, &ivars.world, app)?;
         }
         AppWvLinkEnvelope::Registered { document, .. } => {
@@ -2130,7 +2210,9 @@ fn handle_app_control(
                 .binding
                 .register(&owner.borrow(), &document)
                 .map_err(bridge_error)?;
-            state.flush_controls();
+            drop(state);
+            flush_app_controls(app);
+            let state = app.borrow();
             let token = serde_json::to_string(
                 state
                     .binding
@@ -2209,7 +2291,8 @@ fn handle_compat_envelope(
             {
                 state.fixture.consumed_receipts += 1;
             }
-            state.flush_controls();
+            drop(state);
+            flush_app_controls(app);
         }
         WvLinkEnvelope::Invoke {
             document,
@@ -2223,9 +2306,7 @@ fn handle_compat_envelope(
             {
                 return Err(bridge_error("numeric invoke used wrong world credential"));
             }
-            if state.pending_call.is_some()
-                || state.active_call.is_some()
-                || state.pending_send.is_some()
+            if state.calls.has_pending() || state.calls.has_active() || state.pending_send.is_some()
             {
                 return Err(bridge_error("shared native DATA floor is occupied"));
             }
@@ -2331,8 +2412,8 @@ fn send_compat_message(
         .accept_message_sequence(message.get())
         .map_err(bridge_error)?;
     let active = state
-        .active_call
-        .as_ref()
+        .calls
+        .active()
         .filter(|active| {
             active.send_eligible(
                 &state.document.borrow(),
@@ -2349,7 +2430,10 @@ fn send_compat_message(
     let mut request = request_for_lease(
         lease.clone(),
         message.get(),
-        RendererBridgeOperation::Send { channel },
+        RendererBridgeOperation::Send {
+            channel,
+            original_call: active.id(),
+        },
         payload,
     );
     request.native_facts = facts;
@@ -2358,7 +2442,7 @@ fn send_compat_message(
         .try_send(request)
         .map_err(|_| bridge_error("existing bounded renderer endpoint unavailable"))?;
     state.pending_send = Some(PendingOriginalSend::after_handoff(message.get(), lease));
-    if let Some(active) = state.active_call.as_mut() {
+    if let Some(active) = state.calls.active_mut() {
         active.send_handed_off().map_err(bridge_error)?;
     }
     Ok(())
@@ -2491,27 +2575,6 @@ mod original_image_tests {
     }
 }
 
-struct QueuedLocalCall {
-    invocation: PreparedOriginalInvocation,
-    credential: String,
-    bytes: usize,
-    channel: Option<String>,
-    role_witness: Option<RendererRoleWitness>,
-    facts: Option<NativeMessageFacts>,
-    cancelled: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AppCallAdmission {
-    Waiting,
-    Accepted,
-    Cancelled,
-}
-struct PendingAppCall {
-    queued: QueuedLocalCall,
-    locals_before: usize,
-    admission: AppCallAdmission,
-}
 #[derive(Clone)]
 enum EvaluationPurpose {
     Control,
@@ -2529,26 +2592,6 @@ enum EvaluationPurpose {
         id: u32,
         lease: super::MacNativeDocumentLease,
     },
-}
-
-fn request_for_lease(
-    lease: super::MacNativeDocumentLease,
-    sequence: u32,
-    operation: RendererBridgeOperation,
-    payload: Vec<u8>,
-) -> RendererBridgeRequest {
-    let stamp = lease.stamp();
-    RendererBridgeRequest {
-        webview: stamp.view(),
-        navigation: u64::from(stamp.observed_generation()),
-        request: sequence,
-        channel: 0,
-        payload,
-        operation,
-        document_lease: Some(lease),
-        native_facts: None,
-        role_witness: None,
-    }
 }
 
 impl AppNativeState {
@@ -2570,360 +2613,78 @@ impl AppNativeState {
                 .binding
                 .original_current(&self.document.borrow(), lease, credential)
     }
-    fn release_local(&mut self, bytes: usize) {
-        if self.local_budget.release(bytes).is_err() {
-            self.control_fault = true;
-        }
-    }
-    fn role_current(&self, role: &RendererRoleWitness) -> bool {
-        self.binding.role_current(role)
-    }
-    fn queued_call_current(&self, call: &QueuedLocalCall) -> bool {
-        !call.cancelled
-            && self.original_current(&call.invocation.lease, &call.credential)
-            && (call.channel.is_none()
-                || call
-                    .role_witness
-                    .as_ref()
-                    .is_some_and(|role| self.role_current(role)))
-    }
-    fn drop_queued_call(&mut self, call: QueuedLocalCall) {
-        let bytes = call.bytes;
-        drop(call);
-        self.release_local(bytes);
-    }
-    fn retain_cancelled_original(
-        &mut self,
-        mut call: QueuedLocalCall,
-        older_locals: usize,
-    ) -> Result<(), WvError> {
-        call.cancelled = true;
-        if older_locals > self.local_calls.len() {
-            // Retain charged custody but forbid execution; never guess an
-            // execution order when the private predecessor census is invalid.
-            self.control_fault = true;
-            self.local_calls.push_back(call);
-            return Err(bridge_error(
-                "cancelled original call predecessor census is invalid",
-            ));
-        }
-        self.local_calls.insert(older_locals, call);
-        let _ = self.wake.send_event(super::WkUserEvent::RendererCustody);
-        Ok(())
-    }
-    /// Submit one preflight using the role observed at native call ingress.
-    /// Full means zero handoff: retain the same charged record until the existing
-    /// capacity wake. Never acquire a successor role at this later dispatch cut.
-    fn begin_original_preflight(
-        &mut self,
-        mut queued: QueuedLocalCall,
-        locals_before: usize,
-    ) -> Result<Option<QueuedLocalCall>, WvError> {
-        if !self.queued_call_current(&queued) {
-            if self.original_current(&queued.invocation.lease, &queued.credential) {
-                queued.cancelled = true;
-                let _ = self.wake.send_event(super::WkUserEvent::RendererCustody);
-                return Ok(Some(queued));
-            }
-            self.drop_queued_call(queued);
-            return Ok(None);
-        }
-        let Some(channel) = queued.channel.as_ref() else {
-            self.drop_queued_call(queued);
-            return Err(bridge_error(
-                "local registration cannot request effect preflight",
-            ));
-        };
-        let mut request = request_for_lease(
-            queued.invocation.lease.clone(),
-            queued.invocation.id,
-            RendererBridgeOperation::Preflight {
-                channel: channel.clone(),
-            },
-            Vec::new(),
-        );
-        request.native_facts = queued.facts.take();
-        request.role_witness.clone_from(&queued.role_witness);
-        match self.requests.try_send(request) {
-            Ok(()) => {
-                self.pending_call = Some(PendingAppCall {
-                    queued,
-                    locals_before,
-                    admission: AppCallAdmission::Waiting,
-                });
-                Ok(None)
-            }
-            Err(TrySendError::Full(request)) => {
-                queued.facts = request.native_facts;
-                Ok(Some(queued))
-            }
-            Err(TrySendError::Disconnected(_)) => {
-                self.drop_queued_call(queued);
-                self.control_fault = true;
-                Err(bridge_error(
-                    "existing bounded renderer endpoint disconnected",
-                ))
-            }
-        }
-    }
-    fn clear_local_calls(&mut self) {
-        while let Some(call) = self.local_calls.pop_front() {
-            let bytes = call.bytes;
-            drop(call);
-            self.release_local(bytes);
-        }
-    }
     fn cancel_queued_originals(&mut self) {
-        self.clear_local_calls();
-        if let Some(pending) = self.pending_call.as_mut() {
-            pending.admission = AppCallAdmission::Cancelled;
+        if self.calls.cancel_queued().is_err() {
+            self.control_fault.latch();
         }
     }
-    fn clear_active_call(&mut self) {
-        if let Some(call) = self.active_call.take() {
-            let bytes = call.local_bytes();
-            drop(call);
-            if bytes != 0 {
-                self.release_local(bytes);
-            }
-        }
-    }
-    fn prepare_next_original(&mut self) -> Result<Option<PreparedOriginalInvocation>, WvError> {
-        self.flush_controls();
-        if self.active_call.is_some() || self.control_fault || self.retiring_at.is_some() {
-            return Ok(None);
-        }
-        if let Some(pending) = self.pending_call.as_ref()
-            && pending.locals_before == 0
-        {
-            // An application callback can enqueue its next effect before the
-            // containing main event physically releases. Keep the existing
-            // charged call until Core's exact EventReleased; controls and local
-            // registrations still progress, and currentness is rechecked below.
-            if pending.admission != AppCallAdmission::Accepted
-                || self.pending_send.is_some()
-                || self.pending_event.is_some()
-            {
-                return Ok(None);
-            }
-            let pending = self
-                .pending_call
-                .take()
-                .ok_or_else(|| bridge_error("admitted original call disappeared"))?;
-            if !self.queued_call_current(&pending.queued) {
-                self.pending_call = Some(PendingAppCall {
-                    admission: AppCallAdmission::Cancelled,
-                    ..pending
-                });
-                self.flush_controls();
-                return Ok(None);
-            }
-            let queued = pending.queued;
-            self.active_call = Some(ActiveOriginalCall::entered(
-                queued.invocation.id,
-                queued.invocation.lease.clone(),
-                queued.credential,
-                queued.channel,
-                queued.bytes,
-                queued.role_witness,
-            ));
-            return Ok(Some(queued.invocation));
-        }
-        if self
-            .local_calls
-            .front()
-            .is_some_and(|call| call.channel.is_some() && !call.cancelled)
-            && (self.pending_call.is_some() || self.pending_send.is_some())
-        {
-            return Ok(None);
-        }
-        let Some(local) = self.local_calls.pop_front() else {
-            return Ok(None);
-        };
-        if !self.queued_call_current(&local) {
-            return self.prepare_cancelled_original(local);
-        }
-        if local.channel.is_some() {
-            if let Some(local) = self.begin_original_preflight(local, 0)? {
-                self.local_calls.push_front(local);
-            }
-            return Ok(None);
-        }
-        if let Some(pending) = self.pending_call.as_mut() {
-            pending.locals_before = pending
-                .locals_before
-                .checked_sub(1)
-                .ok_or_else(|| bridge_error("original call order barrier underflow"))?;
-        }
-        self.active_call = Some(ActiveOriginalCall::entered(
-            local.invocation.id,
-            local.invocation.lease.clone(),
-            local.credential,
-            None,
-            local.bytes,
-            None,
-        ));
-        Ok(Some(local.invocation))
-    }
-    fn prepare_cancelled_original(
+    fn prepare_next_original(
         &mut self,
-        mut local: QueuedLocalCall,
-    ) -> Result<Option<PreparedOriginalInvocation>, WvError> {
-        if self.original_current(&local.invocation.lease, &local.credential) {
-            // Only unentered page-copy slots are released. The original
-            // Function is not invoked, and its bookkeeping is never faked.
-            let token = serde_json::to_string(&local.credential)
-                .map_err(|_| bridge_error("cancelled call credential serialization failed"))?;
-            local.invocation.source = format!(
-                "globalThis.__keldAppNativeRefusal({token},{});",
-                local.invocation.id
-            );
+    ) -> Result<OriginalQueueProgress<Option<PreparingOriginalInvocation<String>>>, WvError> {
+        if self.control_fault.is_faulted() || self.retiring_at.is_some() {
+            return Ok(OriginalQueueProgress {
+                value: None,
+                needs_service_wake: false,
+            });
+        }
+        let result = self.calls.take_next_preparation(
+            &self.binding,
+            &self.document.borrow(),
+            &self.requests,
+            (self.pending_send.as_ref(), self.pending_event.as_ref()),
+            &self.control_fault,
+            prepare_original_payload,
+        );
+        if result.is_err() {
+            self.control_fault.latch();
+        }
+        result
+    }
+
+    /// The existing Mac observation cut remains on its actual living owner.
+    /// It creates no Windows role fence and performs no native operation.
+    fn enter_prepared_original(
+        &mut self,
+        prepared: &PreparingOriginalInvocation<String>,
+    ) -> Result<bool, WvError> {
+        if self.retiring_at.is_some() || self.control_fault.is_faulted() {
+            return Ok(false);
+        }
+        if self.evaluations >= 64 {
+            self.control_fault.latch();
+            self.document.borrow_mut().destroy();
+            return Err(bridge_error("native evaluation record bound exhausted"));
+        }
+        let admitted = self.calls.try_enter_prepared(
+            prepared,
+            &self.binding,
+            &self.document.borrow(),
+            (self.pending_send.as_ref(), self.pending_event.as_ref()),
+            &self.control_fault,
+        );
+        if admitted {
+            self.evaluations += 1;
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-            {
+            if prepared.kind() == OriginalInvocationKind::Refusal {
                 self.fixture.refused_before_entry =
                     self.fixture.refused_before_entry.saturating_add(1);
-                self.fixture.last_refusal_call = local.invocation.id;
+                self.fixture.last_refusal_call = prepared.identity().id();
                 self.fixture.last_refusal_after_calls = self.fixture.finished_calls;
             }
-            self.active_call = Some(ActiveOriginalCall::refused_before_entry(
-                local.invocation.id,
-                local.invocation.lease.clone(),
-                local.credential,
-                local.bytes,
-            ));
-            return Ok(Some(local.invocation));
         }
-        self.drop_queued_call(local);
-        let _ = self.wake.send_event(super::WkUserEvent::RendererCustody);
-        Ok(None)
+        Ok(admitted)
     }
-    fn enqueue_control(&mut self, request: RendererBridgeRequest) -> bool {
-        match self.requests.try_send(request) {
-            Ok(()) => true,
-            Err(TrySendError::Full(_)) => false,
-            Err(TrySendError::Disconnected(_)) => {
-                self.control_fault = true;
+    fn flush_controls(&mut self) -> bool {
+        match self.calls.flush_controls(
+            &mut self.binding,
+            &self.document.borrow(),
+            &mut self.pending_event,
+            &self.requests,
+        ) {
+            Ok(progress) => progress.needs_service_wake,
+            Err(_) => {
+                self.control_fault.latch();
                 false
-            }
-        }
-    }
-    fn reconcile_queued_originals(&mut self) {
-        // At most the bounded admitted count is examined. Local registrations
-        // remain role-independent; queued effects retain their original role.
-        let count = self.local_calls.len();
-        for _ in 0..count {
-            let Some(mut call) = self.local_calls.pop_front() else {
-                break;
-            };
-            if self.original_current(&call.invocation.lease, &call.credential) {
-                if !self.queued_call_current(&call) {
-                    call.cancelled = true;
-                }
-                self.local_calls.push_back(call);
-            } else {
-                self.drop_queued_call(call);
-            }
-        }
-        if self
-            .pending_call
-            .as_ref()
-            .is_some_and(|pending| !self.queued_call_current(&pending.queued))
-            && let Some(pending) = self.pending_call.as_mut()
-        {
-            pending.admission = AppCallAdmission::Cancelled;
-        }
-    }
-    fn flush_controls(&mut self) {
-        self.reconcile_queued_originals();
-        if let Some(event) = self.pending_event.as_ref()
-            && let Some(disposition) = event.pending_consumed().cloned()
-        {
-            let request = request_for_lease(
-                event.lease().clone(),
-                event.id(),
-                RendererBridgeOperation::Consumed { disposition },
-                Vec::new(),
-            );
-            if self.enqueue_control(request)
-                && let Some(event) = self.pending_event.as_mut()
-                && event.consumed_handed_off().is_err()
-            {
-                self.control_fault = true;
-            }
-        }
-        if let Some(event) = self.pending_event.as_ref()
-            && let Some(completed) = event.pending_quiescence()
-        {
-            let request = request_for_lease(
-                event.lease().clone(),
-                event.id(),
-                RendererBridgeOperation::EventQuiesced { completed },
-                Vec::new(),
-            );
-            if self.enqueue_control(request)
-                && let Some(event) = self.pending_event.as_mut()
-                && event.quiescence_handed_off().is_err()
-            {
-                self.control_fault = true;
-            }
-        }
-        if let Some(call) = self.active_call.as_ref()
-            && call.ready_to_release()
-        {
-            if call.needs_preflight_abort() {
-                let request = request_for_lease(
-                    call.lease().clone(),
-                    call.id(),
-                    RendererBridgeOperation::PreflightAborted,
-                    Vec::new(),
-                );
-                if self.enqueue_control(request) {
-                    self.clear_active_call();
-                }
-            } else {
-                self.clear_active_call();
-            }
-        }
-        if let Some(pending) = self.pending_call.as_ref()
-            && pending.admission == AppCallAdmission::Cancelled
-        {
-            let request = request_for_lease(
-                pending.queued.invocation.lease.clone(),
-                pending.queued.invocation.id,
-                RendererBridgeOperation::PreflightAborted,
-                Vec::new(),
-            );
-            if self.enqueue_control(request)
-                && let Some(pending) = self.pending_call.take()
-            {
-                let queued = pending.queued;
-                if self.original_current(&queued.invocation.lease, &queued.credential) {
-                    if self
-                        .retain_cancelled_original(queued, pending.locals_before)
-                        .is_err()
-                    {
-                        self.control_fault = true;
-                    }
-                } else {
-                    self.drop_queued_call(queued);
-                }
-            }
-        }
-        if let Some(lease) = self.binding.registration_notice().cloned() {
-            if lease.is_current() {
-                let request = request_for_lease(
-                    lease.clone(),
-                    0,
-                    RendererBridgeOperation::Registered,
-                    Vec::new(),
-                );
-                if self.enqueue_control(request)
-                    && self.binding.registration_handed_off(&lease).is_err()
-                {
-                    self.control_fault = true;
-                }
-            } else {
-                self.binding.discard_revoked_registration();
             }
         }
     }
@@ -2933,12 +2694,9 @@ impl AppNativeState {
             .as_ref()
             .is_none_or(PendingOriginalEvent::retirement_controls_quiesced);
         self.evaluations == 0
-            && self.pending_call.is_none()
-            && self.active_call.is_none()
-            && self.local_calls.is_empty()
-            && self.local_budget.is_empty()
+            && self.calls.is_drained()
             && controls
-            && !self.control_fault
+            && !self.control_fault.is_faulted()
     }
 }
 
@@ -2980,21 +2738,52 @@ fn evaluate_owned(
     app: SharedAppState,
     purpose: EvaluationPurpose,
 ) {
-    {
+    if let Err(error) = evaluate_owned_inner(webview, world, script, app.clone(), purpose, None) {
+        app.borrow_mut().control_fault.latch();
+        eprintln!("{error}");
+    }
+}
+
+fn evaluate_owned_inner(
+    webview: &WKWebView,
+    world: &WKContentWorld,
+    script: &str,
+    app: SharedAppState,
+    purpose: EvaluationPurpose,
+    original: Option<PreparingOriginalInvocation<String>>,
+) -> Result<(), WvError> {
+    // Original invocation text can come only from its retained backing. The
+    // ordinary script parameter is used solely by existing control/event paths.
+    match (&original, &purpose) {
+        (Some(prepared), EvaluationPurpose::Call { id, lease })
+            if prepared.identity().id() == *id
+                && prepared.identity().lease().same_binding(lease) => {}
+        (None, EvaluationPurpose::Call { .. }) | (Some(_), _) => {
+            return Err(bridge_error(
+                "original native evaluation lacks its exact retained carrier",
+            ));
+        }
+        (None, _) => {}
+    }
+    let script = match original.as_ref() {
+        Some(prepared) => prepared.payload()?.as_str(),
+        None => script,
+    };
+    if original.is_none() {
         let mut state = app.borrow_mut();
         if state.evaluations >= 64 {
-            state.control_fault = true;
+            state.control_fault.latch();
             state.document.borrow_mut().destroy();
-            eprintln!(
-                "KELD-WV-011: native evaluation record bound exhausted; view/image custody retained as unproved"
-            );
-            return;
+            return Err(bridge_error(
+                "native evaluation record bound exhausted; view/image custody retained as unproved",
+            ));
         }
         state.evaluations += 1;
     }
     let source = NSString::from_str(script);
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
     let control_kind = control_observation_kind(script);
+    let callback_app = app.clone();
     let completion = block2::RcBlock::new(
         move |_value: *mut objc2::runtime::AnyObject, error: *mut objc2_foundation::NSError| {
             let receipt = NativeEvaluationReceipt {
@@ -3003,7 +2792,7 @@ fn evaluate_owned(
             };
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
             {
-                let mut state = app.borrow_mut();
+                let mut state = callback_app.borrow_mut();
                 state.fixture.actual_completions += 1;
                 if !error.is_null() && matches!(&receipt.purpose, EvaluationPurpose::Control) {
                     // SAFETY: WebKit supplies this nonnull NSError for the actual
@@ -3048,7 +2837,7 @@ fn evaluate_owned(
                         state.fixture.hold_next_completion.call = false;
                     }
                     if state.fixture.held_completion.is_some() {
-                        state.control_fault = true;
+                        state.control_fault.latch();
                         return;
                     }
                     state.fixture.held_completion = Some(receipt);
@@ -3056,12 +2845,27 @@ fn evaluate_owned(
                     return;
                 }
             }
-            complete_evaluation(&app, receipt);
+            complete_evaluation(&callback_app, receipt);
         },
     );
+    if let Some(prepared) = original.as_ref() {
+        // The source and owned completion are already prepared. Release both
+        // AppState/document borrows before the immediate existing native call.
+        let admitted = app.borrow_mut().enter_prepared_original(prepared);
+        if !admitted.as_ref().is_ok_and(|entered| *entered) {
+            if let Some(prepared) = original {
+                let progress = app.borrow_mut().calls.defer_preparation(prepared)?;
+                post_original_service_wake(&app, progress.needs_service_wake);
+            }
+            flush_app_controls(&app);
+            return admitted.map(|_| ());
+        }
+    }
     // SAFETY: retained live native view/world on AppKit UI thread. WK copies
     // this owned completion block until actual success/failure. Same-view
     // release retains the concrete view/image until every completion arrives.
+    // Original entry just rechecked its same living lease/role with no guard
+    // retained across this call; API return is separate from the WK callback.
     unsafe {
         webview.evaluateJavaScript_inFrame_inContentWorld_completionHandler(
             &source,
@@ -3070,6 +2874,13 @@ fn evaluate_owned(
             Some(&completion),
         );
     }
+    if let Some(prepared) = original {
+        prepared.native_returned()?;
+        // An inline callback may already have supplied both independent facts.
+        // The same charged record can release only now, after real API return.
+        flush_app_controls(&app);
+    }
+    Ok(())
 }
 
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -3112,7 +2923,7 @@ struct NativeEvaluationReceipt {
 fn complete_evaluation(app: &SharedAppState, receipt: NativeEvaluationReceipt) {
     let mut state = app.borrow_mut();
     let Some(remaining) = state.evaluations.checked_sub(1) else {
-        state.control_fault = true;
+        state.control_fault.latch();
         state.document.borrow_mut().destroy();
         return;
     };
@@ -3128,11 +2939,11 @@ fn complete_evaluation(app: &SharedAppState, receipt: NativeEvaluationReceipt) {
             if let Some(slot) = state.fixture.binding_wk_completed.get_mut(index) {
                 *slot = Some(receipt.completed);
             } else {
-                state.control_fault = true;
+                state.control_fault.latch();
             }
         }
         EvaluationPurpose::Call { id, lease } => {
-            if let Some(call) = state.active_call.as_mut() {
+            if let Some(call) = state.calls.active_mut() {
                 call.observe_native_quiescence(id, &lease, receipt.completed);
             }
         }
@@ -3142,8 +2953,12 @@ fn complete_evaluation(app: &SharedAppState, receipt: NativeEvaluationReceipt) {
             }
         }
     }
+    // This actual native-completion notification already covers any queue
+    // transition in the same flush. Preserve one existing wake after the guard.
     state.flush_controls();
-    let _ = state.wake.send_event(super::WkUserEvent::RendererCustody);
+    let wake = state.wake.clone();
+    drop(state);
+    let _ = wake.send_event(super::WkUserEvent::RendererCustody);
 }
 
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -3176,7 +2991,9 @@ fn fixture_origin_probe(
     if handler.ivars().role != HandlerRole::App || !state.authentic(supplied, HandlerRole::App) {
         return Err(bridge_error("origin probe came from wrong native binding"));
     }
-    let tuple = facts.native_origin_tuple();
+    let tuple = facts
+        .native_origin_tuple()
+        .ok_or_else(|| bridge_error("Mac origin probe lacks its actual native tuple"))?;
     let mut isolated = serde_json::Map::new();
     for key in ["href", "origin", "protocol", "hostname", "port"] {
         let text = value
@@ -3328,7 +3145,7 @@ impl MacRendererBridge {
         serde_json::json!({
             "app_runtime":true,"current_owner":state.current().is_some(),"prepared_attempt":state.binding.has_prepared_attempt(),
             "app_bound":state.binding.credential(OriginalCredentialSlot::App).is_some(),"trusted_bound":state.binding.credential(OriginalCredentialSlot::Trusted).is_some(),"registered":state.binding.registered(),"registration_notice_pending":state.binding.registration_notice().is_some(),
-            "retiring":state.retiring_at.is_some(),"control_fault":state.control_fault,"evaluations":state.evaluations,
+            "retiring":state.retiring_at.is_some(),"control_fault":state.control_fault.is_faulted(),"evaluations":state.evaluations,
             "call_ingress":state.fixture.call_ingress,"last_call_cut":state.fixture.last_call_cut,
             "held_call":state.fixture.held_call.is_some(),"held_bindings":state.fixture.held_bindings.len(),
             "old_replay_rejections":state.fixture.old_replays_observed,"replay_wk_completed":state.fixture.replay_wk_completed,
@@ -3337,9 +3154,9 @@ impl MacRendererBridge {
             "refused_before_entry":state.fixture.refused_before_entry,"last_refusal_call":state.fixture.last_refusal_call,"last_refusal_after_calls":state.fixture.last_refusal_after_calls,
             "held_event_completion":state.fixture.held_completion.as_ref().is_some_and(|receipt|matches!(&receipt.purpose,EvaluationPurpose::Event{..})),
             "held_call_completion":state.fixture.held_completion.as_ref().is_some_and(|receipt|matches!(&receipt.purpose,EvaluationPurpose::Call{..})),
-            "local_queue_records":state.local_calls.len(),"local_retained_records":state.local_budget.retained_records(),"local_retained_bytes":state.local_budget.retained_bytes(),
-            "pending_call":state.pending_call.as_ref().map(|call|serde_json::json!({"id":call.queued.invocation.id,"lease_current":call.queued.invocation.lease.is_current(),"locals_before":call.locals_before,"admission":format!("{:?}",call.admission)})),
-            "active_call":state.active_call.as_ref().map(|call|serde_json::json!({"id":call.id(),"lease_current":call.lease().is_current(),"function_finished":call.function_finished(),"evaluation_finished":call.native_finished(),"send_forwarded":call.send_forwarded()})),
+            "local_queue_records":state.calls.local_len(),"local_retained_records":state.calls.retained_records(),"local_retained_bytes":state.calls.retained_bytes(),
+            "pending_call":state.calls.pending_observation().map(|(id,lease,locals_before,admission)|serde_json::json!({"id":id,"lease_current":lease.is_current(),"locals_before":locals_before,"admission":format!("{admission:?}")})),
+            "active_call":state.calls.active().map(|call|serde_json::json!({"id":call.id(),"lease_current":call.lease().is_current(),"function_finished":call.function_finished(),"evaluation_finished":call.native_finished(),"send_forwarded":call.send_forwarded()})),
             "pending_send":state.pending_send.as_ref().map(|send|serde_json::json!({"id":send.id(),"lease_current":send.lease().is_current()})),
             "pending_event":state.pending_event.as_ref().map(|event|serde_json::json!({"id":event.id(),"lease_current":event.lease().is_current(),"consumed_sent":event.consumed_sent(),"quiesced":event.native_quiescence(),"quiesced_sent":event.quiescence_sent()}))
         })
@@ -3372,10 +3189,10 @@ impl MacRendererBridge {
                     .binding
                     .credential(OriginalCredentialSlot::App)
                     .is_some()
-                && state.active_call.is_none()
-                && state.pending_call.is_none()
-                && state.local_calls.is_empty()
-                && state.local_budget.retained_records() == 0
+                && !state.calls.has_active()
+                && !state.calls.has_pending()
+                && state.calls.local_len() == 0
+                && state.calls.retained_records() == 0
                 && state.evaluations == 0
         })
     }
@@ -3565,11 +3382,11 @@ pub(super) fn capture_native_message_facts(
                 "native origin tuple has no qualified serialization for this selected source",
             )
         })?;
-    Ok(NativeMessageFacts {
+    Ok(NativeMessageFacts::from_macos_native(
         url,
         protocol,
         host,
         port,
-        serialized_origin: Some(serialized_origin),
-    })
+        Some(serialized_origin),
+    ))
 }

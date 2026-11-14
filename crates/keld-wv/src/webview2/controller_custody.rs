@@ -58,7 +58,7 @@ impl NativeController {
 
 /// UI-only capability shared by a View and its original-resource callback.
 /// The existing adopted controller remains the sole physical Close authority.
-/// Reentry observes InProgress and never retries the native operation.
+/// Reentry observes `InProgress` and never retries the native operation.
 pub(in crate::webview2) struct AdoptedControllerClose {
     controller: ICoreWebView2Controller,
     release: Option<Weak<ProfileReleaseWait>>,
@@ -72,6 +72,12 @@ enum CloseState {
     Returned(bool),
 }
 
+impl CloseState {
+    const fn actual_closed(self) -> bool {
+        matches!(self, Self::Returned(true))
+    }
+}
+
 impl AdoptedControllerClose {
     pub(in crate::webview2) fn new(
         controller: ICoreWebView2Controller,
@@ -82,6 +88,16 @@ impl AdoptedControllerClose {
             release,
             state: Cell::new(CloseState::Open),
         }
+    }
+
+    /// Borrow the actual retained interface without minting another Close owner.
+    pub(in crate::webview2) fn controller(&self) -> &ICoreWebView2Controller {
+        &self.controller
+    }
+
+    /// Observe the actual completed Close without entering or retrying COM.
+    pub(in crate::webview2) fn actual_closed(&self) -> bool {
+        self.state.get().actual_closed()
     }
 
     /// True is an actual successful Close return, never an admission or wake.

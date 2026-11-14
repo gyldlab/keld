@@ -21,6 +21,11 @@ use tao::window::WindowId;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::IsWindow;
 
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+mod receipt_prefill;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+use receipt_prefill::ReceiptPrefill;
+
 use super::{PROFILE_LAUNCH_DEADLINE, profile_failure_with};
 use crate::engine::{AppWindowEvent, BuildStage};
 use crate::profile::ProfileErrorKind;
@@ -50,15 +55,16 @@ impl Releasing {
 
 /// Only the existing `CreateWindow` payload; no handle or new identity/policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct DeferredCreate {
+pub(super) struct DeferredCreate<O = super::original_view::OriginalBuildInputs> {
     pub(super) build: u64,
     pub(super) width: u32,
     pub(super) height: u32,
     pub(super) x: Option<i32>,
     pub(super) y: Option<i32>,
+    pub(super) original: Option<O>,
 }
 
-impl DeferredCreate {
+impl<O> DeferredCreate<O> {
     pub(super) fn failure_event(self) -> AppWindowEvent {
         AppWindowEvent::WindowBuildFailed {
             build: self.build,
@@ -69,10 +75,10 @@ impl DeferredCreate {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
-pub(super) enum CreateAdmission {
-    Start(DeferredCreate),
+pub(super) enum CreateAdmission<O = super::original_view::OriginalBuildInputs> {
+    Start(DeferredCreate<O>),
     Queued,
-    Refused(DeferredCreate),
+    Refused(DeferredCreate<O>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,7 +86,11 @@ pub(super) enum CreateAdmission {
 pub(super) enum StageResult {
     Unknown,
     AlreadyStaged,
-    Staged { wake_posted: bool },
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    Withheld,
+    Staged {
+        wake_posted: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -89,6 +99,8 @@ struct ReleasingEntry {
     hwnd: isize,
     parked_at: Instant,
     staged: bool,
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    prefill: Option<ReceiptPrefill>,
 }
 
 impl ReleasingEntry {
@@ -99,14 +111,16 @@ impl ReleasingEntry {
 
 /// Production uses Tao `WindowId`. The key parameter is only a pure-test seam:
 /// integer keys let the same state transitions run without inventing Tao handles.
+/// The payload parameter lets Drop controls exercise this same FIFO's real ownership;
+/// production carries only its actual admitted `OriginalBuildInputs`.
 #[derive(Debug)]
-pub(super) struct ManagedCustody<K = WindowId> {
+pub(super) struct ManagedCustody<K = WindowId, O = super::original_view::OriginalBuildInputs> {
     releasing: BTreeMap<K, ReleasingEntry>,
-    deferred: VecDeque<DeferredCreate>,
+    deferred: VecDeque<DeferredCreate<O>>,
     deferred_wake_outstanding: bool,
 }
 
-impl<K> Default for ManagedCustody<K> {
+impl<K, O> Default for ManagedCustody<K, O> {
     fn default() -> Self {
         Self {
             releasing: BTreeMap::new(),
@@ -116,7 +130,7 @@ impl<K> Default for ManagedCustody<K> {
     }
 }
 
-impl<K: Ord + Copy> ManagedCustody<K> {
+impl<K: Ord + Copy, O> ManagedCustody<K, O> {
     /// Records custody before the caller drops its `View` or standalone `Window`.
     ///
     /// A collision replaces nothing and consumes no native custodian. Both
@@ -136,6 +150,8 @@ impl<K: Ord + Copy> ManagedCustody<K> {
                     hwnd,
                     parked_at: now,
                     staged: false,
+                    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                    prefill: None,
                 });
                 Ok(())
             }
@@ -175,6 +191,12 @@ impl<K: Ord + Copy> ManagedCustody<K> {
         };
         if entry.staged {
             return StageResult::AlreadyStaged;
+        }
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        if let Some(prefill) = entry.prefill.as_mut()
+            && prefill.withhold_destroyed(entry.hwnd)
+        {
+            return StageResult::Withheld;
         }
         entry.staged = true;
         StageResult::Staged {
@@ -221,11 +243,20 @@ impl<K: Ord + Copy> ManagedCustody<K> {
 
     /// ending is supplied by the loop from terminal intent/terminal/barrier fault;
     /// it is never copied into a second lifecycle state here.
-    pub(super) fn admit(&mut self, create: DeferredCreate, ending: bool) -> CreateAdmission {
+    pub(super) fn admit(
+        &mut self,
+        create: DeferredCreate<O>,
+        ending: bool,
+        building: bool,
+    ) -> CreateAdmission<O> {
         if ending {
             return CreateAdmission::Refused(create);
         }
-        if self.is_empty() && self.deferred.is_empty() {
+        // The fixture observes the real admission before the production gate.
+        // A no-backpressure mutant must leave this same observation intact.
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        self.observe_prefill_create(create.build);
+        if !building && self.is_empty() && self.deferred.is_empty() {
             return CreateAdmission::Start(create);
         }
         // Core registry admission bounds this queue. Do not duplicate its limit.
@@ -238,10 +269,15 @@ impl<K: Ord + Copy> ManagedCustody<K> {
     pub(super) fn post_deferred_wake(
         &mut self,
         ending: bool,
+        building: bool,
         now: Instant,
         post: impl FnOnce() -> bool,
     ) -> Option<Instant> {
-        if ending || !self.is_empty() || self.deferred.is_empty() || self.deferred_wake_outstanding
+        if ending
+            || building
+            || !self.is_empty()
+            || self.deferred.is_empty()
+            || self.deferred_wake_outstanding
         {
             return None;
         }
@@ -252,9 +288,13 @@ impl<K: Ord + Copy> ManagedCustody<K> {
     /// Only the dedicated `DeferredBuildWake` arm calls this. A `ProfileReleaseWake`
     /// never consumes a request. Clear its mark even if a buffered Destroy/terminal
     /// has since revoked admission; a later bottom-of-callback check may re-post.
-    pub(super) fn take_deferred_wake(&mut self, ending: bool) -> Option<DeferredCreate> {
+    pub(super) fn take_deferred_wake(
+        &mut self,
+        ending: bool,
+        building: bool,
+    ) -> Option<DeferredCreate<O>> {
         let outstanding = std::mem::take(&mut self.deferred_wake_outstanding);
-        if !outstanding || ending || !self.is_empty() {
+        if !outstanding || ending || building || !self.is_empty() {
             return None;
         }
         self.deferred.pop_front()

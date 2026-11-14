@@ -56,24 +56,29 @@ fn windows_stage_is_current_user_protected_and_byte_consistent() {
 }
 
 #[test]
-fn windows_stage_refuses_explicit_profiles_and_preserves_no_profile_staging() {
+fn windows_stage_preserves_explicit_profiles_and_no_profile_staging() {
     let fixture = StageFixture::new();
     let source_policy = fixture.project.join("keld.permissions.jsonc");
     for profile in ["strict", "legacy"] {
-        fs::write(&source_policy, format!(r#"{{"profile":"{profile}"}}"#))
-            .expect("explicit project policy");
-        let error = keld_cli::boot::stage_dev_boot(
+        let source = format!(r#"{{"profile":"{profile}"}}"#);
+        fs::write(&source_policy, &source).expect("explicit project policy");
+        let stage = keld_cli::boot::stage_dev_boot(
             &fixture.project,
             Path::new(env!("CARGO_BIN_EXE_keld-host")),
         )
-        .expect_err("Windows must refuse instead of staging its fixed fallback policy");
-        let detail = error.to_string();
-        assert!(detail.contains("KELD-CLI-047"), "{detail}");
-        assert!(detail.contains("permissions profile"), "{detail}");
-        assert!(detail.contains("macOS primary boots"), "{detail}");
-        assert!(
-            !fixture.project.join(".keld").exists(),
-            "an explicit-profile refusal must precede stage creation"
+        .expect("stage the explicit request for Host profile admission");
+        let descriptor: serde_json::Value = serde_json::from_slice(
+            &fs::read(stage.root().join("keld.boot.json")).expect("boot bytes"),
+        )
+        .expect("boot descriptor JSON");
+        assert_eq!(
+            descriptor["schema"], 3,
+            "an explicit renderer profile must not downgrade to a profile-free boot"
+        );
+        assert_eq!(
+            fs::read(stage.root().join("keld.permissions.jsonc")).expect("staged explicit policy"),
+            source.as_bytes(),
+            "Windows staging must preserve the exact explicit request"
         );
     }
 

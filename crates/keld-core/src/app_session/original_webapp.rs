@@ -87,6 +87,13 @@ pub(super) fn qualify_original_index_uri(
 /// and Host budget. No runtime versions, page facts or readiness boolean can
 /// construct this value or claim that a native window has loaded.
 pub(super) struct PreparedOriginalSource {
+    #[cfg_attr(
+        all(windows, not(test)),
+        expect(
+            dead_code,
+            reason = "Retain the same selected-source metadata; Windows qualifies through the source owner while Mac and tests read this path."
+        )
+    )]
     selected_stage: PathBuf,
     #[cfg(target_os = "macos")]
     selected_entry: PathBuf,
@@ -182,9 +189,11 @@ impl PreparedOriginalSource {
             versions,
         }
     }
+    #[cfg(any(target_os = "macos", test))]
     pub(super) fn selected_stage(&self) -> &Path {
         &self.selected_stage
     }
+    #[cfg(any(target_os = "macos", test))]
     pub(super) fn graph_sha256(&self) -> [u8; 32] {
         self.graph.graph_sha256()
     }

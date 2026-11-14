@@ -83,7 +83,7 @@ impl Drop for DropWitness {
     }
 }
 
-fn pending(builds: &[u64]) -> ManagedCustody<u32> {
+fn pending(builds: &[u64]) -> ManagedCustody<u32, ()> {
     let mut custody = ManagedCustody::default();
     custody
         .park(7, 77, Releasing::Destroy(WebviewId(9)), Instant::now())
@@ -97,7 +97,9 @@ fn pending(builds: &[u64]) -> ManagedCustody<u32> {
                     height: 1,
                     x: None,
                     y: None,
+                    original: None,
                 },
+                false,
                 false,
             ),
             CreateAdmission::Queued,
@@ -129,6 +131,7 @@ fn managed_drops_precede_stop_and_deferred_refusal() {
     close_managed_resources(
         &mut views,
         &mut custody,
+        |_| true,
         || {
             state.commit();
             legacy.clear();
@@ -174,6 +177,7 @@ fn empty_managed_resources_leave_legacy_stop_before_drop() {
     close_managed_resources(
         &mut managed,
         &mut custody,
+        |_| true,
         || {
             state.commit();
             legacy.clear();
@@ -205,6 +209,7 @@ fn refusal_error_drains_once_after_close_and_preserves_native_custody() {
     let result = close_managed_resources(
         &mut views,
         &mut custody,
+        |_| true,
         || state.commit(),
         |event| {
             let build = failed_build(event);
@@ -257,6 +262,7 @@ fn only_a_latched_fault_runs_the_shared_stop_reaction() {
         close_managed_resources(
             &mut views,
             &mut custody,
+            |_| true,
             || state.commit(),
             |_| Ok::<(), ()>(()),
         )
@@ -279,4 +285,78 @@ fn only_a_latched_fault_runs_the_shared_stop_reaction() {
         ],
         "the existing first-fault owner invokes the same ordered stop reaction",
     );
+}
+
+#[test]
+fn failed_retirement_stays_in_the_same_map_without_skipping_terminal_order() {
+    let state = State::new();
+    let mut views = BTreeMap::from([
+        (1, state.resource("released")),
+        (2, state.resource("retained")),
+    ]);
+    let mut custody = pending(&[61]);
+    let mut attempts = Vec::new();
+    let mut answers = Vec::new();
+    close_managed_resources(
+        &mut views,
+        &mut custody,
+        |value| {
+            attempts.push(value.kind);
+            state.record("retire");
+            value.kind == "released"
+        },
+        || state.commit(),
+        |event| {
+            answers.push(failed_build(event));
+            state.record("refuse");
+            Ok::<(), ()>(())
+        },
+    )
+    .expect("a retained resource does not skip the existing terminal reaction");
+
+    assert_eq!(attempts, vec!["released", "retained"]);
+    assert_eq!(answers, vec![61]);
+    assert_eq!(views.keys().copied().collect::<Vec<_>>(), vec![2]);
+    assert_eq!(views.get(&2).expect("same retained value").kind, "retained");
+    assert!(custody.contains(7), "no false native release receipt");
+    assert_eq!(
+        *state.trace.borrow(),
+        vec![
+            ("retire", Phase::Running, false),
+            ("released", Phase::Running, false),
+            ("retire", Phase::Running, false),
+            ("stop", Phase::Stopping, false),
+            ("refuse", Phase::Stopping, false),
+        ],
+        "only an actual releasable value drops; close attempts still precede Stopping",
+    );
+}
+
+#[test]
+fn retirement_panic_keeps_unproved_values_in_the_same_map() {
+    let state = State::new();
+    let mut views = BTreeMap::from([(1, state.resource("retained"))]);
+    let mut custody = pending(&[71]);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _: Result<(), ()> = close_managed_resources(
+            &mut views,
+            &mut custody,
+            |_| panic!("retirement did not return a release receipt"),
+            || panic!("terminal continuation must not run after the panic"),
+            |_| panic!("deferred answer must remain in its existing owner"),
+        );
+    }));
+
+    assert!(result.is_err());
+    assert_eq!(views.len(), 1);
+    assert!(state.trace.borrow().is_empty(), "no native value dropped");
+    assert!(custody.contains(7));
+    let mut answers = Vec::new();
+    custody
+        .refuse_deferred(|event| {
+            answers.push(failed_build(event));
+            Ok::<(), ()>(())
+        })
+        .expect("same deferred owner remains available");
+    assert_eq!(answers, vec![71]);
 }

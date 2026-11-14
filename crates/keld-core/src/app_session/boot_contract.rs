@@ -354,15 +354,17 @@ mod development_graph_tests {
         let mut malformed = document();
         malformed["rendererSource"]["extra"] = serde_json::json!(true);
         assert!(parse_boot_bytes(malformed.to_string().as_bytes()).is_err());
-        let mut unsupported_version = document();
-        unsupported_version["version"] = serde_json::json!("1.2.3");
-        let version_refusal = parse_boot_bytes(unsupported_version.to_string().as_bytes())
-            .err()
-            .expect("declared version requires its runtime owner");
-        assert!(
-            version_refusal
-                .to_string()
-                .contains("native runtime metadata is unavailable")
+        let mut declared_version = document();
+        declared_version["version"] = serde_json::json!("1.2.3");
+        let versioned = parse_boot_bytes(declared_version.to_string().as_bytes())
+            .expect("declared version stays in the same selected graph metadata");
+        assert_eq!(
+            versioned
+                .development_graph
+                .expect("same pending graph")
+                .version
+                .as_deref(),
+            Some("1.2.3"),
         );
         let mut unsupported_instance = document();
         unsupported_instance["singleInstance"] = serde_json::json!({"id":"dev.example.editor"});

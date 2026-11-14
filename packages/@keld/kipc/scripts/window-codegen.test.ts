@@ -38,3 +38,23 @@ test("Rust Window unknown field/type/ordinal changes are refused by the same gen
       "echo codegen",
     );
 });
+
+test("Window borrowing admits only the one canonical enum and exact owned alias", () => {
+  const alias = "pub type WindowEvent = WindowEventValue<String>;";
+  for (const changed of [
+    rust.replace(alias, "pub type WindowEvent = WindowEventValue<Vec<u8>>;"),
+    rust.replace(alias, alias + "\n" + alias),
+    rust.replace(
+      "pub enum WindowEventValue<T> {",
+      "pub enum WindowEventValue<T = String> {",
+    ),
+    rust.replace("        native_url: T,", "        native_url: String,"),
+    rust.replace("        focused: bool,", "        focused: T,"),
+    rust.replace(alias, "#[cfg(windows)]\n" + alias),
+  ]) {
+    expect(changed).not.toBe(rust);
+    expect(() => renderWindowCodecBinding(changed, adapter)).toThrow(
+      "echo codegen",
+    );
+  }
+});

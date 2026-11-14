@@ -29,21 +29,22 @@ struct QualifiedWindowsFramework {
 
 // Intentionally unavailable until exact Windows Host/provider receipts qualify
 // a distribution. A self-consistent project cannot fill this value.
-const QUALIFIED_WINDOWS_FRAMEWORK: Option<QualifiedWindowsFramework> = None;
+const QUALIFIED_WINDOWS_HOST_IMAGE: Option<[u8; 32]> = Some([
+    0x50, 0xc4, 0x78, 0xb1, 0x3e, 0x7b, 0x80, 0x3f, 0xbf, 0x06, 0xfa, 0xa8, 0x60, 0xda, 0x91, 0x49,
+    0x5e, 0xc1, 0xcb, 0xfc, 0xa2, 0xc3, 0x52, 0xe1, 0x9f, 0x70, 0xce, 0x5c, 0x9d, 0x02, 0xb4, 0xc8,
+]);
+
+fn qualified_framework() -> Option<QualifiedWindowsFramework> {
+    let providers = keld_core::app_session::qualified_windows_distribution()?;
+    Some(QualifiedWindowsFramework {
+        target: providers.target(),
+        host_sha256: QUALIFIED_WINDOWS_HOST_IMAGE?,
+        provider_trees: *providers.provider_trees(),
+    })
+}
 
 fn target() -> &'static str {
-    #[cfg(target_arch = "x86_64")]
-    {
-        "x86_64-pc-windows-msvc"
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        "aarch64-pc-windows-msvc"
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    {
-        "unsupported-windows-target"
-    }
+    keld_core::app_session::windows_graph_target()
 }
 
 fn error(phase: &'static str, detail: impl std::fmt::Display) -> BootCompileError {
@@ -156,7 +157,7 @@ impl CapturedGraphInput {
                 .map(|value| value.replace('\\', "/"))
                 .ok_or_else(|| error("development graph boot", "non-UTF-8 selected path"))
         };
-        let descriptor = serde_json::json!({
+        let mut descriptor = serde_json::json!({
             "schema": 8,
             "name": self.app.name,
             "entry": self.app.entry,
@@ -177,6 +178,11 @@ impl CapturedGraphInput {
                 "content_sha256": format!("sha256:{}", hex(&self.selected.preload_sha256())),
             },
         });
+        // Only the exact retained literal is supplied. An omitted declaration
+        // remains absent; package/framework versions are not a fallback.
+        if !self.app.version.is_empty() {
+            descriptor["version"] = serde_json::Value::String(self.app.version.clone());
+        }
         let bytes = serde_json::to_vec(&descriptor)
             .map_err(|source| error("development graph boot", source))?;
         if bytes.len() > 64 * 1024 {
@@ -370,11 +376,7 @@ pub(super) fn stage_for_project(
     project: &Path,
     developer_host: &Path,
 ) -> Result<DevBootStage, BootCompileError> {
-    stage_with_qualification(
-        project,
-        developer_host,
-        QUALIFIED_WINDOWS_FRAMEWORK.as_ref(),
-    )
+    stage_with_qualification(project, developer_host, qualified_framework().as_ref())
 }
 
 fn stage_with_qualification(

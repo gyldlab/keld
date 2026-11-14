@@ -64,12 +64,22 @@ impl ActiveOriginalCall {
     pub(crate) fn channel(&self) -> Option<&str> {
         self.channel.as_deref()
     }
+    /// Retain the ingress role that Core admitted; never use a successor role.
+    #[cfg(windows)]
+    pub(crate) fn role_witness(&self) -> Option<&RendererRoleWitness> {
+        self.role_witness.as_ref()
+    }
     pub(crate) const fn local_bytes(&self) -> usize {
         self.local_bytes
     }
+    #[cfg(any(target_os = "macos", test))]
     pub(crate) const fn send_forwarded(&self) -> bool {
         self.send_forwarded
     }
+    #[cfg(any(
+        test,
+        all(target_os = "macos", feature = "profile-test-hooks", debug_assertions)
+    ))]
     pub(crate) const fn function_finished(&self) -> bool {
         self.function_finished
     }
@@ -106,6 +116,21 @@ impl ActiveOriginalCall {
         if !completed || !lease.is_current() {
             self.function_finished = true;
         }
+        true
+    }
+
+    /// Actual Windows Post return settles only the carrier half. Revocation
+    /// and `S_OK` cannot manufacture the original Function's completion.
+    #[cfg(windows)]
+    pub(crate) fn observe_native_return(
+        &mut self,
+        id: u32,
+        lease: &CheckedNativeDocumentLease,
+    ) -> bool {
+        if self.id != id || !self.lease.same_binding(lease) {
+            return false;
+        }
+        self.native_finished = true;
         true
     }
 
@@ -159,6 +184,10 @@ impl PendingOriginalSend {
     pub(crate) const fn after_handoff(id: u32, lease: CheckedNativeDocumentLease) -> Self {
         Self { id, lease }
     }
+    #[cfg(any(
+        test,
+        all(target_os = "macos", feature = "profile-test-hooks", debug_assertions)
+    ))]
     pub(crate) const fn id(&self) -> u32 {
         self.id
     }

@@ -195,7 +195,7 @@ fn a_reader_that_saw_the_handover_quit_reads_the_handover_fact() {
     });
     assert!(handle.request_handover().expect("a running session"));
     let (command, observed) = ui_loop.join().expect("UI loop stand-in");
-    assert_eq!(command, Ok(AppWindowCommand::Quit));
+    assert!(matches!(command, Ok(AppWindowCommand::Quit)));
     assert!(
         observed,
         "a reader that saw the handover's Quit must see the handover fact"
@@ -213,10 +213,10 @@ fn request_handover_ends_the_loop_once_and_finish_tail_then_sends_nothing() {
     let (handle, _client, owner_rx, window_rx) = initial_ready_router_with_window_loop();
     drop(owner_rx); // `finish_tail`'s guardian step succeeds at once without an owner.
     assert!(handle.request_handover().expect("a running session"));
-    assert_eq!(
+    assert!(matches!(
         window_rx.recv_timeout(Duration::from_secs(2)),
         Ok(AppWindowCommand::Quit)
-    );
+    ));
     assert!(handle.shutdown.handover_requested());
     assert!(
         handle.shutdown.handover_clock.requested.get().is_some(),
@@ -320,10 +320,10 @@ fn attaching_a_dev_lease_tail_makes_the_handover_refuse() {
             .is_none()
     );
     assert!(plain.request_handover().expect("a lease-less session"));
-    assert_eq!(
+    assert!(matches!(
         plain_window_rx.recv_timeout(Duration::from_secs(2)),
         Ok(AppWindowCommand::Quit)
-    );
+    ));
 }
 
 /// Each application session of a process takes the sole broker once; the next

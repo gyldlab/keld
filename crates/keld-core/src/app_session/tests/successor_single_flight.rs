@@ -129,7 +129,11 @@ fn successor_drain_test_router(
     let (window_tx, window_rx) = mpsc::channel();
     let (guardian_tx, _guardian_rx) = mpsc::channel();
     let handle = PrimaryRouterHandle {
+        #[cfg(windows)]
+        primary_writer: None,
         current: Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
+            #[cfg(windows)]
+            writer_link: None,
             identity: PrimaryLinkIdentity::Fixture,
             attempt: 1,
             writer: g1_server,
@@ -159,7 +163,7 @@ fn successor_drain_test_router(
         dialog: None,
         #[cfg(target_os = "macos")]
         menu: None,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         compat: None,
         guardian: GuardianOwnerHandle {
             command_tx: guardian_tx,

@@ -2,7 +2,8 @@
 //! and preflight inputs do not prove Runtime authentication, native milestones,
 //! source qualification or original-app success. Opaque attempts are never forged.
 use super::{
-    Fixture, TestResult, fact, install_successor, native_state, owner_from, reply, snapshot,
+    LegacyPolicyFixture, TestResult, fact, install_successor, native_state, owner_from, reply,
+    snapshot,
 };
 use crate::app_session::window_registry::OriginalLoadAdmission;
 use keld_ipc::codec::decode;
@@ -15,7 +16,11 @@ use keld_wv::{
 };
 use std::num::NonZeroU64;
 
-fn capture(fixture: &Fixture, window: WindowRef, corr: u32) -> TestResult<NativeNavigationContext> {
+fn capture(
+    fixture: &LegacyPolicyFixture,
+    window: WindowRef,
+    corr: u32,
+) -> TestResult<NativeNavigationContext> {
     let owner = owner_from(fixture)?;
     let mut session = fixture
         .handle
@@ -41,7 +46,7 @@ fn capture(fixture: &Fixture, window: WindowRef, corr: u32) -> TestResult<Native
 #[test]
 fn missing_original_source_and_oversize_preflight_are_correlated_nonfatal_without_native_work()
 -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let window = fixture.build(1, 700)?;
@@ -74,7 +79,7 @@ fn missing_original_source_and_oversize_preflight_are_correlated_nonfatal_withou
 #[test]
 fn captured_native_preflight_refusal_settles_only_its_original_call_and_preserves_writer()
 -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let window = fixture.build(1, 700)?;
@@ -85,7 +90,7 @@ fn captured_native_preflight_refusal_settles_only_its_original_call_and_preserve
     );
     fixture
         .handle
-        .window_native_event(AppWindowEvent::MacOriginalNavigation {
+        .window_native_event_legacy_policy(AppWindowEvent::MacOriginalNavigation {
             context: foreign,
             fact: MacOriginalNavigationFact::Refused {
                 error: NativeNavigationRefusal::UnknownView,
@@ -93,7 +98,7 @@ fn captured_native_preflight_refusal_settles_only_its_original_call_and_preserve
         })?;
     fixture
         .handle
-        .window_native_event(AppWindowEvent::MacOriginalNavigation {
+        .window_native_event_legacy_policy(AppWindowEvent::MacOriginalNavigation {
             context,
             fact: MacOriginalNavigationFact::Refused {
                 error: NativeNavigationRefusal::MissingSource,
@@ -117,14 +122,14 @@ fn captured_native_preflight_refusal_settles_only_its_original_call_and_preserve
 
 #[test]
 fn queued_old_context_cannot_reply_to_successor_reusing_numeric_app_correlation() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let window = fixture.build(1, 700)?;
     let old = capture(&fixture, window, 20)?;
     fixture.retire_reader(1)?;
     install_successor(&mut fixture)?;
-    fixture.handle.subscribe_window(
+    fixture.handle.subscribe_window_legacy_policy(
         &fixture.caller()?,
         CorrelationId(11),
         keld_ipc::channel_table::WINDOW.wire_id(),
@@ -147,7 +152,7 @@ fn queued_old_context_cannot_reply_to_successor_reusing_numeric_app_correlation(
     assert_ne!(old.operation(), current.operation());
     fixture
         .handle
-        .window_native_event(AppWindowEvent::MacOriginalNavigation {
+        .window_native_event_legacy_policy(AppWindowEvent::MacOriginalNavigation {
             context: old,
             fact: MacOriginalNavigationFact::Refused {
                 error: NativeNavigationRefusal::InvalidQuery,
@@ -155,7 +160,7 @@ fn queued_old_context_cannot_reply_to_successor_reusing_numeric_app_correlation(
         })?;
     fixture
         .handle
-        .window_native_event(AppWindowEvent::MacOriginalNavigation {
+        .window_native_event_legacy_policy(AppWindowEvent::MacOriginalNavigation {
             context: current,
             fact: MacOriginalNavigationFact::Refused {
                 error: NativeNavigationRefusal::MissingSource,

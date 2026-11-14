@@ -88,6 +88,16 @@ const qualifiedMacDevFacts = {
   locale: "en-US",
 };
 
+const qualifiedWindowsDevFacts = {
+  schema: 3,
+  kind: "development",
+  name: "gh1184-windows-s1",
+  root: "\\\\?\\D:\\qualified-native-stage",
+  version: "31.7.0",
+  paths: {},
+  locale: "en-US",
+};
+
 test("GH481 real Electron source fails closed without the test-owned API export mapping", () => {
   const fixture = sourceFixture(false);
   try {
@@ -117,6 +127,12 @@ test("GH481 real Electron source fails closed without the test-owned API export 
 for (const mode of [
   "other-facade",
   "other-renderer",
+  "windows-facts",
+  "windows-no-mirror",
+  "windows-desktop-valid",
+  "windows-desktop-missing",
+  "windows-desktop-invalidated",
+  "windows-desktop-no-mirror",
   "mac-valid",
   "mac-missing",
   "mac-no-mirror",
@@ -125,19 +141,24 @@ for (const mode of [
   test(`GH481 S1 platform/Ready/zero-effect ${mode}`, () => {
     const fixture = sourceFixture(true);
     try {
-      // Existing Guardian defines these two literals before the app entry.
-      // Only the macOS dev-host test carries its existing Host launch-facts
-      // record; Windows/Linux Host paths never mint this record. This test
-      // models the platform seam but cannot claim a real Windows/Linux run.
-      const payload = mode.startsWith("mac-")
-        ? JSON.stringify(qualifiedMacDevFacts)
-        : "undefined";
+      // Use the same immutable target and canonical schema3 decoder as Host.
+      // Facts alone do not select Windows desktop S1. The added modes carry
+      // its separate immutable Host capability; the old nine oracles remain.
+      // This process-level contract does not prove physical desktop capture.
+      const windows = mode.startsWith("windows-");
+      const payload = windows
+        ? JSON.stringify(qualifiedWindowsDevFacts)
+        : mode.startsWith("mac-")
+          ? JSON.stringify(qualifiedMacDevFacts)
+          : "undefined";
       const child = Bun.spawnSync({
         cmd: [
           process.execPath,
           "--no-install",
           "--no-env-file",
           `--define=process.env.KELD_NATIVE_WINDOW_FACADE:"${mode === "other-renderer" ? "0" : "1"}"`,
+          `--define=__KELD_WINDOWS_HOST__:${windows}`,
+          `--define=__KELD_WINDOWS_DESKTOP_SNAPSHOT__:${mode.startsWith("windows-desktop-")}`,
           `--define=__KELD_HOST_LAUNCH_FACTS__:${payload}`,
           `--preload=${transport}`,
           role,

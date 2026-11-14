@@ -1,5 +1,5 @@
 //! Failed socket/command owners retain teardown and correlation custody.
-use super::{Fixture, TestResult, fact, install_successor, reply, verdict};
+use super::{LegacyPolicyFixture, TestResult, fact, install_successor, reply, verdict};
 use keld_ipc::codec::{decode, encode};
 use keld_ipc::link::{AppLinkDeadlines as _, read_frame};
 use keld_ipc::window::{CloseVerdict, WindowEvent, WindowRequest, WindowResponse};
@@ -7,7 +7,7 @@ use keld_ipc::{CorrelationId, FrameKind};
 use keld_wv::{AppWindowCommand, AppWindowEvent, WebviewId};
 use std::time::Duration;
 
-fn shutdown_host_writer(fixture: &Fixture) -> TestResult {
+fn shutdown_host_writer(fixture: &LegacyPolicyFixture) -> TestResult {
     // Inject the fault at the owned writer, keeping registry/caller admission
     // live. Peer shutdown alone does not establish a failed host-write premise.
     let current = fixture
@@ -25,7 +25,7 @@ fn shutdown_host_writer(fixture: &Fixture) -> TestResult {
 
 #[test]
 fn destroy_correlation_reuse_retires_the_link_before_a_second_effect() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let window = fixture.build(1, 7)?;
@@ -47,7 +47,7 @@ fn destroy_correlation_reuse_retires_the_link_before_a_second_effect() -> TestRe
     fixture.subscribe()?;
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowReleased { view: WebviewId(7) })?;
+        .window_native_event_legacy_policy(AppWindowEvent::WindowReleased { view: WebviewId(7) })?;
     // A new admitted request fences the writer after the old Released input.
     fixture.call(&WindowRequest::RequestClose { window }, 3)?;
     fixture.error(3, "KELD-CORE-038")?;
@@ -57,7 +57,7 @@ fn destroy_correlation_reuse_retires_the_link_before_a_second_effect() -> TestRe
 
 #[test]
 fn teardown_enqueue_failure_remains_an_error_after_the_real_allow_reply() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let window = fixture.build(1, 7)?;
@@ -78,7 +78,7 @@ fn teardown_enqueue_failure_remains_an_error_after_the_real_allow_reply() -> Tes
     drop(fixture.commands);
     let failure = fixture
         .handle
-        .dispatch_window(
+        .dispatch_window_legacy_policy(
             &caller,
             CorrelationId(3),
             &encode(&WindowRequest::CloseReply {
@@ -107,7 +107,7 @@ fn teardown_enqueue_failure_remains_an_error_after_the_real_allow_reply() -> Tes
 
 #[test]
 fn failed_allow_acknowledgement_still_queues_the_committed_teardown() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let window = fixture.build(1, 7)?;
@@ -140,7 +140,7 @@ fn failed_allow_acknowledgement_still_queues_the_committed_teardown() -> TestRes
     assert!(fixture.commands.try_recv().is_err());
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowReleased { view: WebviewId(7) })?;
+        .window_native_event_legacy_policy(AppWindowEvent::WindowReleased { view: WebviewId(7) })?;
     assert!(
         fixture
             .handle
@@ -154,7 +154,7 @@ fn failed_allow_acknowledgement_still_queues_the_committed_teardown() -> TestRes
 
 #[test]
 fn failed_allow_acknowledgement_and_enqueue_preserve_both_independent_faults() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let window = fixture.build(1, 7)?;
@@ -176,7 +176,7 @@ fn failed_allow_acknowledgement_and_enqueue_preserve_both_independent_faults() -
     drop(fixture.commands);
     let failure = fixture
         .handle
-        .dispatch_window(
+        .dispatch_window_legacy_policy(
             &caller,
             CorrelationId(3),
             &encode(&WindowRequest::CloseReply {

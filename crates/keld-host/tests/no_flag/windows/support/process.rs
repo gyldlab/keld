@@ -129,6 +129,50 @@ pub(crate) fn wait_for_process_signal(process: &OwnedHandle, timeout_ms: u32) ->
     unsafe { WaitForSingleObject(process.as_raw_handle().cast(), timeout_ms) }
 }
 
+/// Reads the actual exit code only after this exact retained process has signaled.
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+pub(crate) fn retained_process_exit_code(process: &OwnedHandle) -> u32 {
+    assert_eq!(
+        wait_for_process_signal(process, 0),
+        WAIT_OBJECT_0,
+        "exit-code observation requires the same actual process retirement"
+    );
+    let mut code = 0_u32;
+    // SAFETY: the signaled process HANDLE is retained by the caller with query
+    // rights, and the live u32 output is borrowed only for this synchronous call.
+    // The query neither closes/transfers the HANDLE nor affects any process.
+    assert_ne!(
+        unsafe {
+            windows_sys::Win32::System::Threading::GetExitCodeProcess(
+                process.as_raw_handle().cast(),
+                &raw mut code,
+            )
+        },
+        0,
+        "actual retained process exit-code query: {}",
+        std::io::Error::last_os_error()
+    );
+    code
+}
+
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+#[test]
+fn retained_exit_code_preserves_actual_nonzero_process_status() {
+    let system =
+        std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("Windows system root"));
+    let mut child = Command::new(system.join("System32").join("cmd.exe"))
+        .args(["/D", "/C", "exit", "23"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("owned fixed nonzero-exit child");
+    let handle = open_process_for_wait(child.id(), false);
+    let status = wait_child(&mut child, Instant::now() + crate::PRODUCT_DEADLINE);
+    assert_eq!(status.code(), Some(23), "independent Child status");
+    assert_eq!(retained_process_exit_code(&handle), 23);
+}
+
 /// Waits for `child` to exit until the kill switch `deadline`. At expiry the panic
 /// carries [`process_tree_report`], taken while the host and its browser still live
 /// (the caller's cleanup terminates them afterwards), so a stall can be classified.
