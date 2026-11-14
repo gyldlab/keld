@@ -186,7 +186,7 @@ if [[ -L "$mermaid_docs" ]]; then
   echo 'KELD-DOCS006: Mermaid parser executable must not be a symlink. Restore the generated local tool, then rerun.' >&2
   exit 1
 fi
-if [[ ! -x "$mermaid_docs" || "$workspace/tools/mermaid_docs.rs" -nt "$mermaid_docs" ]]; then
+if [[ ! -x "$mermaid_docs" || "$workspace/tools/mermaid_docs.rs" -nt "$mermaid_docs" || "$workspace/tools/markdown_paths.rs" -nt "$mermaid_docs" ]]; then
   command -v rustc >/dev/null 2>&1 || {
     echo 'KELD-DOCS006: `rustc` is required to build the Mermaid source manifest. Install the pinned Rust toolchain, then rerun.' >&2
     exit 1
