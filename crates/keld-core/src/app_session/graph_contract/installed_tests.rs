@@ -551,6 +551,9 @@ fn core_prepares_windows_source_and_selected_preload_from_the_same_graph_owner()
         String::from("fixture"),
         String::from("1"),
     )]));
+    // Encode the test-owned Windows file root, not the already-escaped query.
+    // A literal % or space in the runner TEMP directory is path data, never
+    // a URI escape or authorization to choose another entry.
     let uri = format!(
         "file:///{}/client/assets/nested/editor.html?queryObj=%257b",
         fixture
@@ -558,6 +561,9 @@ fn core_prepares_windows_source_and_selected_preload_from_the_same_graph_owner()
             .to_str()
             .expect("fixture UTF8")
             .replace('\\', "/")
+            .replace('%', "%25")
+            .replace(' ', "%20")
+            .replace('#', "%23")
     );
     assert_eq!(
         selection
