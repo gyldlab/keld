@@ -26,7 +26,10 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-const PERMISSIONS_BYTES: &[u8] = b"{}\n";
+pub(crate) const PERMISSIONS_BYTES: &[u8] = b"{}\n";
+/// Explicit, non-authoritative KEL-96 compiled bundle staging marker.
+#[cfg(windows)]
+pub(crate) const COMPILED_KEL96_MARKER_LINE: &str = "keld96CompiledBundle: \"v1\",";
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const PERMISSIONS_FILE: &str = "keld.permissions.jsonc";
 /// Hello/`keld create` embeds the canonical TypeScript transport beside the
@@ -1224,15 +1227,35 @@ where
             return Err(BootCompileError::new("kipc transport", source.to_string()));
         }
     }
-    // A locally built compiled JS entry imports this exact generated transport
-    // beside itself. The ordinary KEL-96 stage still owns the path/owner checks.
-    // Do not treat this dev-lease copy as KEL-53 installed provenance.
+    // An ordinary project may independently choose code/main.js without an
+    // imported generated transport. Only an explicitly emitted KEL-96 bundle
+    // requires the compiled sidecar. Its absence must fail before Host spawn.
     #[cfg(windows)]
     if entry == "code/main.js" {
         let relative = "code/kipc-transport.js";
-        let source = contained_source(&project_root, relative, "compiled kipc transport")?;
-        owner_check(&source)?;
-        stage_project_file(&root, relative, &source, "compiled kipc transport")?;
+        let required = config
+            .lines()
+            .any(|line| line.trim() == COMPILED_KEL96_MARKER_LINE);
+        match fs::metadata(project_root.join("code").join("kipc-transport.js")) {
+            Ok(metadata) if metadata.is_file() => {
+                let source = contained_source(&project_root, relative, "compiled kipc transport")?;
+                owner_check(&source)?;
+                stage_project_file(&root, relative, &source, "compiled kipc transport")?;
+            }
+            Ok(_) => {
+                return Err(BootCompileError::new(
+                    "compiled kipc transport",
+                    "target is not a regular file",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound && !required => {}
+            Err(error) => {
+                return Err(BootCompileError::new(
+                    "compiled kipc transport",
+                    error.to_string(),
+                ));
+            }
+        }
     }
     write_new_file(
         &root.join(PERMISSIONS_FILE),
@@ -1375,6 +1398,35 @@ fn prepare_windows_launch_parents(
 #[cfg(windows)]
 fn open_windows_launch_guard(path: &Path) -> Result<File, BootCompileError> {
     open_windows_directory_guard(path, FILE_SHARE_READ | FILE_SHARE_WRITE)
+}
+
+/// Pin every ancestor of an application bundle before opening its signed
+/// CLI by pathname; retain the non-delete-sharing guards through child exit.
+/// Opening from volume root downwards also refuses junction/reparse aliases.
+///
+/// # Errors
+/// Refuses non-local-disk or redirected ancestors and unavailable guard handles.
+#[cfg(windows)]
+pub fn pin_windows_launch_ancestors(path: &Path) -> Result<Vec<File>, BootCompileError> {
+    use std::path::{Component, Prefix};
+
+    let mut components = path.components();
+    if !path.is_absolute()
+        || !matches!(components.next(), Some(Component::Prefix(prefix))
+            if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)))
+        || components
+            .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
+    {
+        return Err(BootCompileError::new(
+            "launch namespace",
+            "developer bundle requires a local absolute disk path without traversal",
+        ));
+    }
+    let mut guards = Vec::new();
+    for ancestor in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
+        guards.push(open_windows_launch_guard(ancestor)?);
+    }
+    Ok(guards)
 }
 
 /// Retains an authoring ancestor without granting concurrent write/delete opens.

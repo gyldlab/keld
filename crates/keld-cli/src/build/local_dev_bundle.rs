@@ -106,6 +106,22 @@ fn required_json<'a>(members: &'a [Member], name: &str) -> Result<&'a [u8], Buil
         )),
     }
 }
+/// Windows KEL-96 writes the literal fixed policy bytes into its dev stage.
+/// No explicit grant, offline CSP, comment or alternate byte encoding may be
+/// silently reinterpreted as that policy. Enforce exact byte replay before the
+/// named launcher or bundled CLI is signed.
+fn require_replayable_permissions(members: &[Member]) -> Result<(), BuildError> {
+    let permissions = required_json(members, "keld.permissions.jsonc")?;
+    let text = std::str::from_utf8(permissions).map_err(refuse)?;
+    keld_guard::parse_manifest(text).map_err(refuse)?;
+    if permissions != boot::PERMISSIONS_BYTES {
+        return Err(refuse(
+            "Windows KEL-96 dev stage cannot replay source permission policy bytes; only the exact empty undeclared policy is supported",
+        ));
+    }
+    Ok(())
+}
+
 fn quoted(value: &str) -> Result<String, BuildError> {
     serde_json::to_string(value).map_err(refuse)
 }
@@ -133,6 +149,7 @@ fn bundle_recipe(pair: &PreparedLocalPair, members: &[Member]) -> Result<Vec<u8>
     let descriptor: serde_json::Value =
         serde_json::from_slice(required_json(members, "keld.boot.json")?).map_err(refuse)?;
     require_replayable_boot_descriptor(&descriptor, &pair.authoring.app.name)?;
+    require_replayable_permissions(members)?;
     let entry = descriptor
         .get("entry")
         .and_then(|value| value.as_str())
@@ -184,6 +201,11 @@ fn render_config(
         config.push_str(&serde_json::to_string(auth).map_err(refuse)?);
         config.push_str(",\n");
     }
+    // This marker controls only sidecar staging. It never grants installed
+    // trust, permissions or an alternate Host boot path.
+    config.push_str("  ");
+    config.push_str(boot::COMPILED_KEL96_MARKER_LINE);
+    config.push('\n');
     config.push_str("} as const;\n");
     if keld_core::entry_from_config_ts(&config).as_deref() != Some(entry)
         || keld_core::renderer_from_config_ts(&config).as_deref() != Some(renderer)
@@ -207,31 +229,8 @@ fn render_config(
     }
     Ok(config.into_bytes())
 }
-/// Choose one Windows leaf for a locally signed application entrypoint; a
-/// developer-controlled title must never become a path, device name or CLI.
-fn launcher_name(name: &str) -> Result<String, BuildError> {
-    if name.is_empty()
-        || name.len() > 80
-        || name.ends_with([' ', '.'])
-        || !name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b' ' | b'-' | b'_' | b'.'))
-    {
-        return Err(refuse("app name is not a safe Windows executable leaf"));
-    }
-    let first = name.split('.').next().unwrap_or_default();
-    let upper = first.trim_end().to_ascii_uppercase();
-    if matches!(
-        upper.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL" | "KELD" | "BUN" | "KELD-HOST"
-    ) || (upper.len() == 4
-        && (upper.starts_with("COM") || upper.starts_with("LPT"))
-        && matches!(upper.as_bytes()[3], b'1'..=b'9'))
-    {
-        return Err(refuse("reserved Windows device or KELD executable name"));
-    }
-    Ok(format!("{name}.exe"))
-}
+// Developer launcher name validation belongs to the input admission owner in
+// windows_inputs and runs before Host compilation or signing.
 const LAUNCH: &[u8] = b"@echo off\r\nsetlocal EnableExtensions DisableDelayedExpansion\r\nset \"PATH=%~dp0;%PATH%\"\r\ncd /d \"%~dp0project\"\r\n\"%~dp0keld.exe\" dev\r\nexit /b %errorlevel%\r\n";
 
 /// Creates one fresh, self-contained LOCAL developer runner using already emitted,
@@ -243,6 +242,7 @@ const LAUNCH: &[u8] = b"@echo off\r\nsetlocal EnableExtensions DisableDelayedExp
 /// Refuses any missing compiled bundle member, path/size/digest discrepancy or
 /// output collision. A failure leaves the partial unique output for diagnosis.
 pub(super) fn emit(pair: &PreparedLocalPair, members: &[Member]) -> Result<PathBuf, BuildError> {
+    let exe_name = windows_inputs::developer_launcher_name(&pair.authoring.app.name)?;
     let config = bundle_recipe(pair, members)?;
     let root = pair.session.join("developer-runnable-bundle");
     boot::create_windows_stage_root(&root).map_err(refuse)?;
@@ -299,7 +299,7 @@ pub(super) fn emit(pair: &PreparedLocalPair, members: &[Member]) -> Result<PathB
     write_bytes(&root.join("Run.cmd"), LAUNCH)?;
     // The application-named executable uses only the normal KEL-96 dev lease.
     // Neither EXE is an installed KEL-53 principal or Store release authority.
-    let launcher = root.join(launcher_name(&pair.authoring.app.name)?);
+    let launcher = root.join(exe_name);
     copy_file(
         &launcher,
         &cli_file.file,
@@ -358,9 +358,12 @@ mod tests {
     }
     #[test]
     fn app_exe_name_accepts_draw_io_and_refuses_win32_aliases() {
-        assert_eq!(launcher_name("draw.io").unwrap(), "draw.io.exe");
         assert_eq!(
-            launcher_name("windows-runnable-hello").unwrap(),
+            windows_inputs::developer_launcher_name("draw.io").unwrap(),
+            "draw.io.exe"
+        );
+        assert_eq!(
+            windows_inputs::developer_launcher_name("windows-runnable-hello").unwrap(),
             "windows-runnable-hello.exe"
         );
         for name in [
@@ -381,7 +384,10 @@ mod tests {
             "executable<bad>",
             "literal*wildcard",
         ] {
-            assert!(launcher_name(name).is_err(), "accepted {name:?}");
+            assert!(
+                windows_inputs::developer_launcher_name(name).is_err(),
+                "accepted {name:?}"
+            );
         }
     }
     #[test]
@@ -453,5 +459,58 @@ mod tests {
         assert!(!text.contains("keld-host.exe\""));
         assert!(text.contains("cd /d \"%~dp0project\""));
         assert!(!text.contains("--keld-install-initial"));
+    }
+    #[test]
+    fn admitted_permissions_must_match_the_actual_windows_dev_stage_bytes() {
+        fn member(bytes: &[u8]) -> Vec<Member> {
+            vec![Member {
+                name: "keld.permissions.jsonc".into(),
+                content: Some(Content::Generated(bytes.to_vec())),
+            }]
+        }
+        assert!(require_replayable_permissions(&member(boot::PERMISSIONS_BYTES)).is_ok());
+        for source in [
+            br"{}" as &[u8],
+            br#"{ "app": { "fs": { "read": ["/home"] } } }"#,
+            br#"{ "windows": { "primary": { "web": { "csp": "default-src 'self'" } } } }"#,
+            br#"{ "profile": null }"#,
+            b"// benign comment\n{}\n",
+        ] {
+            assert!(
+                require_replayable_permissions(&member(source)).is_err(),
+                "incorrectly accepted non-identical staged permissions"
+            );
+        }
+    }
+    #[test]
+    fn generated_marker_is_present_and_not_an_installed_admission_claim() {
+        let output = render_config(
+            "com.example.keld.runnablehello",
+            "1.0.0",
+            "windows-runnable-hello",
+            "code/main.js",
+            "renderer/index.html",
+            None,
+        )
+        .unwrap();
+        let config = std::str::from_utf8(&output).unwrap();
+        assert!(
+            config
+                .lines()
+                .any(|line| line.trim() == boot::COMPILED_KEL96_MARKER_LINE)
+        );
+        assert!(!config.contains("windows-initial-install"));
+        assert!(!config.contains("Strict"));
+    }
+    #[test]
+    fn bundle_parent_handles_refuse_rename_until_child_launch_is_retired() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundle = temp.path().join("signed-bundle");
+        std::fs::create_dir(&bundle).unwrap();
+        let guards = boot::pin_windows_launch_ancestors(&bundle).unwrap();
+        let moved = temp.path().join("replaced-bundle");
+        assert!(std::fs::rename(&bundle, &moved).is_err());
+        drop(guards);
+        std::fs::rename(&bundle, &moved).unwrap();
     }
 }

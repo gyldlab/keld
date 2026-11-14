@@ -9,6 +9,7 @@ use std::path::Path;
 use std::process;
 use std::sync::mpsc;
 
+use keld_cli::boot;
 use keld_cli::build::run_build;
 use keld_cli::create::{CreateError, create_project};
 use keld_cli::dev::{find_project_root, run_dev};
@@ -146,6 +147,11 @@ fn run_named_developer_entry(args: &[String]) -> Option<Result<(), String>> {
         let parent = executable
             .parent()
             .ok_or("KELD-CLI-048: application root absent")?;
+        // The signed CLI is later launched by path. Keep all ancestors of
+        // that path pinned without FILE_SHARE_DELETE until its process exits:
+        // a verified leaf alone cannot prevent hostile parent replacement.
+        let _launch_guards = boot::pin_windows_launch_ancestors(parent)
+            .map_err(|e| format!("KELD-CLI-048: bundled launch namespace refused: {e}"))?;
         let project = parent.join("project");
         let config = std::fs::read_to_string(project.join("keld.config.ts"))
             .map_err(|e| format!("KELD-CLI-032: missing application configuration: {e}"))?;
