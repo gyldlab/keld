@@ -513,11 +513,11 @@ expect_exact_output "reader-doc PR doctests its reader" doctest_packages keld-cl
 # repository below, whose packages have no library target.)
 host_source="$(result_for_paths crates/keld-host/src/main.rs)"
 expect_exact_output "keld-host source selects exact observer dependency closure" packages \
-    "keld-cli keld-compat keld-core keld-host keld-runtime keld-update keld-updater-helper" "$host_source"
+    "keld-cli keld-compat keld-core keld-host keld-runtime keld-update keld-updater-helper keld-wv" "$host_source"
 expect_exact_output "keld-host source runs exact observer dependency closure on Ubuntu" ubuntu_packages \
-    "keld-cli keld-compat keld-core keld-host keld-runtime keld-update keld-updater-helper" "$host_source"
+    "keld-cli keld-compat keld-core keld-host keld-runtime keld-update keld-updater-helper keld-wv" "$host_source"
 expect_exact_output "keld-host source doctests exact selected library packages" doctest_packages \
-    "keld-cli keld-compat keld-core keld-runtime keld-update" "$host_source"
+    "keld-cli keld-compat keld-core keld-runtime keld-update keld-wv" "$host_source"
 expect_exact_output "docs-only PR skips the doctest lane" doctest false "$docs_only_pr"
 expect_empty_output "docs-only PR doctests nothing" doctest_packages "$docs_only_pr"
 # Fallbacks doctest every library package.
