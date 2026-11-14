@@ -688,6 +688,101 @@ fn atomic_package_constructor_preserves_qualified_bun_hello() {
     }
 }
 
+// Exercises the PUBLIC IPC constructor, not only its private SID parser.
+// Invalid SIDs must be rejected before the native named-pipe owner exists.
+#[test]
+fn atomic_public_constructor_refuses_invalid_package_sid_and_accepts_real_profile() {
+    for invalid in [
+        "",
+        "WD",
+        "S-1-5-18",
+        "S-1-15-2-1",
+        "S-1-15-3-1-2-3-4-5-6-7",
+        "S-1-15-2-1-2-3-4-5-6-7-8",
+        "S-1-15-2-01-2-3-4-5-6-7",
+        "S-1-15-2-1-2-3-4-5-6-4294967296",
+        "S-1-15-2-1-2-3-4-5-6-7\0",
+    ] {
+        let Err(error) = WindowsNamedPipeBootstrapListener::bind_windows_lpac(invalid) else {
+            panic!("public atomic LPAC constructor accepted invalid SID {invalid:?}");
+        };
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::InvalidInput,
+            "{invalid:?}: {error}"
+        );
+    }
+
+    let root = tempfile::tempdir().expect("owned native profile fixture");
+    let name = format!(
+        "keld210-public-{}",
+        root.path()
+            .file_name()
+            .expect("unique profile name")
+            .to_string_lossy()
+    );
+    let profile = WindowsLpacProfile::create(OsStr::new(&name))
+        .expect("fresh real zero-capability package profile");
+    let sid = profile.sid_string().expect("actual native package SID");
+    let listener = WindowsNamedPipeBootstrapListener::bind_windows_lpac(&sid)
+        .expect("valid native package SID must create an atomic listener");
+    assert!(
+        listener.endpoint().starts_with(r"\\.\pipe\keld-"),
+        "valid listener must own a canonical Keld endpoint"
+    );
+    drop(listener);
+    drop(profile);
+    root.close().expect("native profile fixture cleanup");
+}
+
+fn attempt_second_native_first_pipe_instance(endpoint: &str) -> std::io::Result<OwnedHandle> {
+    use windows_sys::Win32::System::Pipes::{PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT};
+
+    let wide: Vec<u16> = endpoint.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: wide is live NUL-terminated UTF-16. The OS supplies its default
+    // SECURITY_ATTRIBUTES for this deliberately independent competing server.
+    // The returned non-invalid handle is transferred into OwnedHandle once.
+    let raw = unsafe {
+        CreateNamedPipeW(
+            wide.as_ptr(),
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            1,
+            4096,
+            4096,
+            0,
+            std::ptr::null(),
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: CreateNamedPipeW succeeded and returned one new handle.
+    Ok(unsafe { OwnedHandle::from_raw_handle(raw.cast()) })
+}
+
+#[test]
+fn atomic_lpac_first_instance_excludes_second_native_server_and_reuses_after_drop() {
+    let package = "S-1-15-2-1-2-3-4-5-6-7";
+    for _ in 0..2 {
+        let listener = WindowsNamedPipeBootstrapListener::bind_windows_lpac(package)
+            .expect("first native LPAC server must bind");
+        let endpoint = listener.endpoint().to_owned();
+        let error = attempt_second_native_first_pipe_instance(&endpoint)
+            .expect_err("second native CreateNamedPipeW with first-instance flag must refuse");
+        assert_eq!(
+            error.raw_os_error(),
+            Some(5),
+            "live LPAC endpoint must return ERROR_ACCESS_DENIED: {error}"
+        );
+
+        drop(listener);
+        let reused = attempt_second_native_first_pipe_instance(&endpoint)
+            .expect("first-instance name must be reusable after the owner closes");
+        drop(reused);
+    }
+}
+
 #[test]
 fn atomic_package_constructor_denies_wrong_profile_before_hello() {
     for _ in 0..2 {
