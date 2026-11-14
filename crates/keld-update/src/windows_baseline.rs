@@ -258,43 +258,120 @@ impl ActivePackageSelection {
         }
         let mut file = open_pinned_leaf(&self.tree, "bun.exe")
             .map_err(|cause| error("bundled Bun open", cause))?;
-        let metadata = file
-            .metadata()
-            .map_err(|cause| error("bundled Bun metadata", cause))?;
-        ensure_regular(&metadata).map_err(|cause| error("bundled Bun type", cause))?;
-        if metadata.len() == 0 || metadata.len() > 1024 * 1024 * 1024 {
-            return Err(error(
-                "bundled Bun size",
-                "runtime is empty or exceeds 1 GiB",
-            ));
-        }
-        let mut digest = blake3::Hasher::new();
-        let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
-        let mut total = 0_u64;
-        loop {
-            let count = file
-                .read(&mut buffer)
-                .map_err(|cause| error("bundled Bun read", cause))?;
-            if count == 0 {
-                break;
-            }
-            total = total
-                .checked_add(count as u64)
-                .ok_or_else(|| error("bundled Bun size", "size overflow"))?;
-            if total > metadata.len() {
-                return Err(error("bundled Bun identity", "runtime grew during hashing"));
-            }
-            digest.update(&buffer[..count]);
-        }
-        let actual: [u8; 32] = *digest.finalize().as_bytes();
-        if total != metadata.len() || actual != expected_blake3 {
-            return Err(error(
-                "bundled Bun identity",
-                "runtime differs from the independently compiled expected image",
-            ));
-        }
+        verify_bundled_bun_image(&mut file, &expected_blake3)?;
         self.bundled_bun = Some(file);
         Ok(self.tree_root.join("bun.exe"))
+    }
+}
+
+/// Verifies the exact retained read-only image, never an independently
+/// reopened path. The caller must hold all installed-version ancestry pins.
+/// Hash authentication never substitutes for protected-root admission.
+fn supported_bun_size(bytes: u64) -> bool {
+    (1..=1024 * 1024 * 1024).contains(&bytes)
+}
+
+fn verify_bundled_bun_image(
+    file: &mut File,
+    expected_blake3: &[u8; 32],
+) -> Result<(), UpdateError> {
+    let metadata = file
+        .metadata()
+        .map_err(|cause| error("bundled Bun metadata", cause))?;
+    ensure_regular(&metadata).map_err(|cause| error("bundled Bun type", cause))?;
+    if !supported_bun_size(metadata.len()) {
+        return Err(error(
+            "bundled Bun size",
+            "runtime is empty or exceeds 1 GiB",
+        ));
+    }
+    let mut digest = blake3::Hasher::new();
+    let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
+    let mut total = 0_u64;
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|cause| error("bundled Bun read", cause))?;
+        if count == 0 {
+            break;
+        }
+        total = total
+            .checked_add(count as u64)
+            .ok_or_else(|| error("bundled Bun size", "size overflow"))?;
+        if total > metadata.len() {
+            return Err(error("bundled Bun identity", "runtime grew during hashing"));
+        }
+        digest.update(&buffer[..count]);
+    }
+    let actual: [u8; 32] = *digest.finalize().as_bytes();
+    if total != metadata.len() || actual != *expected_blake3 {
+        return Err(error(
+            "bundled Bun identity",
+            "runtime differs from the independently compiled expected image",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod installed_bun_image_tests {
+    use super::{supported_bun_size, verify_bundled_bun_image};
+    use std::fs::{self, File};
+    use std::io::Write as _;
+
+    #[test]
+    fn exact_bun_bytes_pass_but_modified_digest_and_file_refuse() {
+        let workspace = tempfile::tempdir().expect("test root");
+        let path = workspace.path().join("bun.exe");
+        let mut writer = File::create(&path).expect("fixture");
+        writer
+            .write_all(b"original bundled runtime fixture")
+            .unwrap();
+        writer.sync_all().unwrap();
+        drop(writer);
+        let expected = *blake3::hash(b"original bundled runtime fixture").as_bytes();
+        verify_bundled_bun_image(
+            &mut cap_std::fs::File::from_std(File::open(&path).unwrap()),
+            &expected,
+        )
+        .expect("exact image bytes");
+        let mut wrong = expected;
+        wrong[0] ^= 1;
+        assert!(
+            verify_bundled_bun_image(
+                &mut cap_std::fs::File::from_std(File::open(&path).unwrap()),
+                &wrong
+            )
+            .is_err()
+        );
+        fs::write(&path, b"changed bundled runtime fixture").unwrap();
+        assert!(
+            verify_bundled_bun_image(
+                &mut cap_std::fs::File::from_std(File::open(&path).unwrap()),
+                &expected
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn empty_or_oversized_bun_refuses_before_hashing() {
+        let workspace = tempfile::tempdir().expect("test root");
+        let path = workspace.path().join("bun.exe");
+        File::create(&path).unwrap();
+        assert!(
+            verify_bundled_bun_image(
+                &mut cap_std::fs::File::from_std(File::open(&path).unwrap()),
+                &[0; 32]
+            )
+            .is_err()
+        );
+        // Avoid allocating a 1 GiB fixture on the shared Windows test machine.
+        // This checks exactly the same production size predicate before hashing.
+        assert!(!supported_bun_size(0));
+        assert!(supported_bun_size(1));
+        assert!(supported_bun_size(1024 * 1024 * 1024));
+        assert!(!supported_bun_size(1024 * 1024 * 1024 + 1));
     }
 }
 
