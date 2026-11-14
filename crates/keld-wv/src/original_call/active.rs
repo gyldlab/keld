@@ -64,6 +64,11 @@ impl ActiveOriginalCall {
     pub(crate) fn channel(&self) -> Option<&str> {
         self.channel.as_deref()
     }
+    /// Retain the ingress role that Core admitted; never use a successor role.
+    #[cfg(windows)]
+    pub(crate) fn role_witness(&self) -> Option<&RendererRoleWitness> {
+        self.role_witness.as_ref()
+    }
     pub(crate) const fn local_bytes(&self) -> usize {
         self.local_bytes
     }
