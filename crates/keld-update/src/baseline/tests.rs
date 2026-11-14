@@ -140,6 +140,33 @@ fn baseline_validates_nonselected_releases_before_selection() {
 }
 
 #[test]
+fn signed_nonselected_release_cannot_hide_unknown_full_authority() {
+    let (verifier, original, _) = fixture("1.0.0", b"baseline");
+    let baseline = verifier
+        .verify_manifest(&original, &sign(&original))
+        .expect("unchanged signed baseline");
+    assert_eq!(baseline.identity().version, "1.0.0");
+
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&original).expect("fixture manifest");
+    let mut nonselected = manifest["releases"][0].clone();
+    nonselected["version"] = "9.0.0".into();
+    nonselected["full"]["qualificationAuthority"] = "unreviewed".into();
+    manifest["releases"]
+        .as_array_mut()
+        .expect("releases array")
+        .push(nonselected);
+    let bytes = serde_json::to_vec(&manifest).expect("signed input bytes");
+
+    // All releases must validate before selecting one. Unknown signed fields
+    // must never become an implicit installed or qualification authority.
+    assert!(matches!(
+        verifier.verify_manifest(&bytes, &sign(&bytes)),
+        Err(UpdateError::ManifestInvalid { .. })
+    ));
+}
+
+#[test]
 fn baseline_full_verifier_enforces_signed_compressed_and_content_domains() {
     let (verifier, manifest, compressed) = fixture("1.0.0", b"baseline content");
     let selected = verifier
