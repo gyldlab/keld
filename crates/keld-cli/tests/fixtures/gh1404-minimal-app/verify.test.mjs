@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   closeSync,
   cpSync,
   existsSync,
@@ -23,6 +24,16 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(fileURLToPath(import.meta.url));
+// Pack rejects POSIX setuid/setgid entries before copying, even if their
+// names, ordinary file/directory kinds and byte digests are unchanged.
+// Apply the same no-exception predicate to captured roots and every member.
+function assertPackCaptureMode(metadata, relative) {
+  assert.equal(
+    metadata.mode & 0o6000,
+    0,
+    "unreviewed captured set-ID mode: " + relative,
+  );
+}
 // Pack opens capture inputs without following links. Refuse physical root
 // substitutions before any source reads, even if the linked bytes hash equal.
 for (const relative of ["src", "web"]) {
@@ -37,6 +48,7 @@ for (const relative of ["src", "web"]) {
     true,
     "non-directory captured source root: " + relative,
   );
+  assertPackCaptureMode(metadata, relative);
 }
 for (const relative of [
   "package.json",
@@ -56,6 +68,7 @@ for (const relative of [
     true,
     "non-regular captured root: " + relative,
   );
+  assertPackCaptureMode(metadata, relative);
 }
 assert.equal(
   readdirSync(root).includes("node_modules"),
@@ -85,6 +98,7 @@ test("build selection and executable main retain inspected source identities", (
       false,
       "unreviewed source symlink: " + relative,
     );
+    assertPackCaptureMode(metadata, relative);
     if (metadata.isDirectory()) {
       // Pack's no-follow capture inventories directory entries too, including
       // empty ones; a file-only census incorrectly accepts reserved roots.
@@ -178,6 +192,31 @@ test(
               "node_modules",
               () => "dangling",
               "missing",
+            ],
+          ]),
+      // Only POSIX filesystems promise set-ID bits; do not silently let
+      // macOS/Linux mode-only mutations pass while Pack rejects them.
+      ...(process.platform === "win32"
+        ? []
+        : [
+            [
+              "set-ID captured file",
+              "src/main.mjs",
+              () => "setid",
+              "setid-file",
+            ],
+            ["set-ID captured directory", "src", () => "setid", "setid-dir"],
+            [
+              "set-ID package manifest",
+              "package.json",
+              () => "setid",
+              "setid-file",
+            ],
+            [
+              "set-ID package lock",
+              "package-lock.json",
+              () => "setid",
+              "setid-file",
             ],
           ]),
       [
@@ -301,7 +340,24 @@ test(
           name + ": intact copied source must pass",
         );
         mkdirSync(dirname(target), { recursive: true });
-        if (linkType === "directory") {
+        if (linkType === "setid-file" || linkType === "setid-dir") {
+          const bit = linkType === "setid-file" ? 0o4000 : 0o2000;
+          const original = lstatSync(target);
+          const beforeBytes = original.isFile() ? readFileSync(target) : null;
+          chmodSync(target, original.mode | bit);
+          assert.notEqual(
+            lstatSync(target).mode & bit,
+            0,
+            name + ": set-ID mode mutation must take effect",
+          );
+          if (beforeBytes !== null) {
+            assert.deepEqual(
+              readFileSync(target),
+              beforeBytes,
+              name + ": bytes unchanged",
+            );
+          }
+        } else if (linkType === "directory") {
           mkdirSync(target);
         } else if (linkType === "missing") {
           symlinkSync(join(scratch, "absent-provider-tree"), target, "dir");
@@ -353,36 +409,40 @@ test(
         );
         assert.equal(result.error, undefined, name + ": child must run");
         const identityError =
-          linkType === "external"
-            ? new RegExp(
-                "unreviewed captured root symlink: " +
-                  file.replaceAll(".", "\\."),
-              )
-            : {
-                src: /unreviewed source symlink/,
-                "src/preload.mjs": /unreviewed source symlink/,
-                "package.json":
-                  /unreviewed captured root symlink: package.json/,
-                "package-lock.json":
-                  /unreviewed captured root symlink: package-lock.json/,
-                node_modules: /unreviewed provider-root entry: node_modules/,
-                "src/.keld": /Pack source member inventory differs/,
-                "web/unreviewed": /Pack source member inventory differs/,
-                "src/unreviewed-module.mjs":
-                  /Pack source member inventory differs/,
-                "web/pages/unreviewed.html":
-                  /Pack source member inventory differs/,
-                "src/nested/extra.mjs": /Pack source member inventory differs/,
-                "keld.build.ts":
-                  /build config differs from inspected effective field selection/,
-                "src/main.mjs": /main differs from inspected executable module/,
-                "keld.config.ts":
-                  /app config differs from inspected source selection/,
-                "keld.permissions.jsonc":
-                  /permission manifest differs from inspected window grants/,
-                "web/pages/index.html":
-                  /renderer HTML differs from inspected offline document/,
-              }[file];
+          linkType === "setid-file" || linkType === "setid-dir"
+            ? /unreviewed captured set-ID mode:/
+            : linkType === "external"
+              ? new RegExp(
+                  "unreviewed captured root symlink: " +
+                    file.replaceAll(".", "\\."),
+                )
+              : {
+                  src: /unreviewed source symlink/,
+                  "src/preload.mjs": /unreviewed source symlink/,
+                  "package.json":
+                    /unreviewed captured root symlink: package.json/,
+                  "package-lock.json":
+                    /unreviewed captured root symlink: package-lock.json/,
+                  node_modules: /unreviewed provider-root entry: node_modules/,
+                  "src/.keld": /Pack source member inventory differs/,
+                  "web/unreviewed": /Pack source member inventory differs/,
+                  "src/unreviewed-module.mjs":
+                    /Pack source member inventory differs/,
+                  "web/pages/unreviewed.html":
+                    /Pack source member inventory differs/,
+                  "src/nested/extra.mjs":
+                    /Pack source member inventory differs/,
+                  "keld.build.ts":
+                    /build config differs from inspected effective field selection/,
+                  "src/main.mjs":
+                    /main differs from inspected executable module/,
+                  "keld.config.ts":
+                    /app config differs from inspected source selection/,
+                  "keld.permissions.jsonc":
+                    /permission manifest differs from inspected window grants/,
+                  "web/pages/index.html":
+                    /renderer HTML differs from inspected offline document/,
+                }[file];
         assert.match(
           result.stdout + result.stderr,
           identityError,
