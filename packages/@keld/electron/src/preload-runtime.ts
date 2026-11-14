@@ -334,8 +334,15 @@ export function installApp(
   const callbackProxies = new Map<number, Listener>();
   const callProxies = new Map<number, Set<number>>();
   const localCharges = new Map<number, number>();
+  // A completed watch retains its callback image until replaced or retired.
+  const watchCharges = new Map<number, number>();
   let copyingCall: number | undefined;
   function releaseCall(call: number): void {
+    const retained = watchCharges.get(call);
+    if (retained !== undefined) {
+      charged -= retained;
+      watchCharges.delete(call);
+    }
     const ids = callProxies.get(call);
     callProxies.delete(call);
     if (ids)
@@ -357,6 +364,13 @@ export function installApp(
   >();
   const watches = new Map<string, number>();
   const activeWatches = new Set<string>();
+  function retireUnownedCall(call: number): void {
+    // A replaced watch may still own a real original response; never release
+    // that callback image before the original handler consumes its response.
+    if ([...watches.values()].includes(call)) return;
+    if ([...requests.values()].some((pending) => pending.call === call)) return;
+    releaseCall(call);
+  }
   let invoking: { call: number; bytes: number; watch: boolean } | undefined;
   const post = (value: unknown) => native.postMessage(stringify(value));
   function reserve(bytes: number): void {
@@ -402,8 +416,12 @@ export function installApp(
               ? value.path
               : undefined,
         });
-        if (invoking.watch && typeof value.path === "string")
+        if (invoking.watch && typeof value.path === "string") {
+          const previous = watches.get(value.path);
           watches.set(value.path, invoking.call);
+          if (previous !== undefined && previous !== invoking.call)
+            retireUnownedCall(previous);
+        }
       }
       post({
         v: 2,
@@ -788,6 +806,7 @@ export function installApp(
       invoking = { call: call.call, bytes: watch ? 1_024 : bytes, watch };
       entered = true;
       if (local) localCharges.set(call.call, bytes);
+      if (watch) watchCharges.set(call.call, bytes);
       apply(registry[call.method], undefined, args);
       if (call.method === "sendMessage") {
         charged -= bytes;
@@ -883,8 +902,7 @@ export function installApp(
               activeWatches.add(req.watchPath);
             if (!response.error && req.unwatchPath)
               activeWatches.delete(req.unwatchPath);
-            if (![...watches.values()].includes(req.call))
-              releaseCall(req.call);
+            retireUnownedCall(req.call);
           }
         }
       }
