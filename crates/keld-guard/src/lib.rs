@@ -100,6 +100,7 @@ pub use admit::{
     ProbeVerdict, ProfileDigest, ProfileState, ProofArchive, ProofIdentity, RoleInstance, admit,
     expected_layer_for,
 };
+pub use admit::{policy_generation_for, required_os_containment_probes};
 pub use probe::{ProbeReport, run_synthetic_probes};
 
 /// Canonical Windows installation-state protection profiles owned by `keld-guard`.

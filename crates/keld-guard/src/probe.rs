@@ -13,8 +13,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::admit::{
-    HostOs, OS_CONTAINMENT_PROBES, ProbeLayer, ProbeOracle, ProbeRecord, ProbeVerdict,
-    expected_layer_for,
+    HostOs, ProbeLayer, ProbeOracle, ProbeRecord, ProbeVerdict, expected_layer_for,
+    required_os_containment_probes,
 };
 
 /// Result of running the T1 synthetic catalog in this process.
@@ -70,7 +70,7 @@ pub fn run_synthetic_probes() -> ProbeReport {
     rows.push(probe_direct_filesystem());
     rows.push(probe_direct_network());
     rows.push(probe_direct_spawn());
-    for probe in OS_CONTAINMENT_PROBES {
+    for probe in required_os_containment_probes(HostOs::current()) {
         if rows.iter().any(|row| row.probe == *probe) {
             continue;
         }
@@ -596,6 +596,24 @@ mod tests {
         let json = report.to_json();
         assert!(json.contains("\"contained\":false"), "{json}");
         assert!(json.contains("direct_network"), "{json}");
+    }
+
+    #[test]
+    fn synthetic_catalog_never_substitutes_another_os_transfer_probe() {
+        let report = run_synthetic_probes();
+        let (native, foreign) = if cfg!(windows) {
+            ("handle_transfer", "scm_rights")
+        } else {
+            ("scm_rights", "handle_transfer")
+        };
+        assert!(
+            report
+                .rows
+                .iter()
+                .any(|row| { row.probe == native && row.verdict == ProbeVerdict::Fail }),
+            "synthetic native transfer evidence must remain a failure"
+        );
+        assert!(!report.rows.iter().any(|row| row.probe == foreign));
     }
 
     #[test]

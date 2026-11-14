@@ -265,7 +265,7 @@ impl HostFacts {
         Self {
             os: HostOs::current(),
             missing_primitives: required_primitives(HostOs::current()).to_vec(),
-            policy_generation: CURRENT_POLICY_GENERATION,
+            policy_generation: policy_generation_for(HostOs::current()),
             handle_leak: None,
         }
     }
@@ -283,11 +283,21 @@ impl HostFacts {
     }
 }
 
-/// §4 policy generation for this spec text. Bump when T2–T4 change required primitives.
+/// Legacy Unix policy generation; Windows has a separate native proof requirement.
 pub const CURRENT_POLICY_GENERATION: u64 = 1;
 
-/// Spec §7 OS-containment probe ids. Every id must have a recorded OS-deny pass
-/// before [`admit`] can return [`ProfileState::Strict`].
+/// Returns the target policy generation. Windows v2 requires native
+/// HANDLE-transfer denial independently of startup inherited handles.
+#[must_use]
+pub const fn policy_generation_for(os: HostOs) -> u64 {
+    match os {
+        HostOs::Windows => 2,
+        HostOs::Macos | HostOs::Linux => CURRENT_POLICY_GENERATION,
+    }
+}
+
+/// Legacy Unix §7 OS-containment probes. The Windows-specific census is
+/// selected by [`required_os_containment_probes`] and requires its own OS-deny evidence.
 pub const OS_CONTAINMENT_PROBES: &[&str] = &[
     "direct_filesystem",
     "direct_network",
@@ -301,6 +311,30 @@ pub const OS_CONTAINMENT_PROBES: &[&str] = &[
     "updater_boundary",
 ];
 
+/// Windows requires HANDLE transfer denial, while Unix requires `SCM_RIGHTS`.
+/// This probe is distinct from inherited handles checked at child birth.
+const WINDOWS_OS_CONTAINMENT_PROBES: &[&str] = &[
+    "direct_filesystem",
+    "direct_network",
+    "direct_spawn",
+    "inherited_handles",
+    "handle_transfer",
+    "descendants",
+    "broker_bypass",
+    "token_theft",
+    "addon_escape",
+    "updater_boundary",
+];
+
+/// Native OS-containment probe census required for the selected target.
+#[must_use]
+pub const fn required_os_containment_probes(os: HostOs) -> &'static [&'static str] {
+    match os {
+        HostOs::Windows => WINDOWS_OS_CONTAINMENT_PROBES,
+        HostOs::Macos | HostOs::Linux => OS_CONTAINMENT_PROBES,
+    }
+}
+
 /// Expected layer for a §7 probe id. Direct net is always OS containment
 /// in the contract, including when a `keld-guard` net grant exists.
 #[must_use]
@@ -309,6 +343,7 @@ pub fn expected_layer_for(probe: &str) -> Option<ProbeLayer> {
         "crash_cleanup" => Some(ProbeLayer::SupervisorCleanup),
         "protocol_confusion" => Some(ProbeLayer::HostProtocol),
         "resource" => Some(ProbeLayer::ResourceLimits),
+        "handle_transfer" => Some(ProbeLayer::OsContainment),
         id if OS_CONTAINMENT_PROBES.contains(&id) => Some(ProbeLayer::OsContainment),
         _ => None,
     }
@@ -579,7 +614,7 @@ fn admit_strict(
     if let Some(err) = layer_mismatch(facts.os, &archive.rows) {
         return Err(err);
     }
-    if let Some(missing) = incomplete_os_rows(&archive.rows) {
+    if let Some(missing) = incomplete_os_rows(facts.os, &archive.rows) {
         return Err(AdmissionError::ProofIncomplete {
             os: facts.os,
             missing,
@@ -754,9 +789,9 @@ fn layer_mismatch(os: HostOs, rows: &[ProbeRecord]) -> Option<AdmissionError> {
     None
 }
 
-fn incomplete_os_rows(rows: &[ProbeRecord]) -> Option<String> {
+fn incomplete_os_rows(os: HostOs, rows: &[ProbeRecord]) -> Option<String> {
     let mut missing = Vec::new();
-    for probe in OS_CONTAINMENT_PROBES {
+    for probe in required_os_containment_probes(os) {
         let passed = rows.iter().any(|row| {
             row.probe == *probe
                 && row.verdict == ProbeVerdict::Pass
@@ -824,7 +859,7 @@ mod tests {
         HostFacts {
             os: HostOs::current(),
             missing_primitives: Vec::new(),
-            policy_generation: CURRENT_POLICY_GENERATION,
+            policy_generation: policy_generation_for(HostOs::current()),
             handle_leak: None,
         }
     }
@@ -843,8 +878,12 @@ mod tests {
     fn complete_archive() -> ProofArchive {
         ProofArchive {
             identity: id(),
-            rows: OS_CONTAINMENT_PROBES.iter().copied().map(os_pass).collect(),
-            policy_generation: CURRENT_POLICY_GENERATION,
+            rows: required_os_containment_probes(HostOs::current())
+                .iter()
+                .copied()
+                .map(os_pass)
+                .collect(),
+            policy_generation: policy_generation_for(HostOs::current()),
         }
     }
 
@@ -915,7 +954,7 @@ mod tests {
         let archive = ProofArchive {
             identity: id(),
             rows: Vec::new(),
-            policy_generation: CURRENT_POLICY_GENERATION,
+            policy_generation: policy_generation_for(HostOs::current()),
         };
         match admit(&req, &facts_primitives_present(), Some(&archive)) {
             Err(err @ AdmissionError::ProofMissing { .. }) => assert_code(&err, "KELD-GUARD011"),
@@ -1001,7 +1040,7 @@ mod tests {
         let facts = HostFacts {
             os: HostOs::current(),
             missing_primitives: Vec::new(),
-            policy_generation: CURRENT_POLICY_GENERATION,
+            policy_generation: policy_generation_for(HostOs::current()),
             handle_leak: Some("host stdout".into()),
         };
         match admit(&strict_req(Some(id())), &facts, Some(&complete_archive())) {
@@ -1034,7 +1073,7 @@ mod tests {
                 oracle: ProbeOracle::HostProtocol,
                 detail: "KELD-IPC-007".into(),
             }],
-            policy_generation: CURRENT_POLICY_GENERATION,
+            policy_generation: policy_generation_for(HostOs::current()),
         };
         match admit(&req, &facts_primitives_present(), Some(&archive)) {
             Err(err @ AdmissionError::ProofIncomplete { .. }) => {
@@ -1183,5 +1222,62 @@ mod tests {
             expected_layer_for("direct_network"),
             Some(ProbeLayer::OsContainment)
         );
+    }
+
+    #[test]
+    fn every_target_uses_its_native_containment_census() {
+        for unix in [HostOs::Macos, HostOs::Linux] {
+            assert_eq!(required_os_containment_probes(unix), OS_CONTAINMENT_PROBES);
+            assert!(required_os_containment_probes(unix).contains(&"scm_rights"));
+            assert!(!required_os_containment_probes(unix).contains(&"handle_transfer"));
+            assert_eq!(policy_generation_for(unix), 1);
+        }
+        assert!(required_os_containment_probes(HostOs::Windows).contains(&"handle_transfer"));
+        assert!(!required_os_containment_probes(HostOs::Windows).contains(&"scm_rights"));
+        assert_eq!(policy_generation_for(HostOs::Windows), 2);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_requires_native_handle_transfer_instead_of_unix_scm_rights() {
+        assert_eq!(
+            expected_layer_for("handle_transfer"),
+            Some(ProbeLayer::OsContainment)
+        );
+        let old_unix_rows: Vec<_> = OS_CONTAINMENT_PROBES.iter().copied().map(os_pass).collect();
+        let archive = ProofArchive {
+            identity: id(),
+            rows: old_unix_rows,
+            policy_generation: policy_generation_for(HostOs::current()),
+        };
+        assert!(
+            matches!(
+                admit(&strict_req(Some(id())), &facts_primitives_present(), Some(&archive)),
+                Err(AdmissionError::ProofIncomplete { missing, .. }) if missing.contains("handle_transfer")
+            ),
+            "a Unix SCM_RIGHTS probe cannot satisfy Windows HANDLE transfer denial"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_handle_transfer_requires_os_deny_not_host_protocol() {
+        let mut archive = complete_archive();
+        let Some(transfer) = archive
+            .rows
+            .iter_mut()
+            .find(|r| r.probe == "handle_transfer")
+        else {
+            panic!("Windows fixture must contain native handle transfer");
+        };
+        transfer.oracle = ProbeOracle::HostProtocol;
+        assert!(matches!(
+            admit(
+                &strict_req(Some(id())),
+                &facts_primitives_present(),
+                Some(&archive)
+            ),
+            Err(AdmissionError::ProofLayerMismatch { .. })
+        ));
     }
 }

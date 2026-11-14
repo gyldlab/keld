@@ -236,6 +236,9 @@ manifest decoder.
      `sandbox_init` and inherit-from-host are rejected;
    - Windows: the live zero-capability LPAC + reviewed ACL/handle-list mechanism is the
      authority boundary; the non-breakaway Job is descendant cleanup, not authority;
+     Strict admission additionally requires a native post-startup `handle_transfer`
+     OS-deny probe separate from `inherited_handles`; Unix `scm_rights` evidence
+     cannot fill that Windows row. Missing or misattributed proof fails closed.
    - Linux: the live T4 mechanism uses unprivileged Bubblewrap user/mount/PID/network
      namespaces, an empty-root exact-file mount policy, zero capabilities,
      `no_new_privs`, x86_64-only Keld seccomp filters (other architectures fail
