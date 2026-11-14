@@ -86,6 +86,9 @@ test("build selection and executable main retain inspected source identities", (
       "unreviewed source symlink: " + relative,
     );
     if (metadata.isDirectory()) {
+      // Pack's no-follow capture inventories directory entries too, including
+      // empty ones; a file-only census incorrectly accepts reserved roots.
+      capturedMembers.push(relative + "/");
       for (const name of readdirSync(join(root, relative))) {
         visit(relative + "/" + name);
       }
@@ -102,7 +105,14 @@ test("build selection and executable main retain inspected source identities", (
   visit("web");
   assert.deepEqual(
     capturedMembers.sort(),
-    ["src/main.mjs", "src/preload.mjs", "web/pages/index.html"],
+    [
+      "src/",
+      "src/main.mjs",
+      "src/preload.mjs",
+      "web/",
+      "web/pages/",
+      "web/pages/index.html",
+    ],
     "Pack source member inventory differs from independently inspected candidate",
   );
   assert.equal(
@@ -170,6 +180,18 @@ test(
               "missing",
             ],
           ]),
+      [
+        "added empty reserved directory",
+        "src/.keld",
+        () => "directory",
+        "directory",
+      ],
+      [
+        "added empty renderer directory",
+        "web/unreviewed",
+        () => "directory",
+        "directory",
+      ],
       [
         "added executable",
         "src/unreviewed-module.mjs",
@@ -279,7 +301,9 @@ test(
           name + ": intact copied source must pass",
         );
         mkdirSync(dirname(target), { recursive: true });
-        if (linkType === "missing") {
+        if (linkType === "directory") {
+          mkdirSync(target);
+        } else if (linkType === "missing") {
           symlinkSync(join(scratch, "absent-provider-tree"), target, "dir");
         } else if (linkType === "external") {
           // An external same-byte witness proves that source preflight fails
@@ -342,6 +366,8 @@ test(
                 "package-lock.json":
                   /unreviewed captured root symlink: package-lock.json/,
                 node_modules: /unreviewed provider-root entry: node_modules/,
+                "src/.keld": /Pack source member inventory differs/,
+                "web/unreviewed": /Pack source member inventory differs/,
                 "src/unreviewed-module.mjs":
                   /Pack source member inventory differs/,
                 "web/pages/unreviewed.html":
