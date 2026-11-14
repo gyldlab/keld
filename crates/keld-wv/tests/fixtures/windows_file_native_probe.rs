@@ -17,9 +17,8 @@ use windows::Win32::System::Threading::WaitForSingleObject;
 
 use super::observation;
 
-#[path = "windows_file_native_parent_receipt.rs"]
-mod parent_receipt;
-use parent_receipt::{verify_parent_binding, verify_profile_absent};
+// Reuse the parent-owned receipt tests; loading them twice duplicates test cases.
+use super::parent_receipt::{verify_parent_binding, verify_profile_absent};
 
 const CHILD: &str = "windows_file_native_probe_child";
 const CHILD_MARKER: &str = "w3-q22-native-v2";
