@@ -546,3 +546,66 @@ fn failed_host_terminal_cannot_precede_its_start_with_resequenced_events() {
         "failed Host terminal before its native start was accepted"
     );
 }
+
+fn move_document_request_after_completion(receipt: &mut Value, phase: &str, terminal: &str) {
+    let events = receipt["events"].as_array_mut().expect("fixture events");
+    let request_at = events
+        .iter()
+        .position(|row| row["phase"] == phase && row["kind"] == "resource-request")
+        .expect("unique owned DOCUMENT request");
+    let request = events.remove(request_at);
+    let terminal_at = events
+        .iter()
+        .position(|row| row["phase"] == phase && row["kind"] == terminal)
+        .expect("matching native navigation terminal");
+    events.insert(terminal_at + 1, request);
+    // Keep the native trace's contiguous global ordering valid. The only
+    // fault is the late DOCUMENT observation; everything else is unchanged.
+    for (index, row) in events.iter_mut().enumerate() {
+        row["seq"] = json!(index + 1);
+    }
+}
+
+#[test]
+fn late_plain_document_request_cannot_qualify_completed_top_navigation() {
+    let mut receipt = sample();
+    move_document_request_after_completion(&mut receipt, "plain", "navigation-completed");
+    assert!(
+        assess(&receipt).is_err(),
+        "late plain DOCUMENT request certified an already-completed top navigation"
+    );
+    assert!(
+        assess(&sample()).is_ok(),
+        "valid native document control rejected"
+    );
+}
+
+#[test]
+fn late_page_document_request_cannot_qualify_completed_top_navigation() {
+    let mut receipt = sample();
+    move_document_request_after_completion(&mut receipt, "page", "navigation-completed");
+    assert!(
+        assess(&receipt).is_err(),
+        "late page DOCUMENT request certified an already-completed top navigation"
+    );
+}
+
+#[test]
+fn late_host_document_request_cannot_qualify_completed_top_navigation() {
+    let mut receipt = sample();
+    move_document_request_after_completion(&mut receipt, "host-header", "navigation-completed");
+    assert!(
+        assess(&receipt).is_err(),
+        "late Host DOCUMENT request certified an already-completed top navigation"
+    );
+}
+
+#[test]
+fn late_iframe_document_request_cannot_qualify_completed_frame_navigation() {
+    let mut receipt = sample();
+    move_document_request_after_completion(&mut receipt, "iframe", "frame-navigation-completed");
+    assert!(
+        assess(&receipt).is_err(),
+        "late iframe DOCUMENT request certified an already-completed frame navigation"
+    );
+}

@@ -34,6 +34,19 @@ fn one<'a>(receipt: &'a Value, phase: &str, kind: &str) -> Result<&'a Value, Str
     Ok(found[0])
 }
 
+// Tie a qualifying DOCUMENT request to this navigation, not merely to its
+// phase/URI. The native trace gives one contiguous event sequence.
+fn document_during_navigation(start: &Value, request: &Value, end: &Value) -> bool {
+    match (
+        start["seq"].as_u64(),
+        request["seq"].as_u64(),
+        end["seq"].as_u64(),
+    ) {
+        (Some(start), Some(request), Some(end)) => start < request && request < end,
+        _ => false,
+    }
+}
+
 fn successful_navigation(receipt: &Value, phase: &str) -> Result<(), String> {
     let start = one(receipt, phase, "navigation-starting")?;
     let content = one(receipt, phase, "content-loading")?;
@@ -76,6 +89,10 @@ fn successful_navigation(receipt: &Value, phase: &str) -> Result<(), String> {
     require(
         resources[0]["data"]["resource_context"] == 1,
         "owned document was not reported as DOCUMENT",
+    )?;
+    require(
+        document_during_navigation(start, resources[0], end),
+        "owned DOCUMENT request is outside the completed navigation lifecycle",
     )?;
     check_page(receipt, phase)
 }
@@ -239,16 +256,19 @@ fn check_same_uri_frame(receipt: &Value) -> Result<(), String> {
             && frames[0]["href"] == receipt["uri"],
         "owned iframe did not independently report its file content",
     )?;
-    let frame_resources = rows(receipt, "iframe", "resource-request");
+    let frame_resources: Vec<_> = rows(receipt, "iframe", "resource-request")
+        .into_iter()
+        .filter(|event| {
+            event["data"]["uri"] == receipt["uri"] && event["data"]["resource_context"] == 1
+        })
+        .collect();
     require(
-        frame_resources
-            .iter()
-            .filter(|event| {
-                event["data"]["uri"] == receipt["uri"] && event["data"]["resource_context"] == 1
-            })
-            .count()
-            == 1,
+        frame_resources.len() == 1,
         "iframe cell lacks one exact-URI resource observation",
+    )?;
+    require(
+        document_during_navigation(frame_start, frame_resources[0], frame_end),
+        "iframe DOCUMENT request is outside the completed frame lifecycle",
     )?;
     Ok(())
 }
