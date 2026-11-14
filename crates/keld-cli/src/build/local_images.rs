@@ -241,6 +241,7 @@ pub(super) struct ImageRequest {
     pub(super) sign_tool_sha256: String,
     pub(super) certificate_thumbprint: String,
     pub(super) publisher_scope: String,
+    pub(super) profile_admission: windows_inputs::ProfileAdmission,
 }
 pub(super) struct PreparedLocalPair {
     pub(super) release_public_key: [u8; 32],
@@ -282,6 +283,7 @@ pub(super) fn request_from_args(args: &[String]) -> Result<ImageRequest, BuildEr
         sign_tool_sha256: args[11].clone(),
         certificate_thumbprint: args[12].clone(),
         publisher_scope: args[13].clone(),
+        profile_admission: windows_inputs::ProfileAdmission::ExplicitStrict,
     })
 }
 #[allow(clippy::too_many_lines)] // Same existing source/sign/image-custody transaction, not a second pipeline.
@@ -290,7 +292,13 @@ pub(super) fn prepare_request(
     initial_install: bool,
 ) -> Result<PreparedLocalPair, BuildError> {
     let app_root = request.app_root.as_path();
-    let authoring = windows_inputs::CapturedInputs::open(app_root)?.capture(app_root)?;
+    let inputs = windows_inputs::CapturedInputs::open(app_root)?;
+    let authoring = match request.profile_admission {
+        windows_inputs::ProfileAdmission::ExplicitStrict => inputs.capture(app_root)?,
+        windows_inputs::ProfileAdmission::UndeclaredDeveloper => {
+            inputs.capture_developer(app_root)?
+        }
+    };
     let app = &authoring.app;
     let key_path = request.release_public_key.as_path();
     let key_parent = key_path

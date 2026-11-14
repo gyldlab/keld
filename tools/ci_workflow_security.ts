@@ -439,6 +439,89 @@ function checkB3BunCachePolicy(stepsByJob: Map<string, Mapping[]>): void {
   }
 }
 
+/** A runner-image Node fallback must never replace the fixed Node 26 corpus. */
+function checkNode26CorpusSetup(stepsByJob: Map<string, Mapping[]>): void {
+  const owners = new Set(["check", "bun-test"]);
+  const actionRef =
+    "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1";
+  const bunRef = "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6";
+  for (const [jobName, steps] of stepsByJob) {
+    const nodeIndices = steps.flatMap((step, index) =>
+      typeof step.uses === "string" &&
+      actionName(step.uses) === "actions/setup-node"
+        ? [index]
+        : [],
+    );
+    if (!owners.has(jobName)) {
+      if (nodeIndices.length !== 0)
+        fail(`Node 26 setup not reviewed for job ${jobName}.`);
+      continue;
+    }
+    if (nodeIndices.length !== 1)
+      fail(`Node 26 setup must appear exactly once in ${jobName}.`);
+    const index = nodeIndices[0]!;
+    const step = steps[index]!;
+    exactKeys(step, ["uses", "with"], `Node 26 setup in ${jobName}`);
+    if (step.uses !== actionRef)
+      fail(`Node 26 setup must use the reviewed immutable SHA in ${jobName}.`);
+    inputsMatch(
+      mapping(step.with, `Node 26 setup inputs in ${jobName}`),
+      { "node-version": "26", "package-manager-cache": "false" },
+      `Node 26 must not inherit runner defaults or untrusted package cache in ${jobName}`,
+    );
+    const bunIndex = steps.findIndex((candidate) => candidate.uses === bunRef);
+    if (bunIndex < 0 || index >= bunIndex)
+      fail(`Node 26 setup must precede the Bun runtime in ${jobName}.`);
+  }
+  const install = namedStep(
+    stepsByJob.get("check")!,
+    "Install declared KIPC, API, Electron links for Rust corpus oracles",
+  );
+  exactKeys(install, ["name", "shell", "run"], "Rust corpus dependency setup");
+  if (
+    install.shell !== "bash" ||
+    install.run !==
+      [
+        "node --version | grep -E '^v26[.]'",
+        "(cd packages/@keld/kipc && bun install --frozen-lockfile)",
+        "(cd packages/@keld/api && bun install --frozen-lockfile)",
+        "(cd packages/@keld/electron && bun install --frozen-lockfile)",
+        "",
+      ].join("\n")
+  ) {
+    fail(
+      "Rust corpus must install all declared Bun links before Clippy and Nextest.",
+    );
+  }
+  const native = stepsByJob.get("check")!;
+  const installIndex = native.indexOf(install);
+  const clippyIndex = native.findIndex(
+    (step) => step.name === "clippy (warnings deny)",
+  );
+  if (clippyIndex < 0 || installIndex >= clippyIndex)
+    fail("Rust corpus links must be installed before the native test lane.");
+  const bunTests = namedStep(
+    stepsByJob.get("bun-test")!,
+    "frozen install, typecheck, and bun test",
+  );
+  if (
+    bunTests.shell !== "bash" ||
+    typeof bunTests.run !== "string" ||
+    !bunTests.run.includes(
+      "node --version | grep -E '^v26[.]'\n" +
+        "# KIPC/packaged Electron sources may import API during one selected suite.\n" +
+        "# Materialize declared local links in dependency order before any test.\n" +
+        "(cd packages/@keld/kipc && bun install --frozen-lockfile)\n" +
+        "(cd packages/@keld/api && bun install --frozen-lockfile)\n" +
+        "for package in $KELD_CI_TS_PACKAGES;",
+    )
+  ) {
+    fail(
+      "Bun suite must pin Node26 and install KIPC/API links before package tests.",
+    );
+  }
+}
+
 /** The CodeQL languages, each analysed by its own job `codeql-<language>`. */
 export const codeqlLanguages = [
   "rust",
@@ -449,7 +532,7 @@ export const codeqlLanguages = [
 // Both actions must use the same *reviewed* immutable revision. Merely
 // requiring equal 40-hex SHAs would allow all six init/analyze uses to drift
 // together to an unreviewed action while the security admission stays green.
-const approvedCodeqlActionSha = "6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee"; // v4.39.0
+const approvedCodeqlActionSha = "9b3254085494b55a0f7c4c2b3d2d52cc712ce370"; // v4.39.1
 
 /**
  * One language's job condition: its router output (tools/ci_changes.sh), or a
@@ -1133,12 +1216,14 @@ export function checkRustToolchainPins(
 // still unreviewed code; the SHA syntax check alone is not an allowlist.
 const reviewedWorkflowActionRefs = new Set([
   "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+  // Checked against upstream immutable release v7.1.0, not a floating tag.
+  "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1",
   approvedRustToolchainAction,
   "Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0",
   "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
   "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
   "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
-  "taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91",
+  "taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b",
   `github/codeql-action/init@${approvedCodeqlActionSha}`,
   `github/codeql-action/analyze@${approvedCodeqlActionSha}`,
   "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294",
@@ -1839,6 +1924,7 @@ export function checkWorkflowSecurity(source: string): void {
   // Globally reject unknown Actions SHAs before checking approved Bun cache
   // owners. This preserves the upstream unreviewed-action failure diagnostic.
   checkB3BunCachePolicy(stepsByJob);
+  checkNode26CorpusSetup(stepsByJob);
   // This broad safety net runs AFTER the narrower, previously reviewed
   // executable-step checks. That keeps their deterministic negative-control
   // diagnostics while also rejecting an otherwise permitted earlier step
@@ -1871,14 +1957,14 @@ export function checkWorkflowSecurity(source: string): void {
   const reviewedStepInventories: Record<string, string> = {
     fmt: "5021013ee751a651b110df9c3f45d96425b8a51ca5f6b7e13ce107c4a0042ea9",
     "windows-media":
-      "f4c3b6794e4f21428201253a5cf0af3ceb3fc1abf7e47a008c96682c4cf2f68f",
-    check: "5036a881d6e2cb4f1801926ff49520c3fc483368d810974029ec45dc94514817",
+      "385b68e1ef567912453c5a08eaa7e7d678f48444956115ade2ad110ffac2b0d8",
+    check: "c9464e02939ec394145fcda02e06bbd7965e5f2b33ce75b1af3f98f39874f7c1",
     "codeql-rust":
-      "8f4dd53774b6cc05b37eab2a04b65da5580d0ff8f352be0aae481dcc8e8f2889",
+      "513d4978b886a9f8d3b5ce09fc9022a953114fa3cadec43be6c06d8ef39cce41",
     "codeql-javascript-typescript":
-      "94618e798d1743171d548d8a5e45b6cc891fa0f0fa2eb44e08bdbed0de2d63f8",
+      "d713f5c054fdfd82273abd56150aedd1e0415beef9c380123b71261fb3e2f317",
     "codeql-actions":
-      "d074515becad551aef170eaf595df0daa69eec27474654ec3cd0cb2d12847c17",
+      "adb7c7aa03ae3b8d36392101b32c360bd63b2b8763e288bb373b106adeecbe80",
   };
   for (const [jobName, digest] of Object.entries(reviewedStepInventories)) {
     const steps = stepsByJob.get(jobName);

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -43,10 +43,7 @@ assert.equal(declared.WorkerLink, sibling.WorkerLink);
   expect(identity.exitCode, new TextDecoder().decode(identity.stderr)).toBe(0);
 });
 
-test("real packed SDK installs offline with one API app identity", async () => {
-  const scratch = realpathSync.native(
-    mkdtempSync(join(tmpdir(), "keld-sdk-package-")),
-  );
+function preparePackedSdk(scratch: string) {
   try {
     const source = Object.fromEntries(
       ["api", "kipc"].map((name) => [
@@ -142,6 +139,38 @@ test("real packed SDK installs offline with one API app identity", async () => {
       TEST_HOOK_NAMES.filter((name) => packedTransport.includes(name)),
       "packed @keld/kipc transport.js names WorkerLink test hooks; its release build must define KELD_KIPC_RELEASE",
     ).toEqual([]);
+    return { scratch, source, packageHashes, api, kipc, consumer };
+  } catch (error) {
+    rmSync(scratch, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+describe("packed SDK artifact acceptance", () => {
+  let fixture: ReturnType<typeof preparePackedSdk> | undefined;
+  let ownedScratch: string | undefined;
+
+  // Packing twice and installing the offline fixture are setup, not an IPC
+  // operation. Bound setup independently; keep the acceptance and every
+  // nested lifecycle/handshake deadline unchanged.
+  beforeAll(() => {
+    ownedScratch = mkdtempSync(join(tmpdir(), "keld-sdk-package-"));
+    ownedScratch = realpathSync.native(ownedScratch);
+    fixture = preparePackedSdk(ownedScratch);
+  }, 30_000);
+
+  // Keep ownership even if setup fails or times out before returning a fixture.
+  afterAll(() => {
+    if (ownedScratch !== undefined) {
+      rmSync(ownedScratch, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("real packed SDK installs offline with one API app identity", async () => {
+    if (fixture === undefined) {
+      throw new Error("packed SDK fixture setup did not complete");
+    }
+    const { scratch, source, packageHashes, api, kipc, consumer } = fixture;
     const probe = join(consumer, "probe.mjs");
     writeFileSync(
       probe,
@@ -697,7 +726,5 @@ WorkerLink.open({ link: process.env.KELD_APP_LINK, receive: { eventChannels: [3]
         runtimes,
       }),
     );
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
-  }
-}, 30_000);
+  }, 30_000);
+});

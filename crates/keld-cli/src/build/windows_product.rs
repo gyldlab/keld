@@ -143,6 +143,11 @@ pub(super) fn run(session_path: &Path) -> Result<(), BuildError> {
     let mut build = local_source::pin_file(&root.join("keld.build.ts"), MAX_INPUT)?;
     let bytes = read(&mut build)?;
     let recipe = config::parse_windows_build(std::str::from_utf8(&bytes).map_err(refuse)?)?;
+    if recipe.signing != "test-local-untimestamped" {
+        return Err(refuse(
+            "explicit local-test session cannot select developer signer",
+        ));
+    }
     let parent = session_path
         .parent()
         .ok_or_else(|| refuse("session input parent missing"))?;
@@ -176,6 +181,7 @@ pub(super) fn run(session_path: &Path) -> Result<(), BuildError> {
         sign_tool_sha256: session.sign_tool.sha256,
         certificate_thumbprint: session.certificate_thumbprint,
         publisher_scope: session.publisher_scope,
+        profile_admission: windows_inputs::ProfileAdmission::ExplicitStrict,
     };
     let compiler = local_archive_command::CompilerRequest {
         typescript_root: resolve(&root, &recipe.typescript_root)?,
@@ -189,6 +195,84 @@ pub(super) fn run(session_path: &Path) -> Result<(), BuildError> {
     );
     local_archive_command::run_product(images, compiler, &recipe.modules, &session.published_at)
 }
+/// Ordinary Windows developer build: select only an existing signer from the
+/// project's closed public config and create a fresh, unpredictable output leaf.
+/// The existing authenticated source, image and archive owners are reused.
+pub(super) fn run_developer(install: Option<(&Path, &str, bool)>) -> Result<(), BuildError> {
+    // Fail a malformed install request before compiler/source or filesystem work.
+    if let Some((input, published_at, _)) = install {
+        local_archive_command::validate_stamp(published_at)?;
+        if !absolute_local_disk_locator(input) {
+            return Err(refuse(
+                "developer initial-install inputs must be absolute local-disk paths without traversal",
+            ));
+        }
+    }
+    let root = std::env::current_dir().map_err(refuse)?;
+    let _project = windows_inputs::pin_input_root(&root)?;
+    let mut file = local_source::pin_file(&root.join("keld.build.ts"), MAX_INPUT)?;
+    let recipe =
+        config::parse_windows_build(std::str::from_utf8(&read(&mut file)?).map_err(refuse)?)?;
+    if recipe.signing != "developer-local" {
+        return Err(refuse(
+            "ordinary Windows build requires signing: 'developer-local' in keld.build.ts",
+        ));
+    }
+    let signer = recipe
+        .developer_signer
+        .ok_or_else(|| refuse("developerSigner absent"))?;
+    let mut nonce_bytes = [0_u8; 16];
+    getrandom::fill(&mut nonce_bytes).map_err(refuse)?;
+    let nonce = local_source::observed_hex(&nonce_bytes);
+    let out_dir = resolve(&root, &recipe.out_dir)?;
+    let _output = windows_inputs::pin_input_root(&out_dir)?;
+    let source = local_source::Request {
+        source: resolve(&root, &recipe.source_root)?,
+        commit: recipe.source_commit,
+        session: out_dir.join(format!("session-{nonce}")),
+        git: resolve(&root, &signer.git)?,
+        cargo: resolve(&root, &signer.cargo)?,
+        rustc: resolve(&root, &signer.rustc)?,
+        cargo_home: resolve(&root, &signer.cargo_home)?,
+        cache_mode: local_source::CacheMode::MutableDeveloper,
+    };
+    let images = local_images::ImageRequest {
+        source,
+        app_root: root.clone(),
+        channel: recipe.channel,
+        release_public_key: resolve(&root, &signer.release_public_key)?,
+        sign_tool: resolve(&root, &signer.sign_tool.path)?,
+        sign_tool_sha256: local_source::observed_hex(&signer.sign_tool.sha256),
+        certificate_thumbprint: signer.certificate_thumbprint,
+        publisher_scope: signer.publisher_scope,
+        profile_admission: windows_inputs::ProfileAdmission::UndeclaredDeveloper,
+    };
+    let compiler = local_archive_command::CompilerRequest {
+        typescript_root: resolve(&root, &recipe.typescript_root)?,
+        bun: resolve(&root, &recipe.bun.path)?,
+        bun_sha256: recipe.bun.sha256,
+        tsc: resolve(&root, &recipe.tsc.path)?,
+        tsc_sha256: recipe.tsc.sha256,
+    };
+    println!(
+        "Building Windows DEVELOPER LOCAL application using the explicitly selected existing certificate; no public release or key creation."
+    );
+    if let Some((inputs, published_at, create_scaffold)) = install {
+        // The external signer must respond to the exact one-use emitted manifest.
+        // Only the retained, authenticated signed Host may commit the baseline.
+        local_archive_command::run_developer_initial_install(
+            images,
+            compiler,
+            &recipe.modules,
+            published_at,
+            inputs,
+            create_scaffold,
+        )
+    } else {
+        local_archive_command::run_developer(images, compiler, &recipe.modules)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +329,27 @@ mod tests {
         assert!(resolve(Path::new("D:/project"), Path::new(r"\\server\share\out")).is_err());
         assert!(resolve(Path::new("D:/project"), Path::new("E:/out/../other")).is_err());
     }
+    #[test]
+    fn developer_install_refuses_invalid_stamp_or_external_locator_before_project_io() {
+        let bad_stamp = run_developer(Some((
+            Path::new("D:/fresh/inputs.json"),
+            "not-a-utc-timestamp",
+            true,
+        )))
+        .expect_err("invalid publishedAt must refuse before project input");
+        assert!(bad_stamp.to_string().contains("UTC"), "{bad_stamp}");
+
+        for path in [
+            r"\\server\share\inputs.json",
+            "D:/outside/../inputs.json",
+            "D:relative.json",
+        ] {
+            let error = run_developer(Some((Path::new(path), "2026-11-13T15:00:00Z", true)))
+                .expect_err("untrusted install locator must refuse before project input");
+            assert!(error.to_string().contains("local-disk"), "{error}");
+        }
+    }
+
     #[test]
     fn stale_host_commit_cannot_replace_selected_integrated_source() {
         require_source_commit(&"1".repeat(40), &"1".repeat(40)).unwrap();

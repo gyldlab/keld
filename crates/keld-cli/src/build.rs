@@ -139,8 +139,18 @@ fn is_windows_app_input_check(args: &[String]) -> bool {
         || matches!(args, [flag, target, check] if flag == "--target" && target == "windows-x64" && check == "--check-app-inputs")
 }
 
-/// Recognizes only the ordinary Windows product route after diagnostic routes.
-fn windows_product_session(args: &[String]) -> Result<Option<&str>, BuildError> {
+/// User-facing Windows developer build and the retained explicit local-test route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowsProductRoute<'a> {
+    Developer,
+    DeveloperInitialInstall {
+        inputs: &'a str,
+        published_at: &'a str,
+        create_scaffold: bool,
+    },
+    LocalTest(&'a str),
+}
+fn windows_product_session(args: &[String]) -> Result<Option<WindowsProductRoute<'_>>, BuildError> {
     let rest = match args {
         [flag, target, rest @ ..] if flag == "--target" && target == "windows-x64" => Some(rest),
         [target, rest @ ..] if target == "--target=windows-x64" => Some(rest),
@@ -148,10 +158,46 @@ fn windows_product_session(args: &[String]) -> Result<Option<&str>, BuildError> 
     };
     match rest {
         None => Ok(None),
-        Some([flag, path]) if flag == "--local-test-session" && !path.is_empty() => Ok(Some(path)),
+        Some([]) => Ok(Some(WindowsProductRoute::Developer)),
+        Some([flag, path]) if flag == "--local-test-session" && !path.is_empty() => {
+            Ok(Some(WindowsProductRoute::LocalTest(path)))
+        }
+        Some([flag, inputs, stamp_flag, stamp])
+            if matches!(
+                flag.as_str(),
+                "--initial-install-observed-inputs" | "--initial-install-create-scaffold-inputs"
+            ) && !inputs.is_empty()
+                && stamp_flag == "--published-at"
+                && !stamp.is_empty() =>
+        {
+            Ok(Some(WindowsProductRoute::DeveloperInitialInstall {
+                inputs,
+                published_at: stamp,
+                create_scaffold: flag == "--initial-install-create-scaffold-inputs",
+            }))
+        }
         Some(_) => Err(BuildError::invocation(
-            "Windows build requires explicit --local-test-session ABS_JSON and test-local-untimestamped in keld.build.ts; production signing is unavailable, installation is not implied",
+            "Windows build accepts developer-local keld.build.ts, an explicit --local-test-session ABS_JSON, or --initial-install-{observed,create-scaffold}-inputs ABS_JSON --published-at UTC; install requires separate signed catalog and one-use manifest signer",
         )),
+    }
+}
+
+#[cfg(windows)]
+fn run_windows_product(route: WindowsProductRoute<'_>) -> Result<(), BuildError> {
+    match route {
+        WindowsProductRoute::Developer => windows_product::run_developer(None),
+        WindowsProductRoute::DeveloperInitialInstall {
+            inputs,
+            published_at,
+            create_scaffold,
+        } => windows_product::run_developer(Some((
+            std::path::Path::new(inputs),
+            published_at,
+            create_scaffold,
+        ))),
+        WindowsProductRoute::LocalTest(session) => {
+            windows_product::run(std::path::Path::new(session))
+        }
     }
 }
 
@@ -168,14 +214,20 @@ fn parse_args(args: &[String]) -> Result<(), BuildError> {
 const BUILD_USAGE: &str = "usage:
   keld build --target macos-arm64
   keld build --target windows-x64 --check-app-inputs
+  keld build --target windows-x64
   keld build --target windows-x64 --local-test-session ABS_JSON
+  keld build --target windows-x64 --initial-install-create-scaffold-inputs ABS_JSON --published-at UTC
 
 Targets require their native operating system; macos-arm64 requires Apple Silicon.
 Windows --check-app-inputs validates authoring only; it does not build an app.
-Windows --local-test-session builds a LOCAL TEST package with an existing test signer.
-It requires keld.build.ts with signing: 'test-local-untimestamped' and an absolute
-session JSON path. Production signing is unavailable; installation, app launch,
-and Strict containment qualification are not implied.";
+Windows developer-local builds select an existing certificate through closed
+keld.build.ts authoring (developerSigner); the build never imports private keys.
+Windows --local-test-session preserves the original explicit LOCAL TEST route.
+Windows initial installation requires an existing signed catalog, an authorized
+one-use Ed25519 manifest signer and explicit install/update roots; it invokes the
+existing verified Host in the same retained build transaction. Build success alone
+is not proof of installation, app launch or Strict runtime qualification.
+Public release trust and Store publication are not part of this developer build.";
 
 /// Builds the selected local cell using the invocation directory.
 ///
@@ -251,14 +303,14 @@ pub fn run_build(args: &[String]) -> Result<(), BuildError> {
             ));
         }
     }
-    if let Some(session) = windows_product_session(args)? {
+    if let Some(route) = windows_product_session(args)? {
         #[cfg(windows)]
         {
-            return windows_product::run(std::path::Path::new(session));
+            return run_windows_product(route);
         }
         #[cfg(not(windows))]
         {
-            let _ = session;
+            let _ = route;
             return Err(BuildError::invocation(
                 "Windows product build requires native Windows; no source was built or signed",
             ));
@@ -496,9 +548,80 @@ mod tests {
             run_build(&[flag.into()]).expect("build help does not require a project");
         }
         assert!(BUILD_USAGE.contains("--target windows-x64 --local-test-session ABS_JSON"));
-        assert!(BUILD_USAGE.contains("Production signing is unavailable"));
+        assert!(BUILD_USAGE.contains("developer-local"));
         assert!(BUILD_USAGE.contains("installation, app launch"));
         assert!(BUILD_USAGE.contains("does not build an app"));
+    }
+
+    #[test]
+    fn windows_initial_install_requires_explicit_closed_invocation() {
+        for (flag, create_scaffold) in [
+            ("--initial-install-observed-inputs", false),
+            ("--initial-install-create-scaffold-inputs", true),
+        ] {
+            for target in [
+                vec!["--target", "windows-x64"],
+                vec!["--target=windows-x64"],
+            ] {
+                let mut args: Vec<String> = target.into_iter().map(str::to_owned).collect();
+                args.extend([
+                    flag.to_owned(),
+                    "D:/owned/install-inputs.json".to_owned(),
+                    "--published-at".to_owned(),
+                    "2026-11-13T15:00:00Z".to_owned(),
+                ]);
+                assert_eq!(
+                    windows_product_session(&args).unwrap(),
+                    Some(WindowsProductRoute::DeveloperInitialInstall {
+                        inputs: "D:/owned/install-inputs.json",
+                        published_at: "2026-11-13T15:00:00Z",
+                        create_scaffold,
+                    })
+                );
+            }
+        }
+        for rest in [
+            vec!["--initial-install-create-scaffold-inputs", ""],
+            vec!["--initial-install-observed-inputs", "D:/observed.json"],
+            vec![
+                "--initial-install-create-scaffold-inputs",
+                "D:/observed.json",
+                "--published-at",
+            ],
+            vec![
+                "--initial-install-create-scaffold-inputs",
+                "D:/observed.json",
+                "--published-at",
+                "",
+            ],
+            vec![
+                "--initial-install-create-scaffold-inputs",
+                "D:/observed.json",
+                "--published-at",
+                "2026-11-13T15:00:00Z",
+                "--sign",
+            ],
+            vec![
+                "--local-test-session",
+                "D:/test.json",
+                "--initial-install-observed-inputs",
+                "D:/observed.json",
+            ],
+            vec![
+                "--initial-install-create-scaffold-inputs",
+                "D:/observed.json",
+                "--sign",
+                "2026-11-13T15:00:00Z",
+            ],
+        ] {
+            let mut args = vec!["--target".to_owned(), "windows-x64".to_owned()];
+            args.extend(rest.into_iter().map(str::to_owned));
+            assert!(windows_product_session(&args).is_err(), "{args:?}");
+        }
+        assert_eq!(
+            windows_product_session(&["--target=windows-x64".into()]).unwrap(),
+            Some(WindowsProductRoute::Developer)
+        );
     }
 
     #[test]
@@ -608,7 +731,7 @@ mod windows_product_route_tests {
         values.iter().map(|s| (*s).to_owned()).collect()
     }
     #[test]
-    fn ordinary_windows_route_is_explicit_test_only_and_closed() {
+    fn ordinary_windows_route_accepts_developer_and_retains_closed_test_mode() {
         for a in [
             args(&[
                 "--target",
@@ -624,11 +747,10 @@ mod windows_product_route_tests {
         ] {
             assert_eq!(
                 windows_product_session(&a).unwrap(),
-                Some("D:/session.json")
+                Some(WindowsProductRoute::LocalTest("D:/session.json"))
             );
         }
         for a in [
-            args(&["--target", "windows-x64"]),
             args(&["--target", "windows-x64", "--sign", "production"]),
             args(&[
                 "--target",
@@ -640,6 +762,14 @@ mod windows_product_route_tests {
         ] {
             assert!(windows_product_session(&a).is_err());
         }
+        assert_eq!(
+            windows_product_session(&args(&["--target", "windows-x64"])).unwrap(),
+            Some(WindowsProductRoute::Developer)
+        );
+        assert_eq!(
+            windows_product_session(&args(&["--target=windows-x64"])).unwrap(),
+            Some(WindowsProductRoute::Developer)
+        );
         assert_eq!(
             windows_product_session(&args(&["--target", "macos-arm64"])).unwrap(),
             None
