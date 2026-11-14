@@ -1,5 +1,5 @@
 //! Actual socket/writer close ordering; fake UI receipts prove no native behavior.
-use super::{Fixture, TestResult, fact, install_successor, reply, snapshot, verdict};
+use super::{LegacyPolicyFixture, TestResult, fact, install_successor, reply, snapshot, verdict};
 use keld_ipc::codec::{decode, encode};
 use keld_ipc::link::read_frame;
 use keld_ipc::window::{CloseVerdict, WindowEvent, WindowRequest, WindowResponse};
@@ -9,13 +9,13 @@ use std::time::Duration;
 
 #[test]
 fn bounds_precede_close_and_stale_allow_is_diagnosed_once_without_teardown() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let window = fixture.build(1, 7)?;
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowBounds {
+        .window_native_event_legacy_policy(AppWindowEvent::WindowBounds {
             view: WebviewId(7),
             x: 50,
             y: 60,
@@ -85,7 +85,7 @@ fn bounds_precede_close_and_stale_allow_is_diagnosed_once_without_teardown() -> 
     reply(&mut fixture, 6, WindowResponse::Accepted)?;
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowFullScreen {
+        .window_native_event_legacy_policy(AppWindowEvent::WindowFullScreen {
             view: WebviewId(7),
             full_screen: true,
         })?;
@@ -108,7 +108,7 @@ fn bounds_precede_close_and_stale_allow_is_diagnosed_once_without_teardown() -> 
 
 #[test]
 fn repeated_destroy_waits_for_actual_release_then_facts_precede_both_replies() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let window = fixture.build(1, 7)?;
@@ -128,13 +128,13 @@ fn repeated_destroy_waits_for_actual_release_then_facts_precede_both_replies() -
     reply(&mut fixture, 4, WindowResponse::AlreadyClosing)?;
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowFocus {
+        .window_native_event_legacy_policy(AppWindowEvent::WindowFocus {
             view: WebviewId(7),
             focused: false,
         })?;
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowReleased { view: WebviewId(7) })?;
+        .window_native_event_legacy_policy(AppWindowEvent::WindowReleased { view: WebviewId(7) })?;
     fact(&mut fixture, &WindowEvent::Destroyed { window })?;
     let (header, bytes) = read_frame(&mut fixture.peer)?;
     assert_eq!(
@@ -155,7 +155,7 @@ fn repeated_destroy_waits_for_actual_release_then_facts_precede_both_replies() -
 
 #[test]
 fn one_stalled_release_caps_host_destroy_correlations_with_typed_nonterminal_error() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let window = fixture.build(1, 7)?;
@@ -178,7 +178,7 @@ fn one_stalled_release_caps_host_destroy_correlations_with_typed_nonterminal_err
     reply(&mut fixture, 67, WindowResponse::AlreadyClosing)?;
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowReleased { view: WebviewId(7) })?;
+        .window_native_event_legacy_policy(AppWindowEvent::WindowReleased { view: WebviewId(7) })?;
     fact(&mut fixture, &WindowEvent::Destroyed { window })?;
     let (header, body) = read_frame(&mut fixture.peer)?;
     assert_eq!(
@@ -201,7 +201,7 @@ fn one_stalled_release_caps_host_destroy_correlations_with_typed_nonterminal_err
 
 #[test]
 fn gap_close_replays_one_coalesced_pending_snapshot_and_only_successor_can_answer() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let window = fixture.build(1, 7)?;
@@ -226,25 +226,29 @@ fn gap_close_replays_one_coalesced_pending_snapshot_and_only_successor_can_answe
     );
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowCloseRequested { view: WebviewId(7) })?;
+        .window_native_event_legacy_policy(AppWindowEvent::WindowCloseRequested {
+            view: WebviewId(7),
+        })?;
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowCloseRequested { view: WebviewId(7) })?;
+        .window_native_event_legacy_policy(AppWindowEvent::WindowCloseRequested {
+            view: WebviewId(7),
+        })?;
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowFocus {
+        .window_native_event_legacy_policy(AppWindowEvent::WindowFocus {
             view: WebviewId(7),
             focused: false,
         })?;
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowFocus {
+        .window_native_event_legacy_policy(AppWindowEvent::WindowFocus {
             view: WebviewId(7),
             focused: true,
         })?;
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowMaximized {
+        .window_native_event_legacy_policy(AppWindowEvent::WindowMaximized {
             view: WebviewId(7),
             maximized: true,
         })?;
@@ -253,7 +257,7 @@ fn gap_close_replays_one_coalesced_pending_snapshot_and_only_successor_can_answe
         "recovery gap never tears down on close"
     );
     install_successor(&mut fixture)?;
-    fixture.handle.subscribe_window(
+    fixture.handle.subscribe_window_legacy_policy(
         &fixture.caller()?,
         CorrelationId(3),
         keld_ipc::channel_table::WINDOW.wire_id(),
@@ -277,7 +281,7 @@ fn gap_close_replays_one_coalesced_pending_snapshot_and_only_successor_can_answe
         decode::<LifecycleResponse>(&bytes)?,
         LifecycleResponse::Subscribed
     );
-    fixture.handle.dispatch_window(
+    fixture.handle.dispatch_window_legacy_policy(
         &retired,
         CorrelationId(4),
         &encode(&WindowRequest::CloseReply {

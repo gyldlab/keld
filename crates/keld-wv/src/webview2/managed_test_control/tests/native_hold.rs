@@ -6,9 +6,13 @@ fn hold_parser_preserves_a_windows_drive_colon() {
     for (input, expected) in [
         (r"destroyed:D:\fixture\hold", HoldPoint::Destroyed),
         (r"build-pump:D:\fixture\hold", HoldPoint::BuildPump),
+        (
+            r"build-pump-prefill:D:\fixture\hold",
+            HoldPoint::BuildPumpPrefill,
+        ),
     ] {
         let hold = NativeHold::parse(input).expect("approved absolute hold directory");
-        assert_eq!(hold.point, expected);
+        assert_eq!(hold.point.get(), expected);
         assert_eq!(hold.directory, std::path::Path::new(r"D:\fixture\hold"));
     }
     for bad in [
@@ -93,4 +97,21 @@ fn initial_activation_stimulus_is_one_build_and_build_pump_only() {
         rejected,
         "malformed stimulus must fail before creating a HWND"
     );
+}
+
+#[test]
+fn prefill_selection_is_consumed_once_without_disabling_the_same_build_hold() {
+    let hold =
+        NativeHold::parse(r"build-pump-prefill:D:\fixture\hold").expect("fixed prefill fixture");
+    assert!(hold.holds_builds());
+    assert!(hold.take_destroyed_prefill());
+    assert!(!hold.take_destroyed_prefill());
+    assert!(
+        hold.holds_builds(),
+        "the original native hold remains selected"
+    );
+    for value in [r"build-pump:D:\fixture\hold", r"destroyed:D:\fixture\hold"] {
+        let ordinary = NativeHold::parse(value).expect("ordinary fixture");
+        assert!(!ordinary.take_destroyed_prefill());
+    }
 }

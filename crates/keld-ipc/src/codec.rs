@@ -33,6 +33,21 @@ pub fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, IpcError> {
     to_allocvec(value).map_err(IpcError::Codec)
 }
 
+/// Count the canonical postcard encoding without allocating output storage.
+///
+/// Callers that own a bounded writer position reserve it before this pass, check
+/// the returned length against that position's limit, then use [`encode_into`]
+/// with exactly that much storage. Counting is not successful delivery and does
+/// not replace the final bounded encoding check if the value can change.
+///
+/// # Errors
+///
+/// Returns [`IpcError::Codec`] when the same postcard serializer rejects `value`.
+pub fn encoded_len<T: serde::Serialize + ?Sized>(value: &T) -> Result<usize, IpcError> {
+    postcard::serialize_with_flavor(value, postcard::ser_flavors::Size::default())
+        .map_err(IpcError::Codec)
+}
+
 /// Encodes into caller-owned storage and returns only its used prefix.
 ///
 /// Uses the same postcard schema as [`encode`], without allocating an output
@@ -111,6 +126,46 @@ mod tests {
             encode_into(&1_u8, &mut []),
             Err(IpcError::Codec(postcard::Error::SerializeBufferFull))
         ));
+    }
+
+    #[test]
+    fn counted_size_matches_canonical_bytes_at_varint_boundaries() {
+        for length in [0, 1, 127, 128, 16_383, 16_384] {
+            let value = EchoRequest {
+                message: "x".repeat(length),
+                count: u32::MAX,
+            };
+            let count = encoded_len(&value).expect("count canonical postcard bytes");
+            let expected = encode(&value).expect("existing canonical encoding");
+            assert_eq!(count, expected.len());
+            let mut exact = vec![0; count].into_boxed_slice();
+            assert_eq!(
+                encode_into(&value, &mut exact).expect("exact bounded encoding"),
+                expected
+            );
+            assert!(
+                encode_into(&value, &mut exact[..count - 1]).is_err(),
+                "one byte below the counted boundary refuses"
+            );
+        }
+        assert_eq!(encoded_len(&()).expect("empty canonical value"), 0);
+        assert_eq!(
+            encoded_len("unsized").expect("borrowed value"),
+            encode(&"unsized").expect("same codec").len()
+        );
+    }
+
+    #[test]
+    fn counted_size_preserves_serializer_refusal() {
+        struct Refused;
+        impl serde::Serialize for Refused {
+            fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("fixture serialization refusal"))
+            }
+        }
+        assert!(encoded_len(&Refused).is_err());
+        assert!(encode(&Refused).is_err());
+        assert!(encode_into(&Refused, &mut [0; 8]).is_err());
     }
 
     #[test]

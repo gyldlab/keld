@@ -122,6 +122,8 @@ impl Fixture {
         let (guardian_tx, guardian) = mpsc::channel();
         let (window_tx, window) = mpsc::channel();
         let handle = PrimaryRouterHandle {
+            #[cfg(windows)]
+            primary_writer: None,
             current: Arc::new(Mutex::new(None)),
             readers: Arc::new(Mutex::new(HashMap::new())),
             pending_echo: Arc::new(Mutex::new(None)),

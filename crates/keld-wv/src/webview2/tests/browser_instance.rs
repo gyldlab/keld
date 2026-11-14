@@ -46,10 +46,7 @@ fn rebind(release: &ProfileReleaseWait, pid: u32, process: OwnedHandle) -> Resul
     release.bind_browser_pid_with(
         pid,
         |_| Some(process),
-        |old| {
-            drop(old);
-            Ok(())
-        },
+        |_old| Ok(()),
         |new| Ok(BrowserProcess::Polled(new)),
     )
 }
@@ -97,9 +94,8 @@ fn first_identified_controller_publishes_generation_one_only_after_watch_registr
                 operations.borrow_mut().push("open");
                 Some(alive_process_handle())
             },
-            |old| {
+            |_old| {
                 operations.borrow_mut().push("retire");
-                drop(old);
                 Ok(())
             },
             |new| {
@@ -130,10 +126,7 @@ fn ac21_a1_old_normal_is_drained_before_rebind_then_credit_is_cleared() {
                     .set(release.observed.get() && release.normal_exit_observed_at.get().is_some());
                 Some(exited_process_handle())
             },
-            |old| {
-                drop(old);
-                Ok(())
-            },
+            |_old| Ok(()),
             |new| Ok(BrowserProcess::Polled(new)),
         )
         .expect("bind next controller");
@@ -184,9 +177,8 @@ fn ac21_c_same_pid_unsignaled_handle_reuses_generation_and_one_receipt() {
                 operations.borrow_mut().push("open");
                 Some(alive_process_handle())
             },
-            |old| {
+            |_old| {
                 operations.borrow_mut().push("retire");
-                drop(old);
                 Ok(())
             },
             |new| {
@@ -243,10 +235,7 @@ fn ac21_f_a_bind_after_terminal_arming_is_an_immediate_invariant_fault() {
             opens.set(opens.get() + 1);
             Some(alive_process_handle())
         },
-        |old| {
-            drop(old);
-            Ok(())
-        },
+        |_old| Ok(()),
         |new| Ok(BrowserProcess::Polled(new)),
     );
     assert_eq!(release.fault(), Some(ProfileReleaseFault::RebindUnproven));
@@ -268,9 +257,8 @@ fn ac21_g_failed_open_cannot_retire_the_old_handle_or_fall_back_to_grace() {
         let result = release.bind_browser_pid_with(
             pid,
             |_| None,
-            |old| {
+            |_old| {
                 retires.set(retires.get() + 1);
-                drop(old);
                 Ok(())
             },
             |new| Ok(BrowserProcess::Polled(new)),
@@ -307,9 +295,8 @@ fn generation_overflow_refuses_before_opening_or_retiring_any_handle() {
             opens.set(opens.get() + 1);
             Some(alive_process_handle())
         },
-        |old| {
+        |_old| {
             retires.set(retires.get() + 1);
-            drop(old);
             Ok(())
         },
         |new| Ok(BrowserProcess::Polled(new)),
@@ -368,6 +355,7 @@ fn unidentified_controller_preserves_an_abnormal_receipt_queued_during_its_build
 fn ac21_i_checked_retirement_failure_never_registers_or_unregisters_again() {
     for refusal in [false, true] {
         let (_sender, release) = owner(A, Some(alive_process_handle()));
+        let old_handle = release.process.borrow().as_ref().expect("old handle").raw();
         let operations = RefCell::new(Vec::new());
         let live_registrations = Cell::new(1_u32);
         let result = release.bind_browser_pid_with(
@@ -376,9 +364,8 @@ fn ac21_i_checked_retirement_failure_never_registers_or_unregisters_again() {
                 operations.borrow_mut().push("open");
                 Some(alive_process_handle())
             },
-            |old| {
+            |_old| {
                 operations.borrow_mut().push("retire");
-                drop(old);
                 if refusal {
                     Err(profile_failure_with(
                         ProfileErrorKind::LifecycleUnproven,
@@ -405,15 +392,30 @@ fn ac21_i_checked_retirement_failure_never_registers_or_unregisters_again() {
             assert_eq!(&*operations.borrow(), &["open", "retire"]);
             assert_eq!(release.binding.load(), A);
             assert_eq!(release.fault(), Some(ProfileReleaseFault::WakeRetireFailed));
-            assert!(
-                release.process.borrow().is_none(),
-                "failed retirement was consumed"
+            assert_eq!(
+                release
+                    .process
+                    .borrow()
+                    .as_ref()
+                    .expect("same retained old process")
+                    .raw(),
+                old_handle,
+                "failed retirement must retain the original native handle"
             );
             assert!(rebind(&release, B.pid, alive_process_handle()).is_err());
             assert_eq!(
                 &*operations.borrow(),
                 &["open", "retire"],
                 "no second retirement"
+            );
+            assert_eq!(
+                release
+                    .process
+                    .borrow()
+                    .as_ref()
+                    .expect("old owner survived refusal")
+                    .raw(),
+                old_handle
             );
             release.arm();
             assert_eq!(release.fault(), Some(ProfileReleaseFault::WakeRetireFailed));
@@ -427,15 +429,71 @@ fn ac21_i_checked_retirement_failure_never_registers_or_unregisters_again() {
 }
 
 #[test]
+fn retirement_unwind_restores_the_same_old_process_without_a_refcell_borrow() {
+    let (_sender, release) = owner(A, Some(alive_process_handle()));
+    let old_handle = release.process.borrow().as_ref().expect("old handle").raw();
+    let retire_calls = Cell::new(0);
+    let register_calls = Cell::new(0);
+    let result = release.bind_browser_pid_with(
+        B.pid,
+        |_| Some(alive_process_handle()),
+        |old| {
+            retire_calls.set(retire_calls.get() + 1);
+            assert_eq!(old.raw(), old_handle);
+            let observed = release
+                .process
+                .try_borrow_mut()
+                .expect("no RefCell borrow may survive the native retirement cut");
+            assert!(observed.is_none(), "the same old owner is locally retained");
+            drop(observed);
+            panic!("controlled retirement unwind before native completion");
+        },
+        |new| {
+            register_calls.set(register_calls.get() + 1);
+            Ok(BrowserProcess::Polled(new))
+        },
+    );
+    assert!(result.is_err());
+    assert_eq!(release.fault(), Some(ProfileReleaseFault::WakeRetireFailed));
+    assert_eq!(release.binding.load(), A);
+    assert_eq!(
+        release
+            .process
+            .borrow()
+            .as_ref()
+            .expect("same old owner restored")
+            .raw(),
+        old_handle
+    );
+    assert_eq!((retire_calls.get(), register_calls.get()), (1, 0));
+    assert!(
+        release
+            .bind_browser_pid_with(
+                B.pid,
+                |_| panic!("a latched failure cannot open again"),
+                |_| panic!("a latched failure cannot retire again"),
+                |_| panic!("a latched failure cannot register again"),
+            )
+            .is_err()
+    );
+    assert_eq!(
+        release
+            .process
+            .borrow()
+            .as_ref()
+            .expect("no retry consumed old owner")
+            .raw(),
+        old_handle
+    );
+}
+
+#[test]
 fn failed_new_registration_keeps_old_binding_and_latches_without_grace_fallback() {
     let (_sender, release) = owner(A, Some(alive_process_handle()));
     let result = release.bind_browser_pid_with(
         B.pid,
         |_| Some(alive_process_handle()),
-        |old| {
-            drop(old);
-            Ok(())
-        },
+        |_old| Ok(()),
         |_new| {
             Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,

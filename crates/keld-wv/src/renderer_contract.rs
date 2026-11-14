@@ -214,3 +214,12 @@ impl PartialEq for OriginalDocumentDestroyAdmission {
     }
 }
 impl Eq for OriginalDocumentDestroyAdmission {}
+
+// Compile the same pure fixture body on Windows. The historical macOS module
+// and MacNativeDocumentFixture alias remain unchanged for existing consumers.
+// Neither platform exposes a modeled commit in normal production builds.
+#[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+#[path = "wkwebview/macos_document/recovery_fixture.rs"]
+mod recovery_fixture;
+#[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+pub use recovery_fixture::NativeDocumentFixture;

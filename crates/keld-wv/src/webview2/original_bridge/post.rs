@@ -3,23 +3,25 @@
 #![deny(unsafe_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+mod entry;
+pub(super) use entry::{PostTarget, post_prepared_with_entry};
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
-use windows::core::PCWSTR;
 
-use super::super::guarded_navigation::canonical_webview_identity;
-use super::super::original_callbacks::{callback_credit, source_uri};
 use super::super::original_navigation::OriginalNavigation;
 use crate::renderer_bridge::{
     NativeControlReservation, RendererRoleWitness, RouteRetirementPermit,
 };
 use crate::renderer_contract::CheckedNativeDocumentLease;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+use crate::webview2::managed_test_control::navigation_post::PostCarrier;
 use crate::wv_link::HostRendererMessage;
 
 /// Only the fixed route-unavailable carrier may use the old Registry's permit.
-pub(super) enum ControlAuthority {
+pub(super) enum PostAuthority {
     Current(RendererRoleWitness),
     RetiredRoute(RouteRetirementPermit),
 }
@@ -37,14 +39,17 @@ pub(super) struct PreparedControl {
     wide: Vec<u16>,
     epoch: [u8; 32],
     document: CheckedNativeDocumentLease,
-    authority: ControlAuthority,
+    authority: PostAuthority,
     phase: PostPhase,
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    carrier: PostCarrier,
     charge: NativeControlReservation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PostPhase {
+pub(super) enum PostPhase {
     Prepared,
+    Cancelled,
     Posting,
     Returned,
     OutcomeUnknown,
@@ -63,11 +68,33 @@ pub(super) enum PostResult {
 }
 
 impl PostPhase {
-    fn prior_attempt_result(self) -> Option<PostResult> {
+    pub(super) fn prior_attempt_result(self) -> Option<PostResult> {
         match self {
             Self::Prepared => None,
+            Self::Cancelled => Some(PostResult::NotAdmitted),
             Self::Posting | Self::OutcomeUnknown => Some(PostResult::OutcomeUnknown),
             Self::Returned => Some(PostResult::AlreadyReturned),
+        }
+    }
+
+    /// Irreversible no-entry cancellation on this same operation. A later
+    /// source/role change cannot turn it back into a prepared publication.
+    pub(super) fn cancel_unentered(&mut self) -> bool {
+        if matches!(self, Self::Prepared | Self::Cancelled) {
+            *self = Self::Cancelled;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// An actual same Close may settle unknown native custody only outside the
+    /// in-call phase. API return and consumer/logical terminal remain separate.
+    pub(super) fn physically_quiescent(self, actual_closed: bool) -> bool {
+        match self {
+            Self::Prepared | Self::Cancelled | Self::Returned => true,
+            Self::Posting => false,
+            Self::OutcomeUnknown => actual_closed,
         }
     }
 
@@ -88,7 +115,7 @@ impl PreparedControl {
         carrier: &HostRendererMessage<'_>,
         epoch: &str,
         document: CheckedNativeDocumentLease,
-        authority: ControlAuthority,
+        authority: PostAuthority,
         charge: NativeControlReservation,
     ) -> Result<Self, PrepareFailure> {
         let prepared = prepare_bytes(carrier, epoch, &authority, &charge);
@@ -99,133 +126,99 @@ impl PreparedControl {
                 document,
                 authority,
                 phase: PostPhase::Prepared,
+                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                carrier: PostCarrier::control(carrier),
                 charge,
             }),
             Err(detail) => Err(PrepareFailure { detail, charge }),
         }
     }
 
-    /// The caller supplies its exact retained view/navigation binding, not a
-    /// current-window lookup. The final predicate validates the live epoch in
-    /// the UI owner's existing state; it may only inspect local state and must
-    /// release every interior borrow before returning.
-    #[allow(unsafe_code)] // One reviewed PostWebMessageAsString on the retained STA view.
-    pub(super) fn post(
+    /// Pure same-operation entry runs against the navigation owner's already
+    /// borrowed living document inside the canonical Core retirement fence.
+    pub(super) fn post_with_entry(
         &mut self,
         view: &ICoreWebView2,
         expected_identity: usize,
         navigation: &Rc<RefCell<OriginalNavigation>>,
-        epoch_current: &mut dyn FnMut(&CheckedNativeDocumentLease, &[u8; 32]) -> bool,
+        enter: &mut dyn FnMut(
+            &CheckedNativeDocumentLease,
+            &[u8; 32],
+            &crate::native_document::NativeDocumentOwner,
+        ) -> bool,
     ) -> PostResult {
-        if let Some(result) = self.phase.prior_attempt_result() {
-            return result;
-        }
-        if !self.document.is_current() {
-            return PostResult::NotAdmitted;
-        }
-        // Native getters and shared source parsing all precede the final fence.
-        // Their temporary source metadata uses its existing owner. CONTROL
-        // payload/UTF16 backing remains exclusively on the Core CONTROL slot.
-        let source_ok = (|| {
-            let _credit = callback_credit(navigation).ok()?;
-            if canonical_webview_identity(view).ok()? != expected_identity {
-                return None;
-            }
-            let uri = source_uri(view).ok()?;
-            let source = navigation.try_borrow().ok()?.source().clone();
-            // The shared parser performs Windows ordinal comparison. No
-            // navigation interior borrow survives that native observation.
-            if !self.document.belongs_to_source(&source)
-                || source.qualify_document_url(&uri).is_err()
-            {
-                return None;
-            }
-            Some(())
-        })();
-        if source_ok.is_none() {
-            return PostResult::NotAdmitted;
-        }
-        let message = PCWSTR(self.wide.as_ptr());
-        let document = &self.document;
-        let epoch = &self.epoch;
-        let phase = &mut self.phase;
-        let mut admit = || {
-            if *phase != PostPhase::Prepared || !epoch_current(document, epoch) {
-                return false;
-            }
-            let Ok(mut state) = navigation.try_borrow_mut() else {
-                return false;
-            };
-            if !state.begin_post(document) {
-                return false;
-            }
-            *phase = PostPhase::Posting;
-            true
-        };
-        let admitted = match &self.authority {
-            ControlAuthority::Current(role) => role.try_admit_native(&mut admit),
-            ControlAuthority::RetiredRoute(permit) => {
-                permit.try_admit_route_unavailable(document, &mut admit)
-            }
-        };
-        if let Some(result) = self.phase.finish_admission(admitted) {
-            return result;
-        }
-        // SAFETY: retained creating-STA view; bounded immutable NUL-terminated
-        // UTF16 backing lives through return. All QI/getters/source parsing ran
-        // first. The canonical fence just committed this exact document/epoch
-        // and posting sentinel, and all Rust/Core guards are now released.
-        // No native getter, callback, allocation, wait or pump intervenes here.
-        // S_OK proves API acceptance only. Same-thread navigation reentry is a
-        // qualification failure even if that native call eventually returns OK.
-        // https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2#postwebmessageasstring
-        let returned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-            view.PostWebMessageAsString(message)
-        }));
-        let finished = navigation
-            .try_borrow_mut()
-            .is_ok_and(|mut state| state.finish_post());
-        match (returned, finished) {
-            (Ok(result), true) => {
-                self.phase = PostPhase::Returned;
-                PostResult::Returned(result)
-            }
-            _ => {
-                self.phase = PostPhase::OutcomeUnknown;
-                if let Ok(mut state) = navigation.try_borrow_mut() {
-                    state.destroy();
-                }
-                PostResult::OutcomeUnknown
-            }
-        }
+        post_prepared_with_entry(
+            &mut self.phase,
+            &self.authority,
+            PostTarget {
+                view,
+                expected_identity,
+                navigation,
+                wide: &self.wide,
+                document: &self.document,
+                epoch: &self.epoch,
+                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                event_storage: None,
+                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                carrier: self.carrier,
+            },
+            enter,
+        )
     }
 
     /// Move only the SAME reservation after this operation's native completion
     /// or proved never-written cancellation. The original caller keeps any
     /// consumer/startup half live; this method does not acknowledge consumption.
+    #[cfg(test)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "Test refusal returns the complete same charged native carrier without allocation or lost custody."
+    )]
     pub(super) fn into_charge(self) -> Result<NativeControlReservation, Self> {
-        if matches!(self.phase, PostPhase::Posting | PostPhase::OutcomeUnknown) {
+        if !self.phase.physically_quiescent(false) {
             return Err(self);
         }
+        Ok(self.take_charge())
+    }
+
+    /// Actual same-controller Close can settle an outcome-unknown carrier, but
+    /// never an in-call borrow. It grants no consumer or logical completion.
+    #[expect(
+        clippy::result_large_err,
+        reason = "Refusal returns the complete charged native carrier without allocation or lost custody."
+    )]
+    pub(super) fn into_charge_after_close(
+        self,
+        close: &super::super::controller_custody::AdoptedControllerClose,
+    ) -> Result<NativeControlReservation, Self> {
+        if !self.phase.physically_quiescent(close.actual_closed()) {
+            return Err(self);
+        }
+        Ok(self.take_charge())
+    }
+
+    fn take_charge(self) -> NativeControlReservation {
         let Self {
             wide,
             epoch: _,
             document,
             authority,
             phase: _,
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                carrier: _,
             charge,
         } = self;
         drop(wide);
         drop(document);
         drop(authority);
-        Ok(charge)
+        charge
     }
 }
 
 fn prepare_bytes(
     carrier: &HostRendererMessage<'_>,
     epoch: &str,
-    authority: &ControlAuthority,
+    authority: &PostAuthority,
     charge: &NativeControlReservation,
 ) -> Result<(Vec<u16>, [u8; 32]), &'static str> {
     match carrier {
@@ -237,42 +230,53 @@ fn prepare_bytes(
         | HostRendererMessage::Error { .. } => {}
         _ => return Err("DATA cannot consume a CONTROL reservation"),
     }
-    if matches!(authority, ControlAuthority::RetiredRoute(_))
+    if matches!(authority, PostAuthority::RetiredRoute(_))
         && !matches!(carrier, HostRendererMessage::RouteState { ready: false })
     {
         return Err("retirement permit authorizes only route-state ready:false");
     }
+    prepare_encoded_bytes(carrier, epoch, |encoded, backing| {
+        charge
+            .try_extend_storage(encoded, backing)
+            .then_some(())
+            .ok_or("existing CONTROL storage budget is unavailable")
+    })
+}
+
+pub(super) fn prepare_encoded_bytes(
+    carrier: &HostRendererMessage<'_>,
+    epoch: &str,
+    pay: impl FnOnce(usize, usize) -> Result<(), &'static str>,
+) -> Result<(Vec<u16>, [u8; 32]), &'static str> {
     let encoded = carrier
         .encoded_len(epoch)
-        .map_err(|_| "invalid closed CONTROL carrier")?;
+        .map_err(|_| "invalid closed native publication carrier")?;
     let epoch: [u8; 32] = epoch
         .as_bytes()
         .try_into()
         .map_err(|_| "invalid native epoch")?;
     let units = encoded
         .checked_add(1)
-        .ok_or("native CONTROL storage overflow")?;
+        .ok_or("native publication storage overflow")?;
     let backing = units
         .checked_mul(2)
         .and_then(|wide| wide.checked_add(encoded))
-        .ok_or("native CONTROL storage overflow")?;
+        .ok_or("native publication storage overflow")?;
     // Add JSON plus worst-case UTF16 capacity to the *actual* existing record.
     // The previous DTO/wire allocations remain charged; no guessed total and
     // no second slot. Every failure leaves the old lease intact.
-    if !charge.try_extend_storage(encoded, backing) {
-        return Err("existing CONTROL storage budget is unavailable");
-    }
+    pay(encoded, backing)?;
     let bytes = carrier
         .encode(std::str::from_utf8(&epoch).map_err(|_| "invalid native epoch")?)
-        .map_err(|_| "CONTROL serialization failed")?;
-    let text = std::str::from_utf8(&bytes).map_err(|_| "CONTROL JSON is not UTF8")?;
+        .map_err(|_| "native publication serialization failed")?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| "native publication JSON is not UTF8")?;
     let mut wide = Vec::new();
     wide.try_reserve_exact(units)
-        .map_err(|_| "native CONTROL allocation failed")?;
+        .map_err(|_| "native publication allocation failed")?;
     wide.extend(text.encode_utf16());
     wide.push(0);
     if bytes.capacity() > encoded || wide.capacity() > units || wide.len() > units {
-        return Err("native CONTROL backing exceeded its reserved capacity");
+        return Err("native publication backing exceeded its reserved capacity");
     }
     Ok((wide, epoch))
 }

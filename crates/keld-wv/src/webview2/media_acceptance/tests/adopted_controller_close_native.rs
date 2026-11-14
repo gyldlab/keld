@@ -69,6 +69,9 @@ fn drive(
                             height: 480,
                             x: None,
                             y: None,
+                            original_source: None,
+                            preload_image: None,
+                            original_role: None,
                         })
                         .map_err(failure)?;
                 }
@@ -108,13 +111,15 @@ struct AppRun {
     outcome: Result<(), WvError>,
     trace: Result<DriverTrace, WvError>,
     witness_calls: u32,
+    facts: adopted_close_control::Facts,
+    custody: native_support::AppCustodyFacts,
 }
 
-fn run_managed(engine: backend::WebView2Engine, deadline: Instant) -> AppRun {
+fn run_managed(mut engine: backend::WebView2Engine, deadline: Instant) -> AppRun {
     let witness_calls = Cell::new(0_u32);
     let (commands, received) = mpsc::channel();
     let (events, received_events) = mpsc::channel();
-    let (outcome, trace) = std::thread::scope(|threads| {
+    let (outcome, trace, facts, custody) = std::thread::scope(|threads| {
         let driver_commands = commands.clone();
         let driver = threads.spawn(move || drive(&received_events, &driver_commands, deadline));
         eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=app-enter");
@@ -129,6 +134,15 @@ fn run_managed(engine: backend::WebView2Engine, deadline: Instant) -> AppRun {
             },
         );
         eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=app-return outcome={outcome:?}");
+        // Freeze the actual Close observations and SAME retained owners before
+        // fixture Drop or cleanup can change native liveness.
+        let facts = adopted_close_control::Scope::take_facts();
+        let custody = native_support::observe_app_custody(&engine, facts.capture.as_ref());
+        eprintln!("KELD_ADOPTED_CLOSE_CUSTODY {custody:?}");
+        // This fixture withholds a result only AFTER actual successful Close.
+        // Freeze the product outcome, then release its known-safe retained owner
+        // before joining the fixture event receiver. Production retains to exit.
+        drop(engine);
         drop(commands);
         eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=driver-join-enter");
         let trace = driver
@@ -136,12 +150,14 @@ fn run_managed(engine: backend::WebView2Engine, deadline: Instant) -> AppRun {
             .map_err(|_| failure("managed Close driver panicked"))
             .and_then(std::convert::identity);
         eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=driver-joined trace={trace:?}");
-        (outcome, trace)
+        (outcome, trace, facts, custody)
     });
     AppRun {
         outcome,
         trace,
         witness_calls: witness_calls.get(),
+        facts,
+        custody,
     }
 }
 
@@ -152,16 +168,13 @@ fn require_native_eligibility(
     trace: &DriverTrace,
     facts: &adopted_close_control::Facts,
     late: &adopted_close_control::Facts,
-    already_retired: bool,
 ) -> Result<(), WvError> {
-    // All prerequisites are independent of the disputed fault-latch assertion.
-    // A missing callback/control/normal receipt is not a valid negative control.
-    if !already_retired
-        || initial_windows != 0
+    // Native inputs and independent cleanup remain prerequisites. Production
+    // release/retention are the disputed outputs, checked by the split verdict.
+    if initial_windows != 0
         || initial_phase != "running"
         || trace.ready != 1
         || trace.built != 1
-        || trace.released != 1
         || trace.error.is_some()
         || facts.calls != 1
         || facts.native_successes != 1
@@ -190,16 +203,36 @@ fn require_product_verdict(
     final_phase: &str,
     witness_calls: u32,
     outcome: &Result<(), WvError>,
+    trace: &DriverTrace,
+    custody: &native_support::AppCustodyFacts,
+    already_retired: bool,
 ) -> Result<(), WvError> {
     if withhold {
-        if final_phase == "stopping" && witness_calls == 0 && expected_close_fault(outcome) {
+        let same_retained_view = matches!(
+            custody.retained_view,
+            Ok(Some((view, false))) if trace.view == Some(view)
+        );
+        if final_phase == "stopping"
+            && witness_calls == 0
+            && expected_close_fault(outcome)
+            && trace.released == 0
+            && custody.first_fault == Some(backend::ProfileReleaseFault::ControllerCloseFailed)
+            && same_retained_view
+        {
             Ok(())
         } else {
             Err(failure(
-                "a managed Close error received normal shutdown or durable Idle credit",
+                "a managed Close error lost its original cause/owner or received release credit",
             ))
         }
-    } else if outcome.is_ok() && final_phase == "idle" && witness_calls == 1 {
+    } else if outcome.is_ok()
+        && final_phase == "idle"
+        && witness_calls == 1
+        && trace.released == 1
+        && already_retired
+        && custody.first_fault.is_none()
+        && matches!(custody.retained_view, Ok(None))
+    {
         Ok(())
     } else {
         Err(failure(
@@ -234,12 +267,18 @@ fn case(withhold: bool) -> Result<Result<(), WvError>, WvError> {
         outcome,
         trace,
         witness_calls,
+        facts,
+        custody,
     } = run_managed(engine, deadline);
     // Capture the actual durable product result before any test cleanup.
     let final_phase = raw_phase(&plan);
     // Metadata only: keep the original callback until raw native cleanup ends.
-    witness.prepare_after_app(expected_close_fault(&outcome), witness_calls);
-    let facts = adopted_close_control::Scope::take_facts();
+    // Cleanup attribution uses the actual first fault, so a regression in the
+    // returned diagnostic can still be a semantic RED after complete cleanup.
+    witness.prepare_after_app(
+        custody.first_fault == Some(backend::ProfileReleaseFault::ControllerCloseFailed),
+        witness_calls,
+    );
     let capture = facts.capture.as_ref().ok_or_else(|| {
         failure(format!(
             "native Close capture missing: {:?}",
@@ -267,7 +306,7 @@ fn case(withhold: bool) -> Result<Result<(), WvError>, WvError> {
     let trace = trace?;
     let final_phase = final_phase?;
     println!(
-        "KELD_ADOPTED_CLOSE_RESULT withhold={withhold} before={initial_phase} after={final_phase} calls={} native_successes={} injected={} results={:?} witnesses={witness_calls} trace={trace:?} result={outcome:?}",
+        "KELD_ADOPTED_CLOSE_RESULT withhold={withhold} before={initial_phase} after={final_phase} calls={} native_successes={} injected={} results={:?} witnesses={witness_calls} trace={trace:?} custody={custody:?} result={outcome:?}",
         facts.calls, facts.native_successes, facts.injected_errors, facts.results,
     );
     require_native_eligibility(
@@ -277,7 +316,6 @@ fn case(withhold: bool) -> Result<Result<(), WvError>, WvError> {
         &trace,
         &facts,
         &late,
-        already_retired,
     )?;
     // Native normal exit plus the exact process handle and captured HWND tree
     // are proved before deleting this test-owned persistent fixture.
@@ -292,6 +330,9 @@ fn case(withhold: bool) -> Result<Result<(), WvError>, WvError> {
         &final_phase,
         witness_calls,
         &outcome,
+        &trace,
+        &custody,
+        already_retired,
     ))
 }
 

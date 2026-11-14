@@ -7,19 +7,39 @@ use tao::platform::windows::WindowExtWindows as _;
 use super::super::managed_windows::{DeferredCreate, Releasing};
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 use super::super::t2_test_observation as observe;
-use super::super::view_build::{BuildFailure, BuildResources, ManagedBuild};
+use super::super::view_build::{
+    BuildFailure, BuildFailureDisposition, BuildNavigation, BuildProgress, CompletedBuild,
+    ManagedBuild,
+};
 use super::super::{ProfileReleaseWait, WindowsLoopEvent};
 use super::{ManagedWindows, send, send_failure};
 use crate::WvError;
-use crate::engine::{AppWindowEvent, BuildStage, LogicalSize, NavTarget, WebviewSpec};
+use crate::engine::{AppWindowEvent, LogicalSize, NavTarget, WebviewSpec};
 
 impl ManagedWindows {
     pub(super) fn build(
         &mut self,
         target: &EventLoopWindowTarget<WindowsLoopEvent>,
         release: &Rc<ProfileReleaseWait>,
-        create: DeferredCreate,
+        mut create: DeferredCreate,
     ) -> Result<(), WvError> {
+        let build = create.build;
+        let navigation = if let Some(inputs) = create.original.take() {
+            match self.prepare_original_build(inputs) {
+                Ok(original) => BuildNavigation::Original(original),
+                Err(error) => {
+                    eprintln!("KELD_WV_ORIGINAL_PREPARATION_FAILED build={build} {error}");
+                    return send_failure(
+                        &self.events,
+                        create.failure_event(),
+                        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                        self.test_control.as_ref(),
+                    );
+                }
+            }
+        } else {
+            BuildNavigation::Renderer(None)
+        };
         let spec = WebviewSpec {
             title: String::from("Keld"),
             size: LogicalSize {
@@ -33,94 +53,109 @@ impl ManagedWindows {
             &self.proxy,
             &spec,
             Some(&ManagedBuild {
-                create,
+                create: &create,
                 release,
                 sender: self.receipt_sender.clone(),
             }),
-            None,
+            navigation,
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
             self.test_control.as_mut(),
         ) {
-            Ok(built) => {
-                // A20: never replace an existing live native custodian, even
-                // if the backend ID counter or a native identity is faulty.
-                if self.views.contains_key(&built.id.0)
-                    || self
-                        .views
-                        .values()
-                        .any(|view| view.window.id() == built.view.window.id())
-                {
-                    return self.failed_build(
-                        create,
-                        BuildFailure {
-                            stage: BuildStage::Window,
-                            source: WvError::Window(String::from(
-                                "native window identity collision",
-                            )),
-                            resources: Some(BuildResources::View(built.view)),
-                        },
-                    );
-                }
-                let Some(snapshot) = built.snapshot else {
-                    return self.failed_build(
-                        create,
-                        BuildFailure::held(
-                            WvError::EventLoop(String::from("managed build omitted native state")),
-                            BuildResources::View(built.view),
-                        ),
-                    );
-                };
-                // New membership and its Created snapshot supersede a hook sample.
-                self.activation_observer.invalidate();
-                self.views.insert(built.id.0, built.view);
-                send(
-                    &self.events,
-                    AppWindowEvent::WindowBuilt {
-                        build: create.build,
-                        view: built.id,
-                        snapshot,
-                    },
-                )
-            }
-            Err(failure) => self.failed_build(create, failure),
+            Ok(BuildProgress::Complete(completed)) => self.complete_build(build, completed),
+            Ok(BuildProgress::PendingOriginal) => Ok(()),
+            Err(failure) => self.failed_build(build, failure),
         }
     }
 
-    fn failed_build(
+    pub(super) fn complete_build(
         &mut self,
-        create: DeferredCreate,
+        build: u64,
+        completed: CompletedBuild,
+    ) -> Result<(), WvError> {
+        let Some(snapshot) = completed.snapshot() else {
+            return self.failed_build(
+                build,
+                BuildFailure::webview(WvError::EventLoop(String::from(
+                    "managed build omitted native state",
+                ))),
+            );
+        };
+        let view = match self
+            .builder
+            .transfer_completed_into(&mut self.views, completed)
+        {
+            Ok(view) => view,
+            Err(source) => return self.failed_build(build, BuildFailure::collision(source)),
+        };
+        self.activation_observer.invalidate();
+        send(
+            &self.events,
+            AppWindowEvent::WindowBuilt {
+                build,
+                view,
+                snapshot,
+            },
+        )
+    }
+
+    pub(super) fn failed_build(
+        &mut self,
+        build: u64,
         failure: BuildFailure,
     ) -> Result<(), WvError> {
-        eprintln!(
-            "KELD_WV_BUILD_FAILED build={} {}",
-            create.build, failure.source
-        );
-        if let Some(resources) = failure.resources {
-            let window = resources.window();
-            self.custody.park(
+        let BuildFailure {
+            disposition,
+            stage,
+            source,
+        } = failure;
+        eprintln!("KELD_WV_BUILD_FAILED build={build} {source}");
+        if disposition == BuildFailureDisposition::NotStarted {
+            // The occupied candidate belongs to an earlier invocation. Never
+            // park, retire or relabel it with this new build correlation.
+            return Err(source);
+        }
+        let cleanup = if let Some(window) = self.builder.candidate_window() {
+            let parked = self.custody.park(
                 window.id(),
                 window.hwnd(),
-                Releasing::FailedBuild {
-                    build: create.build,
-                    stage: failure.stage,
-                },
+                Releasing::FailedBuild { build, stage },
                 Instant::now(),
-            )?;
-            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-            observe::releasing(self.custody.len());
-            drop(resources);
-            // Only later Destroyed staging plus IsWindow(FALSE) can answer.
+            );
+            if let Err(error) = parked {
+                Err(error) // candidate remains stored before return
+            } else {
+                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                observe::releasing(self.custody.len());
+                if self.builder.retire_candidate_on_ui() {
+                    // Only later Destroyed staging plus IsWindow(FALSE)
+                    // can answer the scalar record just parked above.
+                    Ok(())
+                } else {
+                    Err(super::super::profile_failure_with(
+                        crate::profile::ProfileErrorKind::LifecycleUnproven,
+                        "failed construction still owns an unresolved native candidate",
+                    ))
+                }
+            }
+        } else if disposition == BuildFailureDisposition::Unwound {
+            // No returned resource does not turn a caught panic into ordinary
+            // failure success. The outer owner receives the fatal source below.
             Ok(())
         } else {
             send_failure(
                 &self.events,
-                AppWindowEvent::WindowBuildFailed {
-                    build: create.build,
-                    stage: failure.stage,
-                },
+                AppWindowEvent::WindowBuildFailed { build, stage },
                 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
                 self.test_control.as_ref(),
             )
+        };
+        if disposition == BuildFailureDisposition::Unwound {
+            if let Err(error) = cleanup {
+                eprintln!("KELD_WV_BUILD_UNWIND_CLEANUP {error}");
+            }
+            Err(source)
+        } else {
+            cleanup
         }
     }
 }

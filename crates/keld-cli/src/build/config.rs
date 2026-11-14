@@ -20,13 +20,6 @@ pub(crate) struct AppConfig {
     )]
     pub(crate) id: String,
     pub(crate) name: String,
-    #[cfg_attr(
-        all(windows, not(test)),
-        expect(
-            dead_code,
-            reason = "Windows dev reuses canonical app validation; packaging retains this field"
-        )
-    )]
     pub(crate) version: String,
     pub(crate) entry: String,
     #[cfg_attr(
@@ -268,6 +261,12 @@ fn parse_app_context(source: &str, development: bool) -> Result<AppConfig, Build
     } else {
         required_text(&mut root, "version", phase)?
     };
+    if development && (version.len() > 4096 || version.contains('\0')) {
+        return Err(invalid(
+            phase,
+            "declared version must be NUL-free and at most 4096 UTF-8 bytes",
+        ));
+    }
     let entry = optional_text(&mut root, "entry", phase)?
         .unwrap_or_else(|| keld_core::DEFAULT_ENTRY.to_owned());
     let renderer = optional_text(&mut root, "renderer", phase)?;
@@ -362,13 +361,12 @@ pub(crate) fn parse_development_graph(
         ));
     }
     let app_root = fields(app_source, "keld.config.ts")?;
-    if app_root.contains_key("version")
-        || app_root.contains_key("singleInstance")
+    if app_root.contains_key("singleInstance")
         || app_root.contains_key("applicationNameForUserAgent")
     {
         return Err(invalid(
             "development graph",
-            "declared version, singleInstance or applicationNameForUserAgent requires the qualified Windows runtime metadata owner",
+            "singleInstance or applicationNameForUserAgent requires the qualified Windows runtime metadata owner",
         ));
     }
     let mut root = fields(build_source, "development keld.build.ts")?;

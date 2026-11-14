@@ -3,6 +3,7 @@
 
 use super::super::fixture::FacadeRun;
 use super::super::initial::capture_native;
+use crate::support::process::pipe_text_by;
 use crate::support::window::native_control;
 use crate::{PRODUCT_DEADLINE, ui_end_kill_switch};
 use serde_json::Value;
@@ -100,5 +101,46 @@ pub(super) fn held_build_or_terminal(run: &mut FacadeRun, after: usize) -> Optio
                 panic!("INVALID: no held build and no actual native terminal: {error}");
             }
         }
+    }
+}
+
+pub(super) fn closed_before_quit(
+    run: &mut FacadeRun,
+    id: u64,
+    deadline: Instant,
+) -> Result<(), String> {
+    let mut malformed = None;
+    loop {
+        // Read the same continuous capture without taking another socket reader.
+        // A partial JSON write is retried by observation, never by an IPC request.
+        let control = pipe_text_by(run.captured_control(), Instant::now());
+        if control.contains("<pipe read failed: ") {
+            return Err(format!("A Closed control capture failed: {control}"));
+        }
+        for json in control
+            .lines()
+            .filter_map(|line| line.strip_prefix("CLOSED "))
+        {
+            match serde_json::from_str::<Value>(json) {
+                Ok(value) if value["id"].as_u64() == Some(id) => return Ok(()),
+                Ok(_) => {}
+                Err(error) => malformed = Some(error.to_string()),
+            }
+        }
+        match run.host.child_mut().try_wait() {
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "Host exited before A Closed was observed: {status}; malformed={malformed:?}"
+                ));
+            }
+            Ok(None) => {}
+            Err(error) => return Err(format!("A Closed Host observation failed: {error}")),
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "A Closed was not observed before the existing terminal bound; malformed={malformed:?}"
+            ));
+        }
+        thread::park_timeout(Duration::from_millis(10));
     }
 }

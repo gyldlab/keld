@@ -94,11 +94,11 @@ impl RegistrationState {
 
     pub(super) fn native_return(&self, accepted: bool, now: Instant) {
         let mut progress = self.progress.get();
-        if !matches!(progress.entry, Entry::InCall) {
-            progress.fault = true;
-        } else {
+        if matches!(progress.entry, Entry::InCall) {
             progress.entry = Entry::Returned(accepted);
             progress.fault |= !accepted || now >= progress.deadline;
+        } else {
+            progress.fault = true;
         }
         self.progress.set(progress);
         self.release_quiesced_input();
@@ -188,6 +188,7 @@ impl RegistrationState {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn retained_input_bytes(&self) -> Result<usize, &'static str> {
         self.input
             .try_borrow()

@@ -1,17 +1,84 @@
 //! Raw primary exit observation and independent cleanup for the Close-result fixture.
 
 use super::super::failure;
-use crate::WvError;
 use crate::webview2 as backend;
 use crate::webview2::media_acceptance::adopted_close_control::{
     BrowserExitFacts, NativeCapture, Scope,
 };
+use crate::{WebviewId, WvError};
 use std::os::windows::io::AsRawHandle as _;
 use std::sync::Arc;
 use std::time::Instant;
 use windows::Win32::Foundation::{HANDLE, HWND, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::System::Threading::{GetCurrentThreadId, WaitForSingleObject};
 use windows::Win32::UI::WindowsAndMessaging::{DestroyWindow, GetWindowThreadProcessId, IsWindow};
+
+/// A read-only snapshot, never a native release or profile witness.
+#[derive(Debug)]
+pub(super) struct AppCustodyFacts {
+    pub(super) first_fault: Option<backend::ProfileReleaseFault>,
+    pub(super) retained_view: Result<Option<(WebviewId, bool)>, &'static str>,
+}
+
+pub(super) fn observe_app_custody(
+    engine: &backend::WebView2Engine,
+    capture: Option<&NativeCapture>,
+) -> AppCustodyFacts {
+    let first_fault = engine
+        .retained_run
+        .as_ref()
+        .and_then(|run| run.release.as_ref())
+        .and_then(|release| release.fault());
+    let retained_view = (|| {
+        let Some(run) = engine.retained_run.as_ref() else {
+            return Ok(None);
+        };
+        let capture = capture.ok_or("actual native Close capture is absent")?;
+        if engine.event_loop.is_some()
+            || !engine.views.is_empty()
+            || engine.profile.is_none()
+            || engine.browser_exit_environment.is_none()
+            || engine.browser_exit_token.is_none()
+            || run.bridge.is_none()
+        {
+            return Err("the same retained engine lost its loop/profile/observer/bridge custody");
+        }
+        let release = run
+            .release
+            .as_ref()
+            .ok_or("retained release owner is absent")?;
+        if !Arc::ptr_eq(&release.binding, &engine.browser_binding)
+            || release.binding.load().pid != capture.browser_pid
+            || release
+                .process
+                .try_borrow()
+                .map_err(|_| "retained browser process is borrowed")?
+                .is_none()
+        {
+            return Err("retained release owner lost the captured browser instance/handle");
+        }
+        let owner = run
+            .managed
+            .as_ref()
+            .ok_or("retained managed owner is absent")?;
+        let managed = owner
+            .shared()
+            .try_borrow()
+            .map_err(|_| "retained managed map is borrowed")?;
+        let managed = managed.as_ref().ok_or("retained managed map is absent")?;
+        if managed.native_resources_drained() {
+            return Err("retained native resources incorrectly report drained");
+        }
+        managed
+            .native_close_fixture_view(capture.hwnd.0 as isize, release)
+            .map(Some)
+            .ok_or("the exact captured HWND/View/Close owner was not retained")
+    })();
+    AppCustodyFacts {
+        first_fault,
+        retained_view,
+    }
+}
 
 fn is_window(hwnd: HWND) -> bool {
     // SAFETY: read-only query of a captured fixture HWND; no pointer is dereferenced.
@@ -135,8 +202,10 @@ impl Drop for ExitWitness {
     }
 }
 
-/// Return whether production had already retired every captured native HWND.
-/// A cleanup intervention is independently ineligible, never an intended RED.
+/// Return whether every captured HWND was gone when fixture cleanup began.
+/// Healthy production must already have retired it. The withheld-result case
+/// separately snapshots the retained product owner before fixture Drop; its
+/// independent cleanup is never production release or profile-witness credit.
 pub(super) fn cleanup(
     capture: &NativeCapture,
     witness: &mut ExitWitness,

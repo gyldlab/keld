@@ -5,6 +5,22 @@
 mod control;
 #[cfg(windows)]
 pub use control::{NativeControlCharge, NativeControlReservation, RendererControlOwner};
+#[cfg(windows)]
+mod data;
+#[cfg(windows)]
+pub use data::{NativeDataCharge, NativeDataReservation};
+#[cfg(windows)]
+mod fixed_event_failure;
+#[cfg(windows)]
+pub use fixed_event_failure::RetainedRendererEventFailure;
+
+mod native_facts;
+#[cfg(windows)]
+pub use crate::original_call::queue::numeric::NativeNumericResultReservation;
+pub(crate) use native_facts::NativeMessageFacts;
+
+#[cfg(windows)]
+pub use crate::webview2::original_bridge::NativeEventRetirement;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,6 +46,9 @@ pub enum RendererBridgeOperation {
     Send {
         /// Exact literal channel.
         channel: String,
+        /// Original call captured from the native active Function owner.
+        /// This is distinct from the one-way IPC message sequence.
+        original_call: u32,
     },
     /// Original app-world consumer completed an addressed event.
     Consumed {
@@ -40,6 +59,13 @@ pub enum RendererBridgeOperation {
     Retired,
     /// Native original Function turn quiesced without any Send entering Core.
     PreflightAborted,
+    /// Sealed Host-only retirement of this exact original native DATA event.
+    /// Neither consumer completion nor physical storage release is implied.
+    #[cfg(windows)]
+    EventRetired {
+        /// Actual irreversible no-entry cancellation or same-controller Close.
+        retirement: crate::renderer_bridge::NativeEventRetirement,
+    },
     /// Real WK event evaluation completion, independent of consumer disposition.
     EventQuiesced {
         /// True only when `WebKit` reported no evaluation error.
@@ -78,7 +104,7 @@ impl std::fmt::Debug for RendererRoleWitness {
             .debug_struct("RendererRoleWitness")
             .field("stopped", &self.stopped)
             .field("has_canonical_fence", &self.fence.is_some())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 impl RendererRoleWitness {
@@ -129,6 +155,34 @@ impl RendererRoleWitness {
             .as_ref()?
             .try_reserve_native_control(encoded_bytes, accounted_bytes)
     }
+    /// The physical View scope survives its creation role stopping or being
+    /// replaced. These three storage methods deliberately do not test `is_live()`.
+    #[cfg(windows)]
+    #[must_use]
+    pub fn has_native_view_scope(&self) -> bool {
+        self.controls
+            .as_ref()
+            .is_some_and(|owner| owner.has_native_view_scope())
+    }
+    /// Call from the actual owning `OriginalView` outside native/interior guards.
+    /// False retains the View; no native release may be inferred from it.
+    #[cfg(windows)]
+    #[must_use]
+    pub fn close_native_offers(&self) -> bool {
+        self.controls
+            .as_ref()
+            .is_some_and(|owner| owner.close_native_offers())
+    }
+    /// Read-only same-owner storage observation after producer close. Internal
+    /// completion-only releases continue to be serviced while this is false.
+    #[cfg(windows)]
+    #[must_use]
+    pub fn native_storage_is_quiescent(&self) -> bool {
+        self.controls
+            .as_ref()
+            .is_some_and(|owner| owner.native_storage_is_quiescent())
+    }
+
     /// Commit only local native admission under Core's actual retirement fence.
     /// Call the native API on the retained original target only after this method
     /// returns true and every Core/native interior guard has been released.
@@ -227,7 +281,7 @@ impl RouteRetirementPermit {
     }
 }
 
-/// One renderer request that already passed `WebKit` world/frame/document admission.
+/// One request handed off by the native renderer adapter through the existing endpoint.
 #[derive(Debug)]
 pub struct RendererBridgeRequest {
     pub(crate) webview: WebviewId,
@@ -239,9 +293,37 @@ pub struct RendererBridgeRequest {
     pub(crate) document_lease: Option<crate::renderer_contract::CheckedNativeDocumentLease>,
     pub(crate) native_facts: Option<NativeMessageFacts>,
     pub(crate) role_witness: Option<RendererRoleWitness>,
+    /// Original numeric result prepayment; keep after all owned request buffers.
+    #[cfg(windows)]
+    pub(crate) numeric_result: Option<NativeNumericResultReservation>,
 }
 
 impl RendererBridgeRequest {
+    /// Observe the exact fixed-only Host completion shape before moving its
+    /// existing storage into the same Core DATA record. This grants no role,
+    /// document, native completion, or retirement authority.
+    #[cfg(windows)]
+    #[must_use]
+    pub fn has_fixed_event_failure_metadata(&self) -> bool {
+        matches!(
+            self.operation,
+            RendererBridgeOperation::EventQuiesced { completed: false }
+        ) && self.channel == 0
+            && self.payload.capacity() == 0
+            && self.native_facts.is_none()
+            && self.numeric_result.is_none()
+            && self.document_lease.is_some()
+            && self.role_witness.is_some()
+    }
+
+    /// Move the same native numeric prepayment into the canonical pending call
+    /// before Core enqueues or allocates its result. Taking supplies no grant or
+    /// completion; all result storage must be disposed before this token.
+    #[cfg(windows)]
+    #[must_use]
+    pub fn take_numeric_result(&mut self) -> Option<NativeNumericResultReservation> {
+        self.numeric_result.take()
+    }
     /// Select operation before using the legacy numeric accessors.
     #[must_use]
     pub const fn operation(&self) -> &RendererBridgeOperation {
@@ -257,24 +339,28 @@ impl RendererBridgeRequest {
     pub fn role_witness(&self) -> Option<&RendererRoleWitness> {
         self.role_witness.as_ref()
     }
-    /// Actual native request URL captured in this WK callback, never caller data.
+    /// Actual native frame/request URL on Mac or WebMessageReceived.Source on
+    /// Windows, qualified through that adapter's same admitted source.
     #[must_use]
     pub fn url(&self) -> Option<&str> {
         self.native_facts.as_ref().map(NativeMessageFacts::url)
     }
-    /// Qualified actual native origin serialization; absent means fail closed.
+    /// Platform-described origin metadata, never route or principal identity.
+    /// Mac supplies its qualified native tuple serialization; Windows supplies
+    /// only the informational file-scheme serialization of its qualified URL.
     #[must_use]
     pub fn origin(&self) -> Option<&str> {
         self.native_facts
             .as_ref()
             .and_then(NativeMessageFacts::origin)
     }
-    /// Actual same-message native origin tuple; serialization is separately qualified.
+    /// Actual same-message Mac native origin tuple. Windows returns None:
+    /// its qualified Source URL does not supply a native `SecurityOrigin` tuple.
     #[must_use]
     pub fn native_origin_tuple(&self) -> Option<(&str, &str, i64)> {
         self.native_facts
             .as_ref()
-            .map(NativeMessageFacts::native_origin_tuple)
+            .and_then(NativeMessageFacts::native_origin_tuple)
     }
 
     /// Returns the host-minted `WebView` identity that admitted this request.
@@ -363,6 +449,16 @@ pub enum RendererBridgeOutcome {
         channel: String,
         /// Opaque bounded endpoint arguments.
         payload: Vec<u8>,
+        /// Same checked document retained by the original DATA admission.
+        #[cfg(windows)]
+        document: crate::renderer_contract::CheckedNativeDocumentLease,
+        /// Same original caller retained for cleanup after logical revocation.
+        #[cfg(windows)]
+        role: RendererRoleWitness,
+        /// SAME Core DATA record's native storage half. Owned payload precedes
+        /// this field so disposal cannot report storage release before bytes drop.
+        #[cfg(windows)]
+        storage: Option<NativeDataReservation>,
     },
     /// Current authenticated Bun route availability; retirement does not free JS maps.
     RouteState {
@@ -392,6 +488,9 @@ pub enum RendererBridgeOutcome {
         request: u32,
         /// Application reply bytes.
         payload: Vec<u8>,
+        /// Same original numeric result prepayment; drops after owned result bytes.
+        #[cfg(windows)]
+        numeric_result: Option<NativeNumericResultReservation>,
     },
     /// Typed terminal failure for one renderer-local request.
     Error {
@@ -408,6 +507,9 @@ pub enum RendererBridgeOutcome {
         /// Reserved before retaining this terminal outcome and its native copies.
         #[cfg(windows)]
         control: Option<NativeControlReservation>,
+        /// Same original numeric result storage; diagnostics must drop before it.
+        #[cfg(windows)]
+        numeric_result: Option<NativeNumericResultReservation>,
     },
 }
 
@@ -440,6 +542,7 @@ impl RendererBridgeOutcome {
     }
 
     #[must_use]
+    #[cfg(target_os = "macos")]
     pub(crate) const fn navigation(&self) -> u64 {
         match self {
             Self::Reply { navigation, .. }
@@ -493,36 +596,34 @@ impl RendererBridgeEndpoint {
     }
 }
 
-/// Actual same-message frame metadata. Only the exact source-qualified native
-/// keld-resource tuple has the isolated-world serialization observed by the
-/// inert WK probe. Unknown tuple semantics refuse capture, never guess null.
-#[derive(Debug)]
-pub(crate) struct NativeMessageFacts {
-    pub(crate) url: crate::resource_source::NativeNavigationUrl,
-    pub(crate) protocol: Option<crate::resource_source::NativeNavigationUrl>,
-    pub(crate) host: Option<crate::resource_source::NativeNavigationUrl>,
-    pub(crate) port: i64,
-    pub(crate) serialized_origin: Option<crate::resource_source::NativeNavigationUrl>,
+/// Same 128-bit document credential generator used by native adapters.
+pub(crate) fn credential() -> Result<String, crate::WvError> {
+    use std::fmt::Write as _;
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).map_err(|_| crate::WvError::RendererBridge {
+        detail: String::from("Host credential randomness unavailable"),
+    })?;
+    let mut value = String::with_capacity(32);
+    for byte in bytes {
+        let _ = write!(&mut value, "{byte:02x}");
+    }
+    Ok(value)
 }
 
-impl NativeMessageFacts {
-    pub(crate) fn url(&self) -> &str {
-        self.url.as_str()
-    }
-    pub(crate) fn origin(&self) -> Option<&str> {
-        self.serialized_origin
-            .as_ref()
-            .map(crate::resource_source::NativeNavigationUrl::as_str)
-    }
-    pub(crate) fn native_origin_tuple(&self) -> (&str, &str, i64) {
-        (
-            self.protocol
-                .as_ref()
-                .map_or("", crate::resource_source::NativeNavigationUrl::as_str),
-            self.host
-                .as_ref()
-                .map_or("", crate::resource_source::NativeNavigationUrl::as_str),
-            self.port,
-        )
-    }
+/// One existing Windows loop service turn, outside all native/Core guards.
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RendererBridgeServiceTurn {
+    /// Observe actual worker/source progress without waiting or renewing clocks.
+    Poll,
+    /// Drain actual Core protocol/source owners under one original I/O deadline.
+    Drain,
 }
+
+/// The existing Core endpoint owner supplies this borrowed callback.
+/// Poll must return None. Drain must return Some of its one original absolute
+/// deadline after actual producer/protocol drainage; no subsequent turn may
+/// renew it. A result is not a native callback or consumer completion receipt.
+#[cfg(windows)]
+pub type RendererBridgeService<'a> =
+    dyn FnMut(RendererBridgeServiceTurn) -> Result<Option<std::time::Instant>, crate::WvError> + 'a;

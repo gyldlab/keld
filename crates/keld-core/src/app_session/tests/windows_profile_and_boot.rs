@@ -338,8 +338,20 @@ fn windows_trust_image_refusal_is_reported_as_wv009() {
 #[test]
 #[cfg(windows)]
 fn pending_boot8_cannot_start_without_retained_graph_admission() {
-    let root = tempfile::tempdir().expect("owned source fixture");
     use sha2::Digest as _;
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    let root = tempfile::tempdir().expect("owned source fixture");
+    // Explicit component fixture: the real retained directory exercises the
+    // canonical graph reader. Production obtains it from the existing ACL owner.
+    let held = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(root.path())
+        .expect("actual retained source directory");
     let row = |path: &str, hash: &str| serde_json::json!({"path":path, "size":1, "sha256":format!("sha256:{}", hash.repeat(32))});
     let graph = serde_json::json!({
         "schema":"keld.stage.graph/v1", "entry":"missing-main.mjs",
@@ -354,22 +366,54 @@ fn pending_boot8_cannot_start_without_retained_graph_admission() {
     });
     fs::write(root.path().join(super::GRAPH_FILE), &graph).expect("graph bytes");
     fs::write(root.path().join(BOOT_FILE), boot.to_string()).expect("boot bytes");
-    let error = validate_windows_boot_files(root.path().to_path_buf(), WindowsBootMode::DevStage)
-        .expect_err("unbound graph cannot start");
-    assert_eq!(error.code(), "KELD-CORE-035");
-    assert!(error.to_string().contains("not been bound to a retained source"), "{error}");
+    let error = super::validate_windows_boot_files_with_root(
+        root.path().to_path_buf(),
+        WindowsBootMode::DevStage,
+        Some(&held),
+    )
+    .expect_err("unbound graph cannot start");
+    assert_eq!(error.code(), "KELD-CORE-036");
+    // A compiled receipt cannot admit an inert graph with no provider rows.
+    #[cfg(all(target_arch = "x86_64", target_env = "msvc"))]
+    assert!(
+        error
+            .to_string()
+            .contains("approved package artifact: empty node_modules/electron"),
+        "{error}"
+    );
+    #[cfg(not(all(target_arch = "x86_64", target_env = "msvc")))]
+    assert!(
+        error
+            .to_string()
+            .contains("no independently qualified Windows target/provider"),
+        "{error}"
+    );
     fs::write(root.path().join(super::GRAPH_FILE), b"changed graph").expect("mutate graph");
-    let error = validate_windows_boot_files(root.path().to_path_buf(), WindowsBootMode::DevStage)
-        .expect_err("graph digest mismatch refuses before launch");
-    assert!(error.to_string().contains("graph digest does not match"), "{error}");
+    let error = super::validate_windows_boot_files_with_root(
+        root.path().to_path_buf(),
+        WindowsBootMode::DevStage,
+        Some(&held),
+    )
+    .expect_err("graph digest mismatch refuses before launch");
+    assert!(error.to_string().contains("graph hash differs"), "{error}");
 
     let mut missing: serde_json::Value = serde_json::from_slice(&graph).expect("fixture graph");
     missing["files"].as_array_mut().expect("rows").remove(0);
     let missing = missing.to_string().into_bytes();
-    boot["graph"]["content_sha256"] = serde_json::json!(format!("sha256:{:x}", sha2::Sha256::digest(&missing)));
+    boot["graph"]["content_sha256"] =
+        serde_json::json!(format!("sha256:{:x}", sha2::Sha256::digest(&missing)));
     fs::write(root.path().join(super::GRAPH_FILE), missing).expect("missing selected entry");
     fs::write(root.path().join(BOOT_FILE), boot.to_string()).expect("updated boot digest");
-    let error = validate_windows_boot_files(root.path().to_path_buf(), WindowsBootMode::DevStage)
-        .expect_err("a matching digest cannot invent an unlisted selected entry");
-    assert!(error.to_string().contains("selected resource entry is missing"), "{error}");
+    let error = super::validate_windows_boot_files_with_root(
+        root.path().to_path_buf(),
+        WindowsBootMode::DevStage,
+        Some(&held),
+    )
+    .expect_err("a matching digest cannot invent an unlisted selected entry");
+    assert!(
+        error
+            .to_string()
+            .contains("selected resource entry is missing"),
+        "{error}"
+    );
 }

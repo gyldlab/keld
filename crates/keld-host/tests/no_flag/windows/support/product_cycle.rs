@@ -12,6 +12,7 @@ use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 use super::control::{accept_control_or_host_failure, parse_descendant_pid, read_control_line};
 use super::process::{open_process_for_wait, wait_for_process_signal};
 use super::product::ProductFixture;
+use super::profile_run::{ProfileTestRoot, apply_dev_profiles};
 use super::renderer::{spawn_renderer_beacon, try_expect_renderer_beacon};
 use crate::{
     DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, dev_stage_command, process_exists,
@@ -25,6 +26,14 @@ pub(crate) struct ProductEvidence {
 }
 
 pub(crate) fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
+    run_product_cycle_with_profiles(fixture, label, None)
+}
+
+pub(crate) fn run_product_cycle_with_profiles(
+    fixture: &ProductFixture,
+    label: &str,
+    profiles: Option<&ProfileTestRoot>,
+) -> ProductEvidence {
     let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind control listener");
     let control_port = control_listener
         .local_addr()
@@ -45,7 +54,9 @@ pub(crate) fn run_product_cycle(fixture: &ProductFixture, label: &str) -> Produc
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
     )
     .expect("stage Windows product host");
-    let mut child = dev_stage_command(stage.root(), stage.host())
+    let mut command = dev_stage_command(stage.root(), stage.host());
+    apply_dev_profiles(&mut command, stage.host(), profiles);
+    let mut child = command
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

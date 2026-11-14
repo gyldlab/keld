@@ -17,6 +17,8 @@ import type {
 } from "./dialog.generated.ts";
 import {
   hostLaunchFacts,
+  windowsHostSelected,
+  windowsDesktopSnapshotSelected,
   linkError,
   nativeFacadeBootSelected,
   runtimeProcessFactsSelected,
@@ -151,17 +153,16 @@ export function sendCurrentWindowEvent(
 }
 
 /**
- * GH481 S1 is currently the qualified macOS *development* facade slice.
- * Only Core's macOS admitted dev lease produces the existing immutable
- * hostLaunchFacts captured in the canonical preload. Windows/Linux facade
- * roles receive the normal window subscription but no such record; their
- * previously usable Ready must not depend on an unimplemented desktop source.
- * Missing launch facts are not inferred from mutable process.env or from a
- * guessed display value. Installed/non-dev macOS remains outside S1 until its
- * own Host-owned selector and native proof are provided.
+ * Read the Host's immutable target/capability from the canonical preload.
+ * A preprocessed Bun app bundle cannot capture later --define literals itself.
+ * Windows launch facts alone do not select desktop S1; actual facade boot fixes
+ * its separate capability. macOS retains its existing selection contract.
  */
 const desktopS1Selected =
-  nativeFacadeBootSelected && hostLaunchFacts !== undefined;
+  nativeFacadeBootSelected &&
+  (windowsHostSelected
+    ? windowsDesktopSnapshotSelected
+    : hostLaunchFacts !== undefined);
 
 /** Shared scope for the facade's first-read refusal and public Ready commit. */
 export function isDesktopS1Selected(): boolean {
@@ -246,7 +247,7 @@ function onHostReady(): void {
   queueMicrotask(() => {
     nativeReadyQueued = false;
     if (hostReady || linkDead) return;
-    if (desktopS1Selected) {
+    if (nativeFacadeBootSelected) {
       let failure: Error | undefined;
       try {
         if (!connectedLink?.windowSource) {
@@ -254,7 +255,7 @@ function onHostReady(): void {
             "KELD-CORE-045",
             "The native window subscription has no admitted mirror source.",
           );
-        } else if (!connectedLink.windowSource.desktop()) {
+        } else if (desktopS1Selected && !connectedLink.windowSource.desktop()) {
           failure = linkError(
             "KELD-CORE-049",
             "The native desktop snapshot is unavailable. Correct the Host display/appearance capture and relaunch.",

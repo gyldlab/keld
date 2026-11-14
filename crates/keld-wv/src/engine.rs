@@ -24,6 +24,11 @@
 //!   [`WebviewId`] must surface as a typed error, never a panic (root
 //!   `AGENTS.md`: no panics in libs).
 
+#[cfg(windows)]
+mod desktop;
+#[cfg(windows)]
+pub use desktop::AppDesktopCapture;
+
 use crate::WebviewId;
 use crate::error::WvError;
 #[cfg(any(target_os = "macos", windows))]
@@ -250,8 +255,15 @@ mod original_entry_query_tests {
 
 /// Command delivered from the primary app-link owner to the platform UI loop.
 #[derive(Debug, Clone)]
-#[cfg_attr(not(target_os = "macos"), derive(Copy, PartialEq, Eq))]
+#[cfg_attr(not(any(target_os = "macos", windows)), derive(Copy, PartialEq, Eq))]
 pub enum AppWindowCommand {
+    /// Refresh the Windows desktop for this authenticated primary reader.
+    /// Native acquisition returns this same identity unchanged to Core.
+    #[cfg(windows)]
+    WindowsDesktopProducer {
+        /// Actual reader captured by Core before entering the native queue.
+        capture: AppDesktopCapture,
+    },
     /// The session is ending: close windows and exit the loop. Sent after the
     /// correlated Quit reply has been written, or by the host itself at a profile
     /// handover, where the application keeps running and the host writes
@@ -274,11 +286,14 @@ pub enum AppWindowCommand {
         /// Requested outer top edge; absence preserves the OS placement.
         y: Option<i32>,
         /// Exact already-admitted per-window source; no ambient/global view guess.
-        #[cfg(target_os = "macos")]
-        original_source: Option<std::sync::Arc<crate::wkwebview::AdmittedWebAppSource>>,
+        #[cfg(any(target_os = "macos", windows))]
+        original_source: Option<std::sync::Arc<crate::resource_source::AdmittedWebAppSource>>,
         /// Exact immutable image/configuration retained by the resulting native view.
-        #[cfg(target_os = "macos")]
-        preload_image: Option<std::sync::Arc<crate::wkwebview::AppPreloadImage>>,
+        #[cfg(any(target_os = "macos", windows))]
+        preload_image: Option<std::sync::Arc<crate::preload_image::AppPreloadImage>>,
+        /// Actual authenticated creator retained before bootstrap registration.
+        #[cfg(windows)]
+        original_role: Option<crate::renderer_bridge::RendererRoleWitness>,
     },
     /// Request a maximized state. A later native fact confirms its outcome.
     SetMaximized {
@@ -302,25 +317,31 @@ pub enum AppWindowCommand {
     },
     /// Conditionally retire only the exact original native document, then use
     /// the existing physical release owner. Acceptance is not a release receipt.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     DestroyOriginalDocument {
         /// Actual Core-mapped backend view, never a caller-cast `WindowRef`.
         view: WebviewId,
         /// Exact opaque native lease resolved under the authenticated Core owner.
-        expected: crate::wkwebview::MacNativeDocumentLease,
+        expected: crate::renderer_contract::CheckedNativeDocumentLease,
         /// Same bounded object retained by the Core Entry until reconciliation.
-        admission: std::sync::Arc<crate::wkwebview::OriginalDocumentDestroyAdmission>,
+        admission: std::sync::Arc<crate::renderer_contract::OriginalDocumentDestroyAdmission>,
     },
     /// The authenticated GH459 Host already matched the one captured original
     /// file URL and current `HostWindowRef` -> native `WebviewId`. Only the native
     /// GH542 owner can begin a new attempt and mint a committed document.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     LoadAdmittedOriginal {
         /// Immutable accepted Host operation and actual mapped view.
         context: NativeNavigationContext,
         /// Data-only bounded query; no native pointer/source authority.
         query: OriginalEntryQuery,
+        /// Actual caller captured by the accepted load, never a successor lookup.
+        #[cfg(windows)]
+        role_witness: crate::renderer_bridge::RendererRoleWitness,
     },
+    /// Wake the actual single-writer completion owner; carries no receipt/payload.
+    #[cfg(windows)]
+    HostWriterProgress,
     /// Wake the existing macOS main-owned authentication presentation service.
     #[cfg(target_os = "macos")]
     MacAuthWake,
@@ -359,7 +380,7 @@ pub type MacDialogUiOutcome = DialogUiOutcome;
 
 /// Observable UI-owned milestone delivered to the host session coordinator.
 #[derive(Debug, PartialEq)]
-#[cfg_attr(not(target_os = "macos"), derive(Clone, Copy, Eq))]
+#[cfg_attr(not(any(target_os = "macos", windows)), derive(Clone, Copy, Eq))]
 pub enum AppWindowEvent {
     /// Initial renderer navigation completed on the live backend.
     NavigationReady,
@@ -371,11 +392,19 @@ pub enum AppWindowEvent {
         /// Monotonic observation time of the real first native Init turn.
         observed_at: Instant,
     },
-    /// Complete actual `AppKit` sample, or explicit unavailable result.
+    /// Complete actual native UI sample, or explicit unavailable result.
     /// Sent from genuine Init before `HostInitialized`; never a user-supplied fact.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     DesktopObserved {
         /// An owned native observation, with no platform handles retained.
+        facts: Option<AppDesktopFacts>,
+    },
+    /// A Windows observation bound to the reader captured before acquisition.
+    #[cfg(windows)]
+    WindowsDesktopObserved {
+        /// Original reader identity, never recaptured after native work.
+        capture: AppDesktopCapture,
+        /// Failed acquisition is unavailable; it cannot reuse retired facts.
         facts: Option<AppDesktopFacts>,
     },
     /// The primary-window count transitioned from one to zero.
@@ -442,13 +471,25 @@ pub enum AppWindowEvent {
     },
     /// Conditional native admission decision on the exact shared object.
     /// Accepted is irreversible retirement; only `WindowReleased` proves release.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     OriginalDocumentDestroyDecision {
         /// Actual view inspected on the UI owner.
         view: WebviewId,
         /// Same Arc association as the pending Core Entry, not a new numeric ID.
-        admission: std::sync::Arc<crate::wkwebview::OriginalDocumentDestroyAdmission>,
+        admission: std::sync::Arc<crate::renderer_contract::OriginalDocumentDestroyAdmission>,
     },
+    /// Actual Windows navigation observation from the sole native document owner.
+    #[cfg(windows)]
+    OriginalNavigation {
+        /// Original accepted Host operation, retained before native dispatch.
+        context: NativeNavigationContext,
+        /// Exact correlated native observation, never a grant.
+        fact: OriginalNavigationFact,
+    },
+    /// The single physical writer has progress to inspect under its own custody.
+    /// This lightweight wake is not transport, consumer or native receipt credit.
+    #[cfg(windows)]
+    HostWriterProgress,
     /// A fact from the same native GH542 owner as the actual `WKNavigation`.
     /// This observation is never a grant; the Core must also verify current
     /// Bun role, authentic `HostWindowRef` and native stamp on each use.
@@ -628,8 +669,8 @@ pub struct WindowSnapshot {
     pub full_screen: bool,
 }
 
-/// An owned `AppKit` point-space rectangle after checked primary-origin conversion.
-#[cfg(target_os = "macos")]
+/// An owned native logical rectangle after checked primary-origin conversion.
+#[cfg(any(target_os = "macos", windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppDesktopRect {
     /// Horizontal offset from primary top-left, signed for secondary screens.
@@ -642,8 +683,8 @@ pub struct AppDesktopRect {
     pub height: u32,
 }
 
-/// One display captured by the macOS UI loop before the Host Init milestone.
-#[cfg(target_os = "macos")]
+/// One display captured by the native UI loop before the Host Init milestone.
+#[cfg(any(target_os = "macos", windows))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppDesktopDisplay {
     /// Native nonzero u32 display identity, not an authorization identifier.
@@ -657,7 +698,7 @@ pub struct AppDesktopDisplay {
 }
 
 /// Owned copy of the native UI loop's current complete desktop capture.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppDesktopFacts {
     /// Native primary display identity.

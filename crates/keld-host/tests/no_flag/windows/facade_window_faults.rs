@@ -161,13 +161,34 @@ fn windows_terminal_waits_for_pending_releases() {
         run.send("QUIT");
         // The in-flight raw Create can be interrupted by the admitted Quit tail.
         // Its TCP response is not the native release oracle (AC16 NC4).
-        let (status, trace) = run.finish(Instant::now() + ui_end_kill_switch());
+        let (status, trace, control) = run.finish_observed(Instant::now() + ui_end_kill_switch());
         assert!(
             trace.contains("TERMINAL Quit releasing=1"),
             "INVALID AC16 NC4: Quit did not meet a parked release; zero at-risk runs:\n{trace}"
         );
         println!("KELD_GH1188_AC16_NC4 deferred={add_deferred} at_risk=1 hwnd={hwnd}");
         assert!(status.success(), "terminal failed:\n{trace}");
+        assert!(
+            !trace.contains("Keld window listener error") && !trace.contains("write after end"),
+            "fixture callback/reporting failure:\n{trace}"
+        );
+        for token in std::iter::once("first").chain(add_deferred.then_some("second")) {
+            let reported = control
+                .lines()
+                .filter_map(|line| {
+                    line.strip_prefix("RAW_ERROR ")
+                        .or_else(|| line.strip_prefix("RAW_CREATED "))
+                })
+                .map(|json| {
+                    serde_json::from_str::<serde_json::Value>(json).expect("raw terminal JSON")
+                })
+                .filter(|record| record["token"] == token)
+                .count();
+            assert_eq!(
+                reported, 1,
+                "raw-call terminal report lost during Quit: {token}\n{control}"
+            );
+        }
         ordered(
             &trace,
             &[

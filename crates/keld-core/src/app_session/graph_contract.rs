@@ -42,10 +42,20 @@ type ObjectMetadata = std::fs::Metadata;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
+mod windows_boot;
+#[cfg(windows)]
+pub(super) use windows::open_relative_file as open_windows_boot_member;
+#[cfg(windows)]
 use windows::{
     ObjectMetadata, RetainedRoot, borrow_retained_root, census_directory, file_metadata,
     missing_configuration_reference, open_relative_file, path_metadata, root_identity,
     same_identity, sorted_census_children,
+};
+#[cfg(windows)]
+pub(super) use windows_boot::read_windows_bound_graph_from_retained_root;
+#[cfg(windows)]
+pub use windows_boot::{
+    WindowsDistributionQualification, qualified_windows_distribution, windows_graph_target,
 };
 
 #[cfg(target_os = "macos")]
@@ -266,6 +276,8 @@ mod selected_source_tests {
             root_identity: identity,
             selected_source: None,
             selected_file_identities: None,
+            #[cfg(windows)]
+            windows_runtime_entry: None,
         };
         graph
             .bind_selected_source(&selected)
@@ -298,6 +310,10 @@ pub struct AdmittedStageGraph {
     /// A byte-identical replacement of either selected leaf must fail while
     /// this admitted graph lives; full copied-tree identity belongs to Pack.
     selected_file_identities: Option<(ObjectMetadata, ObjectMetadata)>,
+    /// The exact canonical Windows entry stays deny-write/delete pinned through
+    /// all sessions and any retained fatal native owner.
+    #[cfg(windows)]
+    windows_runtime_entry: Option<File>,
 }
 
 fn graph_error(phase: &'static str, detail: impl std::fmt::Display) -> HostAppError {
@@ -1173,15 +1189,7 @@ fn admit_graph_against_expected(
             "external source receipt differs",
         ));
     }
-    for (index, (prefix, _)) in PACKAGES.iter().enumerate() {
-        if package_tree_fingerprint(&graph.files, prefix)? != expected.expected_package_trees[index]
-        {
-            return Err(graph_error(
-                "approved package artifact",
-                format!("{prefix}: external provider identity differs"),
-            ));
-        }
-    }
+    verify_provider_rows(&graph.files, &expected.expected_package_trees)?;
     let result = AdmittedStageGraph {
         root: root.to_owned(),
         retained_root,
@@ -1191,6 +1199,8 @@ fn admit_graph_against_expected(
         root_identity: identity,
         selected_source: None,
         selected_file_identities: None,
+        #[cfg(windows)]
+        windows_runtime_entry: None,
     };
     // Preserve the exact retained root against replacement during final
     // source/provider admission, including the last digest calculation.
@@ -1209,6 +1219,21 @@ fn validate_bound_graph(
     expected_graph_sha256: [u8; 32],
     selected_entry: &Path,
 ) -> Result<AdmittedStageGraph, HostAppError> {
+    let graph = parse_bound_graph(leaf_bytes, expected_graph_sha256, selected_entry)?;
+    bind_bound_graph(
+        root,
+        selected_root,
+        leaf_bytes,
+        expected_graph_sha256,
+        graph,
+    )
+}
+
+fn parse_bound_graph(
+    leaf_bytes: &[u8],
+    expected_graph_sha256: [u8; 32],
+    selected_entry: &Path,
+) -> Result<GraphDocument, HostAppError> {
     if leaf_bytes.len() > MAX_GRAPH_BYTES {
         return Err(graph_error(
             "graph size",
@@ -1228,6 +1253,16 @@ fn validate_bound_graph(
             "selected boot/Guardian entry differs from bound graph entry",
         ));
     }
+    Ok(graph)
+}
+
+fn bind_bound_graph(
+    root: &Path,
+    selected_root: &RetainedRoot,
+    leaf_bytes: &[u8],
+    expected_graph_sha256: [u8; 32],
+    graph: GraphDocument,
+) -> Result<AdmittedStageGraph, HostAppError> {
     let identity = root_identity(root, selected_root)?;
     validate_document(root, selected_root, &graph)?;
     let retained_root = clone_root(selected_root)?;
@@ -1240,6 +1275,8 @@ fn validate_bound_graph(
         root_identity: identity,
         selected_source: None,
         selected_file_identities: None,
+        #[cfg(windows)]
+        windows_runtime_entry: None,
     };
     if root_identity(&result.root, &result.retained_root)? != result.root_identity {
         return Err(graph_error("retained root", "bound root changed"));
@@ -1384,14 +1421,7 @@ pub fn verify_provider_trees_from_retained_root(
     }
     rows.sort_by(|left, right| left.path.cmp(&right.path));
     validate_graph_files(&rows)?;
-    for (index, (prefix, _)) in PACKAGES.iter().enumerate() {
-        if package_tree_fingerprint(&rows, prefix)? != expected[index] {
-            return Err(graph_error(
-                "approved package artifact",
-                format!("{prefix}: external provider identity differs"),
-            ));
-        }
-    }
+    verify_provider_rows(&rows, expected)?;
     if root_identity(root_path, &retained)? != identity {
         return Err(graph_error(
             "approved package artifact",
@@ -1548,6 +1578,25 @@ impl AdmittedStageGraph {
         let selected = absolute_selector
             .to_str()
             .ok_or_else(|| graph_error("preload selector", "non UTF-8 selector"))?;
+        let expected_selector = self.root.join(selected_source.preload_path());
+        let exact_selector = absolute_selector == expected_selector;
+        #[cfg(windows)]
+        let exact_selector = {
+            use std::path::{Component, Prefix};
+
+            // Bun's fileURLToPath emits an ordinary drive path while the Host
+            // retains a canonical verbatim root. Derive this one spelling from
+            // the trusted selected member, never resolve a caller locator.
+            // Raw equality keeps dot, separator, case and namespace aliases out
+            // of this additional alternative.
+            exact_selector
+                || matches!(
+                    expected_selector.components().next(),
+                    Some(Component::Prefix(prefix))
+                        if matches!(prefix.kind(), Prefix::VerbatimDisk(_))
+                ) && absolute_selector.as_os_str()
+                    == keld_runtime::primary::strip_verbatim_prefix(&expected_selector).as_os_str()
+        };
         if selected.len() > 2_048
             || !absolute_selector.is_absolute()
             || cfg!(target_os = "macos") && selected.contains('\\')
@@ -1557,7 +1606,7 @@ impl AdmittedStageGraph {
                     .split('/')
                     .skip(1)
                     .any(|part| part.is_empty() || part == "." || part == "..")
-            || absolute_selector != self.root.join(selected_source.preload_path())
+            || !exact_selector
         {
             return Err(graph_error(
                 "preload selector",
@@ -1814,6 +1863,18 @@ impl AdmittedStageGraph {
         self.recheck_selected_file_identities()?;
         Ok(())
     }
+}
+
+fn verify_provider_rows(rows: &[GraphFile], expected: &[[u8; 32]; 3]) -> Result<(), HostAppError> {
+    for (index, (prefix, _)) in PACKAGES.iter().enumerate() {
+        if package_tree_fingerprint(rows, prefix)? != expected[index] {
+            return Err(graph_error(
+                "approved package artifact",
+                format!("{prefix}: external provider identity differs"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn package_tree_fingerprint(files: &[GraphFile], prefix: &str) -> Result<[u8; 32], HostAppError> {

@@ -4,6 +4,9 @@
 //! authenticated coordinator for an independent `app-bound` slot rather than
 //! wrapping a second restart loop around [`crate::Supervisor`].
 
+#[cfg(windows)]
+pub use crate::role::RoleSourceRecheck;
+
 pub use crate::role::{
     BUN_OPTIONS_ENV, BoundRoleGeneration as BoundPrimaryGeneration,
     RoleConfig as PrimaryRoleConfig, RoleEvent as PrimaryRoleEvent, RoleGeneration, RoleOwner,

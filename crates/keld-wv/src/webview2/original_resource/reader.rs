@@ -2,10 +2,15 @@
 //! The existing native wait owner proves actual thread/TLS termination on the UI.
 
 use super::{Source, failure};
+
+mod custody;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+mod test_hold;
 use crate::resource_intake::{ORIGINAL_WEBAPP_LIMITS, RetainedByteCredit, TaskTicket};
 use crate::resource_source::{ResourceSourceError, SelectedRead, VerifiedBytes};
 use crate::webview2::{BrowserExitWake, WindowsLoopEvent};
 use crate::{WebviewId, WvError};
+pub(super) use custody::{ReaderCustody, with_reader_on_ui};
 use std::os::windows::io::AsHandle as _;
 use std::sync::{
     Arc, Mutex,
@@ -30,7 +35,15 @@ pub(super) struct Completed {
     pub(super) _credit: RetainedByteCredit,
 }
 
-fn read_work(work: Work) -> Completed {
+fn read_work(
+    work: Work,
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))] hold_directory: Option<
+        &std::path::Path,
+    >,
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))] wake_failed: &AtomicBool,
+) -> Completed {
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    let observed_view = work.view;
     let Work {
         ticket,
         source,
@@ -44,6 +57,28 @@ fn read_work(work: Work) -> Completed {
         ORIGINAL_WEBAPP_LIMITS.max_asset_bytes,
         &cancelled,
     );
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    if let Some(directory) = hold_directory {
+        let observation = test_hold::ReadObservation {
+            ticket,
+            view: observed_view,
+            selected: &selected,
+            source: &source,
+            credit: &credit,
+            result: &result,
+            cancelled: &cancelled,
+        };
+        if let Err(error) = test_hold::wait_for_fixture_release(directory, &observation) {
+            use std::io::Write as _;
+            // Keep and publish this exact real Completed/body/credit below.
+            // The existing failure flag refuses a successful reader drain.
+            wake_failed.store(true, Ordering::Release);
+            let _ = writeln!(
+                std::io::stderr(),
+                "KELD_ORIGINAL_RESOURCE_HOLD_FAILED {error}"
+            );
+        }
+    }
     // Job metadata and source aliases are quiescent before the UI can observe
     // this result; its actual buffer and reservation move together.
     drop(selected);
@@ -66,9 +101,34 @@ pub(super) struct Reader {
     shutdown: bool,
     joined: bool,
     unproved: bool,
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    test_hold_directory: Option<std::path::PathBuf>,
 }
 
 impl Reader {
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    fn observe_custody(&self) -> serde_json::Value {
+        let (result_available, result_ticket) = match self.result.try_lock() {
+            Ok(slot) => (
+                true,
+                slot.as_ref().map(|value| format!("{:?}", value.ticket)),
+            ),
+            Err(_) => (false, None),
+        };
+        serde_json::json!({
+            "phase": "retained",
+            "activeTicket": self.active.map(|ticket| format!("{ticket:?}")),
+            "shutdown": self.shutdown,
+            "joined": self.joined,
+            "unproved": self.unproved,
+            "workerRetained": self.worker.is_some(),
+            "waitRetained": self.wait.is_some(),
+            "resultAvailable": result_available,
+            "resultTicket": result_ticket,
+            "wakeFailed": self.wake_failed.load(Ordering::Acquire),
+        })
+    }
+
     pub(super) fn new() -> Self {
         Self {
             submit: None,
@@ -80,14 +140,12 @@ impl Reader {
             shutdown: false,
             joined: false,
             unproved: false,
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            test_hold_directory: None,
         }
     }
 
-    fn start(
-        &mut self,
-        proxy: &EventLoopProxy<WindowsLoopEvent>,
-        view: WebviewId,
-    ) -> Result<(), WvError> {
+    fn start(&mut self, proxy: &EventLoopProxy<WindowsLoopEvent>) -> Result<(), WvError> {
         if self.shutdown || self.unproved {
             return Err(failure("resource reader is retiring or unproved"));
         }
@@ -98,12 +156,25 @@ impl Reader {
         let completed = Arc::clone(&self.result);
         let wake_failed = Arc::clone(&self.wake_failed);
         let wake = proxy.clone();
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let mut hold_directory = self.test_hold_directory.take();
         let worker = thread::Builder::new()
             .name(String::from("keld-original-resource"))
             .spawn(move || {
                 while let Ok(work) = receiver.recv() {
-                    let view = work.view;
-                    let response = read_work(work);
+                    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                    let selected_hold = if work.selected.path == test_hold::FIXTURE_ASSET {
+                        hold_directory.take()
+                    } else {
+                        None
+                    };
+                    let response = read_work(
+                        work,
+                        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                        selected_hold.as_deref(),
+                        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                        &wake_failed,
+                    );
                     let Ok(mut slot) = completed.lock() else {
                         wake_failed.store(true, Ordering::Release);
                         break;
@@ -116,10 +187,7 @@ impl Reader {
                     }
                     *slot = Some(response);
                     drop(slot);
-                    if wake
-                        .send_event(WindowsLoopEvent::OriginalWake(view))
-                        .is_err()
-                    {
+                    if wake.send_event(WindowsLoopEvent::OriginalWake).is_err() {
                         wake_failed.store(true, Ordering::Release);
                         break;
                     }
@@ -132,7 +200,7 @@ impl Reader {
         let wait = thread_handle
             .map_err(|_| failure("cannot retain resource reader thread identity"))
             .and_then(|handle| {
-                BrowserExitWake::register_for_resource_reader(handle, proxy.clone(), view)
+                BrowserExitWake::register_for_resource_reader(handle, proxy.clone())
             });
         match wait {
             Ok(wait) => {
@@ -158,10 +226,10 @@ impl Reader {
         if self.active.is_some() {
             return Err(failure("resource reader already owns a task"));
         }
-        let Some(work) = staged.as_ref() else {
+        if staged.is_none() {
             return Err(failure("resource submission has no reserved work"));
-        };
-        self.start(proxy, work.view)?;
+        }
+        self.start(proxy)?;
         let Some(sender) = self.submit.as_ref() else {
             return Err(failure("resource reader sender is unavailable"));
         };
@@ -203,23 +271,15 @@ impl Reader {
         Ok(slot.take())
     }
 
-    pub(super) fn retain_unproved(&mut self, completed: Completed) {
+    fn mark_unproved(&mut self) {
         self.unproved = true;
         self.shutdown = true;
         self.submit.take();
-        // Restore the one result to its existing slot; never turn an internal
-        // accounting disagreement into a fictitious buffer-release receipt.
-        let mut slot = self
-            .result
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if slot.is_none() {
-            *slot = Some(completed);
-        } else {
-            // Two owned results contradict the single-worker invariant. Keep
-            // the unaccounted owner rather than releasing unknown live credit.
-            std::mem::forget(completed);
-        }
+    }
+
+    pub(super) fn retain_unproved(&mut self, completed: Completed) {
+        self.mark_unproved();
+        retain_result(&self.result, completed);
     }
 
     pub(super) fn retire(&mut self) {
@@ -237,7 +297,7 @@ impl Reader {
         if self.unproved || self.wake_failed.load(Ordering::Acquire) {
             return Err(failure("resource reader termination/wake is unproved"));
         }
-        let Some(wait) = &self.wait else {
+        let Some(wait) = self.wait.as_mut() else {
             return Ok(());
         };
         if !wait.resource_reader_signaled()? {
@@ -245,11 +305,11 @@ impl Reader {
         }
         // The same kernel thread is signaled, including TLS destruction. The
         // pool callback has no source/credit. Retire it before consuming JoinHandle.
-        let Some(wait) = self.wait.take() else {
-            self.unproved = true;
-            return Err(failure("signaled resource thread lost its retained wait"));
-        };
-        wait.retire().inspect_err(|_| self.unproved = true)?;
+        wait.retire_checked()
+            .inspect_err(|_| self.unproved = true)?;
+        // Retirement succeeded on that same owner. Only now may its retired
+        // shell be dropped, followed by the already-signaled JoinHandle.
+        self.wait.take();
         let Some(worker) = self.worker.take() else {
             self.unproved = true;
             return Err(failure("signaled resource thread lost its JoinHandle"));
@@ -271,6 +331,21 @@ impl Reader {
             && !self.unproved
             && self.active.is_none()
             && self.result.lock().is_ok_and(|slot| slot.is_none())
+    }
+}
+
+// One existing result slot is shared with the native-entry phase. This is the
+// same contradiction-retention branch as before, not another completion queue.
+fn retain_result(result: &Mutex<Option<Completed>>, completed: Completed) {
+    let mut slot = result
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if slot.is_none() {
+        *slot = Some(completed);
+    } else {
+        // Two owned results contradict the single-worker invariant. Keep
+        // the unaccounted owner rather than releasing unknown live credit.
+        std::mem::forget(completed);
     }
 }
 
@@ -302,7 +377,17 @@ mod tests {
         };
         // This test joins its real Rust worker; it does not claim the native UI
         // thread-termination/wake contract, which needs the Windows host probe.
-        let completed = thread::spawn(move || read_work(work)).join().unwrap();
+        let completed = thread::spawn(move || {
+            read_work(
+                work,
+                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                None,
+                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                &AtomicBool::new(false),
+            )
+        })
+        .join()
+        .unwrap();
         assert_eq!(completed.ticket, ticket);
         assert_eq!(account.load(Ordering::Acquire), before + charge);
         if cancelled {

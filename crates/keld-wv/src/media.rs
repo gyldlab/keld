@@ -508,18 +508,39 @@ mod tests {
         // The shared native builder must reconcile saved permissions and register
         // both live guards before first navigation can consume the witness.
         let engine = include_str!("webview2/view_build.rs");
-        let saved = engine
-            .find("reconcile_saved_media_permissions(&view.webview, deadline)?")
-            .expect("saved media permission reconciliation exists");
-        let guard = engine
+        let (build, helpers) = engine
+            .split_once("fn build_started(")
+            .expect("the retained builder has one construction path")
+            .1
+            .split_once("fn reconcile_permissions(")
+            .expect("the same builder owns permission reconciliation");
+        let saved = build
+            .find("self.reconcile_permissions(deadline)")
+            .expect("construction invokes saved permission reconciliation");
+        let configure = build
+            .find("Self::configure(")
+            .expect("construction configures the same retained View");
+        assert!(
+            saved < configure,
+            "saved permission denial must finish before live guard installation and navigation"
+        );
+        let (reconcile, configure) = helpers
+            .split_once("fn configure(")
+            .expect("the retained View has one native configuration helper");
+        assert!(
+            reconcile
+                .contains("reconcile_saved_media_permissions(&self.view()?.webview, deadline)?"),
+            "the helper must still perform actual saved permission reconciliation"
+        );
+        let guard = configure
             .find("let guard = install_guarded_media_permissions(")
             .expect("engine installs the live permission guard");
-        let initial = engine
+        let initial = configure
             .find("navigate_initial(&guard, &spec.initial)?")
             .expect("first navigation consumes the installed guard");
         assert!(
-            saved < guard && guard < initial,
-            "saved permission denial and live popup/media guards must precede initial navigation"
+            guard < initial,
+            "live popup/media guards must precede initial navigation"
         );
     }
 

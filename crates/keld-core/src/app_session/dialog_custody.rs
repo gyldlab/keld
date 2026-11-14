@@ -172,20 +172,28 @@ impl DialogCustody {
         true
     }
 
-    pub(super) fn take_original_terminal(
-        &mut self,
+    /// Observe the winning original without consuming its publication right.
+    /// A downstream writer commits that right only after actual final admission.
+    pub(super) fn original_terminal(
+        &self,
         owner: DialogOwner,
     ) -> Option<(CorrelationId, TerminalKind)> {
         let active = self
             .active
-            .as_mut()
+            .as_ref()
             .filter(|active| active.owner == owner)?;
         if active.retired || active.terminal_taken {
             return None;
         }
-        let outcome = active.outcome?;
-        active.terminal_taken = true;
-        let result = (active.owner.correlation, outcome);
+        Some((active.owner.correlation, active.outcome?))
+    }
+
+    pub(super) fn take_original_terminal(
+        &mut self,
+        owner: DialogOwner,
+    ) -> Option<(CorrelationId, TerminalKind)> {
+        let result = self.original_terminal(owner)?;
+        self.active.as_mut()?.terminal_taken = true;
         self.release_if_drained();
         Some(result)
     }

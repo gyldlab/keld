@@ -1,5 +1,5 @@
 //! Component proof over real platform sockets and the actual Core handler/writer.
-//! Fixture identities and fake UI commands do not prove Runtime admission or native
+//! `LegacyPolicyFixture` identities and fake UI commands do not prove Runtime admission or native
 //! windows. Actual app-bound Subscribe admission and GH-446 Init remain separate.
 use super::super::window_registry::WindowOwner;
 use super::super::{BootstrapStream, PrimaryCallerContext, PrimaryRouterHandle};
@@ -28,7 +28,7 @@ use super::super::DirectPrimaryOwnerCommand as OwnerCommand;
 #[cfg(target_os = "macos")]
 use super::super::GuardianOwnerCommand as OwnerCommand;
 
-struct Fixture {
+struct LegacyPolicyFixture {
     handle: PrimaryRouterHandle,
     peer: BootstrapStream,
     commands: mpsc::Receiver<AppWindowCommand>,
@@ -36,7 +36,7 @@ struct Fixture {
 }
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-impl Fixture {
+impl LegacyPolicyFixture {
     fn new(support: Option<bool>) -> TestResult<Self> {
         let (mut handle, peer, owner_commands, commands) =
             super::super::tests::initial_ready_router_with_window_loop();
@@ -94,7 +94,7 @@ impl Fixture {
         Ok(())
     }
     fn subscribe(&mut self) -> TestResult {
-        self.handle.subscribe_window(
+        self.handle.subscribe_window_legacy_policy(
             &self.caller()?,
             CorrelationId(11),
             keld_ipc::channel_table::WINDOW.wire_id(),
@@ -121,7 +121,7 @@ impl Fixture {
         Ok(())
     }
     fn call(&self, request: &WindowRequest, correlation: u32) -> TestResult {
-        self.handle.dispatch_window(
+        self.handle.dispatch_window_legacy_policy(
             &self.caller()?,
             CorrelationId(correlation),
             &encode(request)?,
@@ -164,7 +164,7 @@ impl Fixture {
         };
         assert_eq!((width, height, x, y), (640, 480, None, None));
         self.handle
-            .window_native_event(AppWindowEvent::WindowBuilt {
+            .window_native_event_legacy_policy(AppWindowEvent::WindowBuilt {
                 build,
                 view: WebviewId(view),
                 snapshot: snapshot(),
@@ -216,7 +216,11 @@ fn snapshot() -> WindowSnapshot {
     }
 }
 
-fn reply(fixture: &mut Fixture, correlation: u32, expected: WindowResponse) -> TestResult {
+fn reply(
+    fixture: &mut LegacyPolicyFixture,
+    correlation: u32,
+    expected: WindowResponse,
+) -> TestResult {
     let (header, bytes) = read_frame(&mut fixture.peer)?;
     assert_eq!(
         (header.kind, header.channel, header.corr),
@@ -229,7 +233,7 @@ fn reply(fixture: &mut Fixture, correlation: u32, expected: WindowResponse) -> T
     assert_eq!(decode::<WindowResponse>(&bytes)?, expected);
     Ok(())
 }
-fn fact(fixture: &mut Fixture, expected: &WindowEvent) -> TestResult {
+fn fact(fixture: &mut LegacyPolicyFixture, expected: &WindowEvent) -> TestResult {
     let (header, bytes) = read_frame(&mut fixture.peer)?;
     assert_eq!(
         (header.kind, header.channel, header.corr),
@@ -243,7 +247,7 @@ fn fact(fixture: &mut Fixture, expected: &WindowEvent) -> TestResult {
     Ok(())
 }
 fn verdict(
-    fixture: &Fixture,
+    fixture: &LegacyPolicyFixture,
     window: WindowRef,
     close_seq: u64,
     verdict: CloseVerdict,
@@ -258,8 +262,8 @@ fn verdict(
         correlation,
     )
 }
-fn install_successor(fixture: &mut Fixture) -> TestResult {
-    let successor = Fixture::new(None)?;
+fn install_successor(fixture: &mut LegacyPolicyFixture) -> TestResult {
+    let successor = LegacyPolicyFixture::new(None)?;
     let server = successor
         .handle
         .current
@@ -284,13 +288,15 @@ fn install_successor(fixture: &mut Fixture) -> TestResult {
 
 #[test]
 fn native_close_holds_one_exact_fact_and_merges_repeated_attempts() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let window = fixture.build(1, 7)?;
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowCloseRequested { view: WebviewId(7) })?;
+        .window_native_event_legacy_policy(AppWindowEvent::WindowCloseRequested {
+            view: WebviewId(7),
+        })?;
     assert!(
         fixture.commands.try_recv().is_err(),
         "close cannot enqueue teardown before a verdict"
@@ -313,7 +319,9 @@ fn native_close_holds_one_exact_fact_and_merges_repeated_attempts() -> TestResul
     );
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowCloseRequested { view: WebviewId(7) })?;
+        .window_native_event_legacy_policy(AppWindowEvent::WindowCloseRequested {
+            view: WebviewId(7),
+        })?;
     // A correlated reply is an explicit writer fence: an extra close fact would
     // be read before this reply and fail the exact frame assertion.
     fixture.call(&WindowRequest::RequestClose { window }, 2)?;
@@ -331,16 +339,16 @@ fn native_close_holds_one_exact_fact_and_merges_repeated_attempts() -> TestResul
 }
 #[test]
 fn window_router_subscription_precedes_ready_and_body_decoding() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture
         .handle
-        .dispatch_window(&fixture.caller()?, CorrelationId(1), &[0xff])
+        .dispatch_window_legacy_policy(&fixture.caller()?, CorrelationId(1), &[0xff])
         .expect("unsubscribed malformed body is not decoded");
     fixture.error(1, "KELD-CORE-045")?;
     fixture.subscribe()?;
     fixture
         .handle
-        .dispatch_window(&fixture.caller()?, CorrelationId(2), &[0xff])
+        .dispatch_window_legacy_policy(&fixture.caller()?, CorrelationId(2), &[0xff])
         .expect("not-ready malformed body is not decoded");
     fixture.error(2, "KELD-CORE-040")?;
     assert!(fixture.commands.try_recv().is_err());
@@ -351,7 +359,7 @@ fn window_router_subscription_precedes_ready_and_body_decoding() -> TestResult {
 fn cumulative_churn_refuses_correlated_create_before_any_native_command() -> TestResult {
     // GH1149 review-only candidate: the public authenticated writer must
     // report capacity without mutating a single native window or ending link.
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let caller = fixture.caller()?;
@@ -395,7 +403,7 @@ fn cumulative_churn_refuses_correlated_create_before_any_native_command() -> Tes
 
 #[test]
 fn window_router_native_snapshot_identity_and_setter_wire_are_actual() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let first = fixture.build(21, 7)?;
@@ -429,7 +437,7 @@ fn window_router_native_snapshot_identity_and_setter_wire_are_actual() -> TestRe
     );
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowMaximized {
+        .window_native_event_legacy_policy(AppWindowEvent::WindowMaximized {
             view: WebviewId(7),
             maximized: true,
         })
@@ -447,7 +455,7 @@ fn window_router_native_snapshot_identity_and_setter_wire_are_actual() -> TestRe
 }
 #[test]
 fn window_router_forged_close_calls_are_typed_without_native_effects() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let live = fixture.build(1, 7)?;
@@ -489,13 +497,13 @@ fn window_router_forged_close_calls_are_typed_without_native_effects() -> TestRe
     );
     Ok(())
 }
-fn owner_from(fixture: &Fixture) -> TestResult<WindowOwner> {
+fn owner_from(fixture: &LegacyPolicyFixture) -> TestResult<WindowOwner> {
     let caller = fixture.caller()?;
     Ok(WindowOwner::new(caller.identity, caller.attempt))
 }
 #[test]
 fn window_router_unsupported_platform_is_typed_after_subscription_and_ready() -> TestResult {
-    let mut fixture = Fixture::new(Some(false))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(false))?;
     fixture.subscribe()?;
     fixture.ready()?;
     fixture.call(
@@ -513,10 +521,10 @@ fn window_router_unsupported_platform_is_typed_after_subscription_and_ready() ->
 }
 #[test]
 fn window_router_renderer_mode_remains_not_subscribable() -> TestResult {
-    let mut fixture = Fixture::new(None)?;
+    let mut fixture = LegacyPolicyFixture::new(None)?;
     fixture
         .handle
-        .subscribe_window(
+        .subscribe_window_legacy_policy(
             &fixture.caller()?,
             CorrelationId(1),
             keld_ipc::channel_table::WINDOW.wire_id(),
@@ -567,10 +575,10 @@ fn window_router_subscription_reasons_are_closed_and_do_not_mutate_state() -> Te
         ),
         Some(SubscribeRefusal::NotSubscribable)
     );
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture
         .handle
-        .subscribe_window(&fixture.caller()?, CorrelationId(3), u16::MAX)
+        .subscribe_window_legacy_policy(&fixture.caller()?, CorrelationId(3), u16::MAX)
         .expect("unknown refusal");
     let (_, bytes) = read_frame(&mut fixture.peer).expect("unknown response");
     assert_eq!(
@@ -594,7 +602,7 @@ fn window_router_subscription_reasons_are_closed_and_do_not_mutate_state() -> Te
 }
 #[test]
 fn window_router_stale_attempt_foreign_arc_and_stopped_callers_are_inert() -> TestResult {
-    let fixture = Fixture::new(Some(true))?;
+    let fixture = LegacyPolicyFixture::new(Some(true))?;
     let current = fixture.caller()?;
     for stale in [
         PrimaryCallerContext {
@@ -608,11 +616,11 @@ fn window_router_stale_attempt_foreign_arc_and_stopped_callers_are_inert() -> Te
     ] {
         fixture
             .handle
-            .dispatch_window(&stale, CorrelationId(1), &[0xff])
+            .dispatch_window_legacy_policy(&stale, CorrelationId(1), &[0xff])
             .expect("stale body never decoded");
         fixture
             .handle
-            .subscribe_window(
+            .subscribe_window_legacy_policy(
                 &stale,
                 CorrelationId(2),
                 keld_ipc::channel_table::WINDOW.wire_id(),
@@ -622,7 +630,7 @@ fn window_router_stale_attempt_foreign_arc_and_stopped_callers_are_inert() -> Te
     current.reader_stop.store(true, Ordering::Release);
     fixture
         .handle
-        .dispatch_window(&current, CorrelationId(3), &[0xff])
+        .dispatch_window_legacy_policy(&current, CorrelationId(3), &[0xff])
         .expect("stopped callback inert");
     assert!(
         fixture
@@ -640,7 +648,7 @@ fn window_router_stale_attempt_foreign_arc_and_stopped_callers_are_inert() -> Te
 }
 #[test]
 fn window_router_terminal_cut_precedes_release_and_is_idempotent() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let window = fixture.build(1, 7)?;
@@ -665,7 +673,7 @@ fn window_router_terminal_cut_precedes_release_and_is_idempotent() -> TestResult
     assert!(fixture.commands.try_recv().is_err());
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowReleased { view: WebviewId(7) })
+        .window_native_event_legacy_policy(AppWindowEvent::WindowReleased { view: WebviewId(7) })
         .expect("physical release after terminal state");
     let (_, bytes) =
         read_frame(&mut fixture.peer).expect("Destroyed, no last-window on terminal cut");
@@ -690,7 +698,7 @@ fn window_router_terminal_cut_precedes_release_and_is_idempotent() -> TestResult
 }
 #[test]
 fn window_router_role_loss_replays_before_subscribed_and_adopts_without_build() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let window = fixture.build(1, 7)?;
@@ -713,7 +721,7 @@ fn window_router_role_loss_replays_before_subscribed_and_adopts_without_build() 
     );
     // Replace the component socket with a fresh correctly fenced Core link. This
     // is a port/state fixture, not an authenticated Runtime principal claim.
-    let successor = Fixture::new(None)?;
+    let successor = LegacyPolicyFixture::new(None)?;
     let mut active = successor
         .handle
         .current
@@ -726,7 +734,7 @@ fn window_router_role_loss_replays_before_subscribed_and_adopts_without_build() 
     *fixture.handle.current.lock().expect("current") = Some(active);
     fixture
         .handle
-        .subscribe_window(
+        .subscribe_window_legacy_policy(
             &fixture.caller()?,
             CorrelationId(2),
             keld_ipc::channel_table::WINDOW.wire_id(),
@@ -792,7 +800,7 @@ fn window_router_role_loss_replays_before_subscribed_and_adopts_without_build() 
 
 #[test]
 fn window_router_duplicate_live_correlation_closes_link_before_second_effect() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     let request = WindowRequest::Create {
@@ -816,7 +824,7 @@ fn window_router_duplicate_live_correlation_closes_link_before_second_effect() -
     drop(fixture.owner_commands);
     let error = fixture
         .handle
-        .dispatch_window(&caller, CorrelationId(91), &[0xff])
+        .dispatch_window_legacy_policy(&caller, CorrelationId(91), &[0xff])
         .expect_err("duplicate rejected before second decode");
     assert!(error.to_string().contains("KELD-IPC-005"), "{error}");
     assert!(fixture.handle.current.lock().expect("current").is_none());
@@ -830,7 +838,7 @@ fn window_router_duplicate_live_correlation_closes_link_before_second_effect() -
     );
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowBuilt {
+        .window_native_event_legacy_policy(AppWindowEvent::WindowBuilt {
             build,
             view: WebviewId(7),
             snapshot: snapshot(),
@@ -847,8 +855,18 @@ fn window_router_duplicate_live_correlation_closes_link_before_second_effect() -
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    expect(
+        clippy::too_many_lines,
+        reason = "Keep actual reader admission, native disposition, correlated replies and original thread/writer joins in one ordered fixture."
+    )
+)]
 fn window_router_existing_primary_reader_admits_the_named_window_policy() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
+    #[cfg(windows)]
+    let mut owned_writer =
+        crate::app_session::compat_router::owned_tests::install_writer(&mut fixture.handle);
     let caller = fixture.caller()?;
     let mut reader = fixture.reader()?;
     let handle = fixture.handle.clone();
@@ -908,7 +926,7 @@ fn window_router_existing_primary_reader_admits_the_named_window_policy() -> Tes
         panic!("native build command")
     };
     assert_eq!((width, height), (11, 12));
-    fixture
+    let disposition = fixture
         .handle
         .window_native_event(AppWindowEvent::WindowBuilt {
             build,
@@ -916,6 +934,13 @@ fn window_router_existing_primary_reader_admits_the_named_window_policy() -> Tes
             snapshot: snapshot(),
         })
         .expect("native result");
+    #[cfg(windows)]
+    assert!(matches!(
+        disposition,
+        super::NativePublicationDisposition::Handled
+    ));
+    #[cfg(not(windows))]
+    let () = disposition;
     let (event_header, bytes) = read_frame(&mut fixture.peer).expect("Created event");
     let WindowEvent::Created { window, .. } = decode(&bytes).expect("Created payload") else {
         panic!("Created")
@@ -937,12 +962,16 @@ fn window_router_existing_primary_reader_admits_the_named_window_policy() -> Tes
     join.join()
         .expect("join actual reader")
         .expect("bounded poll exits on existing reader-stop owner");
+    #[cfg(windows)]
+    owned_writer
+        .stop_and_join()
+        .expect("actual sole writer joined");
     Ok(())
 }
 
 #[test]
 fn window_router_maximum_created_fact_fits_the_fixed_writer_storage() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     let fact = WindowEvent::Created {
         window: keld_ipc::window::WindowRef {
             id: WindowId(u32::MAX),
@@ -997,13 +1026,18 @@ fn window_router_maximum_created_fact_fits_the_fixed_writer_storage() -> TestRes
 
 #[test]
 fn window_router_successor_has_no_stale_legacy_last_window_replay() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
+    #[cfg(windows)]
+    let mut owned_writer =
+        crate::app_session::compat_router::owned_tests::install_writer(&mut fixture.handle);
     fixture.subscribe()?;
     fixture.ready()?;
     let first = fixture.build(1, 7)?;
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowCloseRequested { view: WebviewId(7) })
+        .window_native_event_legacy_policy(AppWindowEvent::WindowCloseRequested {
+            view: WebviewId(7),
+        })
         .expect("native close request");
     fact(
         &mut fixture,
@@ -1023,7 +1057,7 @@ fn window_router_successor_has_no_stale_legacy_last_window_replay() -> TestResul
     ));
     fixture
         .handle
-        .window_native_event(AppWindowEvent::WindowReleased { view: WebviewId(7) })
+        .window_native_event_legacy_policy(AppWindowEvent::WindowReleased { view: WebviewId(7) })
         .expect("actual release receipt");
     let (header, bytes) = read_frame(&mut fixture.peer).expect("Destroyed before LastWindowClosed");
     assert_eq!(header.kind, FrameKind::Event);
@@ -1061,6 +1095,10 @@ fn window_router_successor_has_no_stale_legacy_last_window_replay() -> TestResul
     // Release the real reader before any assertion can fail; the original
     // regression frame is retained independently in these owned observations.
     fixture.retire_reader(2)?;
+    #[cfg(windows)]
+    owned_writer
+        .stop_and_join()
+        .expect("actual sole writer joined");
     assert_eq!(
         (first_after_ready.0.kind, first_after_ready.0.channel),
         (FrameKind::Event, keld_ipc::channel_table::WINDOW.id()),
@@ -1091,7 +1129,7 @@ fn window_router_successor_has_no_stale_legacy_last_window_replay() -> TestResul
 
 #[test]
 fn window_router_ui_terminal_cut_fences_successor_installation() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     fixture.build(1, 7)?;
@@ -1108,7 +1146,7 @@ fn window_router_ui_terminal_cut_fences_successor_installation() -> TestResult {
         .handle
         .retire_generation(1)
         .expect("retire old generation");
-    let successor = Fixture::new(None)?;
+    let successor = LegacyPolicyFixture::new(None)?;
     let server = successor
         .handle
         .current
@@ -1147,7 +1185,7 @@ fn window_router_ui_terminal_cut_fences_successor_installation() -> TestResult {
 #[test]
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn window_router_accepted_quit_reply_precedes_teardown_failure_with_pending_create() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     fixture.build(1, 7)?;
@@ -1235,7 +1273,7 @@ fn window_router_accepted_quit_reply_precedes_teardown_failure_with_pending_crea
 
 #[test]
 fn window_router_forced_tail_marks_completion_after_managed_teardown_error() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     fixture.build(1, 7)?;
@@ -1275,7 +1313,7 @@ fn window_router_forced_tail_marks_completion_after_managed_teardown_error() -> 
 #[test]
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn window_router_failed_quit_reply_still_ends_managed_windows() -> TestResult {
-    let mut fixture = Fixture::new(Some(true))?;
+    let mut fixture = LegacyPolicyFixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
     fixture.build(1, 7)?;
@@ -1362,10 +1400,51 @@ impl WindowSession {
     }
 }
 
+#[cfg(all(windows, debug_assertions))]
+impl WindowSession {
+    pub(in crate::app_session) fn fixture_original_retirement_route(
+        &mut self,
+        owner: WindowOwner,
+    ) -> TestResult<(
+        tempfile::TempDir,
+        keld_wv::renderer_contract::NativeDocumentFixture,
+        super::super::window_registry::RendererRoute,
+    )> {
+        self.registry.mark_ready();
+        self.subscribed = Some(owner);
+        let (selected_stage, native, _, context) =
+            self.registry
+                .fixture_original_document(owner, WebviewId(700), Some(false), true)?;
+        let route = self.registry.renderer_route(owner, context.view(), None)?;
+        Ok((selected_stage, native, route))
+    }
+
+    pub(in crate::app_session) fn fixture_adopt_retained_original(
+        &mut self,
+        caller: &PrimaryCallerContext,
+    ) {
+        let owner = WindowOwner::new(caller.identity, caller.attempt);
+        self.registry.subscribe_successor_for_caller(caller);
+        self.subscribed = Some(owner);
+        self.registry.rebind_recovered_renderer_documents(owner);
+    }
+
+    // Setup alone does not mint a permission. The role-fence fixture calls this
+    // under its actual current/transition cut with that current caller allocation.
+    pub(in crate::app_session) fn fixture_bind_original_caller(
+        &mut self,
+        caller: &PrimaryCallerContext,
+    ) {
+        let owner = WindowOwner::new(caller.identity, caller.attempt);
+        self.registry.role_lost(owner, |_| {});
+        self.fixture_adopt_retained_original(caller);
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn original_menu_quit_selection_reuses_exact_bootstrap_source_and_subscribed_owner() -> TestResult {
-    let fixture = Fixture::new(Some(true))?;
+    let fixture = LegacyPolicyFixture::new(Some(true))?;
     let caller = fixture.caller()?;
     let owner = WindowOwner::new(caller.identity, caller.attempt);
     let mut session = WindowSession::new(true);
@@ -1400,7 +1479,7 @@ fn original_menu_quit_selection_reuses_exact_bootstrap_source_and_subscribed_own
 }
 
 /// The actual socket/error owner and inherited stderr are independent observers.
-/// Fixture identities are component inputs, not Runtime/native authentication.
+/// LegacyPolicyFixture identities are component inputs, not Runtime/native authentication.
 #[test]
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn window_refusal_diagnostic_matches_actual_reply_without_private_message() -> TestResult {
@@ -1409,7 +1488,7 @@ fn window_refusal_diagnostic_matches_actual_reply_without_private_message() -> T
     const CHILD: &str = "KELD_WINDOW_REFUSAL_DIAGNOSTIC_CHILD";
     const PRIVATE: &str = "WINDOW_DIAGNOSTIC_PRIVATE_ARGUMENT";
     if std::env::var_os(CHILD).is_some() {
-        let mut fixture = Fixture::new(Some(true))?;
+        let mut fixture = LegacyPolicyFixture::new(Some(true))?;
         let caller = fixture.caller()?;
         for (code, correlation) in [("KELD-CORE-051", 71), ("KELD-CORE-045", 72)] {
             let message = format!(

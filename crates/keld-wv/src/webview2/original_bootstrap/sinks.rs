@@ -62,7 +62,7 @@ impl fmt::Write for NativeWide {
     }
 }
 
-/// serde_json remains the sole facts encoder. This adapter accepts even split
+/// `serde_json` remains the sole facts encoder. This adapter accepts even split
 /// UTF8 code points without allocating a second JSON/facts buffer.
 struct JsonText<'a, W: fmt::Write> {
     output: &'a mut W,

@@ -1,4 +1,6 @@
 //! AC25: real Win32 close and FIFO native release across a nested controller pump.
+//! The backpressure pair explicitly adapts the former three-command Tao prefill;
+//! its actual retained bridge has one pending delivery. Prior evidence is preserved.
 
 use super::destroy;
 use super::fixture::{
@@ -16,7 +18,9 @@ use std::time::{Duration, Instant};
 
 #[path = "facade_window_pump_observation.rs"]
 mod observation;
-use observation::{held_build_or_terminal, later_bounds_after_pump, pump_record};
+use observation::{
+    closed_before_quit, held_build_or_terminal, later_bounds_after_pump, pump_record,
+};
 
 fn release(hold: &Path, build: u64) {
     fs::write(hold.join(format!("{build}.release")), b"release\n")
@@ -167,7 +171,10 @@ fn backpressure_case(single_hold: bool) {
     let fixture = FacadeFixture::new();
     let hold = fixture.project.root.path().join("fifo-pump-hold");
     fs::create_dir(&hold).expect("owned FIFO pump hold directory");
-    let (mut run, _) = fixture.spawn(&[(NATIVE_HOLD, format!("build-pump:{}", hold.display()))]);
+    let (mut run, _) = fixture.spawn(&[(
+        NATIVE_HOLD,
+        format!("build-pump-prefill:{}", hold.display()),
+    )]);
     let (created, cursor) = initial_window(&mut run, &hold);
     let first_id = number(&created, "id");
     let first_native = capture(census(run.pid(), 1)[0], run.pid());
@@ -184,18 +191,25 @@ fn backpressure_case(single_hold: bool) {
     run.read("RAW_SENT");
     run.send("RAW_CREATE third");
     run.read("RAW_SENT");
-    for command in ["DestroyWindow", "CreateWindow", "CreateWindow"] {
-        let (posted, next) = run.marker("BRIDGE_POSTED ", cursor);
-        assert!(
-            posted.starts_with(&format!("BRIDGE_POSTED {command}")),
-            "fixture command did not enter the live Tao bridge FIFO: {posted}"
-        );
-        cursor = next;
-    }
+    // The retained bridge has one pending delivery. Its next two posts require
+    // the UI to take this Destroy, so they cannot precede carrier release.
+    let (posted, next) = run.marker("BRIDGE_POSTED ", cursor);
+    assert!(
+        posted.starts_with("BRIDGE_POSTED DestroyWindow"),
+        "{posted}"
+    );
     run.capture_control();
     release(&hold, carrier);
-    let (_, next) = run.marker(&format!("BUILD_PUMP_EXIT {carrier}"), cursor);
+    let (_, next) = run.marker(&format!("BUILD_PUMP_EXIT {carrier}"), next);
     cursor = next;
+    let mut posted_cursor = cursor;
+    for _ in 0..2 {
+        let (posted, next) = run.marker("BRIDGE_POSTED ", posted_cursor);
+        assert!(posted.starts_with("BRIDGE_POSTED CreateWindow"), "{posted}");
+        posted_cursor = next;
+    }
+    // Keep the held-build cursor before either Create post: under NC3 the real
+    // first build can enter its pump before the worker posts the second command.
 
     let mut held_builds = Vec::new();
     let mut hold_times = Vec::new();
@@ -227,6 +241,11 @@ fn backpressure_case(single_hold: bool) {
             cursor = next;
         }
     }
+    // Pump exit precedes native publication. Observe the actual A callback before
+    // Quit can close its WorkerLink; retain any absence until physical cleanup.
+    // One existing terminal bound covers both this observation and Host exit.
+    let terminal_deadline = Instant::now() + ui_end_kill_switch();
+    let closed_before_quit = closed_before_quit(&mut run, first_id, terminal_deadline);
     let host_pid = run.pid();
     let observed_census = app_top_level_windows(host_pid).len();
     let request = if run
@@ -240,7 +259,7 @@ fn backpressure_case(single_hold: bool) {
     } else {
         None
     };
-    let (status, trace, control) = run.finish_observed(Instant::now() + ui_end_kill_switch());
+    let (status, trace, control) = run.finish_observed(terminal_deadline);
     assert_retired(&first_native);
     assert_eq!(app_top_level_windows(host_pid), []);
     // Retain product deletion as an observation before removing the isolated
@@ -267,6 +286,7 @@ fn backpressure_case(single_hold: bool) {
     assert!(hold_times[0] >= Duration::from_secs(12));
     let second = held_builds[0];
     let third = held_builds[1];
+    assert_prefill_receipt(&trace, first_native.hwnd, second, third);
     if single_hold {
         assert!(
             hold_times[1] < Duration::from_secs(12),
@@ -310,6 +330,10 @@ fn backpressure_case(single_hold: bool) {
         closed, 1,
         "A closed more than once or never closed:\n{control}"
     );
+    assert!(
+        closed_before_quit.is_ok(),
+        "A Closed was not observed before Quit: {closed_before_quit:?}\n{control}"
+    );
     assert_eq!(
         observed_census, 3,
         "carrier Z, B and C must be independent live native windows"
@@ -318,4 +342,22 @@ fn backpressure_case(single_hold: bool) {
         !profile_retained,
         "healthy product release kept the ephemeral profile"
     );
+}
+
+/// Actual receipt/admission diagnostics only; no replacement native proof.
+fn assert_prefill_receipt(trace: &str, hwnd: usize, second: u64, third: u64) {
+    for expected in [
+        format!("DESTROYED_PREFILL_ARMED {hwnd}"),
+        format!("DESTROYED_PREFILL_CAPTURED {hwnd}"),
+        format!("DESTROYED_PREFILL_CREATE {hwnd} build={second} ordinal=1"),
+        format!("DESTROYED_PREFILL_CREATE {hwnd} build={third} ordinal=2"),
+        format!("DESTROYED_PREFILL_WAKE {hwnd}"),
+        format!("DESTROYED_PREFILL_CONSUMED {hwnd}"),
+    ] {
+        assert_eq!(
+            trace.lines().filter(|line| *line == expected).count(),
+            1,
+            "missing or repeated actual receipt/admission: {expected}\n{trace}"
+        );
+    }
 }

@@ -554,3 +554,62 @@ fn recovered_document_borrow_matches_literal_without_replaying_finish() {
     let mut tiny = [0_u8; 4];
     assert!(super::encode_document_recovered_into(WINDOW, 5, native_url, &mut tiny).is_err());
 }
+
+#[test]
+fn canonical_borrowed_window_urls_preserve_owned_wire_at_empty_unicode_and_limit() {
+    use super::WindowEventValue;
+    let maximum = "界".repeat(2730) + "ab";
+    for native_url in ["", "file:///D:/窗口/π.html?q=✓", maximum.as_str()] {
+        for (borrowed, owned, tag) in [
+            (
+                WindowEventValue::NavigationCommitted {
+                    window: WINDOW,
+                    document_generation: u32::MAX,
+                    native_url,
+                },
+                WindowEvent::NavigationCommitted {
+                    window: WINDOW,
+                    document_generation: u32::MAX,
+                    native_url: native_url.to_owned(),
+                },
+                8,
+            ),
+            (
+                WindowEventValue::DocumentRecovered {
+                    window: WINDOW,
+                    document_generation: u32::MAX,
+                    native_url,
+                },
+                WindowEvent::DocumentRecovered {
+                    window: WINDOW,
+                    document_generation: u32::MAX,
+                    native_url: native_url.to_owned(),
+                },
+                10,
+            ),
+        ] {
+            let borrowed_bytes = encode(&borrowed).expect("canonical borrowed event");
+            assert_eq!(borrowed_bytes[0], tag, "append-only literal discriminator");
+            assert_eq!(
+                borrowed_bytes,
+                encode(&owned).expect("owned decoder schema")
+            );
+            assert_eq!(
+                decode::<WindowEvent>(&borrowed_bytes).expect("owned decode"),
+                owned
+            );
+            assert_eq!(
+                crate::codec::encoded_len(&borrowed).expect("bounded count"),
+                borrowed_bytes.len()
+            );
+        }
+    }
+    let fixed: WindowEvent = WindowEvent::Focus {
+        window: WINDOW,
+        focused: false,
+    };
+    assert_eq!(
+        encode(&fixed).expect("owned alias constructor"),
+        [2, 7, 0xac, 2, 0]
+    );
+}

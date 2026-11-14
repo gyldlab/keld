@@ -59,7 +59,7 @@ pub use bootstrap::{
     WindowsNamedPipeBootstrapListener, WindowsNamedPipeBootstrapStream,
     connect_windows_lifecycle_rendezvous_until,
 };
-pub use call_error::{CallError, write_call_error};
+pub use call_error::{CallError, encode_call_error_into, write_call_error};
 pub use echo::{ECHO_CHANNEL, EchoRequest, EchoResponse};
 pub use frame::{ChannelId, CorrelationId, FrameHeader, FrameKind, HeaderError};
 pub use lifecycle::{

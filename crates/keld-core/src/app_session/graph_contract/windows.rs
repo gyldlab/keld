@@ -35,7 +35,7 @@ pub(super) fn census_directory(root: &RetainedRoot, relative: &str) -> Result<Fi
     Ok(directory)
 }
 
-pub(super) fn open_relative_file(
+pub(in crate::app_session) fn open_relative_file(
     root: &RetainedRoot,
     relative: &Path,
     phase: &'static str,

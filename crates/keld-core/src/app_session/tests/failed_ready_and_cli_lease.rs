@@ -12,7 +12,11 @@ fn failed_initial_ready_write_denies_recovery_before_successor() {
     let (guardian_tx, guardian_rx) = mpsc::channel();
     let (window_tx, _window_rx) = mpsc::channel();
     let handle = PrimaryRouterHandle {
+        #[cfg(windows)]
+        primary_writer: None,
         current: Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
+            #[cfg(windows)]
+            writer_link: None,
             identity: PrimaryLinkIdentity::Fixture,
             attempt: 1,
             writer: server,
@@ -22,13 +26,13 @@ fn failed_initial_ready_write_denies_recovery_before_successor() {
             pending_quit: None,
         }))),
         readers: Arc::new(Mutex::new(HashMap::new())),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         pending_echo: Arc::new(Mutex::new(None)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         pending_echo_attempt: Arc::new(AtomicU32::new(0)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         pending_echo_corr: Arc::new(AtomicU32::new(0)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         next_host_corr: Arc::new(AtomicU32::new(1)),
         window_ready: Arc::new(AtomicBool::new(false)),
         last_window_closed: Arc::new(AtomicBool::new(false)),
@@ -47,7 +51,7 @@ fn failed_initial_ready_write_denies_recovery_before_successor() {
         dialog: None,
         #[cfg(target_os = "macos")]
         menu: None,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         compat: None,
         guardian: PlatformPrimaryOwnerHandle {
             command_tx: guardian_tx,

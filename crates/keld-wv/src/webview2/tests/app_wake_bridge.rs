@@ -8,9 +8,10 @@ use std::time::Duration;
 use tao::event_loop::EventLoopBuilder;
 use tao::platform::windows::EventLoopBuilderExtWindows;
 
+use super::{AppWakeBridge, Worker};
 use crate::WvError;
 use crate::engine::AppWindowCommand;
-use crate::webview2::{WindowsLoopEvent, spawn_app_wake_bridge, stop_app_wake_bridge};
+use crate::webview2::WindowsLoopEvent;
 
 #[test]
 fn setup_error_retires_bridge_with_a_retained_silent_sender() {
@@ -22,14 +23,16 @@ fn setup_error_retires_bridge_with_a_retained_silent_sender() {
     let (commands, receiver) = mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
     let result = (|| -> Result<(), WvError> {
-        let _bridge = spawn_app_wake_bridge(
+        let mut bridge = AppWakeBridge::prepare(
             receiver,
-            event_loop.create_proxy(),
+            None,
             Arc::clone(&stop),
             Arc::new(AtomicBool::new(false)),
-        )?;
-        // The real caller has fallible setup after spawn. An early return
-        // must retire this exact worker, even while a caller retains Sender.
+        );
+        bridge.start(event_loop.create_proxy())?;
+        // When this actual owner is released after a setup error, Drop must
+        // retire its exact worker even while the caller retains Sender. The
+        // production fatal path retains the whole owner until that release.
         Err(WvError::EventLoop(String::from(
             "injected later setup error",
         )))
@@ -79,21 +82,36 @@ fn stop_bridge_does_not_return_before_its_held_worker_retires() {
         // Cleanup also opens the gate when setup failed or the receiver went.
         let _ = hold_worker.recv();
         let _ = worker_ended.send(());
+        Ok(())
     });
     if let Err(error) = started.recv_timeout(Duration::from_secs(2)) {
         let _ = release_worker.send(());
         ended
             .recv_timeout(Duration::from_secs(2))
             .expect("setup failure must release the held worker before failing");
-        worker.join().expect("join worker after failed setup");
+        worker
+            .join()
+            .expect("join worker after failed setup")
+            .expect("held worker returned normally");
         panic!("worker did not reach the held boundary: {error}");
     }
 
     let stop = Arc::new(AtomicBool::new(false));
-    let stop_in_joiner = Arc::clone(&stop);
+    let (_commands, receiver) = mpsc::channel();
+    let mut bridge = AppWakeBridge::prepare(
+        receiver,
+        None,
+        Arc::clone(&stop),
+        Arc::new(AtomicBool::new(false)),
+    );
+    // The existing owner carries the SAME held JoinHandle. No substitute join
+    // helper or second worker supplies the release being observed.
+    bridge.worker = Worker::Running(worker);
     let (finished, completion) = mpsc::channel();
     let joiner = thread::spawn(move || {
-        stop_app_wake_bridge(&stop_in_joiner, worker);
+        bridge
+            .finish_without_renderer()
+            .expect("actual standalone wake owner retires its held worker");
         finished.send(()).expect("report completed retirement");
     });
 
@@ -135,13 +153,15 @@ fn pre_stopped_bridge_retires_without_dispatching_queued_terminal() {
         .expect("queue terminal before the worker exists");
     let stop = Arc::new(AtomicBool::new(true));
     let terminal_intent = Arc::new(AtomicBool::new(false));
-    let bridge = spawn_app_wake_bridge(
+    let mut bridge = AppWakeBridge::prepare(
         receiver,
-        event_loop.create_proxy(),
+        None,
         Arc::clone(&stop),
         Arc::clone(&terminal_intent),
-    )
-    .expect("start pre-stopped worker");
+    );
+    bridge
+        .start(event_loop.create_proxy())
+        .expect("start pre-stopped worker");
     drop(bridge);
 
     // A queued terminal lets even the old loop terminate; no stuck-worker

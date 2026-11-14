@@ -22,32 +22,33 @@ mod state;
 use state::RegistrationState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum InstallStatus {
+pub(in crate::webview2) enum InstallStatus {
     Pending,
     Ready,
     Refused,
 }
 
-pub(super) enum InstallStart {
+pub(in crate::webview2) enum InstallStart {
     NotAdmitted,
     Returned(windows::core::Result<()>),
     AlreadyStarted,
     OutcomeUnknown,
 }
 
-/// Attach this owner to the complete native View before begin_on_ui. The raw
-/// callback retains only its state and wake target, never a COM object or View.
-pub(super) struct PreloadInstaller {
+/// Attach this owner to the complete native View before `begin_on_ui`. The raw
+/// callback retains only its state, original locator and notification proxy,
+/// never a COM object or View.
+pub(in crate::webview2) struct PreloadInstaller {
     view: ICoreWebView2,
     role: RendererRoleWitness,
     state: Rc<RegistrationState>,
     handler: ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler,
     proxy: EventLoopProxy<WindowsLoopEvent>,
-    id: WebviewId,
+    _id: WebviewId,
 }
 
 impl PreloadInstaller {
-    pub(super) fn prepare(
+    pub(in crate::webview2) fn prepare(
         view: ICoreWebView2,
         role: RendererRoleWitness,
         image: &AppPreloadImage,
@@ -63,14 +64,18 @@ impl PreloadInstaller {
             state,
             handler,
             proxy,
-            id,
+            _id: id,
         })
     }
 
     /// One exact role fence followed immediately by the retained native call.
     /// No native getter, allocation, pump, wait, or Rust borrow crosses that cut.
     #[allow(unsafe_code)] // Exact reviewed AddScript call with retained counted UTF16.
-    pub(super) fn begin_on_ui(&self) -> InstallStart {
+    #[expect(
+        clippy::single_match_else,
+        reason = "Preserve the caught panic payload scope through the actual-return or unproved-state transition."
+    )]
+    pub(in crate::webview2) fn begin_on_ui(&self) -> InstallStart {
         if let Some(previous) = self.state.previous_start() {
             return previous;
         }
@@ -106,7 +111,7 @@ impl PreloadInstaller {
         };
         if self
             .proxy
-            .send_event(WindowsLoopEvent::OriginalWake(self.id))
+            .send_event(WindowsLoopEvent::OriginalWake)
             .is_err()
         {
             self.state.refuse();
@@ -116,28 +121,22 @@ impl PreloadInstaller {
 
     /// Ready means both the actual native return and the real completion
     /// callback arrived within the original build deadline. It mints no lease.
-    pub(super) fn status(&self, now: Instant) -> InstallStatus {
+    pub(in crate::webview2) fn status(&self, now: Instant) -> InstallStatus {
         self.state.status(now)
     }
 
-    pub(super) fn retire_on_ui(&self) {
+    pub(in crate::webview2) fn retire_on_ui(&self) {
         self.state.retire();
     }
 
     /// Caller must have observed successful Close from this View's shared
-    /// AdoptedControllerClose; attempted Close or logical retirement is not enough.
-    pub(super) fn controller_closed_on_ui(&self) {
+    /// `AdoptedControllerClose`; attempted Close or logical retirement is not enough.
+    pub(in crate::webview2) fn controller_closed_on_ui(&self) {
         self.state.controller_closed();
     }
 
-    pub(super) fn native_quiesced(&self) -> bool {
+    pub(in crate::webview2) fn native_quiesced(&self) -> bool {
         self.state.native_quiesced()
-    }
-
-    /// Only the separately counted Rust registration input, not source-image
-    /// quota, CONTROL quota, or an estimate of WebView2's internal script copy.
-    pub(super) fn retained_input_bytes(&self) -> Result<usize, &'static str> {
-        self.state.retained_input_bytes()
     }
 }
 
@@ -145,6 +144,11 @@ impl PreloadInstaller {
 // wrapper first copies the unbounded script ID into a String. This handler
 // does not read or retain that ID; the fixed script lives until controller Close.
 #[allow(unsafe_code)] // Exact pinned COM completion vtable, scoped to this constructor.
+#[expect(
+    clippy::ref_as_ptr,
+    clippy::inline_always,
+    reason = "These operations are emitted by pinned windows-implement 0.60.2; keep its reviewed COM ABI unchanged."
+)]
 fn completion_handler(
     state: Rc<RegistrationState>,
     proxy: EventLoopProxy<WindowsLoopEvent>,
@@ -154,7 +158,7 @@ fn completion_handler(
     struct PreloadCompleted {
         state: Rc<RegistrationState>,
         proxy: EventLoopProxy<WindowsLoopEvent>,
-        id: WebviewId,
+        _id: WebviewId,
     }
 
     impl ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler_Impl
@@ -167,7 +171,7 @@ fn completion_handler(
                     .complete(errorcode.is_ok() && !result.is_null(), Instant::now());
                 if self
                     .proxy
-                    .send_event(WindowsLoopEvent::OriginalWake(self.id))
+                    .send_event(WindowsLoopEvent::OriginalWake)
                     .is_err()
                 {
                     self.state.refuse();
@@ -180,7 +184,12 @@ fn completion_handler(
             Ok(())
         }
     }
-    PreloadCompleted { state, proxy, id }.into()
+    PreloadCompleted {
+        state,
+        proxy,
+        _id: id,
+    }
+    .into()
 }
 
 #[cfg(test)]

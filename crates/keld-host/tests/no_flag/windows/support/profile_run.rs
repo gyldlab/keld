@@ -263,6 +263,35 @@ impl ProfileTestRoot {
     }
 }
 
+/// The existing isolated owner for explicitly instrumented no-flag tests.
+/// Default and release fixtures retain their original profile selection.
+pub(crate) fn isolated_dev_profiles() -> Option<ProfileTestRoot> {
+    cfg!(all(feature = "kel135-profile-test-root", debug_assertions)).then(ProfileTestRoot::new)
+}
+
+/// Applies only the held test owner's root to this actual child command.
+pub(crate) fn apply_dev_profiles(
+    command: &mut Command,
+    host: &Path,
+    profiles: Option<&ProfileTestRoot>,
+) {
+    if let Some(profiles) = profiles {
+        assert_profile_test_root_feature(host, profiles.path());
+        let temp = profiles.path().parent().expect("test root parent");
+        command
+            .env("KELD_PROFILE_TEST_ROOT", profiles.path())
+            .env("TEMP", temp)
+            .env("TMP", temp);
+    }
+}
+
+/// Fixture disposal follows the caller's existing actual process/release checks.
+pub(crate) fn remove_dev_profiles(profiles: Option<ProfileTestRoot>) {
+    if let Some(profiles) = profiles {
+        profiles.remove();
+    }
+}
+
 pub(crate) fn assert_profile_test_root_feature(host: &Path, root: &Path) {
     let temp = root.parent().expect("test profile root has a temp parent");
     let output = Command::new(host)

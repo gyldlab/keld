@@ -226,7 +226,7 @@ impl ProfileReleaseWait {
             pid,
             open_browser_process,
             |process| match process {
-                BrowserProcess::Watched(wake) => wake.retire(),
+                BrowserProcess::Watched(wake) => wake.retire_checked(),
                 BrowserProcess::Polled(_) => Ok(()),
             },
             |process| BrowserExitWake::register(process, proxy).map(BrowserProcess::Watched),
@@ -240,7 +240,7 @@ impl ProfileReleaseWait {
         &self,
         pid: u32,
         open: impl FnOnce(u32) -> Option<OwnedHandle>,
-        retire: impl FnOnce(BrowserProcess) -> Result<(), WvError>,
+        retire: impl FnOnce(&mut BrowserProcess) -> Result<(), WvError>,
         register: impl FnOnce(OwnedHandle) -> Result<BrowserProcess, WvError>,
     ) -> Result<(), WvError> {
         self.poll();
@@ -253,14 +253,14 @@ impl ProfileReleaseWait {
         }
         let current = self.binding.load();
         if current.is_bound() && current.pid == pid {
-            let process = self.process.borrow();
-            let Some(process) = process.as_ref() else {
+            let process = self.process.borrow().as_ref().map(BrowserProcess::raw);
+            let Some(process) = process else {
                 return Err(self.fail(ProfileReleaseFault::RebindUnproven));
             };
             // SAFETY: this owner retains the SYNCHRONIZE handle for the full
             // zero-time query. It does not pump or transfer the native handle.
             // https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject
-            let state = unsafe { WaitForSingleObject(process.raw(), 0) };
+            let state = unsafe { WaitForSingleObject(process, 0) };
             if state == WAIT_TIMEOUT {
                 return Ok(());
             }
@@ -282,12 +282,11 @@ impl ProfileReleaseWait {
         // Open before retiring the old wake. An unsuccessful open must leave
         // the original kernel handle and registration intact.
         let next = open(pid).ok_or_else(|| self.fail(ProfileReleaseFault::RebindUnproven))?;
-        // End the RefCell borrow before any native operation. Checked retirement
-        // consumes the old registration even on failure; never retry by Drop.
-        let old = self.process.borrow_mut().take();
-        if let Some(old) = old {
-            retire(old).map_err(|_| self.fail(ProfileReleaseFault::WakeRetireFailed))?;
-        }
+        // The existing owner ends its RefCell borrow before checked retirement
+        // and restores this exact old process on error or unwind. A failed
+        // rebind never loses the native handle or permits a new registration.
+        self.retire_process_with(retire)
+            .map_err(|_| self.fail(ProfileReleaseFault::WakeRetireFailed))?;
         let next = register(next).map_err(|_| self.fail(ProfileReleaseFault::RebindUnproven))?;
         *self.process.borrow_mut() = Some(next);
         let instance = BrowserInstance { generation, pid };

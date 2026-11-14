@@ -613,7 +613,7 @@ impl<'a> PreloadFixture<'a> {
                 {
                     self.admit_burst_preflight(id, &request, channel)?;
                 }
-                RendererBridgeOperation::Send { channel }
+                RendererBridgeOperation::Send { channel, .. }
                     if matches!(
                         self.case,
                         "preload-postbind-burst"
