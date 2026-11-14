@@ -211,16 +211,25 @@ fn retained_root_and_original_digest_are_checked_before_graph_admission() {
 }
 
 fn prepared(f: &Fixture) -> crate::app_session::original_webapp::PreparedOriginalSource {
+    prepared_with_selector(f, "original-editor-offline")
+}
+
+fn prepared_with_selector(
+    f: &Fixture,
+    selector: &str,
+) -> crate::app_session::original_webapp::PreparedOriginalSource {
     use crate::app_session::{load_verified_manifest, original_webapp::PreparedOriginalSource};
     use std::sync::Arc;
-    let bytes =
-        br#"{"profile":"legacy","windows":{"editor":{"web":{"csp":"original-editor-offline"}}}}"#;
+    let policy = serde_json::json!({
+        "profile":"legacy", "windows":{"editor":{"web":{"csp":selector}}}
+    });
+    let bytes = serde_json::to_vec(&policy).expect("exact policy fixture bytes");
     let policy_path = f.owned.path().join("verified-policy.json");
-    fs::write(&policy_path, bytes).expect("same policy fixture");
+    fs::write(&policy_path, &bytes).expect("same policy fixture");
     let verified = load_verified_manifest(
         File::open(&policy_path).expect("actual policy file"),
         policy_path,
-        Sha256::digest(bytes).into(),
+        Sha256::digest(&bytes).into(),
     )
     .expect("verified immutable source");
     let policy = verified
@@ -279,4 +288,121 @@ fn runtime_source_recheck_observes_a_real_changed_original_before_reprovision() 
     fs::write(f.root.join(MAIN), b"// Inert app source; never execute.\n")
         .expect("restore exact fixture bytes");
     RoleSourceRecheck::recheck(&graph).expect("restored bytes match the same retained graph");
+}
+
+#[test]
+fn original_development_descriptor_uses_the_same_retained_graph_policy_and_source() {
+    use crate::app_session::launch_facts::DevelopmentLaunchFacts;
+    use crate::app_session::windows_boot::bind_runtime_facts;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    for selector in [
+        "original-editor-offline",
+        "original-editor-offline-empty-style",
+    ] {
+        let mut f = fixture_with_entry();
+        f.root = f
+            .root
+            .canonicalize()
+            .expect("actual retained Windows spelling");
+        let prepared = prepared_with_selector(&f, selector);
+        let source = Arc::clone(prepared.source());
+        let facts = DevelopmentLaunchFacts::from_validated_development(
+            "Exact λ",
+            &f.root,
+            Some("31.7.0-selected"),
+        )
+        .expect("explicit metadata")
+        .expect("canonical local drive");
+        let generic = facts
+            .bun_define_argument()
+            .expect("unchanged generic facts");
+        let decode = |argument: &str| -> serde_json::Value {
+            serde_json::from_str(
+                argument
+                    .strip_prefix("--define=__KELD_HOST_LAUNCH_FACTS__:")
+                    .expect("one private definition"),
+            )
+            .expect("closed JSON")
+        };
+        let before = decode(&generic);
+        assert_eq!(
+            before,
+            serde_json::json!({
+                "schema":3, "kind":"development", "name":"Exact λ",
+                "root":f.root.to_str().expect("UTF-8 fixture"),
+                "version":"31.7.0-selected", "paths":{}
+            })
+        );
+        let first = facts
+            .original_bun_define_argument(&f.root, &prepared)
+            .expect("same prepared owner");
+        let expected_policy = serde_json::json!({
+            "contract":"gh473-original-editor-offline/v1",
+            "graphSha256":format!("sha256:{:x}", Sha256::digest(
+                fs::read(f.root.join(GRAPH_FILE)).expect("actual graph bytes")
+            )),
+            "policySha256":format!("sha256:{:x}", Sha256::digest(
+                fs::read(f.owned.path().join("verified-policy.json"))
+                    .expect("actual verified policy bytes")
+            )),
+            "windowKey":"editor", "selector":selector
+        });
+        let mut expected = before;
+        expected["schema"] = serde_json::json!(8);
+        expected["originalResourcePolicy"] = expected_policy;
+        assert_eq!(decode(&first), expected);
+        assert_eq!(facts.bun_define_argument().expect("still generic"), generic);
+        assert_eq!(
+            facts
+                .original_bun_define_argument(&f.root, &prepared)
+                .expect("reused capture"),
+            first,
+        );
+        let versions = BTreeMap::from([("bun".to_owned(), "inert-bound-input".to_owned())]);
+        let selected = bind_runtime_facts(Some(prepared), Some(&versions))
+            .expect("supplied Bound metadata")
+            .expect("same original");
+        assert!(Arc::ptr_eq(selected.source(), &source));
+        assert_eq!(selected.runtime_versions(), &versions);
+        assert_eq!(selected.window_key(), "editor");
+    }
+}
+
+#[test]
+fn original_development_join_refuses_foreign_or_missing_captured_facts() {
+    use crate::app_session::PrimaryRoleConfig;
+    use crate::app_session::launch_facts::{
+        DevelopmentLaunchFacts, configure_original_primary_launch,
+    };
+    let mut f = fixture_with_entry();
+    f.root = f
+        .root
+        .canonicalize()
+        .expect("actual retained Windows spelling");
+    let prepared = prepared(&f);
+    let make = |root: &Path| {
+        DevelopmentLaunchFacts::from_validated_development("Exact", root, None)
+            .expect("explicit metadata")
+            .expect("local drive")
+    };
+    let facts = make(&f.root);
+    let foreign_root = f.root.join("foreign");
+    let foreign = make(&foreign_root);
+    for (root, captured) in [
+        (f.root.as_path(), None),
+        (f.root.as_path(), Some(&foreign)),
+        (foreign_root.as_path(), Some(&facts)),
+        (foreign_root.as_path(), Some(&foreign)),
+    ] {
+        let error = configure_original_primary_launch(
+            PrimaryRoleConfig::new("bun"),
+            captured,
+            root,
+            &prepared,
+        )
+        .expect_err("one same-root captured owner is required");
+        assert_eq!(error.code(), "KELD-CORE-037");
+    }
 }

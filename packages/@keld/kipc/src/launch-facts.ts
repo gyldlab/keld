@@ -11,7 +11,7 @@ import { isProxy as isLaunchFactsProxy } from "node:util/types";
 declare const __KELD_HOST_LAUNCH_FACTS__: unknown;
 
 // The same Windows Host launch pins this literal before imports. It selects
-// only bounded development schemas1–3; it grants no role or resource access.
+// only bounded development schemas 1–3 and original-development 8; it grants no access.
 declare const __KELD_WINDOWS_HOST__: boolean;
 declare const __KELD_WINDOWS_DESKTOP_SNAPSHOT__: boolean;
 
@@ -125,11 +125,28 @@ export interface InstalledOriginalHostLaunchFacts {
   readonly originalResourcePolicy: HostOriginalResourcePolicy;
 }
 
+/** Closed Windows original-development facts; schema 3 remains generic metadata. */
+export interface WindowsOriginalDevelopmentHostLaunchFacts {
+  readonly schema: 8;
+  readonly kind: "development";
+  readonly name: string;
+  readonly root: string;
+  readonly version?: string;
+  readonly locale?: string;
+  readonly paths: Readonly<
+    Partial<Record<"appData" | "userData" | "documents", string>>
+  >;
+  readonly originalResourcePolicy: HostOriginalResourcePolicy;
+  readonly resourcesRoot?: never;
+  readonly singleInstance?: never;
+}
+
 /** Data only. Neither a path nor a packaged-state fact grants access. */
 export type HostLaunchFacts =
   | DevelopmentHostLaunchFacts
   | InstalledHostLaunchFacts
-  | InstalledOriginalHostLaunchFacts;
+  | InstalledOriginalHostLaunchFacts
+  | WindowsOriginalDevelopmentHostLaunchFacts;
 
 function invalidLaunchFacts(): never {
   throw Object.assign(
@@ -163,6 +180,8 @@ export function captureHostLaunchFacts(
   // must not read a prototype accessor before the required-key refusal below.
   const schema = Object.getOwnPropertyDescriptor(value, "schema")?.value;
   const installed = schema === 6 || schema === 7;
+  const windowsOriginal = schema === 8;
+  if (windowsOriginal && !windowsHostSelected) return invalidLaunchFacts();
   const required = installed
     ? [
         ...baseKeys,
@@ -170,17 +189,21 @@ export function captureHostLaunchFacts(
         "resourcesRoot",
         ...(schema === 7 ? ["paths", "originalResourcePolicy"] : []),
       ]
-    : baseKeys;
+    : windowsOriginal
+      ? [...baseKeys, "paths", "originalResourcePolicy"]
+      : baseKeys;
   const allowed = installed
     ? [...required, ...(schema === 7 ? ["locale", "singleInstance"] : [])]
-    : [
-        ...baseKeys,
-        "version",
-        "paths",
-        "locale",
-        "singleInstance",
-        "originalResourcePolicy",
-      ];
+    : windowsOriginal
+      ? [...required, "version", "locale"]
+      : [
+          ...baseKeys,
+          "version",
+          "paths",
+          "locale",
+          "singleInstance",
+          "originalResourcePolicy",
+        ];
   if (
     required.some((key) => !keys.includes(key)) ||
     keys.some((key) => typeof key !== "string" || !allowed.includes(key))
@@ -196,7 +219,7 @@ export function captureHostLaunchFacts(
     !validText(record.name) ||
     !validText(record.root) ||
     !(windowsHostSelected
-      ? (schema === 1 || schema === 2 || schema === 3) &&
+      ? (schema === 1 || schema === 2 || schema === 3 || windowsOriginal) &&
         windowsDevelopmentRoot(record.root)
       : record.root.startsWith("/"))
   )
@@ -209,7 +232,8 @@ export function captureHostLaunchFacts(
           schema !== 2 &&
           schema !== 3 &&
           schema !== 4 &&
-          schema !== 5) ||
+          schema !== 5 &&
+          !windowsOriginal) ||
         record.kind !== "development"
   )
     return invalidLaunchFacts();
@@ -233,7 +257,11 @@ export function captureHostLaunchFacts(
   let locale: string | undefined;
   if (keys.includes("locale")) {
     if (
-      (schema !== 3 && schema !== 4 && schema !== 5 && schema !== 7) ||
+      (schema !== 3 &&
+        schema !== 4 &&
+        schema !== 5 &&
+        schema !== 7 &&
+        schema !== 8) ||
       !validText(record.locale)
     )
       return invalidLaunchFacts();
@@ -299,7 +327,8 @@ export function captureHostLaunchFacts(
   }
   let originalResourcePolicy: HostOriginalResourcePolicy | undefined;
   if (
-    (schema === 5 || schema === 7) !== keys.includes("originalResourcePolicy")
+    (schema === 5 || schema === 7 || windowsOriginal) !==
+    keys.includes("originalResourcePolicy")
   )
     return invalidLaunchFacts();
   if (keys.includes("originalResourcePolicy")) {
@@ -342,7 +371,7 @@ export function captureHostLaunchFacts(
       copied.contract !== "gh473-original-editor-offline/v1" ||
       (copied.selector !== "original-editor-offline" &&
         !(
-          schema === 7 &&
+          (schema === 7 || windowsOriginal) &&
           copied.selector === "original-editor-offline-empty-style"
         )) ||
       !/^sha256:[0-9a-f]{64}$/.test(copied.graphSha256) ||
@@ -401,6 +430,19 @@ export function captureHostLaunchFacts(
     } else {
       captured = { schema: 6, ...metadata };
     }
+  } else if (windowsOriginal) {
+    if (paths === undefined || originalResourcePolicy === undefined)
+      return invalidLaunchFacts();
+    captured = {
+      schema: 8,
+      kind: "development",
+      name: record.name,
+      root: record.root,
+      ...(version === undefined ? {} : { version }),
+      ...(locale === undefined ? {} : { locale }),
+      paths,
+      originalResourcePolicy,
+    };
   } else {
     captured = {
       schema,
@@ -422,6 +464,16 @@ export function captureHostLaunchFacts(
     return invalidLaunchFacts();
   // Missing facts must not become readable through later prototype writes.
   return Object.freeze(captured);
+}
+
+/** @internal Eligibility of already-decoded data, never a native grant or live-session check. */
+export function hasOriginalResourcePolicy(
+  facts: HostLaunchFacts | undefined,
+): boolean {
+  return (
+    (facts?.schema === 5 || facts?.schema === 7 || facts?.schema === 8) &&
+    facts.originalResourcePolicy !== undefined
+  );
 }
 
 /** @internal Frozen at preload/import; the application has no setter. */

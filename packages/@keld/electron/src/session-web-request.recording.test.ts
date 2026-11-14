@@ -1,13 +1,15 @@
 /** Local API behavior only; this model is never Host/policy/native qualification. */
 import { expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 function observe(phase: string, schema = 5) {
   const run = Bun.spawnSync({
     cmd: [
       process.execPath,
       "--no-install",
       "--no-env-file",
-      new URL("../fixtures/session_recording_model.ts", import.meta.url)
-        .pathname,
+      fileURLToPath(
+        new URL("../fixtures/session_recording_model.ts", import.meta.url),
+      ),
       phase,
       String(schema),
     ],
@@ -15,7 +17,7 @@ function observe(phase: string, schema = 5) {
     stderr: "pipe",
     timeout: 4000,
   });
-  expect(run.exitCode).toBe(0);
+  expect(run.exitCode, run.stdout.toString() + run.stderr.toString()).toBe(0);
   expect(run.stderr.toString()).toBe("");
   return JSON.parse(run.stdout.toString());
 }
@@ -148,4 +150,68 @@ test("installed schema7 retains the same Ready, descriptor and live-source bound
   ]);
   expect(ended.diagnostics).toEqual([]);
   expect(ended.listenerCalls).toBe(0);
+});
+
+test("Windows schema8 keeps exact recorded hooks and every availability refusal", () => {
+  const accepted = observe("qualified", 8);
+  expect(accepted.results).toEqual([
+    { status: "returned", value: "undefined" },
+    { status: "returned", value: "undefined" },
+  ]);
+  expect(accepted.diagnostics).toEqual(
+    ["onHeadersReceived", "onBeforeRequest"].map(
+      (method) =>
+        "Keld ▲ GH-553 session.defaultSession.webRequest." +
+        method +
+        ": listener ignored; verified Host response CSP and native resource confinement replace this hook.",
+    ),
+  );
+  expect(accepted.listenerCalls).toBe(0);
+  expect(accepted.retained).toEqual([false, false]);
+  expect(accepted.sourceReads).toBe(2);
+  for (const method of Object.keys(accepted.unsupported))
+    expect(accepted.unsupported[method]).toEqual(methodRefusal(method));
+  for (const phase of [
+    "missing-descriptor",
+    "unsupported-descriptor",
+    "desktop-disabled",
+  ]) {
+    const denied = observe(phase, 8);
+    expect(denied.results).toEqual([
+      methodRefusal("onHeadersReceived"),
+      methodRefusal("onBeforeRequest"),
+    ]);
+    expect(denied.diagnostics).toEqual([]);
+    expect(denied.listenerCalls).toBe(0);
+    expect(denied.sourceReads).toBe(0);
+  }
+  const before = observe("pre-ready", 8);
+  expect(before.result).toEqual({
+    status: "threw",
+    code: "KELD-COMPAT-013",
+    member: "session.defaultSession",
+    ticket: "GH-553",
+  });
+  expect(before.sourceReads).toBe(0);
+  const ended = observe("dead-source", 8);
+  expect(ended.results).toEqual([
+    { status: "threw", code: "KELD-IPC-005" },
+    { status: "threw", code: "KELD-IPC-005" },
+  ]);
+  expect(ended.diagnostics).toEqual([]);
+  expect(ended.listenerCalls).toBe(0);
+  const invalid = observe("invalid", 8);
+  expect(invalid.results).toEqual([
+    methodRefusal("onHeadersReceived"),
+    methodRefusal("onBeforeRequest"),
+  ]);
+  expect(invalid.getters).toBe(0);
+  expect(invalid.diagnostics).toEqual([]);
+  const failedDiagnostic = observe("diagnostic-fault", 8);
+  expect(failedDiagnostic.results).toEqual([
+    { status: "threw", code: "fixture-diagnostic-sink" },
+    { status: "threw", code: "fixture-diagnostic-sink" },
+  ]);
+  expect(failedDiagnostic.diagnostics).toEqual([]);
+  expect(failedDiagnostic.listenerCalls).toBe(0);
 });

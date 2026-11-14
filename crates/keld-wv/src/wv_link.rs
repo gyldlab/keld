@@ -5,7 +5,11 @@
 //! generation, grant, or other application authority.
 
 #[cfg(windows)]
+#[path = "wv_link/decode_storage.rs"]
 pub(crate) mod decode_storage;
+// Keep the same helper under both crate-root and the standalone fuzz harness's
+// #[path] inclusion; neither imports a copied decoder or alters wire authority.
+#[path = "wv_link/host_messages.rs"]
 mod host_messages;
 pub use host_messages::HostRendererMessage;
 

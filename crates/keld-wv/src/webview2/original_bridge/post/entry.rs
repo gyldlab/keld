@@ -46,12 +46,9 @@ pub(in crate::webview2::original_bridge) fn post_prepared_with_entry(
     clippy::single_match_else,
     reason = "Consume the one-call target descriptor and preserve caught-panic custody through the native-return disposition."
 )]
-#[cfg_attr(
-    all(feature = "profile-test-hooks", debug_assertions),
-    expect(
-        clippy::too_many_lines,
-        reason = "Keep the final lease/role fence, sole native API and test-only observations visibly adjacent."
-    )
+#[expect(
+    clippy::too_many_lines,
+    reason = "The single native Post API keeps source admission, the final lease and role fence, and the immediate call auditable together across all build configurations."
 )]
 fn post_prepared_inner(
     phase: &mut PostPhase,
