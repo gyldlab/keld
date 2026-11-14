@@ -719,6 +719,66 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_native_image_pins_keep_the_leaf_immutable_until_last_drop() {
+        let directory = FixtureDirectory::new("double-pinned");
+        let image_path = directory.path().join("image.exe");
+        let moved = directory.path().join("moved.exe");
+        fs::write(&image_path, b"two independent image witnesses")
+            .expect("write a fresh leaf for independent Windows handle pins");
+
+        let first = WindowsAuthenticodeImage::open(&image_path).expect("first image pin");
+        let second = WindowsAuthenticodeImage::open(&image_path).expect("second image pin");
+        assert_ne!(
+            first.image.as_raw_handle(),
+            second.image.as_raw_handle(),
+            "each verifier owns an independent Windows handle"
+        );
+        drop(first);
+
+        let renamed = fs::rename(&image_path, &moved)
+            .expect_err("releasing one image witness must not release the second");
+        assert_eq!(renamed.raw_os_error(), Some(32), "{renamed}");
+        let writer = fs::OpenOptions::new()
+            .write(true)
+            .open(&image_path)
+            .expect_err("a second pinned witness must exclude new writers");
+        assert_eq!(writer.raw_os_error(), Some(32), "{writer}");
+
+        drop(second);
+        fs::rename(&image_path, &moved)
+            .expect("the leaf is replaceable only after the final image witness is dropped");
+    }
+
+    #[test]
+    fn duplicate_opens_of_a_live_os_mapped_unsigned_image_never_mint_identity() {
+        // This executing test PE is already an OS-mapped image. Neither
+        // independent image handle may infer a Keld identity from that fact.
+        let mapped_executable = std::env::current_exe().expect("active mapped test image");
+        let first = WindowsAuthenticodeImage::open(&mapped_executable)
+            .expect("open the first native mapped-image trust handle");
+        let second = WindowsAuthenticodeImage::open(&mapped_executable)
+            .expect("open a second independent native mapped-image trust handle");
+        assert_ne!(
+            first.image.as_raw_handle(),
+            second.image.as_raw_handle(),
+            "second trust claim must not reuse the first raw Windows handle"
+        );
+        for image in [first, second] {
+            let error = image
+                .verify()
+                .expect_err("a mapped, unsigned test image has no trusted signed Keld identity");
+            assert!(
+                error.detail().contains("WinVerifyTrust rejected"),
+                "{error}"
+            );
+            assert!(
+                error.close_failure().is_none(),
+                "native trust refusal must retire WinTrust state: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn windows_trust_image_refuses_a_leaf_reparse_point() {
         let directory = FixtureDirectory::new("reparse");
         let target = directory.path().join("target.exe");
