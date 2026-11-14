@@ -360,9 +360,9 @@ cli_source="$(result_for_paths crates/keld-cli/src/lib.rs)"
 expect_package_token "CLI source change still expands to keld-host" keld-host "$cli_source"
 expect_exact_output "CLI source change keeps the Ubuntu GTK selection" webkitgtk true "$cli_source"
 expect_exact_output "CLI source change selects exact observer dependency closure" packages \
-    "keld-cli keld-compat keld-core keld-host keld-runtime keld-update keld-updater-helper" "$cli_source"
+    "keld-cli keld-compat keld-core keld-host keld-runtime keld-update keld-updater-helper keld-wv" "$cli_source"
 expect_exact_output "CLI source change runs exact observer dependency closure on Ubuntu" ubuntu_packages \
-    "keld-cli keld-compat keld-core keld-host keld-runtime keld-update keld-updater-helper" "$cli_source"
+    "keld-cli keld-compat keld-core keld-host keld-runtime keld-update keld-updater-helper keld-wv" "$cli_source"
 expect_codeql "CLI source change selects CodeQL rust only" "$codeql_rust_only" "$cli_source"
 # (Negative control: reader_doc_pr above omits keld-host for the same reader.)
 
@@ -505,7 +505,7 @@ expect_output_package_token "IPC source doctests its library dependent keld-cli"
 expect_output_package_absent "IPC source does not doctest bin-only keld-host" doctest_packages keld-host "$ipc_doctest"
 expect_package_token "IPC source still tests keld-host" keld-host "$ipc_doctest"
 expect_exact_output "CLI source doctests exact selected library packages" doctest_packages \
-    "keld-cli keld-compat keld-core keld-runtime keld-update" "$cli_source"
+    "keld-cli keld-compat keld-core keld-runtime keld-update keld-wv" "$cli_source"
 expect_exact_output "reader-doc PR doctests its reader" doctest_packages keld-cli "$reader_doc_pr"
 # Negative controls: a bin-only package inside the selection is dropped, and a
 # no-Rust diff selects no doctest. (Every crates/* path also reaches keld-cli
@@ -513,11 +513,11 @@ expect_exact_output "reader-doc PR doctests its reader" doctest_packages keld-cl
 # repository below, whose packages have no library target.)
 host_source="$(result_for_paths crates/keld-host/src/main.rs)"
 expect_exact_output "keld-host source selects exact observer dependency closure" packages \
-    "keld-cli keld-compat keld-core keld-host keld-runtime keld-update keld-updater-helper" "$host_source"
+    "keld-cli keld-compat keld-core keld-host keld-runtime keld-update keld-updater-helper keld-wv" "$host_source"
 expect_exact_output "keld-host source runs exact observer dependency closure on Ubuntu" ubuntu_packages \
-    "keld-cli keld-compat keld-core keld-host keld-runtime keld-update keld-updater-helper" "$host_source"
+    "keld-cli keld-compat keld-core keld-host keld-runtime keld-update keld-updater-helper keld-wv" "$host_source"
 expect_exact_output "keld-host source doctests exact selected library packages" doctest_packages \
-    "keld-cli keld-compat keld-core keld-runtime keld-update" "$host_source"
+    "keld-cli keld-compat keld-core keld-runtime keld-update keld-wv" "$host_source"
 expect_exact_output "docs-only PR skips the doctest lane" doctest false "$docs_only_pr"
 expect_empty_output "docs-only PR doctests nothing" doctest_packages "$docs_only_pr"
 # Fallbacks doctest every library package.
