@@ -15,6 +15,10 @@ fn refuse(e: impl std::fmt::Display) -> BuildError {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Inputs {
+    // Caller-proposed locations must match the separately signed catalog in Host.
+    install_root: PathBuf,
+    update_root: PathBuf,
+    version: String,
     provenance: PathBuf,
     catalog: PathBuf,
     catalog_signature: PathBuf,
@@ -140,24 +144,14 @@ fn parse_observed(bytes: &[u8]) -> Result<ObservedInputs, BuildError> {
     }
     Ok(i)
 }
-#[derive(Serialize)]
-struct Request<'a> {
-    schema: &'static str,
-    provenance: &'a Path,
-    catalog: &'a Path,
-    catalog_signature: &'a Path,
-    manifest: &'a Path,
-    manifest_signature: &'a Path,
-    canonical_content: &'a Path,
-    compressed_archive: &'a Path,
-    release_public_key: [u8; 32],
-}
 fn parse(bytes: &[u8]) -> Result<Inputs, BuildError> {
     if bytes.is_empty() || bytes.len() > MAX_REQUEST {
         return Err(refuse("input document exceeds bounds"));
     }
     let inputs: Inputs = serde_json::from_slice(bytes).map_err(refuse)?;
     for path in [
+        &inputs.install_root,
+        &inputs.update_root,
         &inputs.provenance,
         &inputs.catalog,
         &inputs.catalog_signature,
@@ -168,6 +162,9 @@ fn parse(bytes: &[u8]) -> Result<Inputs, BuildError> {
         if !path.is_absolute() {
             return Err(refuse("every input locator must be absolute"));
         }
+    }
+    if inputs.version.is_empty() || inputs.version.len() > 128 {
+        return Err(refuse("explicit v2 install version must be 1..=128 bytes"));
     }
     Ok(inputs)
 }
@@ -195,14 +192,19 @@ fn request_bytes<'a>(
     if !candidate.is_absolute() {
         return Err(refuse("candidate locator must be absolute"));
     }
-    let request = Request {
-        schema: "keld.windows-initial-install-request/v1",
-        provenance: &inputs.provenance,
+    // The old six-field v1 form has no authenticated destination/version.
+    // Reuse the signed Host's closed v2 contract, with existing-root mode only.
+    // Host MUST compare these caller-proposed facts with the Ed25519-signed catalog.
+    let request = ObservedRequest {
+        schema: "keld.windows-initial-install-request/v2",
+        install_root: &inputs.install_root,
+        update_root: &inputs.update_root,
+        version: &inputs.version,
+        scaffold_mode: ScaffoldChoice::Existing,
         catalog: &inputs.catalog,
         catalog_signature: &inputs.catalog_signature,
         manifest: &inputs.manifest,
         manifest_signature: &inputs.manifest_signature,
-        canonical_content: &inputs.canonical_content,
         compressed_archive: candidate,
         release_public_key: key,
     };
@@ -368,8 +370,58 @@ fn run_with_mode(
 mod tests {
     use super::*;
     fn inputs() -> serde_json::Value {
-        serde_json::json!({"provenance":"D:/p","catalog":"D:/c","catalog_signature":"D:/s","manifest":"D:/m","manifest_signature":"D:/ms","canonical_content":"D:/content"})
+        serde_json::json!({"install_root":"D:/app","update_root":"D:/app/update","version":"1.0.0","provenance":"D:/p","catalog":"D:/c","catalog_signature":"D:/s","manifest":"D:/m","manifest_signature":"D:/ms","canonical_content":"D:/content"})
     }
+    #[test]
+    fn provided_inputs_require_explicit_roots_and_emit_host_v2_without_dropping_pins() {
+        let upgraded = inputs();
+        let mut legacy = upgraded.clone();
+        for field in ["install_root", "update_root", "version"] {
+            legacy.as_object_mut().unwrap().remove(field);
+        }
+        assert!(
+            parse(&serde_json::to_vec(&legacy).unwrap()).is_err(),
+            "legacy six-field v1 document must not activate the v2 signed Host"
+        );
+
+        let selected = parse(&serde_json::to_vec(&upgraded).unwrap())
+            .expect("v2 input must bind explicit roots and version");
+        let bytes = request_bytes(&selected, Path::new("D:/signed-candidate.tar.zst"), [7; 32])
+            .expect("serialize the Host's closed v2 request");
+        let emitted: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(emitted["schema"], "keld.windows-initial-install-request/v2");
+        assert_eq!(emitted["install_root"], "D:/app");
+        assert_eq!(emitted["update_root"], "D:/app/update");
+        assert_eq!(emitted["version"], "1.0.0");
+        assert_eq!(emitted["scaffold_mode"], "existing");
+        assert_eq!(emitted["compressed_archive"], "D:/signed-candidate.tar.zst");
+        assert_eq!(
+            emitted["release_public_key"],
+            serde_json::json!(vec![7_u8; 32])
+        );
+        // The legacy input evidence is still retained/pinned by InputMode::Provided,
+        // but these unverified paths must not become the Host's signing authority.
+        assert!(emitted.get("provenance").is_none());
+        assert!(emitted.get("canonical_content").is_none());
+
+        for field in ["install_root", "update_root", "version"] {
+            let mut absent = upgraded.clone();
+            absent.as_object_mut().unwrap().remove(field);
+            assert!(
+                parse(&serde_json::to_vec(&absent).unwrap()).is_err(),
+                "missing v2 field {field} must refuse"
+            );
+        }
+        for field in ["install_root", "update_root"] {
+            let mut relative = upgraded.clone();
+            relative[field] = serde_json::json!("relative");
+            assert!(
+                parse(&serde_json::to_vec(&relative).unwrap()).is_err(),
+                "relative v2 locator {field} must refuse"
+            );
+        }
+    }
+
     #[test]
     fn closed_inputs_cannot_choose_host_candidate_key_or_authority() {
         let value = inputs();
@@ -379,6 +431,7 @@ mod tests {
             "host",
             "compressed_archive",
             "release_public_key",
+            "scaffold_mode",
             "catalog_authority",
             "allow_unverified",
         ] {
@@ -398,7 +451,9 @@ mod tests {
         assert!(parse(&vec![b' '; MAX_REQUEST + 1]).is_err());
         let encoded = request_bytes(&parsed, Path::new("D:/actual.candidate"), [9; 32]).unwrap();
         let emitted: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(emitted["schema"], "keld.windows-initial-install-request/v1");
+        assert_eq!(emitted["schema"], "keld.windows-initial-install-request/v2");
+        assert_eq!(emitted["scaffold_mode"], "existing");
+        assert_eq!(emitted["install_root"], "D:/app");
         assert_eq!(emitted["compressed_archive"], "D:/actual.candidate");
         assert_eq!(
             emitted["release_public_key"],
