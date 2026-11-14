@@ -9,6 +9,8 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 def main():
+    if not __debug__:
+        raise SystemExit("optimized Python disables proof validation; rerun without -O/-OO or PYTHONOPTIMIZE")
     p = argparse.ArgumentParser()
     p.add_argument("--repo", type=Path, required=True)
     p.add_argument("--source-ref", required=True, help="immutable Git blob or COMMIT:path")
