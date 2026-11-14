@@ -4,6 +4,7 @@
 //! committed. `writer` covers AC1, AC3–AC5 and AC7, `malformed` AC6, `reader` AC9 and
 //! the bounded-read property, and `platform` AC10.
 
+mod postsign;
 use super::*;
 
 mod fixture;
@@ -29,7 +30,8 @@ fn refusal<T: std::fmt::Debug>(result: Result<T, PackError>) -> (&'static str, &
                 | PackError::HostImageNoRoom { detail }
                 | PackError::IdentityContainerInvalid { detail }
                 | PackError::ExpectedIdentityInvalid { detail }
-                | PackError::InvalidMetadata { detail } => detail,
+                | PackError::InvalidMetadata { detail }
+                | PackError::PostSignIntegrity { detail } => detail,
                 _ => "",
             };
             (error.code(), detail)

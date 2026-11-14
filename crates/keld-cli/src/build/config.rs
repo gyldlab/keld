@@ -1,7 +1,7 @@
 //! Closed, inert authoring data for the first native local macOS build.
 
 use std::collections::BTreeMap;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 use std::path::PathBuf;
 
 use keld_core::{LiteralConfigValue, literal_config_from_ts};
@@ -11,24 +11,10 @@ use super::BuildError;
 /// Values captured once from the application's shared authoring source.
 #[derive(Debug)]
 pub(crate) struct AppConfig {
-    #[cfg_attr(
-        all(windows, not(test)),
-        expect(
-            dead_code,
-            reason = "Windows dev reuses canonical app validation; packaging retains this field"
-        )
-    )]
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) version: String,
     pub(crate) entry: String,
-    #[cfg_attr(
-        all(windows, not(test)),
-        expect(
-            dead_code,
-            reason = "Windows dev reuses canonical app validation; packaging retains this field"
-        )
-    )]
     pub(crate) renderer: Option<String>,
     /// Optional closed source selection for one explicitly Legacy facade.
     #[cfg(any(target_os = "macos", windows))]
@@ -126,7 +112,7 @@ fn optional_text(
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 fn required_string_array(
     source: &mut Fields,
     field: &'static str,
@@ -239,7 +225,7 @@ fn parse_graph_source(source: &mut Fields) -> Result<Option<GraphSourceConfig>, 
 }
 
 /// Reads only supported application root fields, without evaluating TypeScript.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 pub(crate) fn parse_app(source: &str) -> Result<AppConfig, BuildError> {
     parse_app_context(source, false)
 }
@@ -710,6 +696,285 @@ mod tests {
             graph_build().replace("bootstrap/app-preload.cjs", r"app\\other.js"),
         ] {
             assert!(parse_build(&source).is_err(), "accepted {source}");
+        }
+    }
+}
+
+/// Closed Windows test-only build recipe in the existing keld.build.ts file.
+/// Signing credentials/authority and install actions are not project config.
+#[cfg(any(windows, test))]
+#[derive(Debug)]
+pub(super) struct WindowsBuildConfig {
+    pub(super) signing: String,
+    pub(super) developer_signer: Option<WindowsDeveloperSigner>,
+    pub(super) channel: String,
+    pub(super) out_dir: PathBuf,
+    pub(super) source_root: PathBuf,
+    pub(super) source_commit: String,
+    pub(super) typescript_root: PathBuf,
+    pub(super) bun: WindowsToolPin,
+    pub(super) tsc: WindowsToolPin,
+    pub(super) modules: Vec<String>,
+}
+#[cfg(any(windows, test))]
+#[derive(Debug)]
+pub(super) struct WindowsToolPin {
+    pub(super) path: PathBuf,
+    pub(super) sha256: [u8; 32],
+}
+#[cfg(any(windows, test))]
+#[derive(Debug)]
+pub(super) struct WindowsDeveloperSigner {
+    pub(super) certificate_thumbprint: String,
+    pub(super) publisher_scope: String,
+    pub(super) release_public_key: PathBuf,
+    pub(super) sign_tool: WindowsToolPin,
+    pub(super) git: PathBuf,
+    pub(super) cargo: PathBuf,
+    pub(super) rustc: PathBuf,
+    pub(super) cargo_home: PathBuf,
+}
+
+#[cfg(any(windows, test))]
+fn windows_developer_signer(source: &mut Fields) -> Result<WindowsDeveloperSigner, BuildError> {
+    let phase = "Windows developer signer";
+    let certificate_thumbprint = required_text(source, "certificateThumbprint", phase)?;
+    if certificate_thumbprint.len() != 40
+        || !certificate_thumbprint
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(invalid(
+            phase,
+            "certificateThumbprint must be exactly40hex characters",
+        ));
+    }
+    let publisher_scope = required_text(source, "publisherScope", phase)?;
+    if parse_sha256(&publisher_scope).is_none() {
+        return Err(invalid(
+            phase,
+            "publisherScope must be exact lowercase SHA256",
+        ));
+    }
+    let release_public_key = required_text(source, "releasePublicKey", phase)?.into();
+    let sign_tool = windows_pin(source, "signTool")?;
+    let git = required_text(source, "git", phase)?.into();
+    let cargo = required_text(source, "cargo", phase)?.into();
+    let rustc = required_text(source, "rustc", phase)?.into();
+    let cargo_home = required_text(source, "cargoHome", phase)?.into();
+    closed(source, phase)?;
+    Ok(WindowsDeveloperSigner {
+        certificate_thumbprint,
+        publisher_scope,
+        release_public_key,
+        sign_tool,
+        git,
+        cargo,
+        rustc,
+        cargo_home,
+    })
+}
+
+#[cfg(any(windows, test))]
+fn windows_object(source: &mut Fields, name: &'static str) -> Result<Fields, BuildError> {
+    match source.remove(name) {
+        Some(LiteralConfigValue::Object(value)) => Ok(value),
+        _ => Err(invalid(
+            "Windows build recipe",
+            format!("{name} must be a closed literal object"),
+        )),
+    }
+}
+#[cfg(any(windows, test))]
+fn windows_pin(source: &mut Fields, name: &'static str) -> Result<WindowsToolPin, BuildError> {
+    let mut value = windows_object(source, name)?;
+    let path = required_text(&mut value, "path", "Windows build tool")?.into();
+    let digest = required_text(&mut value, "sha256", "Windows build tool")?;
+    let sha256 = parse_sha256(&digest)
+        .ok_or_else(|| invalid("Windows build tool", "expected64lowercaseSHA256digits"))?;
+    closed(&value, "Windows build tool")?;
+    Ok(WindowsToolPin { path, sha256 })
+}
+#[cfg(any(windows, test))]
+pub(super) fn parse_windows_build(source: &str) -> Result<WindowsBuildConfig, BuildError> {
+    let phase = "keld.build.ts Windows test recipe";
+    let mut root = fields(source, phase)?;
+    if required_text(&mut root, "target", phase)? != "windows-x64" {
+        return Err(invalid(phase, "target must be windows-x64"));
+    }
+    let signing = required_text(&mut root, "signing", phase)?;
+    if !matches!(
+        signing.as_str(),
+        "test-local-untimestamped" | "developer-local"
+    ) {
+        return Err(invalid(
+            phase,
+            "explicit developer-local or test-local-untimestamped signing required",
+        ));
+    }
+    let developer_signer = match root.remove("developerSigner") {
+        Some(LiteralConfigValue::Object(mut value)) if signing == "developer-local" => {
+            Some(windows_developer_signer(&mut value)?)
+        }
+        None if signing == "test-local-untimestamped" => None,
+        _ => {
+            return Err(invalid(
+                phase,
+                "developer-local requires a closed developerSigner; test mode forbids it",
+            ));
+        }
+    };
+    let channel = required_text(&mut root, "channel", phase)?;
+    if !matches!(channel.as_str(), "stable" | "beta" | "nightly") {
+        return Err(invalid(phase, "unsupported release channel"));
+    }
+    let out_dir = required_text(&mut root, "outDir", phase)?.into();
+    let mut source = windows_object(&mut root, "source")?;
+    let source_root = required_text(&mut source, "root", phase)?.into();
+    let source_commit = required_text(&mut source, "commit", phase)?;
+    if source_commit.len() != 40
+        || !source_commit
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(invalid(phase, "source commit must be exact40lowercasehex"));
+    }
+    closed(&source, phase)?;
+    let mut compiler = windows_object(&mut root, "compiler")?;
+    let typescript_root = required_text(&mut compiler, "typescriptRoot", phase)?.into();
+    let bun = windows_pin(&mut compiler, "bun")?;
+    let tsc = windows_pin(&mut compiler, "tsc")?;
+    closed(&compiler, phase)?;
+    let modules = required_string_array(&mut root, "modules", phase)?;
+    if modules.is_empty()
+        || modules
+            .iter()
+            .any(|name| name.is_empty() || name.starts_with("--"))
+        || modules
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != modules.len()
+    {
+        return Err(invalid(
+            phase,
+            "explicit unique nonempty module inventory required",
+        ));
+    }
+    closed(&root, phase)?;
+    Ok(WindowsBuildConfig {
+        signing,
+        developer_signer,
+        channel,
+        out_dir,
+        source_root,
+        source_commit,
+        typescript_root,
+        bun,
+        tsc,
+        modules,
+    })
+}
+#[cfg(test)]
+mod windows_build_tests {
+    use super::*;
+    fn recipe() -> String {
+        format!(
+            "export default {{target:'windows-x64',signing:'test-local-untimestamped',channel:'stable',outDir:'out',source:{{root:'source',commit:'{}'}},compiler:{{typescriptRoot:'typescript',bun:{{path:'bun.exe',sha256:'{}'}},tsc:{{path:'tsc.js',sha256:'{}'}}}},modules:['main.js']}} as const;",
+            "1".repeat(40),
+            "2".repeat(64),
+            "3".repeat(64)
+        )
+    }
+    #[test]
+    fn explicit_windows_recipe_is_separate_from_mac() {
+        let source = recipe();
+        let value = parse_windows_build(&source).unwrap();
+        assert_eq!(value.modules, ["main.js"]);
+        assert_eq!(value.signing, "test-local-untimestamped");
+        assert!(value.developer_signer.is_none());
+        assert_eq!(value.channel, "stable");
+        // Cross-platform tests MUST consume the complete Windows schema:
+        // otherwise Linux/macOS Clippy -D warnings sees unused Windows fields.
+        assert_eq!(value.out_dir, PathBuf::from("out"));
+        assert_eq!(value.source_root, PathBuf::from("source"));
+        assert_eq!(value.source_commit, "1".repeat(40));
+        assert_eq!(value.typescript_root, PathBuf::from("typescript"));
+        assert_eq!(value.bun.path, PathBuf::from("bun.exe"));
+        assert_eq!(value.bun.sha256, [0x22; 32]);
+        assert_eq!(value.tsc.path, PathBuf::from("tsc.js"));
+        assert_eq!(value.tsc.sha256, [0x33; 32]);
+        assert!(parse_build(&source).is_err());
+    }
+    #[test]
+    fn developer_mode_requires_exact_user_selected_public_signer_data() {
+        let signer = format!(
+            "developerSigner:{{certificateThumbprint:'{}',publisherScope:'{}',releasePublicKey:'D:/dev/update.pub',signTool:{{path:'D:/signtool.exe',sha256:'{}'}},git:'D:/git.exe',cargo:'D:/cargo.exe',rustc:'D:/rustc.exe',cargoHome:'D:/cargo'}},",
+            "A".repeat(40),
+            "b".repeat(64),
+            "c".repeat(64)
+        );
+        let source = recipe().replace(
+            "signing:'test-local-untimestamped',",
+            &format!("signing:'developer-local',{signer}"),
+        );
+        let parsed = parse_windows_build(&source).expect("closed developer signer");
+        let dev = parsed.developer_signer.expect("developer signer");
+        assert_eq!(parsed.signing, "developer-local");
+        assert_eq!(dev.certificate_thumbprint, "A".repeat(40));
+        assert_eq!(dev.publisher_scope, "b".repeat(64));
+        assert_eq!(dev.release_public_key, PathBuf::from("D:/dev/update.pub"));
+        assert_eq!(dev.sign_tool.sha256, [0xcc; 32]);
+        assert_eq!(dev.git, PathBuf::from("D:/git.exe"));
+        assert_eq!(dev.cargo, PathBuf::from("D:/cargo.exe"));
+        assert_eq!(dev.rustc, PathBuf::from("D:/rustc.exe"));
+        assert_eq!(dev.cargo_home, PathBuf::from("D:/cargo"));
+        for bad in [
+            source.replace(
+                "certificateThumbprint:'",
+                "privateKey:'secret',certificateThumbprint:'",
+            ),
+            source.replace(
+                "certificateThumbprint:'",
+                "certificateThumbprint:'F',certificateThumbprint:'",
+            ),
+            source.replace(&"b".repeat(64), &"G".repeat(64)),
+            source.replace(
+                "signing:'developer-local'",
+                "signing:'test-local-untimestamped'",
+            ),
+        ] {
+            assert!(parse_windows_build(&bad).is_err(), "accepted {bad}");
+        }
+        assert!(
+            parse_windows_build(&recipe().replace("test-local-untimestamped", "developer-local"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn recipe_refuses_authority_commands_dynamic_or_production_fields() {
+        for field in [
+            "privateKey",
+            "certificate",
+            "command",
+            "install",
+            "catalogAuthority",
+        ] {
+            let source = recipe().replacen("target:", &format!("{field}:'override',target:"), 1);
+            assert!(parse_windows_build(&source).is_err());
+        }
+        for (old, new) in [
+            ("test-local-untimestamped", "production"),
+            ("windows-x64", "macos-arm64"),
+            ("modules:['main.js']", "modules:['main.js','main.js']"),
+            ("root:'source'", "root:process.cwd()"),
+            (
+                "commit:'1111111111111111111111111111111111111111'",
+                "commit:'HEAD'",
+            ),
+        ] {
+            assert!(parse_windows_build(&recipe().replace(old, new)).is_err());
         }
     }
 }

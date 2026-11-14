@@ -61,6 +61,12 @@ impl ActiveOriginalCall {
     pub(crate) const fn lease(&self) -> &CheckedNativeDocumentLease {
         &self.lease
     }
+    /// The ingress role retained by this exact original call, including after
+    /// it stops being live. Abort must not capture a replacement route owner.
+    #[cfg(windows)]
+    pub(crate) const fn original_role_witness(&self) -> Option<&RendererRoleWitness> {
+        self.role_witness.as_ref()
+    }
     pub(crate) fn channel(&self) -> Option<&str> {
         self.channel.as_deref()
     }

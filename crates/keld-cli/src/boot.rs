@@ -26,7 +26,9 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-const PERMISSIONS_BYTES: &[u8] = b"{}\n";
+pub(crate) const PERMISSIONS_BYTES: &[u8] = b"{}\n";
+#[cfg(windows)]
+pub(crate) const COMPILED_KEL96_MARKER_LINE: &str = "keld96CompiledBundle: \"v1\",";
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const PERMISSIONS_FILE: &str = "keld.permissions.jsonc";
 /// Hello/`keld create` embeds the canonical TypeScript transport beside the
@@ -1401,6 +1403,36 @@ where
             }
         }
     }
+    // An ordinary project may independently choose code/main.js without an
+    // imported generated transport. Only an explicitly emitted KEL-96 bundle
+    // requires the compiled sidecar. Its absence must fail before Host spawn.
+    #[cfg(windows)]
+    if entry == "code/main.js" {
+        let relative = "code/kipc-transport.js";
+        let required = config
+            .lines()
+            .any(|line| line.trim() == COMPILED_KEL96_MARKER_LINE);
+        match fs::metadata(project_root.join("code").join("kipc-transport.js")) {
+            Ok(metadata) if metadata.is_file() => {
+                let source = contained_source(&project_root, relative, "compiled kipc transport")?;
+                owner_check(&source)?;
+                stage_project_file(&root, relative, &source, "compiled kipc transport")?;
+            }
+            Ok(_) => {
+                return Err(BootCompileError::new(
+                    "compiled kipc transport",
+                    "target is not a regular file",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound && !required => {}
+            Err(error) => {
+                return Err(BootCompileError::new(
+                    "compiled kipc transport",
+                    error.to_string(),
+                ));
+            }
+        }
+    }
     write_new_file(
         &root.join(PERMISSIONS_FILE),
         permissions_bytes,
@@ -1574,13 +1606,55 @@ fn prepare_windows_launch_parents(
     Ok(guards)
 }
 
+/// Pin every ancestor of an application bundle before opening its signed
+/// CLI by pathname; retain the non-delete-sharing guards through child exit.
+/// Opening from volume root downwards also refuses junction/reparse aliases.
+///
+/// # Errors
+/// Refuses non-local-disk or redirected ancestors and unavailable guard handles.
+#[cfg(windows)]
+pub fn pin_windows_launch_ancestors(path: &Path) -> Result<Vec<File>, BootCompileError> {
+    use std::path::{Component, Prefix};
+
+    let mut components = path.components();
+    if !path.is_absolute()
+        || !matches!(components.next(), Some(Component::Prefix(prefix))
+            if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)))
+        || components
+            .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
+    {
+        return Err(BootCompileError::new(
+            "launch namespace",
+            "developer bundle requires a local absolute disk path without traversal",
+        ));
+    }
+    let mut guards = Vec::new();
+    for ancestor in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
+        guards.push(open_windows_launch_guard(ancestor)?);
+    }
+    Ok(guards)
+}
+
 #[cfg(windows)]
 fn open_windows_launch_guard(path: &Path) -> Result<File, BootCompileError> {
+    open_windows_directory_guard(path, FILE_SHARE_READ | FILE_SHARE_WRITE)
+}
+
+/// Retains an authoring ancestor without granting concurrent write/delete opens.
+/// This is stricter than the dev launch guard: pathname traversal must not race
+/// a directory handle used to change reparse metadata.
+#[cfg(windows)]
+pub(crate) fn open_windows_input_directory_guard(path: &Path) -> Result<File, BootCompileError> {
+    open_windows_directory_guard(path, FILE_SHARE_READ)
+}
+
+#[cfg(windows)]
+fn open_windows_directory_guard(path: &Path, share_mode: u32) -> Result<File, BootCompileError> {
     use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
 
     let guard = OpenOptions::new()
         .read(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .share_mode(share_mode)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
         .map_err(|source| BootCompileError::new("launch namespace", source.to_string()))?;
@@ -1841,7 +1915,7 @@ fn write_new_file(
 
 #[cfg(windows)]
 #[allow(unsafe_code)] // reviewed Windows-only atomic creation boundary; see SAFETY proof at CreateDirectoryW
-fn create_windows_stage_root(path: &Path) -> io::Result<()> {
+pub(crate) fn create_windows_stage_root(path: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt as _;
 
     let descriptor = keld_guard::windows_owner_private_directory_security()?;
