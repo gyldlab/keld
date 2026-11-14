@@ -98,7 +98,12 @@ impl Fixture {
         // Independent fixture spelling, not the production URL constructor.
         format!(
             "file:///{}/{}",
-            self.root.to_str().expect("fixture UTF8").replace('\\', "/"),
+            self.root
+                .to_str()
+                .expect("fixture UTF8")
+                .replace('\\', "/")
+                .replace('%', "%25")
+                .replace('#', "%23"),
             member
         )
         .replace(' ', "%20")

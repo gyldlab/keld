@@ -1,9 +1,13 @@
 //! Allocation admission around the existing app-envelope deserializer.
 //! `RawCompatEnvelope`, `LocalValueSeed` and their validators remain the grammar.
 //! This adapter reserves before an owned allocation; it never returns credit.
+#[path = "decode_storage/access.rs"]
 mod access;
+#[path = "decode_storage/error.rs"]
 mod error;
+#[path = "decode_storage/layout.rs"]
 mod layout;
+#[path = "decode_storage/visitor.rs"]
 mod visitor;
 
 use super::{
@@ -122,4 +126,5 @@ impl<F: FnMut(usize) -> bool> State<'_, F> {
 }
 
 #[cfg(test)]
+#[path = "decode_storage/tests.rs"]
 mod tests;

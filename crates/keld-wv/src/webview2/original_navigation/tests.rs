@@ -134,6 +134,48 @@ fn same_uri_child_without_nonce_cannot_supply_the_top_level_served_witness() {
 }
 
 #[test]
+fn same_uri_child_cannot_preempt_or_replace_real_top_level_response() {
+    // AC06: an iframe's indistinguishable URI and DOCUMENT resource context
+    // must not steal the top-level response before or after it is served.
+    // These are state-model controls; native WebView2 attribution remains a
+    // separate acceptance requirement.
+    for child_first in [true, false] {
+        let mut h = Harness::new();
+        let (_, uri, header, lease) = h.begin(None);
+        h.start(50, &uri, &header);
+        if !child_first {
+            h.serve(150, lease, &uri, &header);
+        }
+
+        let child = h.ledger.begin(151).unwrap();
+        assert_eq!(
+            h.navigation
+                .claim_document_request(child, lease, &uri, None, h.now),
+            Ok(false),
+            "same-URI child was attributed to the top-level request"
+        );
+        assert!(
+            !h.navigation.document_served(child, lease, h.now),
+            "iframe response must not become the top-level served witness"
+        );
+        if child_first {
+            h.serve(152, lease, &uri, &header);
+        }
+
+        assert!(h.navigation.current_document().is_none());
+        let committed = h
+            .navigation
+            .content_loading(id(50), &uri, false, h.now)
+            .expect("only the real top-level response permits commit");
+        assert!(h.navigation.current_document().unwrap().is_current());
+        assert_eq!(
+            h.navigation.navigation_completed(id(50), true),
+            Some(Ok(committed))
+        );
+    }
+}
+
+#[test]
 fn missing_or_foreign_start_nonce_cannot_bind_native_id() {
     for observed in [None, Some("ffffffffffffffffffffffffffffffff")] {
         let mut h = Harness::new();
