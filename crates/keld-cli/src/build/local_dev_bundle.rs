@@ -114,12 +114,7 @@ fn require_replayable_permissions(members: &[Member]) -> Result<(), BuildError> 
     let permissions = required_json(members, "keld.permissions.jsonc")?;
     let text = std::str::from_utf8(permissions).map_err(refuse)?;
     keld_guard::parse_manifest(text).map_err(refuse)?;
-    if permissions != boot::PERMISSIONS_BYTES {
-        return Err(refuse(
-            "Windows KEL-96 dev stage cannot replay source permission policy bytes; only the exact empty undeclared policy is supported",
-        ));
-    }
-    Ok(())
+    super::require_developer_policy_replay(permissions)
 }
 
 fn quoted(value: &str) -> Result<String, BuildError> {

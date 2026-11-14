@@ -169,6 +169,12 @@ impl CapturedInputs {
             }
             _ => {}
         }
+        // The ordinary KEL-96 Windows dev stage substitutes these exact bytes.
+        // Reject any other valid undeclared policy before signer capture, Host
+        // image staging, or session creation; do not weaken the Strict lane.
+        if profile == ProfileAdmission::UndeclaredDeveloper {
+            super::require_developer_policy_replay(&policy)?;
+        }
         // The compiler is the sole owner of relative boot paths/schema and the
         // digest of these exact policy bytes. Drop no source pins until it ends.
         let _descriptor = boot::compile_boot_descriptor_bytes(
