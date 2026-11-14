@@ -1897,7 +1897,7 @@ export function checkWorkflowSecurity(source: string): void {
     fmt: "5021013ee751a651b110df9c3f45d96425b8a51ca5f6b7e13ce107c4a0042ea9",
     "windows-media":
       "385b68e1ef567912453c5a08eaa7e7d678f48444956115ade2ad110ffac2b0d8",
-    check: "8bd943e6da9daab6bb0e34469a3d7db55feac9f5e23e20b8e455a08f6ed4228c",
+    check: "1aead735aeeb2e6c9d02aa8767f6a5293a621c65489b7d3ee4a1d76dd3330ca4",
     "codeql-rust":
       "513d4978b886a9f8d3b5ce09fc9022a953114fa3cadec43be6c06d8ef39cce41",
     "codeql-javascript-typescript":
