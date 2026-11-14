@@ -11,8 +11,15 @@ const output = resolve(
 
 test("embedded preload is the exact pinned generator output", () => {
   const result = Bun.spawnSync(
-    [process.execPath, resolve(root, "packages/@keld/electron/scripts/preload-runtime-codegen.ts"), "check"],
-    { cwd: root },
+    [
+      process.execPath,
+      resolve(
+        root,
+        "packages/@keld/electron/scripts/preload-runtime-codegen.ts",
+      ),
+      "check",
+    ],
+    { cwd: root, timeout: 30_000 },
   );
   expect(result.exitCode, result.stderr.toString()).toBe(0);
 });
@@ -28,8 +35,9 @@ test("embedded codec refuses native Map contents instead of flattening them", ()
     "  globalThis.observeEncode = encodeEndpointArguments;\n" + anchor,
   );
   const context = { TextEncoder, TextDecoder };
-  runInNewContext(observed, context);
-  const result = runInNewContext(`
+  runInNewContext(observed, context, { timeout: 5_000 });
+  const result = runInNewContext(
+    `
     (() => {
       const plain = Array.from(observeEncode([{}]));
       const map = new Map([["retained", 42]]);
@@ -38,7 +46,10 @@ test("embedded codec refuses native Map contents instead of flattening them", ()
       try { observeEncode([map]); } catch (error) { code = error.code; }
       return { plain, code };
     })()
-  `, context);
+  `,
+    context,
+    { timeout: 5_000 },
+  );
   expect(Array.from(result.plain)).toEqual([6, 1, 0, 7, 0, 0]);
   expect(result.code).toBe("KELD-COMPAT-100");
 });

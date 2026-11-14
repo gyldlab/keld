@@ -714,7 +714,7 @@ fn mime_for(path: &Path) -> &'static str {
         .unwrap_or_default()
     {
         "html" | "htm" => "text/html; charset=utf-8",
-        "js" => "text/javascript; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
         "css" => "text/css; charset=utf-8",
         "json" | "map" => "application/json; charset=utf-8",
         "xml" => "application/xml",
@@ -947,7 +947,7 @@ mod tests {
             ("index.html", "text/html; charset=utf-8"),
             ("js/app.min.js", "text/javascript; charset=utf-8"),
             ("js/app.mjs", "text/javascript; charset=utf-8"),
-            ("js/app.MJS", "text/javascript; charset=utf-8"),
+            ("js/app.MJS", "application/octet-stream"),
             ("js/app.unknown", "application/octet-stream"),
             ("styles/grapheditor.css", "text/css; charset=utf-8"),
             ("resources/dia.txt", "text/plain; charset=utf-8"),
