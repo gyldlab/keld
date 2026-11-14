@@ -9,6 +9,7 @@ use std::path::Path;
 use std::process;
 use std::sync::mpsc;
 
+#[cfg(windows)]
 use keld_cli::boot;
 use keld_cli::build::run_build;
 use keld_cli::create::{CreateError, create_project};
