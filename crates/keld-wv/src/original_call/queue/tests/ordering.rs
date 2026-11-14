@@ -38,6 +38,13 @@ fn returned_local_stays_before_a_preflight_with_no_remaining_queued_predecessors
         abort.operation(),
         RendererBridgeOperation::PreflightAborted
     ));
+    #[cfg(windows)]
+    assert!(
+        abort
+            .role_witness()
+            .is_some_and(|role| role.same_role(&h.role))
+    );
+
     assert!(h.queue.is_drained());
     b.assert_released_once();
 }
@@ -142,6 +149,13 @@ fn role_change_during_preparation_waits_for_original_abort_before_refusal() {
         abort.operation(),
         RendererBridgeOperation::PreflightAborted
     ));
+    #[cfg(windows)]
+    assert!(
+        abort
+            .role_witness()
+            .is_some_and(|role| role.same_role(&h.role))
+    );
+
     let mut token = h.take().unwrap();
     assert_eq!(token.kind(), OriginalInvocationKind::Refusal);
     assert!(h.enter(&mut token, OriginalInvocationKind::Refusal));
@@ -201,6 +215,13 @@ fn full_controls_keep_consumed_quiesced_and_abort_on_their_original_records() {
         abort.operation(),
         RendererBridgeOperation::PreflightAborted
     ));
+    #[cfg(windows)]
+    assert!(
+        abort
+            .role_witness()
+            .is_some_and(|role| role.same_role(&h.role))
+    );
+
     assert!(!h.queue.has_pending());
     assert!(
         h.event
