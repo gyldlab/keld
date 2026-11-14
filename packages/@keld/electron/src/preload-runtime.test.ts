@@ -393,6 +393,72 @@ describe("original preload runtime only", () => {
       f.restore();
     }
   });
+  test("shared listener identity survives a replacement on a different watched path", () => {
+    const f = fixture();
+    try {
+      const observed: string[] = [];
+      const sharedListener = () => observed.push("shared");
+      const acknowledge = (delivery: number) => {
+        const req = decodeEndpointArguments(
+          new Uint8Array(f.sends().at(-1)!.payload as number[]),
+        )[0] as { reqId: number };
+        expect(
+          f.event("mainResp", [{ reqId: req.reqId, data: true }], delivery)
+            .disposition,
+        ).toEqual({ status: "consumed" });
+      };
+      f.call(
+        "request",
+        {
+          action: "watchFile",
+          path: "/test/shared-a.xml",
+          listener: sharedListener,
+        },
+        () => {},
+        () => {},
+      );
+      acknowledge(1);
+      f.call(
+        "request",
+        {
+          action: "watchFile",
+          path: "/test/shared-b.xml",
+          listener: sharedListener,
+        },
+        () => {},
+        () => {},
+      );
+      acknowledge(2);
+      f.call(
+        "request",
+        {
+          action: "watchFile",
+          path: "/test/shared-a.xml",
+          listener: () => observed.push("replacement"),
+        },
+        () => {},
+        () => {},
+      );
+      acknowledge(3);
+      expect(
+        f.event(
+          "fileChanged",
+          [{ path: "/test/shared-a.xml", curr: {}, prev: {} }],
+          4,
+        ).disposition,
+      ).toEqual({ status: "consumed" });
+      expect(
+        f.event(
+          "fileChanged",
+          [{ path: "/test/shared-b.xml", curr: {}, prev: {} }],
+          5,
+        ).disposition,
+      ).toEqual({ status: "consumed" });
+      expect(observed).toEqual(["replacement", "shared"]);
+    } finally {
+      f.restore();
+    }
+  });
   test("local registration has no send dependency and once removes before reentry", () => {
     const f = fixture();
     try {
