@@ -215,6 +215,16 @@ fn check_same_uri_frame(receipt: &Value) -> Result<(), String> {
         frame_end["data"]["navigation_id"].as_u64() == Some(frame_id),
         "iframe native identities differ",
     )?;
+    let start_seq = frame_start["seq"]
+        .as_u64()
+        .ok_or("missing native iframe starting event sequence")?;
+    let end_seq = frame_end["seq"]
+        .as_u64()
+        .ok_or("missing native iframe completed event sequence")?;
+    require(
+        start_seq < end_seq,
+        "native iframe completion precedes its navigation start",
+    )?;
     require(
         rows(receipt, "iframe", "navigation-starting").is_empty(),
         "iframe cell unexpectedly navigated the top-level document",
@@ -302,12 +312,18 @@ fn host_header_observations(receipt: &Value) -> Result<(bool, bool), String> {
         if navigation == "S_OK" {
             let start = one(receipt, "host-header", "navigation-starting")?;
             let end = one(receipt, "host-header", "navigation-completed")?;
+            let start_id = start["data"]["navigation_id"]
+                .as_u64()
+                .ok_or("missing native Host navigation identity")?;
             require(
                 start["data"]["uri"] == receipt["uri"]
-                    && start["data"]["navigation_id"] == end["data"]["navigation_id"],
+                    && end["data"]["navigation_id"].as_u64() == Some(start_id),
                 "custom native request terminal is not attributed to its start",
             )?;
-            if end["data"]["success"] == true {
+            let succeeded = end["data"]["success"]
+                .as_bool()
+                .ok_or("missing native Host navigation success Boolean")?;
+            if succeeded {
                 successful_navigation(receipt, "host-header")?;
                 host_start_header = header_is(start, Some(nonce));
                 let resources = rows(receipt, "host-header", "resource-request");

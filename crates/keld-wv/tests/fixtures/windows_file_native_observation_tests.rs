@@ -450,3 +450,74 @@ fn global_native_sequence_cannot_be_duplicated_or_reordered() {
     );
     assert!(assess(&sample()).is_ok(), "ordered global sequence failed");
 }
+
+#[test]
+fn same_uri_iframe_completion_cannot_precede_start_with_resequenced_events() {
+    let mut receipt = sample();
+    let events = receipt["events"].as_array_mut().expect("fixture events");
+    let start = events
+        .iter()
+        .position(|row| row["phase"] == "iframe" && row["kind"] == "frame-navigation-starting")
+        .expect("frame start");
+    let completed = events
+        .iter()
+        .position(|row| row["phase"] == "iframe" && row["kind"] == "frame-navigation-completed")
+        .expect("frame completion");
+    events.swap(start, completed);
+    // Keep the public global sequence valid. The only injected fault is the
+    // impossible native event lifecycle ordering, not a stale seq number.
+    for (index, row) in events.iter_mut().enumerate() {
+        row["seq"] = json!(index + 1);
+    }
+    assert!(
+        assess(&receipt).is_err(),
+        "reversed frame completion/start with contiguous global sequence accepted"
+    );
+}
+
+#[test]
+fn failed_host_navigation_cannot_claim_both_missing_identities() {
+    let mut receipt = sample();
+    for row in receipt["events"].as_array_mut().expect("fixture events") {
+        if row["phase"] == "host-header"
+            && (row["kind"] == "navigation-starting" || row["kind"] == "navigation-completed")
+        {
+            row["data"]["navigation_id"] = Value::Null;
+            if row["kind"] == "navigation-completed" {
+                row["data"]["success"] = json!(false);
+            }
+        }
+    }
+    assert!(
+        assess(&receipt).is_err(),
+        "failure-path host navigation with two null identities accepted"
+    );
+}
+
+#[test]
+fn host_terminal_success_must_be_an_actual_boolean() {
+    let mut receipt = sample();
+    for row in receipt["events"].as_array_mut().expect("fixture events") {
+        if row["phase"] == "host-header" && row["kind"] == "navigation-completed" {
+            row["data"]["success"] = json!("false");
+        }
+    }
+    assert!(
+        assess(&receipt).is_err(),
+        "non-Boolean native completion success accepted as failure path"
+    );
+}
+
+#[test]
+fn failed_host_navigation_preserves_valid_numeric_identity() {
+    let mut receipt = sample();
+    for row in receipt["events"].as_array_mut().expect("fixture events") {
+        if row["phase"] == "host-header" && row["kind"] == "navigation-completed" {
+            row["data"]["success"] = json!(false);
+        }
+    }
+    assert!(
+        assess(&receipt).is_ok(),
+        "valid negative native terminal must remain observable, not be promoted to success"
+    );
+}
