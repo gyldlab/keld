@@ -167,6 +167,61 @@ fn same_uri_child_cannot_preempt_or_replace_real_top_level_response() {
 }
 
 #[test]
+fn same_uri_prior_host_attempt_cannot_satisfy_successor_nonce_or_lease() {
+    // AC06: a prior Host attempt may have the exact selected URI, but its
+    // nonce and resource lease must not be reusable for the next generation.
+    // Model-only test; product WebView2 attribution remains a separate gate.
+    for stale_case in 0..3 {
+        let mut h = Harness::new();
+        let (_, old_uri, old_nonce, old_lease) = h.begin(None);
+        h.start(60, &old_uri, &old_nonce);
+
+        let (_, new_uri, new_nonce, new_lease) = h.begin(None);
+        assert_eq!(old_uri, new_uri, "same-URI replay is required");
+        assert_ne!(old_nonce, new_nonce, "new attempt must have fresh nonce");
+        assert_ne!(old_lease.attempt, new_lease.attempt);
+        h.start(61, &new_uri, &new_nonce);
+
+        let (lease, nonce) = match stale_case {
+            0 => (new_lease, old_nonce.as_str()),
+            1 => (old_lease, new_nonce.as_str()),
+            _ => (old_lease, old_nonce.as_str()),
+        };
+        let replay = h.ledger.begin(160).unwrap();
+        assert_ne!(
+            h.navigation
+                .claim_document_request(replay, lease, &new_uri, Some(nonce), h.now),
+            Ok(true),
+            "prior generation cannot supply a selected-document witness"
+        );
+        assert!(!h.navigation.document_served(replay, lease, h.now));
+        assert!(h.navigation.current_document().is_none());
+
+        if stale_case == 1 {
+            // A valid-looking nonce paired with an obsolete lease must fail
+            // closed, not allow ContentLoading to commit the new attempt.
+            assert!(
+                h.navigation
+                    .content_loading(id(61), &new_uri, false, h.now)
+                    .is_err()
+            );
+        } else {
+            // A wrong nonce is only an ordinary non-selected resource. It
+            // cannot suppress the real top-level request of this attempt.
+            h.serve(161, new_lease, &new_uri, &new_nonce);
+            let committed = h
+                .navigation
+                .content_loading(id(61), &new_uri, false, h.now)
+                .expect("fresh Host request must still qualify");
+            assert_eq!(
+                h.navigation.navigation_completed(id(61), true),
+                Some(Ok(committed))
+            );
+        }
+    }
+}
+
+#[test]
 fn missing_or_foreign_start_nonce_cannot_bind_native_id() {
     for observed in [None, Some("ffffffffffffffffffffffffffffffff")] {
         let mut h = Harness::new();
