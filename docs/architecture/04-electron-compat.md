@@ -46,7 +46,7 @@ Nothing else. No `src-tauri/`, no Rust files, no new IDL in the migration path.
 
 Current boot consumers use root fields such as `name` and `entry`; the original-app
 integration also owns root `version`. The approved
-[local macOS packaging successor](../specs/macos-local-app-packaging.md) proposes one
+[local macOS packaging successor](../specs/gh1404-macos-local-app-packaging/index.md) proposes one
 root `id` alongside those fields and a bounded literal `keld.build.ts` subset. It
 does not make the nested `app` example below a second accepted metadata source.
 That successor is in implementation; this note establishes no installed draw.io

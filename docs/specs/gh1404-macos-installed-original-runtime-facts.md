@@ -1,6 +1,9 @@
 # Installed original-application runtime facts
 
-Status: implementing (delegated design approval recorded; native acceptance open).
+Status: implementing
+Tracker: GH-1404
+Updated: 2026-11-06
+Pin: 76df3f9fa8120e599d68f190c8dcec157c58d0d0
 
 Owner: Core installed session and existing launch-facts codec. Execution record:
 [GH-1404](https://github.com/gyldlab/keld/issues/1404).
@@ -14,7 +17,8 @@ updated content requires its own recorded review digest; the earlier hash is not
 approval of changed bytes. This status claims neither implementation completion
 nor native acceptance.
 
-## Requirement and verified gap
+
+## 1. Goal & non-goals
 
 An original application may need a native user-data directory and locale before
 its first import, then the existing cooperative single-instance verdict at Ready.
@@ -28,7 +32,7 @@ facts schemas 4–5 and private graph launch route are not installed provenance.
 Installed schema 6 already has a closed different meaning. Preserve it unchanged.
 
 For the **installed original-graph cell only**, this amendment supersedes the
-[graph-source amendment](macos-installed-graph-source.md) §4.4 sentence reusing
+[graph-source amendment](gh1404-macos-installed-graph-source.md) §4.4 sentence reusing
 launch-facts schema 6 and `local-bundle-v1`. That cell uses launch-facts schema 7
 and the twelve-argument `local-bundle-v2` role defined here. Its sealed **boot
 schema 6** remains the installed graph selector; boot and launch-facts schema
@@ -36,7 +40,59 @@ numbers are separate contracts. Non-graph installed launches retain launch-facts
 schema 6 and the eleven-argument `local-bundle-v1` role. Developer schemas and the
 seven-argument role are not reinterpreted.
 
-## Selected minimum extension
+
+## 2. Spec refs
+
+The governing graph-source and approval references are preserved above.
+The amendment changes only the installed original-graph cell described in §1.
+
+## 3. Acceptance criteria
+
+### AC-1: Preserve every acceptance obligation below
+- **Given:** An admitted installed original-graph session with a declared single-instance identity.
+- **When:** The authenticated route prepares facts and the Host enters a retained fatal session.
+- **Then:** All failure-first controls below pass, including retained lease ownership until Host retirement.
+- **Negative control:**
+  - **Single fault:** Drop only the acquired lease from the retained fatal-session payload.
+  - **At-risk precondition:** The failed Host remains alive and a same-identity contender attempts acquisition.
+  - **Expected RED:** The contender acquires prematurely, failing the required contended assertion.
+
+
+- Existing schema-6 fixtures and seven/eleven-argument role tests remain unchanged.
+  Mixed records, unsupported versions, duplicates, accessors, unknown fields,
+  wrong root/id/profile, missing verdict and over-bound records refuse before Bun.
+- A raw twelve-argument private invocation with plausible facts cannot authenticate
+  or create a child. The genuine authenticated route checks independent signed
+  roots/digests before consuming any Host-carried observation.
+- The raw record's 16,384-byte bound is enforced before authentication without
+  JSON decoding. Forged registration cannot enter the command factory. After
+  authenticated command construction, withholding or mismatching the actual
+  group's `CONTROL_REGISTERED` acknowledgment prevents Bun execution.
+- Two actual installed Hosts of one declared identity cannot both acquire the
+  same lock. A different identity does not contend. Lock failure cannot return
+  acquired. After the real owner retires, a fresh launch acquires without deleting
+  the persistent lock file. Bun replacement keeps the same owner/verdict.
+- A retained fatal session keeps its acquired lease while the Host remains alive;
+  the negative control drops only that lease and must expose premature acquisition.
+  Forced Host death separately proves owned cleanup and later reacquisition,
+  without claiming exclusion after the lock-owning Host has died.
+- App imports observe native, frozen facts before dependencies. Decoy environment
+  values do not affect them. File paths and unavailable fields are checked against
+  an independent Foundation observer; user-agent text is checked in the real view.
+- Directory results exercise zero (omitted), one (exact value) and multiple
+  (typed failure). Language lists exercise empty (omitted), one and multiple
+  ordered preferences (unchanged first value), malformed-first refusal and the
+  raw-string bounds in both Core and canonical TypeScript.
+- Installed original draw.io still must pass its real Open/Edit/Save/unsaved
+  Cancel/Discard/Quit workflow, file readback, permission rejections and owned
+  cleanup. These data changes or passing codec tests cannot satisfy that gate.
+
+Platform scope is macOS only. Windows/Linux packaging, lock semantics and native
+directory acceptance are not implemented or claimed by this addition. No main
+merge is authorized. Final source, wire/data, lifetime and native review are
+separate required evidence.
+
+## 4. Design
 
 1. **Authoring and sealed boot.** Only the installed graph cell accepts the two
    existing optional application declarations: `singleInstance:{id}` and
@@ -104,18 +160,57 @@ refused before any getter/application code or resource effect. Optional means
 **omitted**, never `null` or an inferred fallback. Rust and the canonical JavaScript
 codec share these literal contract fixtures, not separate inferred shapes.
 
-| Field | Required shape and source |
-|---|---|
-| `schema` | Exactly integer `7`; no coercion. |
-| `kind` | Exactly `"local-development"`; never relabel as development. |
-| `name` | Exact sealed `CFBundleName` and parsed boot name. |
-| `version` | Exact sealed `CFBundleShortVersionString`. |
-| `root` | Absolute verified `Contents/Resources/app`, equal to the Guardian's independent retained root. |
-| `resourcesRoot` | Absolute verified `Contents/Resources`; appending literal `app` equals `root`. |
-| `paths` | Required closed object; zero or more `appData`, `userData`, `documents` own string fields. Each is an absolute native path. Each native directory query admits exactly one result, omits an empty result, and refuses multiple results. `userData` may exist only with `appData`, and equals `appData/name` with `name` exactly one safe path component. No `..`, environment expansion or app-provided directory. |
-| `locale` | Optional native preferred-language string: the exact first value from `NSLocale.preferredLanguages`, subject to the ordinary 4,096-byte, nonempty, NUL-free UTF-8 string bound. Preserve spelling, case and separators; do not normalize or impose an ASCII-only rule. An empty native list omits it. Multiple ordered preferences do not make the first choice ambiguous; a malformed first value fails rather than selecting a later value. No `Intl`, environment, renderer negotiation or default locale. |
-| `singleInstance` | Optional closed object `{ "verdict": "acquired" | "contended" }`. Required if and only if the verified boot contains `singleInstance`; its declaration ID already equals the verified canonical application ID. Either verdict requires an available `paths.appData` native namespace. Available `appData` alone does not imply a declaration or verdict. No ID, PID, path, lock descriptor or arbitrary field is accepted in this record. |
-| `originalResourcePolicy` | Required closed object with exactly the five string fields below. It describes the prepared source; it grants no permission and is not native load evidence. |
+
+### `schema`
+
+Exactly integer `7`; no coercion.
+
+### `kind`
+
+Exactly `"local-development"`; never relabel as development.
+
+### `name`
+
+Exact sealed `CFBundleName` and parsed boot name.
+
+### `version`
+
+Exact sealed `CFBundleShortVersionString`.
+
+### `root`
+
+Absolute verified `Contents/Resources/app`, equal to the Guardian's independent retained root.
+
+### `resourcesRoot`
+
+Absolute verified `Contents/Resources`; appending literal `app` equals `root`.
+
+### `paths`
+
+Required closed object; zero or more `appData`, `userData`, `documents` own string fields. Each is an absolute
+native path. Each native directory query admits exactly one result, omits an empty result, and refuses
+multiple results. `userData` may exist only with `appData`, and equals `appData/name` with `name` exactly one
+safe path component. No `..`, environment expansion or app-provided directory.
+
+### `locale`
+
+Optional native preferred-language string: the exact first value from `NSLocale.preferredLanguages`, subject
+to the ordinary 4,096-byte, nonempty, NUL-free UTF-8 string bound. Preserve spelling, case and separators; do
+not normalize or impose an ASCII-only rule. An empty native list omits it. Multiple ordered preferences do not
+make the first choice ambiguous; a malformed first value fails rather than selecting a later value. No `Intl`,
+environment, renderer negotiation or default locale.
+
+### `singleInstance`
+
+Optional closed object `{ "verdict": "acquired" | "contended" }`. Required if and only if the verified boot
+contains `singleInstance`; its declaration ID already equals the verified canonical application ID. Either
+verdict requires an available `paths.appData` native namespace. Available `appData` alone does not imply a
+declaration or verdict. No ID, PID, path, lock descriptor or arbitrary field is accepted in this record.
+
+### `originalResourcePolicy`
+
+Required closed object with exactly the five string fields below. It describes the prepared source; it grants
+no permission and is not native load evidence.
 
 `originalResourcePolicy` has exactly:
 
@@ -221,7 +316,8 @@ as bounded data; an empty, NUL-containing or 4,097-byte value refuses. These
 controls test representation, not the language values normally returned by macOS.
 Unchanged schema-6 and developer fixtures remain required compatibility controls.
 
-## Alternatives and decision tests
+
+### Alternatives and decision tests
 
 Deriving directories or a successful lock from configuration/environment is
 rejected: it has no OS evidence. Calling the developer facts factory for an
@@ -232,38 +328,39 @@ lock is larger and changes the established GH-453 lifetime/dispatch contract.
 The versioned private record reuses the already authenticated startup and existing
 Host resource owner, with no new transport or supervisor.
 
-## Failure-first acceptance
 
-- Existing schema-6 fixtures and seven/eleven-argument role tests remain unchanged.
-  Mixed records, unsupported versions, duplicates, accessors, unknown fields,
-  wrong root/id/profile, missing verdict and over-bound records refuse before Bun.
-- A raw twelve-argument private invocation with plausible facts cannot authenticate
-  or create a child. The genuine authenticated route checks independent signed
-  roots/digests before consuming any Host-carried observation.
-- The raw record's 16,384-byte bound is enforced before authentication without
-  JSON decoding. Forged registration cannot enter the command factory. After
-  authenticated command construction, withholding or mismatching the actual
-  group's `CONTROL_REGISTERED` acknowledgment prevents Bun execution.
-- Two actual installed Hosts of one declared identity cannot both acquire the
-  same lock. A different identity does not contend. Lock failure cannot return
-  acquired. After the real owner retires, a fresh launch acquires without deleting
-  the persistent lock file. Bun replacement keeps the same owner/verdict.
-- A retained fatal session keeps its acquired lease while the Host remains alive;
-  the negative control drops only that lease and must expose premature acquisition.
-  Forced Host death separately proves owned cleanup and later reacquisition,
-  without claiming exclusion after the lock-owning Host has died.
-- App imports observe native, frozen facts before dependencies. Decoy environment
-  values do not affect them. File paths and unavailable fields are checked against
-  an independent Foundation observer; user-agent text is checked in the real view.
-- Directory results exercise zero (omitted), one (exact value) and multiple
-  (typed failure). Language lists exercise empty (omitted), one and multiple
-  ordered preferences (unchanged first value), malformed-first refusal and the
-  raw-string bounds in both Core and canonical TypeScript.
-- Installed original draw.io still must pass its real Open/Edit/Save/unsaved
-  Cancel/Discard/Quit workflow, file readback, permission rejections and owned
-  cleanup. These data changes or passing codec tests cannot satisfy that gate.
+## 5. Boundaries
 
-Platform scope is macOS only. Windows/Linux packaging, lock semantics and native
-directory acceptance are not implemented or claimed by this addition. No main
-merge is authorized. Final source, wire/data, lifetime and native review are
-separate required evidence.
+Implement only the Core installed session, existing launch-facts codec,
+canonical JavaScript codec and existing authenticated Guardian route described above.
+Do not change schema 6, developer routes, public KIPC or Windows/Linux behavior.
+
+## 6. Tasks
+
+### T-1: Implement the closed installed runtime-facts amendment
+- **Blocked by:** none
+Preserve the versioned codec, native capture and retained resource ownership contract
+in section 4. Validate every failure-first acceptance obligation in section 3.
+This task does not waive the exact-content review or native acceptance gates.
+
+## 7. Test plan & evidence
+
+Use the failure-first acceptance matrix in section 3 as the test oracle.
+Run codec compatibility checks and actual installed macOS controls separately.
+Passing codec tests does not establish native or original-application acceptance.
+The implementation-review evidence in section 4 remains bounded to its stated facts.
+
+## 8. Review gates triggered
+
+Independent source, wire/data, lifetime and native review remain required.
+No main merge or native acceptance is authorized by this structural migration.
+
+## 9. Perf impact
+
+The record and string limits in section 4 remain unchanged.
+No performance improvement or benchmark result is claimed.
+
+## 10. Open questions, blockers & unknowns
+
+The updated content requires its own recorded review digest. The historical approval
+is not approval of changed bytes. Native installed acceptance remains open.

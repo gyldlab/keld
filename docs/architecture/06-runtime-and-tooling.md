@@ -531,7 +531,7 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
 
 **Current versus proposed:** `keld-pack` implements the separately scoped Windows
 update/container primitives; format names alone do not implement installers.
-[GH-1404's approved local macOS successor](../specs/macos-local-app-packaging.md)
+[GH-1404's approved local macOS successor](../specs/gh1404-macos-local-app-packaging/index.md)
 is being implemented using native Apple `codesign` and `hdiutil` for a local ad-hoc
 `.app`/DMG, with executable-derived installed-bundle admission. The candidate build
 command supports only native arm64 macOS and explicit Legacy; original draw.io
