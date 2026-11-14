@@ -4,8 +4,34 @@
 //! permissions, the existing boot compiler owns the sealed descriptor, and
 //! Pack owns resource capture, code signing, image verification and publication.
 
+#[cfg(windows)]
+mod compiler_toolchain;
 #[cfg(any(target_os = "macos", windows, test))]
 pub(crate) mod config;
+#[cfg(windows)]
+mod local_archive;
+#[cfg(windows)]
+mod local_archive_command;
+#[cfg(all(windows, test))]
+mod local_baseline;
+#[cfg(windows)]
+mod local_dev_bundle;
+#[cfg(windows)]
+mod local_images;
+#[cfg(windows)]
+mod local_initial_install;
+#[cfg(windows)]
+mod local_manifest_session;
+#[cfg(windows)]
+mod local_source;
+#[cfg(windows)]
+mod windows_archive;
+#[cfg(windows)]
+mod windows_compiler;
+#[cfg(windows)]
+mod windows_inputs;
+#[cfg(windows)]
+mod windows_product;
 
 use std::fmt;
 
@@ -66,15 +92,28 @@ impl fmt::Display for BuildError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "KELD-CLI-052: local macOS build refused during {}: {}. \
-             Use `keld build --target macos-arm64` with closed literal authoring \
-             files, independently pinned binaries and a new output directory.",
+            "KELD-CLI-052: build input or assembly refused during {}: {}. \
+             Use a supported native target with closed literal authoring files. \
+             Windows --check-app-inputs checks authoring only; it does not build an application.",
             self.phase, self.detail
         )
     }
 }
 
 impl std::error::Error for BuildError {}
+
+/// Require exactly the bytes the KEL-96 Windows developer stage actually writes.
+/// Check the captured source before signing, then check the emitted bundle again.
+#[cfg(any(windows, test))]
+fn require_developer_policy_replay(policy: &[u8]) -> Result<(), BuildError> {
+    if policy != crate::boot::PERMISSIONS_BYTES {
+        return Err(BuildError::input(
+            "Windows developer policy replay",
+            "Windows KEL-96 dev stage cannot replay source permission policy bytes; only the exact empty undeclared policy is supported",
+        ));
+    }
+    Ok(())
+}
 
 #[cfg(any(target_os = "macos", test))]
 fn require_local_legacy_profile(
@@ -110,6 +149,73 @@ fn require_graph_pairing(
     }
 }
 
+fn is_windows_app_input_check(args: &[String]) -> bool {
+    matches!(args, [target, check] if target == "--target=windows-x64" && check == "--check-app-inputs")
+        || matches!(args, [flag, target, check] if flag == "--target" && target == "windows-x64" && check == "--check-app-inputs")
+}
+
+/// User-facing Windows developer build and the retained explicit local-test route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowsProductRoute<'a> {
+    Developer,
+    DeveloperInitialInstall {
+        inputs: &'a str,
+        published_at: &'a str,
+        create_scaffold: bool,
+    },
+    LocalTest(&'a str),
+}
+fn windows_product_session(args: &[String]) -> Result<Option<WindowsProductRoute<'_>>, BuildError> {
+    let rest = match args {
+        [flag, target, rest @ ..] if flag == "--target" && target == "windows-x64" => Some(rest),
+        [target, rest @ ..] if target == "--target=windows-x64" => Some(rest),
+        _ => None,
+    };
+    match rest {
+        None => Ok(None),
+        Some([]) => Ok(Some(WindowsProductRoute::Developer)),
+        Some([flag, path]) if flag == "--local-test-session" && !path.is_empty() => {
+            Ok(Some(WindowsProductRoute::LocalTest(path)))
+        }
+        Some([flag, inputs, stamp_flag, stamp])
+            if matches!(
+                flag.as_str(),
+                "--initial-install-observed-inputs" | "--initial-install-create-scaffold-inputs"
+            ) && !inputs.is_empty()
+                && stamp_flag == "--published-at"
+                && !stamp.is_empty() =>
+        {
+            Ok(Some(WindowsProductRoute::DeveloperInitialInstall {
+                inputs,
+                published_at: stamp,
+                create_scaffold: flag == "--initial-install-create-scaffold-inputs",
+            }))
+        }
+        Some(_) => Err(BuildError::invocation(
+            "Windows build accepts developer-local keld.build.ts, an explicit --local-test-session ABS_JSON, or --initial-install-{observed,create-scaffold}-inputs ABS_JSON --published-at UTC; install requires separate signed catalog and one-use manifest signer",
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn run_windows_product(route: WindowsProductRoute<'_>) -> Result<(), BuildError> {
+    match route {
+        WindowsProductRoute::Developer => windows_product::run_developer(None),
+        WindowsProductRoute::DeveloperInitialInstall {
+            inputs,
+            published_at,
+            create_scaffold,
+        } => windows_product::run_developer(Some((
+            std::path::Path::new(inputs),
+            published_at,
+            create_scaffold,
+        ))),
+        WindowsProductRoute::LocalTest(session) => {
+            windows_product::run(std::path::Path::new(session))
+        }
+    }
+}
+
 fn parse_args(args: &[String]) -> Result<(), BuildError> {
     match args {
         [flag, target] if flag == "--target" && target == "macos-arm64" => Ok(()),
@@ -120,7 +226,25 @@ fn parse_args(args: &[String]) -> Result<(), BuildError> {
     }
 }
 
-/// Builds the only implemented local cell using the invocation directory.
+const BUILD_USAGE: &str = "usage:
+  keld build --target macos-arm64
+  keld build --target windows-x64 --check-app-inputs
+  keld build --target windows-x64
+  keld build --target windows-x64 --local-test-session ABS_JSON
+  keld build --target windows-x64 --initial-install-create-scaffold-inputs ABS_JSON --published-at UTC
+
+Targets require their native operating system; macos-arm64 requires Apple Silicon.
+Windows --check-app-inputs validates authoring only; it does not build an app.
+Windows developer-local builds select an existing certificate through closed
+keld.build.ts authoring (developerSigner); the build never imports private keys.
+Windows --local-test-session preserves the original explicit LOCAL TEST route.
+Windows initial installation requires an existing signed catalog, an authorized
+one-use Ed25519 manifest signer and explicit install/update roots; it invokes the
+existing verified Host in the same retained build transaction. Build success alone
+is not proof of installation, app launch or Strict runtime qualification.
+Public release trust and Store publication are not part of this developer build.";
+
+/// Builds the selected local cell using the invocation directory.
 ///
 /// The command validates its target and native platform before any file write.
 /// Successful output is published only by Pack after its signature/DMG checks.
@@ -130,6 +254,84 @@ fn parse_args(args: &[String]) -> Result<(), BuildError> {
 /// missing input pins, invalid permissions and native tool failures. Independent
 /// source/runtime qualification remains the caller's separate evidence obligation.
 pub fn run_build(args: &[String]) -> Result<(), BuildError> {
+    if matches!(args, [flag] if flag == "--help" || flag == "-h") {
+        println!("{BUILD_USAGE}");
+        return Ok(());
+    }
+    if args.starts_with(&[
+        "--target".into(),
+        "windows-x64".into(),
+        "--prepare-local-source-test-archive".into(),
+    ]) {
+        #[cfg(windows)]
+        {
+            return local_archive_command::run(&args[3..]);
+        }
+        #[cfg(not(windows))]
+        {
+            return Err(BuildError::invocation(
+                "local Windows archive assembly requires native Windows",
+            ));
+        }
+    }
+    if args.starts_with(&[
+        "--target".into(),
+        "windows-x64".into(),
+        "--prepare-local-source-test-images".into(),
+    ]) {
+        #[cfg(windows)]
+        {
+            return local_images::run(&args[3..]);
+        }
+        #[cfg(not(windows))]
+        {
+            return Err(BuildError::invocation(
+                "local-source image preparation requires native Windows; nothing was signed",
+            ));
+        }
+    }
+    if args.starts_with(&[
+        "--target".into(),
+        "windows-x64".into(),
+        "--prepare-local-source-test".into(),
+    ]) {
+        #[cfg(windows)]
+        {
+            return local_source::run(&args[3..]);
+        }
+        #[cfg(not(windows))]
+        {
+            return Err(BuildError::invocation(
+                "local-source test preparation requires native Windows; no source was read or built",
+            ));
+        }
+    }
+    if is_windows_app_input_check(args) {
+        #[cfg(windows)]
+        {
+            return windows_inputs::run();
+        }
+        #[cfg(not(windows))]
+        {
+            return Err(BuildError::invocation(
+                "Windows app-input checking requires native Windows; no inputs were read",
+            ));
+        }
+    }
+    if let Some(route) = windows_product_session(args)? {
+        #[cfg(windows)]
+        {
+            return run_windows_product(route);
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = route;
+            return Err(BuildError::invocation(
+                "Windows product build requires native Windows; no source was built or signed",
+            ));
+        }
+    }
+
     parse_args(args)?;
     if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         return Err(BuildError::invocation(
@@ -378,6 +580,133 @@ fn run_macos_native() -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn developer_policy_replay_requires_exact_empty_staged_bytes() {
+        require_developer_policy_replay(crate::boot::PERMISSIONS_BYTES)
+            .expect("the exact empty Windows developer policy must replay");
+        for (case, bytes) in [
+            ("no newline", b"{}".as_slice()),
+            (
+                "app grant",
+                br#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#.as_slice(),
+            ),
+            (
+                "window CSP",
+                br#"{"windows":{"primary":{"web":{"csp":"original-editor-offline"}}}}"#.as_slice(),
+            ),
+            ("alternate whitespace", b"{ }\n".as_slice()),
+            ("commented empty", b"// comment\n{}\n".as_slice()),
+        ] {
+            keld_guard::parse_manifest(std::str::from_utf8(bytes).expect("negative fixture UTF-8"))
+                .expect("negative fixture must be a valid undeclared manifest");
+            let error = require_developer_policy_replay(bytes)
+                .expect_err("nonidentical source policy must refuse before any signer");
+            assert!(
+                error
+                    .to_string()
+                    .contains("cannot replay source permission policy bytes"),
+                "{case}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn help_succeeds_without_target_or_project_inputs() {
+        for flag in ["--help", "-h"] {
+            run_build(&[flag.into()]).expect("build help does not require a project");
+        }
+        assert!(BUILD_USAGE.contains("--target windows-x64 --local-test-session ABS_JSON"));
+        assert!(BUILD_USAGE.contains("developer-local"));
+        assert!(BUILD_USAGE.contains("installation, app launch"));
+        assert!(BUILD_USAGE.contains("does not build an app"));
+    }
+
+    #[test]
+    fn windows_initial_install_requires_explicit_closed_invocation() {
+        for (flag, create_scaffold) in [
+            ("--initial-install-observed-inputs", false),
+            ("--initial-install-create-scaffold-inputs", true),
+        ] {
+            for target in [
+                vec!["--target", "windows-x64"],
+                vec!["--target=windows-x64"],
+            ] {
+                let mut args: Vec<String> = target.into_iter().map(str::to_owned).collect();
+                args.extend([
+                    flag.to_owned(),
+                    "D:/owned/install-inputs.json".to_owned(),
+                    "--published-at".to_owned(),
+                    "2026-11-13T15:00:00Z".to_owned(),
+                ]);
+                assert_eq!(
+                    windows_product_session(&args).unwrap(),
+                    Some(WindowsProductRoute::DeveloperInitialInstall {
+                        inputs: "D:/owned/install-inputs.json",
+                        published_at: "2026-11-13T15:00:00Z",
+                        create_scaffold,
+                    })
+                );
+            }
+        }
+        for rest in [
+            vec!["--initial-install-create-scaffold-inputs", ""],
+            vec!["--initial-install-observed-inputs", "D:/observed.json"],
+            vec![
+                "--initial-install-create-scaffold-inputs",
+                "D:/observed.json",
+                "--published-at",
+            ],
+            vec![
+                "--initial-install-create-scaffold-inputs",
+                "D:/observed.json",
+                "--published-at",
+                "",
+            ],
+            vec![
+                "--initial-install-create-scaffold-inputs",
+                "D:/observed.json",
+                "--published-at",
+                "2026-11-13T15:00:00Z",
+                "--sign",
+            ],
+            vec![
+                "--local-test-session",
+                "D:/test.json",
+                "--initial-install-observed-inputs",
+                "D:/observed.json",
+            ],
+            vec![
+                "--initial-install-create-scaffold-inputs",
+                "D:/observed.json",
+                "--sign",
+                "2026-11-13T15:00:00Z",
+            ],
+        ] {
+            let mut args = vec!["--target".to_owned(), "windows-x64".to_owned()];
+            args.extend(rest.into_iter().map(str::to_owned));
+            assert!(windows_product_session(&args).is_err(), "{args:?}");
+        }
+        assert_eq!(
+            windows_product_session(&["--target=windows-x64".into()]).unwrap(),
+            Some(WindowsProductRoute::Developer)
+        );
+    }
+
+    #[test]
+    fn help_does_not_silently_accept_extra_arguments() {
+        for args in [
+            vec!["--help".into(), "--install".into()],
+            vec!["-h".into(), "garbage".into()],
+        ] {
+            assert_eq!(
+                run_build(&args)
+                    .expect_err("invalid help invocation")
+                    .exit_code(),
+                2
+            );
+        }
+    }
 
     #[test]
     fn local_package_requires_explicit_legacy_policy_at_guard_boundary() {

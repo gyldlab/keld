@@ -1,8 +1,9 @@
 //! Reserved and unknown `keld` verbs (KEL-29 / arch/07 §2).
 //!
 //! README and spec 06 name `migrate` / `gen` / `ext` before they are
-//! live. `build` is implemented for macos-arm64 only. A bare `unknown command` with exit 1 lets agents think the verb does
-//! not exist. Reserved verbs are `KELD-CLI-045` (exit 2) with a tracking issue
+//! live. `build` supports native macOS packaging and explicit Windows local-test
+//! packaging; see `keld build --help`. A bare `unknown command` with exit 1 lets
+//! agents think the verb does not exist. Reserved verbs are `KELD-CLI-045` (exit 2) with a tracking issue
 //! and the Phase 2 workaround. Garbage verbs are `KELD-CLI-046` (exit 2).
 
 use std::fmt;
