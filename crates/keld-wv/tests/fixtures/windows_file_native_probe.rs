@@ -17,7 +17,8 @@ use windows::Win32::System::Threading::WaitForSingleObject;
 
 use super::observation;
 
-// Reuse the parent-owned receipt tests; loading them twice duplicates test cases.
+// Reuse the parent-owned receipt tests; loading this module twice also
+// duplicates its tests in the opt-in native target.
 use super::parent_receipt::{verify_parent_binding, verify_profile_absent};
 
 const CHILD: &str = "windows_file_native_probe_child";
@@ -197,12 +198,142 @@ fn read_page(native: &session::Session) -> Result<Value, String> {
     Ok(observation["body"].clone())
 }
 
+fn capture_native_same_uri_overlap(
+    native: &session::Session,
+    receipt: &mut Value,
+    attempt: &str,
+) -> Result<(), String> {
+    native.phase("race-child");
+    receipt["race_iframe_action"] = native.evaluate(
+        "(() => { const frame=document.createElement('iframe'); frame.id='w3-ac06-held-iframe'; frame.src=location.href; document.body.appendChild(frame); return 'ac06-frame-dispatched'; })()", false)?;
+    native.wait_event("race-child-held")?;
+    native.phase("race-host");
+    let race_request = native.host_request(attempt)?;
+    if race_request["navigate_hresult"] != "S_OK" {
+        return Err(format!(
+            "AC06 native Host top-level load refused: {race_request}"
+        ));
+    }
+    receipt["race_host_request"] = race_request;
+    native.wait_event("navigation-starting")?;
+    native.wait_event("resource-request")?;
+    native.release_held_iframe()?;
+    native.wait_event("frame-navigation-completed")?;
+    native.wait_event("navigation-completed")?;
+    receipt["pages"]["race-host"] = read_page(native)?;
+    let observed = native.events();
+    verify_native_same_uri_overlap(receipt, &observed, attempt)
+}
+
+fn verify_native_same_uri_overlap(
+    receipt: &mut Value,
+    observed: &[Value],
+    attempt: &str,
+) -> Result<(), String> {
+    let single = |phase: &str, kind: &str| -> Result<&Value, String> {
+        let matches: Vec<_> = observed
+            .iter()
+            .filter(|event| event["phase"] == phase && event["kind"] == kind)
+            .collect();
+        if matches.len() != 1 {
+            return Err(format!(
+                "AC06 {phase}/{kind} observed {} events, expected 1",
+                matches.len()
+            ));
+        }
+        Ok(matches[0])
+    };
+    let frame_start = single("race-child", "frame-navigation-starting")?;
+    let held = single("race-child", "race-child-held")?;
+    let child = single("race-child", "resource-request")?;
+    let host_start = single("race-host", "navigation-starting")?;
+    let host_resource = single("race-host", "resource-request")?;
+    let release = single("race-host", "race-child-released")?;
+    let frame_completed = single("race-host", "frame-navigation-completed")?;
+    let top_content = single("race-host", "content-loading")?;
+    let top_completed = single("race-host", "navigation-completed")?;
+    let seq = |event: &Value| event["seq"].as_u64().unwrap_or(0);
+    if !(seq(frame_start) > 0
+        && seq(frame_start) < seq(held)
+        && seq(held) <= seq(child)
+        && seq(child) < seq(host_start)
+        && seq(host_start) < seq(host_resource)
+        && seq(host_resource) < seq(release)
+        && seq(release) < seq(frame_completed)
+        && seq(frame_completed) < seq(top_completed))
+    {
+        return Err(format!(
+            "AC06 native race callback ordering mismatch: {observed:?}"
+        ));
+    }
+    let top_id = host_start["data"]["navigation_id"].as_u64();
+    let correct = frame_start["data"]["uri"] == receipt["uri"]
+        && frame_start["data"]["header"]["state"] == "absent"
+        && frame_start["data"]["navigation_id"]
+            .as_u64()
+            .is_some_and(|id| {
+                id != 0
+                    && Some(id) != top_id
+                    && frame_completed["data"]["navigation_id"].as_u64() == Some(id)
+            })
+        && held["data"]["real_deferral"] == true
+        && held["data"]["uri"] == receipt["uri"]
+        && held["data"]["source_kind"] == 1
+        && held["data"]["resource_context"] == 1
+        && child["data"]["uri"] == receipt["uri"]
+        && child["data"]["resource_context"] == 1
+        && child["data"]["source_kind"] == 1
+        && child["data"]["header"]["state"] == "absent"
+        && child["data"]["held_iframe"] == true
+        && host_resource["data"]["uri"] == receipt["uri"]
+        && host_resource["data"]["resource_context"] == 1
+        && host_resource["data"]["source_kind"] == 1
+        && host_resource["data"]["header"]["state"] == "present"
+        && host_resource["data"]["header"]["value"].as_str() == Some(attempt)
+        && host_start["data"]["header"]["value"].as_str() == Some(attempt)
+        && host_start["data"]["navigation_id"]
+            .as_u64()
+            .is_some_and(|id| {
+                id != 0
+                    && top_content["data"]["navigation_id"].as_u64() == Some(id)
+                    && top_completed["data"]["navigation_id"].as_u64() == Some(id)
+            })
+        && top_content["data"]["is_error_page"] == false
+        && top_completed["data"]["success"] == true
+        && release["data"]["completed"] == true;
+    if !correct {
+        return Err(format!(
+            "AC06 native race source/header/NavigationId mismatch: child={child}, host_start={host_start}, top_resource={host_resource}, content={top_content}, completed={top_completed}"
+        ));
+    }
+    receipt["ac06_native_overlap"] = json!({
+        "same_uri_iframe_no_host_nonce": true,
+        "child_navigation_id_distinct_from_top": true,
+        "native_child_document_context": child["data"]["resource_context"],
+        "native_child_source_kind": child["data"]["source_kind"],
+        "child_deferral_held": true,
+        "host_top_document_response_and_navigation_id_while_frame_held": true,
+        "host_nonce_at_top_start_and_resource": true,
+        "same_top_navigation_id_at_content_and_completion": true,
+        "child_deferral_completed": true,
+        "order": {
+            "frame_start": seq(frame_start), "child_held": seq(held),
+            "child_request": seq(child), "top_start": seq(host_start),
+            "top_response": seq(host_resource), "child_release": seq(release),
+            "frame_completed": seq(frame_completed), "top_completion": seq(top_completed)
+        },
+        "scope": "raw native SDK race only; not production Core admission or signed installed Host"
+    });
+    Ok(())
+}
+
 fn scenarios(native: &session::Session, receipt: &mut Value, nonce: &str) -> Result<(), String> {
     native.phase("host-header");
     let attempt = receipt["attempt_nonce"]
         .as_str()
-        .ok_or("missing native attempt marker")?;
-    let request = native.host_request(attempt)?;
+        .ok_or("missing native attempt marker")?
+        .to_owned();
+    let request = native.host_request(&attempt)?;
     receipt["host_request"] = request.clone();
     if request["navigate_hresult"] == "S_OK" {
         native.wait_event("navigation-completed")?;
@@ -223,6 +354,7 @@ fn scenarios(native: &session::Session, receipt: &mut Value, nonce: &str) -> Res
     native.wait_event("frame-navigation-completed")?;
     let page = native.evaluate("window.__w3FrameReady.then(() => window.__w3Fixture)", true)?;
     receipt["pages"]["iframe"] = page["body"]["result"]["value"].clone();
+    capture_native_same_uri_overlap(native, receipt, &attempt)?;
     native.phase("page");
     native.navigate_from_page()?;
     native.wait_event("navigation-completed")?;
@@ -340,4 +472,110 @@ pub(super) fn child_entry() -> Result<(), String> {
     }
     written?;
     assessment.map(|_| ())
+}
+
+// These are receipt-oracle mutations, not substituted native callbacks.
+// They ensure a good raw SDK run cannot be reported when identity evidence is lost.
+#[cfg(test)]
+mod ac06_overlap_receipt_tests {
+    use super::*;
+
+    #[test]
+    fn reject_missing_collapsed_or_swapped_frame_identity_and_forged_source() {
+        let uri = "file:///D:/fixture/index.html";
+        let nonce = "host-attempt";
+        let frame = json!({"phase":"race-child","kind":"frame-navigation-starting","seq":15,
+            "data":{"uri":uri,"navigation_id":5,"header":{"state":"absent"}}});
+        let held = json!({"phase":"race-child","kind":"race-child-held","seq":16,
+            "data":{"uri":uri,"resource_context":1,"source_kind":1,"real_deferral":true}});
+        let child = json!({"phase":"race-child","kind":"resource-request","seq":17,
+            "data":{"uri":uri,"resource_context":1,"source_kind":1,
+                "header":{"state":"absent"},"held_iframe":true}});
+        let top = json!({"phase":"race-host","kind":"navigation-starting","seq":18,
+            "data":{"uri":uri,"navigation_id":6,
+                "header":{"state":"present","value":nonce}}});
+        let resource = json!({"phase":"race-host","kind":"resource-request","seq":19,
+            "data":{"uri":uri,"resource_context":1,"source_kind":1,
+                "header":{"state":"present","value":nonce}}});
+        let released = json!({"phase":"race-host","kind":"race-child-released","seq":20,
+            "data":{"completed":true}});
+        let frame_done = json!({"phase":"race-host","kind":"frame-navigation-completed","seq":21,
+            "data":{"navigation_id":5,"success":false}});
+        let content = json!({"phase":"race-host","kind":"content-loading","seq":22,
+            "data":{"navigation_id":6,"is_error_page":false}});
+        let top_done = json!({"phase":"race-host","kind":"navigation-completed","seq":24,
+            "data":{"navigation_id":6,"success":true}});
+        let good = vec![
+            frame, held, child, top, resource, released, frame_done, content, top_done,
+        ];
+        let check = |events: &[Value]| {
+            verify_native_same_uri_overlap(&mut json!({"uri":uri}), events, nonce)
+        };
+        assert!(check(&good).is_ok(), "valid two-navigation receipt refused");
+
+        let mut missing = good.clone();
+        missing.remove(0);
+        assert!(
+            check(&missing).is_err(),
+            "missing frame-start event accepted"
+        );
+
+        let mut collapsed = good.clone();
+        collapsed[0]["data"]["navigation_id"] = json!(6);
+        collapsed[6]["data"]["navigation_id"] = json!(6);
+        assert!(
+            check(&collapsed).is_err(),
+            "shared iframe/top navigation ID accepted"
+        );
+
+        let mut wrong_completion = good.clone();
+        wrong_completion[6]["data"]["navigation_id"] = json!(7);
+        assert!(
+            check(&wrong_completion).is_err(),
+            "wrong iframe completion ID accepted"
+        );
+
+        let mut absent_completion = good.clone();
+        absent_completion.remove(6);
+        assert!(
+            check(&absent_completion).is_err(),
+            "absent iframe completion accepted"
+        );
+
+        let mut delayed_completion = good.clone();
+        delayed_completion[6]["seq"] = json!(25);
+        assert!(
+            check(&delayed_completion).is_err(),
+            "iframe completion after top completion accepted"
+        );
+
+        let mut wrong_kinds = good.clone();
+        wrong_kinds[2]["data"]["source_kind"] = json!(0);
+        wrong_kinds[4]["data"]["source_kind"] = json!(0);
+        assert!(
+            check(&wrong_kinds).is_err(),
+            "matching non-DOCUMENT source kinds accepted"
+        );
+
+        let mut no_deferral = good.clone();
+        no_deferral[1]["data"]["real_deferral"] = json!(false);
+        assert!(
+            check(&no_deferral).is_err(),
+            "forged held deferral accepted"
+        );
+
+        let mut late_start = good.clone();
+        late_start[0]["seq"] = json!(19);
+        assert!(
+            check(&late_start).is_err(),
+            "frame start after Host start accepted"
+        );
+
+        let mut wrong_header = good.clone();
+        wrong_header[0]["data"]["header"] = json!({"state":"present","value":nonce});
+        assert!(
+            check(&wrong_header).is_err(),
+            "Host nonce on iframe navigation accepted"
+        );
+    }
 }
