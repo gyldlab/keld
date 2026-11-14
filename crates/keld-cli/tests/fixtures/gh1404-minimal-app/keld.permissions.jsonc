@@ -1,0 +1,10 @@
+{
+  "profile": "legacy",
+  "windows": {
+    "main": {
+      "web": {
+        "csp": "original-editor-offline"
+      }
+    }
+  }
+}
