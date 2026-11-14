@@ -11,24 +11,10 @@ use super::BuildError;
 /// Values captured once from the application's shared authoring source.
 #[derive(Debug)]
 pub(crate) struct AppConfig {
-    #[cfg_attr(
-        all(windows, not(test)),
-        expect(
-            dead_code,
-            reason = "Windows dev reuses canonical app validation; packaging retains this field"
-        )
-    )]
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) version: String,
     pub(crate) entry: String,
-    #[cfg_attr(
-        all(windows, not(test)),
-        expect(
-            dead_code,
-            reason = "Windows dev reuses canonical app validation; packaging retains this field"
-        )
-    )]
     pub(crate) renderer: Option<String>,
     /// Optional closed source selection for one explicitly Legacy facade.
     #[cfg(any(target_os = "macos", windows))]

@@ -38,6 +38,17 @@ pub fn restamp_transport(source: &str) -> String {
     format!("{TRANSPORT_STAMP_PREFIX}{digest:x}\n{unstamped}")
 }
 
+/// Render an actual retained canonical transport through the same create owner.
+/// This transforms bytes only; it grants no release or filesystem authority.
+#[must_use]
+pub fn render_transport(source: &str, name: &str) -> String {
+    restamp_transport(&source.replace("{{name}}", name).replacen(
+        KIPC_RELEASE_DECLARATION,
+        KIPC_RELEASE_DEFINITION,
+        1,
+    ))
+}
+
 impl TemplateFile {
     /// The file as `keld create` writes it for project `name`: `{{name}}`
     /// substituted, and the transport with [`KIPC_RELEASE_DEFINITION`] in

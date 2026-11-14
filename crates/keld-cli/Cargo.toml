@@ -38,6 +38,8 @@ rustix = { workspace = true, features = ["process"] }
 keld-pack = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
+# Reuse existing workspace packaging APIs for bounded native Windows builds.
+keld-pack = { workspace = true }
 # GH1185: reuse the retained Windows graph opener; no second unsafe path reader.
 keld-update = { workspace = true }
 windows-permissions = { workspace = true }

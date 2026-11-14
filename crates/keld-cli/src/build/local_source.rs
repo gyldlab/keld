@@ -111,7 +111,9 @@ fn parse_members(bytes: &[u8]) -> Result<Vec<SourceMember>, BuildError> {
         ));
     }
     let names: Vec<_> = members.iter().map(|entry| entry.path.as_str()).collect();
-    keld_guard::validate_windows_source_paths(&names)
+    // Every name was already capped at 4096 bytes and 64 components.
+    // AC06's common Windows namespace guard adds prefix-alias rejection.
+    keld_guard::validate_windows_graph_namespace(&names)
         .map_err(|error| failure("local source inventory", error))?;
     members.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
     if members.windows(2).any(|pair| pair[0].path == pair[1].path) {
