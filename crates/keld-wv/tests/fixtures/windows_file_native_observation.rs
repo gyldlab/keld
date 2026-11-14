@@ -323,6 +323,16 @@ fn host_header_observations(receipt: &Value) -> Result<(bool, bool), String> {
             let succeeded = end["data"]["success"]
                 .as_bool()
                 .ok_or("missing native Host navigation success Boolean")?;
+            let start_seq = start["seq"]
+                .as_u64()
+                .ok_or("missing native Host navigation starting sequence")?;
+            let completed_seq = end["seq"]
+                .as_u64()
+                .ok_or("missing native Host navigation completion sequence")?;
+            require(
+                start_seq < completed_seq,
+                "native Host navigation completed before its start",
+            )?;
             if succeeded {
                 successful_navigation(receipt, "host-header")?;
                 host_start_header = header_is(start, Some(nonce));
