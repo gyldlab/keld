@@ -659,11 +659,93 @@ fn exact_package_grant_preserves_bun_hello_and_rejects_wrong_token() {
         Sha256::digest(fs::read(&bun_source).expect("Bun artifact bytes"))
     );
     for repetition in 0..2 {
-        observe_bun_hello(&bun_source, &digest, repetition);
+        observe_bun_hello(&bun_source, &digest, repetition, false);
     }
 }
 
-fn observe_bun_hello(bun_source: &Path, digest: &str, repetition: u32) {
+#[test]
+#[ignore = "requires KELD_LPAC_BUN_PATH and independently qualified KELD_LPAC_BUN_SHA256"]
+fn atomic_package_constructor_preserves_qualified_bun_hello() {
+    let bun =
+        PathBuf::from(env::var_os("KELD_LPAC_BUN_PATH").expect("explicit qualified Bun path"));
+    assert!(bun.is_absolute(), "Bun qualification path must be absolute");
+    let expected = env::var("KELD_LPAC_BUN_SHA256").expect("independently qualified Bun SHA256");
+    assert_eq!(expected.len(), 64, "canonical SHA256 length");
+    assert!(
+        expected
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(fs::read(&bun).expect("qualified Bun bytes"))
+        ),
+        expected
+    );
+    for repetition in 0..2 {
+        observe_bun_hello(&bun, &expected, repetition, true);
+    }
+}
+
+#[test]
+fn atomic_package_constructor_denies_wrong_profile_before_hello() {
+    for _ in 0..2 {
+        let root = tempfile::tempdir().expect("owned atomic fixture");
+        let runtime = root.path().join("runtime");
+        let private = root.path().join("private");
+        fs::create_dir(&runtime).expect("runtime");
+        fs::create_dir(&private).expect("private");
+        let executable = runtime.join("pipe-client.exe");
+        fs::copy(env::current_exe().expect("test image"), &executable).expect("copy client");
+        let suffix = root
+            .path()
+            .file_name()
+            .expect("unique root")
+            .to_string_lossy();
+        let intended = WindowsLpacProfile::create(OsStr::new(&format!("keld210-atomic-{suffix}")))
+            .expect("intended profile");
+        let wrong =
+            WindowsLpacProfile::create(OsStr::new(&format!("keld210-atomic-wrong-{suffix}")))
+                .expect("wrong profile");
+        let listener = WindowsNamedPipeBootstrapListener::bind_windows_lpac(
+            &intended.sid_string().expect("SID"),
+        )
+        .expect("atomic listener");
+        let (exit, output) = run_profile_client(
+            &wrong,
+            root.path(),
+            &runtime,
+            &private,
+            &executable,
+            listener.endpoint(),
+        );
+        assert_eq!(exit, 0, "wrong-profile fixture: {output}");
+        assert!(
+            output.contains("allowed=false kind=PermissionDenied raw=Some(5)"),
+            "wrong profile opened pipe: {output}"
+        );
+        let (exit, output) = run_profile_client(
+            &intended,
+            root.path(),
+            &runtime,
+            &private,
+            &executable,
+            listener.endpoint(),
+        );
+        assert_eq!(exit, 0, "intended fixture: {output}");
+        assert!(
+            output.contains("KEL210_PIPE_OPEN allowed=true"),
+            "intended profile failed: {output}"
+        );
+        drop(listener);
+        drop(wrong);
+        drop(intended);
+        root.close().expect("atomic fixture cleanup after reap");
+    }
+}
+
+fn observe_bun_hello(bun_source: &Path, digest: &str, repetition: u32, atomic: bool) {
     let root = tempfile::tempdir().expect("owned Bun fixture root");
     let runtime = root.path().join("runtime");
     let private = root.path().join("private");
@@ -687,10 +769,20 @@ fn observe_bun_hello(bun_source: &Path, digest: &str, repetition: u32) {
         .to_string_lossy();
     let profile = WindowsLpacProfile::create(OsStr::new(&format!("keld210-bun-{suffix}")))
         .expect("fresh Bun profile");
-    prove_candidate_pre_cancellation(&profile.sid_string().expect("package SID"));
-    let listener = Arc::new(WindowsNamedPipeBootstrapListener::bind().expect("real bootstrap"));
+    let package = profile.sid_string().expect("package SID");
+    prove_candidate_pre_cancellation(&package, atomic);
+    let listener = Arc::new(if atomic {
+        WindowsNamedPipeBootstrapListener::bind_windows_lpac(&package)
+            .expect("atomic LPAC bootstrap")
+    } else {
+        WindowsNamedPipeBootstrapListener::bind().expect("historical bootstrap")
+    });
     let link = listener.app_link();
-    let descriptor = grant_fixture_pipe(&listener, &profile.sid_string().expect("package SID"));
+    let descriptor = if atomic {
+        String::from("atomic-constructor")
+    } else {
+        grant_fixture_pipe(&listener, &package)
+    };
     let (server, finished, seen) = start_bootstrap_worker(&listener);
     let mut wrong = link.clone().into_bytes();
     let last = wrong.last_mut().expect("nonempty link");
@@ -852,10 +944,16 @@ fn grant_fixture_pipe(listener: &WindowsNamedPipeBootstrapListener, package: &st
     actual
 }
 
-fn prove_candidate_pre_cancellation(package: &str) {
-    let listener =
-        Arc::new(WindowsNamedPipeBootstrapListener::bind().expect("cancellation fixture"));
-    grant_fixture_pipe(&listener, package);
+fn prove_candidate_pre_cancellation(package: &str, atomic: bool) {
+    let listener = Arc::new(if atomic {
+        WindowsNamedPipeBootstrapListener::bind_windows_lpac(package)
+            .expect("atomic cancellation fixture")
+    } else {
+        WindowsNamedPipeBootstrapListener::bind().expect("historical cancellation fixture")
+    });
+    if !atomic {
+        grant_fixture_pipe(&listener, package);
+    }
     listener
         .cancellation()
         .cancel()
