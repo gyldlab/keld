@@ -537,6 +537,15 @@ class ValueWriter {
       this.i64(timestamp);
       return;
     }
+    // Class instances with own enumerable string data fields flatten to
+    // ordinary records. Never invoke Symbol.toStringTag or toJSON as a probe.
+    // The internal-slot probes catch a native whose prototype was replaced and
+    // which the chain checks therefore cannot see. Refuse these brands before
+    // Error admission, whose prototype chain can also be grafted onto them.
+    const exoticName = knownExoticName(value) ?? nativeBrandName(value);
+    if (exoticName !== undefined)
+      reject("UnsupportedValue", `unsupported ${exoticName} object`);
+
     if (isInstance(value, NativeError)) {
       const name = this.errorField(value, "name") ?? "Error";
       const message = this.errorField(value, "message") ?? "";
@@ -548,14 +557,6 @@ class ValueWriter {
       if (stack !== undefined) this.text(stack);
       return;
     }
-
-    // Class instances with own enumerable string data fields flatten to
-    // ordinary records. Never invoke Symbol.toStringTag or toJSON as a probe.
-    // The internal-slot probes catch a native whose prototype was replaced and
-    // which the chain check above therefore cannot see.
-    const exoticName = knownExoticName(value) ?? nativeBrandName(value);
-    if (exoticName !== undefined)
-      reject("UnsupportedValue", `unsupported ${exoticName} object`);
 
     const keys = checkedOwnKeys(value);
     if (keys.length > ENDPOINT_VALUE_NODES - this.visits)

@@ -229,3 +229,55 @@ test("codec descriptors ignore inherited get and set planted by a proxy trap", (
     expect((decoded[2] as Error).name).toBe("Error");
   }
 });
+
+test("native brands refuse before a grafted Error prototype can admit them", () => {
+  const natives: object[] = [
+    new Map([[1, 2]]),
+    new Set([1]),
+    new WeakMap(),
+    new WeakSet(),
+    new ArrayBuffer(1),
+    new Uint8Array([1]),
+    new DataView(new ArrayBuffer(1)),
+    /native/,
+    new Number(1),
+    new Boolean(true),
+    new String("native"),
+    Object(1n),
+    Object(Symbol("native")),
+    new Date(0),
+  ];
+  if (typeof SharedArrayBuffer !== "undefined")
+    natives.push(new SharedArrayBuffer(1));
+  for (const value of natives) {
+    Object.setPrototypeOf(value, Error.prototype);
+    let caught: unknown;
+    try {
+      encodeEndpointValue(value);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(CompatCodecError);
+    expect((caught as CompatCodecError).code).toBe("KELD-COMPAT-100");
+    expect((caught as CompatCodecError).kind).toBe("UnsupportedValue");
+  }
+
+  // Exact tag-09 oracle, independent of the encoder and decoder. An absent
+  // stack avoids runtime-specific stack descriptor differences.
+  const error = new Error("safe");
+  delete error.stack;
+  const wire = Uint8Array.from([
+    9, 5, 0, 69, 114, 114, 111, 114, 4, 0, 115, 97, 102, 101, 0,
+  ]);
+  expect(encodeEndpointValue(error)).toEqual(wire);
+  expect((decodeEndpointValue(wire) as Error).message).toBe("safe");
+  class RecordValue {
+    ok = true;
+  }
+  expect(decodeEndpointValue(encodeEndpointValue(new RecordValue()))).toEqual({
+    ok: true,
+  });
+  expect(decodeEndpointValue(encodeEndpointValue(new Date(0)))).toEqual(
+    new Date(0),
+  );
+});
