@@ -334,6 +334,7 @@ export function installApp(
   const callbackProxies = new Map<number, Listener>();
   const callProxies = new Map<number, Set<number>>();
   const localCharges = new Map<number, number>();
+  const watchCharges = new Map<number, number>();
   let copyingCall: number | undefined;
   function releaseCall(call: number): void {
     const ids = callProxies.get(call);
@@ -357,7 +358,23 @@ export function installApp(
   >();
   const watches = new Map<string, number>();
   const activeWatches = new Set<string>();
-  let invoking: { call: number; bytes: number; watch: boolean } | undefined;
+  let invoking:
+    | { call: number; bytes: number; watch: boolean; watchBytes: number }
+    | undefined;
+  function retireSupersededWatch(call: number): void {
+    // The prior original listener no longer owns this path. A still-pending
+    // response, however, must retain its own callbacks until it completes.
+    if (
+      [...watches.values()].includes(call) ||
+      [...requests.values()].some((request) => request.call === call)
+    )
+      return;
+    const bytes = watchCharges.get(call);
+    if (bytes === undefined) return;
+    watchCharges.delete(call);
+    charged -= bytes;
+    releaseCall(call);
+  }
   const post = (value: unknown) => native.postMessage(stringify(value));
   function reserve(bytes: number): void {
     if (bytes > MAX_RETAINED - charged)
@@ -402,8 +419,13 @@ export function installApp(
               ? value.path
               : undefined,
         });
-        if (invoking.watch && typeof value.path === "string")
+        if (invoking.watch && typeof value.path === "string") {
+          watchCharges.set(invoking.call, invoking.watchBytes);
+          const previous = watches.get(value.path);
           watches.set(value.path, invoking.call);
+          if (previous !== undefined && previous !== invoking.call)
+            retireSupersededWatch(previous);
+        }
       }
       post({
         v: 2,
@@ -785,7 +807,12 @@ export function installApp(
       const state = { keys: 0, bytes: 0 };
       const args = call.args.map((value) => revive(value, 1, state));
       copyingCall = undefined;
-      invoking = { call: call.call, bytes: watch ? 1_024 : bytes, watch };
+      invoking = {
+        call: call.call,
+        bytes: watch ? 1_024 : bytes,
+        watch,
+        watchBytes: bytes,
+      };
       entered = true;
       if (local) localCharges.set(call.call, bytes);
       apply(registry[call.method], undefined, args);
@@ -883,7 +910,8 @@ export function installApp(
               activeWatches.add(req.watchPath);
             if (!response.error && req.unwatchPath)
               activeWatches.delete(req.unwatchPath);
-            if (![...watches.values()].includes(req.call))
+            if (req.watchPath) retireSupersededWatch(req.call);
+            else if (![...watches.values()].includes(req.call))
               releaseCall(req.call);
           }
         }
