@@ -15,7 +15,7 @@ pub const RESERVED_VERB_CODE: &str = "KELD-CLI-045";
 pub const UNKNOWN_VERB_CODE: &str = "KELD-CLI-046";
 
 /// Live `keld` verbs in dispatch order (usage text / unknown-verb fix).
-pub const LIVE_VERBS: &str = "create, dev, build, doctor, mcp, hello, ipc-echo, ipc-client";
+pub const LIVE_VERBS: &str = "create, dev, build, launch, doctor, mcp, hello, ipc-echo, ipc-client";
 
 /// Spec 06 verbs that exist in the product vocabulary but are not in this binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

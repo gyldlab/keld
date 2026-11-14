@@ -34,6 +34,11 @@ const QUALIFIED_WINDOWS_HOST_IMAGE: Option<[u8; 32]> = Some([
     0x5e, 0xc1, 0xcb, 0xfc, 0xa2, 0xc3, 0x52, 0xe1, 0x9f, 0x70, 0xce, 0x5c, 0x9d, 0x02, 0xb4, 0xc8,
 ]);
 
+/// Exact independently selected Host digest, not a project or installation value.
+pub(super) fn qualified_host_sha256() -> Option<[u8; 32]> {
+    QUALIFIED_WINDOWS_HOST_IMAGE
+}
+
 fn qualified_framework() -> Option<QualifiedWindowsFramework> {
     let providers = keld_core::app_session::qualified_windows_distribution()?;
     Some(QualifiedWindowsFramework {

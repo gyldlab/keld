@@ -88,6 +88,7 @@ pub(in super::super) fn read_candidate_boot(
         _roots: roots,
         _version: completion.version,
         tree: completion.tree,
+        bundled_bun: None,
     };
     Ok((selection, health_receipt_digest))
 }

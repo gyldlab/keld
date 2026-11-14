@@ -45,6 +45,15 @@ mod graph_capture;
 #[cfg(windows)]
 mod windows_graph;
 
+/// The same fixed signed-Host image digest used by the Windows graph
+/// builder. No command-line, environment, project or signed feed input may
+/// replace this qualified digest.
+#[cfg(windows)]
+#[must_use]
+pub fn qualified_windows_host_image_sha256() -> Option<[u8; 32]> {
+    windows_graph::qualified_host_sha256()
+}
+
 /// One completed owner-private non-release app stage.
 #[derive(Debug)]
 pub struct DevBootStage {

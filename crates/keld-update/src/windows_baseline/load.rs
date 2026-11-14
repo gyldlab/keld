@@ -287,6 +287,7 @@ fn select_committed_package(
             _roots: roots,
             _version: version,
             tree,
+            bundled_bun: None,
         },
     )))
 }

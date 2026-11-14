@@ -11,6 +11,8 @@ use std::sync::mpsc;
 
 #[cfg(windows)]
 use keld_cli::boot;
+#[cfg(windows)]
+mod installed_windows;
 use keld_cli::build::run_build;
 use keld_cli::create::{CreateError, create_project};
 use keld_cli::dev::{find_project_root, run_dev};
@@ -76,6 +78,18 @@ fn main() {
                 process::exit(2);
             }
         },
+        Some("launch") => {
+            #[cfg(windows)]
+            {
+                installed_windows::run(&args[2..])
+            }
+            #[cfg(not(windows))]
+            {
+                Err(String::from(
+                    "KELD-CLI-048: installed CLI launch requires Windows",
+                ))
+            }
+        }
         Some("build") => match run_build(&args[2..]) {
             Ok(()) => Ok(()),
             Err(error) => {
@@ -228,6 +242,7 @@ fn print_usage() {
     eprintln!("  create <name>   Scaffold the hello-world template");
     eprintln!("  dev             Run the app (Bun main + IPC echo + window)");
     eprintln!("  build --help    Show native macOS packaging and Windows local-test build usage");
+    eprintln!("  launch          Start the authenticated installed Windows Host (no dev lease)");
     eprintln!("  doctor [--json] Check local toolchain and project layout");
     eprintln!("  mcp serve       Speak MCP over stdio (doctor/docs/permissions)");
     eprintln!("  hello           Open the hello window (WKWebView on macOS, WebView2 on Windows)");

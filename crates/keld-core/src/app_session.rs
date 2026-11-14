@@ -3797,6 +3797,9 @@ struct DirectSessionInputs<'a> {
     /// Captured once from the admitted development selection, never per child.
     #[cfg(windows)]
     development_launch_facts: Option<launch_facts::DevelopmentLaunchFacts>,
+    // Only installed packages have this independently pinned absolute Bun.
+    #[cfg(windows)]
+    installed_bun: Option<&'a Path>,
     #[cfg(windows)]
     pre_init_terminal: fn(&HostAppError) -> !,
     #[cfg(windows)]
@@ -4028,21 +4031,29 @@ fn windows_primary_config(
     dev_lease: Option<&WindowsDevLeaseMonitor>,
     prepared_original: Option<&original_webapp::PreparedOriginalSource>,
     development_launch_facts: Option<&launch_facts::DevelopmentLaunchFacts>,
+    installed_bun: Option<&Path>,
 ) -> Result<PrimaryRoleConfig, HostAppError> {
-    let config = match prepared_original {
-        Some(prepared) => windows_boot::original_primary_config(
+    let config = if let Some(prepared) = prepared_original {
+        windows_boot::original_primary_config(
             root,
             entry_path,
             prepared,
             development_launch_facts,
-        )?,
-        None => launch_facts::configure_primary_launch(
-            PrimaryRoleConfig::new("bun").staged_bun_launch(root, native_facade),
-            development_launch_facts,
-            native_facade,
+            installed_bun,
         )?
-        .arg("run")
-        .arg(root.join(entry_path)),
+    } else {
+        let role = PrimaryRoleConfig::new(installed_bun.map_or_else(
+            || std::ffi::OsString::from("bun"),
+            |path| path.as_os_str().to_owned(),
+        ));
+        let role = if installed_bun.is_some() {
+            role.env_remove(keld_runtime::primary::BUN_OPTIONS_ENV)
+        } else {
+            role.staged_bun_launch(root, native_facade)
+        };
+        launch_facts::configure_primary_launch(role, development_launch_facts, native_facade)?
+            .arg("run")
+            .arg(root.join(entry_path))
     };
     let config = config
         .current_dir(root)
@@ -4173,6 +4184,14 @@ fn run_app_direct(
         }
     };
     drop(entry_file);
+    // Bind the exact selected package runtime before any application listener,
+    // child or window exists. ActivePackageSelection retains its file handle
+    // across session restarts and failed native-owner custody transfer.
+    #[cfg(windows)]
+    let installed_bun = installed_package
+        .as_mut()
+        .map(|selected| windows_boot::bind_installed_bun(selected, &root))
+        .transpose()?;
     // Per-process state ends below; everything a session owns is created inside
     // `run_direct_app_session`. The first session takes the CLI dev-lease monitor,
     // whose standard-input reader lives for the process, so a dev-stage host runs one
@@ -4212,6 +4231,8 @@ fn run_app_direct(
         windows_profile_mode,
         #[cfg(windows)]
         development_launch_facts,
+        #[cfg(windows)]
+        installed_bun: installed_bun.as_deref(),
         #[cfg(windows)]
         pre_init_terminal,
         #[cfg(windows)]
@@ -4305,6 +4326,7 @@ fn run_direct_app_session(
         dev_lease.as_ref(),
         prepared_original.as_ref(),
         inputs.development_launch_facts.as_ref(),
+        inputs.installed_bun,
     )?
     .windows_primary_families(primary_families.clone());
     // Subscribe is allowed immediately after the primary link connects. Native

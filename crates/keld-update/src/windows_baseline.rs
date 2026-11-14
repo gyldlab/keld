@@ -212,6 +212,8 @@ pub struct ActivePackageSelection {
     _roots: Roots,
     _version: Dir,
     tree: Dir,
+    // Keep exact non-delete-sharing Bun across every session and failed-retained owner.
+    bundled_bun: Option<File>,
 }
 
 impl ActivePackageSelection {
@@ -237,6 +239,62 @@ impl ActivePackageSelection {
     #[must_use]
     pub fn tree_root(&self) -> &std::path::Path {
         &self.tree_root
+    }
+
+    /// Holds the exact selected runtime image as a no-write/no-delete-sharing
+    /// leaf until this selected installed package is retired. The expected
+    /// BLAKE3 is supplied by independently reviewed, compiled Host source.
+    /// Package paths, manifests and caller input cannot select another hash.
+    ///
+    /// # Errors
+    /// Rejects absent, nonregular, oversized or changed files and digest
+    /// mismatch before any Bun process is admitted.
+    pub fn pin_bundled_bun(
+        &mut self,
+        expected_blake3: [u8; 32],
+    ) -> Result<std::path::PathBuf, UpdateError> {
+        if self.bundled_bun.is_some() {
+            return Err(error("bundled Bun", "runtime already bound"));
+        }
+        let mut file = open_pinned_leaf(&self.tree, "bun.exe")
+            .map_err(|cause| error("bundled Bun open", cause))?;
+        let metadata = file
+            .metadata()
+            .map_err(|cause| error("bundled Bun metadata", cause))?;
+        ensure_regular(&metadata).map_err(|cause| error("bundled Bun type", cause))?;
+        if metadata.len() == 0 || metadata.len() > 1024 * 1024 * 1024 {
+            return Err(error(
+                "bundled Bun size",
+                "runtime is empty or exceeds 1 GiB",
+            ));
+        }
+        let mut digest = blake3::Hasher::new();
+        let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
+        let mut total = 0_u64;
+        loop {
+            let count = file
+                .read(&mut buffer)
+                .map_err(|cause| error("bundled Bun read", cause))?;
+            if count == 0 {
+                break;
+            }
+            total = total
+                .checked_add(count as u64)
+                .ok_or_else(|| error("bundled Bun size", "size overflow"))?;
+            if total > metadata.len() {
+                return Err(error("bundled Bun identity", "runtime grew during hashing"));
+            }
+            digest.update(&buffer[..count]);
+        }
+        let actual: [u8; 32] = *digest.finalize().as_bytes();
+        if total != metadata.len() || actual != expected_blake3 {
+            return Err(error(
+                "bundled Bun identity",
+                "runtime differs from the independently compiled expected image",
+            ));
+        }
+        self.bundled_bun = Some(file);
+        Ok(self.tree_root.join("bun.exe"))
     }
 }
 
