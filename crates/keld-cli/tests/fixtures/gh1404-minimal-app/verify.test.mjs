@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  closeSync,
+  constants,
   cpSync,
   existsSync,
   lstatSync,
   mkdtempSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -35,7 +38,13 @@ for (const relative of ["src", "web"]) {
     "non-directory captured source root: " + relative,
   );
 }
-for (const relative of ["package.json", "package-lock.json"]) {
+for (const relative of [
+  "package.json",
+  "package-lock.json",
+  "keld.build.ts",
+  "keld.config.ts",
+  "keld.permissions.jsonc",
+]) {
   const metadata = lstatSync(join(root, relative));
   assert.equal(
     metadata.isSymbolicLink(),
@@ -127,6 +136,9 @@ test(
   "source verifier rejects active-field decoys and inert entry",
   {
     skip: process.env.KELD_B3_MUTANT === "1",
+    // Each case uses multiple real Node subprocesses. Bun's default 5s is
+    // shorter than this bounded mutation suite on supported Mac hosts.
+    timeout: 30_000,
   },
   () => {
     const mutations = [
@@ -138,6 +150,19 @@ test(
             ["linked source member", "src/preload.mjs", () => "linked", "file"],
             ["linked package root", "package.json", () => "linked", "file"],
             ["linked lock root", "package-lock.json", () => "linked", "file"],
+            [
+              "linked build config",
+              "keld.build.ts",
+              () => "linked",
+              "external",
+            ],
+            ["linked app config", "keld.config.ts", () => "linked", "external"],
+            [
+              "linked permissions",
+              "keld.permissions.jsonc",
+              () => "linked",
+              "external",
+            ],
             [
               "dangling provider root",
               "node_modules",
@@ -229,6 +254,8 @@ test(
     const outcomes = [];
     for (const [name, file, mutate, linkType] of mutations) {
       const scratch = mkdtempSync(join(tmpdir(), "keld-b3-oracle-"));
+      let sentinelDir;
+      let sentinelBytes;
       try {
         cpSync(root, scratch, { recursive: true });
         const target = join(scratch, file);
@@ -254,11 +281,36 @@ test(
         mkdirSync(dirname(target), { recursive: true });
         if (linkType === "missing") {
           symlinkSync(join(scratch, "absent-provider-tree"), target, "dir");
+        } else if (linkType === "external") {
+          // An external same-byte witness proves that source preflight fails
+          // before the test oracle can mutate anything outside its scratch.
+          sentinelDir = mkdtempSync(join(tmpdir(), "keld-b3-sentinel-"));
+          sentinelBytes = readFileSync(target);
+          const sentinel = join(sentinelDir, file);
+          writeFileSync(sentinel, sentinelBytes);
+          rmSync(target);
+          symlinkSync(sentinel, target, "file");
+          // Do not skip the nested mutation case: without a top-level
+          // no-follow refusal it would overwrite the external sentinel.
+          delete env.KELD_B3_MUTANT;
         } else if (linkType) {
           renameSync(target, target + ".real");
           symlinkSync(target + ".real", target, linkType);
         } else {
-          writeFileSync(target, after);
+          // Never follow a copied symlink while preparing a negative case,
+          // including if an authoring path is replaced after source preflight.
+          // Exclusive creation also refuses dangling symlinks for new files.
+          const flags = existsSync(target)
+            ? constants.O_WRONLY |
+              constants.O_TRUNC |
+              (constants.O_NOFOLLOW ?? 0)
+            : constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL;
+          const fd = openSync(target, flags, 0o600);
+          try {
+            writeFileSync(fd, after);
+          } finally {
+            closeSync(fd);
+          }
         }
         const result = spawnSync(
           process.env.KELD_B3_NODE_BIN || "node",
@@ -271,35 +323,54 @@ test(
           },
         );
         assert.equal(result.error, undefined, name + ": child must run");
-        const identityError = {
-          src: /unreviewed source symlink/,
-          "src/preload.mjs": /unreviewed source symlink/,
-          "package.json": /unreviewed captured root symlink: package.json/,
-          "package-lock.json":
-            /unreviewed captured root symlink: package-lock.json/,
-          node_modules: /unreviewed provider-root entry: node_modules/,
-          "src/unreviewed-module.mjs": /Pack source member inventory differs/,
-          "web/pages/unreviewed.html": /Pack source member inventory differs/,
-          "src/nested/extra.mjs": /Pack source member inventory differs/,
-          "keld.build.ts":
-            /build config differs from inspected effective field selection/,
-          "src/main.mjs": /main differs from inspected executable module/,
-          "keld.config.ts":
-            /app config differs from inspected source selection/,
-          "keld.permissions.jsonc":
-            /permission manifest differs from inspected window grants/,
-          "web/pages/index.html":
-            /renderer HTML differs from inspected offline document/,
-        }[file];
+        const identityError =
+          linkType === "external"
+            ? new RegExp(
+                "unreviewed captured root symlink: " +
+                  file.replaceAll(".", "\\."),
+              )
+            : {
+                src: /unreviewed source symlink/,
+                "src/preload.mjs": /unreviewed source symlink/,
+                "package.json":
+                  /unreviewed captured root symlink: package.json/,
+                "package-lock.json":
+                  /unreviewed captured root symlink: package-lock.json/,
+                node_modules: /unreviewed provider-root entry: node_modules/,
+                "src/unreviewed-module.mjs":
+                  /Pack source member inventory differs/,
+                "web/pages/unreviewed.html":
+                  /Pack source member inventory differs/,
+                "src/nested/extra.mjs": /Pack source member inventory differs/,
+                "keld.build.ts":
+                  /build config differs from inspected effective field selection/,
+                "src/main.mjs": /main differs from inspected executable module/,
+                "keld.config.ts":
+                  /app config differs from inspected source selection/,
+                "keld.permissions.jsonc":
+                  /permission manifest differs from inspected window grants/,
+                "web/pages/index.html":
+                  /renderer HTML differs from inspected offline document/,
+              }[file];
         assert.match(
           result.stdout + result.stderr,
           identityError,
           name +
             ": refusal must come from source identity, not an unrelated failure",
         );
+        if (sentinelDir) {
+          assert.deepEqual(
+            readFileSync(join(sentinelDir, file)),
+            sentinelBytes,
+            name + ": external sentinel must remain byte-identical",
+          );
+        }
         outcomes.push([name, result.status]);
       } finally {
         rmSync(scratch, { recursive: true, force: true });
+        if (sentinelDir) {
+          rmSync(sentinelDir, { recursive: true, force: true });
+        }
       }
     }
     assert.deepEqual(
