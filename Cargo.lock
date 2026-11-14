@@ -1596,6 +1596,7 @@ dependencies = [
  "keld-cli",
  "keld-core",
  "keld-runtime",
+ "keld-update",
  "keld-wv",
  "serde_json",
  "tempfile",

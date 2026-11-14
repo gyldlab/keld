@@ -43,6 +43,8 @@ mod windows_baseline;
 mod windows_extraction;
 #[cfg(windows)]
 mod windows_fs;
+#[cfg(windows)]
+mod windows_initial_install;
 
 #[cfg(test)]
 mod tests;
@@ -90,6 +92,8 @@ pub use windows_baseline::{
 };
 #[cfg(windows)]
 pub use windows_extraction::{CompletedWindowsStage, ExtractedWindowsStage, WindowsExtractionRoot};
+#[cfg(windows)]
+pub use windows_initial_install::install_windows_initial_from_signed_host;
 
 /// Release channels supported by update feeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

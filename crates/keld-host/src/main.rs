@@ -172,6 +172,27 @@ fn pre_init_terminal(error: &keld_core::app_session::HostAppError) -> ! {
 
 #[cfg(windows)]
 fn handle_windows_private_role(args: &[std::ffi::OsString]) -> bool {
+    if args.get(1).map(std::ffi::OsString::as_os_str)
+        == Some(std::ffi::OsStr::new("--keld-install-initial-v3"))
+    {
+        if args.len() != 3 || args[2].is_empty() {
+            eprintln!("KELD-CLI-044: malformed private initial-install invocation.");
+            process::exit(2);
+        }
+        match keld_update::install_windows_initial_from_signed_host(std::path::Path::new(&args[2]))
+        {
+            Ok(_) => {
+                // The installed package was reloaded and verified; only the CLI
+                // can choose to launch its no-flag Host in a separate process.
+                println!("WINDOWS_INITIAL_BASELINE_COMMITTED");
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                process::exit(1);
+            }
+        }
+        return true;
+    }
     if handle_profile_test_root_probe(args) {
         return true;
     }

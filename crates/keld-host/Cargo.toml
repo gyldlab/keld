@@ -28,6 +28,9 @@ keld-core = { workspace = true }
 [target.'cfg(any(target_os = "macos", target_os = "linux", windows))'.dependencies]
 keld-runtime = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+keld-update = { workspace = true }
+
 [dev-dependencies]
 keld-cli = { workspace = true }
 keld-wv = { workspace = true }
