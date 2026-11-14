@@ -1243,7 +1243,7 @@ NOT_GIT_ARGUMENT_AFTER = re.compile(r"^\s*(?:[=!]=|=>)")
 # Only an executable `config` call counts: a comment that names the setting, or
 # the key without `config`, configures nothing. That includes a whole-line `#` or
 # `//` comment of a script embedded in a string, such as a Rust raw string.
-MAINTENANCE_OFF = re.compile(r"\bconfig\W+maintenance\.auto\W+false\b")
+MAINTENANCE_OFF = re.compile(r"\bconfig\W+(?:--local\W+)?maintenance\.auto\W+false\b")
 EMBEDDED_COMMENT_LINE = re.compile(r"""^\s*["'`]?\s*(?:#|//)""")
 MAINTENANCE_OFF_WINDOW = 4
 TEMP_REPOSITORY_SOURCES = ("*.py", "*.sh", "*.rs", "*.ts")
@@ -1390,6 +1390,10 @@ class TempRepositoryMaintenanceTests(unittest.TestCase):
             "tools/enabled.ts": 'git("{verb}");\ngit("config", "maintenance.auto", "true");\n',
             "tools/late.py": 'git("{verb}")\n' + "pass\n" * 4 + 'git("config", "maintenance.auto", "false")\n',
             "tools/wrong_key.sh": 'git {verb} -q\ngit config gc.auto 0\n',
+            "tools/global.ts": 'git("{verb}");\ngit("config", "--global", "maintenance.auto", "false");\n',
+            "tools/system.ts": 'git("{verb}");\ngit("config", "--system", "maintenance.auto", "false");\n',
+            "tools/worktree.ts": 'git("{verb}");\ngit("config", "--worktree", "maintenance.auto", "false");\n',
+            "tools/local_global.ts": 'git("{verb}");\ngit("config", "--local", "--global", "maintenance.auto", "false");\n',
             # A comment, or the key without a `config` call, configures nothing.
             "tools/commented.sh": 'git {verb} -q\n# git config maintenance.auto false\n',
             "tools/commented.rs": 'git_fixture(root, &["{verb}"]);\n    // config maintenance.auto false\n',
@@ -1421,6 +1425,8 @@ class TempRepositoryMaintenanceTests(unittest.TestCase):
         self.assertEqual(sites, {"tools/bare.py:1": False, "tools/bare.sh:1": False,
                                  "tools/bare.rs:1": False, "tools/enabled.ts:1": False,
                                  "tools/late.py:1": False, "tools/wrong_key.sh:1": False,
+                                 "tools/global.ts:1": False, "tools/system.ts:1": False,
+                                 "tools/worktree.ts:1": False, "tools/local_global.ts:1": False,
                                  "tools/commented.sh:1": False, "tools/commented.rs:1": False,
                                  "tools/no_call.py:1": False, "tools/trailing.py:1": False,
                                  "tools/trailing.sh:1": False, "tools/trailing.rs:1": False,
@@ -1445,10 +1451,11 @@ class TempRepositoryMaintenanceTests(unittest.TestCase):
             "tools/f.sh": 'git -C "$d#1" {verb} -q\ngit -C $d#1 config maintenance.auto false\n',
             # An executable line of a script embedded in a Rust raw string configures.
             "tools/g.rs": 'let script = r#"\ngit {verb} -q\ngit config maintenance.auto false\n"#;\n',
+            "tools/local.ts": 'git("{verb}");\ngit("config", "--local", "maintenance.auto", "false");\n',
         })
         self.assertEqual(sites, {"tools/a.py:1": True, "tools/b.sh:1": True, "tools/c.rs:1": True,
                                  "tools/d.ts:1": True, "tools/e.py:1": True, "tools/f.sh:1": True,
-                                 "tools/g.rs:2": True})
+                                 "tools/g.rs:2": True, "tools/local.ts:1": True})
 
     def test_census_counts_every_quoted_init_in_a_file_that_mentions_git(self):
         # Fail closed: no call-shape attribution decides a site, so every shape that can
