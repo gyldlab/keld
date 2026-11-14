@@ -478,19 +478,30 @@ class FmtIncludedBashCompatibilityTests(unittest.TestCase):
             ),
         ):
             self.assertEqual(native_ci_bash(), actual)
-        # A test fixture's fake Git executable must not divert selection to
-        # a similarly named path or cause unrelated WSL launch.
-        with unittest.mock.patch(
-            "shutil.which",
-            side_effect=lambda command: (
-                r"C:\Windows\System32\git.exe"
-                if command == "git.exe"
-                else r"C:\Windows\System32\bash.exe"
-                if command == "bash"
-                else original_which(command)
-            ),
-        ):
-            self.assertEqual(native_ci_bash(), actual)
+        # A fake PATH Git must fall back to a controlled native installation,
+        # not the machine's ProgramFiles layout or an unrelated WSL launcher.
+        with tempfile.TemporaryDirectory(prefix="keld-ci-bash-fallback-") as temporary:
+            program_files = Path(temporary)
+            bin_dir = program_files / "Git" / "bin"
+            bin_dir.mkdir(parents=True)
+            (bin_dir / "git.exe").write_bytes(b"")
+            shell = bin_dir / "bash.exe"
+            shell.write_bytes(b"")
+            with unittest.mock.patch.dict(os.environ, {
+                "ProgramFiles": str(program_files),
+                "ProgramFiles(x86)": str(program_files / "absent-x86"),
+            }), unittest.mock.patch(
+                "shutil.which",
+                side_effect=lambda command: (
+                    str(program_files / "missing-git.exe")
+                    if command == "git.exe"
+                    else r"C:\Windows\System32\bash.exe"
+                    if command == "bash"
+                    else original_which(command)
+                ),
+            ):
+                self.assertEqual(native_ci_bash(), str(shell))
+                self.assertNotEqual(native_ci_bash(), r"C:\Windows\System32\bash.exe")
 
     def test_fmt_included_supports_bash_without_mapfile(self):
         source = Path(__file__).resolve().parent.parent
