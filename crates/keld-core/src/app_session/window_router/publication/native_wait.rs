@@ -178,8 +178,9 @@ impl PrimaryRouterHandle {
                 drop(completed);
                 Ok(())
             }
-            NativeOutcome::None
-            | NativeOutcome::Fact(_)
+            #[cfg(any(target_os = "macos", windows))]
+            NativeOutcome::None => Ok(()),
+            NativeOutcome::Fact(_)
             | NativeOutcome::Build(BuildOutcome::Created { .. } | BuildOutcome::Ignored)
             | NativeOutcome::BuildFailed { .. }
             | NativeOutcome::Close(

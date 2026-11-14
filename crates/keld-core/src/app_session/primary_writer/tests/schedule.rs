@@ -1,6 +1,7 @@
 use super::super::super::with_primary_caller_locked;
 use super::*;
 use std::io::Read as _;
+use std::thread;
 
 fn hold_next_dequeue(writer: &PrimaryWriter) -> (mpsc::Receiver<()>, mpsc::SyncSender<()>) {
     let (arrived, observe) = mpsc::sync_channel(1);
@@ -33,6 +34,94 @@ fn assert_no_bytes(peer: &mut keld_ipc::BootstrapStream) {
     );
     peer.set_app_link_read_deadline(Some(Duration::from_secs(3)))
         .expect("restore absolute test budget");
+}
+
+#[test]
+fn queued_value_reaches_physical_peer_with_a_competing_capacity_waiter() {
+    let (router, mut peer, _owner, _windows) = initial_ready_router_with_window_loop();
+    let link = target(&router);
+    let writer = PrimaryWriter::new(router.window_commands.clone());
+    // Reserve VALUE while encoding. A second producer is left waiting on the
+    // same Condvar as the idle physical worker before this frame is admitted.
+    let prepared = frame(&writer, &link, &[0x42, 0x43]);
+    let (observed_tx, observed_rx) = mpsc::sync_channel(1);
+    writer.observe_next_capacity_wait_for_test(observed_tx);
+    let waiting_writer = writer.clone();
+    let (result_tx, result_rx) = mpsc::sync_channel(1);
+    let waiter = thread::spawn(move || {
+        let reserved = waiting_writer.reserve_waiting(
+            Class::Value,
+            true,
+            Instant::now() + Duration::from_secs(3),
+            || false,
+        );
+        result_tx
+            .send(reserved.is_ok())
+            .expect("capacity waiter result receiver");
+        reserved
+    });
+    observed_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capacity waiter encountered the occupied VALUE slot");
+    // This lock turn completes after the observed producer released State to
+    // wait; the queued packet must wake the consumer even if this waiter wakes.
+    drop(
+        writer
+            .shared
+            .state
+            .lock()
+            .expect("capacity waiter released State"),
+    );
+    let (idle_tx, idle_rx) = mpsc::sync_channel(1);
+    writer
+        .shared
+        .state
+        .lock()
+        .expect("worker observation")
+        .worker_wait_observer = Some(idle_tx);
+    let (_, mut worker) =
+        PrimaryWriterWorker::start_existing_for_test(router.clone(), writer.clone())
+            .expect("real worker with the already-blocked producer");
+    idle_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("physical worker reached its idle condition-variable wait");
+    drop(
+        writer
+            .shared
+            .state
+            .lock()
+            .expect("physical worker released State to wait"),
+    );
+    let receipt = send(prepared);
+    let (header, body) =
+        keld_ipc::link::read_frame(&mut peer).expect("physical worker must wake for queued VALUE");
+    assert_eq!(
+        (header.kind, header.corr),
+        (FrameKind::Reply, CorrelationId(9))
+    );
+    assert_eq!(body, [0x42, 0x43]);
+    assert_eq!(
+        receipt.wait(deadline()).expect("physical write completion"),
+        WriteCompletion::Written
+    );
+    assert!(
+        result_rx.try_recv().is_err(),
+        "physical completion cannot refund the still-retained VALUE receipt"
+    );
+    drop(receipt);
+    assert!(
+        result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("capacity release"),
+        "retiring the written receipt must free the waiter"
+    );
+    drop(
+        waiter
+            .join()
+            .expect("capacity producer joined")
+            .expect("reservation"),
+    );
+    worker.stop_and_join().expect("physical consumer joined");
 }
 
 #[test]

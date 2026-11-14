@@ -383,7 +383,10 @@ impl PreparedFrame {
         state.enqueue(position.index);
         self.reservation.position = None;
         drop(state);
-        shared.changed.notify_one();
+        // Capacity and physical-consumer waiters share this condition variable.
+        // Wake both predicates: notifying one waiter can select a producer that
+        // still has no slot and leave the only physical consumer asleep.
+        shared.changed.notify_all();
         Ok(WriteReceipt {
             shared,
             position,

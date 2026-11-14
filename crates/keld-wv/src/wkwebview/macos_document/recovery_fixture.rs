@@ -148,6 +148,25 @@ impl NativeDocumentFixture {
         Ok(request)
     }
 
+    /// Build the lease/operation control shape emitted by the original queue
+    /// for real Core dispatcher tests, including missing or stale role inputs.
+    /// This fixture does not model the queue's scheduling.
+    #[cfg(windows)]
+    pub fn original_abort_request(
+        &self,
+        sequence: u32,
+        role: Option<crate::renderer_bridge::RendererRoleWitness>,
+    ) -> crate::renderer_bridge::RendererBridgeRequest {
+        let mut request = crate::original_call::request_for_lease(
+            self.document(),
+            sequence,
+            crate::renderer_bridge::RendererBridgeOperation::PreflightAborted,
+            Vec::new(),
+        );
+        request.role_witness = role;
+        request
+    }
+
     /// Model an independently observed native replacement through its real owner.
     pub fn revoke(&mut self) {
         self.owner.unexpected_mainframe_commit();

@@ -80,11 +80,28 @@ pub(in crate::app_session) struct PrimaryWriterWorker {
 }
 impl PrimaryWriterWorker {
     pub(in crate::app_session) fn start(
+        router: PrimaryRouterHandle,
+    ) -> Result<(PrimaryWriter, Self), HostAppError> {
+        let writer = PrimaryWriter::new(router.window_commands.clone());
+        Self::start_with_writer(router, writer)
+    }
+
+    /// Exercise the production worker with the exact writer whose producers
+    /// are already waiting, so a capacity waiter can precede the idle reader.
+    #[cfg(test)]
+    pub(super) fn start_existing_for_test(
+        router: PrimaryRouterHandle,
+        writer: PrimaryWriter,
+    ) -> Result<(PrimaryWriter, Self), HostAppError> {
+        Self::start_with_writer(router, writer)
+    }
+
+    fn start_with_writer(
         mut router: PrimaryRouterHandle,
+        writer: PrimaryWriter,
     ) -> Result<(PrimaryWriter, Self), HostAppError> {
         #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
         let physical_hold = super::physical_value_hold::PhysicalValueHold::from_env()?;
-        let writer = PrimaryWriter::new(router.window_commands.clone());
         router.primary_writer = Some(writer.clone());
         if let Some(compat) = &router.compat {
             compat
@@ -231,6 +248,10 @@ fn next(shared: &Shared) -> Result<Option<(Position, Packet)>, HostAppError> {
         }
         if state.closed {
             return Ok(None);
+        }
+        #[cfg(test)]
+        if let Some(observed) = state.worker_wait_observer.take() {
+            let _ = observed.try_send(());
         }
         state = shared
             .changed

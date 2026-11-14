@@ -337,3 +337,102 @@ fn mismatched_original_call_role_document_or_channel_never_publishes_data() {
         });
     }
 }
+
+#[test]
+fn original_abort_rejects_missing_foreign_stale_and_wrong_document_before_next_preflight() {
+    fixture(|f| {
+        f.preflight();
+        let assert_pending = || {
+            let state = f
+                .router
+                .compat
+                .as_ref()
+                .expect("same Compat")
+                .lock()
+                .expect("same Core preflight");
+            let pending = state
+                .ledger
+                .preflight
+                .as_ref()
+                .expect("original preflight retained");
+            assert_eq!(pending.call, 2);
+            assert!(same_caller(&pending.caller, f.caller));
+            assert!(pending.document.same_binding(&f.route.document));
+        };
+
+        dispatch(f.router, f.native.original_abort_request(2, None));
+        assert_pending();
+        dispatch(
+            f.router,
+            f.native.original_abort_request(
+                2,
+                Some(RendererRoleWitness::new(Arc::new(AtomicBool::new(false)))),
+            ),
+        );
+        assert_pending();
+        dispatch(
+            f.router,
+            f.native.original_abort_request(
+                2,
+                Some(RendererRoleWitness::new(Arc::new(AtomicBool::new(true)))),
+            ),
+        );
+        assert_pending();
+        dispatch(
+            f.router,
+            f.native.original_abort_request(3, Some(f.role.clone())),
+        );
+        assert_pending();
+
+        let (_root, foreign, route) = WindowSession::new(true)
+            .fixture_original_retirement_route(WindowOwner::new(
+                f.caller.identity,
+                f.caller.attempt,
+            ))
+            .expect("same-number foreign document fixture");
+        assert!(!route.document.same_binding(&f.route.document));
+        dispatch(
+            f.router,
+            foreign.original_abort_request(2, Some(f.role.clone())),
+        );
+        assert_pending();
+
+        dispatch(
+            f.router,
+            f.native.original_abort_request(2, Some(f.role.clone())),
+        );
+        assert!(
+            f.router
+                .compat
+                .as_ref()
+                .expect("same Compat")
+                .lock()
+                .expect("same Core ledger")
+                .ledger
+                .preflight
+                .is_none(),
+            "matching retained original ingress must release exactly its preflight"
+        );
+        dispatch(
+            f.router,
+            f.native
+                .original_call_request(
+                    3,
+                    f.role.clone(),
+                    RendererBridgeOperation::Preflight {
+                        channel: CHANNEL.to_owned(),
+                    },
+                    Vec::new(),
+                )
+                .expect("same native source for next original"),
+        );
+        assert!(matches!(
+            f.outcomes.try_recv(),
+            Ok(RendererBridgeOutcome::Preflight {
+                request: 3,
+                accepted: true,
+                ..
+            })
+        ));
+    });
+}
