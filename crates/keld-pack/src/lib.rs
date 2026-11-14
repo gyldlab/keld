@@ -24,7 +24,9 @@ mod tests;
 pub use expected_identity::{EXPECTED_APP_IDENTITY_KEY_BYTES, ExpectedAppIdentityPayload};
 #[cfg(windows)]
 pub use host_identity::read_host_identity;
-pub use host_identity::{embed_host_identity, read_host_identity_bytes};
+pub use host_identity::{
+    check_host_identity_post_sign, embed_host_identity, read_host_identity_bytes,
+};
 
 /// Exact relative path of the content-authenticated Slice-A update policy.
 pub const UPDATE_POLICY_PATH: &str = ".keld/update-policy.v1";
@@ -287,6 +289,11 @@ pub enum PackError {
         /// Original I/O error.
         source: io::Error,
     },
+    /// The retained baseline or signed candidate fails the pure post-sign contract.
+    PostSignIntegrity {
+        /// Stable reason naming the failed integrity predicate, not a trust decision.
+        detail: &'static str,
+    },
 }
 
 impl PackError {
@@ -306,6 +313,7 @@ impl PackError {
             Self::HostImageNoRoom { .. } => "KELD-PACK-010",
             Self::IdentityContainerInvalid { .. } => "KELD-PACK-011",
             Self::IdentityContainerRead { .. } => "KELD-PACK-012",
+            Self::PostSignIntegrity { .. } => "KELD-PACK-013",
         }
     }
 }
@@ -325,6 +333,7 @@ impl fmt::Display for PackError {
             Self::HostImageNoRoom { detail } => write!(f, "KELD-PACK-010: executable image has no header room for the expected-identity container ({detail}). Use a Keld-released prebuilt `keld-host.exe` or `keld-updater-helper.exe`; an image without header room is a Keld build defect to report."),
             Self::IdentityContainerInvalid { detail } => write!(f, "KELD-PACK-011: expected-identity container is not canonical ({detail}). The image's identity container is damaged or was produced by another tool; reinstall the signed package or rebuild with `keld build`."),
             Self::IdentityContainerRead { source } => write!(f, "KELD-PACK-012: reading the identity container of the verified executable (`keld-host.exe` or `keld-updater-helper.exe`) failed ({source}). Make sure its volume is readable and relaunch, and reinstall the signed package if the failure persists."),
+            Self::PostSignIntegrity { detail } => write!(f, "KELD-PACK-013: executable post-sign integrity check failed ({detail}). Retain the exact unsigned embedded image, sign it once without other image edits, and check the returned candidate before packaging. This check does not establish signature trust."),
         }
     }
 }

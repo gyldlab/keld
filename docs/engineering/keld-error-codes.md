@@ -1186,6 +1186,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Reading the identity container of the verified executable (`keld-host.exe` or `keld-updater-helper.exe`) failed
 - fix: Make sure its volume is readable and relaunch, and reinstall the signed package if the failure persists.
 
+## KELD-PACK-013
+
+- crate: keld-pack
+- message: Executable post-sign integrity check failed
+- fix: Retain the exact unsigned embedded image, sign it once without other image edits, and check the returned candidate before packaging. This pure byte check does not establish signature trust; the existing Windows Guard verifier remains required. `keld build` remains reserved (`KELD-CLI-045`).
+
 ## KELD-HELPER-001
 
 - crate: keld-updater-helper

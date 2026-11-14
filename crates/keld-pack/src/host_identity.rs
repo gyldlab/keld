@@ -224,6 +224,98 @@ pub fn read_host_identity_bytes(image: &[u8]) -> Result<ExpectedAppIdentityPaylo
     read_container(&Bytes(image))
 }
 
+/// Checks the pure byte-integrity part of the KEL-19 post-sign contract.
+///
+/// `unsigned_embedded` must be the retained output of identity embedding, before signing.
+/// Both images must carry `expected`. Only the checksum and Certificate Table directory
+/// may change before an appended, single canonical `WIN_CERTIFICATE` entry.
+///
+/// Success authenticates neither image nor certificate. It proves no publisher identity,
+/// signature validity, absence of nested/secondary signatures, or PKCS#7 internal padding
+/// property. The caller must separately authenticate its baseline and invoke the existing
+/// Windows Guard verifier before treating the candidate as trusted.
+///
+/// The canonical Keld cell requires `dwLength` to include alignment padding and equal the
+/// whole eight-byte-aligned table, matching the real-host acceptance contract. This is
+/// stricter than general PE enumeration, which rounds each entry length up to eight.
+///
+/// # Errors
+/// Preserves the reader's malformed-image/container errors. `KELD-PACK-013` means the
+/// baseline, expected payload, signer byte changes, or certificate envelope failed this
+/// post-sign contract. No bytes are written and no trust verification is performed.
+pub fn check_host_identity_post_sign(
+    unsigned_embedded: &[u8],
+    signed_candidate: &[u8],
+    expected: &ExpectedAppIdentityPayload,
+) -> Result<(), PackError> {
+    let baseline = admit_structure(&Bytes(unsigned_embedded))?;
+    if baseline.certificate != (0, 0) || baseline.len != baseline.raw_end {
+        return Err(post_sign_invalid(
+            "the baseline is signed or has trailing bytes",
+        ));
+    }
+    if read_host_identity_bytes(unsigned_embedded)? != *expected {
+        return Err(post_sign_invalid(
+            "the baseline payload differs from the expected identity",
+        ));
+    }
+
+    // All exemption offsets come from the admitted baseline, never candidate headers.
+    let optional = to_index(baseline.nt) + COFF_END;
+    let checksum = optional + CHECKSUM;
+    let directory = optional + CERTIFICATE_TABLE;
+    let Some(prefix) = signed_candidate.get(..unsigned_embedded.len()) else {
+        return Err(post_sign_invalid(
+            "the candidate is shorter than the baseline",
+        ));
+    };
+    for (offset, (before, after)) in unsigned_embedded.iter().zip(prefix).enumerate() {
+        if before != after
+            && !(checksum..checksum + 4).contains(&offset)
+            && !(directory..directory + 8).contains(&offset)
+        {
+            return Err(post_sign_invalid(
+                "the signer changed bytes outside the checksum and certificate directory",
+            ));
+        }
+    }
+    let start = u64::from(le32(prefix, directory));
+    let size = le32(prefix, directory + 4);
+    let end = start + u64::from(size);
+    if start != baseline.raw_end
+        || !start.is_multiple_of(8)
+        || size <= 8
+        || !size.is_multiple_of(8)
+        || end != u64::try_from(signed_candidate.len()).unwrap_or(u64::MAX)
+    {
+        return Err(post_sign_invalid(
+            "the certificate table must span raw end to EOF and be eight-byte aligned",
+        ));
+    }
+    // The envelope checks above bound this fixed header, without allocating from input.
+    let certificate = signed_candidate
+        .get(to_index(start)..to_index(end))
+        .ok_or_else(|| post_sign_invalid("the certificate table is outside the candidate"))?;
+    if le32(certificate, 0) != size
+        || le16(certificate, 4) != 0x0200
+        || le16(certificate, 6) != 0x0002
+    {
+        return Err(post_sign_invalid(
+            "the table is not one canonical WIN_CERTIFICATE entry",
+        ));
+    }
+    if read_host_identity_bytes(signed_candidate)? != *expected {
+        return Err(post_sign_invalid(
+            "the candidate payload differs from the expected identity",
+        ));
+    }
+    Ok(())
+}
+
+const fn post_sign_invalid(detail: &'static str) -> PackError {
+    PackError::PostSignIntegrity { detail }
+}
+
 /// Positioned, cursor-independent reads over one image.
 trait ImageSource {
     /// Image length in bytes.
