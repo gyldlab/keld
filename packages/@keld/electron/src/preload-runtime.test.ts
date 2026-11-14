@@ -333,7 +333,12 @@ describe("original preload runtime only", () => {
         ).disposition,
       ).toEqual({ status: "consumed" });
       expect(received).toEqual([74, -1]);
-      f.call("request", { action: "isFullscreen" }, () => {}, () => {});
+      f.call(
+        "request",
+        { action: "isFullscreen" },
+        () => {},
+        () => {},
+      );
       const last = decodeEndpointArguments(
         new Uint8Array(f.sends().at(-1)!.payload as number[]),
       )[0] as { reqId: number };
