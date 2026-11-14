@@ -1,7 +1,8 @@
 /** Local facade model only. Mocks deliberately bypass producer trust; never native proof. */
 import { mock } from "bun:test";
+import { hasOriginalResourcePolicy } from "../../kipc/src/launch-facts.ts";
 const phase = process.argv[2];
-const schema = process.argv[3] === "7" ? 7 : 5;
+const schema = process.argv[3] === "8" ? 8 : process.argv[3] === "7" ? 7 : 5;
 let ready = phase !== "pre-ready";
 let sourceReads = 0;
 let listenerCalls = 0;
@@ -23,16 +24,19 @@ const claim = Object.freeze(
   }),
 );
 mock.module("@keld/kipc", () => ({
+  hasOriginalResourcePolicy,
   hostLaunchFacts:
     phase === "missing"
       ? { schema: 4 }
       : phase === "missing-descriptor"
         ? { schema }
-        : { schema, originalResourcePolicy: claim },
+        : phase === "unsupported-descriptor"
+          ? { schema: 3, originalResourcePolicy: claim }
+          : { schema, originalResourcePolicy: claim },
 }));
 mock.module("@keld/api/internal/app", () => ({
   app: { isReady: () => ready },
-  isDesktopS1Selected: () => true,
+  isDesktopS1Selected: () => phase !== "desktop-disabled",
   getDesktopSnapshot() {
     sourceReads++;
     if (phase === "dead-source")

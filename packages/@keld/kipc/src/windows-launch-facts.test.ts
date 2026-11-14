@@ -35,7 +35,8 @@ function observe(
         ";" +
         "console.log(JSON.stringify({ owner, embedded," +
         " frozen: Object.isFrozen(owner) && Object.isFrozen(embedded) &&" +
-        " (!owner.paths || (Object.isFrozen(owner.paths) && Object.isFrozen(embedded.paths)))," +
+        " (!owner.paths || (Object.isFrozen(owner.paths) && Object.isFrozen(embedded.paths))) &&" +
+        " (!owner.originalResourcePolicy || (Object.isFrozen(owner.originalResourcePolicy) && Object.isFrozen(embedded.originalResourcePolicy)))," +
         " nullPrototype: Object.getPrototypeOf(owner) === null && Object.getPrototypeOf(embedded) === null }));",
     ],
     stdout: "pipe",
@@ -245,4 +246,196 @@ test("Windows schema-three joins retain prior closed variants and the total reco
     );
     expect(windowsPath.exitCode).not.toBe(0);
   }
+});
+
+function originalFacts(selector = "original-editor-offline-empty-style") {
+  return {
+    ...facts("\\\\?\\D:\\stage"),
+    schema: 8,
+    version: "31.7.0-selected",
+    locale: "fr-CA",
+    paths: {
+      appData: "D:\\Observed\\Roaming",
+      userData: "D:\\Observed\\Roaming\\Exact",
+      documents: "\\\\server\\share\\Documents",
+    },
+    originalResourcePolicy: {
+      contract: "gh473-original-editor-offline/v1",
+      graphSha256: "sha256:" + "1".repeat(64),
+      policySha256: "sha256:" + "2".repeat(64),
+      windowKey: "editor",
+      selector,
+    },
+  };
+}
+
+test("Windows original schema8 preserves the exact descriptor and captured metadata in both consumers", () => {
+  for (const selector of [
+    "original-editor-offline",
+    "original-editor-offline-empty-style",
+  ]) {
+    const input = originalFacts(selector);
+    const child = observe(input);
+    expect(child.exitCode).toBe(0);
+    expect(child.stderr.toString()).toBe("");
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      owner: input,
+      embedded: input,
+      frozen: true,
+      nullPrototype: true,
+    });
+  }
+  const input = originalFacts();
+  const { version: _version, locale: _locale, ...absent } = input;
+  const optional = { ...absent, paths: {} };
+  const child = observe(optional);
+  expect(child.exitCode).toBe(0);
+  expect(JSON.parse(child.stdout.toString()).owner).toEqual(optional);
+});
+
+test("original schema8 is Windows development only and cannot reinterpret old variants", () => {
+  const input = originalFacts();
+  for (const target of ["other", "absent"] as const) {
+    for (const root of [input.root, "/posix-shaped-decoy"]) {
+      // A POSIX root with empty paths is otherwise valid on the foreign target.
+      // This case must depend on the explicit Windows-only schema8 guard.
+      const child = observe(
+        { ...input, root, paths: root.startsWith("/") ? {} : input.paths },
+        target,
+      );
+      expect(child.exitCode).not.toBe(0);
+      expect(child.stderr.toString()).toContain("KELD-IPC-029");
+    }
+  }
+  for (const value of [
+    { ...input, kind: "local-development" },
+    { ...input, resourcesRoot: "\\\\?\\D:\\" },
+    { ...input, singleInstance: { verdict: "acquired" } },
+    { ...input, root: "D:\\stage" },
+    { ...input, schema: 3 },
+    ...[4, 5, 6, 7].map((schema) => ({ ...input, schema })),
+  ]) {
+    const child = observe(value);
+    expect(child.exitCode).not.toBe(0);
+    expect(child.stderr.toString()).toContain("KELD-IPC-029");
+  }
+});
+
+test("original schema8 refuses missing, malformed and foreign policy descriptors", () => {
+  const input = originalFacts();
+  const { originalResourcePolicy: policy, ...missing } = input;
+  for (const value of [
+    missing,
+    { ...input, paths: undefined },
+    { ...input, originalResourcePolicy: null },
+    { ...input, originalResourcePolicy: {} },
+    { ...input, originalResourcePolicy: { ...policy, extra: "grant" } },
+    ...[
+      { contract: "unqualified" },
+      { windowKey: "" },
+      { windowKey: "nul\0key" },
+      { graphSha256: "sha256:" + "A".repeat(64) },
+      { policySha256: "sha256:" + "2".repeat(63) },
+      { selector: "unsafe-inline" },
+    ].map((change) => ({
+      ...input,
+      originalResourcePolicy: { ...policy, ...change },
+    })),
+  ]) {
+    const child = observe(value);
+    expect(child.exitCode).not.toBe(0);
+    expect(child.stdout.toString()).toBe("");
+    expect(child.stderr.toString()).toContain("KELD-IPC-029");
+  }
+});
+
+test("schema8 descriptor fields and escaped record retain the existing byte bounds", () => {
+  const input = originalFacts();
+  for (const value of [
+    {
+      ...input,
+      originalResourcePolicy: {
+        ...input.originalResourcePolicy,
+        windowKey: "x".repeat(4097),
+      },
+    },
+    { ...input, name: "\u0001".repeat(4096) },
+    {
+      ...input,
+      name: "x".repeat(4096),
+      version: "x".repeat(4096),
+      locale: "x".repeat(4096),
+      paths: { documents: "D:\\" + "x".repeat(3797) },
+    },
+  ]) {
+    const child = observe(value);
+    expect(child.exitCode).not.toBe(0);
+    expect(child.stderr.toString()).toContain("KELD-IPC-029");
+  }
+  const accepted = {
+    ...input,
+    originalResourcePolicy: {
+      ...input.originalResourcePolicy,
+      windowKey: "λ".repeat(2048),
+    },
+  };
+  expect(observe(accepted).exitCode).toBe(0);
+});
+
+test("schema8 rejects getters, proxies, symbols and prototype-only fields without observing them", () => {
+  const script = [
+    'import assert from "node:assert/strict";',
+    "import { captureHostLaunchFacts as a, hasOriginalResourcePolicy as pa } from " +
+      JSON.stringify(owner) +
+      ";",
+    "import { captureHostLaunchFacts as b, hasOriginalResourcePolicy as pb } from " +
+      JSON.stringify(transport) +
+      ";",
+    "const base = " + JSON.stringify(originalFacts()) + ";",
+    "let observed = 0;",
+    'const accessor = () => { observed++; throw Error("getter ran"); };',
+    "const proxy = (value) => new Proxy(value, { ownKeys() { observed++; return []; } });",
+    "const cases = [",
+    "proxy(base), { ...base, paths: proxy(base.paths) },",
+    "{ ...base, originalResourcePolicy: proxy(base.originalResourcePolicy) },",
+    'Object.defineProperty({ ...base }, "originalResourcePolicy", { get: accessor }),',
+    '{ ...base, originalResourcePolicy: Object.defineProperty({ ...base.originalResourcePolicy }, "selector", { get: accessor }) },',
+    '{ ...base, paths: Object.defineProperty({}, "documents", { get: accessor }) },',
+    "{ ...base, originalResourcePolicy: Object.create(base.originalResourcePolicy) },",
+    'Object.create(base), { ...base, [Symbol("unknown")]: true },',
+    "];",
+    "for (const decode of [a,b]) {",
+    'for (const value of cases) assert.throws(() => decode(value), { code:"KELD-IPC-029" });',
+    "const result = decode(base);",
+    "assert.equal(Object.getPrototypeOf(result.paths), null);",
+    "assert.equal(Object.getPrototypeOf(result.originalResourcePolicy), null);",
+    "assert(Object.isFrozen(result.originalResourcePolicy));",
+    "}",
+    "for (const [decode,predicate] of [[a,pa],[b,pb]]) {",
+    "assert.equal(predicate(decode(base)), true);",
+    "assert.equal(predicate(undefined), false);",
+    "const { originalResourcePolicy, ...metadata } = base;",
+    "assert.equal(predicate(decode({ ...metadata, schema:3 })), false);",
+    "}",
+    "assert.equal(observed, 0);",
+    'console.log("PASS closed schema8 owner and embedded");',
+  ].join("\n");
+  const child = Bun.spawnSync({
+    cmd: [
+      process.execPath,
+      "--no-install",
+      "--no-env-file",
+      "--define=__KELD_WINDOWS_HOST__:true",
+      "-e",
+      script,
+    ],
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 4000,
+  });
+  expect(child.exitCode, child.stderr.toString()).toBe(0);
+  expect(child.stderr.toString()).toBe("");
+  expect(child.stdout.toString()).toBe(
+    "PASS closed schema8 owner and embedded\n",
+  );
 });

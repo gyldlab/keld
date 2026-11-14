@@ -4,7 +4,7 @@ import {
   getDesktopSnapshot,
   isDesktopS1Selected,
 } from "@keld/api/internal/app";
-import { hostLaunchFacts } from "@keld/kipc";
+import { hostLaunchFacts, hasOriginalResourcePolicy } from "@keld/kipc";
 import { isProxy } from "node:util/types";
 import {
   method,
@@ -83,8 +83,7 @@ function record(name: RecordedMethod, args: unknown[]): void {
   if (
     !isDesktopS1Selected() ||
     !apiApp.isReady() ||
-    (hostLaunchFacts?.schema !== 5 && hostLaunchFacts?.schema !== 7) ||
-    hostLaunchFacts.originalResourcePolicy === undefined
+    !hasOriginalResourcePolicy(hostLaunchFacts)
   )
     refusal(
       name,

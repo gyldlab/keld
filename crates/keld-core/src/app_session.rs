@@ -4026,14 +4026,14 @@ fn windows_primary_config(
     entry_path: &Path,
     native_facade: bool,
     dev_lease: Option<&WindowsDevLeaseMonitor>,
-    original_graph: Option<&Arc<AdmittedStageGraph>>,
+    prepared_original: Option<&original_webapp::PreparedOriginalSource>,
     development_launch_facts: Option<&launch_facts::DevelopmentLaunchFacts>,
 ) -> Result<PrimaryRoleConfig, HostAppError> {
-    let config = match original_graph {
-        Some(graph) => windows_boot::original_primary_config(
+    let config = match prepared_original {
+        Some(prepared) => windows_boot::original_primary_config(
             root,
             entry_path,
-            graph,
+            prepared,
             development_launch_facts,
         )?,
         None => launch_facts::configure_primary_launch(
@@ -4303,7 +4303,7 @@ fn run_direct_app_session(
         inputs.entry_path,
         ready_trigger == AppReadyTrigger::HostInitialized,
         dev_lease.as_ref(),
-        inputs.original_graph,
+        prepared_original.as_ref(),
         inputs.development_launch_facts.as_ref(),
     )?
     .windows_primary_families(primary_families.clone());

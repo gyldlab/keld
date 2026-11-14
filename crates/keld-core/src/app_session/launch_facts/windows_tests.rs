@@ -249,3 +249,102 @@ fn capture_still_requires_the_same_profile_and_actual_lease_owner() {
         .is_none()
     );
 }
+
+fn original_policy_descriptor() -> super::OriginalResourcePolicyDescriptor {
+    use crate::app_session::load_verified_manifest;
+    use sha2::{Digest as _, Sha256};
+    use std::fs::{self, File};
+    let owned = tempfile::tempdir().expect("owned metadata fixture");
+    let path = owned.path().join("policy.json");
+    let bytes = br#"{"profile":"legacy","windows":{"editor":{"web":{"csp":"original-editor-offline-empty-style"}}}}"#;
+    fs::write(&path, bytes).expect("actual verified policy fixture");
+    let verified = load_verified_manifest(
+        File::open(&path).expect("actual policy file"),
+        path,
+        Sha256::digest(bytes).into(),
+    )
+    .expect("verified policy bytes");
+    let policy = verified
+        .resolve_unique_original_window_csp()
+        .expect("exact selector");
+    super::OriginalResourcePolicyDescriptor::from_verified([0x23; 32], &policy)
+}
+
+#[test]
+fn original_projection_preserves_once_captured_optional_facts_and_generic_record() {
+    // Serializer component proof; real prepared-source identity is exercised
+    // separately by graph_contract::installed_tests::windows_boot.
+    let calls = Cell::new(0);
+    let shutdown = SessionShutdownState::new();
+    let facts = capture_with_observer(prepared("Exact", Some("explicit")), &shutdown, || {
+        calls.set(calls.get() + 1);
+        Ok(observation())
+    })
+    .expect("capture")
+    .expect("running owner");
+    let generic = facts.private_argument().expect("unchanged schema3");
+    let projected = super::OriginalDevelopmentLaunchFacts {
+        schema: 8,
+        kind: facts.kind,
+        name: &facts.name,
+        root: &facts.root,
+        version: facts.version.as_deref(),
+        locale: facts.locale.as_deref(),
+        paths: &facts.paths,
+        original_resource_policy: original_policy_descriptor(),
+    };
+    let mut expected: serde_json::Value = serde_json::from_str(&generic).expect("generic");
+    expected["schema"] = serde_json::json!(8);
+    expected["originalResourcePolicy"] = serde_json::json!({
+        "contract":"gh473-original-editor-offline/v1",
+        "graphSha256":format!("sha256:{}", "23".repeat(32)),
+        "policySha256": format!("sha256:{:x}", {
+            use sha2::{Digest as _, Sha256};
+            Sha256::digest(br#"{"profile":"legacy","windows":{"editor":{"web":{"csp":"original-editor-offline-empty-style"}}}}"#)
+        }),
+        "windowKey":"editor",
+        "selector":"original-editor-offline-empty-style"
+    });
+    for _ in 0..3 {
+        let encoded = super::encode_private_argument(&projected).expect("same capture");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&encoded).expect("JSON"),
+            expected
+        );
+    }
+    assert_eq!(calls.get(), 1);
+    assert_eq!(
+        facts.private_argument().expect("unmodified schema3"),
+        generic
+    );
+    assert!(expected.get("singleInstance").is_none());
+    assert!(expected.get("resourcesRoot").is_none());
+}
+
+#[test]
+fn original_descriptor_shares_the_whole_record_bound_with_captured_metadata() {
+    let facts = prepared(&"x".repeat(4096), Some(&"x".repeat(4096)))
+        .with_observation(native::Observation {
+            app_data: None,
+            documents: Some(format!(r"D:\{}", "x".repeat(3797))),
+            locale: Some("x".repeat(4096)),
+        })
+        .expect("generic record fits its bound");
+    assert!(facts.private_argument().expect("generic").len() <= 16 * 1024);
+    let projected = super::OriginalDevelopmentLaunchFacts {
+        schema: 8,
+        kind: facts.kind,
+        name: &facts.name,
+        root: &facts.root,
+        version: facts.version.as_deref(),
+        locale: facts.locale.as_deref(),
+        paths: &facts.paths,
+        original_resource_policy: original_policy_descriptor(),
+    };
+    assert_eq!(
+        super::encode_private_argument(&projected)
+            .expect_err("descriptor bytes are part of the same 16KiB bound")
+            .code(),
+        "KELD-CORE-037",
+    );
+}
