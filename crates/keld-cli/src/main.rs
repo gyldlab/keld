@@ -9,6 +9,8 @@ use std::path::Path;
 use std::process;
 use std::sync::mpsc;
 
+#[cfg(windows)]
+use keld_cli::boot;
 use keld_cli::build::run_build;
 use keld_cli::create::{CreateError, create_project};
 use keld_cli::dev::{find_project_root, run_dev};
@@ -27,6 +29,17 @@ fn main() {
         eprintln!("{error}");
         process::exit(2);
     });
+    // A signer-selected named developer-local EXE is the app entrypoint. It
+    // still enters the existing guarded KEL-96 lease: the signed Host retains
+    // all native runtime and IPC authority. Normal keld.exe CLI is unchanged.
+    #[cfg(windows)]
+    if let Some(result) = run_named_developer_entry(&args) {
+        if let Err(error) = result {
+            eprintln!("{error}");
+            process::exit(1);
+        }
+        return;
+    }
     let verb = args.get(1).map(String::as_str);
 
     let result = match verb {
@@ -102,6 +115,111 @@ fn main() {
         eprintln!("{err}");
         process::exit(1);
     }
+}
+
+/// Only a locally signed, application-named developer bundle enters this path.
+/// This does not activate an installed package and never bypasses the normal
+/// KEL-96 Host's Authenticode, developer lease, profile or IPC checks.
+#[cfg(windows)]
+fn run_named_developer_entry(args: &[String]) -> Option<Result<(), String>> {
+    let executable = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            return Some(Err(format!(
+                "KELD-CLI-048: app executable locator: {error}"
+            )));
+        }
+    };
+    let file_name = executable.file_name()?.to_str()?;
+    if file_name.eq_ignore_ascii_case("keld.exe") {
+        return None;
+    }
+    let Some(name) = executable.file_stem().and_then(std::ffi::OsStr::to_str) else {
+        return Some(Err(String::from(
+            "KELD-CLI-048: non-Unicode application name",
+        )));
+    };
+    Some((|| {
+        if args.len() != 1 {
+            return Err(String::from(
+                "KELD-CLI-044: the signed developer application accepts no command-line arguments",
+            ));
+        }
+        let parent = executable
+            .parent()
+            .ok_or("KELD-CLI-048: application root absent")?;
+        // The signed CLI is later launched by path. Keep all ancestors of
+        // that path pinned without FILE_SHARE_DELETE until its process exits:
+        // a verified leaf alone cannot prevent hostile parent replacement.
+        let _launch_guards = boot::pin_windows_launch_ancestors(parent)
+            .map_err(|e| format!("KELD-CLI-048: bundled launch namespace refused: {e}"))?;
+        let project = parent.join("project");
+        let config = std::fs::read_to_string(project.join("keld.config.ts"))
+            .map_err(|e| format!("KELD-CLI-032: missing application configuration: {e}"))?;
+        let title = keld_core::title_from_config_ts(&config)
+            .ok_or("KELD-CLI-032: app name must be a quoted literal in config")?;
+        if !title.eq_ignore_ascii_case(name) {
+            return Err(String::from(
+                "KELD-CLI-048: launcher filename and application title disagree",
+            ));
+        }
+        let id = config
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("id:"))
+            .and_then(|literal| {
+                serde_json::from_str::<String>(literal.trim().trim_end_matches(',')).ok()
+            })
+            .ok_or("KELD-CLI-032: missing literal application identity")?;
+        let image = keld_guard::WindowsAuthenticodeImage::open(&executable)
+            .and_then(keld_guard::WindowsAuthenticodeImage::verify)
+            .map_err(|e| format!("KELD-WV-009: developer application image refused: {e}"))?;
+        if image.identity().app_id() != id {
+            return Err(String::from(
+                "KELD-CLI-048: signed launcher app identity differs from project",
+            ));
+        }
+        let cli_path = parent.join("keld.exe");
+        let cli_image = keld_guard::WindowsAuthenticodeImage::open(&cli_path)
+            .and_then(keld_guard::WindowsAuthenticodeImage::verify)
+            .map_err(|e| format!("KELD-WV-009: bundled CLI signature refused: {e}"))?;
+        if cli_image.identity().app_id() != id
+            || cli_image.identity().publisher_scope() != image.identity().publisher_scope()
+        {
+            return Err(String::from(
+                "KELD-CLI-048: the bundled CLI and application entrypoint differ in signed identity",
+            ));
+        }
+        let bun_path = parent.join("bun.exe");
+        let bun_metadata = std::fs::symlink_metadata(&bun_path)
+            .map_err(|e| format!("KELD-CLI-033: bundled Bun missing: {e}"))?;
+        if !bun_metadata.file_type().is_file() {
+            return Err(String::from(
+                "KELD-CLI-033: bundled Bun is not a regular file",
+            ));
+        }
+        // Keld's normal KEL-96 dev lease runs in the child CLI. Give only that
+        // process an explicit bundled-runtime-first PATH; never mutate the
+        // global process environment or select ambient developer Bun.
+        let mut paths = vec![parent.to_owned()];
+        paths.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        let bundled_path = std::env::join_paths(paths)
+            .map_err(|e| format!("KELD-CLI-033: bundled PATH cannot be constructed: {e}"))?;
+        let status = std::process::Command::new(&cli_path)
+            .arg("dev")
+            .current_dir(&project)
+            .env("PATH", bundled_path)
+            .status()
+            .map_err(|e| format!("KELD-CLI-048: bundled developer CLI failed: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "KELD-CLI-048: bundled developer CLI exited with {status}"
+            ))
+        }
+    })())
 }
 
 fn print_usage() {

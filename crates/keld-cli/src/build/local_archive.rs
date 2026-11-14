@@ -84,6 +84,7 @@ pub(super) fn prepare<'images>(
     pair: &'images PreparedLocalPair,
     tools: &CapturedCompilerToolchain,
     module_names: &[String],
+    emit_developer_bundle: bool,
 ) -> Result<LocalArchiveCandidate<'images>, BuildError> {
     // Compile shared boot before adding side effects. These members bind the
     // same literal permissions used to admit the signed pair's app identity.
@@ -155,6 +156,11 @@ pub(super) fn prepare<'images>(
         .map_err(refuse)?;
     let receipt = windows_archive::emit(&mut members, &mut output).map_err(refuse)?;
     output.sync_all().map_err(refuse)?;
+    // The sole Pack producer validated this exact member inventory before it
+    // can become a KEL-96-only local runnable folder. Never imply installed mode.
+    if emit_developer_bundle {
+        super::local_dev_bundle::emit(pair, &members)?;
+    }
     drop(compiler);
     let output = reopen_emitted_archive(output, &path, receipt.compressed_size())?;
     // An error leaves a diagnostic candidate, never a receipt or final installable

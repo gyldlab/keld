@@ -252,6 +252,10 @@ pub(super) struct PreparedLocalPair {
     pub(super) session: PathBuf,
     // Same retained authoring namespace; archive callers cannot supply another root.
     pub(super) app_root: PathBuf,
+    // Retain this exact already-qualified signer/tool handle for the developer
+    // app entrypoint, not a second independently selected certificate.
+    signer: LocalSigner,
+    signer_environment: Vec<(OsString, OsString)>,
     _image_directories: Vec<File>,
 }
 
@@ -371,8 +375,74 @@ pub(super) fn prepare_request(
         source,
         session,
         app_root: app_root.to_owned(),
+        signer,
+        signer_environment: environment,
         _image_directories: image_directories,
     })
+}
+
+/// Signs an application-named launcher with the exact retained developer signer
+/// already used for its Host/helper pair. The launcher invokes only KEL-96;
+/// it is not a KEL-53 installed application or a signed update manifest.
+pub(super) fn sign_named_developer_launcher(
+    pair: &PreparedLocalPair,
+    launcher: &Path,
+) -> Result<[u8; 32], BuildError> {
+    if !launcher.starts_with(pair.session.join("developer-runnable-bundle")) {
+        return Err(refuse(
+            "developer launcher",
+            "launcher escaped the owned output session",
+        ));
+    }
+    let input = File::open("NUL").map_err(|error| refuse("developer launcher stdin", error))?;
+    local_source::run_captured(
+        &pair.signer.tool,
+        &sign_args(
+            &pair.signer.certificate_sha1,
+            &pair.authoring.app.id,
+            launcher,
+        ),
+        &pair.signer_environment,
+        &pair.session,
+        &input,
+        64 * 1024,
+    )?;
+    let launcher_pin = local_source::pin_file(launcher, MAX_IMAGE_BYTES)?;
+    let verified = WindowsAuthenticodeImage::open(launcher)
+        .and_then(WindowsAuthenticodeImage::verify)
+        .map_err(|error| refuse("developer signed launcher", error))?;
+    if verified.identity().app_id() != pair.authoring.app.id
+        || verified.identity().publisher_scope() != pair.host.verified.identity().publisher_scope()
+    {
+        return Err(refuse(
+            "developer signed launcher",
+            "the signed app launcher and verified Host have different application/publisher identities",
+        ));
+    }
+    let signed_bytes = read_exact_image(verified.file(), MAX_IMAGE_BYTES)?;
+    if signed_bytes.len() as u64
+        != launcher_pin
+            .file
+            .metadata()
+            .map_err(|e| refuse("launcher metadata", e))?
+            .len()
+    {
+        return Err(refuse(
+            "developer signed launcher",
+            "retained length differs after signing",
+        ));
+    }
+    let mut args: Vec<OsString> = ["verify", "/pa", "/v"].map(OsString::from).into();
+    args.push(launcher.as_os_str().to_owned());
+    local_source::run_captured(
+        &pair.signer.tool,
+        &args,
+        &pair.signer_environment,
+        &pair.session,
+        &input,
+        64 * 1024,
+    )?;
+    Ok(Sha256::digest(&signed_bytes).into())
 }
 
 pub(super) fn run(args: &[String]) -> Result<(), BuildError> {

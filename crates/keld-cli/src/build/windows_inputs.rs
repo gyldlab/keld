@@ -25,6 +25,38 @@ pub(super) enum ProfileAdmission {
     UndeclaredDeveloper,
 }
 
+/// Single authoritative mapping from an app title to its signed Windows leaf.
+/// Never permit device aliases, path separators, controls or CLI/Host collisions.
+pub(super) fn developer_launcher_name(name: &str) -> Result<String, BuildError> {
+    if name.is_empty()
+        || name.len() > 80
+        || name.ends_with([' ', '.'])
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b' ' | b'-' | b'_' | b'.'))
+    {
+        return Err(BuildError::input(
+            "Windows developer launcher",
+            "app name is not a safe Windows executable leaf",
+        ));
+    }
+    let first = name.split('.').next().unwrap_or_default();
+    let upper = first.trim_end().to_ascii_uppercase();
+    if matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "KELD" | "BUN" | "KELD-HOST"
+    ) || (upper.len() == 4
+        && (upper.starts_with("COM") || upper.starts_with("LPT"))
+        && matches!(upper.as_bytes()[3], b'1'..=b'9'))
+    {
+        return Err(BuildError::input(
+            "Windows developer launcher",
+            "reserved Windows device or KELD executable name",
+        ));
+    }
+    Ok(format!("{name}.exe"))
+}
+
 pub(super) struct CapturedInputs {
     _ancestors: Vec<File>,
     config: File,
@@ -99,6 +131,11 @@ impl CapturedInputs {
         let source = std::str::from_utf8(&source)
             .map_err(|error| BuildError::input("keld.config.ts", error))?;
         let app = config::parse_app(source)?;
+        // Reject a title with no safe Windows EXE leaf before compiling or
+        // selecting any developer signer. Do not create partially signed output.
+        if profile == ProfileAdmission::UndeclaredDeveloper {
+            developer_launcher_name(&app.name)?;
+        }
         require_windows_authoring_paths(&app.entry, app.renderer.as_deref())?;
         if app.renderer.is_none() {
             return Err(BuildError::input(
