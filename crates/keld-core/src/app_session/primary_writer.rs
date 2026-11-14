@@ -383,7 +383,10 @@ impl PreparedFrame {
         state.enqueue(position.index);
         self.reservation.position = None;
         drop(state);
-        shared.changed.notify_one();
+        // Queue, capacity and receipt waiters share this condition variable.
+        // A single wake may select a producer whose predicate is still false,
+        // leaving the idle physical writer asleep with a queued frame.
+        shared.changed.notify_all();
         Ok(WriteReceipt {
             shared,
             position,

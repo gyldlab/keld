@@ -28,6 +28,7 @@ impl PrimaryRouterHandle {
     ) -> Result<(), HostAppError> {
         let subscribed = session.subscribed;
         match outcome {
+            #[cfg(any(target_os = "macos", windows))]
             NativeOutcome::None => Ok(()),
             NativeOutcome::Fact(fact) => match fact {
                 FactOutcome::Event(fact) => owned_event(
