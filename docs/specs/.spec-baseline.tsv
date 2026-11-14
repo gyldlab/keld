@@ -34,7 +34,7 @@ docs/specs/kel74-compat-evidence-schema.md	-	-	182	exempt
 docs/specs/kel75-principalized-bun-child-roles.md	542	-	138	exempt
 docs/specs/kel77-bun-child-process-differential.md	-	-	-	exempt
 docs/specs/kel78-primary-sources.md	-	-	1684	exempt
-docs/specs/kel78-strict-profile-sandbox.md	782	47609	486	exempt
+docs/specs/kel78-strict-profile-sandbox.md	782	47607	486	exempt
 docs/specs/kel81-ci-change-routing.md	-	-	-	exempt
 docs/specs/kel82-linux-webkitgtk-ci-image.md	713	51369	1069	exempt
 docs/specs/kel96-no-flag-host-boot.md	858	54555	-	exempt

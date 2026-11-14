@@ -563,22 +563,12 @@ Electron `sandbox` / `appSandbox: "off"` while `requested` is `Strict` is
 returning an error: no replacement child. T1 implements this state machine
 without claiming OS containment.
 
-Capabilities / manifest: the approved [explicit-profile amendment](kel78-explicit-legacy-profile.md)
-selects root `keld.permissions.jsonc.profile`, with exactly `"strict"` or
-`"legacy"`; omission is no declared request, never implicit legacy. The parser
-and product admission integration remain unimplemented at this amendment's source
-baseline and belong to GH #588. No `keld.config.ts` alias, Electron `sandbox` /
-`appSandbox`, package-name branch, or failed strict proof may select a profile.
-The amendment owns presence-sensitive parsing, the security-forfeit matrix,
-reporting, migration acceptance, and the existing unverified evidence mapping.
-
-Wire/protocol: public kipc and `KELD_APP_LINK=<endpoint>#<64 hex chars>` are unchanged.
-The amendment's R1 composition correction reserves schema 3 for explicit-profile
-renderer boots and 4 for explicit-profile facade boots. Schema 1 remains the
-no-profile renderer format; GH #446's schema 2 remains the no-profile facade
-contract. R1's separate delegated design approval is recorded on #1120/KEL-78; it
-does not repurpose Ready's version. Producer/consumer and unsupported-version refusal
-remain a separate compiled-protocol review gate under KEL-96/KEL-102.
+[amendment](kel78-explicit-legacy-profile/index.md):
+`keld.permissions.jsonc.profile` (`strict`/`legacy`; absence != legacy).
+No config/sandbox alias or failed-Strict fallback.
+GH #588 integrates; 1/2 no-profile, 3/4 profiled.
+`KELD_APP_LINK=<endpoint>#<64 hex chars>` unchanged; R1 #1120.
+KEL-96/KEL-102 own schema refusal.
 
 ### Packaging and reporting
 
@@ -588,10 +578,8 @@ remain a separate compiled-protocol review gate under KEL-96/KEL-102.
 | `keld doctor` | same | same | same |
 | Scoreboard / release metadata | same | same | same |
 
-Renderer sandbox is a different column. The [explicit-profile amendment](kel78-explicit-legacy-profile.md#47-reporting-contract)
-distinguishes static declarations from actual admission, preserves KEL-74's
-approved unverified behavioral evidence, and keeps reserved build/release
-integration pending until those real commands consume the contract.
+Renderer sandbox differs; KEL-74 unverified evidence stays.
+Amendment owns forfeit, migration, reporting and future build/release.
 
 ## 5. Boundaries
 
