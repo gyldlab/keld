@@ -34,6 +34,7 @@ fn returned_local_stays_before_a_preflight_with_no_remaining_queued_predecessors
     h.flush();
     let abort = h.receive();
     assert_eq!(abort.request(), 11);
+    assert!(abort.role_witness().unwrap().same_role(&h.role));
     assert!(matches!(
         abort.operation(),
         RendererBridgeOperation::PreflightAborted
@@ -82,10 +83,15 @@ fn full_preflight_preserves_payload_order_charge_and_original_role() {
         successor
     ));
     h.flush();
+    let abort = h.receive();
     assert!(matches!(
-        h.receive().operation(),
+        abort.operation(),
         RendererBridgeOperation::PreflightAborted
     ));
+    assert!(
+        abort.role_witness().unwrap().same_role(&h.role),
+        "Core must see the admitted original role, not the successor"
+    );
     assert_eq!(h.queue.retained_bytes(), charge);
     let mut refused = h.take().unwrap();
     assert_eq!(refused.identity().id(), 20);
@@ -138,6 +144,7 @@ fn role_change_during_preparation_waits_for_original_abort_before_refusal() {
     h.flush();
     let abort = h.receive();
     assert_eq!(abort.request(), 30);
+    assert!(abort.role_witness().unwrap().same_role(&h.role));
     assert!(matches!(
         abort.operation(),
         RendererBridgeOperation::PreflightAborted
@@ -197,6 +204,7 @@ fn full_controls_keep_consumed_quiesced_and_abort_on_their_original_records() {
     h.flush();
     let abort = h.receive();
     assert_eq!(abort.request(), 40);
+    assert!(abort.role_witness().unwrap().same_role(&h.role));
     assert!(matches!(
         abort.operation(),
         RendererBridgeOperation::PreflightAborted
