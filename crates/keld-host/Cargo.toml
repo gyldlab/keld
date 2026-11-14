@@ -13,6 +13,11 @@ authors.workspace = true
 profile-test-hooks = ["keld-core/profile-test-hooks"]
 # A debug-only signed fixture probe; release use fails in the forwarded KEL-135 feature.
 kel135-profile-test-root = ["keld-core/kel135-profile-test-root"]
+# Install-distribution builds reject development leases and all diagnostic roles.
+windows-qualified-launch = []
+# A sealed, fail-closed private install entry. No catalog authority is yet approved.
+# Enabling this feature does NOT admit an initial installation.
+windows-initial-install = ["windows-qualified-launch"]
 
 [[bin]]
 name = "keld-host"
