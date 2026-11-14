@@ -1,0 +1,534 @@
+{
+  "files": [
+    {
+      "after_sha256": "d79538447fd15dc2c25e628442a0ca69a664d4f2120789c087b5e196389b01a3",
+      "before_sha256": "4a679a699d35de42ce644c433072a2e4b7fb110f57830739e9cbe61f719e2f57",
+      "new": false,
+      "path": "crates/keld-core/src/app_session.rs"
+    },
+    {
+      "after_sha256": "7d84ed97809f7cf3c395b46e54f99d06ab37d816741d40b994df00ff0ee4e26c",
+      "before_sha256": "2f7c3623ea0f830c64fbdb88a59132d3655c304044ffe164041fdb2cb273402a",
+      "new": false,
+      "path": "crates/keld-core/src/app_session/compat_router.rs"
+    },
+    {
+      "after_sha256": "d9d8a3435ae505324321f2b7abd0e50a02a3d278aa53b3f9db74d809997ba62b",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-core/src/app_session/compat_router/fresh_offer_observation.rs"
+    },
+    {
+      "after_sha256": "0e3dd40f1f895d937b51da1493d8127ae3877571e22b4fb69a943c4f9802740c",
+      "before_sha256": "1b0da63ce775ee21ef3ff5ae3e3df6eebd56cfdd56b76f92e792d37b749da5cb",
+      "new": false,
+      "path": "crates/keld-core/src/app_session/compat_router/native_control/tests.rs"
+    },
+    {
+      "after_sha256": "1b21f71bb41c0ca1ec64482fde13986cef7bfd3a69eb54b5c705b69e8348ff00",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-core/src/app_session/compat_router/native_control/tests/x11_capacity.rs"
+    },
+    {
+      "after_sha256": "fadb46f5ad0413773517270d223d312692b431ce102c12e5d7af1bb762dc3cf7",
+      "before_sha256": "123b12c44805f348bb5a092cef8b7fcc994c41eb55216a8bb06bb913d7ad5356",
+      "new": false,
+      "path": "crates/keld-core/src/app_session/compat_router/native_event_retirement/tests.rs"
+    },
+    {
+      "after_sha256": "11aa84a62d616653720e406f0dc55e64f7616f5db9cfb7d83d878cbb50242556",
+      "before_sha256": "b9537a6f33792dce23c7c01299fc9a89b3f30a7aad3b3c702a1fed02d7f7c9e0",
+      "new": false,
+      "path": "crates/keld-core/src/app_session/compat_router/primary_terminal.rs"
+    },
+    {
+      "after_sha256": "af89321448c6a1551ab639eeb371dbecacd0705707e5813733c91be97ab13f9a",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-core/src/app_session/compat_router/primary_terminal/selected_observation.rs"
+    },
+    {
+      "after_sha256": "b4dde3cdeabea88d4531c749305113cd9c6c52734aaa3c3bb49f4f825bc34e8d",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-core/src/app_session/compat_router/primary_terminal/selected_observation/tests.rs"
+    },
+    {
+      "after_sha256": "f45711d796f267d54d0205e94f533e08f2156c8e05132d3bec149f2faf581c0e",
+      "before_sha256": "d034806a338a269913bf2f6350bd529a54632ccbb9b64f425e690e5dab7f6de0",
+      "new": false,
+      "path": "crates/keld-core/src/app_session/compat_router/primary_terminal/tests.rs"
+    },
+    {
+      "after_sha256": "21a20f380c81a3d72401f072d8fefba28b82438d1c28872f2b42fa9cf203c6a4",
+      "before_sha256": "5033fdb5395e227b449a217ebc70e66219b477e7f9011099ad970f49ee460164",
+      "new": false,
+      "path": "crates/keld-core/src/app_session/compat_router/publication/call.rs"
+    },
+    {
+      "after_sha256": "5eb59374fc0da8465427b301f7f867a4d1024430ed2ddfc9f6f768b281a6eaab",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-core/src/app_session/compat_router/queued_close_observation.rs"
+    },
+    {
+      "after_sha256": "8c8557b4e78a03161ee97a43b8f17e2f275b49ae4ccf8f40ce6ea5fb961a73a3",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-core/src/app_session/compat_router/x11_pressure.rs"
+    },
+    {
+      "after_sha256": "955f78241f17d4b06ea02acae60f5249c86f48090a0edb4bc82b454dd7636cea",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-core/src/app_session/compat_router/x11_pressure/observation.rs"
+    },
+    {
+      "after_sha256": "0970ed0fa9c80c542bbe7c6d6ae8f3a00dca6a66d4ae7ea55267ad1023f3556e",
+      "before_sha256": "bcd4a1def328b91ae6f5eb9a283d1c1e6be4032ec51953f1b3f7d48600e4b9d0",
+      "new": false,
+      "path": "crates/keld-core/src/app_session/lifecycle_writer/retirement.rs"
+    },
+    {
+      "after_sha256": "d18269da9f3e69fd7c5c3c939f5b4044c88d0724406576ef3219429f70f40e24",
+      "before_sha256": "5d22d5d7ad9d4291874ee5aa01938db7d7bae9eec8797ef9a3fcb7edf721aa19",
+      "new": false,
+      "path": "crates/keld-core/src/app_session/primary_writer.rs"
+    },
+    {
+      "after_sha256": "13397bf6e0a41f4f6a2d616702ad4f224fe935812cdb8c89da90fabe693dbb52",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-core/src/app_session/primary_writer/physical_value_hold.rs"
+    },
+    {
+      "after_sha256": "d9271efe877f1754aa171957caf0593381b3130a6ae5b8a7a0bf06890feaa3ed",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-core/src/app_session/primary_writer/physical_value_hold/tests.rs"
+    },
+    {
+      "after_sha256": "475c38c6dc966b7198fddd9db684af6b53709469eff7a502842ad504cd25ef5d",
+      "before_sha256": "83e5fed767890311ce83a9d4b7b3bf9a9848a16260646e478c9dbac36fd45b2a",
+      "new": false,
+      "path": "crates/keld-core/src/app_session/primary_writer/queue.rs"
+    },
+    {
+      "after_sha256": "6a6baea5122f4ec437f31bd8a52279ed9c11695858c33b38c5b8587707ef0e13",
+      "before_sha256": "18f189a2fd5d7f41e1d44ce5116f99f6509e1853c3e173753bfe6d78631acdd8",
+      "new": false,
+      "path": "crates/keld-core/src/app_session/primary_writer/worker.rs"
+    },
+    {
+      "after_sha256": "4ab4c5122ef1a914a47ca5a09e8f6390691329c9e4d58036dda41d3a82c5599e",
+      "before_sha256": "232217a995e2412008c8e1e886f19d54b7d11d38bd94ef841660ae978673fc7e",
+      "new": false,
+      "path": "crates/keld-core/src/app_session/renderer_role/native_scope.rs"
+    },
+    {
+      "after_sha256": "d49bbf4c63e07a8345f4fe8e84361402d53a300393ac245ddfd83d47e24911e6",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-core/src/app_session/renderer_role/native_scope/fresh_offer.rs"
+    },
+    {
+      "after_sha256": "ca2c58c67f9c10b1113569beb15d54a0d3452898619223c266ad41d68b3a1b41",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/fixtures/original-native-capacity-editor.html"
+    },
+    {
+      "after_sha256": "9dc0f11e6e5f2c2c71651fabe2869e4ac4ceafb11bc7f1d1669fa94385708123",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/fixtures/original-native-capacity-main.mjs"
+    },
+    {
+      "after_sha256": "cf460002fb84bf6ce9fcae1a3a53e6e162ef9a71da0af38076685fee23190320",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/fixtures/original-native-capacity-probe.js"
+    },
+    {
+      "after_sha256": "fe1a3bef3c76d0001ae7122f6e016f1afe026cf2638369883a53e55209596712",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/fixtures/original-navigation-editor.html"
+    },
+    {
+      "after_sha256": "19409a525c3ef0f47fd51e5ef9a49156a162d20a0267136f13b2d35c2033aa46",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/fixtures/original-navigation-main.mjs"
+    },
+    {
+      "after_sha256": "c09ea109487b7f81075eb0b3bfd3f247ef09249568b90ff02af98a5637276a8e",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/fixtures/original-navigation-probe.js"
+    },
+    {
+      "after_sha256": "9ce0c0e2cbd0d4febff5f1f7d235c4cd9118a3ea632373253243a81d37a9b9f3",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/fixtures/original-queued-close-editor.html"
+    },
+    {
+      "after_sha256": "a26782e7c0f02490b5c41c9e00f2412352caaff40cb64a971a49778c7a5354d2",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/fixtures/original-queued-close-main.mjs"
+    },
+    {
+      "after_sha256": "bcb439e149a028e24872998fe83f0e29f0a85f5c0cdb15737e257addd1f84707",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/fixtures/original-queued-close-probe.js"
+    },
+    {
+      "after_sha256": "66eb0e0718815a1ca4e7e5ea16110fe29abf983a36ff9aeab2320e64525bcd63",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/fixtures/original-selected-diagnostic-editor.html"
+    },
+    {
+      "after_sha256": "11c199da022b6cf9ec55aafb4dd3ee2458c82e52643b92b6a083a0ee97bcb5ce",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/fixtures/original-selected-diagnostic-main.mjs"
+    },
+    {
+      "after_sha256": "635b4e4a2cfe3d8d49a6088b9c16fc1b42c37a3b71ff29346fcb66853275c8cb",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/fixtures/original-selected-diagnostic-probe.js"
+    },
+    {
+      "after_sha256": "953ac7bb988ef6702a3f70322fd38d779c5b5c4c167dc8ca2ad6b3abdcf2a744",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/original_native_capacity.rs"
+    },
+    {
+      "after_sha256": "35f908e5cee63bb36d444249568e12647144f2dd15e3aa56dcc240d5024500fb",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/original_navigation_order.rs"
+    },
+    {
+      "after_sha256": "42ec73c1d60426f00a4806f40b0230ede94459f882549357f14a89925fcec6d8",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/original_queued_close.rs"
+    },
+    {
+      "after_sha256": "70766e4d2d772c58fd19a6c6583f6e2e00e1575e6ef2c37040e409f599d09552",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/original_selected_diagnostic.rs"
+    },
+    {
+      "after_sha256": "62ae5fd30455f32a9740804cb2db6982d424a5499173b5f9a0247145d9103ae7",
+      "before_sha256": "916a7e1f525300d48c074d7d3b6df73c6b325e004f473e97fc4d34ba6a2a3080",
+      "new": false,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_bridge_run.rs"
+    },
+    {
+      "after_sha256": "3285ca8ad0b1eab604c96b6ff08963d2ceb58a4d52db34e89d09e4b116630e9e",
+      "before_sha256": "0c4f792c008bdd95e48393e39a4169f3c73c74cafc0923c72885d4262ab099ee",
+      "new": false,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_bridge_run/fixture.rs"
+    },
+    {
+      "after_sha256": "effa5f69049aaeeef9c55258faf3ba0fda9b56a25ad39e1bf9d51255c8783e1e",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_bridge_run/native_capacity.rs"
+    },
+    {
+      "after_sha256": "0cf049c5e69bb01faab75fe40294d6952c8163eadd858943a27804ee87a25f87",
+      "before_sha256": "d3c170fe2a86a71aad11c1d5f70c414b72ff55f6d7928731ba050f0455447c6f",
+      "new": false,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_bridge_run/observe.rs"
+    },
+    {
+      "after_sha256": "3e523acb20c225881478f89ab7cf55a1ad233edd775f3220734435040390ca5d",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_bridge_run/queued_close.rs"
+    },
+    {
+      "after_sha256": "18fc543ce140afaae11ef9339cf4fc3513c51a0c3dd94887f3ff41f7e35ceaf3",
+      "before_sha256": "6b7a4e04b08ad5159c5fb6a279158dcb430d059393f85f8410f7efeb1ce9847b",
+      "new": false,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_bridge_run/resource_work.rs"
+    },
+    {
+      "after_sha256": "c504c836207cf316b5174ab18d5a5817cdb3dd9d63cabce0932624d55de4fe64",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_bridge_run/retained_failure.rs"
+    },
+    {
+      "after_sha256": "1e8c6d7a533710cd8bb6078b009231c587205c88049632e9c6e72699eff446fd",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_bridge_run/selected_diagnostic.rs"
+    },
+    {
+      "after_sha256": "4d2ee77186fbd32a69f94f6f2ae0491cf4f929f4e394e01d82c216abe199e992",
+      "before_sha256": "04238f4b4a131e2224afe88d02c05e28f3b4025a7c7a730781d0cc0807f48eac",
+      "new": false,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_bridge_run/startup_failure.rs"
+    },
+    {
+      "after_sha256": "9c3b5e9cb29121e9a2ff157a3bde386514f62739d22c9fbbfeac2d7c84ee1382",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_fresh_offer_observation.rs"
+    },
+    {
+      "after_sha256": "6aa0c045b296477398d7b03c12d0815653195c1e2fb8827d79bb530009ae0c1a",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_native_capacity_observation.rs"
+    },
+    {
+      "after_sha256": "f9228534b65684bb1db324fcbb4004991b0d3eb2b106fa148830b7464607ad6f",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_navigation_order_observation.rs"
+    },
+    {
+      "after_sha256": "e4d4423b37a4fc05f0c4f2c69d02038c8258aa3334e24770b0213af462d88514",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_navigation_order_observation_custody.rs"
+    },
+    {
+      "after_sha256": "238dfaf8f9fc31bb73b6086013d1f65d4d025e2e34e517440cc1539c8df6c735",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_navigation_order_observation_order.rs"
+    },
+    {
+      "after_sha256": "c69d03d477639f903ec96ef5c628ad23f031bff23c24e363be8cd7231a3b4b77",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_navigation_order_observation_page.rs"
+    },
+    {
+      "after_sha256": "5abec2b15a479e83afa7674cdd1e01bb6f412f9919b1cb221976d08bbb8b3103",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_navigation_order_observation_tests.rs"
+    },
+    {
+      "after_sha256": "d63aae33ad16e75a8c0d5f762f84d1a62d29458195cc1df914cd872bc080d7e4",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_queued_close_observation.rs"
+    },
+    {
+      "after_sha256": "9a8d261ccb1a481ebde35057238667cd5356d818189649bcbe2cbc57dbc6c15c",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_selected_diagnostic_observation.rs"
+    },
+    {
+      "after_sha256": "d252856521dad88f3449371d796d9b7ff796a9bc1fe135ba0eb1a47bdeda0c9a",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_selected_diagnostic_observation/restoration.rs"
+    },
+    {
+      "after_sha256": "c9a6062a982b0e8b235c25e03cfe9224d6d66e0ef1f7ca31ab3f2e19c4b3d65d",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-host/tests/no_flag/windows/support/original_selected_diagnostic_observation/restoration/tests.rs"
+    },
+    {
+      "after_sha256": "ad07f86a8b9e854cef3adb1d13818da0e5aedbfb2baa5cf69a039752a6ee1cfc",
+      "before_sha256": "0a14ac53e6c9845011f64492835b1517c597d2f077c27344e7fb566fd3a6c730",
+      "new": false,
+      "path": "crates/keld-host/tests/no_flag/windows/support/process.rs"
+    },
+    {
+      "after_sha256": "ea73e3780d7644c0e13077aa708421245235a1c73e9c4680746f3975be04366e",
+      "before_sha256": "494de5d5a6688bf3d4b3486d6a39d0cb4f0fb9c77bec00d11df3439327bcb1d2",
+      "new": false,
+      "path": "crates/keld-host/tests/no_flag_windows.rs"
+    },
+    {
+      "after_sha256": "e6b13cd2714b8be9a39c9c1d5b892b97392e9e0fea55fa50bc97dd14d25c74ad",
+      "before_sha256": "6d5ecd3362928374c7fbe076ace35ec00a9eb9904b02b4f0a58a7d92bfc483ed",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/app_wake_bridge.rs"
+    },
+    {
+      "after_sha256": "8f2f22c7f5ee1c412417aec41905db34515641fde590ede084a53381f1932d31",
+      "before_sha256": "490e97154370dd4aadfc6de9cbe4bbe23096d79db8b5968526128055367ddda1",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/app_wake_bridge/input.rs"
+    },
+    {
+      "after_sha256": "17d0c665afb247f6ff9f94cff1590a7746d194d5fadb0a86cda2523d3bb2375f",
+      "before_sha256": "d1fd573e98f30a871d2f216d4756fd2244b90720146f1b1952edd8d7c213e29a",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/app_wake_bridge/input/tests.rs"
+    },
+    {
+      "after_sha256": "e3f13a422e2d20a2459b83525ea8d135274717afe7232ec6f12245b4930b3184",
+      "before_sha256": "deb75129d63ea26696df0fb613157c5d4ea152c0f77a4c0767522cce80d27599",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/managed_test_control.rs"
+    },
+    {
+      "after_sha256": "ed1e060b355422e76d88134f9061b7c7b2af332617aed1c641ada23f066cdd29",
+      "before_sha256": "758ab515aa917519edae3afea04345073dc9527e69fe484a81690c70bee68d5b",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/managed_test_control/native_hold.rs"
+    },
+    {
+      "after_sha256": "f23d9732c0d75aa9ae8609311b4334edb1daa5895cb6083f2ff2c6c25d125a9d",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-wv/src/webview2/managed_test_control/navigation_post.rs"
+    },
+    {
+      "after_sha256": "515254cc3979eda8e7133da9d96eacbc3f288b46fb84e7fd153d94e811977e8b",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-wv/src/webview2/managed_test_control/navigation_post/post.rs"
+    },
+    {
+      "after_sha256": "3e25c86bb8786b553e102b285f5d46f2ff95bf2a57c1a18c851b8a1ef9090d23",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-wv/src/webview2/managed_test_control/outcome_hold.rs"
+    },
+    {
+      "after_sha256": "619e187d6195ae07319f17ef21e6eb3c32ff5913ffd311084ff16e8005ee8eb0",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-wv/src/webview2/managed_test_control/queued_close_observation.rs"
+    },
+    {
+      "after_sha256": "79dc4cfc1398291d1a3d2b202055006ddd9d67132b331fc01ea2ada1eda7c790",
+      "before_sha256": null,
+      "new": true,
+      "path": "crates/keld-wv/src/webview2/managed_test_control/tests/outcome_hold.rs"
+    },
+    {
+      "after_sha256": "1c9c6c25ba2c99836b287bf490906691468c5f6b91233bd813f69115c345807b",
+      "before_sha256": "8355efd9abf2147346283f6c31fbe0fa69bb38feb617ba63f5a1eca348bed050",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/mod.rs"
+    },
+    {
+      "after_sha256": "0834e7bf29b210a56049c21161e5dcf8ee726bc4cd7e6773a5e866919e037c1e",
+      "before_sha256": "c28e852fd756468782700640c89070edb872c77cc161430602b6b33b95890012",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/original_bridge.rs"
+    },
+    {
+      "after_sha256": "bb959b6d064a39efef19ff33d3ff6a9744445216e95d0594992f407d402b3c73",
+      "before_sha256": "272c4d77d3ba8e453134a3dbd76254ddc07d0e92405e828610e03c8d3b1d313c",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/original_bridge/delivery.rs"
+    },
+    {
+      "after_sha256": "e11bf07da8ead44d12fabf5c7725c1f8cf45dee4f30437f57e62cc073840879a",
+      "before_sha256": "8872a32a91978bc9333320f341d167120d69128939249b3883e81e2a1d32af84",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/original_bridge/event.rs"
+    },
+    {
+      "after_sha256": "607093065e5fb7a2fcaa0e204dd438a9fadbe288212b6026381cd0c212fb8f46",
+      "before_sha256": "a4ee5b9d93523c8368c123324417d8de42f28ab12ccac3c827abc65b801d9a1d",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/original_bridge/event_owner.rs"
+    },
+    {
+      "after_sha256": "7c7714452a6eed099e3a1dfc3bb6ae367c23ee0071c15ac0363faf1b3842c5a4",
+      "before_sha256": "4ea966b25118dbb176ec845bc6f50ace8c2a031ef6f3f2c0e044428c2d52555a",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/original_bridge/intake.rs"
+    },
+    {
+      "after_sha256": "84a209b14653044ced894351cdf3ec6a8cba25bf93b90115fb096ec3739e01c7",
+      "before_sha256": "6cc768c918a5fdee5e2fd9077070ec26646d8f696fe939c3e97e77e9e9687e7e",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/original_bridge/invocation.rs"
+    },
+    {
+      "after_sha256": "428e8302164ee1678a51ca4734cf5e2db53104719ea052d0c558849989bea758",
+      "before_sha256": "605138a8fb586d82db7026d1034883bf04215612bae019586e1316e2f9ee736a",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/original_bridge/numeric.rs"
+    },
+    {
+      "after_sha256": "598e4030735897cdfaa501858f2c51463062cbdcb82ea48fc39d1021965ca843",
+      "before_sha256": "d4187aa22dd6c2ceb7f82584424c6c2d145f220537bc9f0967b753619e5276b0",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/original_bridge/post.rs"
+    },
+    {
+      "after_sha256": "31fc093368b263e932037d1f15f8dae00a37a10951c618a754a20d6d5fc72652",
+      "before_sha256": "ffb68bbdc01fa0cead161367fcac7634834d8b73f283c366788eb2b7843c0d2d",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/original_bridge/post/entry.rs"
+    },
+    {
+      "after_sha256": "60034fbbad0251fc7dad0e746498ce365e5912e073116f8471d281df995e5f60",
+      "before_sha256": "2acefec908c680309286f371c711cdda89f2fda1e5368d56cb6cfebfa77528ac",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/original_callbacks.rs"
+    },
+    {
+      "after_sha256": "7b53d8c5edbdc6f70ffe4455a2bf2b13c0209a6575f2a359a6cd9c2229427ed4",
+      "before_sha256": "b5de8a260550a224e6c71716c1856c1dcebfd1ffda35e66a317d8d216cc45a79",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/original_callbacks/boundary.rs"
+    },
+    {
+      "after_sha256": "0ffa96fd3ba67d9160476a98404c51ef73fef91d95952f5338cc6d8299186b77",
+      "before_sha256": "ddb0aa832989111b697587a79ac6c495945eb2626cd8a2866c02691b9740b369",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/original_navigation.rs"
+    },
+    {
+      "after_sha256": "ae5c3c92ff912fa1e50318a9efd73a0cb92c568e278bc88705d874a16011618e",
+      "before_sha256": "7d0251982acd6cf3004cba8e83301547fcd1da29b62fdcad1c3b521c033b2bc0",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/original_view.rs"
+    },
+    {
+      "after_sha256": "ad1eab1565c70a901e6875ae979490d53217b6d35bbd1cecf7eacf811c3a8bfb",
+      "before_sha256": "2f8768f4188a7ab3408f7cc54d7d2563289bd16eaff9c99df51e700153248f96",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/original_view/lifecycle.rs"
+    },
+    {
+      "after_sha256": "cedcec40d0773a54398d4f307a38a349d29138e7f3a984209bb6d16b55c188ff",
+      "before_sha256": "27729a687c6d77bcc2dd15df512e783cfc987655e853c4f21af62bbda22757e9",
+      "new": false,
+      "path": "crates/keld-wv/src/webview2/view_build.rs"
+    }
+  ],
+  "final_native_evidence_sha256": "79ced9772f004feef10c8dc69d3f777c54a4d358e5a66a6ff5de7cbe75c05207",
+  "foundation_source_digest": "7df119d6379cb2b8c47655da71bed9e9db0f5f9bd525085d670858175ba23095",
+  "foundation_source_rows": 2141,
+  "integration_instructions": "Apply against exact foundation preimages after reviewed W1 integration. Verify all preimage/after hashes. Re-run applicable checks on the final approved source. DO NOT merge this carrier branch into main as a production implementation.",
+  "issue": "https://github.com/gyldlab/keld/issues/1184",
+  "modified_files": 40,
+  "new_files": 46,
+  "owned_count": 86,
+  "patch_sha256": "0880e287933291e87898274c52d7f9f64184d1ef6d0b10b4c495b0e982f98eb7",
+  "purpose": "Only the exact X10 and related X11 source delta, not the 2141-file uncommitted W1 foundation.",
+  "qualified_corrected_source_digest": "5a880f571cba07a1d7050cbccb9644cfec0f6d24b91c3b3ea9003574ff4850c5",
+  "qualified_corrected_source_rows": 2187,
+  "schema": 1,
+  "status": "SOURCE_PATCH_HANDOFF_NON_MERGEABLE_UNTIL_W1_INTEGRATED"
+}
