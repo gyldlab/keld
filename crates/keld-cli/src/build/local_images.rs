@@ -532,9 +532,8 @@ mod tests {
             keld_guard::parse_manifest(std::str::from_utf8(policy).unwrap())
                 .expect("valid nonreplayable manifest");
             fs::write(root.path().join("keld.permissions.jsonc"), policy).expect("source policy");
-            let error = match prepare_request(request(), false) {
-                Ok(_) => panic!("{case} reached unqualified signing path"),
-                Err(error) => error,
+            let Err(error) = prepare_request(request(), false) else {
+                panic!("{case} reached unqualified signing path");
             };
             assert!(
                 error
@@ -558,9 +557,8 @@ mod tests {
             boot::PERMISSIONS_BYTES,
         )
         .expect("positive exact policy");
-        let error = match prepare_request(request(), false) {
-            Ok(_) => panic!("missing signer and public key must prevent signing"),
-            Err(error) => error,
+        let Err(error) = prepare_request(request(), false) else {
+            panic!("missing signer and public key must prevent signing");
         };
         assert!(
             !error.to_string().contains("developer policy replay"),
