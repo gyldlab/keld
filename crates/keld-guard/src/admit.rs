@@ -792,12 +792,14 @@ fn layer_mismatch(os: HostOs, rows: &[ProbeRecord]) -> Option<AdmissionError> {
 fn incomplete_os_rows(os: HostOs, rows: &[ProbeRecord]) -> Option<String> {
     let mut missing = Vec::new();
     for probe in required_os_containment_probes(os) {
-        let passed = rows.iter().any(|row| {
-            row.probe == *probe
-                && row.verdict == ProbeVerdict::Pass
+        // A duplicated pass or a conflicting pass/fail does not prove one
+        // unambiguous native observation. Never promote either to Strict.
+        let mut matching = rows.iter().filter(|row| row.probe == *probe);
+        let passed = matching.next().is_some_and(|row| {
+            row.verdict == ProbeVerdict::Pass
                 && row.recorded_layer == ProbeLayer::OsContainment
                 && row.oracle.admits_os_containment_pass()
-        });
+        }) && matching.next().is_none();
         if !passed {
             missing.push(*probe);
         }
@@ -1279,5 +1281,35 @@ mod tests {
             ),
             Err(AdmissionError::ProofLayerMismatch { .. })
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn duplicate_or_conflicting_native_transfer_proofs_cannot_admit_strict() {
+        let req = strict_req(Some(id()));
+        let facts = facts_primitives_present();
+        let mut archive = complete_archive();
+
+        // A second passing assertion cannot make a duplicate trusted record.
+        archive.rows.push(os_pass("handle_transfer"));
+        match admit(&req, &facts, Some(&archive)) {
+            Err(err @ AdmissionError::ProofIncomplete { .. }) => {
+                assert_code(&err, "KELD-GUARD014");
+            }
+            other => panic!("duplicate native pass was accepted: {other:?}"),
+        }
+
+        // Even a later failing observation must invalidate an earlier pass.
+        let Some(last) = archive.rows.last_mut() else {
+            panic!("duplicate transfer fixture missing");
+        };
+        last.verdict = ProbeVerdict::Fail;
+        last.oracle = ProbeOracle::NotOsDeny;
+        match admit(&req, &facts, Some(&archive)) {
+            Err(err @ AdmissionError::ProofIncomplete { .. }) => {
+                assert_code(&err, "KELD-GUARD014");
+            }
+            other => panic!("contradictory native observations were accepted: {other:?}"),
+        }
     }
 }
