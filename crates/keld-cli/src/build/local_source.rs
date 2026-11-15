@@ -488,6 +488,12 @@ fn capture_source_pipe(
     result
 }
 
+pub(super) struct CapturedToolOutput {
+    pub(super) status: u32,
+    pub(super) stdout: Vec<u8>,
+    pub(super) stderr: Vec<u8>,
+}
+
 struct CaptureOptions<'a> {
     stdout_limit: usize,
     stderr_limit: usize,
@@ -562,6 +568,48 @@ fn run_captured_with_options(
     input: &File,
     options: CaptureOptions<'_>,
 ) -> Result<Vec<u8>, BuildError> {
+    let output = run_captured_with_output(tool, args, environment, cwd, input, options)?;
+    if output.status != 0 {
+        return Err(failure(
+            "source capture status",
+            format!("exit status {}", output.status),
+        ));
+    }
+    Ok(output.stdout)
+}
+
+#[cfg(test)]
+pub(super) fn run_captured_diagnostic(
+    tool: &PinnedFile,
+    args: &[OsString],
+    environment: &[(OsString, OsString)],
+    cwd: &Path,
+    input: &File,
+    stdout_limit: usize,
+) -> Result<CapturedToolOutput, BuildError> {
+    run_captured_with_output(
+        tool,
+        args,
+        environment,
+        cwd,
+        input,
+        CaptureOptions {
+            stdout_limit,
+            stderr_limit: 64 * 1024,
+            timeout: Duration::from_secs(120),
+            stderr_file: None,
+        },
+    )
+}
+
+fn run_captured_with_output(
+    tool: &PinnedFile,
+    args: &[OsString],
+    environment: &[(OsString, OsString)],
+    cwd: &Path,
+    input: &File,
+    options: CaptureOptions<'_>,
+) -> Result<CapturedToolOutput, BuildError> {
     use keld_runtime::windows_lpac::WindowsLpacStdio;
     use std::os::windows::io::AsHandle as _;
     let deadline = std::time::Instant::now() + options.timeout;
@@ -654,13 +702,11 @@ fn run_captured_with_options(
     // Do not echo captured diagnostics: source/tool output may contain private data.
     retain_source_stderr(options.stderr_file, &stderr?)?;
     let status = status?;
-    if status != 0 {
-        return Err(failure(
-            "source capture status",
-            format!("exit status {status}"),
-        ));
-    }
-    Ok(stdout)
+    Ok(CapturedToolOutput {
+        status,
+        stdout,
+        stderr: stderr?,
+    })
 }
 
 /// Observed source/tool/output identities from one nonhermetic developer build.
