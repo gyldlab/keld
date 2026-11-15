@@ -93,6 +93,26 @@ fn button_title(label: &str, normalize: bool) -> String {
     }
 }
 
+// Electron's omitted cancelId is selected after access-key normalization.
+// A single native button keeps Return; it must not be rebound to Escape.
+fn escape_button(options: &MessageOptions) -> Option<u32> {
+    if options.buttons.len() <= 1 {
+        return None;
+    }
+    if let Some(index) = options.cancel_id {
+        return Some(index);
+    }
+    options
+        .buttons
+        .iter()
+        .position(|label| {
+            let text = button_title(label, options.normalize_access_keys);
+            text.eq_ignore_ascii_case("cancel") || text.eq_ignore_ascii_case("no")
+        })
+        .and_then(|index| u32::try_from(index).ok())
+        .or(Some(u32::from(options.default_id == Some(0))))
+}
+
 /// One retained native sheet and its one-shot completion block. This type is
 /// `MainThreadOnly` through its owned `NSAlert`; it must never cross a worker.
 /// The caller MUST hold it until [`Self::poll_outcome`] confirms invisibility
@@ -139,6 +159,7 @@ impl MacMessagePanel {
             }
         });
         let count = options.buttons.len().max(1);
+        let escape = escape_button(options);
         for (index, label) in options.buttons.iter().enumerate() {
             let index = u32::try_from(index)
                 .map_err(|_| invalid("native Message button count exceeds u32 domain"))?;
@@ -150,7 +171,7 @@ impl MacMessagePanel {
             if options.default_id == Some(index) {
                 button.setKeyEquivalent(&NSString::from_str("\r"));
             }
-            if options.cancel_id == Some(index) {
+            if escape == Some(index) {
                 button.setKeyEquivalent(&NSString::from_str("\u{1b}"));
             }
         }
@@ -333,6 +354,40 @@ mod tests {
             (" ", true, " "),
         ] {
             assert_eq!(button_title(label, normalize), expected);
+        }
+    }
+
+    #[test]
+    fn escape_selection_matches_electron_and_preserves_singleton_return() {
+        for (labels, default_id, cancel_id, normalize, expected) in [
+            (vec![], None, None, false, None),
+            (vec!["OK"], Some(0), Some(0), false, None),
+            (vec!["Cancel"], None, None, false, None),
+            (vec!["Yes", "No"], None, None, false, Some(1)),
+            (vec!["No", "Cancel"], None, None, false, Some(0)),
+            (vec!["YES", "cAnCeL"], Some(0), None, false, Some(1)),
+            (vec!["A", "B"], None, None, false, Some(0)),
+            (vec!["A", "B"], Some(0), None, false, Some(1)),
+            (vec!["A", "B"], Some(1), None, false, Some(0)),
+            (vec!["Yes", "No"], Some(0), Some(0), false, Some(0)),
+            (vec!["A", "&No"], None, None, true, Some(1)),
+            (vec!["A", "&No"], None, None, false, Some(0)),
+            (vec!["A", "&&No"], None, None, true, Some(0)),
+        ] {
+            let options = MessageOptions {
+                message: String::new(),
+                kind: MessageKind::None,
+                title: None,
+                detail: None,
+                buttons: labels.into_iter().map(str::to_owned).collect(),
+                default_id,
+                cancel_id,
+                normalize_access_keys: normalize,
+                no_link: false,
+                checkbox_label: None,
+                checkbox_checked: None,
+            };
+            assert_eq!(escape_button(&options), expected, "{options:?}");
         }
     }
 
