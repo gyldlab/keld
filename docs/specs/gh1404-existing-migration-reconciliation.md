@@ -40,7 +40,7 @@ Keep renderer, webapp assets, preload, physical `codeDir`/`codeUrl`, original qu
   amendment/diff needs prime's delegated approval.
 - [GH473 chosen truthful origin 6398386345](https://github.com/gyldlab/keld/issues/473#issuecomment-6398386345) and [bounded S1 authorization 6556536264](https://github.com/gyldlab/keld/issues/473#issuecomment-6556536264): exact recorded main adjustment, native source identity, unchanged page/preload; neither authorizes unrelated edits.
 - [GH499 reconciliation 6665421889](https://github.com/gyldlab/keld/issues/499#issuecomment-6665421889): older GH587/GH589/GH500 one-edit consumers and GH467 file-identity clauses remain distinct owner contracts.
-- [GH564 §S10](gh564-macos-sync-message-box.md), [runtime facts](gh1404-macos-installed-original-runtime-facts.md), architectures [03](../architecture/03-security.md), [04](../architecture/04-electron-compat.md) and [05](../architecture/05-webview-and-native.md) retain their independent boundaries.
+- [GH564 §S10](gh564-macos-sync-message-box/index.md), [runtime facts](gh1404-macos-installed-original-runtime-facts.md), architectures [03](../architecture/03-security.md), [04](../architecture/04-electron-compat.md) and [05](../architecture/05-webview-and-native.md) retain their independent boundaries.
 
 ## 3. Acceptance criteria
 

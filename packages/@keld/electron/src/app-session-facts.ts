@@ -1,6 +1,6 @@
 /**
  * `app` session facts: GH-452 typed absence/development records plus the installed
- * extension in docs/specs/gh1404-macos-local-app-packaging/index.md §4.5.
+ * extension in docs/specs/gh1404-macos-local-app-packaging/bundle-and-delivery.md §4.5.
  *
  * Electron reads `getPath`, `getVersion`, `getName`/`name`, `getAppPath`,
  * `getLocale` and `isPackaged` from the loaded application's package.json, from

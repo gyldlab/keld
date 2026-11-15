@@ -27,18 +27,22 @@ The first native cell is `macos-arm64`, the existing target vocabulary. A second
 and all other platform cells remain unverified until actually exercised.
 
 
+T-1, T-2 and T-3 remain unchecked in the [delivery ledger](bundle-and-delivery.md#6-tasks).
+Their dependencies include qualified source/provider handoffs from the owners of
+#499/#502/#553/#452/#570 and installed native acceptance. The recorded local-development
+contract approval does not qualify the installed product; see the delivery ledger's
+[open gates](bundle-and-delivery.md#10-open-questions-blockers--unknowns) for the outstanding evidence.
+
 ## Parts
 
 | Part | Owns | Load when |
 | --- | --- | --- |
-| [requirements](requirements.md) | References and A1–A16 acceptance | Checking inputs, approval receipts or completion obligations |
-| [admission](admission.md) | Design 4.1–4.4 | Implementing config, trust or bundle admission |
-| [installation](installation.md) | Design 4.5–4.8 | Implementing runtime facts, graphs, signing or future-platform boundaries |
-| [delivery](delivery.md) | Boundaries, tasks, tests, performance and open gates | Planning or validating implementation and installed acceptance |
+| [requirements and admission](requirements-and-admission.md) | References, A1–A16 acceptance and design 4.1–4.3 | Checking requirements, trust or configuration |
+| [bundle and delivery](bundle-and-delivery.md) | Design 4.4–4.8, boundaries, tasks, tests, performance and open gates | Implementing or validating bundle and installed acceptance |
 
 ## Current blockers
 
-none
+B-1
 
 ## 8. Review gates triggered
 

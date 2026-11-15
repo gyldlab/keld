@@ -1,6 +1,6 @@
 /**
  * Main-role Electron `process.*` facts — the GH-570 source owner, with the
- * installed extension in docs/specs/gh1404-macos-local-app-packaging/index.md §4.5.
+ * installed extension in docs/specs/gh1404-macos-local-app-packaging/bundle-and-delivery.md §4.5.
  *
  * Values Electron v44.4.5 defines in its main process and Keld can state
  * truthfully from the Bun role alone:

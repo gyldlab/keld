@@ -563,7 +563,7 @@ Electron `sandbox` / `appSandbox: "off"` while `requested` is `Strict` is
 returning an error: no replacement child. T1 implements this state machine
 without claiming OS containment.
 
-Capabilities / manifest: the approved [explicit-profile amendment](kel78-explicit-legacy-profile.md)
+Capabilities / manifest: the approved [explicit-profile amendment](kel78-explicit-legacy-profile/index.md)
 selects root `keld.permissions.jsonc.profile`, with exactly `"strict"` or
 `"legacy"`; omission is no declared request, never implicit legacy. The parser
 and product admission integration remain unimplemented at this amendment's source
@@ -588,7 +588,7 @@ remain a separate compiled-protocol review gate under KEL-96/KEL-102.
 | `keld doctor` | same | same | same |
 | Scoreboard / release metadata | same | same | same |
 
-Renderer sandbox is a different column. The [explicit-profile amendment](kel78-explicit-legacy-profile.md#47-reporting-contract)
+Renderer sandbox is a different column. The [explicit-profile amendment](kel78-explicit-legacy-profile/integration.md#47-reporting-contract)
 distinguishes static declarations from actual admission, preserves KEL-74's
 approved unverified behavioral evidence, and keeps reserved build/release
 integration pending until those real commands consume the contract.

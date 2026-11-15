@@ -3,7 +3,7 @@
 ## 1. keld-runtime: Bun as a supervised component
 
 **Explicit-profile implementation (KEL-78 / GH #586 and #588):**
-the [profile amendment](../specs/kel78-explicit-legacy-profile.md#44-boot-version-compatibility-and-downgrade-prevention)
+the [profile amendment](../specs/kel78-explicit-legacy-profile/contract.md#44-boot-version-compatibility-and-downgrade-prevention)
 R1 correction separates renderer/profile schema 3 from facade/profile schema 4,
 preserving current schema 1 and GH #446's no-profile facade schema 2. This
 correction has a separate delegated design approval on #1120/KEL-78. The compiler
