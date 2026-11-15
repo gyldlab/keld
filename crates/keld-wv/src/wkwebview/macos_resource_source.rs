@@ -423,7 +423,14 @@ impl AdmittedWebAppSource {
     /// Qualify the configured document entry using the one source URL parser.
     /// Native callers separately corroborate actual view/frame/document state.
     pub(super) fn qualify_document_url(&self, actual_url: &str) -> Result<(), ResourceSourceError> {
-        let selected = self.qualify_url(actual_url)?;
+        // WKFrameInfo.request.URL may gain a fragment through same-document
+        // history changes. It is not a network resource selector, but must
+        // still be checked for control characters before it is ignored.
+        if actual_url.chars().any(char::is_control) {
+            return Err(ResourceSourceError::InvalidUrl);
+        }
+        let selector = actual_url.split_once('#').map_or(actual_url, |(url, _)| url);
+        let selected = self.qualify_url(selector)?;
         if selected.path != self.entry {
             return Err(ResourceSourceError::InvalidEntry);
         }
@@ -909,6 +916,38 @@ mod tests {
             source
                 .qualify_document_url("keld-resource://fedcba9876543210fedcba9876543210/index.html")
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn same_document_fragments_preserve_entry_but_cannot_select_resources() {
+        let fixture = Fixture::new();
+        let source = original_source(
+            &fixture.0,
+            vec![asset("index.html", b"entry"), asset("asset.css", b"body{}")],
+        );
+        let base = "keld-resource://0123456789abcdef0123456789abcdef/";
+        for suffix in ["#heading", "?lang=en#heading", "#%E2%9C%93", "#?x=1"] {
+            let url = format!("{base}index.html{suffix}");
+            assert_eq!(source.qualify_document_url(&url), Ok(()), "{url}");
+            assert_eq!(
+                source.qualify_url(&url),
+                Err(ResourceSourceError::InvalidUrl),
+                "a resource selector must never include a fragment: {url}"
+            );
+        }
+        for url in [
+            format!("{base}asset.css#heading"),
+            format!("{base}not-present.html#heading"),
+            format!("{base}pages/%2e%2e/index.html#heading"),
+            String::from("keld-resource://fedcba9876543210fedcba9876543210/index.html#heading"),
+            String::from("about:blank#heading"),
+        ] {
+            assert!(source.qualify_document_url(&url).is_err(), "{url}");
+        }
+        assert_eq!(
+            source.qualify_document_url(&format!("{base}index.html#bad\nfragment")),
+            Err(ResourceSourceError::InvalidUrl)
         );
     }
 
