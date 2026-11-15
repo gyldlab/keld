@@ -1,0 +1,79 @@
+{
+  "schema": "keld.evidence-capacity-definition/v1",
+  "qualification": "synthetic accounting only; all native/product evidence remains NOT_RUN",
+  "object_limit": 24,
+  "byte_limit": 1310720,
+  "current_policy_references": 7,
+  "worst_case_positive_distinct_objects": 20,
+  "worst_case_positive_bytes": 1179776,
+  "passed": 9,
+  "failed": 0,
+  "cases": [
+    {
+      "name": "current seven-reference cohort",
+      "expected": "accept",
+      "result": "PASS",
+      "observation": [
+        7,
+        7
+      ]
+    },
+    {
+      "name": "two issuers and distinct U1/U2 positive set",
+      "expected": "accept",
+      "result": "PASS",
+      "observation": [
+        20,
+        1179776
+      ]
+    },
+    {
+      "name": "one repeated kind/digest has one physical copy",
+      "expected": "accept",
+      "result": "PASS",
+      "observation": [
+        20,
+        1179776
+      ]
+    },
+    {
+      "name": "small four-object headroom still fits both caps",
+      "expected": "accept",
+      "result": "PASS",
+      "observation": [
+        24,
+        1212544
+      ]
+    },
+    {
+      "name": "25 distinct objects refuse",
+      "expected": "refuse",
+      "result": "PASS",
+      "observation": null
+    },
+    {
+      "name": "24 objects above byte cap refuse",
+      "expected": "refuse",
+      "result": "PASS",
+      "observation": null
+    },
+    {
+      "name": "same kind/digest different length refuses",
+      "expected": "refuse",
+      "result": "PASS",
+      "observation": null
+    },
+    {
+      "name": "oversized object refuses",
+      "expected": "refuse",
+      "result": "PASS",
+      "observation": null
+    },
+    {
+      "name": "bad length on signature-u2 refuses",
+      "expected": "refuse",
+      "result": "PASS",
+      "observation": null
+    }
+  ]
+}

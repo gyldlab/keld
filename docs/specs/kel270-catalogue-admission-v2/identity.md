@@ -327,15 +327,49 @@ issuer object can satisfy both references, but a shared issuer never
 authorizes the wrong signer profile.
 This publication uses D-64 and the same retained-parent writer. A partial policy set grants no installation authority.
 
-Each transition evidence set permits at most 12 objects and at most 786,432 aggregate bytes.
-Count every required evidence object, including policy objects. Shared references count once within the set.
-Permit at most one pending set and one retained recovery set for an installation.
-Retain one current seven-reference policy set independently of transition
-sets. Apply the same per-object and per-set bounds, deduplicating only exact
-kind-and-digest-identical objects. A missing recovery-only signing policy
-MUST fail the initial commissioned profile; do not silently fall back to
-the application publisher policy.
-Reject admission when the complete required set exceeds either bound. Do not omit evidence to fit a bound.
+The current policy cohort has exactly seven logical references and at most
+seven distinct objects, each at most 65,536 bytes. Retain this cohort
+independently of transition and recovery evidence.
+Each pending transition or retained recovery set has a cap of **24 distinct
+objects** and **1,310,720 aggregate bytes**. A set includes every
+required policy object for both the source and destination, not only
+its non-policy receipts. Apply those bounds to each set independently.
+
+For a v2 U1-to-U2 transition with different issuer policies,
+the worst-case required set has 20 distinct objects:
+
+| Evidence category | Maximum distinct objects |
+|---|---:|
+| Source policy cohort: repository, app publisher, app issuer, discovery, recovery, recovery publisher, recovery issuer | 7 |
+| Destination policy cohort, when every policy digest differs | 7 |
+| Exact before and after provenance | 2 |
+| One signed transition document | 1 |
+| Distinct U1 and U2 signature evidence | 2 |
+| One metadata-admission receipt | 1 |
+| **Required total** | **20** |
+
+The 24-object cap leaves four additional objects for required owner-local
+evidence. Each additional object MUST use an already defined kind,
+decoder, digest and length. The complete set MUST pass both caps before
+the transaction publishes its consuming journal. A 25th distinct object
+or byte count above 1,310,720 MUST refuse with no partial authority.
+
+Count a repeated exact `(kind, sha256)` reference once within each set.
+The repeated reference MUST have an identical length and authenticated
+bytes. Across current, pending and retained sets, store identical
+objects once at D-9's kind-and-digest-derived path. Do not count the
+same physical object twice for disk retention, but never exclude a
+referenced object when checking a set's complete membership.
+Permit at most one pending set and one retained recovery set per installation.
+Including the current cohort, retention is bounded by at most
+55 distinct objects and 3,080,192 aggregate evidence bytes before
+cross-set deduplication. Do not delete any current, previous-LKG or
+pending-authority object needed by those sets.
+
+A missing recovery-only signing policy MUST fail the commissioned
+profile; never fall back to the application publisher policy.
+Reject admission when a required set exceeds its object or byte cap.
+Do not omit required evidence merely to satisfy a bound.
 Keep all objects needed by current, LKG, previous-LKG, or pending state.
 Current provenance and a durable initial-admission record also root policy retention, even when `recovery_bindings` is empty.
 Garbage collection cannot delete those objects. Refuse a new transition if safe retention would exceed the set limit.

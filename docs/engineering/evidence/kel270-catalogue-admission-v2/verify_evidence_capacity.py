@@ -1,0 +1,145 @@
+"""Synthetic D-9 object-set accounting. This is not native validation.
+
+The objects below have deterministic fake digests and upper-bound lengths.
+No real signatures, WinTrust, root metadata, protected files or recovery
+journals are executed. See AC-3 and E-82 for the later native oracle.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+OBJECT_LIMIT = 24
+BYTE_LIMIT = 1_310_720
+SINGLE_LIMIT = 65_536
+CURRENT_POLICY_LIMIT = 7
+
+POLICY = [
+    "repository-policy",
+    "publisher-policy",  # Application
+    "issuer-policy",  # Application
+    "discovery-policy",
+    "recovery-policy",
+    "publisher-policy",  # Recovery
+    "issuer-policy",  # Recovery
+]
+
+
+def record(kind: str, label: str, size: int = SINGLE_LIMIT) -> dict:
+    return {
+        "kind": kind,
+        "sha256": hashlib.sha256(label.encode("ascii")).hexdigest(),
+        "bytes": size,
+    }
+
+
+def policies(epoch: str) -> list[dict]:
+    return [record(kind, f"{epoch}:policy:{i}") for i, kind in enumerate(POLICY)]
+
+
+def count(records: list[dict]) -> tuple[int, int]:
+    seen: dict[tuple[str, str], int] = {}
+    for record_ in records:
+        size = record_["bytes"]
+        if not 1 <= size <= SINGLE_LIMIT:
+            raise ValueError("individual evidence object size")
+        if record_["kind"].startswith("signature-") and size != 64:
+            raise ValueError("signature length")
+        key = (record_["kind"], record_["sha256"])
+        if key in seen and seen[key] != size:
+            raise ValueError("contradictory duplicate evidence reference")
+        seen[key] = size
+    total = sum(seen.values())
+    if len(seen) > OBJECT_LIMIT or total > BYTE_LIMIT:
+        raise ValueError("set object/byte cap")
+    return len(seen), total
+
+
+def assert_case(name: str, work, expected: bool) -> dict:
+    try:
+        result = work()
+        accepted = True
+    except ValueError:
+        result = None
+        accepted = False
+    assert accepted == expected, f"unexpected {name}: {accepted}"
+    return {"name": name, "expected": "accept" if expected else "refuse",
+            "result": "PASS", "observation": result}
+
+
+def run() -> None:
+    old = policies("before")
+    new = policies("after")
+    # Distinct application and recovery issuers in each policy cohort.
+    assert len({x["sha256"] for x in old + new}) == 14
+    non_policy = [
+        record("provenance", "before-provenance"),
+        record("provenance", "after-provenance"),
+        record("transition", "fully signed transition"),
+        record("signature-u1", "U1 proof", 64),
+        record("signature-u2", "U2 proof", 64),
+        record("metadata-admission", "exact current revision"),
+    ]
+    transition = old + new + non_policy
+    assert len(transition) == 20
+    assert sum(v["bytes"] for v in transition) == 1_179_776
+    cases = [
+        assert_case("current seven-reference cohort",
+                    lambda: (len(old), len({x["sha256"] for x in old})),
+                    True),
+        assert_case("two issuers and distinct U1/U2 positive set",
+                    lambda: count(transition), True),
+        assert_case("one repeated kind/digest has one physical copy",
+                    lambda: count(transition + [transition[0]]), True),
+        assert_case("small four-object headroom still fits both caps",
+                    lambda: count(transition + [
+                        record("provenance", f"headroom-{i}", 8192)
+                        for i in range(4)
+                    ]), True),
+        assert_case("25 distinct objects refuse",
+                    lambda: count(transition + [
+                        record("provenance", f"excess-{i}", 8192)
+                        for i in range(5)
+                    ]), False),
+        assert_case("24 objects above byte cap refuse",
+                    lambda: count(transition + [
+                        record("provenance", f"large-{i}")
+                        for i in range(4)
+                    ]), False),
+        assert_case("same kind/digest different length refuses",
+                    lambda: count(transition + [{**transition[0], "bytes": 1}]),
+                    False),
+        assert_case("oversized object refuses",
+                    lambda: count(transition + [record("provenance", "large", 65537)]),
+                    False),
+        assert_case("bad length on signature-u2 refuses",
+                    lambda: count([*transition[:-2],
+                                   {**transition[-2], "bytes": 65},
+                                   transition[-1]]),
+                    False),
+    ]
+    assert len(old) == CURRENT_POLICY_LIMIT
+    report = {
+        "schema": "keld.evidence-capacity-definition/v1",
+        "qualification": "synthetic accounting only; all native/product evidence remains NOT_RUN",
+        "object_limit": OBJECT_LIMIT,
+        "byte_limit": BYTE_LIMIT,
+        "current_policy_references": CURRENT_POLICY_LIMIT,
+        "worst_case_positive_distinct_objects": len(transition),
+        "worst_case_positive_bytes": sum(v["bytes"] for v in transition),
+        "passed": len(cases),
+        "failed": 0,
+        "cases": cases,
+    }
+    (ROOT / "evidence-capacity-validation.json").write_text(
+        json.dumps(report, indent=2) + "\n", encoding="utf-8",
+    )
+    print(json.dumps({"suite": "synthetic evidence-capacity", "passed": len(cases),
+                      "failed": 0, "positive_objects": len(transition)}))
+
+
+if __name__ == "__main__":
+    run()
