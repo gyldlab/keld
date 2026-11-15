@@ -2,6 +2,7 @@
 //! Runtime authentication and real `WebKit` effects remain separate native gates.
 
 use super::{active_caller, availability_session};
+use super::super::{CompatLedger, Direction, NativeRouteKey, PreflightAdmission};
 use crate::app_session::window_registry::WindowOwner;
 use crate::app_session::window_router::WindowSession;
 use keld_ipc::codec::decode;
@@ -10,6 +11,7 @@ use keld_ipc::link::{AppLinkDeadlines as _, read_frame};
 use keld_ipc::window::WindowEvent;
 use keld_ipc::{CorrelationId, FrameKind, LifecycleEvent, LifecycleResponse};
 use keld_wv::wkwebview::RendererBridgeOutcome;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -345,6 +347,87 @@ fn exercise(early_compat: bool, revoke_after_snapshot: bool) -> TestResult {
     {
         reader.join().map_err(|_| "component reader panicked")??;
     }
+    Ok(())
+}
+
+#[test]
+fn stale_forwarded_send_frees_only_matching_preflight_and_keeps_data_custody() -> TestResult {
+    let (handle, _peer, _guardian, _commands) =
+        crate::app_session::tests::initial_ready_router_with_window_loop();
+    let caller = active_caller(&handle);
+    let owner = WindowOwner::new(caller.identity, caller.attempt);
+    let mut windows = WindowSession::new(true);
+    let (_root, mut original, _window, _context) =
+        windows.fixture_original_recovery_document(owner)?;
+    let document = original.document();
+    let stamp = document.stamp();
+    let key = NativeRouteKey {
+        webview: stamp.view().0,
+        navigation: stamp.observed_generation(),
+        message: 41,
+    };
+    let unrelated_data = NativeRouteKey { message: 44, ..key };
+    let mut ledger = CompatLedger::new();
+    ledger.preflight = Some(PreflightAdmission {
+        caller: caller.clone(),
+        document: document.clone(),
+        call: key.message,
+        channel: String::from("rendererReq"),
+    });
+    // An independent DATA charge must survive a rejected, never-dispatched Send.
+    ledger
+        .reserve(Direction::MainToRenderer, unrelated_data, &caller, 64)
+        .expect("independent DATA in flight");
+    let mut foreign = caller.clone();
+    foreign.reader_stop = Arc::new(AtomicBool::new(false));
+    assert!(!ledger.clear_matching_preflight(key, &foreign, Some(&document)));
+    assert!(!ledger.clear_matching_preflight(
+        NativeRouteKey {
+            message: key.message + 1,
+            ..key
+        },
+        &caller,
+        Some(&document),
+    ));
+    assert!(!ledger.clear_matching_preflight(
+        NativeRouteKey {
+            navigation: key.navigation + 1,
+            ..key
+        },
+        &caller,
+        Some(&document),
+    ));
+    assert!(!ledger.clear_matching_preflight(key, &caller, None));
+    let mut separate = WindowSession::new(true);
+    let (_second_root, second_native, _, _) =
+        separate.fixture_original_recovery_document(owner)?;
+    let separate_document = second_native.document();
+    assert!(!document.same_binding(&separate_document));
+    assert!(!ledger.clear_matching_preflight(
+        key,
+        &caller,
+        Some(&separate_document),
+    ));
+    assert!(ledger.preflight.is_some(), "foreign aborts cannot free capacity");
+
+    // After native forwarding, the original document can be retired before
+    // the Core Send callback. Its retained lease still identifies the charge.
+    original.revoke();
+    assert!(!document.is_current());
+    assert!(ledger.clear_matching_preflight(key, &caller, Some(&document)));
+    assert!(ledger.preflight.is_none(), "next valid preflight has capacity");
+    assert!(
+        ledger.occupied(Direction::MainToRenderer),
+        "preflight refusal cannot refund independent DATA custody"
+    );
+    assert!(separate_document.is_current());
+    ledger.preflight = Some(PreflightAdmission {
+        caller,
+        document: separate_document,
+        call: 42,
+        channel: String::from("rendererReq"),
+    });
+    assert!(ledger.preflight.is_some(), "successor can reserve preflight");
     Ok(())
 }
 
