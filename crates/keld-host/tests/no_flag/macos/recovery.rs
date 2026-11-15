@@ -104,6 +104,7 @@ fn third_generation_crash_trips_breaker_without_a_fourth_generation() {
 fn recovery_wait_preserves_the_cli_lease_until_child_exit() {
     assert_wait_preserves_the_cli_lease(|child, lease, listener, observe| {
         let mut cycle = RecoveryCycle {
+            stage_root: PathBuf::new(),
             host_pid: child.id(),
             dev_lease_writer: lease,
             host: Some(child),
