@@ -109,7 +109,9 @@ mod tests {
 /// Retains source and dependency custody, binding only the three parser imports
 /// to the exact captured official package instead of ambient `node_modules`.
 pub(super) struct BoundCompilerEntry<'a> {
-    pub(super) source: local_source::ObservedCompilerSources<'a>,
+    // Retain the captured source handles through the entire compiler transaction.
+    // This is custody; no ambient source lookup or second provenance claim.
+    _source: local_source::ObservedCompilerSources<'a>,
     pub(super) tools: &'a CapturedCompilerToolchain,
     pub(super) preload: local_source::PinnedFile,
     pub(super) entry: local_source::PinnedFile,
@@ -190,7 +192,7 @@ impl<'a> BoundCompilerEntry<'a> {
         let tsconfig =
             write_generated_input(stage, "tsconfig.json", b"{\"compilerOptions\":{}}\n")?;
         Ok(Self {
-            source,
+            _source: source,
             tools,
             preload,
             entry,
