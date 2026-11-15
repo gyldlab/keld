@@ -37,6 +37,8 @@ function Invoke-Case([string]$Name, [string[]]$Arguments, [bool]$ExpectSuccess, 
     return $output
 }
 
+if ($Thumbprint -ceq ('0' * 40)) { $missingThumbprint = '1' * 40 } else { $missingThumbprint = '0' * 40 }
+[void](Invoke-Case 'incorrect or missing certificate' @('-Thumbprint', $missingThumbprint, '-DiscoverPublisherScope') $false '')
 $discovery = Invoke-Case 'discovery' @('-Thumbprint', $Thumbprint, '-DiscoverPublisherScope') $true 'DISCOVERY_ONLY publisherScope=[0-9a-f]{64}'
 $scopeMatches = [regex]::Matches($discovery, 'DISCOVERY_ONLY publisherScope=(?<scope>[0-9a-f]{64})')
 if ($scopeMatches.Count -ne 1) { throw 'KELD-PREFLIGHT-TEST: non-unique discovery scope' }
@@ -71,4 +73,4 @@ try {
 } finally {
     Remove-Item -LiteralPath $fixture -Force -ErrorAction SilentlyContinue
 }
-Write-Output 'KELD_DEVELOPER_SIGNER_PREFLIGHT_TEST: 7/7'
+Write-Output 'KELD_DEVELOPER_SIGNER_PREFLIGHT_TEST: 8/8'
