@@ -141,7 +141,7 @@ if ($publisher -cne 'Microsoft Corporation') {
     Refuse 'selected SignTool Authenticode publisher is not Microsoft Corporation'
 }
 $toolMetadata = (Get-Item -LiteralPath $signTool).VersionInfo
-if ($toolMetadata.OriginalFilename -cne 'signtool.exe') {
+if ($toolMetadata.OriginalFilename -ine 'signtool.exe') {
     Refuse 'selected executable has the wrong original SignTool filename'
 }
 
