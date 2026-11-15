@@ -51,26 +51,30 @@ impl NativePanel {
         &mut self,
     ) -> Result<Option<(MacDialogUiOutcome, Option<DialogReplyV1>)>, HostAppError> {
         match self {
-            Self::Message(panel) => panel
-                .poll_outcome()
-                .map(|outcome| {
-                    outcome.map(|value| {
-                        let outcome = match value {
-                            MacMessageOutcome::Selected(DialogReplyV1::Message {
-                                response,
-                                checkbox_checked,
-                            }) => MacDialogUiOutcome::Selected {
-                                response,
-                                checkbox_checked,
-                            },
-                            MacMessageOutcome::Selected(_) | MacMessageOutcome::Dismissed => {
-                                MacDialogUiOutcome::Dismissed
-                            }
-                        };
-                        (outcome, None)
-                    })
-                })
-                .map_err(|source| app_detail("native Message callback", source.to_string())),
+            Self::Message(panel) => match panel.poll_outcome() {
+                Ok(result) => Ok(result.map(|value| {
+                    let outcome = match value {
+                        MacMessageOutcome::Selected(DialogReplyV1::Message {
+                            response,
+                            checkbox_checked,
+                        }) => MacDialogUiOutcome::Selected {
+                            response,
+                            checkbox_checked,
+                        },
+                        MacMessageOutcome::Selected(_) | MacMessageOutcome::Dismissed => {
+                            MacDialogUiOutcome::Dismissed
+                        }
+                    };
+                    (outcome, None)
+                })),
+                Err(_source) if panel.quiescent() => {
+                    // A rejected AppKit response after callback and invisibility
+                    // is a native failure, not a fabricated click or Cancel.
+                    // Normal notify/complete keeps the original correlation.
+                    Ok(Some((MacDialogUiOutcome::Failed, None)))
+                }
+                Err(source) => Err(app_detail("native Message callback", source.to_string())),
+            },
             Self::File(panel) => match panel.poll_outcome() {
                 Ok(result) => Ok(result.map(|value| (MacDialogUiOutcome::FileResult, Some(value)))),
                 Err(_source) if panel.quiescent() => {
