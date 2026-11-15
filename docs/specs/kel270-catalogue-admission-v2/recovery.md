@@ -287,7 +287,11 @@ An unreferenced prepared successor is not committed trust; retain it until
 safe bounded cleanup while the matching pending pointer still guards the repository.
 Any ambiguous or changed state MUST refuse abortion and preserve all evidence for diagnosis.
 Persist and reread terminal `aborted` before any cleanup. Under the same
-metadata, installation and physical-profile leases, retire the *exact*
+metadata, installation and physical-profile leases, first publish, flush
+and read back the D-23 mode-`recovery` retirement intent. Bind its exact
+attempt ID, protected old/current and destination generation, full list
+of exclusively owned blobs, and matching pending pointer to the aborted
+journal; no object deletion may precede this durable record. Then retire the *exact*
 unreferenced prepared successor generation at
 `generations/<oldSequence+1>.json` and exclusively owned preparation blobs.
 Verify its recorded digest, protection and ownership and prove it was
@@ -296,13 +300,16 @@ The aborted journal remains as bounded diagnostic evidence; its destination
 digest is historical, not live authority to keep uncommitted successor bytes.
 The immutable next-sequence filename MUST be absent before a new attempt
 can prepare different bytes at that same required sequence.
-Retirement is idempotent only for an exactly authenticated, already
-removed *unreferenced* object. Missing authoritative old-state files refuse.
+Retirement is idempotent only under the matching authentic pre-deletion
+D-23 intent: a missing intent-listed blob or retired successor can be
+counted as completed only while the protected old state still matches.
+Missing unlisted or authoritative old-state files, a changed reference,
+or a mismatched/absent intent MUST refuse before any further deletion.
 After a crash following durable `aborted`, the matching pending pointer
 permits only finishing that same retirement and pointer cleanup.
 Reread the unchanged old metadata current, provenance, epoch, application
-state, and the verified absence of prepared successor files before
-removing the pointer.
+state, and the verified absence of the prepared successor, exclusively
+owned blobs, and the retired D-23 intent before removing the pointer.
 Remove and reread the pointer under the same lease. An interrupted removal resumes this terminal cleanup only.
 If any readback or removal fails, keep the operation blocked; never infer success from a missing response.
 Only after verified pointer absence MAY a new random attempt and independently signed directive enter `prepared`.
@@ -318,7 +325,7 @@ Reject a stale directive or a changed replacement without changing the establish
 | `prepared`, old metadata current, directive valid | Reverify the original authorization and all source/policy bindings, then commit or refuse. |
 | `prepared`, old metadata current, directive expired | Verify no trust or application effect, durably mark `aborted`, retire only authenticated unreferenced preparation, verify old state and clear matching pointer, then require a new attempt. |
 | `prepared`, new metadata current | Match the recorded destination generation. Advance the journal without repeating the epoch change. |
-| `aborted`, old metadata current | Verify no trust/application effect, idempotently finish exact successor retirement and pending-pointer cleanup; never resume trust commit. |
+| `aborted`, old metadata current | Verify no trust/application effect, idempotently finish the exact D-23 retirement-intent cleanup, verify intent removal, then clear the pending pointer; never resume trust commit. |
 | `trust-committed` | Complete the exact activation binding. Refuse all unrelated selection until that binding exists. |
 | `activation-bound` | Resume only the corresponding KEL-53 activation phase. |
 | `complete` | Use the coherent new view or its finite LKG view. |

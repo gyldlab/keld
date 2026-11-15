@@ -107,7 +107,23 @@ within the clock implementation's supported range. SID uses the native owner's c
 Maximum anchor/current/generation lengths are 2,048/512/4,096 bytes.
 Anchor appId uses the exact app-ID grammar and bytes from the identity part. Normal refresh and in-place recovery preserve this value.
 
-Blob filenames are `blobs/<sha256>.json`. Generation filenames are `generations/<sequence>.json`. The current filename is `current.json`. Use only these validated components with retained-parent operations. Existing content-addressed objects require exact-byte and protection readback. Never overwrite an existing blob or generation with different bytes.
+Blob filenames are `blobs/<sha256>.json`. Generation filenames are `generations/<sequence>.json`. The current filename is `current.json`. Retirement-intent filenames are `retirements/<successorSequence>.json`, owned by
+the same protected KEL-53 writer. A retirement intent is a separate bounded,
+immutable-before-completion cleanup authority, never caller-supplied.
+Its canonical ASCII JSON record has a 65,536-byte cap. Ordered fields:
+`schema`, `repositoryId`, `ownerSid`, `oldSequence`,
+`oldGenerationSha256`, `orphanSequence`, `orphanGenerationSha256`,
+`mode`, `attemptId`, `exclusiveBlobs`.
+`schema` is `keld.metadata-retirement/v1`; `mode` is `ordinary` or `recovery`.
+`attemptId` is null only for ordinary mode. `orphanSequence` MUST be the
+checked successor of `oldSequence`. `exclusiveBlobs` is a sorted,
+duplicate-free, bounded list of canonical `{sha256,length}` references to
+preparation blobs proved unreachable from every other protected owner.
+Empty is valid. The intent pins the exact authenticated old/current state,
+orphan generation and complete exclusive blob inventory. An existing
+intent is never overwritten with different bytes.
+
+Use only these validated components with retained-parent operations. Existing content-addressed objects require exact-byte and protection readback. Never overwrite an existing blob or generation with different bytes.
 
 Role blobs preserve the exact downloaded bytes. Do not reconstruct signed role bytes from parsed fields. Before client loading, verify every reference, bound, digest, parse result, and role identity. A malformed established role cannot become an absent cache entry.
 
@@ -140,41 +156,63 @@ MUST refuse. A protected `current` record at sequence N is authoritative.
 An existing `generations/<N+1>.json` cannot be overwritten with different
 bytes and cannot be silently adopted as committed state.
 
-With no pending pointer, the metadata owner MAY retire an unreferenced
-ordinary-publication successor at that fixed next-sequence path. It MUST
-first verify the old current, established enrollment, repository ID,
-previous-generation digest, successor sequence, recovery epoch, protection,
-record format, referenced blobs, and absence of all current/LKG/other
-protected references. Retire only that fully authenticated orphan and
-exclusively owned unreachable preparation blobs through the retained
-parent writer. Then verify the successor path is absent and the complete
-old state is unchanged. A new mutation MAY create new authenticated bytes
-at N+1 only after that readback.
+With no pending pointer, the metadata owner MAY retire only the exact unreferenced
+ordinary-publication successor at `generations/<N+1>.json`. Under the repository
+lease, first authenticate the old protected current and established enrollment,
+repository ID, owner SID, previous-generation digest, successor sequence,
+recovery epoch, canonical orphan bytes and protection. Verify the complete
+referenced-blob set and prove every proposed exclusive blob is unreachable
+from current/LKG/previous-LKG and all other protected owners. No ordinary
+cleanup is permitted while a D-68 pending pointer exists.
 
-A crash during retirement permits the same proof and idempotent cleanup
-on restart; absence of the removed orphan does not authorize deleting
-any other object. Unknown, corrupt, foreign, ambiguous or reachable
-successor evidence MUST halt without deletion. The existing KEL-53
-operator recovery owner then investigates the exact preserved state.
+Before deleting any blob or generation, the writer MUST durably publish, flush
+and read back the D-23 retirement intent for N+1 with mode `ordinary`, exact
+old-state and orphan digests, and the complete sorted exclusive-blob list.
+The same protected intent MUST be present on resume. If it already exists,
+all fields and the old protected state MUST match exactly; a mismatch halts.
+While that intent exists, no independent mutation may reuse N+1.
+
+Under the retained-parent writer, delete only the intent-listed exclusive
+blobs whose remaining bytes, owner and unreachability are verified. A listed
+blob already absent on restart counts as previously retired ONLY when the
+matching immutable pre-deletion intent remains authentic and the entire
+protected old/current, LKG and ownership evidence is unchanged. Delete the
+exact authenticated orphan generation, then verify its absence, the absence
+of every listed exclusive blob and the unchanged established old state.
+An orphan already absent may count as retired ONLY under that same
+durable, previously verified intent. Missing unlisted or authoritative
+objects, changed protections, foreign bytes or reachable references MUST
+halt with the intent preserved; they never authorize another deletion.
+
+Only after complete readback may the writer durably retire the intent itself
+and verify its path absent. A subsequent authenticated mutation MAY create
+new bytes at N+1 only after that verified absence. A crash at any deletion,
+generation-removal or intent-removal edge resumes this exact finite
+operation if its protected evidence is still coherent; otherwise it halts.
+An absent orphan without a matching durable intent cannot authorize blob
+deletions. The KEL-53 operator recovery owner investigates ambiguous state.
 There is no caller-provided cleanup flag or empty-store fallback.
+
 When `current` already names N+1, the successor is committed and MUST
 NOT be retired. Manual recovery with a pending pointer uses only
 D-65's explicit terminal-`aborted` path, not ordinary orphan cleanup.
 
-For D-65 manual recovery only, when an expired `prepared` journal and the
-protected old `current` are verified intact, a recorded terminal `aborted`
-permits the same KEL-53 writer to retire exactly that attempt's
-unreferenced prepared generation at `generations/<oldSequence+1>.json`.
-Before deletion, verify its recorded digest, protection, owner and absence
-from every current/LKG/previous-LKG or other live reference. Preserve the
-old generation, all reachable blobs and both application/UTC floors.
-After crash, continue this exact idempotent cleanup under the original
-pending pointer. Verify the successor path is absent and all old-state
-readbacks agree **before** D-68 clears the pending pointer. A newly
-authenticated attempt can then safely create a different immutable
-generation at the required next sequence; it MUST NOT overwrite stale
-successor bytes. If current already selected the new generation, abort is
-forbidden and the exact committed recovery must resume instead.
+For D-65 manual recovery only, a verified expired `prepared` journal,
+matching D-68 pending pointer, protected old `current` and terminal
+readback-verified `aborted` phase are required. Before any deletion,
+the recovery owner MUST durably publish and read back a D-23 intent at
+`retirements/<oldSequence+1>.json` with mode `recovery`, the exact
+`attemptId`, journal-bound successor digest and all exclusively owned
+preparation blobs. It MUST prove that no listed object is reachable
+from current/LKG/previous-LKG or another protected owner. Continue after
+a crash only using this same authenticated intent and pending pointer;
+an absent intent-listed blob counts as retired, but any absent unlisted
+blob, divergent protected state or ambiguous owner halts without deletion.
+Verify the exact successor and all listed blobs absent, the old current,
+provenance, epoch, application and UTC floors unchanged, and the intent
+durably removed/read back as absent BEFORE D-68 removes its pointer.
+A new attempt may use the immutable next-sequence filename only then.
+When `current` already names the committed successor, abort is forbidden.
 
 Before root catch-up, persist `phase=root-refresh`. Record fingerprints of the timestamp and snapshot key sets in the starting trusted root. Use canonical sorted key IDs and their canonical public-key bytes. Persist each accepted N-to-N+1 root before the next fetch. Keep the starting fingerprints across every successor and process interruption.
 

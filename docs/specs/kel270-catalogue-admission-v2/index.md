@@ -34,7 +34,7 @@ Non-goals:
 Review the exact commit, independent review receipt, and stated support boundaries.
 Approve that commit for implementation, or name the specific contract that must change.
 The approval record must identify the commit. Silence and a request to continue drafting are not approval.
-After sign-off, T-1 and T-20 can begin. Native work also requires T-82.
+T-1 and T-20 MUST NOT start until both T-80 exact-version sign-off and T-82 governing-contract reconciliation are complete. Other native implementation also requires its listed owner and unsafe-operation gates.
 The release owner commissions actual authority through T-81 before signed production qualification.
 
 ## Parts
