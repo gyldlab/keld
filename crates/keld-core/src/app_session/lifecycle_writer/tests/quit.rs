@@ -174,8 +174,6 @@ fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_rep
 #[test]
 #[ignore = "spawned only by the bounded parent test"]
 fn quit_ready_lock_witness_child() {
-    if std::env::var_os(PREMATURE_PANIC_ENV).is_some() {
-    }
     assert!(
         std::env::var_os(PREMATURE_PANIC_ENV).is_none(),
         "injected failure before transition-lock witness"
