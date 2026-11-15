@@ -427,12 +427,9 @@ fn bun_role_blocking_quit_returns_the_real_reply_then_the_link_closes() {
 /// and asks its owner to fail generation 1, KEL-75's natural-crash entry,
 /// and the role throws `KELD-IPC-025`.
 #[test]
-#[cfg_attr(
-    windows,
-    expect(
-        clippy::too_many_lines,
-        reason = "Keep actual Bun worker death, retained FS work, generation failure and real cleanup in one scenario."
-    )
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep actual Bun worker death, retained FS work, generation failure and real cleanup in one scenario."
 )]
 fn bun_worker_death_is_link_loss_that_fails_the_generation() {
     let (_temp_target, target) = {
