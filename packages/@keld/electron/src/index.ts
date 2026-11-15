@@ -44,7 +44,7 @@ export type {
   WebContentsEventMap,
   WebPreferences,
 } from "./browser-window";
-export { isCallError, type KeldCallError } from "./link";
+export { isCallError, type KeldCallError } from "@keld/kipc";
 
 const electron = { app, BrowserWindow, dialog };
 export default electron;

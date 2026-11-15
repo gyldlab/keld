@@ -10,7 +10,7 @@ import {
   type OpenDialogOptions,
   type OpenProperty,
   type SaveDialogOptions,
-} from "../../api/src/dialog.generated.ts";
+} from "@keld/api/internal/dialog-codec";
 
 const MAX_TEXT = 4096;
 const MAX_GROUPS = 32;

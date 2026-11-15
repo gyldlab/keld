@@ -1,7 +1,7 @@
 /** Real LifecycleLink and WindowSource; only the WorkerLink socket seam is controlled. */
 import assert from "node:assert/strict";
 import { mock } from "bun:test";
-import * as transport from "../../kipc/src/transport.ts";
+import * as transport from "@keld/kipc";
 import { encodeWindowEvent } from "./window-codec.ts";
 
 const mode = process.argv[2];
@@ -62,7 +62,7 @@ const worker = {
     ended?.(terminal);
   },
 };
-mock.module("../../kipc/src/transport.ts", () => ({
+mock.module("@keld/kipc", () => ({
   ...transport,
   WorkerLink: { open: async () => worker },
 }));

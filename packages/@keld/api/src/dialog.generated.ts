@@ -7,7 +7,7 @@ import {
   encodeU64Varint,
   encodePostcardString,
   kipcError,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 import type { WindowRef } from "./window-codec.ts";
 
 export type MessageKind = "None" | "Info" | "Error" | "Question" | "Warning";
