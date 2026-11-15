@@ -1,0 +1,485 @@
+{
+  "status": "PASS",
+  "suite": "definition-only",
+  "tests": 94,
+  "passed": 94,
+  "failed": 0,
+  "checks": [
+    {
+      "name": "v2 normal round trip",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "v1 matching domain",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "preserved existing source v1 literal",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "v1 rejects v2",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "v2 rejects v1",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "minimum byte payload",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "maximum byte payload",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "truncated before appId",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "truncated before channel",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "truncated before target",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "truncated before provider",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "truncated before profileOid",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "truncated before owner",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "truncated before installMode",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "truncated before principalModel",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "truncated before rootPolicy",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "unsupported provider",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "unsupported owner",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "unsupported installMode",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "unsupported principalModel",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "unsupported rootPolicy",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "trailing byte",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "empty app",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "app limit plus one",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "channel limit plus one",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "target limit plus one",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "invalid oid '1.03.6'",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "invalid oid '1..6'",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "invalid oid '3.1'",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "invalid oid '1.40'",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "invalid oid '2.4294967296'",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "invalid oid '1.3.'",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "invalid oid '1.3\\n'",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "invalid oid '1.+3'",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "invalid oid '1.3 '",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "issuer canonical shape",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "issuer newline refusal",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "issuer unknown field",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "issuer duplicate field",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "publisher canonical shape",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "publisher newline refusal",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "publisher unknown field",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "publisher duplicate field",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "repository canonical shape",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "repository newline refusal",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "repository unknown field",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "repository duplicate field",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "discovery canonical shape",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "discovery newline refusal",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "discovery unknown field",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "discovery duplicate field",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "catalogue canonical shape",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "catalogue newline refusal",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "catalogue unknown field",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "catalogue duplicate field",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "transition canonical shape",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "transition newline refusal",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "transition unknown field",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "transition duplicate field",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "provenance canonical shape",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "provenance newline refusal",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "provenance unknown field",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "provenance duplicate field",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "forbidden URL https://user@updates.example.invalid/",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "forbidden URL https://updates.example.invalid/../",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "forbidden URL https://updates.example.invalid/%2e/",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "forbidden URL http://updates.example.invalid/",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "forbidden URL https://updates.example.invalid:444/",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "forbidden URL https://updates.example.invalid/?token=1",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "metadata profile rejects JSON true",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "metadata profile rejects float",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "repository missing recovery policy",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "repository missing app",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "repository one-app agreement",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "repository app mismatch in Host",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "repository app mismatch in repository policy",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "repository app mismatch in discovery",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "repository app mismatch in catalogue",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "coherent other app cannot reuse enrolled repository",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "evidence reference derives unique path",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "evidence reference rejects attempt selector",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "evidence reference rejects path in digest",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "retained browser union",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "fresh browser rejects premature owner record",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "recovery authorization planned-transition",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "recovery authorization manual-recovery",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "recovery rejects implicit fallback",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "catalogue domain signature",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "transition U1 signature",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "transition U2 signature",
+      "expected": "accept",
+      "result": "PASS"
+    },
+    {
+      "name": "catalogue signature cannot authorize transition",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "U1 signature cannot satisfy U2 proof",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "literal transition mutation",
+      "expected": "refuse",
+      "result": "PASS"
+    },
+    {
+      "name": "renewal scope independent of SPKI",
+      "expected": "accept",
+      "result": "PASS"
+    }
+  ],
+  "limitations": [
+    "BLAKE3 fields are synthetic grammar fixtures, not computed product identities.",
+    "Certificate, metadata, package, native-path, issuer, and artifact authenticity are not exercised.",
+    "Ed25519 domain checks use cryptography; product verify_strict and weak-key qualification remain separate.",
+    "Boundary codec vectors are syntactic; app/channel/target provider eligibility requires owning semantic validation."
+  ]
+}

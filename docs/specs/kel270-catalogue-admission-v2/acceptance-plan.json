@@ -1,0 +1,308 @@
+{
+  "schema": "keld.research.acceptance-plan/v1",
+  "status": "PROPOSED_NOT_EXECUTED",
+  "source_pin": "7ff41173d28d58ae61ccbb3382d055c8ef9c9c97",
+  "research_pin": "b5b6ae6c5b0bd4627d8997bcf6cdd99a7f895f06",
+  "groups": [
+    {
+      "id": "A01",
+      "owner": "Acquisition/identity",
+      "status": "NOT_RUN",
+      "requires": "G1 definition; qualified bootstrap fixture",
+      "cases": [
+        "wrong Windows-trusted publisher",
+        "counterfeit Host with coherent self-selected keys",
+        "unauthenticated initial root"
+      ],
+      "oracle": "Acquisition refuses before installer authority. Independently record publisher/profile and zero protected publication.",
+      "mutant": "Remove expected publisher/profile equality; wrong-publisher control must fail."
+    },
+    {
+      "id": "A02",
+      "owner": "Catalogue authentication",
+      "status": "NOT_RUN",
+      "requires": "valid outer metadata and positive catalogue fixture",
+      "cases": [
+        "one catalogue-byte change authorized by replacement fixture metadata but not re-signed by catalogue key",
+        "one detached-signature-byte change",
+        "separate outer target digest mismatch"
+      ],
+      "oracle": "Observe catalogue signature predicate for inner faults and metadata target predicate for outer fault.",
+      "mutant": "Skip exact-byte catalogue verification; inner byte control must fail."
+    },
+    {
+      "id": "A03",
+      "owner": "Catalogue parser",
+      "status": "NOT_RUN",
+      "requires": "valid outer metadata and valid catalogue signature on each malformed fixture",
+      "cases": [
+        "duplicate top-level member",
+        "duplicate nested baseline member",
+        "unknown field",
+        "BOM or invalid UTF-8",
+        "wrong JSON type or unsupported enum",
+        "0/65536/65537 byte bounds",
+        "noncanonical digest/key and invalid full SemVer"
+      ],
+      "oracle": "Each malformed input reaches its parser predicate and refuses without trust construction.",
+      "mutant": "Disable one parser predicate per mutant; matching malformed control must fail."
+    },
+    {
+      "id": "A04",
+      "owner": "Metadata/catalogue role owners",
+      "status": "NOT_RUN",
+      "requires": "valid unrelated layers",
+      "cases": [
+        "valid signature over wrong domain",
+        "valid key for wrong role",
+        "duplicate signatures counted against threshold",
+        "raw catalogue signature incorrectly treated as threshold envelope"
+      ],
+      "oracle": "Role/domain owner refuses. Duplicate signatures do not meet a distinct-key threshold.",
+      "mutant": "Remove role/domain binding or distinct-key deduplication independently."
+    },
+    {
+      "id": "A05",
+      "owner": "Identity + BaselineVerifier",
+      "status": "NOT_RUN",
+      "requires": "valid signatures and reachable exact binding checks",
+      "cases": [
+        "wrong app",
+        "wrong channel",
+        "wrong target",
+        "wrong Host full-file digest",
+        "wrong publisher observation",
+        "wrong update key",
+        "wrong manifest digest",
+        "each baseline version/content/transport hash or size",
+        "wrong profile/mode/owner/principal/root policy"
+      ],
+      "oracle": "Each field fails its equality check. Foreign coherent package never becomes selected.",
+      "mutant": "Remove one equality check and run its owner-local discriminator; unrelated checks must not hide it."
+    },
+    {
+      "id": "A06",
+      "owner": "Metadata owner",
+      "status": "NOT_RUN",
+      "requires": "standard client positive refresh",
+      "cases": [
+        "expired timestamp/snapshot/targets/final root as separate cases",
+        "rolled-back role version",
+        "missing required metadata",
+        "wrong target",
+        "fresh metadata referencing release not eligible for first install",
+        "unusable clock",
+        "operation duration or cache bounds exceeded",
+        "valid catalogue evidence expires before first installation-tree creation",
+        "metadata repository revision changes between check and creation",
+        "long package acquisition followed by fresh authorization selects another target"
+      ],
+      "oracle": "No acquisition authorization and no v1 or stale-cache fallback. Boundary values follow selected profile. The actual filesystem worker must refuse stale or mismatched evidence before scaffold/bootstrap creation. Admission lease closes the revision race.",
+      "mutant": "Disable corresponding expiry/version/eligibility bound; control must fail."
+    },
+    {
+      "id": "A07",
+      "owner": "Metadata root owner",
+      "status": "NOT_RUN",
+      "requires": "root-chain fixture",
+      "cases": [
+        "unexpired N and N+1 absent",
+        "expired final N and N+1 absent",
+        "expired intermediate followed by valid current root",
+        "invalid fetched N+1",
+        "skipped root version",
+        "per-operation catch-up bound reached"
+      ],
+      "oracle": "Normal absence may terminate only with valid final authorization. Invalid fetched chain and expired final root refuse.",
+      "mutant": "Treat every absence as success or skip dual-threshold check in separate mutants."
+    },
+    {
+      "id": "A08",
+      "owner": "Metadata recovery + KEL-53",
+      "status": "NOT_RUN",
+      "requires": "persisted metadata and protected application floor",
+      "cases": [
+        "extreme timestamp version then authorized key rotation",
+        "extreme snapshot version then authorized rotation",
+        "old-role replay after recovery",
+        "delegated-target rotation alone",
+        "interruption at metadata persistence cuts",
+        "established acquisition ledger is missing or corrupt",
+        "initial acquisition-ledger creation is interrupted before completion marker"
+      ],
+      "oracle": "Pinned standard's reset rules hold. KELD application floor bytes stay unchanged. No missing/corrupt established ledger becomes first use; application state remains unchanged.",
+      "mutant": "Retain poisoned cache incorrectly or reset application floor in separate mutants."
+    },
+    {
+      "id": "A09",
+      "owner": "Identity/update authority",
+      "status": "NOT_RUN",
+      "requires": "installed U1 and separate catalogue/metadata roles",
+      "cases": [
+        "catalogue C1 to C2 with U1 unchanged",
+        "catalogue rotation attempting U2 without update-key transition",
+        "authorized U1 to U2 transition",
+        "mixed Host/update key/provenance at each cut"
+      ],
+      "oracle": "Catalogue rotation alone never changes installed update authority. Authorized transition follows approved journal.",
+      "mutant": "Use catalogue authority as installed-key authority; unauthorized U2 control must fail."
+    },
+    {
+      "id": "A10",
+      "owner": "KEL-135/KEL-254",
+      "status": "NOT_RUN",
+      "requires": "genuine old/new certificate evidence",
+      "cases": [
+        "same-key renewal control",
+        "old SPKI not equal new SPKI within same commissioned profile",
+        "unrelated profile",
+        "deleted/recreated profile",
+        "unauthorized stable identity mapping"
+      ],
+      "oracle": "Real changed-key case preserves intended install/browser state. Unauthorized profiles refuse.",
+      "mutant": "Restore SPKI-only stable derivation; changed-key control must fail."
+    },
+    {
+      "id": "A11",
+      "owner": "Guard caller",
+      "status": "NOT_RUN",
+      "requires": "positive supported standard-user primary token",
+      "cases": [
+        "SYSTEM/LocalService/NetworkService",
+        "elevated same SID",
+        "UAC-filtered same SID",
+        "AppContainer/LPAC",
+        "low/high/system/UIAccess integrity variants",
+        "restricted SIDs",
+        "deny-only-only restriction",
+        "privilege-removal-only restriction",
+        "same/different SID thread impersonation",
+        "token query failure",
+        "worker handoff to impersonated thread",
+        "post-admission token change"
+      ],
+      "oracle": "OS facts independently identify each context. Prohibited context fails at caller predicate before source/target mutation.",
+      "mutant": "Remove the individual token predicate. Do not let another token fault mask the control."
+    },
+    {
+      "id": "A12",
+      "owner": "Deployment/Guard root",
+      "status": "NOT_RUN",
+      "requires": "valid Host policy and admitted context",
+      "cases": [
+        "poison LOCALAPPDATA/PATH",
+        "wrong request root hint",
+        "ancestor junction",
+        "ancestor replacement",
+        "wrong volume or network/ReFS/FAT target",
+        "foreign owner or broadened ACL",
+        "changed descriptor after admission"
+      ],
+      "oracle": "Ignored hints cannot redirect a valid install. Mutated admitted objects refuse. Actual destination IDs match exact v1 or fresh-v2 derivation; v2 app/channel/target changes yield distinct writer namespaces.",
+      "mutant": "Select root from hint, omit ancestry pin, or skip exact descriptor predicate independently."
+    },
+    {
+      "id": "A13",
+      "owner": "Update source custody",
+      "status": "NOT_RUN",
+      "requires": "pinned positive source objects",
+      "cases": [
+        "replace each catalogue/signature/manifest/signature/transport/canonical TAR",
+        "equal bytes in new file object",
+        "mutate during verification or copying",
+        "hardlink/reparse source",
+        "ancestor swap",
+        "open conflicting writer before admission",
+        "try replacement after admission"
+      ],
+      "oracle": "Observe actual consumed file ID and bytes. OS sharing denial or explicit refusal prevents replacement. Both operation orders tested.",
+      "mutant": "Replace retained-object consumption with pathname reopen in an isolated owner test where that change is observable."
+    },
+    {
+      "id": "A14",
+      "owner": "KEL-53 bootstrap",
+      "status": "NOT_RUN",
+      "requires": "two fully authenticated installers and one absent root",
+      "cases": [
+        "A reaches create first",
+        "B reaches create first",
+        "both reach bootstrap barrier",
+        "first creator dies with partial scaffold",
+        "foreign object appears between checks"
+      ],
+      "oracle": "At most one bootstrap owner. Loser never repairs/reseeds/publishes. Partial state remains diagnosable.",
+      "mutant": "Remove exclusive-create or bootstrap exclusivity; double-writer control must fail."
+    },
+    {
+      "id": "A15",
+      "owner": "KEL-53 transaction",
+      "status": "NOT_RUN",
+      "requires": "native positive installer",
+      "cases": [
+        "terminate child at each named BaselineBoundary",
+        "terminate after provenance before reply",
+        "corrupt final protected readback",
+        "disk-full/write/flush/rename failure"
+      ],
+      "oracle": "No false success. Before commit remains incomplete. Lost reply is classified from protected state, never blind fresh retry.",
+      "mutant": "Emit success before readback or remove required final commit predicate."
+    },
+    {
+      "id": "A16",
+      "owner": "KEL-53 recovery",
+      "status": "NOT_RUN",
+      "requires": "native 1.0.0 baseline",
+      "cases": [
+        "activate 2.0.0 then reject health",
+        "restore 1.0.0 with floor 2.0.0",
+        "replay 2.0.0",
+        "offer 3.0.0"
+      ],
+      "oracle": "Known-good recovery succeeds, floor stays 2.0.0, replay is ineligible, later 3.0.0 can proceed.",
+      "mutant": "Lower floor on rollback or apply floor to all authorized execution in separate mutants."
+    },
+    {
+      "id": "A17",
+      "owner": "Deployment owner",
+      "status": "NOT_RUN",
+      "requires": "authenticated managed installation from the real deployment producer, complete signed predecessor/managed lookup policy, and positive direct control",
+      "cases": [
+        "managed Host package intent",
+        "managed protected provenance versus direct candidate",
+        "unknown/malformed existing owner",
+        "managed update and initial-install entry"
+      ],
+      "oracle": "Zero feed requests, no stage creation, no direct writer or lifecycle identity. Managed owner is preserved. Every required signed lookup is evaluated; different or missing request locators cannot hide an installed owner.",
+      "mutant": "Move owner check after feed access or trust candidate owner; observer detects forbidden request."
+    },
+    {
+      "id": "A18",
+      "owner": "Existing W4/W5",
+      "status": "NOT_RUN",
+      "requires": "exact final source, complete CI, commissioned signed artifact set",
+      "cases": [
+        "installed CLI to Host to Core to bundled Bun to WebView2",
+        "all applicable authoritative application workflows under the existing W4/W5/AC06 contract; resolve the exact inventory at qualification",
+        "native quit/cleanup/relaunch",
+        "existing source/nonce/lease/race controls"
+      ],
+      "oracle": "Real installed signed artifacts produce authentic behavior and expected process/handle lifecycle. Readiness-only proof is insufficient.",
+      "mutant": "Use existing W4/W5 discriminating mutants and wrong-source/signed-image controls; none removed."
+    },
+    {
+      "id": "A19",
+      "owner": "Identity + KEL-53 + W5",
+      "status": "NOT_RUN",
+      "requires": "approved migration, genuine changed-SPKI pair, existing browser data",
+      "cases": [
+        "identity transition with failed candidate",
+        "interrupt every identity/provenance/lifecycle cut",
+        "mixed Host/helper/candidate identities",
+        "LKG recovery with migrated or retained data",
+        "unauthorized predecessor mapping"
+      ],
+      "oracle": "One coherent identity interpretation, intact intended browser store, correct lifecycle bindings, authenticated LKG, unchanged floor policy. Migrated boot retains exactly the authenticated predecessor root instead of deriving a fresh-v2 root.",
+      "mutant": "Disable transition-to-provenance binding or use old lifecycle identity after migration; joined test must fail."
+    }
+  ]
+}
