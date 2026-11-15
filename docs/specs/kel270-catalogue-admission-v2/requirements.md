@@ -143,6 +143,11 @@ for named operator recovery. A different valid successor MUST not be
 written over the orphan. After verified retirement, a different
 authenticated successor MAY use the same N+1 name without lowering
 metadata, application, or UTC floors.
+Terminate at the durable D-23 retirement-intent cut, after deletion of an
+exclusive blob, after removal of the orphan generation, and after intent
+removal. Only an authenticated pre-deletion intent may treat an absent
+listed blob as retired. A missing unlisted or still-reachable object MUST
+refuse without deleting another object.
 
 ### AC-22: Established state cannot become first use through partial loss
 
@@ -372,6 +377,11 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
 - **Then:** It refuses expired trust commit, readback-verifies terminal `aborted`,
   retires the exact unreferenced prepared successor generation and owned
   blobs before pointer removal, and preserves established current/LKG.
+- Before deleting an orphan or exclusively owned preparation blob, the
+  owner MUST durably read back a D-23 retirement intent binding the aborted
+  attempt, exact successor and complete exclusive-blob inventory. After a
+  crash, only absent intent-listed objects may count as already retired;
+  absent unlisted or live-referenced objects refuse without deletion.
 - A distinct newly authorized replacement MUST be able to reuse the
   immutable next-sequence filename after safe retirement. An abandoned
   successor file MUST NOT silently grant trust or block the new attempt.

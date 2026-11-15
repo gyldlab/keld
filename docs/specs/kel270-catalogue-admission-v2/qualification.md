@@ -134,6 +134,7 @@ commissioning; those remain separate T-81/AC-66 gates.
 | R2 / AC-67 | Crash after `prepared` and pointer, expire directive, persist/read `aborted`, retire exact unreferenced successor, clear pointer, then confirm fresh matching attempt | Expired original, mismatched new directive, and crashes on each abort/retirement/pointer edge refuse; read pointer, journal, immutable successor filename, epoch, provenance, app current/LKG independently |
 | R3 / AC-68 | Old U1 signer unavailable. Valid signed recovery-only Host/directive, fresh consent, new root and U2 complete loss-only recovery | Missing independent recovery authority refuses before trust commit. A normal transition without U1 signature refuses under AC-61. Single-field repository-policy mutations refuse. Check current, provenance, and epoch before and after |
 
+For R2, cut before retirement-intent publication, after its durable readback, after every exclusively owned blob deletion, after orphan-generation deletion, and after intent removal. Restart must finish the exact recorded cleanup and permit a fresh authorized attempt; absent unlisted or newly referenced objects must halt without deletion.
 For R3, independently mutate recovery digest, recovery signer, catalogue keys, metadata/targets URLs, discovery digest, publisher digest, and root version.
 Keep Windows signature validity, source-state integrity, and unrelated checks valid in each negative control.
 The review addenda are new planned coverage, not retroactive passes for any of the 110 product cases.
@@ -318,7 +319,7 @@ UNKNOWN: This inspection does not establish full TUF 1.0.37 conformance or all d
 - **Status:** open
 - **Owner:** KEL-270 with KEL-135 and independent Windows/security reviewers.
 - **Impact:** Initial and manual recovery cannot be advertised as production ready.
-- **Check:** Exact-source AC-60 through AC-65 and every applicable joined A19 support cell pass.
+- **Check:** Exact-source AC-60 through AC-68 and every applicable joined A19 support cell pass. Any missing or failed AC-66, AC-67, or AC-68 keeps this blocker open.
 
 ### B-62: Compromised-system and unavailable-recovery-authority cells require operator recovery
 
