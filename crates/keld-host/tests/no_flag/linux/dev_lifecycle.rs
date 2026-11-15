@@ -12,7 +12,7 @@ use crate::support::{
         wait_for_direct_host, wait_for_strict_generation, wait_process_identity_gone,
     },
     project::{DARK_BG, DEV_HELPER_TEST, PRODUCT_TITLE, ProductFixture, prepare_keld_dev_helper},
-    renderer::serve_renderer_beacon,
+    renderer::{expect_renderer_beacon, spawn_renderer_beacon},
     stage::{dev_stage_count, wait_for_dev_stage_count},
 };
 use std::{
@@ -21,8 +21,6 @@ use std::{
     net::TcpListener,
     os::unix::net::UnixListener,
     process::{Command, Stdio},
-    sync::mpsc,
-    thread,
     time::Instant,
 };
 
@@ -41,8 +39,7 @@ fn shipping_keld_dev_delegates_ownership_and_deletes_its_stage() {
         .local_addr()
         .expect("dev beacon address")
         .port();
-    let (beacon_tx, beacon_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || serve_renderer_beacon(&beacon_listener, &beacon_tx));
+    let beacon = spawn_renderer_beacon(beacon_listener);
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -88,9 +85,7 @@ fn shipping_keld_dev_delegates_ownership_and_deletes_its_stage() {
         "CLI cannot own the Bun process"
     );
     assert_nonzero_descendant(&read_control_line(&mut reader));
-    beacon_rx
-        .recv_timeout(PRODUCT_DEADLINE)
-        .expect("shipping renderer beacon");
+    expect_renderer_beacon(beacon, "shipping renderer beacon");
     assert_eq!(read_control_line(&mut reader), "READY");
     assert_eq!(read_control_line(&mut reader), "ECHO1");
     assert_eq!(read_control_line(&mut reader), "ECHO2");
@@ -112,7 +107,6 @@ fn shipping_keld_dev_delegates_ownership_and_deletes_its_stage() {
     wait_process_identity_gone(&generation.bun, Instant::now() + PRODUCT_DEADLINE);
     wait_process_identity_gone(&generation.descendant, Instant::now() + PRODUCT_DEADLINE);
     wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
-    beacon.join().expect("dev beacon thread");
 }
 
 #[test]
@@ -126,8 +120,7 @@ fn shipping_keld_dev_cli_death_reaps_host_bun_and_stage() {
         .expect("nonblocking death control");
     let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind death beacon");
     let beacon_port = beacon_listener.local_addr().expect("death beacon").port();
-    let (beacon_tx, beacon_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || serve_renderer_beacon(&beacon_listener, &beacon_tx));
+    let beacon = spawn_renderer_beacon(beacon_listener);
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -163,9 +156,7 @@ fn shipping_keld_dev_cli_death_reaps_host_bun_and_stage() {
     let host = wait_for_direct_host(cli.id(), Instant::now() + PRODUCT_DEADLINE);
     let generation = wait_for_strict_generation(host.pid, Instant::now() + PRODUCT_DEADLINE);
     assert_nonzero_descendant(&read_control_line(&mut reader));
-    beacon_rx
-        .recv_timeout(PRODUCT_DEADLINE)
-        .expect("death renderer beacon");
+    expect_renderer_beacon(beacon, "death renderer beacon");
     assert_eq!(read_control_line(&mut reader), "READY");
     assert_eq!(read_control_line(&mut reader), "ECHO1");
     assert_eq!(read_control_line(&mut reader), "ECHO2");
@@ -179,7 +170,6 @@ fn shipping_keld_dev_cli_death_reaps_host_bun_and_stage() {
     wait_process_identity_gone(&generation.bun, Instant::now() + PRODUCT_DEADLINE);
     wait_process_identity_gone(&generation.descendant, Instant::now() + PRODUCT_DEADLINE);
     wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
-    beacon.join().expect("death beacon thread");
 }
 
 #[test]
@@ -196,8 +186,7 @@ fn linux_host_only_death_reaps_strict_tree_deletes_stage_and_relaunches() {
         .local_addr()
         .expect("host-death beacon")
         .port();
-    let (beacon_tx, beacon_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || serve_renderer_beacon(&beacon_listener, &beacon_tx));
+    let beacon = spawn_renderer_beacon(beacon_listener);
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -228,9 +217,7 @@ fn linux_host_only_death_reaps_strict_tree_deletes_stage_and_relaunches() {
     let generation = wait_for_strict_generation(host.pid, Instant::now() + PRODUCT_DEADLINE);
     let tree = descendant_identities(host.pid);
     assert!(tree.len() >= 4, "incomplete strict product tree: {tree:?}");
-    beacon_rx
-        .recv_timeout(PRODUCT_DEADLINE)
-        .expect("host-death renderer beacon");
+    expect_renderer_beacon(beacon, "host-death renderer beacon");
     expect_ready_and_echoes(&mut reader);
     assert_eq!(dev_stage_count(&fixture.project), 1);
 
@@ -246,7 +233,6 @@ fn linux_host_only_death_reaps_strict_tree_deletes_stage_and_relaunches() {
     diagnostic.push_str(&String::from_utf8(output.stderr).expect("host-death stderr UTF-8"));
     assert!(diagnostic.contains("KELD-CLI-048"), "{diagnostic}");
     wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
-    beacon.join().expect("host-death beacon thread");
 
     let relaunched = run_product_cycle(&fixture, "after-host-death");
     assert_ne!(relaunched.host_pid, host.pid);
