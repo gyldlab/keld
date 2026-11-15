@@ -72,6 +72,7 @@ Evidence is stored outside the specification directory:
 - B-62
 - B-80
 - B-81
+- B-82
 
 ## 8. Review gates triggered
 

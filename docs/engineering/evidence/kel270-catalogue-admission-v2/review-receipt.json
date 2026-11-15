@@ -90,19 +90,20 @@
     "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py": "9e428a8211558e1761ab8fb5dece9ea585e86cba98e5503e8d69afa356fadc21",
     "docs/specs/kel270-catalogue-admission-v2/identity.md": "5634bd627985407710fd13e72fa8bde8345c26c88bf2890d3c1ea9b672561ece",
     "docs/specs/kel270-catalogue-admission-v2/implementation.md": "01aa9b7df3c79273acb6ff82e26ea167a8479924798e7e784cb2b8e292b7534e",
-    "docs/specs/kel270-catalogue-admission-v2/index.md": "4c223cfa9599de97f31ab8b3ef7dfb9bfad1d236149cf6c6350d930881f123e1",
+    "docs/specs/kel270-catalogue-admission-v2/index.md": "4c6ee0471974f10a5bbb9b252aa8a4e0bb0686532c0c045a25dbc71e4fc015b0",
     "docs/specs/kel270-catalogue-admission-v2/integration.md": "10ea8844e3baa1a9799f2a7b4d76f2d394da6d23564bc9769aa038ab285b3a0d",
     "docs/specs/kel270-catalogue-admission-v2/metadata.md": "0cd13b1da317b7ee4049c23dd3d8f5f13b3f9a5dbdde658a97c52c955cdef80d",
-    "docs/specs/kel270-catalogue-admission-v2/qualification.md": "56cf7dccecde8449280996d9f42776d74a04ca1c63993ec815f00492f633b581",
+    "docs/specs/kel270-catalogue-admission-v2/qualification.md": "6419536409e89feac0c2b8bb6865aaf53189596da66806883b4bb0a4c0b19d2f",
     "docs/specs/kel270-catalogue-admission-v2/recovery.md": "2dea655af708f1b07d9fa71e37352493342bfae4da3c353523c321354a63dff0",
     "docs/specs/kel270-catalogue-admission-v2/requirements.md": "685c99908fe667c29e4cf96e750961946b23d20488ca9be9043285da60c3aad1",
     "docs/specs/kel270-catalogue-admission-v2/windows.md": "4bf869fb42468b7bdaa07c75367177f192df65495fd068119f7819b3b52748dc"
   },
   "reproduction": {
-    "command": "just spec-evidence",
+    "command": "python3 -B docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py --check",
     "mode": "no-write byte-for-byte golden and synthetic-report digest verification",
-    "ci_artifact": "CI scratch JSON with logged SHA-256, not uploaded; immutable full historical reports remain archived in keld-research",
-    "immutable_history": "Archived original report bytes and SHA-256 manifest in keld-research; historical reviews are not new exact-head approvals."
+    "ci_artifact": "Hosted auto-integration is B-82 BLOCKED by protected-base CI provenance; full historical reports archived; manual exact-source check remains available",
+    "immutable_history": "Archived original report bytes and SHA-256 manifest in keld-research; historical reviews are not new exact-head approvals.",
+    "ci_integration_status": "B-82 TRUSTED_BASE_APPROVAL_PENDING"
   },
   "qualification": {
     "native_product_cases": "NOT_RUN",

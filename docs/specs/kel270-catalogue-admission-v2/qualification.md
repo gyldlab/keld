@@ -9,8 +9,9 @@ Owns: Definition and native evidence, performance limits, and open release or ap
 
 - **Run:** `python3 -B docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py --check`.
 - **n:** 94 definition checks. The exact output digest is in the compact review receipt.
-- **Environment:** Python 3.10 or newer with the test-only `cryptography` package.
-  Hosted CI installs version 46.0.5 in an isolated virtual environment.
+- **Environment:** Python 3.10 or newer with the test-only `cryptography`
+  package. Local qualification used version 46.0.5.
+  A future hosted hook needs the separate B-82 trusted-base approval.
 - **Limits:** This validates candidate bytes and signature domains. It does not execute product codecs, Authenticode, Windows storage, or migration.
 
 The vector files contain synthetic public fixture keys and identities. They commission no real authority.
@@ -142,12 +143,13 @@ The fixture and review files are in `docs/engineering/evidence/kel270-catalogue-
 
 ### E-80: Definition and structure checks
 
-- **Run:** `just spec-evidence` and `just spec-structure` in the owning repository.
+- **Run:** `python3 -B docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py --check`
+  and `just spec-structure` in the owning repository.
 - **n:** 94 identity cases, nine evidence-capacity cases, and two isolated
   stale-evidence negative controls. The compact receipt pins both report digests.
-- **Environment:** The source tree is not modified. Hosted CI regenerates
-  synthetic JSON in runner scratch and logs the SHA-256 values. Immutable
-  full historical outputs remain in the pinned research archive.
+- **Environment:** A verified local Mac worktree. The check does not modify
+  tracked source. Complete historical output remains archived in research.
+  Automatic hosted evidence verification is blocked by B-82.
 - **Limits:** No product codec, patched client, native signature, crash, power-loss, or release qualification follows from these checks.
 
 ### E-81: Independent specification review
@@ -351,6 +353,24 @@ No design approval or release approval is recorded by this draft.
   field-level policy equality; refute surviving counterexamples,
   reconcile all three original review threads and publish a new
   exact-head receipt before asking the owner for T-80 sign-off.
+
+### B-82: Trusted-base CI evidence integration
+
+- **Status:** open
+- **Owner:** Repository CI/security maintainer with the trusted-base authority.
+- **Impact:** The standalone non-mutating evidence check and its two
+  failure mutants pass locally. They cannot become a hosted required
+  CI gate through this normal specification PR. CI provenance prohibits
+  edits to `.github/workflows/ci.yml`, `justfile` and CI executors.
+  A former draft added an immutable but unapproved upload action.
+  The workflow-security gate rejected it, correctly. The action was
+  removed without changing the allowlist.
+- **Check:** Separately review and land a trusted-base CI policy change
+  that runs `verify_spec_evidence.py --check` from the canonical
+  documentation job with its qualified test-only Python dependency.
+  Verify all required native workflow-security tests and protected
+  CI provenance at the new base. Keep this PR `do-not-merge` until
+  the owner records that authorization and its exact check evidence.
 
 No unresolved design choice may be hidden as a release gate.
 Product and native unknowns remain in the owning parts until their stated execution checks pass.
