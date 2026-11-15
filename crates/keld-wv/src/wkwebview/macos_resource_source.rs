@@ -429,7 +429,9 @@ impl AdmittedWebAppSource {
         if actual_url.chars().any(char::is_control) {
             return Err(ResourceSourceError::InvalidUrl);
         }
-        let selector = actual_url.split_once('#').map_or(actual_url, |(url, _)| url);
+        let selector = actual_url
+            .split_once('#')
+            .map_or(actual_url, |(url, _)| url);
         let selected = self.qualify_url(selector)?;
         if selected.path != self.entry {
             return Err(ResourceSourceError::InvalidEntry);
