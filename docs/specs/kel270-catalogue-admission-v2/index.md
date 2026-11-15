@@ -41,11 +41,14 @@ The release owner commissions actual authority through T-81 before signed produc
 
 | Part | Owns | Load when |
 |---|---|---|
+| [Requirements](requirements.md) | Source pins and all acceptance criteria | Review facts or test requirements |
 | [Identity](identity.md) | D-WIRE: bytes, stable publisher, transitions, provenance | Identity or wire behavior changes |
 | [Metadata](metadata.md) | D-METADATA: standard client, store, time, bounds | Acquisition or freshness changes |
 | [Windows](windows.md) | D-NATIVE: worker, discovery, handles, admission | Native installation behavior changes |
 | [Recovery](recovery.md) | D-RECOVERY: initial interruption and independent key replacement | Recovery behavior changes |
-| [Integration](integration.md) | Approval, task graph, evidence, release boundaries | Scheduling, review, or approval |
+| [Integration](integration.md) | Atomic owners, approval order, support boundaries | Integration or approval decisions |
+| [Implementation](implementation.md) | Change boundaries, tasks, dependency graph | Schedule or implement an approved task |
+| [Qualification](qualification.md) | Evidence, performance, release and approval blockers | Verify support or readiness |
 
 Evidence is stored outside the specification directory:
 
