@@ -30,8 +30,8 @@ pub(super) use router::admit_locked;
 pub(super) use worker::{PrimaryWriterWorker, WriterLink};
 
 use std::sync::mpsc::{Sender, TrySendError};
-use std::sync::{Arc, Condvar, Mutex};
-use std::time::Instant;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, WaitTimeoutResult};
+use std::time::{Duration, Instant};
 
 use keld_ipc::{ChannelId, CorrelationId, FrameHeader, FrameKind};
 use keld_wv::AppWindowCommand;
@@ -126,6 +126,14 @@ struct Shared {
     state: Mutex<State>,
     changed: Condvar,
     progress: Sender<AppWindowCommand>,
+    #[cfg(test)]
+    deterministic_waiters: Mutex<Option<Arc<DeterministicWaiters>>>,
+}
+
+#[cfg(test)]
+struct DeterministicWaiters {
+    capacity: Condvar,
+    worker: Condvar,
 }
 
 pub(super) struct Reservation {
@@ -173,6 +181,19 @@ impl PrimaryWriter {
     }
 
     #[cfg(test)]
+    pub(super) fn use_deterministic_waiters_for_test(&self) {
+        *self
+            .shared
+            .deterministic_waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Arc::new(DeterministicWaiters {
+                capacity: Condvar::new(),
+                worker: Condvar::new(),
+            }));
+    }
+
+    #[cfg(test)]
     pub(in crate::app_session) fn observe_next_capacity_wait_for_test(
         &self,
         observed: std::sync::mpsc::SyncSender<()>,
@@ -190,6 +211,8 @@ impl PrimaryWriter {
                 state: Mutex::new(State::new()),
                 changed: Condvar::new(),
                 progress,
+                #[cfg(test)]
+                deterministic_waiters: Mutex::new(None),
             }),
         }
     }
@@ -304,8 +327,7 @@ impl PrimaryWriter {
                     }
                     let (next, _) = self
                         .shared
-                        .changed
-                        .wait_timeout(state, remaining)
+                        .wait_capacity_timeout(state, remaining)
                         .map_err(|_| WriterRefusal::Poisoned)?;
                     state = next;
                 }
@@ -324,7 +346,7 @@ impl PrimaryWriter {
             state.closed = true;
             std::array::from_fn::<_, POSITIONS, _>(|index| state.slots[index].target.clone())
         };
-        self.shared.changed.notify_all();
+        self.shared.notify_all();
         for target in targets.into_iter().flatten() {
             let _ = target.shutdown();
         }
@@ -332,6 +354,75 @@ impl PrimaryWriter {
 }
 
 impl Shared {
+    fn wait_capacity_timeout<'a>(
+        &self,
+        state: MutexGuard<'a, State>,
+        remaining: Duration,
+    ) -> std::sync::LockResult<(MutexGuard<'a, State>, WaitTimeoutResult)> {
+        #[cfg(test)]
+        if let Some(waiters) = self
+            .deterministic_waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned()
+        {
+            return waiters.capacity.wait_timeout(state, remaining);
+        }
+        self.changed.wait_timeout(state, remaining)
+    }
+
+    fn wait_worker<'a>(
+        &self,
+        state: MutexGuard<'a, State>,
+    ) -> std::sync::LockResult<MutexGuard<'a, State>> {
+        #[cfg(test)]
+        if let Some(waiters) = self
+            .deterministic_waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned()
+        {
+            return waiters.worker.wait(state);
+        }
+        self.changed.wait(state)
+    }
+
+    fn notify_all(&self) {
+        #[cfg(test)]
+        if let Some(waiters) = self
+            .deterministic_waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned()
+        {
+            waiters.capacity.notify_all();
+            waiters.worker.notify_all();
+            return;
+        }
+        self.notify_all();
+    }
+
+    #[cfg(test)]
+    fn notify_one(&self) {
+        if let Some(waiters) = self
+            .deterministic_waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned()
+        {
+            // This is the adversarial allowed selection: a shared-condition
+            // single wake is consumed by the full-capacity producer, whose
+            // predicate remains false, while the physical writer stays asleep.
+            waiters.capacity.notify_one();
+            return;
+        }
+        self.changed.notify_one();
+    }
+
     fn release(&self, position: Position, reservation: bool) {
         let wake = {
             let mut state = self
@@ -386,7 +477,7 @@ impl PreparedFrame {
         // Queue, capacity and receipt waiters share this condition variable.
         // A single wake may select a producer whose predicate is still false,
         // leaving the idle physical writer asleep with a queued frame.
-        shared.changed.notify_all();
+        shared.notify_all();
         Ok(WriteReceipt {
             shared,
             position,
