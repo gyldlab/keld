@@ -20,6 +20,13 @@ import {
 } from "@keld/kipc";
 import { decodeRuntimeProcessInit } from "@keld/kipc/runtime-process-facts";
 
+// This allowance covers process startup in the packed integration test only.
+// Frame assembly and production WorkerLink deadlines remain at 5 seconds.
+const TEST_STARTUP_ALLOWANCE_MS = 30_000;
+function withTestIoDeadline<T>(promise: Promise<T>): Promise<T> {
+  return withIoDeadline(promise, TEST_STARTUP_ALLOWANCE_MS);
+}
+
 import { freshWin32AppLinkPipe } from "../../kipc/test/app-link-host.ts";
 
 type Message = {
@@ -112,16 +119,16 @@ async function launch(
   async function message(): Promise<Message> {
     return (
       messages.shift() ??
-      withIoDeadline(
+      withTestIoDeadline(
         new Promise<Message>((resolve) => {
           pending = resolve;
         }),
       )
     );
   }
-  const socket = await withIoDeadline(opened);
+  const socket = await withTestIoDeadline(opened);
   const writer = new WriteQueue(socket, drain);
-  const hello = await withIoDeadline(reader.readFrame());
+  const hello = await withTestIoDeadline(reader.readFrame());
   expect(hello.header.kind).toBe(FrameKind.Hello);
   await writer.writeFrame(
     FrameKind.Hello,
@@ -130,7 +137,7 @@ async function launch(
     0,
     new Uint8Array(32).fill(0x72),
   );
-  const init = await withIoDeadline(reader.readFrame());
+  const init = await withTestIoDeadline(reader.readFrame());
   expect(init.header).toMatchObject({
     kind: FrameKind.Call,
     channel: LIFECYCLE_CHANNEL,
@@ -158,7 +165,7 @@ async function launch(
     },
     async subscribe() {
       for (const channel of [WINDOW_CHANNEL, COMPAT_CONTROL_CHANNEL]) {
-        const call = await withIoDeadline(reader.readFrame());
+        const call = await withTestIoDeadline(reader.readFrame());
         expect(call.header.kind).toBe(FrameKind.Call);
         expect(call.header.channel).toBe(LIFECYCLE_CHANNEL);
         expect([...call.payload]).toEqual([1, channel]);
@@ -241,7 +248,7 @@ test("wrong Init acknowledgement closes the link before application entry", asyn
     run.proc.send({ kind: "probe" });
     expect(await run.message()).toEqual({ kind: "probe", entered: false });
     await run.ack(1);
-    expect(await withIoDeadline(run.proc.exited)).not.toBe(0);
+    expect(await withTestIoDeadline(run.proc.exited)).not.toBe(0);
     const stderr = await new Response(run.proc.stderr).text();
     expect(stderr).toContain("Runtime facts require");
     expect(run.connections()).toBe(1);
