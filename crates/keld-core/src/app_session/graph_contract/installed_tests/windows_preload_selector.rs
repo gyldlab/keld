@@ -44,6 +44,20 @@ fn canonical_fixture() -> (Fixture, PathBuf, Option<PathBuf>) {
     // Keep the original TEMP spelling as a hostile alias if this Windows
     // host exposes one. Do not count a canonical TEMP path as an alias test.
     let original_alias = (initial != ordinary).then_some(initial);
+    if std::env::var_os("GITHUB_ACTIONS").is_some() {
+        let alias = original_alias
+            .as_ref()
+            .expect("GitHub Windows runner must expose its original TEMP short-name spelling");
+        assert!(
+            alias.components().any(|component| {
+                component
+                    .as_os_str()
+                    .to_string_lossy()
+                    .contains('~')
+            }),
+            "GitHub Windows TEMP must provide an observable 8.3 short-name component: {alias:?}"
+        );
+    }
     (fixture, ordinary, original_alias)
 }
 
