@@ -164,3 +164,22 @@ fn assert_rendererless(host: u32) {
         "{text}"
     );
 }
+
+/// Execute the bounded real Unix-control regression in the already-routed
+/// macOS Host test target: the package-only Bun CI lane does not discover
+/// standalone files kept next to Host's authentic recovery role fixture.
+#[test]
+fn facade_recovery_rejects_abnormal_link_end_reasons() {
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/facade_profile_recovery_end.test.ts");
+    let output = Command::new("bun")
+        .arg("test")
+        .arg(source)
+        .output()
+        .expect("run pinned Bun Host fixture regression");
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("4 pass"),
+        "the normal EOF and all three abnormal link controls must execute: {output:?}"
+    );
+}

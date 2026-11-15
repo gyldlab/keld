@@ -110,8 +110,25 @@ if (mode === "mac-invalidated") {
   apply({ variant: "DesktopSnapshot", epoch: 2n, snapshot: null });
 }
 
-callbacks.onReady();
-assert.equal(app.isReady(), false, "raw Ready cannot commit synchronously");
+// The application realm can overwrite globals after the canonical Host preload
+// imported app.ts. Public Ready must still defer beyond this raw callback stack.
+const originalQueueMicrotask = globalThis.queueMicrotask;
+let applicationSchedulerCalls = 0;
+try {
+  globalThis.queueMicrotask = (callback: VoidFunction): void => {
+    applicationSchedulerCalls += 1;
+    callback();
+  };
+  callbacks.onReady();
+  assert.equal(app.isReady(), false, "raw Ready cannot commit synchronously");
+} finally {
+  globalThis.queueMicrotask = originalQueueMicrotask;
+}
+assert.equal(
+  applicationSchedulerCalls,
+  0,
+  "Host Ready must not consult the application-replaced scheduler",
+);
 
 if (
   mode === "mac-missing" ||

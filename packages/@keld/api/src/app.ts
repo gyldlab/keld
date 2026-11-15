@@ -50,6 +50,10 @@ import {
   encodeRuntimeProcessInit,
   snapshotRuntimeProcessFacts,
 } from "@keld/kipc/runtime-process-facts";
+// The Host-selected preload evaluates this module before any application code.
+// Do not consult a replaceable global when committing public Ready after the
+// remaining authenticated WorkerLink records in the current task.
+const intrinsicQueueMicrotask = queueMicrotask;
 let runtimeInitPayload: Uint8Array | undefined;
 /** Internal cold preload entry: captures before any link attempt or user entry. */
 export function preloadRuntimeProcessFacts(versions: unknown): Promise<void> {
@@ -248,7 +252,7 @@ function onHostReady(): void {
   // cannot flush a recovered close before application whenReady continuations.
   // WindowSource applies every record in-order in the existing bounded ring;
   // no extra fact queue, timer/polling, or second dispatch authority is added.
-  queueMicrotask(() => {
+  intrinsicQueueMicrotask(() => {
     nativeReadyQueued = false;
     if (hostReady || linkDead) return;
     if (desktopS1Selected) {
