@@ -274,6 +274,7 @@ fn verify_native_same_uri_overlap(
         && child["data"]["source_kind"] == 1
         && child["data"]["header"]["state"] == "absent"
         && child["data"]["held_iframe"] == true
+        && host_start["data"]["uri"] == receipt["uri"]
         && host_resource["data"]["uri"] == receipt["uri"]
         && host_resource["data"]["resource_context"] == 1
         && host_resource["data"]["source_kind"] == 1
@@ -507,6 +508,23 @@ mod ac06_overlap_receipt_tests {
             verify_native_same_uri_overlap(&mut json!({"uri":uri}), events, nonce)
         };
         assert!(check(&good).is_ok(), "valid two-navigation receipt refused");
+
+        let mut foreign_host_start = good.clone();
+        foreign_host_start[3]["data"]["uri"] = json!("file:///D:/fixture/foreign.html");
+        assert!(
+            check(&foreign_host_start).is_err(),
+            "foreign Host navigation-starting URI accepted"
+        );
+
+        let mut missing_host_start = good.clone();
+        missing_host_start[3]["data"]
+            .as_object_mut()
+            .expect("Host start data is an object")
+            .remove("uri");
+        assert!(
+            check(&missing_host_start).is_err(),
+            "missing Host navigation-starting URI accepted"
+        );
 
         let mut missing = good.clone();
         missing.remove(0);
