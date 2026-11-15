@@ -1,0 +1,34 @@
+{
+  "additional_952_only_file_pending": "crates/keld-runtime/src/macos_guardian/authenticated_runner/tests.rs",
+  "all_historical_files_fully_reviewed": false,
+  "baseline_949_head": "899e287ea487f38ec1cd347f7c9db8f1927348ef",
+  "changed_blobs_pending": [
+    "crates/keld-runtime/src/macos_guardian/authenticated_runner.rs",
+    "crates/keld-runtime/src/macos_guardian/process_group.rs",
+    "crates/keld-runtime/src/macos_guardian/tests/process_group_failsafe.rs"
+  ],
+  "current_pending_historical": 34,
+  "historical_path_count": 77,
+  "independent_exact_head_review_pending": true,
+  "kernel_custody_proven": false,
+  "merge_authorized": false,
+  "native_suites_rerun": false,
+  "new_limited_review_count": 8,
+  "parent_head": "059c70d88c1841c58bc85907bdf9424fc29adb99",
+  "parent_pending_historical": 42,
+  "parent_pr": 976,
+  "schema_version": 1,
+  "source_review_status_counts": {
+    "changed-since-949-pending": 3,
+    "historical-scoped-only": 4,
+    "pending-source-review": 34,
+    "source-reviewed-limited": 5,
+    "source-reviewed-limited-batch10": 7,
+    "source-reviewed-limited-batch8": 8,
+    "source-reviewed-new": 7,
+    "source-reviewed-production-followon": 4,
+    "source-reviewed-reused": 5
+  },
+  "source_tip_952": "77b1c5aef9202a6cc0d84195fc1f4c32e1eb1cba",
+  "verification_scope": "historical source references and status transitions; not proof of semantic correctness"
+}
