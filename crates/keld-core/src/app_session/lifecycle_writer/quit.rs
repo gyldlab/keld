@@ -178,6 +178,14 @@ impl PrimaryRouterHandle {
                     let _ = observed.try_send(());
                 }
             }
+            // Failure-first test-only mutant: deliberately retain the actual
+            // transition guard while Ready is pending. The bounded child test
+            // must observe that the independent lock witness cannot acquire it.
+            #[cfg(test)]
+            if std::env::var_os("KELD_TEST_QUIT_RETAIN_TRANSITION_LOCK").is_some() {
+                std::thread::sleep(remaining);
+                continue;
+            }
             // The original Ready owner must commit or retire before this Quit
             // claims. No current or Registry guard survives this actual wait.
             transition = self
