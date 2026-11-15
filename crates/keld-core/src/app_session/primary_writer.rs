@@ -405,7 +405,6 @@ impl Shared {
         self.changed.notify_all();
     }
 
-
     fn release(&self, position: Position, reservation: bool) {
         let wake = {
             let mut state = self
