@@ -1357,6 +1357,12 @@ impl WindowSession {
         WindowRef,
         keld_wv::NativeNavigationContext,
     )> {
+        // These component fixtures replace the Host's session after Ready.
+        // Qualify the registry before the original-page admission path.
+        assert!(
+            self.registry.mark_ready(),
+            "original recovery fixture requires a serviceable registry"
+        );
         self.registry
             .fixture_original_document(owner, WebviewId(700), Some(false), true)
     }
