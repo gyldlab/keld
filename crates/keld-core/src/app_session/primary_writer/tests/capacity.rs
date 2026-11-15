@@ -145,12 +145,9 @@ fn actual_writer_advances_when_an_earlier_capacity_waiter_cannot() {
     let (router, mut peer, _owner, _windows) = initial_ready_router_with_window_loop();
     let link = target(&router);
     let writer = PrimaryWriter::new(router.window_commands.clone());
-    // Test-only split condition variables provide a deterministic adversarial
-    // selection for the notify_one mutation: the capacity waiter is woken,
-    // while the actual physical writer remains asleep.
+    // Split only the two role-specific test waiters. Receipts and quiescence
+    // continue to use the original shared condition variable.
     writer.use_deterministic_waiters_for_test();
-    // Reserving the only VALUE slot creates a genuine blocked producer. Keep
-    // the reservation, payload and future receipt charged until after I/O.
     let prepared = frame(&writer, &link, &[0x42, 0x24]);
     let (capacity_observed, capacity_registered) = mpsc::sync_channel(1);
     writer.observe_next_capacity_wait_for_test(capacity_observed);
@@ -167,7 +164,6 @@ fn actual_writer_advances_when_an_earlier_capacity_waiter_cannot() {
     capacity_registered
         .recv_timeout(Duration::from_secs(2))
         .expect("real producer reaches full-capacity wait first");
-    // The shared mutex fence proves the capacity waiter released it in wait.
     drop(
         writer
             .shared
@@ -196,20 +192,65 @@ fn actual_writer_advances_when_an_earlier_capacity_waiter_cannot() {
             .expect("writer wait registration"),
     );
 
-    // Without a broadcast, the first waiter can consume the only notification
-    // even though its capacity predicate remains false, stranding this worker.
-    let receipt = send(prepared);
+    // Failure-first: enqueue's one-shot notify_one mutant wakes only the
+    // capacity producer. Its predicate remains Full, so no physical bytes arrive.
+    writer.arm_notify_one_next_for_test();
+    let (written, written_rx) = writer.hold_next_completion_for_test();
+    let receipt = Arc::new(send(prepared));
+    peer.set_app_link_read_deadline(Some(Duration::from_millis(150)))
+        .expect("bounded notify_one negative");
+    let no_write = keld_ipc::link::read_frame(&mut peer);
+    assert!(
+        no_write.is_err(),
+        "capacity-only notify_one mutant must not wake the physical writer"
+    );
+
+    // The real broadcast now wakes the same worker. Hold it after the actual
+    // pipe write but before completion publication so both receipt waiters
+    // demonstrably sleep on the original shared condition variable.
+    writer.shared.notify_all();
     peer.set_app_link_read_deadline(Some(Duration::from_secs(2)))
         .expect("bounded physical proof");
     let (header, payload) =
-        keld_ipc::link::read_frame(&mut peer).expect("worker physically wrote without release");
+        keld_ipc::link::read_frame(&mut peer).expect("broadcast wakes physical writer");
     assert_eq!(header.corr, CorrelationId(9));
     assert_eq!(payload, [0x42, 0x24]);
+    written_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("physical write returned before completion publication");
+
+    let (completion_observed, completion_registered) = mpsc::sync_channel(1);
+    let (quiescence_observed, quiescence_registered) = mpsc::sync_channel(1);
+    {
+        let mut state = writer.shared.state.lock().expect("completion wait observers");
+        state.completion_wait_observer = Some(completion_observed);
+        state.quiescence_wait_observer = Some(quiescence_observed);
+    }
+    let receipt_for_waiter = Arc::clone(&receipt);
+    let receipt_waiter = thread::spawn(move || receipt_for_waiter.wait(deadline()));
+    let observation = receipt.observation();
+    let quiescence_waiter = thread::spawn(move || observation.wait_quiesced_result());
+    completion_registered
+        .recv_timeout(Duration::from_secs(2))
+        .expect("receipt waiter sleeps before completion");
+    quiescence_registered
+        .recv_timeout(Duration::from_secs(2))
+        .expect("quiescence waiter sleeps before completion");
+
+    written.send(()).expect("publish actual physical completion");
     assert_eq!(
-        receipt
-            .wait(deadline())
+        receipt_waiter
+            .join()
+            .expect("receipt waiter joins")
             .expect("same retained receipt settles"),
         WriteCompletion::Written
+    );
+    assert_eq!(
+        quiescence_waiter
+            .join()
+            .expect("quiescence waiter joins")
+            .expect("same source becomes quiescent"),
+        Some(WriteCompletion::Written)
     );
     assert_eq!(count(&writer), 1, "completed receipt still owns the slot");
     assert!(matches!(
