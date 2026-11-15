@@ -116,6 +116,17 @@ async function launch(
       } else messages.push(message);
     },
   });
+  let startupResolved = false;
+  const startupFailure = proc.exited.then(async (code) => {
+    if (startupResolved) return;
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    throw new Error(
+      `Bun child exited before app-link readiness (exit ${code}); stdout=${stdout}; stderr=${stderr}`,
+    );
+  });
   async function message(): Promise<Message> {
     return (
       messages.shift() ??
@@ -126,7 +137,11 @@ async function launch(
       )
     );
   }
-  const socket = await withTestIoDeadline(opened);
+  const socket = await Promise.race([
+    withTestIoDeadline(opened),
+    startupFailure,
+  ]);
+  startupResolved = true;
   const writer = new WriteQueue(socket, drain);
   const hello = await withTestIoDeadline(reader.readFrame());
   expect(hello.header.kind).toBe(FrameKind.Hello);
@@ -322,4 +337,4 @@ test("actual packed API wrapper captures and ACKs over its same stamped installe
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
-}, 15000);
+}, 45000);
