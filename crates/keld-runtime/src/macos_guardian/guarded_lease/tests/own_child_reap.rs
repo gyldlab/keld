@@ -180,6 +180,14 @@ fn assert_signal_phase_eperm(error: &RuntimeError) {
                 phase: "macOS guardian process-group signal",
                 source,
             } if source.raw_os_error() == Some(nix::libc::EPERM)
+                || source.get_ref().is_some_and(|context| {
+                    // An attested absence failure wraps the original kernel
+                    // EPERM; do not confuse the outer io::Error with raw errno.
+                    context.to_string().contains("group absence after the denied signal is unproven")
+                        && std::error::Error::source(context)
+                            .and_then(|cause| cause.downcast_ref::<std::io::Error>())
+                            .is_some_and(|cause| cause.raw_os_error() == Some(nix::libc::EPERM))
+                })
         ),
         "typed signal-phase EPERM: {error:?}"
     );
