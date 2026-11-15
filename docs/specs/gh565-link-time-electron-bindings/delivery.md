@@ -72,8 +72,10 @@ Resolve the independent review findings only after exact-head evidence.
 | AC-11 | `cargo test -p keld-compat` (registry: census, digest, citations, Bun admission); re-recorded cases in `native-surface.test.ts` and `dialog.test.ts` |
 | AC-12 | manual mutation run, recorded in the PR with the failing case names |
 
-Anti-flake: every child has a kill-switch timeout below Bun's per-test limit, writes only
-to an isolated temp directory, and reports on stdout; no sleeps; no ports; no OS UI.
+Anti-flake: Bun-test children have a kill-switch below Bun's per-test limit. The Rust
+session refusal probe owns an eight-second child deadline and kills/reaps on timeout,
+including under local Cargo. Its stdout/stderr use isolated temporary files to avoid
+pipe backpressure. No sleeps for synchronization, ports or OS UI.
 
 ### E-1: Historical package-level validation
 - **Run:** `cd packages/@keld/electron && bun test`
