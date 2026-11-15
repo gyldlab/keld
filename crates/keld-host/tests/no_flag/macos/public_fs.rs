@@ -349,9 +349,11 @@ fn run_launch_with_causal_receipt(
         observation_result.is_ok(),
         body_receipt.as_deref_mut(),
     );
+    // CI diagnostics must never serialize private observer reports or Host output.
     eprintln!(
-        "KELD_KEL140_PUBLIC_DIAGNOSTICS policy={:?} launch={launch} click={:?} reports={:?} host_output={output:?}",
-        fixture.policy, evidence.click, evidence.reports,
+        "KELD_KEL140_PUBLIC_DIAGNOSTICS launch={launch} report_count={} host_exit_success={}",
+        evidence.reports.len(),
+        output.status.success(),
     );
     if let Err(failure) = observation_result {
         resume_unwind(failure);
