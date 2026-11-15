@@ -1,6 +1,15 @@
 # Spec: Electron-shaped `process.*` facts for the Bun main role
-Status: draft
-Linear: GH-570 (#517) · Owner: @0monish · Updated: 2026-10-31
+Status: approved for T1 only; T2/T3 remain draft
+Linear: GH-570 (#517) · Owner: @0monish · Updated: 2026-11-15
+
+## Scoped owner decision (2026-11-15)
+
+The owner approved T1 at reviewed head `7feedd409b668280e83062eb8d8bc5a547611fa7`
+after independent adversarial review: Option A, the package-bound version, native
+property descriptors and the existing single installer. [Decision record](https://github.com/gyldlab/keld/pull/1363#discussion_r4499768681).
+This is not approval of T2/T3, native or installed acceptance, the whole PR, merge,
+or a security/provenance bypass. The PR remains draft/do-not-merge. T2/T3 text below
+is a deferred proposal, not an approved implementation contract.
 
 ## 1. Goal & non-goals
 
@@ -286,8 +295,8 @@ the electron-log-first fixture (AC8) observing `undefined` in a real staged role
 
 - [ ] T1 — one owner module, Option A `(argv, defaultApp)`, Electron-matching descriptors,
   `KELD-COMPAT-014`, red-first Bun tests and fixtures, scoreboard rows, arch 04
-  sentence. Proposed on the same branch as this draft; it is not landed work until the
-  spec is approved.
+  sentence. T1 design approved on 2026-11-15; implementation remains on this draft
+  branch, unmerged. Approval does not certify CI or native acceptance.
 - [ ] T2 — pre-entry installation via a Host-staged second `--preload` (KEL-75
   amendment; `keld-cli` staging + guardian command); flips #569 cells
   `process.early.type` and `process.argv.default-app.empty-user-args`. Depends on #569
@@ -332,26 +341,25 @@ descriptors the single facade import produced.
 
 none — three `Object.defineProperty` calls at import; no steady-state work, no I/O.
 
-## 10. Open questions
+## 10. Decisions and deferred questions
 
-- Q1 Approve Option A for the `(argv, defaultApp)` atom (Bun argv kept, `defaultApp =
-  true`, `execPath` keeps Node semantics) over Option B.
-- Q2 T2 mechanism: a second Host-selected `--preload` of a Keld-owned bootstrap staged
+- Q1 Approved for T1: Option A for the `(argv, defaultApp)` atom (Bun argv kept,
+  `defaultApp = true`, `execPath` keeps Node semantics) over Option B.
+- Q2 Deferred, not approved. T2 mechanism: a second Host-selected `--preload` of a Keld-owned bootstrap staged
   by `keld dev` under a fixed name (transport-sidecar precedent, no `keld.boot.json`
   field) versus a bootstrap entry that imports the app entry. Who writes the KEL-75
   amendment text, and does KEL-96's closed schema v1 need a field?
-- Q3 `resourcesPath` under `keld dev` is the launch root `<project>/.keld/dev/<nonce>`;
+- Q3 Deferred, not approved. `resourcesPath` under `keld dev` is the launch root `<project>/.keld/dev/<nonce>`;
   the installed value follows the KEL-141/KEL-53 bundle layout — confirm with those
   owners before T3.
-- Q4 `type` and `versions.electron` are configurable but non-writable,
+- Q4 Approved for T1: `type` and `versions.electron` are configurable but non-writable,
   matching Electron's native `SetReadOnly`; only `defaultApp` is
   non-configurable. Any consumer that deletes/redefines the native facts?
   No such consumer was found in this repository. This corrects the earlier
-  proposed non-configurable behavior, not an owner approval of the draft.
-- Q5 `ELECTRON_VERSION_SHIM` stays the `@keld/electron` package version (`0.0.1`,
+  proposed non-configurable behavior; no T2/T3 approval is implied.
+- Q5 Approved for the current T1 scope: `ELECTRON_VERSION_SHIM` stays the `@keld/electron` package version (`0.0.1`,
   outside the npm `electron` list, which starts at `0.1.0`); the test binds the two.
-  Should the honesty rule also forbid any `0.x.y` that Electron later publishes? (#569's
-  cell holds the bounded list.)
-- Q6 This branch carries T1 behind a draft spec on the coordinator's instruction. If
-  the owner wants spec-only first, drop the `test`/`feat` commits and keep the `docs`
-  commit; nothing merges from this branch.
+  No speculative future-version policy is approved here; #569's bounded-list
+  honesty check remains separate evidence.
+- Q6 Keep T1 on the existing draft branch, preserving commit history; no new
+  spec-only PR or dropped implementation commits. This decision does not authorize merge.
