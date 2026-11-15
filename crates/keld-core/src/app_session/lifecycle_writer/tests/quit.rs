@@ -46,46 +46,79 @@ fn tail_owner(
     observations
 }
 
-#[test]
-fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_reply() {
-    const CHILD: &str = "KELD_QUIT_READY_SCENARIO_CHILD";
-    if std::env::var_os(CHILD).is_some() {
-        run_written_ready_quit_drain_scenario();
-        return;
-    }
-
-    // Run the lock-order scenario in a child test process. A broken
-    // transition-lock-retention implementation must fail inside that child;
-    // the parent can kill it at the hard deadline instead of hanging the
-    // repository's test process or leaking blocked actor threads.
-    let executable = std::env::current_exe().expect("current test executable");
-    let test_name = thread::current().name().expect("named test").to_owned();
-    let mut child = std::process::Command::new(executable)
-        .arg("--exact")
-        .arg(test_name)
-        .arg("--nocapture")
-        .env(CHILD, "1")
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .spawn()
-        .expect("isolated Quit scenario child starts");
-    let deadline = Instant::now() + Duration::from_secs(20);
+fn wait_quit_child(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus, String> {
+    let deadline = Instant::now() + timeout;
     loop {
-        if let Some(status) = child.try_wait().expect("child status") {
-            assert!(
-                status.success(),
-                "isolated Quit scenario failed with {status}"
-            );
-            return;
+        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+            return Ok(status);
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
-            let status = child.wait().expect("timed-out child reaped");
-            panic!("Quit scenario exceeded 20-second bound; child killed ({status})");
+            let status = child.wait().map_err(|error| error.to_string())?;
+            return Err(format!("child exceeded {timeout:?} and was killed ({status})"));
         }
         thread::sleep(Duration::from_millis(10));
     }
 }
+
+#[test]
+fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_reply() {
+    const MUTANT: &str = "KELD_TEST_QUIT_RETAIN_TRANSITION_LOCK";
+    let executable = std::env::current_exe().expect("current test executable");
+    let test_name = thread::current().name().expect("named test");
+    let child_name = test_name.replace(
+        "written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_reply",
+        "quit_ready_lock_witness_child",
+    );
+    assert_ne!(child_name, test_name, "child test name must be distinct");
+
+    // Run the real Quit path with a test-only transition-lock-retention mutant.
+    // Its witness must fail inside the isolated child; no parent thread can hang.
+    let mut mutant = std::process::Command::new(&executable)
+        .arg("--ignored")
+        .arg("--exact")
+        .arg(&child_name)
+        .arg("--nocapture")
+        .env(MUTANT, "1")
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .expect("transition-retention mutant child starts");
+    let mutant_status = wait_quit_child(&mut mutant, Duration::from_secs(20))
+        .expect("transition-retention mutant must fail within the hard deadline");
+    assert!(
+        !mutant_status.success(),
+        "transition-retention mutant unexpectedly passed the lock witness"
+    );
+
+    // Then run the unchanged production wait path in a second bounded child.
+    let mut healthy = std::process::Command::new(executable)
+        .arg("--ignored")
+        .arg("--exact")
+        .arg(child_name)
+        .arg("--nocapture")
+        .env_remove(MUTANT)
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .expect("healthy Quit scenario child starts");
+    let healthy_status = wait_quit_child(&mut healthy, Duration::from_secs(20))
+        .expect("healthy Quit scenario must finish within the hard deadline");
+    assert!(
+        healthy_status.success(),
+        "healthy Quit scenario failed: {healthy_status}"
+    );
+}
+
+#[test]
+#[ignore = "spawned only by the bounded parent test"]
+fn quit_ready_lock_witness_child() {
+    run_written_ready_quit_drain_scenario();
+}
+
 
 #[cfg_attr(
     windows,
