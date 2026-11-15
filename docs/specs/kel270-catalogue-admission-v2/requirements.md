@@ -335,7 +335,15 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
 
 - **Given:** An independently commissioned recovery signer and a valid normal application signer.
 - **When:** Each signs a recovery-role image with valid Authenticode and otherwise valid directive inputs.
-- **Then:** Only the signer matching all protected recovery profile, issuer, and SPKI pins authorizes recovery.
+- **Then:** Only the signer matching the protected recovery-only profile
+  and issuer policies and all native signature checks authorizes recovery.
+- Two authentic renewed certificate leaves with different SPKIs but the same
+  independently commissioned recovery profile OID MUST both be eligible.
+- A leaf with both application and recovery profile EKUs MUST refuse.
+- An otherwise correctly signed ordinary application candidate containing
+  the independently commissioned recovery profile OID MUST also refuse;
+  the symmetric role predicate is required before granting launch or catalogue
+  authority.
 - The application-signed image MUST fail at recovery signer authorization, before trust or application mutation.
 - **Negative control:**
   - **Single fault:** Replace the recovery-only signer predicate with ordinary application publisher verification.
@@ -346,7 +354,12 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
 
 - **Given:** A `prepared` journal and pending pointer, with the old metadata and application state still current.
 - **When:** The process crashes, the directive expires, and the recovery owner restarts.
-- **Then:** It refuses expired trust commit and readback-verifies terminal `aborted` before pointer removal.
+- **Then:** It refuses expired trust commit, readback-verifies terminal `aborted`,
+  retires the exact unreferenced prepared successor generation and owned
+  blobs before pointer removal, and preserves established current/LKG.
+- A distinct newly authorized replacement MUST be able to reuse the
+  immutable next-sequence filename after safe retirement. An abandoned
+  successor file MUST NOT silently grant trust or block the new attempt.
 - A new signed directive and fresh consent MAY start a new attempt only after verified pointer absence.
 - Recheck old generation, provenance, epoch, protected policies, destination, current/LKG, and browser binding.
 - An altered replacement or ambiguous first attempt MUST refuse without replacing established trust.
@@ -361,6 +374,9 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
 - **When:** The owner compares canonical source and destination repository policy before trust commit.
 - **Then:** Only `bootstrapRootSha256` and increasing `bootstrapRootVersion` MAY change.
 - All other repository-policy fields and the installed recovery policy MUST remain exact.
+- Bind the source directive root to the *currently accepted protected metadata root*,
+  not blindly to the original bootstrap root. The independently authorized
+  replacement root version must exceed that current verified version.
 - Repeat with one isolated change each to recovery policy, recovery signer, catalogue keys, URLs, and discovery.
 - Each unauthorized change MUST refuse before established trust changes.
 - **Negative control:**

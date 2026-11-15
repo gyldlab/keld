@@ -167,6 +167,9 @@ Reject ordinary application signers, unattended recovery, unauthorized policy ch
 
 Implement D-65 and D-66 without another writer. Run AC-63, AC-64, and AC-67.
 Crash after `prepared`, terminal `aborted`, and pending-pointer removal.
+Require idempotent retirement of the exact unreferenced prepared successor
+generation before pointer removal. A new attempt MUST be able to write
+different independently authorized bytes at the required old-sequence-plus-one path.
 Observe the metadata epoch and current/LKG state independently before a fresh attempt.
 Qualify loss-only recovery separately from fresh-v2 and legacy cells.
 
@@ -185,8 +188,10 @@ Record all remaining implementation gates without declaring them passed.
 - **Blocked by:** T-80
 
 The release/security owner records actual profile, issuer, repository, catalogue, and independent recovery policy evidence.
-Commission a recovery-only profile OID and pin its exact signer SPKI in protected policy.
-Verify separate signing credentials, application-signer refusal, and recovery-origin control.
+Commission and pin the durable recovery-only profile OID and issuer policy,
+not the daily-rotating leaf SPKI. Verify separate signing permissions and custody,
+application-signer and dual-profile refusal, changed-leaf-SPKI continuity
+within the same recovery profile, and recovery-origin control.
 Use no synthetic fixture as commissioning evidence.
 Supply two genuine changed-SPKI artifacts for the unchanged commissioned publisher profile.
 This task needs the existing release owner's operational authority. No draft approval manufactures those credentials.
