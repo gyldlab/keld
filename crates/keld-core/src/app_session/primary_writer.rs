@@ -31,7 +31,7 @@ pub(super) use worker::{PrimaryWriterWorker, WriterLink};
 
 use std::sync::mpsc::{Sender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, WaitTimeoutResult};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use keld_ipc::{ChannelId, CorrelationId, FrameHeader, FrameKind};
 use keld_wv::AppWindowCommand;
