@@ -23,7 +23,7 @@ Under the repository owner's continuing 2026-10-23 delegation, this revision app
 6. KEL-74's current unverified evidence/scoring contract is preserved; stale #586/#588 exclusions are superseded.
 7. The staged PR sequence and test matrix govern implementation; build/migrate integration is reported pending until those commands are real.
 
-No further user choice is requested. KEL-78 remains the profile owner; GH #446 remains the facade Ready owner. The independent review found and resolved the earlier literal-API obligations that contradicted `admit_uncontained`; AC6/AC7 and §4.5 now state the same routing rule. The reviewed content digest and new delegated approval are
+No further user choice is requested. KEL-78 remains the profile owner; GH #446 remains the facade Ready owner. The independent review found and resolved the earlier literal-API obligations that contradicted `admit_uncontained`; acceptance items 6 and 7 and §4.5 now state the same routing rule. The reviewed content digest and new delegated approval are
 published on #1120/KEL-78, with the matrix correction handed to #446/#588. Each implementation PR still requires independent review of its exact final public contract, permission boundary and compiled-boot seam. Design approval neither changes the explicit no-merge instruction nor supplies any implementation or OS evidence.
 
 ### 10.2 Verified blockers and first completion checks

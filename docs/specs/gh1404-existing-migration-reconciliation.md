@@ -16,7 +16,7 @@ explicit first-window diagnostic when optional visual-zoom limits are unavailabl
 
 Use the user's existing KELD-powered draw.io Desktop 31.7.0 migration as the installed macOS consumer. Select sender adaptation plus original-document close coordination: retained close attempt, captured original replies, actual veto settlement and scoped native destruction. Preserve `dialog.showMessageBoxSync`, its exact original options and
 button meanings; the surrounding close implementation changes and requires its own source/native proof.
-[Packaging §1](gh1404-macos-local-app-packaging/index.md) already selects the original migration. After exact approval, “original main” in [installed graph/source AC8 and T2](gh1404-macos-installed-graph-source.md) means the pinned upstream main plus the declared patch below. A wholly unmodified main was an implementation assumption, not a new user requirement.
+[Packaging §1](gh1404-macos-local-app-packaging/index.md) already selects the original migration. After exact approval, “original main” in [installed graph/source acceptance item 8 and task 2](gh1404-macos-installed-graph-source.md) means the pinned upstream main plus the declared patch below. A wholly unmodified main was an implementation assumption, not a new user requirement.
 Keep renderer, webapp assets, preload, physical `codeDir`/`codeUrl`, original query behavior and original source archive unchanged. Exclude importer/exporter qualification, browser-storage persistence, new URL identity APIs, native file-origin fabrication, other platforms and compatibility scores.
 
 ## 2. Spec refs
@@ -135,13 +135,13 @@ Retain the AC-1 acceptance oracle and its negative control.
 
 ## 7. Test plan & evidence
 
-AC1–2, AC7: independent full byte/diff census; one undeclared hunk and one changed immutable source each refuse. Confirm all three packed internal helpers resolve to the same facade instance and the original synchronous prompt/options bytes remain unchanged.
-AC3: genuine native event succeeds; forged/prototype/copied event, wrong WindowRef/incarnation, same-URL replacement, retirement, link death, foreign entry/authority and missing literal grant each fail independently.
-AC4: root performs real installed macOS Open → Edit → Save → XML readback → unsaved Cancel/Save failure/Discard → Reopen → Quit. Preserve native and child-cleanup evidence for final signed .app and DMG.
-AC5: execute unchanged Electron/file reference separately; preserve its custom-origin rejection. Adapted workflow and GH564 unmodified-main S10 must have different evidence labels.
-AC6: hold A across synchronous-dialog return, actual veto settlement, Save acknowledgement and both Discard branches; retire A/commit B and release each held operation. Verify captured replies cannot reach B, all four original destruction branches reject a replacement document at native admission, and stale cleanup cannot remove B's
+Acceptance items 1–2 and 7: independent full byte/diff census; one undeclared hunk and one changed immutable source each refuse. Confirm all three packed internal helpers resolve to the same facade instance and the original synchronous prompt/options bytes remain unchanged.
+Acceptance item 3: genuine native event succeeds; forged/prototype/copied event, wrong WindowRef/incarnation, same-URL replacement, retirement, link death, foreign entry/authority and missing literal grant each fail independently.
+Acceptance item 4: root performs real installed macOS Open → Edit → Save → XML readback → unsaved Cancel/Save failure/Discard → Reopen → Quit. Preserve native and child-cleanup evidence for final signed .app and DMG.
+Acceptance item 5: execute unchanged Electron/file reference separately; preserve its custom-origin rejection. Adapted workflow and GH564 unmodified-main S10 must have different evidence labels.
+Acceptance item 6: hold A across synchronous-dialog return, actual veto settlement, Save acknowledgement and both Discard branches; retire A/commit B and release each held operation. Verify captured replies cannot reach B, all four original destruction branches reject a replacement document at native admission, and stale cleanup cannot remove B's
 listeners/flags or close bookkeeping. Exercise repeated close, wrong-window acknowledgement, failed/cancelled Save and successful physical destruction; a generic-destroy substitution or captured-reply removal must fail the corresponding control.
-AC8: exact extracted Exit and close handlers must request Quit, veto and send `isModified`, without a pending unused `mainResp`; deleting Quit or all ordinary replies must fail independent positive controls. Original first-window callback, in both native/renderer event orders: absent method fails before the correction; explicit absence
+Acceptance item 8: exact extracted Exit and close handlers must request Quit, veto and send `isModified`, without a pending unused `mainResp`; deleting Quit or all ordinary replies must fail independent positive controls. Original first-window callback, in both native/renderer event orders: absent method fails before the correction; explicit absence
 diagnostic permits the original join afterward; callable invocation preserves receiver/arguments and a real thrown error is not swallowed. These source controls do not substitute for native File → Exit or installed startup qualification.
 Watcher behavior is separately diagnosed by prime if needed. No watcher-isolation or whole-application asynchronous-lifetime PASS is asserted by these close controls.
 No tests, build or native execution were performed by this review. Existing test source establishes available cases only; root reports actual runs.

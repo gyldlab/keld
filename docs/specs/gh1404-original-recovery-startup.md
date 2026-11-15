@@ -124,4 +124,4 @@ No performance improvement claim. Existing startup and IPC budgets remain.
 The confirmed baseline defect discarded the finished physical observation at role_lost. The implementation now retains only qualified physical state and explicitly binds a fresh authenticated subscriber; no native UI roundtrip is needed to read the existing atomic lease observation.
 An Acquire liveness read is not a reservation. Snapshot publication, DocumentBound/RouteState and every later native effect retain their existing current lease/role checks; revocation cannot create a usable stale binding.
 Pending acceptance: final independent review, frozen source gates and installed genuine G2 request followed by stable unsaved 270, Save 280 and independent/fresh-open readback. In-flight replies and lost file watchers remain outside this bounded claim.
-AC7–8 remain unproved until the root's real installed run passes. v6 remains FAIL, including its separately preserved early positive temporal observation.
+Acceptance items 7–8 remain unproved until the root's real installed run passes. v6 remains FAIL, including its separately preserved early positive temporal observation.
