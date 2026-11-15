@@ -135,8 +135,11 @@ fn link_shutdown_accepts_already_closed_but_propagates_other_io_errors() {
     assert!(error.to_string().contains("permission denied"), "{error}");
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn assert_echo_call(client: &mut std::os::unix::net::UnixStream, correlation: u32, message: &str) {
+/// One echo round trip on a router link. `BootstrapStream` is the Unix
+/// socket on macOS and Linux and the KEL-101 named pipe on Windows, so the
+/// cross-OS guarded router cases (#528 T5) share this helper.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn assert_echo_call(client: &mut BootstrapStream, correlation: u32, message: &str) {
     use keld_ipc::codec::{decode, encode};
     use keld_ipc::echo::{EchoRequest, EchoResponse};
     use keld_ipc::link::read_frame;
