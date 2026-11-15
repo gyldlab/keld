@@ -3,6 +3,26 @@
 Status: done
 Linear: KEL-42 · Owner: TBD (human approver) · Updated: 2026-08-13
 
+### Dependency maintenance — 2026-11-10
+
+The current workspace pin is `rmcp =3.9.0`, replacing the original `=3.1.2`
+to remediate RUSTSEC-2026-0457, -0461 and -0462. The original dependency review
+and research references below describe the August implementation, not the current
+resolved graph. Version bumps remain subject to the conformance gates below.
+
+The [2026-07-28 versioning contract](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning)
+uses per-request protocol/capability metadata and `server/discover`; it does not
+negotiate that revision through `initialize`. Legacy `initialize` requests,
+including ones requesting 2026-07-28, negotiate 2025-11-25. The integration corpus
+tests both paths and rejects missing required modern metadata.
+
+Keld still calls `serve(stdio())` and enables only rmcp's server, macros and
+transport-io features. In the [pinned SDK](https://github.com/modelcontextprotocol/rust-sdk/blob/5596a8a0bba2a1ec5519cc855cdadf23e4dcecdc/crates/rmcp/Cargo.toml),
+transport-io transitively enables `tokio/net` for optional pipe support. This does
+not add an HTTP/auth transport or a network listener to Keld's stdio server.
+The original statement that the resolved Tokio features contain only `rt` and
+`io-std` is historical, not a current feature inventory.
+
 > Status flipped to **APPROVED** on 2026-08-11; implementation may proceed under
 > workflow.md § spec gate. T4 (`keld_permissions_explain`) wraps `keld-guard`
 > `load_manifest` / `evaluate` (v0: default-deny path scopes on `app` grants).
@@ -15,7 +35,7 @@ was this denied and what manifest edit fixes it" without a human reading
 `docs/architecture/03-security.md`. This spec ships the official Keld MCP server —
 `keld mcp serve`, a stdio-transport server inside the existing `keld` binary speaking
 MCP spec revision **2026-07-28** (with 2025-11-25 negotiation for lagging clients),
-built on **rmcp 3.1.x** — exposing the first three tools of the
+initially built on **rmcp 3.1.x** — exposing the first three tools of the
 `docs/architecture/07-agent-experience.md` §4 toolset: `keld_doctor`,
 `keld_docs_search`, `keld_permissions_explain`. Observable outcome: an MCP client
 (Claude Code, Cursor, etc.) configured with `command: keld, args: [mcp, serve]` can
@@ -209,7 +229,7 @@ pub struct PermissionsExplainResult {
   v0 `evaluate` covers app path/host scopes only: a present `operation.channel`
   is `KELD-MCP014` (fail closed), not an allow/deny for the path question.
 
-### Dependency review gate — rmcp (and tokio)
+### Original dependency review gate — rmcp (and tokio), 2026-08-13
 
 Per root `AGENTS.md` (name, purpose, alternatives):
 
