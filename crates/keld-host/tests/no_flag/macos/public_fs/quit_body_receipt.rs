@@ -236,7 +236,9 @@ mod composition_tests {
 #[cfg(test)]
 mod native_bun_reply_tests {
     use super::QuitBodyReceipt;
+    use crate::public_fs::{Observation, assert_public_quit_body_evidence};
     use crate::support::EVENT_DEADLINE;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::io::{ErrorKind, Read as _, Write as _};
     use std::net::TcpListener;
     use std::process::{Child, Command, Stdio};
@@ -361,6 +363,23 @@ mod native_bun_reply_tests {
         actual_get: bool,
     }
 
+    // Adapt the independent results from real Bun/HTTP into the shipping
+    // assertion; a copied Boolean predicate would not catch guard regressions.
+    fn shipping_guard_accepts(evidence: &NativeProbe) -> bool {
+        let mut observer = Observation::bind();
+        observer.stop_and_join();
+        observer.quit_progress.store(
+            if evidence.actual_get { 2 } else { 0 },
+            Ordering::Release,
+        );
+        let mut receipt = QuitBodyReceipt::arm();
+        receipt.observed = evidence.native_receipt;
+        catch_unwind(AssertUnwindSafe(|| {
+            assert_public_quit_body_evidence(&observer, Some(&receipt));
+        }))
+        .is_ok()
+    }
+
     fn native_bun_body_script(port: u16, source: ReplySource, receipt: &QuitBodyReceipt) -> String {
         let fixture_source = include_str!("../../../fixtures/public_fs_app.ts");
         let body_function = fixture_source
@@ -482,6 +501,7 @@ mod native_bun_reply_tests {
             evidence.actual_get,
             "server must observe actual HTTP /quit GET"
         );
+        assert!(shipping_guard_accepts(&evidence), "real HTTP and native Bun receipt must pass the shipping guard");
     }
 
     #[test]
@@ -496,6 +516,7 @@ mod native_bun_reply_tests {
             "wrong HTTP body must never publish a native receipt"
         );
         assert!(evidence.actual_get, "wrong-body case still uses real GET");
+        assert!(!shipping_guard_accepts(&evidence), "missing native Bun receipt must fail the shipping guard");
     }
 
     #[test]
@@ -514,8 +535,8 @@ mod native_bun_reply_tests {
             "the independent HTTP server must observe no /quit GET"
         );
         assert!(
-            !(evidence.actual_get && evidence.native_receipt),
-            "missing GET cannot satisfy both independent native receipt conditions"
+            !shipping_guard_accepts(&evidence),
+            "missing real HTTP GET must fail the shipping composed evidence assertion"
         );
     }
 }
