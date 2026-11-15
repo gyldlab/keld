@@ -222,7 +222,11 @@ fn actual_writer_advances_when_an_earlier_capacity_waiter_cannot() {
     let (completion_observed, completion_registered) = mpsc::sync_channel(1);
     let (quiescence_observed, quiescence_registered) = mpsc::sync_channel(1);
     {
-        let mut state = writer.shared.state.lock().expect("completion wait observers");
+        let mut state = writer
+            .shared
+            .state
+            .lock()
+            .expect("completion wait observers");
         state.completion_wait_observer = Some(completion_observed);
         state.quiescence_wait_observer = Some(quiescence_observed);
     }
@@ -237,7 +241,9 @@ fn actual_writer_advances_when_an_earlier_capacity_waiter_cannot() {
         .recv_timeout(Duration::from_secs(2))
         .expect("quiescence waiter sleeps before completion");
 
-    written.send(()).expect("publish actual physical completion");
+    written
+        .send(())
+        .expect("publish actual physical completion");
     assert_eq!(
         receipt_waiter
             .join()
