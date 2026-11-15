@@ -402,7 +402,7 @@ impl Shared {
             waiters.worker.notify_all();
             return;
         }
-        self.notify_all();
+        self.changed.notify_all();
     }
 
     #[cfg(test)]
@@ -431,7 +431,7 @@ impl Shared {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.release(position, reservation)
         };
-        self.changed.notify_all();
+        self.notify_all();
         self.wake(wake);
     }
 }
