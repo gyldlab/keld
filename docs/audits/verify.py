@@ -806,6 +806,19 @@ def main() -> int:
         errors.append(
             f"{REGISTRY}: published-row count {len(rows)} differs from manifest count {len(manifests)}"
         )
+    # Keep the historical Guardian policy in its existing verifier. This is a
+    # required bundle, not optional discovery: missing scripts/objects fail closed.
+    guardian = subprocess.run(
+        [
+            sys.executable, "-B",
+            str(ROOT / "macos-guardian-2026-10-19-86933528-final19" / "verify_final19.py"),
+        ],
+        cwd=REPO,
+        check=False,
+    )
+    if guardian.returncode != 0:
+        errors.append("Guardian final19 verifier failed")
+
     if errors:
         for error in errors:
             print(f"audit-docs error: {error}", file=sys.stderr)
