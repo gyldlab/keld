@@ -121,8 +121,7 @@ fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_rep
             .send(waiting_router.current.try_lock().is_ok())
             .expect("transition release witness");
     });
-    let transition_released_during_wait =
-        available_rx.recv_timeout(Duration::from_secs(3));
+    let transition_released_during_wait = available_rx.recv_timeout(Duration::from_secs(3));
     let writer = router.primary_writer_owner().expect("one primary writer");
     let (quit_dequeued, quit_write) = writer.hold_next_dequeue_for_test();
     ready_resume.send(()).expect("allow canonical Ready commit");
