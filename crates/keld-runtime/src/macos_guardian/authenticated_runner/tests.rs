@@ -1,6 +1,7 @@
 //! Real KGR1 terminal failure must report denied native group cleanup without
 //! waiting indefinitely for a still-executing, independently test-owned Child.
 use super::run_live_group;
+use crate::macos_guardian::GUARDIAN_SHUTDOWN_DEADLINE;
 use crate::macos_guardian::process_group::{observe_group_identity, terminate_attested_group};
 use nix::errno::Errno;
 use nix::sys::signal::kill;
@@ -10,7 +11,7 @@ use std::fs::File;
 use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // Own the actual spawned Child from the first fallible fixture assertion
 // until it is transferred to run_live_group. A setup panic must never leave
@@ -61,9 +62,24 @@ fn denied_attested_kgr1_group_signal_never_blocks_on_live_direct_child_wait() {
     drop(writer); // Actual host EOF is what starts terminal group cleanup.
     let stale_birth = original.altered_birth_for_test();
     let (tx, rx) = mpsc::channel();
+    let (revoked_tx, revoked_rx) = mpsc::channel();
     let child = child.take();
     let worker = std::thread::spawn(move || {
-        let result = run_live_group(child, stale_birth, File::from(reader), || Ok(()));
+        // Deliberately spend 600ms in a valid registered-resource revocation.
+        // This is below the shipping five-second cleanup budget but exceeds
+        // the prior 400ms test-only response timeout. It is a latency fault
+        // injection, never a synchronization sleep or an OS authority change.
+        let result = run_live_group(child, stale_birth, File::from(reader), || {
+            let finish = Instant::now() + Duration::from_millis(600);
+            while Instant::now() < finish {
+                std::thread::yield_now();
+            }
+            // The receipt follows the actual delayed revocation work. The
+            // 400ms terminal oracle starts only when cleanup advances to its
+            // native group-signal/owned-direct-Child phase.
+            revoked_tx.send(()).map_err(std::io::Error::other)?;
+            Ok(())
+        });
         let _ = tx.send(result);
     });
 
@@ -73,6 +89,10 @@ fn denied_attested_kgr1_group_signal_never_blocks_on_live_direct_child_wait() {
     // A mutant which only returns Err and drops that live Child is also RED.
     // The test subsequently rescues with its TRUE retained kernel birth even
     // in an old unbounded-wait or live-child-drop variant.
+    // The shipping cleanup may spend its original five-second budget on
+    // revocation before signaling the group. Await that *real* phase receipt,
+    // then preserve the original 400ms native terminal-result negative oracle.
+    let revoked = revoked_rx.recv_timeout(GUARDIAN_SHUTDOWN_DEADLINE);
     let early = rx.recv_timeout(Duration::from_millis(400));
     let gone_before_rescue = kill(Pid::from_raw(raw), None) == Err(Errno::ESRCH)
         && getpgid(Some(Pid::from_raw(raw))) == Err(Errno::ESRCH);
@@ -80,7 +100,7 @@ fn denied_attested_kgr1_group_signal_never_blocks_on_live_direct_child_wait() {
     // must already have reaped its actual Child. A mutant that merely drops
     // the live child returns StillAlive; one that signals but does not reap
     // returns a waitable zombie. Never let test cleanup create a false green.
-    // If the 400ms negative timeout fired, the product still owns a live
+    // If the bounded negative timeout fired, the product still owns a live
     // Child on the worker thread. Never race its waitpid or steal its OS
     // exit status. Independent ECHILD proof is safe only AFTER an actual
     // product completion receipt was observed.
@@ -98,6 +118,10 @@ fn denied_attested_kgr1_group_signal_never_blocks_on_live_direct_child_wait() {
         let _ = native_waitpid(Pid::from_raw(raw), None);
     }
     rescue.expect("original test-owned birth must permit native cleanup");
+    assert!(
+        revoked.is_ok(),
+        "native revocation never completed within its original budget"
+    );
     assert!(
         early.is_ok(),
         "failed attested group cleanup may not block indefinitely in Child::wait"
