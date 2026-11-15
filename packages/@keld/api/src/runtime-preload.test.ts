@@ -117,15 +117,21 @@ async function launch(
     },
   });
   let startupResolved = false;
-  const startupFailure = proc.exited.then(async (code) => {
-    if (startupResolved) return;
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    throw new Error(
-      `Bun child exited before app-link readiness (exit ${code}); stdout=${stdout}; stderr=${stderr}`,
-    );
+  const startupFailure: Promise<never> = new Promise((_, reject) => {
+    void proc.exited
+      .then(async (code) => {
+        if (startupResolved) return;
+        const [stdout, stderr] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+        ]);
+        reject(
+          new Error(
+            `Bun child exited before app-link readiness (exit ${code}); stdout=${stdout}; stderr=${stderr}`,
+          ),
+        );
+      })
+      .catch(reject);
   });
   async function message(): Promise<Message> {
     return (
