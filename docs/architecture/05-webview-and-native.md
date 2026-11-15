@@ -282,7 +282,7 @@ through that spec's ordered tasks.
 | `window` | create/close/show/focus/bounds/state, titlebar styles (hiddenInset/overlay), vibrancy/mica/acrylic, always-on-top, parenting/modal, fullscreen | `BrowserWindow` |
 | `menu` | app menu, context menus, accelerators, role items (macOS roles complete) | `Menu`, `MenuItem` |
 | `tray` | icon, tooltip, menu, click events, template images | `Tray` |
-| `dialog` | planned open/save/message/error; GH478 macOS legacy first-proof returns selected paths only, with **no implicit FsBroker scope**. Guarded FS requires an independent pre-existing grant; strict user-intent scope minting is deferred to F06-T15 and its own approved policy/OS proof | `dialog` |
+| `dialog` | planned open/save/message/error; GH478 macOS legacy Open/Save first-proof returns selected paths only, with **no implicit FsBroker scope**; Message returns a button index and checkbox state. Guarded FS requires an independent pre-existing grant; strict user-intent scope minting is deferred to F06-T15 and its own approved policy/OS proof | `dialog` |
 | `notify` | notifications with actions, macOS UNUserNotification / WinRT toast / libnotify | `Notification` |
 | `clipboard` | text/html/image/files, change polling where OS allows | `clipboard` |
 | `shortcut` | global shortcuts with conflict detection | `globalShortcut` |
