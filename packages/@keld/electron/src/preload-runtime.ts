@@ -910,8 +910,13 @@ export function installApp(
               activeWatches.add(req.watchPath);
             if (!response.error && req.unwatchPath)
               activeWatches.delete(req.unwatchPath);
-            if (req.watchPath) retireSupersededWatch(req.call);
-            else if (![...watches.values()].includes(req.call))
+            if (req.watchPath) {
+              // A native denial never established a live watch. The current
+              // failed path must no longer keep its page callback or charge.
+              if (response.error && watches.get(req.watchPath) === req.call)
+                watches.delete(req.watchPath);
+              retireSupersededWatch(req.call);
+            } else if (![...watches.values()].includes(req.call))
               releaseCall(req.call);
           }
         }
