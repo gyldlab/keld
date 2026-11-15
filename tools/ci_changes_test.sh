@@ -14,18 +14,10 @@ trap cleanup EXIT
 
 "$required" test
 "$repo_root/tools/dependency_review_metadata.sh" test
-# This apt archive self-test owns Linux filesystem semantics. Under Windows
-# Git Bash, `ln -s` need not create the POSIX directory symlink that `test -L`
-# inspects, so the Linux-only negative oracle is not meaningful there. The
-# mandatory Ubuntu change-router job still executes it.
-case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*)
-        echo "info: WebKitGTK apt native symlink test runs on Ubuntu CI"
-        ;;
-    *)
-        "$repo_root/tools/ci_webkitgtk_apt.sh" test
-        ;;
-esac
+# The apt archive self-test runs everywhere; it skips only its two symlink
+# controls in a Windows shell whose `ln -s` makes no POSIX symlink, and the
+# mandatory Ubuntu change-router job still runs those.
+"$repo_root/tools/ci_webkitgtk_apt.sh" test
 "$repo_root/tools/agents_md.sh" test
 
 result_for_paths() {
@@ -635,7 +627,7 @@ git -C "$temp_dir" init -q
 git -C "$temp_dir" config user.email ci-router@example.invalid
 git -C "$temp_dir" config user.name ci-router-test
 mkdir -p "$temp_dir/crates/keld-runtime/src" "$temp_dir/fake-bin" "$temp_dir/tools"
-printf '%s\n' '{"schema":"keld.ci-inputs/v1","known_inputs":["*"],"reader_sets":{},"consumers":[]}' >"$temp_dir/tools/ci-inputs.json"
+printf '%s\n' '{"schema":"keld.ci-inputs/v2","known_inputs":["*"],"reader_sets":{},"consumers":[]}' >"$temp_dir/tools/ci-inputs.json"
 mkdir -p "$temp_dir/packages/@fake/bootstrap/src"
 printf '{"name":"@fake/bootstrap"}\n' >"$temp_dir/packages/@fake/bootstrap/package.json"
 printf 'import { test } from "bun:test";\n' >"$temp_dir/packages/@fake/bootstrap/src/unit.test.ts"
