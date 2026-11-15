@@ -385,15 +385,20 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
 
 ### AC-68: Loss-only policy changes are limited to bootstrap root replacement
 
-- **Given:** A protected installed policy, unchanged recovery signer pins, and a valid replacement root/U1.
-- **When:** The owner compares canonical source and destination repository policy before trust commit.
-- **Then:** Only `bootstrapRootSha256` and increasing `bootstrapRootVersion` MAY change.
+- **Given:** An established installation with an unavailable source update-key signer U1 and unchanged protected recovery-signer policy.
+- A valid independent recovery directive binds the replacement metadata root and destination update key U2.
+- **When:** A signed recovery-only Host, the valid directive, and fresh native consent authorize the loss-only operation.
+- The owner compares canonical source and destination repository policy before trust commit.
+- **Then:** The transaction commits only the directive-bound root and U2 without any signature from unavailable U1.
+- Only `bootstrapRootSha256` and increasing `bootstrapRootVersion` MAY change in RepositoryPolicy.
 - All other repository-policy fields and the installed recovery policy MUST remain exact.
 - Bind the source directive root to the *currently accepted protected metadata root*,
   not blindly to the original bootstrap root. The independently authorized
   replacement root version must exceed that current verified version.
 - Repeat with one isolated change each to recovery policy, recovery signer, catalogue keys, URLs, and discovery.
 - Each unauthorized change MUST refuse before established trust changes.
+- A normal planned U1-to-U2 transition without the old U1 signature MUST refuse under AC-61.
+- A loss-only request without independent recovery authorization MUST refuse before established trust changes.
 - **Negative control:**
   - **Single fault:** Compare only repository identity and replacement root, omitting the closed field matrix.
   - **At-risk precondition:** Independently authenticate the directive and keep all other policy fields valid.

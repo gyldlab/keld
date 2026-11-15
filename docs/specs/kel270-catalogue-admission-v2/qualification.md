@@ -132,8 +132,9 @@ commissioning; those remain separate T-81/AC-66 gates.
 |---|---|---|
 | R1 / AC-66 | Genuinely independent recovery signer accepted under pinned durable profile/issuer, including a renewed leaf with a different SPKI | Ordinary application signer, recovery signer on an ordinary candidate, or a dual-profile leaf with valid Authenticode and directive must fail the role-specific signer predicate; record zero trust mutations |
 | R2 / AC-67 | Crash after `prepared` and pointer, expire directive, persist/read `aborted`, retire exact unreferenced successor, clear pointer, then confirm fresh matching attempt | Expired original, mismatched new directive, and crashes on each abort/retirement/pointer edge refuse; read pointer, journal, immutable successor filename, epoch, provenance, app current/LKG independently |
-| R3 / AC-68 | Authenticated loss-only root/U1 replacement with otherwise identical repository policy | Mutate recovery digest, recovery signer, catalogue keys, metadata/targets URLs, discovery digest, publisher digest, or root version separately; compare protected current trust before/after |
+| R3 / AC-68 | Old U1 signer unavailable. Valid signed recovery-only Host/directive, fresh consent, new root and U2 complete loss-only recovery | Missing independent recovery authority refuses before trust commit. A normal transition without U1 signature refuses under AC-61. Single-field repository-policy mutations refuse. Check current, provenance, and epoch before and after |
 
+For R3, independently mutate recovery digest, recovery signer, catalogue keys, metadata/targets URLs, discovery digest, publisher digest, and root version.
 Keep Windows signature validity, source-state integrity, and unrelated checks valid in each negative control.
 The review addenda are new planned coverage, not retroactive passes for any of the 110 product cases.
 
