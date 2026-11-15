@@ -63,6 +63,11 @@ Non-goals (owners in parentheses):
 - Deviation from the architecture docs: none. `No boundary change`: no handle ownership, crash
   ownership or principal minting changes; the package makes no host call.
 
+FACT: External artifact [electron-updater 6.8.9](https://registry.npmjs.org/electron-updater/-/electron-updater-6.8.9.tgz), retrieved 2026-11-15; SHA512 matches the integrity above.
+`out/ElectronAppAdapter.js`, lines 19-20: "return this.app.isPackaged === true;".
+`out/BaseUpdater.js`, lines 42-53: "No update filepath provided, can't quit and install" and "return false;".
+These are external artifact locations, not Keld repository paths. The missing-path branch precedes the quit path in lines 13-26.
+
 ## 3. Acceptance criteria
 
 Upstream citations are electron-updater 6.8.9 `out/AppUpdater.js` unless named otherwise.
@@ -143,7 +148,7 @@ Then: Unpackaged facts resolve null without events and log the skip line; absenc
 Given the application facts report not packaged, when `checkForUpdates()` is called, then it
    resolves `null`, emits no event and logs upstream's skip line through the assigned logger
    (`:277-284`). At the source basis, the Electron facade has no `isPackaged`; the bridge
-   follows upstream's `=== true` comparison (`out/ElectronAppAdapter.js:19-20`). This
+   follows upstream's `=== true` comparison (external electron-updater 6.8.9 artifact `out/ElectronAppAdapter.js`, lines 19-20). This
    absent-property snapshot is not proof of a Host-delivered development `false` fact.
    Producing and delivering that fact remains #452's responsibility.
 Negative control: Apply this isolated fault, then rerun the named oracle.
@@ -178,7 +183,7 @@ Then: The stated errors and log repeat as specified; the application quit method
    `Please check update first` and rejects with the same `Error` (`:435-441`, `dispatchError`
    `:476-478`). `quitAndInstall()` with nothing staged logs `Install on explicit quitAndInstall`,
    dispatches one `error` with message `No update filepath provided, can't quit and install`,
-   and never calls the application's `quit` (`out/BaseUpdater.js:13-26`, `:42-53`); a second
+   and never calls the application's `quit` (external electron-updater 6.8.9 artifact `out/BaseUpdater.js`, lines 13-26 and 42-53); a second
    call does the same again.
 Negative control: Apply this isolated fault, then rerun the named oracle.
 - Single fault: call app.quit from quitAndInstall.
