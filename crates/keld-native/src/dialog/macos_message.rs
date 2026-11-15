@@ -62,6 +62,17 @@ fn response_index(response: NSModalResponse, count: usize) -> Result<Option<u32>
         .map_err(|_| invalid("native Message button index overflow"))
 }
 
+// Invoke only once AppKit has called back and the sheet is no longer visible.
+// Validation must not hide the already-observed physical drain from Core.
+fn drained_response_index(
+    state: &mut PanelState,
+    response: NSModalResponse,
+    buttons: usize,
+) -> Result<Option<u32>, IpcError> {
+    *state = PanelState::Drained;
+    response_index(response, buttons)
+}
+
 fn normalize_access_keys(input: &str) -> String {
     let mut chars = input.chars().peekable();
     let mut output = String::with_capacity(input.len());
@@ -233,7 +244,7 @@ impl MacMessagePanel {
         if self.alert.window().isVisible() {
             return Ok(None);
         }
-        let value = response_index(response, self.buttons)?.map_or(
+        let value = drained_response_index(&mut self.state, response, self.buttons)?.map_or(
             MacMessageOutcome::Dismissed,
             |response| {
                 let checked = self.checkbox
@@ -247,7 +258,6 @@ impl MacMessagePanel {
                 })
             },
         );
-        self.state = PanelState::Drained;
         Ok(Some(value))
     }
 
@@ -297,6 +307,31 @@ mod tests {
         }
         assert!(response_index(NSAlertFirstButtonReturn + 3, 3).is_err());
         assert!(response_index(0, 3).is_err());
+    }
+
+    #[test]
+    fn hidden_callback_drains_even_when_appkit_response_is_invalid() {
+        for native_failure in [-1000, -1001, -1002, NSAlertFirstButtonReturn + 3] {
+            let mut state = PanelState::Presented;
+            assert!(
+                drained_response_index(&mut state, native_failure, 3).is_err(),
+                "invalid AppKit result must not synthesize a selection or Cancel"
+            );
+            assert_eq!(
+                state,
+                PanelState::Drained,
+                "the callback has run and the sheet is physically invisible"
+            );
+        }
+        let mut state = PanelState::CancelRequested;
+        assert_eq!(drained_response_index(&mut state, -1, 3), Ok(None));
+        assert_eq!(state, PanelState::Drained);
+        let mut state = PanelState::Presented;
+        assert_eq!(
+            drained_response_index(&mut state, NSAlertFirstButtonReturn + 1, 3),
+            Ok(Some(1))
+        );
+        assert_eq!(state, PanelState::Drained);
     }
 
     #[test]
