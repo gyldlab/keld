@@ -152,6 +152,9 @@ fn actual_writer_advances_when_an_earlier_capacity_waiter_cannot() {
     // Split only the two role-specific test waiters. Receipts and quiescence
     // continue to use the original shared condition variable.
     writer.use_deterministic_waiters_for_test();
+    let (capacity_rewait, capacity_rewaited) = mpsc::sync_channel(1);
+    writer.observe_capacity_rewait_for_test(capacity_rewait);
+    let worker_wake_before = writer.worker_wake_generation_for_test();
     let prepared = frame(&writer, &link, &[0x42, 0x24]);
     let (capacity_observed, capacity_registered) = mpsc::sync_channel(1);
     writer.observe_next_capacity_wait_for_test(capacity_observed);
@@ -205,19 +208,37 @@ fn actual_writer_advances_when_an_earlier_capacity_waiter_cannot() {
     let (dequeued_rx, resume_dequeue) = writer.hold_next_dequeue_for_test();
     let (written_rx, written) = writer.hold_next_completion_for_test();
     let receipt = Arc::new(send(prepared));
-    let unexpectedly_dequeued = dequeued_rx.recv_timeout(Duration::from_millis(150));
-    if !matches!(unexpectedly_dequeued, Err(mpsc::RecvTimeoutError::Timeout)) {
-        // Always release the physical worker before failing the mutation test.
-        // No sender, worker thread, or caller is left blocked on a test barrier.
-        let _ = resume_dequeue.send(());
-        panic!(
-            "capacity-only notify_one mutant advanced the physical writer: {unexpectedly_dequeued:?}"
-        );
-    }
+    // The capacity waiter must consume the controlled wake and re-enter its
+    // still-Full predicate wait. This acknowledgement is the negative-control
+    // oracle; its deadline is only a deadlock kill switch.
+    capacity_rewaited
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capacity-only wake is consumed and the producer re-waits while Full");
+    // The fence proves the capacity waiter has atomically released State in
+    // its second wait. The worker token is unchanged, so even a spurious
+    // Condvar wake cannot advance the physical writer.
+    drop(
+        writer
+            .shared
+            .state
+            .lock()
+            .expect("capacity re-wait registration"),
+    );
+    assert_eq!(
+        writer.worker_wake_generation_for_test(),
+        worker_wake_before,
+        "capacity-only notify_one must not advance the physical worker wake token"
+    );
 
-    // A broadcast now wakes the same worker. The pipe has not been read or
-    // poisoned: require the actual dequeue, then permit its physical write.
+    // A broadcast advances the worker token and wakes the same real owner.
+    // The pipe has not been read or poisoned: require actual dequeue, then
+    // permit its physical write.
     writer.shared.notify_all();
+    assert_ne!(
+        writer.worker_wake_generation_for_test(),
+        worker_wake_before,
+        "broadcast must advance the physical worker wake token"
+    );
     dequeued_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("broadcast wakes the real physical writer");
