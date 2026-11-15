@@ -61,10 +61,8 @@ export const clipboard = unsupportedSurface("clipboard", {
  * Pinned `clipboard-item.md`: `new ClipboardItem(items)` takes a record keyed by MIME type
  * and constructs locally (GH-565 AC8); its payload members belong to GH-559.
  */
-/** The upstream constructor takes an enumerable snapshot, without making it public. */
-const clipboardItemPayloads = new WeakMap<ClipboardItem, Readonly<Record<string, unknown>>>();
-
 export class ClipboardItem {
+  readonly #payload: Readonly<Record<string, unknown>>;
   constructor(items: Readonly<Record<string, unknown>>) {
     if (
       items === null ||
@@ -77,7 +75,7 @@ export class ClipboardItem {
       );
     }
     // Spread reads each own enumerable payload exactly once. Getter errors propagate.
-    clipboardItemPayloads.set(this, { ...items });
+    this.#payload = { ...items };
   }
 
   get types(): never {
@@ -110,9 +108,7 @@ export const nativeTheme = unsupportedSurface("nativeTheme", {
   shouldUseInvertedColorScheme: property("GH-558"),
   inForcedColorsMode: property("GH-558"),
   prefersReducedTransparency: property("GH-558"),
-  ...(IS_MACOS
-    ? { shouldDifferentiateWithoutColor: property("GH-558") }
-    : {}),
+  ...(IS_MACOS ? { shouldDifferentiateWithoutColor: property("GH-558") } : {}),
   on: method("GH-558"),
   once: method("GH-558"),
   off: method("GH-558"),

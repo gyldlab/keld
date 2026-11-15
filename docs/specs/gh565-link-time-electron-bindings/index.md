@@ -13,7 +13,7 @@ This approval does not approve the implementation or authorize merging.
 ## 1. Goal & non-goals
 
 draw.io's main process is an ES module whose first statement imports twelve named
-bindings from `electron` (`src/main/electron.js:5-6` at `2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e`):
+bindings from `electron` (`src/main/electron.js` lines 5–6 at upstream commit `2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e`):
 `Menu, shell, dialog, session, screen, ClipboardItem, clipboard, nativeImage, nativeTheme,
 ipcMain, app, BrowserWindow`. `@keld/electron` exports two of them. Under Bun 1.4.4 a
 named import of a missing export fails module linking with
@@ -66,8 +66,8 @@ Non-goals:
 
 ## Current blockers
 
-- B-1: Corrected multi-platform implementation and exact-head CI must pass.
-- B-2: Existing review findings require independent re-review and closeout.
+B-1
+B-2
 
 ## 8. Review gates triggered
 

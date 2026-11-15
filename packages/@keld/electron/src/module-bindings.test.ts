@@ -63,11 +63,7 @@ const IS_LINUX = process.platform === "linux";
 const IS_WINDOWS = process.platform === "win32";
 
 type MemberKind =
-  | "method"
-  | "promise"
-  | "property"
-  | "writableProperty"
-  | "undefined";
+  "method" | "promise" | "property" | "writableProperty" | "undefined";
 
 interface BindingOracle {
   /** Corpus operation prefix (`<prefix>.binding.named-import`). */
@@ -632,13 +628,25 @@ describe("constructors", () => {
   });
 
   test("ClipboardItem rejects missing, array, empty, inherited-only and symbol-only records", () => {
-    const Loose = electron.ClipboardItem as unknown as new (...args: unknown[]) => unknown;
+    const Loose = electron.ClipboardItem as unknown as new (
+      ...args: unknown[]
+    ) => unknown;
     const inherited = Object.create({ "text/plain": "inherited" });
     const symbolOnly = { [Symbol("text/plain")]: "x" };
-    const nonenumerable = Object.defineProperty({}, "text/plain", { value: "x" });
+    const nonenumerable = Object.defineProperty({}, "text/plain", {
+      value: "x",
+    });
     for (const invalid of [
-      undefined, null, "text/plain", 7, [], ["text/plain"], {},
-      inherited, symbolOnly, nonenumerable,
+      undefined,
+      null,
+      "text/plain",
+      7,
+      [],
+      ["text/plain"],
+      {},
+      inherited,
+      symbolOnly,
+      nonenumerable,
     ]) {
       expect(() => new Loose(invalid)).toThrow(TypeError);
     }
@@ -646,18 +654,25 @@ describe("constructors", () => {
   });
 
   test("ClipboardItem snapshots enumerable payload getters once and propagates their errors", () => {
-    const Loose = electron.ClipboardItem as unknown as new (...args: unknown[]) => unknown;
+    const Loose = electron.ClipboardItem as unknown as new (
+      ...args: unknown[]
+    ) => unknown;
     let calls = 0;
     const good = Object.defineProperty({}, "text/plain", {
       enumerable: true,
-      get() { calls += 1; return "hello"; },
+      get() {
+        calls += 1;
+        return "hello";
+      },
     });
     expect(new Loose(good)).toBeInstanceOf(electron.ClipboardItem);
     expect(calls).toBe(1);
     const sentinel = new Error("payload getter failed");
     const bad = Object.defineProperty({}, "text/plain", {
       enumerable: true,
-      get() { throw sentinel; },
+      get() {
+        throw sentinel;
+      },
     });
     expect(() => new Loose(bad)).toThrow(sentinel);
   });
