@@ -305,6 +305,24 @@ fn run(
             })?;
         }
         let (outcome, completed_at) = write(&packet);
+        #[cfg(test)]
+        {
+            let hook = shared
+                .state
+                .lock()
+                .ok()
+                .and_then(|mut state| state.after_write_before_completion.take());
+            if let Some(hook) = hook {
+                hook.arrived
+                    .send(())
+                    .map_err(|_| app_detail("writer completion fixture", "observer disappeared"))?;
+                hook.resume
+                    .lock()
+                    .map_err(|_| app_detail("writer completion fixture", "hook poisoned"))?
+                    .recv()
+                    .map_err(|_| app_detail("writer completion fixture", "release disappeared"))?;
+            }
+        }
         #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
         if let Some(observed) = held_packet {
             observed.observe("packet-returned", shared, Some(outcome), Some(&packet));
@@ -342,6 +360,12 @@ fn run(
         retirement?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(in crate::app_session) struct CompletionHook {
+    pub(in crate::app_session) arrived: std::sync::mpsc::SyncSender<()>,
+    pub(in crate::app_session) resume: Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
 #[cfg(test)]
