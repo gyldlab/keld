@@ -17,6 +17,7 @@ use super::super::window_registry::CommittedOriginalLoad;
 
 pub(super) enum NativeOutcome {
     #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", windows))]
     None,
     Fact(FactOutcome),
     Build(BuildOutcome),
