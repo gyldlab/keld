@@ -1,7 +1,13 @@
 # Spec: inert `electron-updater` adapter for migrated apps (F09-T1, GH-491)
 
 Status: draft
-Linear: GH-491 (#517 tracker of record; KEL-127 reference) · Owner: @0monish · Updated: 2026-10-31
+Tracker: GH-491
+Owner: @0monish
+Updated: 2026-11-15
+Pin: 078a1ddf4740912c5cc4131216a12722e0d5cb74
+
+FACT: GH-491 is the #517 tracker of record; KEL-127 is a reference.
+This is a structure-only migration. Historical observations below are not new acceptance evidence.
 
 Source basis: `origin/main b72e4c19`. Upstream oracle: electron-updater **6.8.9**, the npm
 artifact drawio-desktop's lockfile pins by integrity
@@ -57,39 +63,98 @@ Non-goals (owners in parentheses):
 - Deviation from the architecture docs: none. `No boundary change`: no handle ownership, crash
   ownership or principal minting changes; the package makes no host call.
 
-## 3. Acceptance criteria (binary, each becomes a test)
+## 3. Acceptance criteria
 
 Upstream citations are electron-updater 6.8.9 `out/AppUpdater.js` unless named otherwise.
-
-1. Given a Bun 1.4.4 role, when `import pkg from "@keld/electron-updater"` runs and
+### AC-1
+Given: A Bun 1.4.4 role imports the package.
+When: Destructure the default import and compare the named exports.
+Then: The updater is the same EventEmitter object; AppUpdater and NoOpLogger exist.
+Given a Bun 1.4.4 role, when `import pkg from "@keld/electron-updater"` runs and
    its `autoUpdater` property is destructured, then `autoUpdater` is an `EventEmitter` and the same
    object as the named export `autoUpdater`, and `pkg.AppUpdater`/`pkg.NoOpLogger` exist
    (upstream `out/main.js` module object).
-2. Given a probe that refuses every socket, Worker, child process and file write (`fetch`,
+Negative control: Apply this isolated fault, then rerun the named oracle.
+- Single fault: drop the default export.
+- At-risk precondition: the package import completes.
+- Expected RED: The corresponding criterion 1 test in section 7 fails its stated oracle.
+### AC-2
+Given: The refusing I/O probe passes its self-check.
+When: Import the package and replay the criterion 10 draw.io sequence.
+Then: The probe records zero socket, Worker, process and file-write calls.
+Given a probe that refuses every socket, Worker, child process and file write (`fetch`,
    `Bun.connect`/`listen`/`udpSocket`/`spawn`/`spawnSync`/`write`, `Worker`, `WebSocket`,
    `node:net`/`tls`/`http`/`https`/`dgram`/`child_process`/`worker_threads`, `node:fs` writes),
    when the package is imported and the draw.io sequence of criterion 10 is replayed, then the
    probe records zero calls. The probe's own self-check records a real `fetch`, `net.connect`
    and `fs.writeFileSync`, so an inert probe cannot pass this criterion.
-3. Given an object `log`, when `autoUpdater.logger = log`, then `autoUpdater.logger === log`,
+Negative control: Apply this isolated fault, then rerun the named oracle.
+- Single fault: add fetch to setFeedURL.
+- At-risk precondition: the refusing probe passes its self-check.
+- Expected RED: The corresponding criterion 2 test in section 7 fails its stated oracle.
+### AC-3
+Given: An updater and an assignable logger object exist.
+When: Assign the object, mutate its nested transport level, then assign null.
+Then: Object identity and nested writes persist; null selects NoOpLogger; the default is console.
+Given an object `log`, when `autoUpdater.logger = log`, then `autoUpdater.logger === log`,
    so `autoUpdater.logger.transports.file.level = 'error'` (`electron.js:82`) lands on `log`.
    Given `autoUpdater.logger = null`, then the getter returns a `NoOpLogger` instance, not
    `null` (`:62-67`). The default logger is `console` (`:179`).
-4. `autoDownload`, `autoInstallOnAppQuit` and `autoRunAppAfterInstall` default to `true`
+Negative control: Apply this isolated fault, then rerun the named oracle.
+- Single fault: return a wrapper from the logger getter.
+- At-risk precondition: the assigned object has a writable nested transport.
+- Expected RED: The corresponding criterion 3 test in section 7 fails its stated oracle.
+### AC-4
+Given: A fresh updater has event observers.
+When: Read and assign autoDownload, autoInstallOnAppQuit and autoRunAppAfterInstall.
+Then: Defaults are true; assigned values read back; no event is emitted.
+`autoDownload`, `autoInstallOnAppQuit` and `autoRunAppAfterInstall` default to `true`
    (`:109-119`), read back whatever is assigned, and emit nothing.
-5. Given draw.io's options `{provider: 'github', repo: 'drawio-desktop', owner: 'jgraph'}` with
+Negative control: Apply this isolated fault, then rerun the named oracle.
+- Single fault: emit an event from a flag setter.
+- At-risk precondition: an event listener is registered before assignment.
+- Expected RED: The corresponding criterion 4 test in section 7 fails its stated oracle.
+### AC-5
+Given: The accepted draw.io feed options or a string are supplied.
+When: Call setFeedURL and then getFeedURL under the I/O probe.
+Then: setFeedURL returns undefined without throws, events or I/O; getFeedURL is unchanged.
+Given draw.io's options `{provider: 'github', repo: 'drawio-desktop', owner: 'jgraph'}` with
    and without `channel` (`:2078-2083`), and given a plain string, when `setFeedURL` is called,
    then it returns `undefined`, throws nothing, emits nothing, opens no socket and writes no
    file (criterion 2), and `getFeedURL()` is unchanged. ▲ Upstream builds a provider client
    (`:234-252`); Keld ignores the app feed because the feed is host-declared (§2).
-6. `getFeedURL()` returns exactly `"Deprecated. Do not use it."` (`:227-229`).
-7. Given the application facts report not packaged, when `checkForUpdates()` is called, then it
+Negative control: Apply this isolated fault, then rerun the named oracle.
+- Single fault: throw from setFeedURL.
+- At-risk precondition: the supplied feed is one of the accepted argument shapes.
+- Expected RED: The corresponding criterion 5 test in section 7 fails its stated oracle.
+### AC-6
+Given: An updater instance exists.
+When: Call getFeedURL.
+Then: The result is exactly "Deprecated. Do not use it.".
+`getFeedURL()` returns exactly `"Deprecated. Do not use it."` (`:227-229`).
+Negative control: Apply this isolated fault, then rerun the named oracle.
+- Single fault: change the deprecated literal.
+- At-risk precondition: a fresh adapter is constructed.
+- Expected RED: The corresponding criterion 6 test in section 7 fails its stated oracle.
+### AC-7
+Given: Application facts report unpackaged; missing Host facts are a distinct state.
+When: Call checkForUpdates through the applicable adapter.
+Then: Unpackaged facts resolve null without events and log the skip line; absence proves no Host delivery.
+Given the application facts report not packaged, when `checkForUpdates()` is called, then it
    resolves `null`, emits no event and logs upstream's skip line through the assigned logger
    (`:277-284`). At the source basis, the Electron facade has no `isPackaged`; the bridge
    follows upstream's `=== true` comparison (`out/ElectronAppAdapter.js:19-20`). This
    absent-property snapshot is not proof of a Host-delivered development `false` fact.
    Producing and delivering that fact remains #452's responsibility.
-8. Error case: given the application facts report packaged and no host updater exists, when
+Negative control: Apply this isolated fault, then rerun the named oracle.
+- Single fault: swallow a facade getter refusal as false.
+- At-risk precondition: the composed real facade throws typed missing-fact refusal.
+- Expected RED: The corresponding criterion 7 test in section 7 fails its stated oracle.
+### AC-8
+Given: Facts report packaged without a host updater, or the fact getter throws.
+When: Call either updater check method and observe event order, error identity and settlement.
+Then: Packaged checks emit one typed 050 error then reject identically; getter errors propagate synchronously without updater effects.
+Error case: given the application facts report packaged and no host updater exists, when
    `checkForUpdates()` is called, then exactly one `error` event fires carrying an `Error`
    whose `code` is `KELD-COMPAT-050` (a registry code outside `KELD-COMPAT-001..009` and not a
    `KELD-UPDATE-*` host code), whose message starts with that code and states the fix, with
@@ -101,13 +166,29 @@ Upstream citations are electron-updater 6.8.9 `out/AppUpdater.js` unless named o
    is returned, with no updater event, log or I/O. Upstream reads the getter outside its
    Promise catch (`:253-255`, `:277-278`, `:286-287`). The adapter neither converts that
    failure to `false` nor replaces it with the packaged no-host-updater refusal.
-9. `downloadUpdate()` before any offer dispatches one `error` with message
+Negative control: Apply this isolated fault, then rerun the named oracle.
+- Single fault: resolve null for a packaged check.
+- At-risk precondition: a packaged fact is present with no host updater.
+- Expected RED: The corresponding criterion 8 test in section 7 fails its stated oracle.
+### AC-9
+Given: No update offer or staged update exists.
+When: Call downloadUpdate, then quitAndInstall twice.
+Then: The stated errors and log repeat as specified; the application quit method is never called.
+`downloadUpdate()` before any offer dispatches one `error` with message
    `Please check update first` and rejects with the same `Error` (`:435-441`, `dispatchError`
    `:476-478`). `quitAndInstall()` with nothing staged logs `Install on explicit quitAndInstall`,
    dispatches one `error` with message `No update filepath provided, can't quit and install`,
    and never calls the application's `quit` (`out/BaseUpdater.js:13-26`, `:42-53`); a second
    call does the same again.
-10. Given a fixture that replays the PANEL-P3 sequence (`electron.js:74-86` configuration,
+Negative control: Apply this isolated fault, then rerun the named oracle.
+- Single fault: call app.quit from quitAndInstall.
+- At-risk precondition: no staged update exists and quit calls are observed.
+- Expected RED: The corresponding criterion 9 test in section 7 fails its stated oracle.
+### AC-10
+Given: The child replay explicitly sets or removes DRAWIO_DISABLE_UPDATE and selects the stated facts.
+When: Replay configuration, listeners, setFeedURL and the guarded boot check.
+Then: The three environment/fact cases produce exactly the call, event and settlement counts below.
+Given a fixture that replays the PANEL-P3 sequence (`electron.js:74-86` configuration,
     `:2228-2355` listeners, then the `whenReady` tail `:2078-2083` `setFeedURL` and the
     `:2092-2100` guarded boot check) with the variable set or cleared explicitly in the child's
     environment, never inherited:
@@ -117,15 +198,43 @@ Upstream citations are electron-updater 6.8.9 `out/AppUpdater.js` unless named o
     - with the variable absent, the facts packaged and no host updater: one call, exactly one
       `error` with `code` `KELD-COMPAT-050`, one rejection reaching the replica's catch (what
       draw.io shows as its Update Error dialog: the honest outcome), zero other events.
-11. Across every case above, `update-available`, `update-not-available`, `download-progress`,
+Negative control: Apply this isolated fault, then rerun the named oracle.
+- Single fault: throw from setFeedURL.
+- At-risk precondition: the explicitly disabled child replay reaches setFeedURL.
+- Expected RED: The corresponding criterion 10 test in section 7 fails its stated oracle.
+### AC-11
+Given: Listeners observe every updater case above.
+When: Execute the preceding operations.
+Then: None of the forbidden update, progress, login or cancellation events listed below is emitted.
+Across every case above, `update-available`, `update-not-available`, `download-progress`,
     `update-downloaded`, `checking-for-update`, `login`, `update-cancelled` and
     `appimage-filename-updated` are never emitted.
-12. `cargo test -p keld-cli --test error_registry` passes with `KELD-COMPAT-050` registered and
+Negative control: Apply this isolated fault, then rerun the named oracle.
+- Single fault: emit update-not-available.
+- At-risk precondition: listeners are installed before the operation.
+- Expected RED: The corresponding criterion 11 test in section 7 fails its stated oracle.
+### AC-12
+Given: The registry heading and scoped TypeScript emitter contain KELD-COMPAT-050.
+When: Run the error_registry test and each stated deletion control.
+Then: The complete registry passes; removing either heading or emitter fails.
+`cargo test -p keld-cli --test error_registry` passes with `KELD-COMPAT-050` registered and
     emitted only from `packages/@keld/electron-updater/src`; removing either the heading or the
     emitter fails it.
-13. Emitting `error` with no application listener does not throw from the emitter: the
+Negative control: Apply this isolated fault, then rerun the named oracle.
+- Single fault: delete the registry heading.
+- At-risk precondition: the emitter remains present while its registry heading is removed.
+- Expected RED: The corresponding criterion 12 test in section 7 fails its stated oracle.
+### AC-13
+Given: No application error listener is installed.
+When: Emit an error on the updater.
+Then: The own first listener logs the error through the assigned logger without an emitter throw.
+Emitting `error` with no application listener does not throw from the emitter: the
     instance's own first `error` listener logs `Error: <stack>` through the assigned logger
     (`:198-200`).
+Negative control: Apply this isolated fault, then rerun the named oracle.
+- Single fault: remove the first error listener.
+- At-risk precondition: no application error listener is installed.
+- Expected RED: The corresponding criterion 13 test in section 7 fails its stated oracle.
 
 ## 4. Design
 
@@ -169,12 +278,12 @@ Upstream citations are electron-updater 6.8.9 `out/AppUpdater.js` unless named o
 
 ### 4.2 Decisions (each with the alternative rejected and its falsifier)
 
-- D1 **Name and path.** `@keld/electron-updater` at `packages/@keld/electron-updater`,
+### D-1 Name and path. `@keld/electron-updater` at `packages/@keld/electron-updater`,
   following the root naming rule (`@keld/*`) and naming the specifier it stands in for.
   Alternative `@keld/updater-compat` rejected: it does not name the replaced package, which
   the X02-T3 manifest reviewer must recognise. Falsifier: the migrated manifest's
   `electron-updater` entry cannot name the package.
-- D2 **Reaching the facade.** `src/electron-app.ts` imports `app` from
+### D-2 Reaching the facade. `src/electron-app.ts` imports `app` from
   `../../electron/src/index.ts` statically, as upstream's `ElectronAppAdapter` does
   `require("electron").app` when the updater is constructed. Alternatives: (a) a lazy dynamic
   import, rejected because upstream's gate is synchronous and laziness would only hide a facade
@@ -185,29 +294,30 @@ Upstream citations are electron-updater 6.8.9 `out/AppUpdater.js` unless named o
   connects only inside functions (`packages/@keld/kipc/src/transport.ts:1287`, `:2600`) and its
   Worker self-entry is guarded by `!isMainThread` (`:3760`). Falsifier: the import probe records
   a socket or Worker.
-- D3 **Injectable application facts.** `AppUpdater`'s constructor takes `(options, app:
+### D-3 Injectable application facts
+`AppUpdater`'s constructor takes `(options, app:
   AppAdapter)` with `AppAdapter = { readonly isPackaged: boolean; quit(): void | Promise<void> }`,
   the two upstream `AppAdapter` members this slice can observe (upstream's constructor is
   `(options, app?)`). The module `autoUpdater` is constructed with the facade-backed adapter.
   Alternative, a module-level stub of the facade in tests, rejected: `bun test` shares one module
   cache across files, so a stub leaks (learnings 2026-08-18). Falsifier: the no-quit test cannot
   observe a quit.
-- D4 **One new code.** `KELD-COMPAT-050` for the refused check, emitted only from
+### D-4 One new code. `KELD-COMPAT-050` for the refused check, emitted only from
   `packages/@keld/electron-updater/src/error.ts`, registered with crate `@keld/electron-updater`.
   The match cells of criterion 9 keep upstream's plain `Error` text. The number is taken from the
   middle of the free range (`013..999`) because parallel agents allocate from both ends this
   week; the registry's "next free number" step is therefore not followed and is raised in §10.
   Falsifier: reusing `KELD-UPDATE-*` or `KELD-COMPAT-001..009` fails the provenance test.
-- D5 **No pretence.** The adapter never logs upstream's `Checking for update` line, never emits
+### D-5 No pretence. The adapter never logs upstream's `Checking for update` line, never emits
   `checking-for-update`, and does not deduplicate concurrent checks (upstream's
   `checkForUpdatesPromise`, `:257-262`): each call refuses independently. draw.io checks at most
   once per boot and once per menu action. Falsifier: a `checking-for-update` listener fires.
-- D6 **`setFeedURL` is silent.** No log line, no stored field, no thrown error. A logger line
+### D-6 `setFeedURL` is silent. No log line, no stored field, no thrown error. A logger line
   was rejected because a throwing application logger would turn `setFeedURL` into the throw
   the issue's negative control forbids. The ▲ is recorded by #580's cell, not by runtime output.
-- D7 **Upstream's first `error` listener is mirrored** (criterion 13) so a refusal with no app
+### D-7 Upstream's first `error` listener is mirrored (criterion 13) so a refusal with no app
   listener is logged, not thrown by `EventEmitter`.
-- D8 **Registry holding of a TypeScript emitter.** `SCAN_REL` in
+### D-8 Registry holding of a TypeScript emitter. `SCAN_REL` in
   `crates/keld-cli/tests/error_registry.rs` gains `packages/@keld/electron-updater/src`, so the
   heading and the emitter are checked in both directions; a Bun test additionally reads the
   registry file and asserts the heading exists, an oracle independent of the Rust test.
@@ -286,18 +396,25 @@ export default { autoUpdater, AppUpdater, NoOpLogger };
   `Cargo.toml`, `.github/workflows/**`, `tools/ci_changes.sh` (it discovers Bun suites from
   `packages/**/package.json` plus a test file; no edit is needed), the draw.io pin.
 
-## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
-
-- [ ] T1 This spec (`Status: draft`), opened as a DRAFT PR and stopped for exact-text approval.
-- [ ] T2 Package `@keld/electron-updater` with the registry entry, `SCAN_REL`, `justfile` wiring and
-      regenerated `llms-full.txt`; Bun tests and fixtures for criteria 1-13 (same PR, behind T1;
+## 6. Tasks
+### T-1
+Blocked by: B-1
+This spec (`Status: draft`), opened as a DRAFT PR and stopped for exact-text approval.
+### T-2
+Blocked by: T-1
+Package `@keld/electron-updater` with the registry entry, `SCAN_REL`, `justfile` wiring and
+      regenerated `llms-full.txt`; Bun tests and fixtures for criteria 1-13 (same PR, behind T-1;
       merge only at `Status: approved`).
-- [ ] T3 (#580, separate owner) flips the eight F09-T3 cells from their recorded expected `fail`
+### T-3
+Blocked by: T-2
+(#580, separate owner) flips the eight F09-T3 cells from their recorded expected `fail`
       to `pass`/▲ against the test names in §7 once this package lands.
-- [ ] T4 (X02-T3 / #499, separate owner) points the migrated manifest's `electron-updater` entry
+### T-4
+Blocked by: T-2
+(X02-T3 / #499, separate owner) points the migrated manifest's `electron-updater` entry
       at this package under the #502 resolver.
 
-## 7. Test plan
+## 7. Test plan & evidence
 
 All tests run with `env -u CLAUDECODE bun test` in `packages/@keld/electron-updater` (Bun 1.4.4)
 and are discovered by the CI router as a Bun suite root. Test names begin with an operation id
@@ -310,7 +427,8 @@ of the form `electron-updater.<member>.<observable>` so #580's cells can map to 
 | 3 | `app-updater.test.ts`: `electron-updater.logger.identity` | strict equality; property write lands | return a wrapper from the getter |
 | 4 | `app-updater.test.ts`: `electron-updater.flags.plain-booleans` | field values; zero events | a setter with a side effect |
 | 5, 6 | `app-updater.test.ts`: `electron-updater.set-feed-url.no-throw-no-effect`, `electron-updater.get-feed-url.deprecated-literal` | `undefined` return; exact literal; zero events; probe in replay | `throw` inside `setFeedURL` |
-| 7 | `app-updater.test.ts`: `electron-updater.check-for-updates.unpackaged-null`, `electron-updater.check-for-updates.facade-no-host-facts` | explicit unpackaged adapter resolves `null`; the module singleton preserves the independent real facade's outcome, including synchronous typed refusal with zero events/logs after GH-452 composition | remove the gate; coerce the facade refusal to false; make the check async; bypass the facade with an unpackaged adapter |
+| 7 | `app-updater.test.ts`: `electron-updater.check-for-updates.unpackaged-null` | explicit unpackaged adapter resolves `null` | remove the gate |
+| 7 | `app-updater.test.ts`: `electron-updater.check-for-updates.facade-no-host-facts` | module singleton preserves the real facade outcome: synchronous typed refusal, zero events/logs after GH-452 composition | coerce refusal to false; make check async; bypass facade with unpackaged adapter |
 | 8 | `app-updater.test.ts`: `electron-updater.check-for-updates.packaged-no-host-updater-error`, `electron-updater.error-code.provenance`, `electron-updater.check-for-updates-and-notify.same-outcome` | one `error`; `isCallError`; `code === KELD-COMPAT-050`; identical rejection; registry heading present | resolve `null` when packaged; reuse `KELD-UPDATE-001` |
 | 7, 8 (fact-read failure) | `replay.test.ts`: `electron-updater.checks.missing-facts`, through `fixtures/missing_facts.ts` and the existing I/O probe | both methods synchronously throw the identical test-only typed error; no Promise, events, log, quit or probe-visible I/O | make `checkForUpdates` async; catch the getter failure and treat it as `false` |
 | 9 | `app-updater.test.ts`: `electron-updater.download-update.check-first`, `electron-updater.quit-and-install.nothing-staged-no-quit` | upstream message text; one `error`; `quit` count 0 | call `app.quit()` from `quitAndInstall` |
@@ -351,17 +469,26 @@ acceptance checks remain with #452 and X02-T4.
 none. Import constructs one `EventEmitter`; no steady-state allocation, timer or I/O. No
 architecture 01 §5 budget moves.
 
-## 10. Open questions
-
-1. Code number: `KELD-COMPAT-050` deliberately skips the registry's "next free number" step so
+## 10. Open questions, blockers & unknowns
+### Q-1
+Code number: `KELD-COMPAT-050` deliberately skips the registry's "next free number" step so
    parallel allocations this week do not collide. Owner choice: keep `050`, or renumber to the
    next free number at merge (three literals: `src/error.ts`, the registry heading, this spec).
-2. Public seam: `AppUpdater`'s constructor requires an `AppAdapter`. Upstream's is protected with
+### Q-2
+Public seam: `AppUpdater`'s constructor requires an `AppAdapter`. Upstream's is protected with
    an optional `app`. Keep the explicit seam (recommended: it is what makes the no-quit and
    packaged contracts observable without module stubs), or hide it behind a facade default.
-3. Product-status ledger: a `package.keld-electron-updater` row needs an id mapping in
+### Q-3
+Product-status ledger: a `package.keld-electron-updater` row needs an id mapping in
    `tools/product_status.rs` (`expected_package_owner`) plus a TSV row and regeneration. Owner
    choice: add the row in this PR (tool edit), fold the package into `package.keld-electron`'s
    note, or defer until the package is consumed by the migrated manifest.
-4. Approval of this exact text (`Status: approved`) before the implementation commits on this
+### Q-4
+Approval of this exact text (`Status: approved`) before the implementation commits on this
    branch may merge.
+
+### B-1 Exact-text approval
+Status: open
+Owner: @0monish
+Impact: This draft and its implementation cannot merge before exact-text approval.
+Check: Record approval of this exact spec and change its status to approved.
