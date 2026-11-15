@@ -680,7 +680,7 @@ pub(super) struct LocalSourceBuildObservation {
 }
 
 /// Test-only exact source pins for exercising the production compiler binder.
-/// This does not create a LocalSourceBuildObservation receipt or release authority.
+/// This does not create a `LocalSourceBuildObservation` receipt or release authority.
 #[cfg(test)]
 pub(super) fn compiler_source_observation_for_test(
     source_root: &Path,
