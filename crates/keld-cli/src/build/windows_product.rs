@@ -149,13 +149,32 @@ pub(super) fn run(session_path: &Path) -> Result<(), BuildError> {
     let _session_parents = windows_inputs::pin_input_root(parent)?;
     let mut session_pin = local_source::pin_file(session_path, MAX_INPUT)?;
     let session = parse_session(&read(&mut session_pin)?)?;
+    // A syntactically drive-rooted tool may still be a mapped network volume.
+    // The existing path owners retain file and directory identity separately.
+    for path in [
+        &session.git,
+        &session.cargo,
+        &session.rustc,
+        &session.cargo_home,
+        &session.sign_tool.path,
+        &session.release_public_key,
+    ] {
+        windows_inputs::require_existing_local_volume(path)?;
+    }
     require_source_commit(&session.expected_source_commit, &recipe.source_commit)?;
     let out_dir = resolve(&root, &recipe.out_dir)?;
     // Existing output root is admitted, not silently created/repaired with a new
     // policy. Same source owner creates only the fresh transaction child below it.
     let _output: Vec<File> = windows_inputs::pin_input_root(&out_dir)?;
+    let source_root = resolve(&root, &recipe.source_root)?;
+    let typescript_root = resolve(&root, &recipe.typescript_root)?;
+    let bun = resolve(&root, &recipe.bun.path)?;
+    let tsc = resolve(&root, &recipe.tsc.path)?;
+    for path in [&source_root, &typescript_root, &bun, &tsc] {
+        windows_inputs::require_existing_local_volume(path)?;
+    }
     let source = local_source::Request {
-        source: resolve(&root, &recipe.source_root)?,
+        source: source_root,
         commit: recipe.source_commit,
         session: out_dir.join(format!("session-{}", session.output_nonce)),
         git: session.git,
@@ -178,10 +197,10 @@ pub(super) fn run(session_path: &Path) -> Result<(), BuildError> {
         publisher_scope: session.publisher_scope,
     };
     let compiler = local_archive_command::CompilerRequest {
-        typescript_root: resolve(&root, &recipe.typescript_root)?,
-        bun: resolve(&root, &recipe.bun.path)?,
+        typescript_root,
+        bun,
         bun_sha256: recipe.bun.sha256,
-        tsc: resolve(&root, &recipe.tsc.path)?,
+        tsc,
         tsc_sha256: recipe.tsc.sha256,
     };
     println!(

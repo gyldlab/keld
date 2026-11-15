@@ -16,6 +16,35 @@ use crate::boot;
 
 const AUTHORING_LIMIT: u64 = 64 * 1024;
 
+/// Drive-letter syntax is not a local-volume identity. The normalized
+/// final pathname can reveal remote UNC/device aliases, which we refuse.
+/// This extra pathname check is not a replacement for the retained, no-follow
+/// file/directory handles or native mapped-volume qualification.
+fn resolved_local_disk(path: &Path) -> bool {
+    let mut components = path.components();
+    matches!(
+        components.next(),
+        Some(Component::Prefix(prefix))
+            if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+    ) && matches!(components.next(), Some(Component::RootDir))
+}
+
+/// Requires a live path to resolve onto a local Windows disk namespace.
+/// This is only a second admission predicate: existing pinned file and
+/// directory handles remain the source of launch/authorization identity.
+pub(super) fn require_existing_local_volume(path: &Path) -> Result<(), BuildError> {
+    let resolved = path
+        .canonicalize()
+        .map_err(|error| BuildError::input("Windows local volume", error))?;
+    if !resolved_local_disk(&resolved) {
+        return Err(BuildError::input(
+            "Windows local volume",
+            "selected path resolves to a remote share or non-disk namespace",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) struct CapturedInputs {
     _ancestors: Vec<File>,
     config: File,
@@ -44,6 +73,7 @@ pub(super) fn pin_input_root(root: &Path) -> Result<Vec<File>, BuildError> {
                 .map_err(|error| BuildError::input("Windows authoring namespace", error))?,
         );
     }
+    require_existing_local_volume(root)?;
     Ok(ancestors)
 }
 
@@ -449,6 +479,32 @@ fn require_windows_authoring_paths(entry: &str, renderer: Option<&str>) -> Resul
     keld_guard::validate_windows_package_paths(&paths)
         .map_err(|error| BuildError::input("Windows authoring paths", error))
 }
+#[cfg(test)]
+mod windows_local_volume_tests {
+    use super::*;
+
+    #[test]
+    fn resolved_unc_and_device_namespaces_are_not_local_disks() {
+        for local in [r"C:\tool.exe", r"\\?\C:\tool.exe"] {
+            assert!(resolved_local_disk(Path::new(local)), "{local}");
+        }
+        for remote in [
+            r"\\server\share\tool.exe",
+            r"\\?\UNC\server\share\tool.exe",
+            r"\\?\GLOBALROOT\Device\Mup\server\share\tool.exe",
+        ] {
+            assert!(!resolved_local_disk(Path::new(remote)), "{remote}");
+        }
+    }
+
+    #[test]
+    fn real_local_directory_is_admitted_and_missing_path_refused() {
+        let owned = tempfile::tempdir().expect("private Windows fixture");
+        require_existing_local_volume(owned.path()).expect("real local drive");
+        assert!(require_existing_local_volume(&owned.path().join("absent")).is_err());
+    }
+}
+
 #[cfg(test)]
 mod windows_authoring_path_tests {
     use super::*;
