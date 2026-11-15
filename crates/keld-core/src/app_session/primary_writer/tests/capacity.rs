@@ -145,6 +145,10 @@ fn actual_writer_advances_when_an_earlier_capacity_waiter_cannot() {
     let (router, mut peer, _owner, _windows) = initial_ready_router_with_window_loop();
     let link = target(&router);
     let writer = PrimaryWriter::new(router.window_commands.clone());
+    // Test-only split condition variables provide a deterministic adversarial
+    // selection for the notify_one mutation: the capacity waiter is woken,
+    // while the actual physical writer remains asleep.
+    writer.use_deterministic_waiters_for_test();
     // Reserving the only VALUE slot creates a genuine blocked producer. Keep
     // the reservation, payload and future receipt charged until after I/O.
     let prepared = frame(&writer, &link, &[0x42, 0x24]);
