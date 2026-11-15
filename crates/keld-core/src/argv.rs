@@ -1,9 +1,10 @@
-//! Strict process-argument decoding shared by the `keld` and `keld-host` binaries.
+//! Strict process-argument decoding shared by the `keld` and `keld-host` binaries
+//! and keld-core's feature-gated `native_renderer_joint_main` acceptance harness.
 //!
 //! Native argv is not guaranteed to be Unicode: Unix argv is arbitrary bytes and
 //! Windows argv may hold unpaired UTF-16 surrogates. `std::env::args()` panics on
 //! such input, and lossy conversion would turn an invalid argument into a
-//! different command, flag or path. Both binaries therefore read
+//! different command, flag or path. All three callers therefore read
 //! `std::env::args_os()` and decode it here, on every OS, refusing with one
 //! registered code instead. Windows private helper roles dispatch on the raw
 //! `OsString` values before this conversion.
