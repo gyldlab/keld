@@ -83,6 +83,35 @@ const descriptor = Object.getOwnPropertyDescriptor;
 const define = Object.defineProperty;
 const freeze = Object.freeze;
 const isArray = Array.isArray;
+const getPrototype = Object.getPrototypeOf;
+const recordPrototype = Object.prototype;
+const isBufferView = ArrayBuffer.isView;
+// Brand probes use captured native internal-slot checks. A prototype-erased
+// Map/Date must not become an empty object after page crossing.
+const nativeRecordRejectors = [
+  Map.prototype.has,
+  Set.prototype.has,
+  WeakMap.prototype.has,
+  WeakSet.prototype.has,
+  Date.prototype.getTime,
+  Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength")?.get,
+  Object.getOwnPropertyDescriptor(RegExp.prototype, "source")?.get,
+];
+function ordinaryPageRecord(value: object): boolean {
+  const proto = getPrototype(value);
+  if ((proto !== null && proto !== recordPrototype) || isBufferView(value))
+    return false;
+  for (const probe of nativeRecordRejectors) {
+    if (!probe) continue;
+    try {
+      apply(probe, value, [undefined]);
+      return false;
+    } catch {
+      // Native internal-slot mismatch: this is not that exotic brand.
+    }
+  }
+  return true;
+}
 const stringify = JSON.stringify;
 const parse = JSON.parse;
 const encoder = new TextEncoder();
@@ -182,10 +211,13 @@ export function installPage(facts: PreloadFacts): void {
       }
       if (typeof value !== "object" || seen.has(value))
         refuse("unsupported or cyclic local crossing");
+      const array = isArray(value);
+      if (!array && !ordinaryPageRecord(value))
+        refuse("unsupported local object kind");
       seen.add(value);
       const names = ownKeys(value);
       if (names.length > MAX_KEYS - keys) refuse("local key bound exceeded");
-      if (isArray(value)) {
+      if (array) {
         const length = descriptor(value, "length")?.value as unknown;
         if (
           typeof length !== "number" ||
