@@ -114,12 +114,7 @@ fn require_replayable_permissions(members: &[Member]) -> Result<(), BuildError> 
     let permissions = required_json(members, "keld.permissions.jsonc")?;
     let text = std::str::from_utf8(permissions).map_err(refuse)?;
     keld_guard::parse_manifest(text).map_err(refuse)?;
-    if permissions != boot::PERMISSIONS_BYTES {
-        return Err(refuse(
-            "Windows KEL-96 dev stage cannot replay source permission policy bytes; only the exact empty undeclared policy is supported",
-        ));
-    }
-    Ok(())
+    super::require_developer_policy_replay(permissions)
 }
 
 fn quoted(value: &str) -> Result<String, BuildError> {
@@ -229,9 +224,15 @@ fn render_config(
     }
     Ok(config.into_bytes())
 }
-// Developer launcher name validation belongs to the input admission owner in
-// windows_inputs and runs before Host compilation or signing.
-const LAUNCH: &[u8] = b"@echo off\r\nsetlocal EnableExtensions DisableDelayedExpansion\r\nset \"PATH=%~dp0;%PATH%\"\r\ncd /d \"%~dp0project\"\r\n\"%~dp0keld.exe\" dev\r\nexit /b %errorlevel%\r\n";
+// windows_inputs admits the application EXE leaf before any signing. The
+// shipped Run.cmd must enter that signed launcher, which authenticates the
+// sibling Bun/Host/CLI images before the ordinary developer lease begins.
+fn signed_entry_run_script(launcher_name: &str) -> Vec<u8> {
+    format!(
+        "@echo off\r\nsetlocal EnableExtensions DisableDelayedExpansion\r\n\"%~dp0{launcher_name}\"\r\nexit /b %errorlevel%\r\n"
+    )
+    .into_bytes()
+}
 
 /// Creates one fresh, self-contained LOCAL developer runner using already emitted,
 /// authenticated signed Host and same-execution compiled application members.
@@ -283,6 +284,11 @@ pub(super) fn emit(pair: &PreparedLocalPair, members: &[Member]) -> Result<PathB
             return Err(refuse("required compiled runtime member missing"));
         }
     }
+    // Bun runs first during the child CLI's doctor check. Authenticate the
+    // bundled runtime with the same signer and app ID as Host, CLI and launcher
+    // so an unsigned replacement cannot execute in the signed bundle.
+    let bun_sha =
+        super::local_images::sign_developer_bundle_executable(pair, &root.join("bun.exe"))?;
     write_bytes(&project.join("keld.config.ts"), &config)?;
     let cli = std::env::current_exe().map_err(refuse)?;
     let cli_file = super::local_source::pin_file(&cli, MAX_COPY)?;
@@ -295,17 +301,17 @@ pub(super) fn emit(pair: &PreparedLocalPair, members: &[Member]) -> Result<PathB
     // process with a pinned PATH. Authenticate this child with the SAME
     // previously captured developer signer; do not ship a mutable unsigned
     // executable behind a trusted application launcher.
-    let cli_sha = super::local_images::sign_named_developer_launcher(pair, &root.join("keld.exe"))?;
-    write_bytes(&root.join("Run.cmd"), LAUNCH)?;
+    let cli_sha =
+        super::local_images::sign_developer_bundle_executable(pair, &root.join("keld.exe"))?;
     // The application-named executable uses only the normal KEL-96 dev lease.
     // Neither EXE is an installed KEL-53 principal or Store release authority.
-    let launcher = root.join(exe_name);
+    let launcher = root.join(&exe_name);
     copy_file(
         &launcher,
         &cli_file.file,
         cli_file.file.metadata().map_err(refuse)?.len(),
     )?;
-    let launcher_sha = super::local_images::sign_named_developer_launcher(pair, &launcher)?;
+    let launcher_sha = super::local_images::sign_developer_bundle_executable(pair, &launcher)?;
     let host = keld_guard::WindowsAuthenticodeImage::open(&root.join("keld-host.exe"))
         .map_err(refuse)?
         .verify()
@@ -315,6 +321,7 @@ pub(super) fn emit(pair: &PreparedLocalPair, members: &[Member]) -> Result<PathB
             "bundle Host publisher/app id changed after signed candidate",
         ));
     }
+    write_bytes(&root.join("Run.cmd"), &signed_entry_run_script(&exe_name))?;
     println!(
         "Prepared Windows LOCAL DEVELOPER runnable folder: {} (Run.cmd and {} use KEL-96 dev lease, not installed provenance, Strict or Store)",
         root.display(),
@@ -328,6 +335,10 @@ pub(super) fn emit(pair: &PreparedLocalPair, members: &[Member]) -> Result<PathB
     println!(
         "Verified LOCAL DEVELOPER co-bundled CLI Authenticode: SHA256 {}",
         super::local_source::observed_hex(&cli_sha)
+    );
+    println!(
+        "Verified LOCAL DEVELOPER bundled Bun Authenticode: SHA256 {}",
+        super::local_source::observed_hex(&bun_sha)
     );
     Ok(root)
 }
@@ -454,10 +465,12 @@ mod tests {
 
     #[test]
     fn launcher_invokes_only_dev_lease_not_bare_signed_exe() {
-        let text = std::str::from_utf8(LAUNCH).unwrap();
-        assert!(text.contains("keld.exe\" dev"));
-        assert!(!text.contains("keld-host.exe\""));
-        assert!(text.contains("cd /d \"%~dp0project\""));
+        let script = signed_entry_run_script("draw.io.exe");
+        let text = std::str::from_utf8(&script).unwrap();
+        assert!(text.contains("\"%~dp0draw.io.exe\""));
+        assert!(!text.contains("keld.exe"));
+        assert!(!text.contains("keld-host.exe"));
+        assert!(!text.contains("set \"PATH="));
         assert!(!text.contains("--keld-install-initial"));
     }
     #[test]

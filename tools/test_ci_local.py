@@ -536,19 +536,30 @@ class FmtIncludedBashCompatibilityTests(unittest.TestCase):
             ),
         ):
             self.assertEqual(native_ci_bash(), actual)
-        # A test fixture's fake Git executable must not divert selection to
-        # a similarly named path or cause unrelated WSL launch.
-        with unittest.mock.patch(
-            "shutil.which",
-            side_effect=lambda command: (
-                r"C:\Windows\System32\git.exe"
-                if command == "git.exe"
-                else r"C:\Windows\System32\bash.exe"
-                if command == "bash"
-                else original_which(command)
-            ),
-        ):
-            self.assertEqual(native_ci_bash(), actual)
+        # A fake PATH Git must fall back to a controlled native installation,
+        # not the machine's ProgramFiles layout or an unrelated WSL launcher.
+        with tempfile.TemporaryDirectory(prefix="keld-ci-bash-fallback-") as temporary:
+            program_files = Path(temporary)
+            bin_dir = program_files / "Git" / "bin"
+            bin_dir.mkdir(parents=True)
+            (bin_dir / "git.exe").write_bytes(b"")
+            shell = bin_dir / "bash.exe"
+            shell.write_bytes(b"")
+            with unittest.mock.patch.dict(os.environ, {
+                "ProgramFiles": str(program_files),
+                "ProgramFiles(x86)": str(program_files / "absent-x86"),
+            }), unittest.mock.patch(
+                "shutil.which",
+                side_effect=lambda command: (
+                    str(program_files / "missing-git.exe")
+                    if command == "git.exe"
+                    else r"C:\Windows\System32\bash.exe"
+                    if command == "bash"
+                    else original_which(command)
+                ),
+            ):
+                self.assertEqual(native_ci_bash(), str(shell))
+                self.assertNotEqual(native_ci_bash(), r"C:\Windows\System32\bash.exe")
 
     def test_fmt_included_supports_bash_without_mapfile(self):
         source = Path(__file__).resolve().parent.parent
@@ -1375,7 +1386,7 @@ NOT_GIT_ARGUMENT_AFTER = re.compile(r"^\s*(?:[=!]=|=>)")
 # Only an executable `config` call counts: a comment that names the setting, or
 # the key without `config`, configures nothing. That includes a whole-line `#` or
 # `//` comment of a script embedded in a string, such as a Rust raw string.
-MAINTENANCE_OFF = re.compile(r"\bconfig\W+maintenance\.auto\W+false\b")
+MAINTENANCE_OFF = re.compile(r"\bconfig\W+(?:--local\W+)?maintenance\.auto\W+false\b")
 EMBEDDED_COMMENT_LINE = re.compile(r"""^\s*["'`]?\s*(?:#|//)""")
 MAINTENANCE_OFF_WINDOW = 4
 TEMP_REPOSITORY_SOURCES = ("*.py", "*.sh", "*.rs", "*.ts")
@@ -1522,6 +1533,10 @@ class TempRepositoryMaintenanceTests(unittest.TestCase):
             "tools/enabled.ts": 'git("{verb}");\ngit("config", "maintenance.auto", "true");\n',
             "tools/late.py": 'git("{verb}")\n' + "pass\n" * 4 + 'git("config", "maintenance.auto", "false")\n',
             "tools/wrong_key.sh": 'git {verb} -q\ngit config gc.auto 0\n',
+            "tools/global.py": 'git("{verb}")\ngit("config", "--global", "maintenance.auto", "false")\n',
+            "tools/system.sh": 'git {verb} -q\ngit config --system maintenance.auto false\n',
+            "tools/worktree.ts": 'git("{verb}");\ngit("config", "--worktree", "maintenance.auto", "false");\n',
+            "tools/mixed_scope.ts": 'git("{verb}");\ngit("config", "--local", "--global", "maintenance.auto", "false");\n',
             # A comment, or the key without a `config` call, configures nothing.
             "tools/commented.sh": 'git {verb} -q\n# git config maintenance.auto false\n',
             "tools/commented.rs": 'git_fixture(root, &["{verb}"]);\n    // config maintenance.auto false\n',
@@ -1553,6 +1568,8 @@ class TempRepositoryMaintenanceTests(unittest.TestCase):
         self.assertEqual(sites, {"tools/bare.py:1": False, "tools/bare.sh:1": False,
                                  "tools/bare.rs:1": False, "tools/enabled.ts:1": False,
                                  "tools/late.py:1": False, "tools/wrong_key.sh:1": False,
+                                 "tools/global.py:1": False, "tools/system.sh:1": False,
+                                 "tools/worktree.ts:1": False, "tools/mixed_scope.ts:1": False,
                                  "tools/commented.sh:1": False, "tools/commented.rs:1": False,
                                  "tools/no_call.py:1": False, "tools/trailing.py:1": False,
                                  "tools/trailing.sh:1": False, "tools/trailing.rs:1": False,
@@ -1571,6 +1588,7 @@ class TempRepositoryMaintenanceTests(unittest.TestCase):
             "tools/c.rs": 'git_fixture(root, &["{verb}", "--quiet"]);\n'
                           'git_fixture(root, &["config", "maintenance.auto", "false"]);\n',
             "tools/d.ts": 'git("{verb}");\n' + "\n" * 3 + 'git("config", "maintenance.auto", "false");\n',
+            "tools/local.ts": 'git("{verb}");\ngit("config", "--local", "maintenance.auto", "false");\n',
             # A trailing comment after the call, a `#` inside a string, or a shell `#`
             # inside a word keeps the call.
             "tools/e.py": 'self.git("{verb}")\nself.git("config", "maintenance.auto", "false")  # #670\n',
@@ -1579,7 +1597,8 @@ class TempRepositoryMaintenanceTests(unittest.TestCase):
             "tools/g.rs": 'let script = r#"\ngit {verb} -q\ngit config maintenance.auto false\n"#;\n',
         })
         self.assertEqual(sites, {"tools/a.py:1": True, "tools/b.sh:1": True, "tools/c.rs:1": True,
-                                 "tools/d.ts:1": True, "tools/e.py:1": True, "tools/f.sh:1": True,
+                                 "tools/d.ts:1": True, "tools/local.ts:1": True,
+                                 "tools/e.py:1": True, "tools/f.sh:1": True,
                                  "tools/g.rs:2": True})
 
     def test_census_counts_every_quoted_init_in_a_file_that_mentions_git(self):

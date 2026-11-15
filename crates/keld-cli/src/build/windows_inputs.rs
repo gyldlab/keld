@@ -169,6 +169,12 @@ impl CapturedInputs {
             }
             _ => {}
         }
+        // Refuse valid but nonreplayable policies before signer capture, source
+        // preparation or any signed image. Only the undeclared developer lease
+        // stages the fixed policy; explicit Strict follows its original owner.
+        if profile == ProfileAdmission::UndeclaredDeveloper {
+            super::require_developer_policy_replay(&policy)?;
+        }
         // The compiler is the sole owner of relative boot paths/schema and the
         // digest of these exact policy bytes. Drop no source pins until it ends.
         let _descriptor = boot::compile_boot_descriptor_bytes(
