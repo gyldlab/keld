@@ -105,6 +105,7 @@ impl WindowEmitter<'_, '_> {
         outcome: NativeOutcome,
     ) -> PublicationResult<()> {
         match outcome {
+            #[cfg(any(target_os = "macos", windows))]
             NativeOutcome::None => Ok(()),
             NativeOutcome::Fact(fact) => self.native_fact(fact),
             NativeOutcome::Build(BuildOutcome::Created { fact, reply }) => {
