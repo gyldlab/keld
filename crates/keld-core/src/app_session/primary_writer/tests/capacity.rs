@@ -199,20 +199,31 @@ fn actual_writer_advances_when_an_earlier_capacity_waiter_cannot() {
     // Failure-first: enqueue's one-shot notify_one mutant wakes only the
     // capacity producer. Its predicate remains Full, so no physical bytes arrive.
     writer.arm_notify_one_next_for_test();
+    // Observe a real dequeue, not a timeout read on the wire. The IPC contract
+    // explicitly forbids retrying read_frame on a socket after any read timeout:
+    // even a partial header would permanently poison the stream.
+    let (dequeued_rx, resume_dequeue) = writer.hold_next_dequeue_for_test();
     let (written_rx, written) = writer.hold_next_completion_for_test();
     let receipt = Arc::new(send(prepared));
-    peer.set_app_link_read_deadline(Some(Duration::from_millis(150)))
-        .expect("bounded notify_one negative");
-    let no_write = keld_ipc::link::read_frame(&mut peer);
-    assert!(
-        no_write.is_err(),
-        "capacity-only notify_one mutant must not wake the physical writer"
-    );
+    let unexpectedly_dequeued = dequeued_rx.recv_timeout(Duration::from_millis(150));
+    if !matches!(unexpectedly_dequeued, Err(mpsc::RecvTimeoutError::Timeout)) {
+        // Always release the physical worker before failing the mutation test.
+        // No sender, worker thread, or caller is left blocked on a test barrier.
+        let _ = resume_dequeue.send(());
+        panic!(
+            "capacity-only notify_one mutant advanced the physical writer: {unexpectedly_dequeued:?}"
+        );
+    }
 
-    // The real broadcast now wakes the same worker. Hold it after the actual
-    // pipe write but before completion publication so both receipt waiters
-    // demonstrably sleep on the original shared condition variable.
+    // A broadcast now wakes the same worker. The pipe has not been read or
+    // poisoned: require the actual dequeue, then permit its physical write.
     writer.shared.notify_all();
+    dequeued_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("broadcast wakes the real physical writer");
+    resume_dequeue
+        .send(())
+        .expect("resume actual dequeue after broadcast");
     peer.set_app_link_read_deadline(Some(Duration::from_secs(2)))
         .expect("bounded physical proof");
     let (header, payload) =
