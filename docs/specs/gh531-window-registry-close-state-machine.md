@@ -27,8 +27,10 @@ Sections 4.a to 4.h map to the ticket's sections (a) to (h).
 
 Non-goals:
 
-- Windows and Linux (F02-T12, parked). Window-channel calls on those hosts fail with a
-  typed error.
+- Linux (F02-T12, parked). Window-channel calls on that host fail with a typed error.
+- Windows, which `docs/specs/gh1188-windows-window-adapter.md` owns. A product build
+  refuses a schema-2 boot until that spec's T2, and a window `Create` answers
+  `KELD-CORE-042` until its T3.
 - Multiple views per window, `BrowserView`, `WebContentsView` (Tier 3).
 - Window-bound roles (KEL-75/T4). This spec only keeps the close transition at which
   KEL-75's `WindowClosing(w)` tombstone is linearized.
@@ -704,7 +706,7 @@ registers each code in `docs/engineering/keld-error-codes.md` with a fix sentenc
 | `KELD-CORE-039` | a registry counter is exhausted (`WindowId`, `WindowGeneration` or `close_seq`; the detail names it) | F02-T2 |
 | `KELD-CORE-040` | registry not ready | F02-T2 |
 | `KELD-CORE-041` | native create failed (names the failed stage; the keld-wv `WvError` text goes to the host log) | F02-T2 |
-| `KELD-CORE-042` | window calls unsupported on this platform (Windows/Linux, F02-T12) | F02-T2 |
+| `KELD-CORE-042` | window calls unsupported on this platform (Linux, F02-T12; Windows until gh1188 T3) | F02-T2 |
 | `KELD-CORE-043` | window not owned by the calling RoleInstance generation | F02-T2 (T1 carries admission check 2; amended by #657) |
 | `KELD-CORE-045` | `window` CALL on a link not subscribed to `window` | F02-T2 (amended by #657) |
  The facade's own
@@ -1068,10 +1070,13 @@ remains and the step is outside a session end; then every **admitted** deferred
 `REPLY Destroyed`, in correlation/admission order. The new bounded Host admission
 budget is **64 outstanding Destroy correlations per window** while `Closing`;
 attempt 65 receives immediate `ERR KELD-CORE-046` on its own correlation (no
-window effects and no reply from `Released`). The fixed number is a reviewed
-capacity-policy proposal on integration PR #1181, distinct from the Worker
-abandonment and Auth quotas. The original unlimited C8 assumption is unsafe if
-AppKit Release stalls; this amendment requires independent GH531 owner review.
+window effects and no reply from `Released`). The fixed number is the
+[accepted per-window admission policy](https://github.com/gyldlab/keld/pull/1181#discussion_r4371478951)
+on PR #1181, distinct from Worker abandonment and Auth quotas. This supersedes
+the original unlimited C8 assumption for a stalled AppKit Release. Acceptance of
+this numeric policy alone establishes neither an application-wide resource/CPU
+budget nor a physical heap/RSS bound, and does not replace cumulative-admission
+or Source-memory qualification.
 *Live* means `Opening`, `Open`, `ClosePending` or `Closing`. An `Opening` window counts
 because its `Create` was admitted before this step, as an Electron constructor returns
 before any later close completes; so the session cannot quit before it opens.
@@ -1482,8 +1487,11 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
   (`window_delegate.rs:326-331`, FACT). The veto primitive exists; the change is host
   policy. tao registers no `applicationShouldTerminate:` (FACT, #419 packet), which is
   F01-T3's concern.
-- Windows and Linux: window `CALL`s answer the unsupported-platform `ERR`. Backends
-  never receive the new commands. F02-T12 owns these platforms.
+- Linux: window `CALL`s answer the unsupported-platform `ERR`. The backend never
+  receives the new commands. F02-T12 owns this platform.
+- Windows: `docs/specs/gh1188-windows-window-adapter.md` owns this platform. Until its
+  T3 the same `ERR` answers window `CALL`s, the backend receives none of the new
+  commands, and a test-admitted facade session answers `Subscribe`.
 
 ### Runtime seam
 

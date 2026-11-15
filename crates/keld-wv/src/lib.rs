@@ -119,6 +119,12 @@ pub use media::{
     MediaPermission, WEB_CAMERA, WEB_MEDIA_ORIGIN, WEB_MICROPHONE, media_permission_allowed,
 };
 pub use profile::{ProfileError, ProfileErrorKind, ProfileIdentity, WebProfileSelection};
+#[cfg(all(
+    feature = "profile-test-hooks",
+    debug_assertions,
+    target_os = "windows"
+))]
+pub use webview2::TEST_STALL_BEFORE_INIT_ENV;
 #[cfg(all(feature = "profile-test-hooks", target_os = "windows"))]
 pub use webview2::TEST_WINDOWS_BARRIER_GRACE_EXPIRY_ENV;
 

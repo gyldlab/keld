@@ -11,7 +11,7 @@ use std::thread;
 use std::time::Duration;
 
 use super::super::{FIXTURE_DEADLINE, blank_spec, failure};
-use super::{profile_fixture_engine, profile_fixture_root};
+use super::{profile_fixture_engine, profile_fixture_root, run_renderer_until_quit};
 use crate::webview2::tests::run_with_watchdog;
 use crate::{NavTarget, WebviewSpec, WvError};
 
@@ -75,7 +75,7 @@ fn windows_first_navigation_start_is_observed_by_real_com_callback() -> Result<(
             };
             commands_tx.send(command).is_ok() && ready
         });
-        let run = engine.run_app_until_quit(commands_rx, mpsc::channel().0);
+        let run = run_renderer_until_quit(engine, commands_rx, mpsc::channel().0);
         let ready = readiness
             .join()
             .map_err(|_| failure("native navigation readiness owner panicked"))?;
