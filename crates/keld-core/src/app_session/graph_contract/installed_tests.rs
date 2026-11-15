@@ -554,12 +554,18 @@ fn core_prepares_windows_source_and_selected_preload_from_the_same_graph_owner()
     // Encode the test-owned Windows file root, not the already-escaped query.
     // A literal % or space in the runner TEMP directory is path data, never
     // a URI escape or authorization to choose another entry.
+    // Resolve the owned TEMP directory independently through the OS. A CI runner
+    // can reach its TEMP directory through an alias that is not the admitted
+    // retained handle's final DOS path; this fixture must model the latter.
+    // Never use the production resource source to construct this test oracle.
+    let canonical = fs::canonicalize(&fixture.root).expect("canonical fixture root");
+    let canonical_path = canonical.to_str().expect("canonical fixture UTF8");
+    let canonical_drive = canonical_path
+        .strip_prefix(r"\\?\")
+        .unwrap_or(canonical_path);
     let uri = format!(
         "file:///{}/client/assets/nested/editor.html?queryObj=%257b",
-        fixture
-            .root
-            .to_str()
-            .expect("fixture UTF8")
+        canonical_drive
             .replace('\\', "/")
             .replace('%', "%25")
             .replace(' ', "%20")
