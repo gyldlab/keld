@@ -12,6 +12,12 @@
 //! An absent event is never evidence of liveness. A refused registration, a
 //! failed or interrupted read, or a read that finishes past the caller's
 //! deadline never becomes a successful kernel-exit observation.
+//!
+//! Cohesion review exception (.agents/test-layout.md): owned by GH-824's
+//! macOS no-flag Host fixture. The exit classifier and its native status-23
+//! negative controls share one private kernel-read seam and phase invariants.
+//! Reassess this exception when GH-824's native shutdown witness is accepted,
+//! or if the classifier gains another independent scenario owner.
 
 use crate::support::process::ProcessExitObserver;
 use std::process::ExitStatus;
