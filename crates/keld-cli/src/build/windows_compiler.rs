@@ -375,7 +375,6 @@ pub(super) fn compile(
         OsString::from("--preload"),
         compiler.preload.path.as_os_str().to_owned(),
         compiler.entry.path.as_os_str().to_owned(),
-        compiler.source.kipc_root().as_os_str().to_owned(),
         compiler.tools.parser.path.as_os_str().to_owned(),
     ];
     let bytes = local_source::run_captured(
