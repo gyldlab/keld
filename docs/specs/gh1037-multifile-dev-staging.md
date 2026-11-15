@@ -1,6 +1,12 @@
 # Spec: macOS multi-file development source staging (GH-1037)
-Status: draft
-Linear: GH-1037 (#517 tracker; KEL-96 reference) · Owner: @0monish / GYLDLAB · Updated: 2026-10-31
+
+- Status: draft
+- Tracker: GH-1037
+- Owner: @0monish / GYLDLAB
+- Updated: 2026-11-16
+- Pin: 58763359e46a4f80bc329f8514763437856f447c
+
+Related: issue #517 and KEL-96 boot ownership.
 
 This is the evidence-led proposal after GH1037's native verification. General
 source-tree copying remains draft and requires its source/startup owner contract.
@@ -30,7 +36,7 @@ graph admission, renderer delivery and other-platform staging remain unchanged.
 
 - Architecture01/03: Host authority, default-deny, explicit security profiles and
   one owner per source/permission/lifecycle rule.
-- Architecture06 §2 and approved `docs/specs/kel96-no-flag-host-boot.md`:
+- Architecture06 §2 and approved `docs/specs/kel96-no-flag-host-boot/boot.md`:
   sole `boot.rs` stage producer, executable-located descriptor, private nonce,
   no-flag Host and fixed entry-relative layout.
 - Approved `docs/specs/kel140-macos-public-filesystem.md` §4.5: retained source
@@ -108,51 +114,120 @@ same macOS26.5.1/25F80 arm64 Mac with Bun1.4.4, ten pure and both native cases
 pass. Deleting the observer listeners, bypassing it for the stylesheet, or
 omitting href or src fails; a `<base>` change fails only the document baseline.
 
-## 3. Acceptance criteria (binary, each becomes a test)
+## 3. Acceptance criteria
 
-1. **Ordinary sibling:** the normal producer stages a project whose configured
-   `src/main.ts` statically imports `./sibling.ts`; the unmodified shipping
-   no-flag Host reaches actual HELLO/Ready and a sibling-selected effect, then
-   Echo/Quit/link EOF and process/stage cleanup. No post-stage injection is allowed.
-2. **Layout:** preserve every selected file's path relative to the canonical
-   project root. Nested imports and imports to a sibling directory resolve under
-   the staged root using Bun itself; no flattening, rewritten import or extra resolver.
-3. **Captured bytes:** each selected regular file is read from its validated owned
-   handle once into the bytes written to a new staged inode. A source-path
-   replacement after open cannot replace those captured bytes. A source error
-   fails with existing KELD-CLI-047 detail naming the path and remediation.
-4. **Containment/type:** an outside-root reference is not copied; a symlink in
-   the selected tree, including one in `src` pointing outside, is refused before
-   Host launch. FIFOs, devices, sockets, unreadable and foreign-owned files also
-   refuse; none silently becomes a missing-file fallback.
-5. **Single policy owner:** the existing permissions-source owner captures and
-   stages its one fixed policy buffer. Tree traversal never reopens or overwrites
-   that policy, merges grants, changes the profile or writes a second descriptor.
-6. **Failure cleanup:** a failure after any selected-file copy removes only that
-   incomplete nonce via the existing stage guard when the retained nonce and
-   parent identities still match. Missing, substituted or uninspectable identities
-   refuse destructive cleanup and retain the owned incomplete stage for safe
-   disposition. A healthy following project can stage and run; caller-selected
-   paths and prior launch roots are not deleted.
-7. **Recovery:** an existing recovery generation uses the same completed stage.
-   Replacing project source after capture does not re-stage or change the next
-   generation. Existing fresh principal/token, stale-generation refusal and
-   permission-snapshot behavior retain their separate KEL-75/KEL-78 tests.
-8. **Package/startup identity:** when a qualified installed graph is supplied by its
-   existing owner, preserve its relative layout and actual resolver/importer
-   identity. Re-run that owner's identity matrix from the produced stage before
-   accepting its compatibility consumer. Missing/unqualified graphs and unsupported
-   file/link kinds are blockers; copied package bytes alone never imply admission.
-   Package/configuration/environment/preload inputs that affect startup must be
-   qualified by their existing owners before evaluation; file presence is not proof.
-9. **Renderer honesty:** keep the inline renderer behavior unchanged in this Bun
-   staging slice. A copied stylesheet/image is not evidence that WebView URL
-   delivery works. Preserve the generic inline fixture's actual states and the
-   KEL-79 handoff; no Drawio facade or other engine is inferred from it.
-10. **Compatibility:** the existing prepared-entry/canonical-transport hello
-    remains healthy with unchanged descriptor/policy bytes and no new required
-    configuration. Windows/Linux retain their current staging behavior until
-    their separately qualified slices; no unrun OS is reported supported.
+### AC-1: Ordinary sibling
+- **Given:** a macOS project imports a sibling module.
+- **When:** the normal stage producer prepares its source.
+- **Then:** the normal producer stages a project whose configured `src/main.ts` statically imports
+  `./sibling.ts`; the unmodified shipping no-flag Host reaches actual HELLO/Ready and a sibling-selected effect,
+  then Echo/Quit/link EOF and process/stage cleanup. No post-stage injection is allowed.
+- **Negative control:** Run one adverse mutation through the owning observer.
+  - **Single fault:** omit the selected sibling from the produced stage.
+  - **At-risk precondition:** the project imports that sibling on first Bun launch.
+  - **Expected RED:** the Host readiness and sibling-effect oracle reports failure.
+
+### AC-2: Layout
+- **Given:** a project has nested, relative module imports.
+- **When:** the producer stages the selected source.
+- **Then:** preserve every selected file's path relative to the canonical project root. Nested imports and
+  imports to a sibling directory resolve under the staged root using Bun itself; no flattening, rewritten import
+  or extra resolver.
+- **Negative control:** Run one adverse mutation through the owning observer.
+  - **Single fault:** flatten nested paths when staging.
+  - **At-risk precondition:** Bun resolves the nested relative import.
+  - **Expected RED:** the nested importer identity and effect check fails.
+
+### AC-3: Captured bytes
+- **Given:** the producer opens a validated source handle.
+- **When:** a source pathname changes before staged-byte publication.
+- **Then:** each selected regular file is read from its validated owned handle once into the bytes written to a
+  new staged inode. A source-path replacement after open cannot replace those captured bytes. A source error
+  fails with existing KELD-CLI-047 detail naming the path and remediation.
+- **Negative control:** Run one adverse mutation through the owning observer.
+  - **Single fault:** reopen the source by its pathname after validation.
+  - **At-risk precondition:** the source path has been replaced after the validated open.
+  - **Expected RED:** the captured-byte equality check fails.
+
+### AC-4: Containment/type
+- **Given:** a selected source tree has a disallowed object.
+- **When:** the producer validates containment and file type.
+- **Then:** an outside-root reference is not copied; a symlink in the selected tree, including one in `src`
+  pointing outside, is refused before Host launch. FIFOs, devices, sockets, unreadable and foreign-owned files
+  also refuse; none silently becomes a missing-file fallback.
+- **Negative control:** Run one adverse mutation through the owning observer.
+  - **Single fault:** follow one outside-root symlink.
+  - **At-risk precondition:** the symlink appears in selected source.
+  - **Expected RED:** the outside sentinel or typed-refusal check fails.
+
+### AC-5: Single policy owner
+- **Given:** the producer has captured the fixed policy buffer.
+- **When:** the source-tree walker stages selected bytes.
+- **Then:** the existing permissions-source owner captures and stages its one fixed policy buffer. Tree
+  traversal never reopens or overwrites that policy, merges grants, changes the profile or writes a second
+  descriptor.
+- **Negative control:** Run one adverse mutation through the owning observer.
+  - **Single fault:** let the walker open the policy a second time.
+  - **At-risk precondition:** policy contents change between source capture and traversal.
+  - **Expected RED:** the one-capture/policy-byte invariant fails.
+
+### AC-6: Failure cleanup
+- **Given:** a stage fails during selected-file copying.
+- **When:** the stage guard performs identity-bound cleanup.
+- **Then:** a failure after any selected-file copy removes only that incomplete nonce via the existing stage
+  guard when the retained nonce and parent identities still match. Missing, substituted or uninspectable
+  identities refuse destructive cleanup and retain the owned incomplete stage for safe disposition. A healthy
+  following project can stage and run; caller-selected paths and prior launch roots are not deleted.
+- **Negative control:** Run one adverse mutation through the owning observer.
+  - **Single fault:** delete an unverified replacement nonce by pathname.
+  - **At-risk precondition:** the nonce was replaced before cleanup.
+  - **Expected RED:** the replacement-sentinel preservation oracle fails.
+
+### AC-7: Recovery
+- **Given:** a Bun generation is restarted after capture.
+- **When:** the supervisor launches its successor.
+- **Then:** an existing recovery generation uses the same completed stage. Replacing project source after
+  capture does not re-stage or change the next generation. Existing fresh principal/token, stale-generation
+  refusal and permission-snapshot behavior retain their separate KEL-75/KEL-78 tests.
+- **Negative control:** Run one adverse mutation through the owning observer.
+  - **Single fault:** copy live project source again during restart.
+  - **At-risk precondition:** the project source changed after initial capture.
+  - **Expected RED:** the unchanged-stage/recovery oracle fails.
+
+### AC-8: Package/startup identity
+- **Given:** an installed source graph has startup inputs.
+- **When:** the producer considers the graph for admission.
+- **Then:** when a qualified installed graph is supplied by its existing owner, preserve its relative layout and
+  actual resolver/importer identity. Re-run that owner's identity matrix from the produced stage before
+  accepting its compatibility consumer. Missing/unqualified graphs and unsupported file/link kinds are blockers;
+  copied package bytes alone never imply admission. Package/configuration/environment/preload inputs that affect
+  startup must be qualified by their existing owners before evaluation; file presence is not proof.
+- **Negative control:** Run one adverse mutation through the owning observer.
+  - **Single fault:** accept one unqualified preload or path redirect.
+  - **At-risk precondition:** the redirect is evaluated during startup.
+  - **Expected RED:** the graph-admission refusal check fails.
+
+### AC-9: Renderer honesty
+- **Given:** the inline renderer reports an unresolved relative asset.
+- **When:** the source-stage tests report compatibility.
+- **Then:** keep the inline renderer behavior unchanged in this Bun staging slice. A copied stylesheet/image is
+  not evidence that WebView URL delivery works. Preserve the generic inline fixture's actual states and the
+  KEL-79 handoff; no Drawio facade or other engine is inferred from it.
+- **Negative control:** Run one adverse mutation through the owning observer.
+  - **Single fault:** treat copied assets as proof of WebView delivery.
+  - **At-risk precondition:** the inline resource remains pending or unresolved.
+  - **Expected RED:** the native renderer-state oracle reports a false success.
+
+### AC-10: Compatibility
+- **Given:** an existing prepared-entry project uses no new option.
+- **When:** the unchanged transport starts that project.
+- **Then:** the existing prepared-entry/canonical-transport hello remains healthy with unchanged
+  descriptor/policy bytes and no new required configuration. Windows/Linux retain their current staging behavior
+  until their separately qualified slices; no unrun OS is reported supported.
+- **Negative control:** Run one adverse mutation through the owning observer.
+  - **Single fault:** require one new configuration input.
+  - **At-risk precondition:** the historical prepared-entry fixture starts.
+  - **Expected RED:** the compatibility startup test fails.
 
 ## 4. Design
 
@@ -167,112 +242,88 @@ transaction or authenticity against a malicious same-user writer.
 
 ### Isolated macOS stage prerequisite
 
-The live project must not be an ancestor of the produced stage. A fresh Bun 1.4.4
-control repeated the owning KEL-75 observation: a staged import reached live
-project `node_modules`, `tsconfig.json` paths and `package.json` imports even with
-`--no-install --no-env-file`. The same three imports failed from an isolated
-placement before either target or entry executed, while captured relative source
-still ran. This is resolver evidence, not a shipping Host or draw.io acceptance.
+The live project must not be an ancestor of the produced stage. A fresh Bun 1.4.4 control repeated the owning KEL-75
+observation: a staged import reached live project `node_modules`, `tsconfig.json` paths and `package.json` imports
+even with `--no-install --no-env-file`. The same three imports failed from an isolated placement before either
+target or entry executed, while captured relative source still ran. This is resolver evidence, not a shipping Host
+or draw.io acceptance.
 
-The CLI therefore owns this bounded filesystem-boundary correction before tree
-copying. Its canonical system temporary directory must be outside the canonical
-project, owned by the invoking user and already mode `0700`. No fallback directory
-or permission repair is selected. The project namespace is
-`<temporary>/keld-dev-<uid>/<project-id>/.keld/dev/`, where `project-id` is the
-lowercase SHA-256 of the canonical project path's native bytes. It is only a
-non-authoritative locator; it does not authenticate the application or grant a
-capability. The existing random 128-bit nonce remains the per-launch leaf.
+The CLI therefore owns this bounded filesystem-boundary correction before tree copying. Its canonical system
+temporary directory must be outside the canonical project, owned by the invoking user and already mode `0700`. No
+fallback directory or permission repair is selected. The project namespace is
+`<temporary>/keld-dev-<uid>/<project-id>/.keld/dev/`, where `project-id` is the lowercase SHA-256 of the canonical
+project path's native bytes. It is only a non-authoritative locator; it does not authenticate the application or
+grant a capability. The existing random 128-bit nonce remains the per-launch leaf.
 
-Create each private namespace component with mode `0700`, open it relative to
-the retained parent with directory/no-follow flags, verify its existing owner and
-mode, and retain those parents until staging completes. Refuse a symlink,
-non-directory, foreign owner or unexpected mode without modifying it. Refuse
-`node_modules`, `package.json`, `tsconfig.json` or `jsconfig.json` in any stage
-ancestor. Immediately before completing capture, recheck the retained private
-parents' owner/mode and device/inode identity against their pathnames, and repeat
-the ancestor-input census. A missing, inaccessible or unsuitable temporary base
-is a typed staging failure, not a reason to return to the project-local layout.
+Create each private namespace component with mode `0700`, open it relative to the retained parent with
+directory/no-follow flags, verify its existing owner and mode, and retain those parents until staging completes.
+Refuse a symlink, non-directory, foreign owner or unexpected mode without modifying it. Refuse `node_modules`,
+`package.json`, `tsconfig.json` or `jsconfig.json` in any stage ancestor. Immediately before completing capture,
+recheck the retained private parents' owner/mode and device/inode identity against their pathnames, and repeat the
+ancestor-input census. A missing, inaccessible or unsuitable temporary base is a typed staging failure, not a reason
+to return to the project-local layout.
 
-The existing `StageGuard` owns the retained namespace chain and opens the allocated
-nonce relative to the retained `dev` directory, with directory/no-follow flags.
-Every failure unwind checks the retained parents and nonce against their named
-owner/mode and device/inode identities before removing that incomplete nonce.
-Unknown, missing, substituted or uninspectable identity skips deletion, preserving
-the moved original stage and any replacement pathname. This identity-only cleanup
-check is separate from the resolver-input census: a late input with stable
-directory identities still removes only the owned incomplete nonce. Immediately
-before publishing a completed stage, require the retained nonce identity and
-recheck it together with the retained parent chain, after the final ancestor-input
-census. Any refusal leaves the same `StageGuard` responsible for its identity-bound
-failure unwind. A missing identity is a failure, not permission to publish by path.
+The existing `StageGuard` owns the retained namespace chain and opens the allocated nonce relative to the retained
+`dev` directory, with directory/no-follow flags. Every failure unwind checks the retained parents and nonce against
+their named owner/mode and device/inode identities before removing that incomplete nonce. Unknown, missing,
+substituted or uninspectable identity skips deletion, preserving the moved original stage and any replacement
+pathname. This identity-only cleanup check is separate from the resolver-input census: a late input with stable
+directory identities still removes only the owned incomplete nonce. Immediately before publishing a completed stage,
+require the retained nonce identity and recheck it together with the retained parent chain, after the final
+ancestor-input census. Any refusal leaves the same `StageGuard` responsible for its identity-bound failure unwind. A
+missing identity is a failure, not permission to publish by path.
 
-The shipping Host and Guardian still derive their exact `.keld/dev/<nonce>` cleanup
-root from the running executable and the existing lease; no new deletion authority
-or caller-selected root is introduced. Their production selection code is
-unchanged. The original entry/renderer/transport and one policy capture remain the
-only staged inputs. Linux and Windows retain their existing location and qualification.
+The shipping Host and Guardian still derive their exact `.keld/dev/<nonce>` cleanup root from the running executable
+and the existing lease; no new deletion authority or caller-selected root is introduced. Their production selection
+code is unchanged. The original entry/renderer/transport and one policy capture remain the only staged inputs. Linux
+and Windows retain their existing location and qualification.
 
-The native acceptance observers use the actual producer-returned parent and the
-kernel-observed Host image, while preserving exact source/policy byte checks and a
-live-stage positive before cleanup assertions. Test-only fallback cleanup happens
-after those assertions. The CLI regression must reject each live-project-only
-import and run a healthy captured entry; namespace tests cover unsuitable
-temporary placement, resolver-bearing ancestry, symlinks, mode preservation and
-capture-time path/input substitution. A late-input refusal must remove only the
-incomplete nonce while preserving an earlier completed stage and the new input;
-a healthy following capture must succeed after restoring the test fixture.
-The full staging path must also reject a parent replacement made during source
-capture while preserving a same-nonce replacement sentinel, the moved original
-incomplete stage and an earlier completed stage's Host/descriptor bytes. Its
-healthy-following control restores only test-owned paths after those oracles.
-The same full-producer regression must also substitute only the nonce leaf while
-leaving every parent unchanged. It must refuse publication and preserve the moved
-original stage, the replacement sentinel, and the earlier completed stage before
-any test-only restoration. This distinguishes final leaf admission from the
-already-qualified error-unwind cleanup predicate.
-This amendment changes KEL-96 stage-location text and architecture06 together.
+The native acceptance observers use the actual producer-returned parent and the kernel-observed Host image, while
+preserving exact source/policy byte checks and a live-stage positive before cleanup assertions. Test-only fallback
+cleanup happens after those assertions. The CLI regression must reject each live-project-only import and run a
+healthy captured entry; namespace tests cover unsuitable temporary placement, resolver-bearing ancestry, symlinks,
+mode preservation and capture-time path/input substitution. A late-input refusal must remove only the incomplete
+nonce while preserving an earlier completed stage and the new input; a healthy following capture must succeed after
+restoring the test fixture. The full staging path must also reject a parent replacement made during source capture
+while preserving a same-nonce replacement sentinel, the moved original incomplete stage and an earlier completed
+stage's Host/descriptor bytes. Its healthy-following control restores only test-owned paths after those oracles. The
+same full-producer regression must also substitute only the nonce leaf while leaving every parent unchanged. It must
+refuse publication and preserve the moved original stage, the replacement sentinel, and the earlier completed stage
+before any test-only restoration. This distinguishes final leaf admission from the already-qualified error-unwind
+cleanup predicate. This amendment changes KEL-96 stage-location text and architecture06 together.
 
-This slice does not freeze startup environment, stop runtime package acquisition,
-admit installed aliases, or supply GH499's missing source graph. Those remain
-KEL-75/GH499/GH502/GH593-owned implementation gates. The Host's qualification
-immediately before every Bun generation is not implemented by this CLI check.
-Same-user namespace mutation after capture remains outside the
-cooperating-developer snapshot guarantee; held CLI descriptors do not freeze
-Bun's later path-based lookup. Identity reads also do not lock namespace entries
-against a later same-user replacement during pathname cleanup.
+This slice does not freeze startup environment, stop runtime package acquisition, admit installed aliases, or supply
+GH499's missing source graph. Those remain KEL-75/GH499/GH502/GH593-owned implementation gates. The Host's
+qualification immediately before every Bun generation is not implemented by this CLI check. Same-user namespace
+mutation after capture remains outside the cooperating-developer snapshot guarantee; held CLI descriptors do not
+freeze Bun's later path-based lookup. Identity reads also do not lock namespace entries against a later same-user
+replacement during pathname cleanup.
 
 | Option | Decision and reason |
 |---|---|
 | (a) Validated read-only project source tree | Selected for the Bun side. The observed missing sibling is ordinary file delivery. Preserve paths and reuse the existing producer, invoking-owner rule and Bun resolver. |
-| (b) Entry import graph plus the app's renderer dev server | Deferred. A new import-graph implementation would duplicate resolver semantics and miss dynamic/data inputs; no current approved producer supplies this general graph. Existing qualified package/source graphs remain authoritative when available. The app's renderer dev server is the architecture06 destination under KEL-79; it does not solve this Bun copy defect. |
+| (b) Entry import graph plus the app's renderer dev server | Deferred. Building an import graph duplicates resolver semantics and misses dynamic/data inputs; no approved producer supplies this graph. Qualified package/source graphs remain authoritative. The renderer dev server (architecture06, KEL-79) does not fix this Bun copy defect. |
 | (c) Document the current selected-file limit | Required immediately in README as current behavior. It leaves the verified sibling failure in place, so it is the compatibility baseline rather than the proposed fix. |
 
-The isolation prerequisite does not rewrite source selection or claim a
-performance advantage. Keep the current prepared-entry route available for
-projects outside the proposed source-copy slice.
-Do not invent a graph-qualified flag or approval registry for packaging.
+The isolation prerequisite does not rewrite source selection or claim a performance advantage. Keep the current
+prepared-entry route available for projects outside the proposed source-copy slice. Do not invent a graph-qualified
+flag or approval registry for packaging.
 
 ### Source paths and capture
 
-The canonical project root already selected by the CLI is the source root.
-The selected tree must be qualified by the existing source/installed-graph and
-role-startup owners for any startup-affecting inputs. The exact existing
-qualification interface for that general tree remains an explicit draft
-unknown below; this text does not invent one or claim it exists. Ordinary
-relative-file verification did not exercise such configuration or package graphs.
-The configured relative entry path remains unchanged. Copy the selected tree
-beneath the random stage root with that same relative path, so an entry at
-`src/main/electron.js` and its local siblings retain their relative relationship.
-No source path, working-directory hint or environment variable replaces the
-Host's executable-located descriptor.
+The canonical project root already selected by the CLI is the source root. The selected tree must be qualified by
+the existing source/installed-graph and role-startup owners for any startup-affecting inputs. The exact existing
+qualification interface for that general tree remains an explicit draft unknown below; this text does not invent one
+or claim it exists. Ordinary relative-file verification did not exercise such configuration or package graphs. The
+configured relative entry path remains unchanged. Copy the selected tree beneath the random stage root with that
+same relative path, so an entry at `src/main/electron.js` and its local siblings retain their relative relationship.
+No source path, working-directory hint or environment variable replaces the Host's executable-located descriptor.
 
-The first macOS slice admits **ordinary directories and regular files only**:
-enumerate without following symbolic links, prove each selected object remains
-beneath the retained project root, reuse the invoking-owner predicate and capture
-from the selected no-follow handle. Reject every symlink rather than flattening
-one or changing module identity. Supporting an internal-link package graph is
-an explicit later qualification under its owning graph contract, not an inferred
-fallback. Outside-root imports receive no copied outside bytes.
+The first macOS slice admits **ordinary directories and regular files only**: enumerate without following symbolic
+links, prove each selected object remains beneath the retained project root, reuse the invoking-owner predicate and
+capture from the selected no-follow handle. Reject every symlink rather than flattening one or changing module
+identity. Supporting an internal-link package graph is an explicit later qualification under its owning graph
+contract, not an inferred fallback. Outside-root imports receive no copied outside bytes.
 
 Source selection has one owner in `boot.rs`:
 - Exclude Git metadata `.git` and the top-level producer-owned `.keld` subtree;
@@ -292,36 +343,30 @@ Source selection has one owner in `boot.rs`:
   This draft selects no new configuration, preload or environment-loading policy.
   Unsupported link kinds remain refused; copying cannot upgrade qualification.
 
-Use the current new-file/0400 staged-byte rule and private nonce/cleanup owner.
-Do not make source files writable, follow an escape, auto-install dependencies,
-or silently skip a failed selected input. No arbitrary file/byte quota is chosen
-here; existing allocation/I/O failures must remain typed and clean up. Any later
-resource quota requires measured inputs and its own explicit contract.
+Use the current new-file/0400 staged-byte rule and private nonce/cleanup owner. Do not make source files writable,
+follow an escape, auto-install dependencies, or silently skip a failed selected input. No arbitrary file/byte quota
+is chosen here; existing allocation/I/O failures must remain typed and clean up. Any later resource quota requires
+measured inputs and its own explicit contract.
 
-The source buffers actually captured are the copy inputs. Retained-handle
-selection defeats path substitution, but this does not claim a simultaneous
-version across all source files or prevent an authorized same-user in-place
-writer. GH499's authenticated complete-graph/launch-generation admission remains
-separate and must not be fabricated from a successful copy.
+The source buffers actually captured are the copy inputs. Retained-handle selection defeats path substitution, but
+this does not claim a simultaneous version across all source files or prevent an authorized same-user in-place
+writer. GH499's authenticated complete-graph/launch-generation admission remains separate and must not be fabricated
+from a successful copy.
 
 ### Renderer, lifecycle and runtime seam
 
-Renderer HTML still goes through its current inline path. Serving relative
-assets, choosing an origin/base URL, dev-server authentication and the Drawio
-custom resource entry remain KEL-79 and existing GH471/GH473 owners. No permission,
-CSP exception, URL forge, HTTP service or transport is added here.
+Renderer HTML still goes through its current inline path. Serving relative assets, choosing an origin/base URL,
+dev-server authentication and the Drawio custom resource entry remain KEL-79 and existing GH471/GH473 owners. No
+permission, CSP exception, URL forge, HTTP service or transport is added here.
 
-Before/after execution owner and crash domain remain CLI → shipping Host →
-supervised Bun. Capture happens once before launch; recovery reuses the completed
-stage. No new public Rust signature, channel, IPC message, schema field,
-capability or persisted-state migration is proposed. Compatibility fallback:
-the existing prepared-entry/canonical-transport route. No temporary adapter.
+Before/after execution owner and crash domain remain CLI → shipping Host → supervised Bun. Capture happens once
+before launch; recovery reuses the completed stage. No new public Rust signature, channel, IPC message, schema
+field, capability or persisted-state migration is proposed. Compatibility fallback: the existing
+prepared-entry/canonical-transport route. No temporary adapter.
 
-Initial qualification is macOS only. Linux directory mounting would change the
-current strict launcher's file-only `/code` admission and needs its existing
-containment owner plus real Linux proof. Windows namespace/ACL and cleanup
+Initial qualification is macOS only. Linux directory mounting would change the current strict launcher's file-only
+`/code` admission and needs its existing containment owner plus real Linux proof. Windows namespace/ACL and cleanup
 ownership likewise require its real platform slice. Neither is silently widened.
-
 ## 5. Boundaries
 
 Original verification: focused `keld-host` fixture/module registration, this
@@ -340,42 +385,55 @@ scope and independent gates. No PR1306/1308 source adoption.
 
 ## 6. Tasks
 
-- [x] T0 verification: run the independent native sibling/counterweight and
-  calibrated inline-renderer cases; retain failed and changed-source attempts.
-- [ ] T0a isolation prerequisite: fail first on actual producer ancestry, move the
-  macOS nonce outside the project using the existing private-stage/cleanup owners,
-  and qualify namespace refusal, preserved stock launch and cleanup. Candidate
-  implementation is not completed acceptance.
-- [ ] T1 publish this draft and the truthful README; obtain independent exact-head
-  review and human exact-text approval. No production staging implementation.
-- [ ] T2 after approval: one macOS source-capture/copy owner, normal sibling and
-  nested-layout vertical slice, all containment/type/failure-cleanup controls,
-  unchanged prepared-entry route and actual shipping no-flag Host result.
-- [ ] T3 consume separately qualified package graph and recovery contracts only
-  when their owners supply them; prove actual produced-stage identity and causal
-  recovery. Renderer and other-OS qualification remain their owning slices.
+### T-1: Verification (T0; completed)
+- **Blocked by:** none
+verification: run the independent native sibling/counterweight and calibrated inline-renderer cases; retain
+failed and changed-source attempts.
 
-## 7. Test plan
+### T-2: macOS isolation prerequisite (T0a; pending)
+- **Blocked by:** T-1
+isolation prerequisite: fail first on actual producer ancestry, move the macOS nonce outside the project
+using the existing private-stage/cleanup owners, and qualify namespace refusal, preserved stock launch and
+cleanup. Candidate implementation is not completed acceptance.
 
-AC1/2: convert the current normal-stage sibling observation to actual supported
+### T-3: Draft publication and approval (T1; pending)
+- **Blocked by:** T-2
+publish this draft and the truthful README; obtain independent exact-head review and human exact-text
+approval. No production staging implementation.
+
+### T-4: Source-tree capture (T2; pending)
+- **Blocked by:** T-3
+after approval: one macOS source-capture/copy owner, normal sibling and nested-layout vertical slice, all
+containment/type/failure-cleanup controls, unchanged prepared-entry route and actual shipping no-flag Host
+result.
+
+### T-5: Qualified graph integration (T3; pending)
+- **Blocked by:** T-4
+consume separately qualified package graph and recovery contracts only when their owners supply them; prove
+actual produced-stage identity and causal recovery. Renderer and other-OS qualification remain their owning
+slices.
+
+## 7. Test plan & evidence
+
+AC-1 and AC-2: convert the current normal-stage sibling observation to actual supported
 startup only in the implementation that makes it pass; keep the injected stage
 as labelled causal diagnostic only. Add nested/sibling-directory paths and an
 independent Bun-loader effect, exact source-byte/layout checks and healthy
 Echo/Quit/cleanup. Do not rely on unavailable error-path stderr.
 
-AC3–6: real temporary files/directories, retained-path replacement, outside
+AC-3 through AC-6: real temporary files/directories, retained-path replacement, outside
 sentinel, outside/in-root symlinks, FIFO/non-file, foreign-owner seam and failed
 copy after an earlier success. Assert typed error and exact nonce cleanup, then
 a healthy following operation. One-fault controls remove containment/type/capture
 checks; each must fail its named oracle. Reuse existing owner helpers, no mock-only
 OS proof or copied policy implementation.
 
-AC7/8: existing real generation/graph owner fixtures plus the actual produced
+AC-7 and AC-8: existing real generation/graph owner fixtures plus the actual produced
 tree; project mutation after capture, stale generation, nested foreign facade
 and lost source/transport must be rejected or retain the owner's exact existing
 outcome. Do not substitute the future product operation for a mechanism gate.
 
-AC9/10: preserve real parse/script/load calibration and inline positive controls;
+AC-9 and AC-10: preserve real parse/script/load calibration and inline positive controls;
 record pending explicitly. No physical clicks or focus oracle is needed for this
 fixture. Other platform suites/qualified graph tests run only on their owning
 real systems. Full format, warning-denied workspace Clippy, applicable CI and
@@ -402,7 +460,7 @@ queue/work, clock and statistic, and retain reproducible artifacts under the
 existing performance owner. The native verification duration is test execution,
 not an application performance benchmark.
 
-## 10. Open questions
+## 10. Open questions, blockers & unknowns
 
 1. **Source/startup admission interface — implementation blocker, not a fabricated
    completed closure.** GH499/source admission, GH502 installed graph and
