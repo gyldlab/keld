@@ -579,11 +579,10 @@ mod rust_binder_acceptance_tests {
         environment: &[(OsString, OsString)],
         request: &mut File,
         hostile_config: Option<&Path>,
-    ) -> std::process::Output {
-        // Production run_captured intentionally suppresses error output.
-        // A diagnostic retry uses the exact Rust-bound runner, request,
-        // environment and production argument builder to assert the negative
-        // cases emit no bytes and carry their expected refusal sentinel.
+    ) -> local_source::CapturedToolOutput {
+        // Reuse the production process-job owner, bounded stdout/stderr readers,
+        // timeout, descendant termination and reap path. Only the diagnostic
+        // result is returned to this test; it is never echoed to CI logs.
         request
             .seek(SeekFrom::Start(0))
             .expect("rewind retained compiler request");
@@ -591,16 +590,15 @@ mod rust_binder_acceptance_tests {
         if let Some(config) = hostile_config {
             args[2] = bun_config_argument(config);
         }
-        Command::new(&compiler.tools.bun.path)
-            .args(args)
-            .current_dir(stage)
-            .env_clear()
-            .envs(environment.iter().cloned())
-            .stdin(Stdio::from(
-                request.try_clone().expect("clone retained request"),
-            ))
-            .output()
-            .expect("observe exact Rust-bound compiler negative response")
+        local_source::run_captured_diagnostic(
+            &compiler.tools.bun,
+            &args,
+            environment,
+            stage,
+            request,
+            64 * 1024,
+        )
+        .expect("observe exact Rust-bound compiler response under bounded process ownership")
     }
 
     fn run_bound_case(
@@ -649,7 +647,7 @@ mod rust_binder_acceptance_tests {
                     &mut request,
                     Some(hostile_config),
                 );
-                assert!(!output.status.success(), "poisoned config succeeded");
+                assert_ne!(output.status, 0, "poisoned config succeeded");
                 assert!(output.stdout.is_empty(), "poisoned config emitted output");
                 assert!(
                     String::from_utf8_lossy(&output.stderr).contains("AMBIENT_BUN_CONFIG_USED"),
@@ -669,7 +667,7 @@ mod rust_binder_acceptance_tests {
                     &mut request,
                     None,
                 );
-                assert!(!output.status.success(), "invalid import runner succeeded");
+                assert_ne!(output.status, 0, "invalid import runner succeeded");
                 assert!(
                     output.stdout.is_empty(),
                     "invalid import emitted compiler output"
