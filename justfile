@@ -54,10 +54,10 @@ ci-route:
 # (tools/cache_tool_provenance_test.sh). Its cfg(windows) and cfg(unix) paths each
 # compile only on their own OS.
 [parallel]
-ci-policy: agents-md atomic-protocol agent-context-test agent-context cache-check-test ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-ci product-status-test product-status-check llms-test llms-check hygiene
+ci-policy: agents-md atomic-protocol agent-context-test agent-context cache-check-test ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check spec-structure-test spec-structure mermaid-ci product-status-test product-status-check llms-test llms-check hygiene
 
 [parallel]
-ci-policy-full: agents-md atomic-protocol agent-context-test agent-context cache-check-test ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-full product-status-test product-status-check llms-test llms-check hygiene
+ci-policy-full: agents-md atomic-protocol agent-context-test agent-context cache-check-test ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check spec-structure-test spec-structure mermaid-full product-status-test product-status-check llms-test llms-check hygiene
 
 mermaid-ci:
     #!/usr/bin/env bash
@@ -260,6 +260,18 @@ doc-placeholders-test:
     mkdir -p target/doc-placeholders
     rustc --edition=2024 -D warnings --test tools/doc_placeholders.rs -o target/doc-placeholders/doc-placeholders-test
     target/doc-placeholders/doc-placeholders-test
+
+# CI gate: spec size, layout, stable IDs, links and pin citations (#1321; .agents/specs.md).
+spec-structure:
+    mkdir -p target/spec-structure
+    rustc --edition=2024 -D warnings tools/spec_structure.rs -o target/spec-structure/spec-structure
+    target/spec-structure/spec-structure check .
+
+# Contract tests: one single-fault mutant per rule, plus the ratchet bypasses.
+spec-structure-test:
+    mkdir -p target/spec-structure
+    rustc --edition=2024 -D warnings --test tools/spec_structure.rs -o target/spec-structure/spec-structure-test
+    target/spec-structure/spec-structure-test
 
 # Validate Mermaid fences, accessibility metadata, stable types, and semantic palette.
 mermaid-check:
