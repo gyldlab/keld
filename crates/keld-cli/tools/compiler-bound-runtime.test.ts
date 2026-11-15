@@ -139,6 +139,7 @@ function stageCompiler(stage: string): string {
 function execute(
   modules: readonly (readonly [string, string])[],
   hostileAmbient: boolean,
+  homeMode: "isolated" | "hostile" = "isolated",
 ): {
   status: number | null;
   stdout: Buffer;
@@ -146,6 +147,8 @@ function execute(
   artifacts: string[];
 } {
   if (!typescript || !parser) throw new Error("Qualified Bun inputs required");
+  if (homeMode === "hostile" && !hostileAmbient)
+    throw new Error("Hostile HOME negative requires its poison fixture");
   const outer = mkdtempSync(join(tmpdir(), "keld-projected-compiler-"));
   try {
     const stage = join(outer, "private");
@@ -193,10 +196,12 @@ function execute(
       input: request(modules),
       env: {
         ...process.env,
-        HOME: stage,
-        USERPROFILE: stage,
-        APPDATA: stage,
-        LOCALAPPDATA: stage,
+        // The normal path isolates all Windows and Unix home lookups. The
+        // failure-first HOME mutant deliberately exposes the prewritten poison.
+        HOME: homeMode === "hostile" ? hostileHome : stage,
+        USERPROFILE: homeMode === "hostile" ? hostileHome : stage,
+        APPDATA: homeMode === "hostile" ? hostileHome : stage,
+        LOCALAPPDATA: homeMode === "hostile" ? hostileHome : stage,
         TEMP: stage,
         TMP: stage,
         NODE_PATH: join(outer, "node_modules"),
@@ -248,6 +253,22 @@ runtimeTest(
     expect(transport.toString("utf8")).toContain(
       "@keld/kipc-transport sha256:",
     );
+    expect(result.artifacts).toEqual([]);
+  },
+  120_000,
+);
+
+runtimeTest(
+  "unisolated HOME loads the poisoned Bun config before compiler output",
+  () => {
+    const result = execute(
+      [["main.js", 'console.log("compiler must not run");']],
+      true,
+      "hostile",
+    );
+    expect(result.status, result.stderr).toBe(1);
+    expect(result.stderr).toContain("AMBIENT_BUN_CONFIG_USED");
+    expect(result.stdout.length).toBe(0);
     expect(result.artifacts).toEqual([]);
   },
   120_000,
