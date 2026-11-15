@@ -52,10 +52,11 @@ The release owner commissions actual authority through T-81 before signed produc
 
 Evidence is stored outside the specification directory:
 
-- [Independent review receipt](../../engineering/evidence/kel270-catalogue-admission-v2/review-receipt.json).
-- [Definition results](../../engineering/evidence/kel270-catalogue-admission-v2/identity-validation.json).
+- [Compact research archive and review index](../../engineering/evidence/kel270-catalogue-admission-v2/review-receipt.json).
+- [Non-mutating definition verification](../../engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py).
 - [Original acceptance plan](../../engineering/evidence/kel270-catalogue-admission-v2/acceptance-plan.json).
-- [Evidence capacity definition results](../../engineering/evidence/kel270-catalogue-admission-v2/evidence-capacity-validation.json).
+- [Canonical identity golden vectors](../../engineering/evidence/kel270-catalogue-admission-v2/identity-vectors.json).
+- [Evidence capacity definition tests](../../engineering/evidence/kel270-catalogue-admission-v2/verify_evidence_capacity.py).
 
 ## Current blockers
 

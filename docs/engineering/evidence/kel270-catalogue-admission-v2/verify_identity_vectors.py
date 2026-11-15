@@ -1,5 +1,6 @@
 """Definition-only identity vectors. Not product code or native qualification."""
 from __future__ import annotations
+import argparse
 import copy
 import hashlib
 import json
@@ -226,7 +227,7 @@ def case(name, fn, passes=True):
     require(actual==passes,"unexpected result: "+name)
     TESTS.append({"name":name,"expected":"accept" if passes else "refuse","result":"PASS"})
 
-def build():
+def build(output_dir: Path | None = None):
     # Public deterministic fixture seeds. They must never become production authority.
     keys=[Ed25519PrivateKey.from_private_bytes(bytes([n])*32) for n in [1,2,3]]
     pubs=[k.public_key().public_bytes(Encoding.Raw,PublicFormat.Raw).hex() for k in keys]
@@ -329,9 +330,30 @@ def build():
     case("literal transition mutation",lambda:verify(1,sigs["u1"],messages["transition"]+b" "),False)
     case("renewal scope independent of SPKI",lambda:require(source["hostSpkiSha256"]!=dest["hostSpkiSha256"] and source["identity"]["publisherScope"]==dest["identity"]["publisherScope"]))
     vector={"schema":"keld.definition-identity-vectors/v1","productPin":"7ff41173d28d58ae61ccbb3382d055c8ef9c9c97","qualification":"definition-only; synthetic fixtures; no native or product execution","fields":f,"payloadV1Hex":old.hex(),"payloadV2Hex":raw.hex(),"payloadV2Sha256":hashlib.sha256(raw).hexdigest(),"minimumPayloadHex":encode_v2(low).hex(),"maximumPayloadHex":encode_v2(high).hex(),"stablePublisherScope":scope,"browserProfileIdentity":profile,"fixturePublicKeys":pubs,"literalDocuments":{k:canonical(v).decode() for k,v in fixtures.items()},"signatureMessagesSha256":{k:hashlib.sha256(v).hexdigest() for k,v in messages.items()},"signatureHex":{k:v.hex() for k,v in sigs.items()},"limitations":["BLAKE3 fields are synthetic grammar fixtures, not computed product identities.","Certificate, metadata, package, native-path, issuer, and artifact authenticity are not exercised.","Ed25519 domain checks use cryptography; product verify_strict and weak-key qualification remain separate.","Boundary codec vectors are syntactic; app/channel/target provider eligibility requires owning semantic validation."]}
-    (ROOT/"identity-vectors.json").write_text(json.dumps(vector,indent=2)+"\n", encoding="utf-8", newline="\n")
     report={"status":"PASS","suite":"definition-only","tests":len(TESTS),"passed":len(TESTS),"failed":0,"checks":TESTS,"limitations":vector["limitations"]}
-    (ROOT/"identity-validation.json").write_text(json.dumps(report,indent=2)+"\n", encoding="utf-8", newline="\n")
-    print(json.dumps({k:report[k] for k in ["status","suite","tests","passed","failed"]}))
+    vector_bytes=(json.dumps(vector,indent=2)+"\n").encode("utf-8")
+    report_bytes=(json.dumps(report,indent=2)+"\n").encode("utf-8")
+    if output_dir is None:
+        # Validation does not touch tracked content. Detailed reports live
+        # in the immutable research archive and CI artifacts.
+        if (ROOT/"identity-vectors.json").read_bytes()!=vector_bytes:
+            raise SystemExit("stale golden identity-vectors.json; regenerate in a scratch directory")
+        receipt=json.loads((ROOT/"review-receipt.json").read_text(encoding="utf-8"))
+        pin=receipt["definition_reports"]["identity"]
+        if pin["sha256"]!=hashlib.sha256(report_bytes).hexdigest() or pin["passed"]!=len(TESTS):
+            raise SystemExit("generated identity report differs from pinned summary")
+    else:
+        output_dir.mkdir(parents=True,exist_ok=True)
+        (output_dir/"identity-vectors.json").write_bytes(vector_bytes)
+        (output_dir/"identity-validation.json").write_bytes(report_bytes)
+    print(json.dumps({**{k:report[k] for k in ["status","suite","tests","passed","failed"]},
+                      "mode":"check" if output_dir is None else "generate"}))
 
-if __name__ == "__main__": build()
+if __name__ == "__main__":
+    p=argparse.ArgumentParser(description="Definition-only identity vector verification")
+    p.add_argument("--check",action="store_true",help="Check golden bytes and report digest without writes")
+    p.add_argument("--output-dir",type=Path,help="Generate complete reports in an explicit scratch directory")
+    args=p.parse_args()
+    if args.check and args.output_dir is not None:
+        p.error("--check and --output-dir are exclusive")
+    build(args.output_dir)
