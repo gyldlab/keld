@@ -84,9 +84,9 @@ Native shipping lease implementation, source identity, Guardian, Guard, original
 
 ## 6. Tasks
 
-- [ ] T1: independent architecture/security review of the final physical-state/role-binding transition, appended snapshot payload and exact SDK/main candidate; prime records exact content.
-- [ ] T2: preserve root behavioral RED def07e74e0704a6f90746c938dd51db6 and retention GREEN 5b2c331ed355497c8b91ae5323dd512f; run remaining registry/socket/wire controls and removal mutants against the frozen final source.
-- [ ] T3: root rebuilds/seals the integrated original migration and runs real G2 IPC plus 270→280 Save/readback and the removal control.
+- [ ] Work item 1: independent architecture/security review of the final physical-state/role-binding transition, appended snapshot payload and exact SDK/main candidate; prime records exact content.
+- [ ] Work item 2: preserve root behavioral RED def07e74e0704a6f90746c938dd51db6 and retention GREEN 5b2c331ed355497c8b91ae5323dd512f; run remaining registry/socket/wire controls and removal mutants against the frozen final source.
+- [ ] Work item 3: root rebuilds/seals the integrated original migration and runs real G2 IPC plus 270→280 Save/readback and the removal control.
 
 ### T-1: Exercise recovery and native Save on the installed original app
 
