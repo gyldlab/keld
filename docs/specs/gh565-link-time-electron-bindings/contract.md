@@ -1,59 +1,7 @@
-# Spec: link-time Electron named bindings with typed unsupported members (GH-565)
+# GH-565 contract and design
 
-Status: draft
-Linear: GH-565 (#517; Linear reference KEL-127) · Owner: @0monish · Updated: 2026-11-07
-
-Review correction proposal: this revision remains unapproved. It corrects the
-platform-presence and constructor-admission contracts identified on PR #1366.
-Existing implementation is not evidence of approval; implementation of these
-corrections waits for the owner's exact-text sign-off.
-
-## 1. Goal & non-goals
-
-draw.io's main process is an ES module whose first statement imports twelve named
-bindings from `electron` (`src/main/electron.js:5-6` at `2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e`):
-`Menu, shell, dialog, session, screen, ClipboardItem, clipboard, nativeImage, nativeTheme,
-ipcMain, app, BrowserWindow`. `@keld/electron` exports two of them. Under Bun 1.4.4 a
-named import of a missing export fails module linking with
-`SyntaxError: Export named '<name>' not found in module '…/index.ts'.` and exit 1
-(re-measured 2026-10-31 on this branch's base), so nothing of draw.io evaluates. This
-spec exports nine of the ten missing bindings so that import links and evaluates, with
-default-export parity and no Host traffic at module evaluation; the tenth, `ipcMain`, is
-exported by the GH-466 registration slice (PR #1365), not by this spec (D5). Every member
-available on the executing platform that Keld does not implement raises one typed error,
-`KELD-COMPAT-013`, that names the member and its tracking issue, using Electron's
-documented return kind: synchronous members throw, Promise-returning members return a
-rejected Promise, properties throw on read, and constructors throw.
-Absent and own-`undefined` members preserve the shapes in §4.3 instead of refusing.
-`new ClipboardItem(items)` constructs for inputs admitted by AC8. Once this spec and
-PR #1365 have both landed, draw.io's import statement links, and the first unsupported
-member of these nine bindings that it touches fails with a typed error naming its owner
-instead of a link-time `SyntaxError` or a bare `TypeError`. This is the F06 epic's L0
-rung (#476 § Maturity ladder): nothing silently succeeds.
-
-Non-goals:
-
-- Behaviour for any exported member. Owners: dialog GH-478, GH-564, GH-561; Menu GH-480,
-  GH-556, GH-557; screen and nativeTheme GH-481, GH-558; shell GH-479, GH-482;
-  clipboard, ClipboardItem and nativeImage GH-559; session GH-553 (`defaultSession`,
-  `webRequest`) and GH-474
-  (`fromPartition`, `fromPath`). Members that no ticket names yet are listed under
-  "Not yet specified" on #476 and refuse naming #476.
-- A recorded no-op anywhere. #553 allows `webRequest.onHeadersReceived`/`onBeforeRequest`
-  as recorded ▲ no-ops only on a lane where GH-473's containment and CSP have landed;
-  no such lane exists, and #553 itself says every other lane throws a typed error.
-- `ipcMain` in any form. The GH-466 registration slice (PR #1365) exports it; the
-  reconciliation between that slice and this spec is recorded on #466 (2026-10-31,
-  "Delegated design decision" comment) and in D5. This spec declares no `ipcMain`
-  binding, cell, snapshot or member row.
-- `MenuItem`. draw.io does not import it by name, and `native-surface.test.ts` holds the
-  GH-480 transition gate for the GH-563 role-quit cell, which trips when `MenuItem`
-  appears. GH-480 owns that re-record.
-- `electron` specifier resolution, the package `exports` map, CJS `require` and the
-  installable graph (GH-502, GH-569, GH-1287). The package today has one ESM entry (`"."`);
-  default and named parity is the ESM contract this spec can test.
-- Scoreboard rows (F06-T6, #482) and new red cells for member behaviour (F06-T1 #477,
-  F06-T3 #479, F05-T1 #470, F04-T1 #464 own those).
+Part of: [index](index.md)
+Owns: acceptance, decisions, platform matrix, upstream oracle
 
 ## 2. Spec refs
 
@@ -80,68 +28,120 @@ Non-goals:
 No architecture document deviates. No boundary change: handle ownership, crash ownership
 and principal minting are untouched; the facade sends no frame.
 
-## 3. Acceptance criteria (binary, each becomes a test)
+## 3. Acceptance criteria
 
-1. **Link, per binding.** Given a Bun 1.4.4 child process evaluating a module whose only
-   import is `import { <name> } from "<index.ts>"` for each of the nine bindings, when it
-   runs, then it exits 0 and prints the binding's `typeof` (`function` for `Menu` and
-   `ClipboardItem`, `object` otherwise). *Negative control:* removing that one export makes
-   the child exit 1 with `SyntaxError: Export named '<name>' not found`.
-2. **Link, draw.io's statement.** Given a child module importing the eleven names of
-   draw.io's statement that this facade exports (all but `ipcMain`, PR #1365's), when it
-   runs, then it exits 0 in one module graph. The PR that lands second restores the full
-   twelve-name case. *Negative control:* the same harness with `MenuItem` exits 1 with the
-   `SyntaxError`; this is also the live proof that the oracle detects a missing export.
-3. **Default parity.** For each of those eleven names, `electron.default[name]` is the same
-   value as the named export. *Negative control:* dropping a key from the default object.
-4. **No Host traffic.** Given `KELD_APP_LINK` set and `LifecycleLink.connect` replaced by
-   a recorder before the facade loads, when a child imports the facade and touches every
-   own member of the nine bindings (calls each function, reads each accessor, constructs
-   each class), then `connect` was called zero times. *Negative control:* one refusal
-   calling `app.whenReady()` makes the count 1.
-5. **Synchronous refusal.** Given a member whose pinned page documents no `Promise`
-   return (a method, a property, or a constructor), when it is called, read or
-   constructed, then it throws an `UnsupportedMemberError` with `code === "KELD-COMPAT-013"`,
-   `member === "<binding>.<member>"` (the class name for a constructor), `ticket === "GH-<n>"`,
-   `kind` naming the reach, and a message that starts with the code and names
-   `gyldlab/keld#<n>`. *Negative control:* returning `undefined`.
-6. **Promise refusal.** Given a member whose pinned page says `Returns \`Promise<…>\``, when
-   it is called, then it returns a `Promise` (no synchronous throw) that rejects with the
-   same error. *Negative control:* throwing synchronously, or resolving.
-7. **Census by platform.** For each binding, the set of own property names (for classes:
-   minus `length`, `name`, `prototype`) equals §4.3's platform-qualified member list.
-   Each available member's kind and ticket equal that table. Members omitted upstream
-   have no own property and a read yields `undefined` without throwing. Preserve the
-   distinct own-`undefined` shape of `Menu.sendActionToFirstResponder` outside macOS.
-   Test on each actual CI platform; mocked `process.platform` is not OS evidence.
-   *Negative control:* one extra, missing, wrongly available or re-kinded member.
-8. **ClipboardItem admission.** `new ClipboardItem({ "text/plain": "x" })` constructs
-   locally without Host traffic. Missing, null, non-object, array (empty or nonempty),
-   and zero-own-enumerable-string-key inputs throw `TypeError`, including inherited-only
-   and symbol-only records. This supersedes GH-565's original `{}`-success criterion,
-   subject to owner approval, because the pinned upstream constructor rejects it.
-   Like that constructor, snapshot own enumerable properties once: payload getters run
-   once and their thrown errors propagate synchronously. Do not add MIME or payload
-   validation that upstream defers until writing. Reading `types` and calling
-   `getType("text/plain")` still refuse naming GH-559; no clipboard payload support is
-   claimed. *Negative controls:* accept `{}` or `[]`, skip a throwing payload getter,
-   throw for the valid record, or return `[]` from `types`.
-9. **Transition gate untouched.** `MenuItem` is absent from the named and default exports;
-   the five existing `MenuItem`-based cases in `native-surface.test.ts` pass unchanged.
-   *Negative control:* exporting `MenuItem` fails the GH-563 three-stage case.
-10. **Registry.** `KELD-COMPAT-013` has a heading with `crate`, `message` and `fix` in
-    `docs/engineering/keld-error-codes.md`, and `cargo test -p keld-cli --test error_registry`
-    passes. *Negative control:* deleting the heading.
-11. **Corpus.** The corpus `electron-main-bindings-v1` registers nine cells, one per
-    binding, each citing its page's `Process: Main` line; after T3 they are `pass` cells
-    with no `implementing_ticket`. The `electron-native-v1` cells whose mapped Bun cases
-    asserted an absent export are re-recorded to assert today's typed refusal and keep
-    `expected_verdict: fail` with their implementing tickets. `cargo test -p keld-compat`
-    passes on the host. *Negative control:* one flipped manifest byte
-    (`DigestMismatch`), or a quote absent from its pinned page (`QuoteAbsent`).
-12. **Mutation run.** With one method refusal replaced by `return undefined` and one
-    Promise refusal replaced by a synchronous throw, the mapped cases of AC5 and AC6 fail;
-    the PR records the exact failing case names.
+### AC-1: Every named binding links independently
+- **Given:** Bun 1.4.4 and each of the nine main-process names in the pinned Electron v44.4.5 API.
+- **When:** A fresh Bun child imports exactly one binding by name from the facade.
+- **Then:** It exits 0. Menu and ClipboardItem are functions; the other seven names are objects.
+- **Negative control:**
+  - **Single fault:** Delete the binding's named export.
+  - **At-risk precondition:** The child evaluates a fresh named-import module.
+  - **Expected RED:** The link case fails with Bun's export-not-found SyntaxError and exit 1.
+
+### AC-2: Draw.io's linked statement succeeds
+- **Given:** The eleven draw.io imports owned here, excluding ipcMain owned by PR #1365.
+- **When:** A fresh child evaluates all eleven names in one module graph.
+- **Then:** The import links and the child exits 0. PR #1365 restores the twelve-name case when composed.
+- **Negative control:**
+  - **Single fault:** Import the deliberately unexported MenuItem name.
+  - **At-risk precondition:** Bun performs ESM named-import linking before evaluation.
+  - **Expected RED:** The negative case exits 1 with the documented SyntaxError.
+
+### AC-3: Default and named binding identities match
+- **Given:** Each of the eleven named values exported by this facade.
+- **When:** The test reads the same key through electron.default.
+- **Then:** The default key is strictly identical to the named export.
+- **Negative control:**
+  - **Single fault:** Remove one key from the default object.
+  - **At-risk precondition:** Default parity is checked for every named import.
+  - **Expected RED:** The missing key breaks the identity assertion.
+
+### AC-4: Link-only stubs cause no Host traffic
+- **Given:** KELD_APP_LINK and a recorder installed on LifecycleLink.connect before module import.
+- **When:** A child imports the facade, reads every existing getter, calls methods, and constructs both classes.
+- **Then:** The recorder sees zero connect calls, including when present members refuse.
+- **Negative control:**
+  - **Single fault:** Call app.whenReady() from a refusal path.
+  - **At-risk precondition:** The fixture touches each reachable member and watches the only connect seam.
+  - **Expected RED:** The recorder observes connect=1 instead of connect=0.
+
+### AC-5: Available synchronous members refuse with a typed error
+- **Given:** A method, property, or constructor without a Promise return in the pinned API.
+- **When:** An application calls, reads, or constructs that member.
+- **Then:** It throws UnsupportedMemberError with KELD-COMPAT-013, exact kind, member, and GH ticket.
+- **Negative control:**
+  - **Single fault:** Replace one refusal with return undefined.
+  - **At-risk precondition:** The mapped case reaches the available synchronous member.
+  - **Expected RED:** The missing typed error breaks that member's refusal case.
+
+### AC-6: Promise members reject asynchronously
+- **Given:** A present member whose pinned API documents a Promise return.
+- **When:** The application invokes that member.
+- **Then:** It returns a Promise without synchronous throw, then rejects with the same typed GH-ticket error.
+- **Negative control:**
+  - **Single fault:** Throw synchronously or resolve instead of rejecting.
+  - **At-risk precondition:** The test captures the returned Promise and awaits its rejection.
+  - **Expected RED:** The return-kind or rejection assertion fails.
+
+### AC-7: The native platform's member census is exact
+- **Given:** The platform table in section 4.3 and a real macOS, Linux, or Windows CI runner.
+- **When:** The test enumerates every binding's own members and checks available kinds and tickets.
+- **Then:** Its census exactly matches section 4.3 on that OS, including the absent-name rules.
+- **Then:** Absent members read undefined without throwing; Menu.sendActionToFirstResponder is own undefined off macOS.
+- **Negative control:**
+  - **Single fault:** Add an unavailable name or re-kind a present name.
+  - **At-risk precondition:** All native CI lanes run the independent census, not a mocked platform value.
+  - **Expected RED:** The census or absence assertion fails on the affected OS.
+
+### AC-8: ClipboardItem follows upstream constructor admission
+- **Given:** Electron v44.4.5 clipboard-item constructor behavior and GH-559 payload ownership.
+- **When:** The caller constructs ClipboardItem with a MIME-keyed record or an invalid input.
+- **Then:** A nonempty own-enumerable string-key record constructs locally without Host traffic.
+- **Then:** Missing, null, primitive, array, empty, inherited-only and symbol-only records throw TypeError.
+- **Then:** Enumerable payload getters run exactly once and their thrown errors propagate synchronously.
+- **Then:** types and getType still refuse with GH-559. Do not validate payload MIME or values prematurely.
+- **Negative control:**
+  - **Single fault:** Accept an empty record or skip a payload getter.
+  - **At-risk precondition:** Dedicated tests construct invalid and valid records with observable getters.
+  - **Expected RED:** The constructor or getter assertions fail on the mutated behavior.
+
+### AC-9: MenuItem remains absent
+- **Given:** The separate GH-480 and GH-563 MenuItem transition gate.
+- **When:** Both ESM exports and the existing five MenuItem native-surface cases are evaluated.
+- **Then:** MenuItem is absent from named and default exports; existing transition cases pass unchanged.
+- **Negative control:**
+  - **Single fault:** Add a MenuItem named export.
+  - **At-risk precondition:** The three-stage GH-563 case runs on the modified facade.
+  - **Expected RED:** Its absent-export expectation fails.
+
+### AC-10: The typed error is registered
+- **Given:** The central error registry and KELD-COMPAT-013 documentation.
+- **When:** cargo test -p keld-cli --test error_registry runs.
+- **Then:** The heading defines crate, message and fix; the registry test passes.
+- **Negative control:**
+  - **Single fault:** Remove the KELD-COMPAT-013 registry heading.
+  - **At-risk precondition:** The error registry scan includes the facade source.
+  - **Expected RED:** The registry test fails for the unregistered code.
+
+### AC-11: Both conformance corpora remain meaningful
+- **Given:** electron-main-bindings-v1 and the re-recorded electron-native-v1 observations.
+- **When:** cargo test -p keld-compat runs against the pinned snapshots and Bun cases.
+- **Then:** Nine main-binding cells pass with their Process: Main citations and no implementing ticket.
+- **Then:** Unimplemented native-member cells stay RED with their implementing tickets despite linkable names.
+- **Negative control:**
+  - **Single fault:** Change a manifest byte or remove a quote from the pinned page.
+  - **At-risk precondition:** Corpus admission checks both digests and sourced statements.
+  - **Expected RED:** DigestMismatch or QuoteAbsent rejects the changed corpus.
+
+### AC-12: Mutations falsify both refusal kinds
+- **Given:** Independent synchronous and Promise refusal cases already in the package tests.
+- **When:** A method is changed to return undefined and a Promise member is changed to throw synchronously.
+- **Then:** The associated cases fail, and the PR records their exact case names.
+- **Negative control:**
+  - **Single fault:** Mutate either one refusal return kind.
+  - **At-risk precondition:** The selected case reaches the specific mutated member.
+  - **Expected RED:** That member's case fails instead of accepting a silent stub.
 
 ## 4. Design
 
@@ -188,7 +188,9 @@ No boundary change. Facts (FACT unless marked):
 
 Decisions, each with the rejected alternative:
 
-- **D1 one code, one class.** `KELD-COMPAT-013` is the only code; `UnsupportedMemberError`
+### D-1: one code, one class.
+
+`KELD-COMPAT-013` is the only code; `UnsupportedMemberError`
   carries `code`, `kind`, `member` and `ticket` fields and a message `KELD-COMPAT-013: <subject>
   is not implemented by @keld/electron yet; it is tracked on gyldlab/keld#<n>. <fix>`, where the
   subject is `electron.<member>()` for a callable, `electron.<member>` for a property and
@@ -197,14 +199,18 @@ Decisions, each with the rejected alternative:
   member), and bare `Error` strings as in 010-012 (tests and apps would parse messages
   for the ticket). The field shape follows `KeldCallError`; `isUnsupportedMemberError`
   follows `isCallError`.
-- **D2 return kinds from the pinned pages.** Method → throw; `Returns Promise` → rejected
+### D-2: return kinds from the pinned pages.
+
+Method → throw; `Returns Promise` → rejected
   Promise; property → throwing accessor (writable `themeSource` also throws on set);
   constructor → throw. For available members, rejected: `undefined`-valued properties
   and resolving Promises
   (silent success, forbidden by root `AGENTS.md`), and throwing synchronously from
   Promise members (draw.io `await`s and `.catch`es them; a synchronous throw changes
   control flow).
-- **D3 census = each platform's reachable documented member.** Each binding exposes
+### D-3: census = each platform's reachable documented member.
+
+Each binding exposes
   the members registered by the pinned implementation on the actual platform, with
   the shape exceptions in §4.3, plus the EventEmitter
   registration methods (`on, once, off, addListener, removeListener, removeAllListeners`)
@@ -214,34 +220,45 @@ Decisions, each with the rejected alternative:
   unreachable, YAGNI). Also rejected: exposing every platform's union everywhere;
   that turns safe feature-detection reads into throwing getters or false-positive
   callable checks. An unavailable member is not an unsupported implementation.
-- **D4 `session.defaultSession` is a throwing accessor naming GH-553.** Rejected: a stable
+### D-4: `session.defaultSession` is a throwing accessor naming GH-553.
+
+Rejected: a stable
   `defaultSession` object with eight refusing `WebRequest` methods. That is #553's own
   design (object identity, F05-T5 binding, the ▲ no-op lane); pre-deciding it here would
   duplicate its spec. draw.io reaches the same typed stop at `electron.js:994`.
-- **D5 `ipcMain` is exported by the GH-466 registration slice (PR #1365); this spec does
-  not touch it.** Decision recorded on #466 (2026-10-31, "Delegated design decision"
+### D-5: `ipcMain` is exported by the GH-466 registration slice (PR #1365); this spec does not touch it.
+
+Decision recorded on #466 (2026-10-31, "Delegated design decision"
   comment): the #589 activation criterion scores draw.io's `ipcMain` registrations, so a
   link-time refusal at `electron.js:3426` would stop evaluation before any later criterion
   is observable, and with no sender in the tree a registered listener has no message to
-  miss. Rejected: nine refusing `ipcMain` methods here (this spec's first D5), which #1365
+  miss. Rejected: nine refusing `ipcMain` methods here (this spec's first D-5), which #1365
   would have had to delete on rebase. Landing order: this PR first; #1365 rebases onto it
   and brings the `ipcMain` export, its cells and its `ipc-main.md` snapshot (byte-identical
   to the one T2 first added and T4 removes).
-- **D6 `MenuItem` stays unexported** (§1). Rejected: exporting it now with refusals, which
+### D-6: `MenuItem` stays unexported
+
+(§1). Rejected: exporting it now with refusals, which
   would trip the GH-563 gate that GH-480 owns.
-- **D7 layout.** `unsupported.ts` owns the error, the guard and the surface builder;
+### D-7: layout.
+
+`unsupported.ts` owns the error, the guard and the surface builder;
   `unsupported-bindings.ts` owns the member table (data). An implementing ticket moves
   its module out of the table into its own file (as #1306 does for `dialog.ts`) and
   deletes the rows it implements. Rejected: nine module files now (nine copies of one
   shape) and inlining the table in `index.ts`.
-- **D8 corpus.** A new corpus `electron-main-bindings-v1` (kind `activation`: module
+### D-8: corpus.
+
+A new corpus `electron-main-bindings-v1` (kind `activation`: module
   linking is part of boot), one `pass` cell per binding citing the page's `Process: Main`
   line, every cell declaring `macos`, `linux` and `windows` because all nine bindings
   link on all three. Member presence is platform-specific; the CI matrix must verify
   the corresponding census on each actual platform. Rejected: adding
   the cells to `electron-native-v1` (kind `primary_workflow`, and a file three open PRs
   edit) and macOS-only cells (would hide two lanes CI already runs).
-- **D9 red first.** T2 lands the cells as `fail`/`GH-565` with Bun cases asserting
+### D-9: red first.
+
+T2 lands the cells as `fail`/`GH-565` with Bun cases asserting
   today's link failure; T3 inverts the cases and flips the cells in the same change
   (gh532 rules 3 and 5).
 
@@ -279,7 +296,7 @@ and extends the default object with the same nine bindings. No `any` anywhere.
 |---|---|
 | `shell` (`shell.md`) | `showItemInFolder` method → GH-479 · `openPath` promise → GH-479 · `openExternal` promise → GH-479 · `trashItem` promise → GH-479 · `beep` method → GH-479 · `writeShortcutLink` method → GH-482 · `readShortcutLink` method → GH-482 |
 | `clipboard` (`clipboard.md`) | `readText` promise → GH-559 · `writeText` promise → GH-559 · `write` promise → GH-559 · `read` promise → GH-476 · `has` promise → GH-476 · `clear` method → GH-476 · `selection` property → GH-476 |
-| `ClipboardItem` (`clipboard-item.md`) | constructor admits a nonempty non-array record and snapshots its own enumerable properties (AC8); invalid shape throws `TypeError` · `types` property → GH-559 · `getType` promise → GH-559 |
+| `ClipboardItem` (`clipboard-item.md`) | constructor admits a nonempty non-array record and snapshots its own enumerable properties (AC-8); invalid shape throws `TypeError` · `types` property → GH-559 · `getType` promise → GH-559 |
 | `nativeImage` (`native-image.md`) | `createFromDataURL` method → GH-559 · `createEmpty`, `createFromPath`, `createFromBitmap`, `createFromBuffer`, `createFromNamedImage`, `createMenuSymbol` method → GH-476 · `createThumbnailFromPath` promise → GH-476 |
 | `nativeTheme` (`native-theme.md`) | `shouldUseDarkColors` property → GH-481 · `themeSource` writableProperty → GH-558 · `shouldUseHighContrastColors`, `shouldUseDarkColorsForSystemIntegratedUI`, `shouldUseInvertedColorScheme` property → GH-558 |
 | `nativeTheme` (continued) | `inForcedColorsMode`, `prefersReducedTransparency`, `shouldDifferentiateWithoutColor` property → GH-558 · `on`, `once`, `off`, `addListener`, `removeListener`, `removeAllListeners` method → GH-558 (`updated`) |
@@ -330,85 +347,3 @@ Primary receipt (Electron v44.4.5, immutable commit
 - Runtime seam: none.
 - Migration unit: none permanent. Each implementing ticket replaces its rows with the
   real member in the same change that flips its cells; the compat facade is retained.
-
-## 5. Boundaries
-
-- Implement in:
-  - `packages/@keld/electron/src/{index.ts,unsupported.ts,unsupported-bindings.ts}`;
-  - `packages/@keld/electron/src/{module-bindings.test.ts,native-surface.test.ts,dialog.test.ts}`;
-  - `packages/@keld/electron/fixtures/bindings_no_link.ts`;
-  - `crates/keld-compat/fixtures/main-bindings-corpus/{corpus.json,denominator.json}`;
-  - `crates/keld-compat/fixtures/native-corpus/{corpus.json,denominator.json}` (re-record only);
-  - `crates/keld-compat/fixtures/doc-snapshots/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/`
-    `{shell,clipboard,clipboard-item,native-image,session}.md`;
-  - `crates/keld-compat/tests/support/corpus_manifest.rs` (one `REGISTRY` entry);
-  - `docs/engineering/keld-error-codes.md`, regenerated `llms-full.txt`.
-- Must not touch: `app.ts`, `browser-window.ts`, `@keld/api`, `@keld/kipc`, any Rust
-  crate source, `Cargo.toml`, the kipc channel table, `keld-guard`, the architecture docs,
-  the GH-563 transition-gate cases, `tsconfig.json` or `package.json` of the package.
-
-## 6. Tasks (each ≈ one commit of the GH-565 PR; ordered; no placeholders)
-
-- [ ] T1 This spec, `Status: draft`, for exact-text approval.
-- [ ] T2 Red cells first: six pinned pages into the snapshot store (URL + SHA-256 in the
-  manifest), corpus `electron-main-bindings-v1` with ten `fail`/`GH-565` cells, the
-  `REGISTRY` entry, and `module-bindings.test.ts` asserting today's link failure.
-- [ ] T3 Implementation: `unsupported.ts`, `unsupported-bindings.ts`, `index.ts`
-  exports, `KELD-COMPAT-013` registry entry and `llms-full.txt`, the `bindings_no_link.ts`
-  fixture, inverted link cases and flipped cells, re-recorded `electron-native-v1` cells
-  and their Bun cases, the mutation run (AC12) recorded in the PR.
-- [ ] T4 Reconciliation with PR #1365 (D5): remove the `ipcMain` binding, its cell and its
-  `ipc-main.md` snapshot, and narrow the statement cases to the eleven names this facade
-  exports; `electron-main-bindings-v1` then holds nine cells.
-- [ ] T5 After approval of this corrected contract: add failure-first platform-presence
-  and ClipboardItem admission regressions, then correct the existing owning table and
-  constructor. Preserve typed refusals, nine binding cells, and zero Host traffic.
-  Validate the independent census and negative controls on the exact final head.
-
-## 7. Test plan
-
-| AC | Test |
-|---|---|
-| 1 | `module-bindings.test.ts`, nine cell cases `<module>.binding.named-import: …`, each spawning one Bun child with a one-name import (isolated temp file, `file://` specifier) |
-| 2 | same file, `the eleven names of draw.io's import statement (electron.js:5-6) that this facade exports link in one module graph; ipcMain is PR #1365's` and the `MenuItem` SyntaxError control |
-| 3 | same file, `the default export carries every named binding` |
-| 4 | same file spawning `fixtures/bindings_no_link.ts` with `KELD_APP_LINK` set; asserts `connect=0` and `touched` equal to the actual platform's available-member count plus two constructors; ClipboardItem uses a valid nonempty record |
-| 5, 6, 7 | same file, one case per table row from the test's own copy of §4.3 (independent of the implementation's table), plus a census case per binding |
-| 8 | same file, `ClipboardItem` invalid-shape, valid-record and getter-side-effect/error cases; run before and after the constructor fix |
-| 9 | existing `native-surface.test.ts` `MenuItem` cases, unchanged |
-| 10 | `cargo test -p keld-cli --test error_registry` |
-| 11 | `cargo test -p keld-compat` (registry: census, digest, citations, Bun admission); re-recorded cases in `native-surface.test.ts` and `dialog.test.ts` |
-| 12 | manual mutation run, recorded in the PR with the failing case names |
-
-Anti-flake: every child has a kill-switch timeout below Bun's per-test limit, writes only
-to an isolated temp directory, and reports on stdout; no sleeps; no ports; no OS UI.
-
-## 8. Review gates triggered
-
-public API (new named exports and the `UnsupportedMemberError` type). `unsafe`: none.
-permission model: none. dependency: none. wire protocol: none.
-
-## 9. Perf impact
-
-none. Module evaluation adds seven frozen objects and two classes; no frame, no allocation
-on any kipc or event-loop path.
-
-## 10. Open questions
-
-1. Platform declaration (D8): proposed decision is to retain all three binding lanes
-   and require their platform-qualified census tests. Existing exact-head CI is not
-   proof of the corrected shape until those assertions run. A failing or unrun lane
-   remains a blocker; do not silently narrow scoring or skip its tests.
-2. Members with no owning ticket refuse naming #476. Should the owner mint tickets for
-   `clipboard.read/has/clear/selection`, the seven `nativeImage` constructors and
-   `Menu.sendActionToFirstResponder`, or is the epic the intended tracker until demand
-   appears?
-3. Landing order against PRs #1306/#1308 (GH-478): the later PR re-records (`dialog` rows
-   replaced by the real broker). Confirm the first-to-green rule applies, or name an order.
-   #1365 (GH-466) is ordered after this PR by D5; #1130's `ipcMain` absence baselines are
-   #1365's to re-record.
-4. Approve this corrected platform census and AC8 explicitly, including replacing the
-   tracker issue's original empty-object success with upstream rejection. Recommended:
-   follow the pinned upstream constructor admission, preserve payload-member refusals
-   under GH-559, keep #476 as the existing tracker for unspecified members, and preserve
-   the documented landing order. This draft does not record that approval on its own.
