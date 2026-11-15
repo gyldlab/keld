@@ -8,6 +8,7 @@ This is a **developer-local** procedure for `keld build --target windows-x64`, n
 - Existing certificate in the developer's own `Cert:\CurrentUser\My`, with an accessible private key, valid date, Code Signing EKU and Digital Signature key usage. Keep its 40-hex thumbprint.
 - An independently authenticated SignTool executable and its previously recorded SHA-256 pin. Use the exact tool path, never automatic signer/certificate selection.
 - Existing 32-byte raw update public key; approved Git/Cargo/Rustc source tools, compiler Bun/TypeScript tool paths and SHA-256 pins, an exact source commit, and unique private `outDir`. The update public key does not authorize or create a private signing key.
+- Resolved `typescriptRoot` and `outDir` must use ordinary absolute local-disk paths such as `C:\Work\keld`. Project-relative paths are valid when they resolve to that form. Extended-length `\\?\C:\...`, UNC and device aliases are refused before compiler capture, source-session creation, or executable signing because the local compiler binds imports through fixed `file:///` URLs.
 - Python 3 available as `python` for the portable read-only certificate public-SPKI parser (standard library only).
 
 ## Derive the publisher scope from the selected certificate

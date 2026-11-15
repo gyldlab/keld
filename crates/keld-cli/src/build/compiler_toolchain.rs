@@ -226,7 +226,7 @@ fn project_imports(
     Ok(text.into_bytes())
 }
 
-fn local_file_url(path: &Path) -> Result<String, BuildError> {
+pub(super) fn local_file_url(path: &Path) -> Result<String, BuildError> {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     if !path.is_absolute()
         || !matches!(path.components().next(),
