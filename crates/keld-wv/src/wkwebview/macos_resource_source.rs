@@ -932,9 +932,8 @@ mod tests {
         for suffix in ["#heading", "?lang=en#heading", "#%E2%9C%93", "#?x=1"] {
             let url = format!("{base}index.html{suffix}");
             assert_eq!(source.qualify_document_url(&url), Ok(()), "{url}");
-            assert_eq!(
-                source.qualify_url(&url),
-                Err(ResourceSourceError::InvalidUrl),
+            assert!(
+                matches!(source.qualify_url(&url), Err(ResourceSourceError::InvalidUrl)),
                 "a resource selector must never include a fragment: {url}"
             );
         }
