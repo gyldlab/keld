@@ -54,7 +54,7 @@ impl PrimaryWriter {
 
     /// Canonical retirement wakes capacity waiters; it does not refund positions.
     pub(in crate::app_session) fn role_retired(&self) {
-        self.shared.changed.notify_all();
+        self.shared.notify_all();
         let wake = self
             .shared
             .state
@@ -162,7 +162,7 @@ impl Shared {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.closed = true;
-            self.changed.notify_all();
+            self.notify_all();
         }
     }
 }
