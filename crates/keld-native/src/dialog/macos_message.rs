@@ -79,6 +79,20 @@ fn normalize_access_keys(input: &str) -> String {
     output
 }
 
+fn button_title(label: &str, normalize: bool) -> String {
+    let text = if normalize {
+        normalize_access_keys(label)
+    } else {
+        label.to_owned()
+    };
+    // AppKit rejects empty titles; match Electron after access-key removal.
+    if text.is_empty() {
+        "(empty)".to_owned()
+    } else {
+        text
+    }
+}
+
 /// One retained native sheet and its one-shot completion block. This type is
 /// `MainThreadOnly` through its owned `NSAlert`; it must never cross a worker.
 /// The caller MUST hold it until [`Self::poll_outcome`] confirms invisibility
@@ -128,11 +142,7 @@ impl MacMessagePanel {
         for (index, label) in options.buttons.iter().enumerate() {
             let index = u32::try_from(index)
                 .map_err(|_| invalid("native Message button count exceeds u32 domain"))?;
-            let text = if options.normalize_access_keys {
-                normalize_access_keys(label)
-            } else {
-                label.clone()
-            };
+            let text = button_title(label, options.normalize_access_keys);
             let button = alert.addButtonWithTitle(&NSString::from_str(&text));
             if index == 0 && options.default_id.is_some_and(|id| id > 0) {
                 button.setKeyEquivalent(&NSString::from_str(""));
@@ -305,6 +315,25 @@ mod tests {
         }
         assert!(response_index(NSAlertFirstButtonReturn + 3, 3).is_err());
         assert!(response_index(0, 3).is_err());
+    }
+
+    #[test]
+    fn button_titles_are_nonempty_after_access_key_normalization() {
+        for (label, normalize, expected) in [
+            ("", false, "(empty)"),
+            ("", true, "(empty)"),
+            ("&", true, "(empty)"),
+            ("&", false, "&"),
+            ("&&", true, "&"),
+            ("&&&", true, "&"),
+            ("&Save", true, "Save"),
+            ("&Save", false, "&Save"),
+            ("Save && Close", true, "Save & Close"),
+            ("保存", true, "保存"),
+            (" ", true, " "),
+        ] {
+            assert_eq!(button_title(label, normalize), expected);
+        }
     }
 
     #[test]
