@@ -1,4 +1,6 @@
 //! Repeatable contracts for the private-link fuzz corpus and v2 oracle bounds.
+use std::num::{NonZeroU16, NonZeroU32};
+
 use keld_wv::wv_link::{
     WvConsumerDisposition, WvLinkEnvelope, WvLinkMode, WvLinkRejectReason, decode_wv_link_for_mode,
 };
@@ -14,28 +16,45 @@ fn committed_v2_corpus_has_exact_outcomes_in_both_modes() {
     for fixture in [INVOKE, SEND, CONSUMED, REFUSED, ZERO_MESSAGE] {
         assert!(decode_wv_link_for_mode(fixture, WvLinkMode::LegacyV1).is_err());
     }
-    assert!(matches!(
+    // Literal expected values are independent of the decoder and fixture parser.
+    let document = "0123456789abcdef0123456789abcdef";
+    assert_eq!(
         decode_wv_link_for_mode(INVOKE, WvLinkMode::CompatV2),
-        Ok(WvLinkEnvelope::Invoke { .. })
-    ));
-    assert!(matches!(
+        Ok(WvLinkEnvelope::Invoke {
+            document: document.into(),
+            request: NonZeroU32::new(1).unwrap(),
+            channel: NonZeroU16::new(1).unwrap(),
+            payload: vec![0, 255],
+        })
+    );
+    assert_eq!(
         decode_wv_link_for_mode(SEND, WvLinkMode::CompatV2),
-        Ok(WvLinkEnvelope::Send { .. })
-    ));
-    assert!(matches!(
+        Ok(WvLinkEnvelope::Send {
+            document: document.into(),
+            message: NonZeroU32::new(1).unwrap(),
+            channel: "el:test".into(),
+            payload: vec![0, 255],
+        })
+    );
+    assert_eq!(
         decode_wv_link_for_mode(CONSUMED, WvLinkMode::CompatV2),
         Ok(WvLinkEnvelope::Consumed {
+            document: document.into(),
+            delivery: NonZeroU32::new(1).unwrap(),
             disposition: WvConsumerDisposition::Consumed,
-            ..
         })
-    ));
-    assert!(matches!(
+    );
+    assert_eq!(
         decode_wv_link_for_mode(REFUSED, WvLinkMode::CompatV2),
         Ok(WvLinkEnvelope::Consumed {
-            disposition: WvConsumerDisposition::Refused { .. },
-            ..
+            document: document.into(),
+            delivery: NonZeroU32::new(1).unwrap(),
+            disposition: WvConsumerDisposition::Refused {
+                code: "TEST".into(),
+                message: "fixture".into(),
+            },
         })
-    ));
+    );
     assert_eq!(
         decode_wv_link_for_mode(ZERO_MESSAGE, WvLinkMode::CompatV2),
         Err(WvLinkRejectReason::ZeroRequest)
