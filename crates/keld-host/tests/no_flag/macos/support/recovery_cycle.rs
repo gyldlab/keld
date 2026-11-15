@@ -275,7 +275,14 @@ impl RecoveryGeneration {
     }
 
     pub(crate) fn try_accept(listener: &UnixListener, label: &str) -> Result<Self, String> {
-        let deadline = Instant::now() + EVENT_DEADLINE;
+        Self::try_accept_before(listener, label, Instant::now() + EVENT_DEADLINE)
+    }
+
+    fn try_accept_before(
+        listener: &UnixListener,
+        label: &str,
+        deadline: Instant,
+    ) -> Result<Self, String> {
         let (stream, hello, descendant) =
             collect_initial_control_until(listener, label, deadline, &mut |_| {})?;
         let mut hello_fields = hello.split_whitespace();
@@ -347,6 +354,29 @@ impl RecoveryGeneration {
             .expect("recovery app link token")
             .1
     }
+}
+
+#[test]
+fn recovery_accept_refuses_a_queued_control_peer_after_the_original_deadline() {
+    let root = tempfile::tempdir().expect("recovery accept root");
+    let path = root.path().join("control.sock");
+    let listener = UnixListener::bind(&path).expect("own recovery control listener");
+    let deadline = Instant::now();
+    let peer = UnixStream::connect(&path).expect("queued control peer");
+    // A silent, write-closed peer: if accepted, the HELLO read fails at once.
+    peer.shutdown(std::net::Shutdown::Write)
+        .expect("close queued peer writes");
+    match RecoveryGeneration::try_accept_before(&listener, "late", deadline) {
+        Ok(_) => panic!("a queued peer after the deadline became a generation"),
+        Err(error) => assert_eq!(error, "late: Bun did not connect the fixture control"),
+    }
+    listener
+        .set_nonblocking(true)
+        .expect("probe the queue without blocking");
+    assert!(
+        listener.accept().is_ok(),
+        "the late peer was dequeued instead of left unaccepted"
+    );
 }
 
 const MAX_INITIAL_CONTROL_LINE_BYTES: usize = 4096;
