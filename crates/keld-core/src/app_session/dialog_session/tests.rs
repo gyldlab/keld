@@ -306,3 +306,156 @@ fn deadline_arbitration_preserves_prior_cancel_and_retirement() {
         assert!(session.fully_drained());
     }
 }
+
+#[test]
+fn cleanup_deadline_fails_without_releasing_custody_and_never_restarts() {
+    use std::time::{Duration, Instant};
+    let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
+    let owner = original(1, 1);
+    session.reserve(owner, options(), WebviewId(3)).unwrap();
+    let started = Instant::now();
+    let cutoff = started + Duration::from_secs(10);
+    session.begin_cleanup(owner, cutoff).unwrap();
+    session
+        .begin_cleanup(owner, cutoff + Duration::from_secs(10))
+        .unwrap();
+    assert!(
+        session
+            .check_cleanup(owner, || cutoff - Duration::from_nanos(1))
+            .is_ok()
+    );
+    assert!(session.check_cleanup(owner, || cutoff).is_err());
+    assert!(
+        !session.has_capacity(),
+        "failed drain must retain physical custody"
+    );
+    assert!(!session.fully_drained());
+    let retirement_cutoff = started + Duration::from_secs(5);
+    session.begin_cleanup(owner, retirement_cutoff).unwrap();
+    assert!(session.check_cleanup(owner, || retirement_cutoff).is_err());
+    // Genuine callback + invisibility is represented by complete, not by the timer.
+    session.expire(owner).unwrap();
+    session
+        .complete(owner.attempt, owner.nonce, MacDialogUiOutcome::Dismissed)
+        .unwrap();
+    assert!(session.fully_drained());
+    let next = original(2, 2);
+    session.reserve(next, options(), WebviewId(3)).unwrap();
+    assert!(
+        session
+            .check_cleanup(next, || cutoff + Duration::from_secs(100))
+            .is_ok(),
+        "old timer cannot poison healthy next dialog"
+    );
+}
+
+#[test]
+fn cancel_and_retirement_start_their_owned_cleanup_clocks() {
+    use std::time::{Duration, Instant};
+    let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
+    let owner = original(1, 1);
+    session.reserve(owner, options(), WebviewId(3)).unwrap();
+    let before = Instant::now();
+    session
+        .cancel(owner.identity, owner.attempt, owner.nonce, CorrelationId(2))
+        .unwrap();
+    let cancel_deadline = session.state.lock().unwrap().cleanup_deadline.unwrap();
+    assert!(cancel_deadline >= before + Duration::from_secs(10));
+    assert!(cancel_deadline <= Instant::now() + Duration::from_secs(10));
+    session
+        .cancel(owner.identity, owner.attempt, owner.nonce, CorrelationId(3))
+        .unwrap();
+    assert_eq!(
+        session.state.lock().unwrap().cleanup_deadline,
+        Some(cancel_deadline)
+    );
+    let before_retire = Instant::now();
+    session.retire(owner.identity, owner.attempt);
+    let retire_deadline = session.state.lock().unwrap().cleanup_deadline.unwrap();
+    assert!(retire_deadline <= cancel_deadline);
+    assert!(retire_deadline >= (before_retire + Duration::from_secs(5)).min(cancel_deadline));
+    assert!(retire_deadline <= Instant::now() + Duration::from_secs(5));
+    session.retire(owner.identity, owner.attempt);
+    assert_eq!(
+        session.state.lock().unwrap().cleanup_deadline,
+        Some(retire_deadline)
+    );
+}
+
+#[test]
+fn late_cleanup_poll_does_not_consume_newly_available_drain() {
+    use std::cell::Cell;
+    use std::time::{Duration, Instant};
+    let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
+    let owner = original(1, 1);
+    session.reserve(owner, options(), WebviewId(3)).unwrap();
+    let cutoff = Instant::now() + Duration::from_secs(10);
+    session.begin_cleanup(owner, cutoff).unwrap();
+    for now in [cutoff, cutoff + Duration::from_secs(1)] {
+        let polled = Cell::new(false);
+        let result = session.poll_before_cleanup_deadline(
+            owner,
+            || now,
+            || {
+                polled.set(true);
+                Ok(Some(
+                    keld_native::dialog::macos_message::MacMessageOutcome::Dismissed,
+                ))
+            },
+        );
+        assert!(result.is_err());
+        assert!(
+            !polled.get(),
+            "expired owner must retain its native proof and handles"
+        );
+        assert!(!session.has_capacity());
+    }
+    let polled = Cell::new(false);
+    let result = session.poll_before_cleanup_deadline(
+        owner,
+        || cutoff - Duration::from_nanos(1),
+        || {
+            polled.set(true);
+            Ok(Some(
+                keld_native::dialog::macos_message::MacMessageOutcome::Dismissed,
+            ))
+        },
+    );
+    assert!(result.unwrap().is_some());
+    assert!(polled.get());
+}
+
+#[test]
+fn poll_crossing_cleanup_cutoff_cannot_release_owner() {
+    use std::cell::Cell;
+    use std::time::{Duration, Instant};
+    let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
+    let owner = original(1, 1);
+    session.reserve(owner, options(), WebviewId(3)).unwrap();
+    let cutoff = Instant::now() + Duration::from_secs(10);
+    session.begin_cleanup(owner, cutoff).unwrap();
+    let observed = Cell::new(false);
+    let result = session.poll_before_cleanup_deadline(
+        owner,
+        || {
+            if observed.get() {
+                cutoff
+            } else {
+                cutoff - Duration::from_nanos(1)
+            }
+        },
+        || {
+            observed.set(true);
+            Ok(Some(
+                keld_native::dialog::macos_message::MacMessageOutcome::Dismissed,
+            ))
+        },
+    );
+    assert!(observed.get());
+    assert!(
+        result.is_err(),
+        "proof first returned at cutoff cannot release custody"
+    );
+    assert!(!session.has_capacity());
+    assert!(!session.fully_drained());
+}

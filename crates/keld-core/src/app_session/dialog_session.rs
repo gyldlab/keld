@@ -104,6 +104,17 @@ pub(super) struct DialogWork {
 struct DialogState {
     custody: DialogCustody,
     pending: Option<DialogWork>,
+    cleanup_deadline: Option<Instant>,
+}
+
+impl DialogState {
+    // Repeated Cancel/retirement/polls may shorten, never restart, this clock.
+    fn tighten_cleanup(&mut self, deadline: Instant) {
+        self.cleanup_deadline = Some(
+            self.cleanup_deadline
+                .map_or(deadline, |old| old.min(deadline)),
+        );
+    }
 }
 
 /// The verified manifest is immutable; native effects and current-generation
@@ -123,6 +134,7 @@ impl DialogSession {
             state: Mutex::new(DialogState {
                 custody: DialogCustody::default(),
                 pending: None,
+                cleanup_deadline: None,
             }),
             wake,
         }
@@ -155,6 +167,7 @@ impl DialogSession {
                 ReserveError::Busy => DialogFault::Busy,
                 ReserveError::Stale | ReserveError::InvalidTransition => DialogFault::NativeFailure,
             })?;
+            state.cleanup_deadline = None;
             state.pending = Some(DialogWork {
                 owner,
                 options,
@@ -196,6 +209,9 @@ impl DialogSession {
             return Err(DialogFault::InvalidRequest);
         }
         let outcome = state.custody.cancel(identity, attempt, nonce);
+        if outcome == CancelResult::Requested {
+            state.tighten_cleanup(Instant::now() + Duration::from_secs(10));
+        }
         drop(state);
         match outcome {
             CancelResult::Requested => {
@@ -217,7 +233,11 @@ impl DialogSession {
         // the shared Host queue. This also keeps existing FS/Ready teardown
         // ordering unchanged when the policy happens to include `dialog`.
         let wake_needed = if let Ok(mut state) = self.state.lock() {
-            state.custody.retire(identity, attempt)
+            let retired = state.custody.retire(identity, attempt);
+            if retired {
+                state.tighten_cleanup(Instant::now() + Duration::from_secs(5));
+            }
+            retired
         } else {
             false
         };
@@ -280,6 +300,56 @@ impl DialogSession {
         Ok(())
     }
 
+    fn begin_cleanup(&self, owner: DialogOwner, deadline: Instant) -> Result<(), HostAppError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| app_detail("native dialog cleanup", "custody lock poisoned"))?;
+        if state.custody.active_owner() == Some(owner) {
+            state.tighten_cleanup(deadline);
+        }
+        Ok(())
+    }
+
+    // Before accepting new callback/invisibility proof, enforce the cleanup
+    // cutoff. A late poll has no proof invisibility occurred before the bound.
+    // An error enters the existing fatal/retained-custody path, not quiescence.
+    fn check_cleanup(
+        &self,
+        owner: DialogOwner,
+        now: impl FnOnce() -> Instant,
+    ) -> Result<(), HostAppError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| app_detail("native dialog cleanup", "custody lock poisoned"))?;
+        if state.custody.active_owner() == Some(owner)
+            && state
+                .cleanup_deadline
+                .is_some_and(|deadline| now() >= deadline)
+        {
+            return Err(app_detail(
+                "native dialog cleanup",
+                "native callback and physical drain remain unproved at cleanup deadline",
+            ));
+        }
+        Ok(())
+    }
+
+    fn poll_before_cleanup_deadline(
+        &self,
+        owner: DialogOwner,
+        mut now: impl FnMut() -> Instant,
+        poll: impl FnOnce() -> Result<Option<MacMessageOutcome>, HostAppError>,
+    ) -> Result<Option<MacMessageOutcome>, HostAppError> {
+        self.check_cleanup(owner, &mut now)?;
+        let outcome = poll()?;
+        // Service or lock acquisition can be descheduled across the cutoff.
+        // Retain the owner even when polling just produced a drain receipt.
+        self.check_cleanup(owner, &mut now)?;
+        Ok(outcome)
+    }
+
     // A delayed poll is not a delayed callback. Preserve a timestamped native
     // completion strictly before the cutoff; expiry wins at/after the cutoff.
     fn expire_if_due(
@@ -292,6 +362,7 @@ impl DialogSession {
         let due = now >= deadline && completed_at.is_none_or(|at| at >= deadline);
         if due {
             self.expire(owner)?;
+            self.begin_cleanup(owner, deadline + Duration::from_secs(10))?;
         }
         Ok(due)
     }
@@ -455,7 +526,12 @@ impl DialogMainOwner {
             // Never retain the native panel solely because the former NSWindow
             // pointer still has an AppKit retain count: the UI owner checks
             // the live `WebviewId` map on every active service turn.
-            if stopping || !self.session.may_present(*owner)? || resolve(*parent_view).is_none() {
+            let retiring = stopping || resolve(*parent_view).is_none();
+            if retiring {
+                self.session
+                    .begin_cleanup(*owner, Instant::now() + Duration::from_secs(5))?;
+            }
+            if retiring || !self.session.may_present(*owner)? {
                 panel
                     .request_cancel()
                     .map_err(|source| app_detail("native dialog cancel", source.to_string()))?;
@@ -466,9 +542,15 @@ impl DialogMainOwner {
                 panel.completed_at(),
                 Instant::now(),
             )?;
-            if let Some(outcome) = panel
-                .poll_outcome()
-                .map_err(|source| app_detail("native dialog callback", source.to_string()))?
+            // Do not accept newly observed drain after the cleanup cutoff:
+            // the callback timestamp alone cannot date physical invisibility.
+            if let Some(outcome) =
+                self.session
+                    .poll_before_cleanup_deadline(*owner, Instant::now, || {
+                        panel.poll_outcome().map_err(|source| {
+                            app_detail("native dialog callback", source.to_string())
+                        })
+                    })?
             {
                 let owner = *owner;
                 let outcome = match outcome {
@@ -485,10 +567,12 @@ impl DialogMainOwner {
                 };
                 self.notify(owner, outcome)?;
                 self.active = None;
-            } else if expired {
-                panel
-                    .request_cancel()
-                    .map_err(|source| app_detail("native dialog expired", source.to_string()))?;
+            } else {
+                if expired {
+                    panel.request_cancel().map_err(|source| {
+                        app_detail("native dialog expired", source.to_string())
+                    })?;
+                }
             }
         }
         let next = self.active.as_ref().map(|(_, _, _, deadline)| {
