@@ -274,6 +274,8 @@ fn verify_native_same_uri_overlap(
         && child["data"]["source_kind"] == 1
         && child["data"]["header"]["state"] == "absent"
         && child["data"]["held_iframe"] == true
+        && host_start["data"]["uri"] == receipt["uri"]
+        && host_start["data"]["header"]["state"] == "present"
         && host_resource["data"]["uri"] == receipt["uri"]
         && host_resource["data"]["resource_context"] == 1
         && host_resource["data"]["source_kind"] == 1
@@ -566,6 +568,29 @@ mod ac06_overlap_receipt_tests {
             "frame start after Host start accepted"
         );
 
+        let mut wrong_top_uri = good.clone();
+        wrong_top_uri[3]["data"]["uri"] = json!("file:///D:/fixture/other.html");
+        assert!(
+            check(&wrong_top_uri).is_err(),
+            "foreign top-level start URI accepted"
+        );
+
+        let mut missing_top_uri = good.clone();
+        missing_top_uri[3]["data"]
+            .as_object_mut()
+            .unwrap()
+            .remove("uri");
+        assert!(
+            check(&missing_top_uri).is_err(),
+            "missing top-level start URI accepted"
+        );
+
+        let mut missing_top_header_state = good.clone();
+        missing_top_header_state[3]["data"]["header"]["state"] = json!("absent");
+        assert!(
+            check(&missing_top_header_state).is_err(),
+            "Host start without present header state accepted"
+        );
         let mut wrong_header = good.clone();
         wrong_header[0]["data"]["header"] = json!({"state":"present","value":nonce});
         assert!(
