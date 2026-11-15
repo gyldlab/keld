@@ -4,6 +4,7 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Instant;
 
 use block2::RcBlock;
 use keld_ipc::IpcError;
@@ -84,7 +85,7 @@ fn normalize_access_keys(input: &str) -> String {
 /// and the completion callback has run. No locks are held while `AppKit` runs.
 pub struct MacMessagePanel {
     alert: Retained<NSAlert>,
-    completion: Rc<Cell<Option<NSModalResponse>>>,
+    completion: Rc<Cell<Option<(NSModalResponse, Instant)>>>,
     callback: RcBlock<dyn Fn(NSModalResponse)>,
     buttons: usize,
     checkbox: bool,
@@ -159,7 +160,7 @@ impl MacMessagePanel {
         let completion_for_block = Rc::clone(&completion);
         let callback: RcBlock<dyn Fn(NSModalResponse)> = RcBlock::new(move |response| {
             if completion_for_block.get().is_none() {
-                completion_for_block.set(Some(response));
+                completion_for_block.set(Some((response, Instant::now())));
             }
         });
         Ok(Self {
@@ -217,6 +218,13 @@ impl MacMessagePanel {
         }
     }
 
+    /// The first native callback's monotonic timestamp, independent of when
+    /// the Host next polls or when the window becomes physically invisible.
+    #[must_use]
+    pub fn completed_at(&self) -> Option<Instant> {
+        self.completion.get().map(|(_, completed_at)| completed_at)
+    }
+
     /// Returns the single genuine outcome only after callback and real window
     /// invisibility. An outstanding cancellation is not proof of that drain.
     ///
@@ -227,7 +235,7 @@ impl MacMessagePanel {
         if self.state == PanelState::Prepared || self.state == PanelState::Drained {
             return Ok(None);
         }
-        let Some(response) = self.completion.get() else {
+        let Some((response, _completed_at)) = self.completion.get() else {
             return Ok(None);
         };
         if self.alert.window().isVisible() {

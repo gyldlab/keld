@@ -280,6 +280,22 @@ impl DialogSession {
         Ok(())
     }
 
+    // A delayed poll is not a delayed callback. Preserve a timestamped native
+    // completion strictly before the cutoff; expiry wins at/after the cutoff.
+    fn expire_if_due(
+        &self,
+        owner: DialogOwner,
+        deadline: Instant,
+        completed_at: Option<Instant>,
+        now: Instant,
+    ) -> Result<bool, HostAppError> {
+        let due = now >= deadline && completed_at.is_none_or(|at| at >= deadline);
+        if due {
+            self.expire(owner)?;
+        }
+        Ok(due)
+    }
+
     /// The Tao owner invokes this only after observing the actual `AppKit`
     /// callback and physical sheet invisibility. Commit the terminal *before*
     /// posting its event to the Core coordinator. Otherwise a later Cancel
@@ -444,6 +460,12 @@ impl DialogMainOwner {
                     .request_cancel()
                     .map_err(|source| app_detail("native dialog cancel", source.to_string()))?;
             }
+            let expired = self.session.expire_if_due(
+                *owner,
+                *deadline,
+                panel.completed_at(),
+                Instant::now(),
+            )?;
             if let Some(outcome) = panel
                 .poll_outcome()
                 .map_err(|source| app_detail("native dialog callback", source.to_string()))?
@@ -463,8 +485,7 @@ impl DialogMainOwner {
                 };
                 self.notify(owner, outcome)?;
                 self.active = None;
-            } else if Instant::now() >= *deadline {
-                self.session.expire(*owner)?;
+            } else if expired {
                 panel
                     .request_cancel()
                     .map_err(|source| app_detail("native dialog expired", source.to_string()))?;

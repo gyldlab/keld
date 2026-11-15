@@ -225,3 +225,84 @@ fn appkit_observed_native_click_is_terminal_before_event_coordinator_receives_it
         }))) if owner == first));
     assert!(session.fully_drained());
 }
+
+#[test]
+fn delayed_poll_preserves_only_pre_cutoff_native_completion() {
+    use std::time::{Duration, Instant};
+    let cutoff = Instant::now();
+    let tick = Duration::from_millis(1);
+    for (completed_at, expected_expiry) in [
+        (Some(cutoff - tick), false),
+        (Some(cutoff), true),
+        (Some(cutoff + tick), true),
+        (None, true),
+    ] {
+        let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
+        let owner = original(1, 1);
+        session.reserve(owner, options(), WebviewId(3)).unwrap();
+        assert_eq!(
+            session
+                .expire_if_due(owner, cutoff, completed_at, cutoff + tick)
+                .unwrap(),
+            expected_expiry
+        );
+        let outcome = MacDialogUiOutcome::Selected {
+            response: 0,
+            checkbox_checked: false,
+        };
+        session.record_native_outcome(owner, outcome).unwrap();
+        let terminal = session
+            .complete(owner.attempt, owner.nonce, outcome)
+            .unwrap()
+            .unwrap()
+            .1;
+        if expected_expiry {
+            assert_eq!(terminal, Err(DialogFault::Expired));
+        } else {
+            assert_eq!(
+                terminal,
+                Ok(DialogReplyV1::Message {
+                    response: 0,
+                    checkbox_checked: false
+                })
+            );
+        }
+    }
+}
+
+#[test]
+fn deadline_arbitration_preserves_prior_cancel_and_retirement() {
+    use std::time::Instant;
+    for retired in [false, true] {
+        let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
+        let owner = original(1, 1);
+        session.reserve(owner, options(), WebviewId(3)).unwrap();
+        let cutoff = Instant::now();
+        if retired {
+            session.retire(owner.identity, owner.attempt);
+        } else {
+            session
+                .cancel(owner.identity, owner.attempt, owner.nonce, CorrelationId(2))
+                .unwrap();
+        }
+        assert!(
+            session
+                .expire_if_due(owner, cutoff, Some(cutoff), cutoff)
+                .unwrap()
+        );
+        let outcome = MacDialogUiOutcome::Selected {
+            response: 0,
+            checkbox_checked: false,
+        };
+        session.record_native_outcome(owner, outcome).unwrap();
+        let result = session
+            .complete(owner.attempt, owner.nonce, outcome)
+            .unwrap();
+        if retired {
+            assert!(result.is_none());
+        } else {
+            assert!(result == Some((owner, Err(DialogFault::Cancelled))));
+        }
+        assert!(session.fully_drained());
+    }
+}
