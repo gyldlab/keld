@@ -407,8 +407,14 @@ fn window_responses_match_shared_vectors() {
 
 #[test]
 fn window_payloads_reject_unknown_discriminants_and_invalid_scalar_values() {
+    // Tag 10 is DocumentRecovered: this is a truncated known event.
     assert!(matches!(
         decode::<WindowEvent>(&[10]),
+        Err(IpcError::Codec(_))
+    ));
+    // Tag 0x7f is unassigned: reject an actually unknown event discriminant.
+    assert!(matches!(
+        decode::<WindowEvent>(&[0x7f]),
         Err(IpcError::Codec(_))
     ));
     assert!(matches!(
