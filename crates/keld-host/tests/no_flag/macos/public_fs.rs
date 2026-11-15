@@ -218,6 +218,21 @@ fn run_launch_with_quit_body_receipt(
     run_launch_with_causal_receipt(fixture, launch, exercise, None, Some(receipt))
 }
 
+fn assert_public_quit_body_evidence(observer: &Observation, receipt: Option<&QuitBodyReceipt>) {
+    // Both independently owned receipts must hold; Bun's ACK alone can be
+    // minted by a constructed Response without any observer /quit GET.
+    if let Some(receipt) = receipt {
+        receipt.assert_verified();
+        assert_eq!(
+            observer
+                .quit_progress
+                .load(std::sync::atomic::Ordering::Acquire),
+            2,
+            "missing independent real HTTP /quit request and response receipt"
+        );
+    }
+}
+
 /// Select the original test application for each exercise. Only an
 /// explicitly armed component launch receives a test-only native receipt.
 fn prepare_public_fs_exercise(
@@ -336,9 +351,11 @@ fn run_launch_with_causal_receipt(
         observation_result.is_ok(),
         body_receipt.as_deref_mut(),
     );
+    // CI diagnostics must never serialize private observer reports or Host output.
     eprintln!(
-        "KELD_KEL140_PUBLIC_DIAGNOSTICS policy={:?} launch={launch} click={:?} reports={:?} host_output={output:?}",
-        fixture.policy, evidence.click, evidence.reports,
+        "KELD_KEL140_PUBLIC_DIAGNOSTICS launch={launch} report_count={} host_exit_success={}",
+        evidence.reports.len(),
+        output.status.success(),
     );
     if let Err(failure) = observation_result {
         resume_unwind(failure);
@@ -346,11 +363,7 @@ fn run_launch_with_causal_receipt(
     if let Err(failure) = descendant_result {
         resume_unwind(failure);
     }
-    // Require the independent Bun-authored *native* receipt, not the
-    // observer's response-written phase or an untrusted Host log string.
-    if let Some(receipt) = body_receipt.as_ref() {
-        receipt.assert_verified();
-    }
+    assert_public_quit_body_evidence(&observer, body_receipt.as_deref());
     assert_product_quit(&output, &evidence, stage.root(), host_pid, exercise);
     if exercise == Exercise::PublicAppRetirement {
         retirement::assert_after_quit(&output, &evidence, &prepared.target);
