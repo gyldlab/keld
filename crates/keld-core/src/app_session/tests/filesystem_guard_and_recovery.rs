@@ -174,7 +174,7 @@ fn fs_worker_reply_write_failure_retires_generation_and_notifies_owner() {
             command_tx: guardian_tx,
         },
         window_commands: window_tx,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         quit_drain_hooks: Arc::default(),
     };
 
@@ -311,7 +311,7 @@ fn successor_install_does_not_wait_for_retired_fs_recovery_ack() {
             command_tx: guardian_tx,
         },
         window_commands: window_tx,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         quit_drain_hooks: Arc::default(),
     };
     let router = PrimaryRouter {
