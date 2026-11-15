@@ -299,6 +299,28 @@ docs_only_pr="$(result_for_paths docs/specs/gh532-first-proof-evidence-rules.md 
 expect_flags "docs-only PR runs only the docs lane" "$docs_only" "$docs_only_pr"
 expect_codeql "docs-only PR selects no CodeQL language" "$codeql_none" "$docs_only_pr"
 expect_no_package_selection "docs-only PR selects no package/suite" "$docs_only_pr"
+# #1321: the spec-structure census reads all GitHub-rendered Markdown forms,
+# including upper-case extensions and Markdown outside docs/specs. Each input
+# must reach the hosted hygiene job through docs or hygiene. A lower-case .md
+# remains the unchanged positive control.
+for extension in litcoffee livemd markdown md mdown mdwn mdx mkd mkdn mkdown ronn scd workbook MD MARKDOWN Md; do
+    input="packages/@keld/kipc/gh999-offroot.$extension"
+    routed="$(result_for_paths "$input")"
+    expect_exact_output "$input selects the hosted spec checker" docs true "$routed"
+    expect_exact_output "$input retains its TS package owner" ts true "$routed"
+    if [[ "$extension" != md ]]; then
+        expect_mermaid_flag "$input cannot bypass Mermaid validation" true "$routed"
+    fi
+done
+for extension in md markdown MD; do
+    input="crates/keld-wv/gh999-offroot.$extension"
+    routed="$(result_for_paths "$input")"
+    expect_exact_output "$input keeps the Rust owner" rust true "$routed"
+    expect_exact_output "$input reaches the spec checker" docs true "$routed"
+    expect_exact_output "$input does not become a GUI source" gui false "$routed"
+done
+expect_exact_output "a Rust source is not classified as Markdown" docs false \
+    "$(result_for_paths crates/keld-ipc/src/codec.rs)"
 # Negative control: the same directory with a Rust source extension selects
 # the Rust analysis, so the docs-only result is not a constant.
 docs_rust_source="$(result_for_paths docs/specs/gh532-first-proof-evidence-rules.md docs/specs/example.rs)"
@@ -382,7 +404,8 @@ done
 # AGENTS.md and README.md (tools/doc_placeholders.rs SCANNED_DIRS/FILES), and
 # runs in the hygiene job, which runs whenever docs or hygiene is selected. Each
 # scanned input must reach that job; the test-hello contract's onboarding docs too.
-for input in docs/specs/gh566-corpus-manifest-owner.md .agents/ci.md llms.txt llms-full.txt AGENTS.md README.md \
+for input in docs/specs/gh566-corpus-manifest-owner.md docs/specs/.spec-baseline.tsv \
+    docs/agents/spec-template.md .agents/specs.md .agents/ci.md llms.txt llms-full.txt AGENTS.md README.md \
     docs/onboarding/03-api-and-cli-surface.md justfile; do
     placeholder_input="$(result_for_paths "$input")"
     if ! grep -Fxq docs=true <<<"$placeholder_input" && ! grep -Fxq hygiene=true <<<"$placeholder_input"; then
@@ -397,6 +420,11 @@ done
 rust_source_only="$(result_for_paths crates/keld-ipc/src/codec.rs)"
 expect_exact_output "Rust source alone skips the docs lane" docs false "$rust_source_only"
 expect_exact_output "Rust source alone skips the hygiene lane" hygiene false "$rust_source_only"
+# #1321: a baseline drain edits the spec checker. Like the other hygiene checkers it
+# stays out of the every-lane fallback and also feeds the recursive CLI registry scan.
+spec_checker_classification="$(result_for_paths tools/spec_structure.rs tools/spec_structure_tests.rs tools/git_base_contract.rs)"
+expect_flags "spec checker feeds hygiene and registry" "$hygiene_rust" "$spec_checker_classification"
+expect_package_token "recursive tools scan selects its CLI reader for the spec checker" keld-cli "$spec_checker_classification"
 # The placeholder checker itself is an unknown tools input: every lane runs.
 expect_flags "doc-placeholders checker edit selects every lane" "$all_true" "$(result_for_paths tools/doc_placeholders.rs)"
 
