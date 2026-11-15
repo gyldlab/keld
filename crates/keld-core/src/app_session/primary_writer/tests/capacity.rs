@@ -199,7 +199,7 @@ fn actual_writer_advances_when_an_earlier_capacity_waiter_cannot() {
     // Failure-first: enqueue's one-shot notify_one mutant wakes only the
     // capacity producer. Its predicate remains Full, so no physical bytes arrive.
     writer.arm_notify_one_next_for_test();
-    let (written, written_rx) = writer.hold_next_completion_for_test();
+    let (written_rx, written) = writer.hold_next_completion_for_test();
     let receipt = Arc::new(send(prepared));
     peer.set_app_link_read_deadline(Some(Duration::from_millis(150)))
         .expect("bounded notify_one negative");
