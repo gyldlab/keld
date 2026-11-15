@@ -627,7 +627,7 @@ git -C "$temp_dir" init -q
 git -C "$temp_dir" config user.email ci-router@example.invalid
 git -C "$temp_dir" config user.name ci-router-test
 mkdir -p "$temp_dir/crates/keld-runtime/src" "$temp_dir/fake-bin" "$temp_dir/tools"
-printf '%s\n' '{"schema":"keld.ci-inputs/v1","known_inputs":["*"],"reader_sets":{},"consumers":[]}' >"$temp_dir/tools/ci-inputs.json"
+printf '%s\n' '{"schema":"keld.ci-inputs/v2","known_inputs":["*"],"reader_sets":{},"consumers":[]}' >"$temp_dir/tools/ci-inputs.json"
 mkdir -p "$temp_dir/packages/@fake/bootstrap/src"
 printf '{"name":"@fake/bootstrap"}\n' >"$temp_dir/packages/@fake/bootstrap/package.json"
 printf 'import { test } from "bun:test";\n' >"$temp_dir/packages/@fake/bootstrap/src/unit.test.ts"
