@@ -130,3 +130,43 @@ test("DocumentBound decode rejects truncation, zero identities, unknown tags and
     expect(() => decodeCompatControlEvent(invalid)).toThrow("KELD-IPC-003");
   }
 });
+
+test("compat decoder never invokes a late-poisoned typed-array slice", () => {
+  // The generated decoder was imported above before application globals changed.
+  const payload = Uint8Array.of(21, 34, 55);
+  const message: CompatControlEvent = {
+    variant: "RendererMessage",
+    webview: 1,
+    navigation: 2,
+    message: 3,
+    window_id: 7,
+    window_incarnation: 258n,
+    url: "keld-resource://test/index.html",
+    origin: "null",
+    topic: "message",
+    payload,
+  };
+  const wire = encodeCompatControlEvent(message);
+  const nativeSlice = Uint8Array.prototype.slice;
+  let poisonedCalls = 0;
+  let decoded: CompatControlEvent | undefined;
+  try {
+    Object.defineProperty(Uint8Array.prototype, "slice", {
+      value: function () {
+        poisonedCalls += 1;
+        return Uint8Array.of(0);
+      },
+      configurable: true,
+      writable: true,
+    });
+    decoded = decodeCompatControlEvent(wire);
+  } finally {
+    Object.defineProperty(Uint8Array.prototype, "slice", {
+      value: nativeSlice,
+      configurable: true,
+      writable: true,
+    });
+  }
+  expect(poisonedCalls).toBe(0);
+  expect(decoded).toEqual(message);
+});
