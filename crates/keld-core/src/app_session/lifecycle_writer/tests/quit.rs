@@ -1,4 +1,5 @@
 //! Actual pipe controls for Ready commit versus an accepted terminal owner.
+use std::io::Read;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver};
@@ -15,7 +16,7 @@ use crate::app_session::{
 const MUTANT_WITNESS_FAILURE_EXIT_CODE: i32 = 86;
 const PREMATURE_PANIC_ENV: &str = "KELD_TEST_QUIT_WITNESS_PREMATURE_PANIC";
 
-fn is_expected_witness_failure(status: &std::process::ExitStatus) -> bool {
+fn is_expected_witness_failure(status: std::process::ExitStatus) -> bool {
     status.code() == Some(MUTANT_WITNESS_FAILURE_EXIT_CODE)
 }
 
@@ -97,7 +98,7 @@ fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_rep
     let wrong_selector_status = wait_quit_child(&mut wrong_selector, Duration::from_secs(20))
         .expect("wrong-selector child exits within the hard deadline");
     assert!(
-        !is_expected_witness_failure(&wrong_selector_status),
+        !is_expected_witness_failure(wrong_selector_status),
         "a wrong child selector must not satisfy the mutant oracle"
     );
 
@@ -109,13 +110,27 @@ fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_rep
         .arg(&child_name)
         .arg("--nocapture")
         .env(PREMATURE_PANIC_ENV, "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("premature-failure child starts");
     let premature_status = wait_quit_child(&mut premature_failure, Duration::from_secs(20))
         .expect("premature-failure child exits within the hard deadline");
+    let mut premature_stderr = String::new();
+    premature_failure
+        .stderr
+        .take()
+        .expect("captured premature-panic stderr")
+        .read_to_string(&mut premature_stderr)
+        .expect("read premature-panic marker");
+    assert_eq!(
+        premature_status.code(),
+        Some(101),
+        "premature-panic control must exit through the Rust test-harness panic path"
+    );
     assert!(
-        !is_expected_witness_failure(&premature_status),
-        "a panic before the witness must not satisfy the mutant oracle"
+        premature_stderr.contains("injected failure before transition-lock witness"),
+        "premature-panic control must emit its exact panic marker"
     );
 
     // Run the real Quit path with a test-only transition-lock-retention mutant.
@@ -133,7 +148,7 @@ fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_rep
     let mutant_status = wait_quit_child(&mut mutant, Duration::from_secs(20))
         .expect("transition-retention mutant must fail within the hard deadline");
     assert!(
-        is_expected_witness_failure(&mutant_status),
+        is_expected_witness_failure(mutant_status),
         "transition-retention mutant must exit with the dedicated lock-witness code; got {mutant_status}"
     );
 
@@ -160,8 +175,11 @@ fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_rep
 #[ignore = "spawned only by the bounded parent test"]
 fn quit_ready_lock_witness_child() {
     if std::env::var_os(PREMATURE_PANIC_ENV).is_some() {
-        panic!("injected failure before transition-lock witness");
     }
+    assert!(
+        std::env::var_os(PREMATURE_PANIC_ENV).is_none(),
+        "injected failure before transition-lock witness"
+    );
     run_written_ready_quit_drain_scenario();
 }
 
