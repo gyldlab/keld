@@ -7,3 +7,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # CodeQL init and analyze share run configuration and MUST update together.
+    groups:
+      codeql-action:
+        applies-to: version-updates
+        patterns:
+          - "github/codeql-action/*"
