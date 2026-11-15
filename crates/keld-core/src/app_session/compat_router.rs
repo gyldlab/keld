@@ -184,6 +184,28 @@ impl CompatLedger {
         self.clear_if_complete(direction);
     }
 
+    // A refused Send or native abort frees only its own undelivered preflight.
+    // Neither a numeric call id nor a copied document stamp grants authority
+    // over another native binding, and this never touches either DATA lane.
+    fn clear_matching_preflight(
+        &mut self,
+        key: NativeRouteKey,
+        caller: &PrimaryCallerContext,
+        document: Option<&MacNativeDocumentLease>,
+    ) -> bool {
+        let matched = self.preflight.as_ref().is_some_and(|preflight| {
+            preflight.call == key.message
+                && same_caller(&preflight.caller, caller)
+                && document.is_some_and(|document| {
+                    exact_document(document, key) && preflight.document.same_binding(document)
+                })
+        });
+        if matched {
+            self.preflight = None;
+        }
+        matched
+    }
+
     fn document_retired(&mut self, webview: u32, navigation: u32) {
         if self.preflight.as_ref().is_some_and(|p| {
             p.document.stamp().view().0 == webview
@@ -378,6 +400,18 @@ fn exact_document(document: &MacNativeDocumentLease, key: NativeRouteKey) -> boo
     document.stamp().view().0 == key.webview
         && document.stamp().observed_generation() == key.navigation
 }
+fn refused_stale_send(request: &RendererBridgeRequest, key: NativeRouteKey) -> RendererBridgeOutcome {
+    RendererBridgeOutcome::SendResult {
+        webview: request.webview(),
+        navigation: request.navigation(),
+        request: key.message,
+        disposition: WvTerminalDisposition::Refused {
+            code: String::from("KELD-WV-011"),
+            message: String::from("original send no longer has its admitted role and document"),
+        },
+    }
+}
+
 fn principal(route: &RendererRoute) -> Principal {
     Principal::Webview {
         id: route.document.stamp().view().0,
@@ -848,15 +882,11 @@ impl PrimaryRouterHandle {
                 request.operation(),
                 RendererBridgeOperation::PreflightAborted
             ) {
-                if state.ledger.preflight.as_ref().is_some_and(|p| {
-                    p.call == key.message
-                        && same_caller(&p.caller, &caller)
-                        && request
-                            .document_lease()
-                            .is_some_and(|lease| lease.stamp() == p.document.stamp())
-                }) {
-                    state.ledger.preflight = None;
-                }
+                state.ledger.clear_matching_preflight(
+                    key,
+                    &caller,
+                    request.document_lease(),
+                );
                 return Ok(());
             }
             drop(state); // order: transition -> current -> Registry -> compat
@@ -947,17 +977,12 @@ impl PrimaryRouterHandle {
                                 })
                         });
                     if !admitted {
-                        return state.send(RendererBridgeOutcome::SendResult {
-                            webview: request.webview(),
-                            navigation: request.navigation(),
-                            request: key.message,
-                            disposition: WvTerminalDisposition::Refused {
-                                code: String::from("KELD-WV-011"),
-                                message: String::from(
-                                    "original send no longer has its admitted role and document",
-                                ),
-                            },
-                        });
+                        state.ledger.clear_matching_preflight(
+                            key,
+                            &caller,
+                            request.document_lease(),
+                        );
+                        return state.send(refused_stale_send(request, key));
                     }
                     let route = route.as_ref().ok_or_else(|| {
                         app_detail("compat send", "admitted native route disappeared")
@@ -994,7 +1019,12 @@ impl PrimaryRouterHandle {
                     // Only this callback can reserve/write. Repeat native currentness
                     // after encoding, then final exact Guard at the actual writer cut.
                     if !route.document.is_current() {
-                        return Ok(());
+                        state.ledger.clear_matching_preflight(
+                            key,
+                            &caller,
+                            request.document_lease(),
+                        );
+                        return state.send(refused_stale_send(request, key));
                     }
                     let CompatSession {
                         verified,
@@ -1044,7 +1074,29 @@ impl PrimaryRouterHandle {
                         },
                     );
                     match dispatched {
-                        Ok(result) => result,
+                        Ok(result) => {
+                            // The final Guard callback can observe revocation
+                            // after route admission. No DATA was reserved in that
+                            // case, so complete the original Send and its exact
+                            // preflight rather than stranding the capacity slot.
+                            if !route.document.is_current()
+                                && ledger.clear_matching_preflight(
+                                    key,
+                                    &caller,
+                                    request.document_lease(),
+                                )
+                            {
+                                outcomes
+                                    .send(refused_stale_send(request, key))
+                                    .map_err(|_| {
+                                        app_detail(
+                                            "compat native refusal",
+                                            "existing native endpoint ended",
+                                        )
+                                    })?;
+                            }
+                            result
+                        }
                         Err(reason) => {
                             ledger.preflight = None;
                             let error = CallError::from(&reason);
