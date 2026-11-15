@@ -15,8 +15,20 @@ use super::{CreateOutcome, PrimaryCallerContext};
 
 impl PrimaryRouterHandle {
     #[cfg(not(any(target_os = "macos", windows)))]
-    #[cfg_attr(target_os = "linux", expect(clippy::unused_self, reason = "The native original preload route uses the receiver only on macOS and Windows."))]
-    #[cfg_attr(target_os = "linux", expect(clippy::unnecessary_wraps, reason = "Keep the shared fallible request signature aligned with native adapters; Linux can only return its fixed refusal."))]
+    #[cfg_attr(
+        target_os = "linux",
+        expect(
+            clippy::unused_self,
+            reason = "The native original preload route uses the receiver only on macOS and Windows."
+        )
+    )]
+    #[cfg_attr(
+        target_os = "linux",
+        expect(
+            clippy::unnecessary_wraps,
+            reason = "Keep the shared fallible request signature aligned with native adapters; Linux can only return its fixed refusal."
+        )
+    )]
     pub(super) fn prepare_window_create_original_locked(
         &self,
         _session: &mut WindowSession,
@@ -115,8 +127,20 @@ impl PrimaryRouterHandle {
     }
 
     #[cfg(not(any(target_os = "macos", windows)))]
-    #[cfg_attr(target_os = "linux", expect(clippy::unused_self, reason = "The native original editor-load route uses the receiver only on macOS and Windows."))]
-    #[cfg_attr(target_os = "linux", expect(clippy::unnecessary_wraps, reason = "Keep the shared fallible request signature aligned with native adapters; Linux can only return its fixed refusal."))]
+    #[cfg_attr(
+        target_os = "linux",
+        expect(
+            clippy::unused_self,
+            reason = "The native original editor-load route uses the receiver only on macOS and Windows."
+        )
+    )]
+    #[cfg_attr(
+        target_os = "linux",
+        expect(
+            clippy::unnecessary_wraps,
+            reason = "Keep the shared fallible request signature aligned with native adapters; Linux can only return its fixed refusal."
+        )
+    )]
     pub(super) fn prepare_window_original_load_locked(
         &self,
         _session: &mut WindowSession,
