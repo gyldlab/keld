@@ -49,12 +49,7 @@ fn canonical_fixture() -> (Fixture, PathBuf, Option<PathBuf>) {
             .as_ref()
             .expect("GitHub Windows runner must expose its original TEMP short-name spelling");
         assert!(
-            alias.components().any(|component| {
-                component
-                    .as_os_str()
-                    .to_string_lossy()
-                    .contains('~')
-            }),
+            alias.components().any(|component| component.as_os_str().to_string_lossy().contains('~')),
             "GitHub Windows TEMP must provide an observable 8.3 short-name component: {alias:?}"
         );
     }
