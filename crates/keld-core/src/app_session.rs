@@ -2259,6 +2259,13 @@ pub fn run_unprivileged(
         reason = "Keep the complete guarded native startup and failure-custody handoff visible in one owner."
     )
 )]
+#[cfg_attr(
+    not(windows),
+    expect(
+        clippy::too_many_lines,
+        reason = "Keep platform-gated boot preflight and retained-guard ownership in one audited entry point."
+    )
+)]
 pub fn run_guarded(
     boot: ValidatedBootSelection,
     #[cfg(any(target_os = "macos", windows))] pre_init_terminal: fn(&HostAppError) -> !,
@@ -4134,6 +4141,13 @@ fn spawn_windows_environment_descendant() -> Result<Option<std::process::Child>,
         reason = "Keep the per-process retained input pins and session failure handoff in one lifecycle owner."
     )
 )]
+#[cfg_attr(
+    not(windows),
+    expect(
+        clippy::too_many_lines,
+        reason = "Keep per-process runtime selection, session-loop ownership, and retained native cleanup in one audited lifecycle entry point."
+    )
+)]
 fn run_app_direct(
     boot: AppBootSelection,
     guard_snapshot: Option<&GuardSnapshot>,
@@ -5999,6 +6013,13 @@ fn forward_navigation_ready(
     expect(
         clippy::too_many_lines,
         reason = "Keep one coordinator closure owning Init ordering, the original watch, and the exact FatalQueued versus ordinary-error disposition."
+    )
+)]
+#[cfg_attr(
+    not(windows),
+    expect(
+        clippy::too_many_lines,
+        reason = "Keep cross-platform event ordering and Ready milestone transitions in one ordered dispatcher."
     )
 )]
 fn coordinate_window_events(
