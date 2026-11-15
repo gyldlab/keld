@@ -249,7 +249,9 @@ fn verify_native_same_uri_overlap(
         && seq(host_start) < seq(host_resource)
         && seq(host_resource) < seq(release)
         && seq(release) < seq(frame_completed)
-        && seq(frame_completed) < seq(top_completed))
+        && seq(frame_completed) < seq(top_completed)
+        && seq(host_resource) < seq(top_content)
+        && seq(top_content) < seq(top_completed))
     {
         return Err(format!(
             "AC06 native race callback ordering mismatch: {observed:?}"
@@ -509,6 +511,20 @@ mod ac06_overlap_receipt_tests {
             verify_native_same_uri_overlap(&mut json!({"uri":uri}), events, nonce)
         };
         assert!(check(&good).is_ok(), "valid two-navigation receipt refused");
+
+        let mut early_top_content = good.clone();
+        early_top_content[7]["seq"] = json!(13);
+        assert!(
+            check(&early_top_content).is_err(),
+            "ContentLoading before Host NavigationStarting accepted"
+        );
+
+        let mut late_top_content = good.clone();
+        late_top_content[7]["seq"] = json!(25);
+        assert!(
+            check(&late_top_content).is_err(),
+            "ContentLoading after top completion accepted"
+        );
 
         let mut foreign_host_start = good.clone();
         foreign_host_start[3]["data"]["uri"] = json!("file:///D:/fixture/foreign.html");
