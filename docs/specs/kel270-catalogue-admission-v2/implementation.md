@@ -44,7 +44,7 @@ The original PR #1531 remains outside this documentation branch's write scope.
 
 ### T-1: Implement the additive identity codec
 
-- **Blocked by:** T-80
+- **Blocked by:** T-80, T-82
 
 Add the v2 byte codec and exact vectors. Retain existing v1 vectors unchanged.
 Run AC-1 and every malformed enum, OID, size, and cross-version case.
@@ -60,7 +60,7 @@ Keep the legacy support cell disabled until its bridge and joined recovery evide
 
 ### T-20: Qualify and correct the pinned client
 
-- **Blocked by:** T-80
+- **Blocked by:** T-80, T-82
 
 - T-80 includes the approved specification and design-level dependency review.
 - Compare the crate archive with the pinned source and checksum.
