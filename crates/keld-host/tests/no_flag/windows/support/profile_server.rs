@@ -4,7 +4,7 @@ use super::profile_observation::ProfileStateObservation;
 use super::profile_response::{
     profile_state_response, renderer_request_path, write_profile_state_response,
 };
-use super::renderer::renderer_beacon_remaining;
+use super::renderer::{BeaconPhase, renderer_beacon_remaining};
 use crate::RENDERER_ACCEPT_POLL;
 use crate::windows_renderer_http::{
     PendingRendererRequest, RendererRequestRead, accept_renderer_connection,
@@ -71,8 +71,9 @@ impl ProfileStateServer {
         expected: &str,
         deadline: Instant,
     ) -> ProfileStateObservation {
-        let remaining = renderer_beacon_remaining(deadline, Instant::now())
-            .expect("profile state deadline remains");
+        let remaining =
+            renderer_beacon_remaining(deadline, Instant::now(), BeaconPhase::IntakeWait)
+                .expect("profile state deadline remains");
         let observation = self
             .observations
             .recv_timeout(remaining)
@@ -126,7 +127,8 @@ fn serve_profile_state_loop(
             Err(mpsc::TryRecvError::Empty) => {}
         }
         let (expected_case, deadline) = expected.as_ref().expect("armed profile state case");
-        let remaining = renderer_beacon_remaining(*deadline, Instant::now())?;
+        let remaining =
+            renderer_beacon_remaining(*deadline, Instant::now(), BeaconPhase::IntakeWait)?;
 
         let mut index = 0;
         while index < pending.len() {
