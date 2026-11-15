@@ -125,7 +125,10 @@ fn renderer_public_fs_recovers_same_document_after_real_bun_loss() {
 fn renderer_pending_public_fs_call_rejects_once_and_rebinds_replaced_root() {
     let fixture = PublicFsProject::new(Policy::Narrow);
     let recovered = run_launch(&fixture, 0, Exercise::RendererPendingRecovery);
-    let relaunched = run_launch(&fixture, 1, Exercise::PublicAppComponent);
+    // Bind before shipping Host spawn; only the second ordinary app is armed.
+    let mut receipt = QuitBodyReceipt::arm();
+    let relaunched =
+        run_launch_with_quit_body_receipt(&fixture, 1, Exercise::PublicAppComponent, &mut receipt);
     let document = |evidence: &LaunchEvidence| {
         evidence
             .reports
