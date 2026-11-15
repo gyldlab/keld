@@ -15,13 +15,22 @@ if (-not (Test-Path -LiteralPath $subject -PathType Leaf)) {
 }
 
 function Invoke-Case([string]$Name, [string[]]$Arguments, [bool]$ExpectSuccess, [string]$Marker) {
-    $output = (& powershell.exe -NoProfile -NonInteractive -File $subject @Arguments 2>&1 | Out-String)
-    $exit = $LASTEXITCODE
+    # A deliberate refusal writes native stderr; capture it as data even
+    # under this harness's otherwise terminating-error policy.
+    $priorPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = (& powershell.exe -NoProfile -NonInteractive -File $subject @Arguments 2>&1 | Out-String)
+        $exit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $priorPreference
+    }
     if ($ExpectSuccess) {
         if ($exit -ne 0 -or $output -notmatch $Marker) {
             throw "KELD-PREFLIGHT-TEST: $Name expected success; exit=$exit output=$output"
         }
-    } elseif ($exit -eq 0 -or $output -match 'PREFLIGHT_PASS') {
+    } elseif ($exit -eq 0 -or $output -match 'PREFLIGHT_PASS' -or
+        $output -notmatch 'KELD-DEVELOPER-SIGNER-PREFLIGHT:') {
         throw "KELD-PREFLIGHT-TEST: $Name accepted invalid inputs: $output"
     }
     Write-Output "KELD_PREFLIGHT_CASE: $Name"
