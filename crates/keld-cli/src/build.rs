@@ -253,6 +253,23 @@ fn compile_local_boot_bytes(
     }
 }
 
+// Format successful Pack output without asserting unobserved runtime admission.
+// The caller emits this report only after native packaging succeeds.
+#[cfg(any(target_os = "macos", test))]
+fn successful_local_build_report(
+    app: &std::path::Path,
+    dmg: &std::path::Path,
+    receipt: &std::path::Path,
+) -> String {
+    format!(
+        "Requested security profile: legacy\n{}\nBuilt app: {}\nBuilt DMG: {}\nBuild receipt: {}\n",
+        keld_guard::LEGACY_PROFILE_FORFEIT,
+        app.display(),
+        dmg.display(),
+        receipt.display()
+    )
+}
+
 #[cfg(target_os = "macos")]
 fn run_macos_native() -> Result<(), BuildError> {
     let root = env::current_dir()
@@ -346,9 +363,10 @@ fn run_macos_native() -> Result<(), BuildError> {
         keld_pack::produce_macos_local(&package)
             .map_err(|error| BuildError::input("macOS assembly", error))?
     };
-    println!("Built app: {}", result.app.display());
-    println!("Built DMG: {}", result.dmg.display());
-    println!("Build receipt: {}", result.receipt.display());
+    print!(
+        "{}",
+        successful_local_build_report(&result.app, &result.dmg, &result.receipt)
+    );
     Ok(())
 }
 
@@ -373,6 +391,24 @@ mod tests {
                 None => require_local_legacy_profile(&parsed).expect("conscious Legacy"),
             }
         }
+    }
+
+    #[test]
+    fn successful_local_build_discloses_the_requested_legacy_profile_and_forfeiture() {
+        let report = successful_local_build_report(
+            std::path::Path::new("Example.app"),
+            std::path::Path::new("Example.dmg"),
+            std::path::Path::new("build-receipt.json"),
+        );
+        assert_eq!(
+            report,
+            format!(
+                "Requested security profile: legacy\n{}\nBuilt app: Example.app\nBuilt DMG: Example.dmg\nBuild receipt: build-receipt.json\n",
+                keld_guard::LEGACY_PROFILE_FORFEIT
+            )
+        );
+        assert!(!report.contains("strict verified"));
+        assert!(!report.contains("effective profile"));
     }
 
     #[test]
