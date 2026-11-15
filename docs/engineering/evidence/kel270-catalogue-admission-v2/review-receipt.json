@@ -18,22 +18,27 @@
     "acceptance-plan.json": "a48f0519d7dcf08054dfaad9c8b4f75ef39d32052066a2d15518ef0326f2a295"
   },
   "published_file_sha256": {
-    "recovery.md": "fb181fe9ab351a3c54899928cf6f9c0e8f367e7957ea4a55b85e388166c582a5",
-    "metadata-golden.json": "e9c0eb71df1a8c6f62373a8977c20405afc54f83752a7da4b7f3e6e582a7abea",
-    "index.md": "f0dda27fce41b0fc86eb11060d2f23a8d3952ee09af2efa6d6ea261128fcd4ff",
-    "verify_identity_vectors.py": "8d55714a03bf68d401c593d0c7471d47622462585152fe02308416418839b461",
-    "metadata.md": "c76739c0ac46e8bb64888360db154b3292039c4e30704011fbd11ba5a51d5121",
-    "identity-vectors.json": "400e007fc279f1895910aeeaaf5b3c78788656cc5982b6f49eeeee6fae3caf51",
-    "integration.md": "4baf7d994db186b9b96bc6ad6af1bfdd44620ff8a25b5e81ee6ac30ee3470775",
-    "windows.md": "f228d9e5ca40ff0e7d9e1b0b4341279cb46bf1c409eefc53c265859d77746230",
-    "identity.md": "bd7c9c80c22fdbedbcab0a988d1f6bd2463fbc5598f604f2a71dd3d8c62edec7",
-    "identity-validation.json": "70bd03deb5d287a97d8ec6044351f811a6fad42df467ff72545a3dc39c917e52",
-    "acceptance-plan.json": "a48f0519d7dcf08054dfaad9c8b4f75ef39d32052066a2d15518ef0326f2a295"
+    "docs/engineering/evidence/kel270-catalogue-admission-v2/acceptance-plan.json": "a48f0519d7dcf08054dfaad9c8b4f75ef39d32052066a2d15518ef0326f2a295",
+    "docs/engineering/evidence/kel270-catalogue-admission-v2/identity-validation.json": "70bd03deb5d287a97d8ec6044351f811a6fad42df467ff72545a3dc39c917e52",
+    "docs/engineering/evidence/kel270-catalogue-admission-v2/identity-vectors.json": "400e007fc279f1895910aeeaaf5b3c78788656cc5982b6f49eeeee6fae3caf51",
+    "docs/engineering/evidence/kel270-catalogue-admission-v2/metadata-golden.json": "e9c0eb71df1a8c6f62373a8977c20405afc54f83752a7da4b7f3e6e582a7abea",
+    "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py": "8d55714a03bf68d401c593d0c7471d47622462585152fe02308416418839b461",
+    "docs/specs/kel270-catalogue-admission-v2/identity.md": "61718260e95618d167005c59ab528bdbcc0d19114f376d21adab46c6074797db",
+    "docs/specs/kel270-catalogue-admission-v2/index.md": "c6e41bff4b70f17414d0d855e8ad458f812b8b016de4867791c41a14a7a13cc1",
+    "docs/specs/kel270-catalogue-admission-v2/integration.md": "b63816b11481086a922999294c07ccc2afac705664c1a778a1340198249114a0",
+    "docs/specs/kel270-catalogue-admission-v2/metadata.md": "439aca379912d5d2a5471e9a5e362cfbab27182c6a4cdec08e649ccf434a7788",
+    "docs/specs/kel270-catalogue-admission-v2/recovery.md": "4574eab7b3bfe79454c35771587bfddeb7430e3ab9f69d3e85b76b203f30ae1c",
+    "docs/specs/kel270-catalogue-admission-v2/windows.md": "2f2be1f21ac75b7f22ce47e03c11bf10e87eb700b3bb9aba16b41325cbee6934"
   },
   "publication_changes_after_R3": [
     "index.md removes closed B-81 from the open-blocker list",
     "integration.md records B-81 closed with exact R3 review evidence",
-    "Adds complete review receipts and actual definition-validation output"
+    "Adds complete review receipts and actual definition-validation output",
+    "Close the B-81 heading wording to match its recorded status.",
+    "Give each split canonical section a unique part subtitle.",
+    "List only stable blocker IDs in the index and remove terminal punctuation from task dependency fields.",
+    "Place unchanged fixtures and review evidence outside the Markdown-only specification directory.",
+    "Add direct evidence links, pin Windows source citations, and express external citations as source URLs."
   ],
   "independence": "Three isolated reviewers received the exact source and one named lens without author rationale. Each surviving R2 finding received independent refutation. R3 rechecks cover the corrections and added pending-operation contract.",
   "reports": {
@@ -1124,7 +1129,59 @@
     "No product implementation or native acceptance pass",
     "All original 19 groups and 110 planned cases remain NOT_RUN",
     "No production authority commissioned",
-    "Canonical Windows spec-structure invocation exited 127 because rustc was absent from that invocation PATH; another canonical validation is pending",
-    "No merge or release authorization from this receipt"
-  ]
+    "No merge or release authorization from this receipt",
+    "Repository validation is recorded separately on PR #1541. The initial publication failed canonical layout checks; the publication correction changes layout, references and evidence placement only."
+  ],
+  "published_files_root": "repository root",
+  "publication_layout_review": {
+    "reviewer": "review_identity_contract",
+    "task": "KEL-270 corrected publication layout check",
+    "snapshot": "publish-v2",
+    "compared_with": [
+      "review-r3",
+      "publish"
+    ],
+    "reviewed_manifest_sha256": "5c7c5a975d1d29e954fa98468a194a98daa45b804025f7c3f17a340787dee8f1",
+    "checked_review_receipt_sha256": "8f376348c952785ff5997020d38a62d1f7de03ab785d6626b7473839b3f23a1f",
+    "disposition": "QUALIFIED_NO_UNINTENDED_SEMANTIC_CHANGE_OR_MISSING_PATH_FOUND",
+    "findings": [],
+    "checks": {
+      "all_10_frozen_r3_file_hashes_valid": true,
+      "all_11_repository_relative_published_hashes_valid": true,
+      "all_6_spec_parts_present": true,
+      "all_6_evidence_files_present": true,
+      "non_receipt_evidence_files_byte_identical_to_prior_publish": 5,
+      "embedded_review_reports_unchanged": 8,
+      "stable_ids_unchanged": true,
+      "acceptance_criteria_blocks_byte_identical": 28,
+      "tasks_with_unchanged_dependency_lists_and_content_after_layout_normalization": 18,
+      "task_dependency_graph_sha256": "1ebee935a6975d747947c524c77247fb8f19269705e9e3b216b181204af8bc57",
+      "design_rule_review": "All R3-to-publication and prior-publish-to-corrected-publication differences inspected. Changed D-20/D-25 passages replace equivalent source references with exact pinned URLs; no normative rule changed.",
+      "permitted_layout_changes": "Unique split-section subtitles, bare blocker IDs, task dependency terminal punctuation and paragraph separation, evidence relocation, source-citation pin/link formatting, and the corresponding write-scope description.",
+      "local_markdown_links": "All resolve within corrected snapshot.",
+      "specification_directory": "Markdown only.",
+      "prior_PUB_ID_01": "Closed: B-81 heading now says Independent combined review and agrees with Status: closed.",
+      "claims": "Receipt preserves qualified R3 review results and explicitly disclaims human approval, native/product qualification, production commissioning, merge, and release authority."
+    },
+    "verified_published_file_sha256": {
+      "docs/engineering/evidence/kel270-catalogue-admission-v2/acceptance-plan.json": "a48f0519d7dcf08054dfaad9c8b4f75ef39d32052066a2d15518ef0326f2a295",
+      "docs/engineering/evidence/kel270-catalogue-admission-v2/identity-validation.json": "70bd03deb5d287a97d8ec6044351f811a6fad42df467ff72545a3dc39c917e52",
+      "docs/engineering/evidence/kel270-catalogue-admission-v2/identity-vectors.json": "400e007fc279f1895910aeeaaf5b3c78788656cc5982b6f49eeeee6fae3caf51",
+      "docs/engineering/evidence/kel270-catalogue-admission-v2/metadata-golden.json": "e9c0eb71df1a8c6f62373a8977c20405afc54f83752a7da4b7f3e6e582a7abea",
+      "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py": "8d55714a03bf68d401c593d0c7471d47622462585152fe02308416418839b461",
+      "docs/specs/kel270-catalogue-admission-v2/identity.md": "61718260e95618d167005c59ab528bdbcc0d19114f376d21adab46c6074797db",
+      "docs/specs/kel270-catalogue-admission-v2/index.md": "c6e41bff4b70f17414d0d855e8ad458f812b8b016de4867791c41a14a7a13cc1",
+      "docs/specs/kel270-catalogue-admission-v2/integration.md": "b63816b11481086a922999294c07ccc2afac705664c1a778a1340198249114a0",
+      "docs/specs/kel270-catalogue-admission-v2/metadata.md": "c15622efbd5286029181553c678016e048d8d50b61cdcca2823d1e91a72ef684",
+      "docs/specs/kel270-catalogue-admission-v2/recovery.md": "4574eab7b3bfe79454c35771587bfddeb7430e3ab9f69d3e85b76b203f30ae1c",
+      "docs/specs/kel270-catalogue-admission-v2/windows.md": "2f2be1f21ac75b7f22ce47e03c11bf10e87eb700b3bb9aba16b41325cbee6934"
+    },
+    "limits": [
+      "No new design approval, implementation, patched-client execution, Rust build, Windows/native test, or GitHub review is implied.",
+      "The evidence scripts and generated outputs are byte-identical to the earlier independently rerun 94/94 definition-only result; no redundant rerun was needed for relocation.",
+      "Canonical CI execution and the initial 53dca0b5 layout failure are owned by the primary separate receipt. This check verifies corrected local bytes, not remote CI status.",
+      "Read-only for both snapshots and product source. Only this requested check receipt was written."
+    ]
+  },
+  "publication_layout_review_limit": "After the layout review, one trailing space was removed from metadata.md. Published hashes below bind the resulting bytes."
 }
