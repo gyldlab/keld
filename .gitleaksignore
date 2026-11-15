@@ -5,7 +5,7 @@
 # False positive: this preload test uses the public, deterministic hex sequence
 # 0..f repeated twice as its synthetic document token. The literal is not a
 # credential, and the current tree builds the same fixture with deterministic
-# code. Match only the two historic introducing commits and the one test line;
+# code. Match only identified historical commits at the one test line;
 # any other secret match remains reportable.
 69ce0730c2b23a631dc8324bafb4264f90a4e394:packages/@keld/electron/src/preload-runtime.test.ts:generic-api-key:21
 60160f3ebf4681f6a97ef2ab2e465d5bbbdecc49:packages/@keld/electron/src/preload-runtime.test.ts:generic-api-key:21
