@@ -324,13 +324,16 @@ mod tests {
             );
         }
         let mut state = PanelState::CancelRequested;
-        assert_eq!(drained_response_index(&mut state, -1, 3), Ok(None));
+        assert!(matches!(
+            drained_response_index(&mut state, -1, 3),
+            Ok(None)
+        ));
         assert_eq!(state, PanelState::Drained);
         let mut state = PanelState::Presented;
-        assert_eq!(
+        assert!(matches!(
             drained_response_index(&mut state, NSAlertFirstButtonReturn + 1, 3),
             Ok(Some(1))
-        );
+        ));
         assert_eq!(state, PanelState::Drained);
     }
 
