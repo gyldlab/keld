@@ -699,13 +699,14 @@ fn run_captured_with_output(
     // Preserve the actual reader refusal before the generic cancellation/status
     // result. Otherwise an overflow-triggered child exit can hide its cause.
     let stdout = stdout?;
+    let stderr = stderr?;
     // Do not echo captured diagnostics: source/tool output may contain private data.
-    retain_source_stderr(options.stderr_file, &stderr?)?;
+    retain_source_stderr(options.stderr_file, &stderr)?;
     let status = status?;
     Ok(CapturedToolOutput {
         status,
         stdout,
-        stderr: stderr?,
+        stderr,
     })
 }
 
