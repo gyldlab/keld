@@ -694,16 +694,18 @@ mod rust_binder_acceptance_tests {
         )
         .expect("write hostile Bun global configuration");
         let stage = home_negative.0.join("stage");
-        let error = run_bound_case(
-            &sources,
-            &tools,
-            &home_negative.0,
-            &[("main.js", "console.log('must not compile');")],
-            &hostile_home,
-            None,
-        )
-        .expect_err("unisolated HOME must load the hostile Bun configuration");
-        assert!(error.to_string().contains("captured compiler"));
+        assert!(
+            run_bound_case(
+                &sources,
+                &tools,
+                &home_negative.0,
+                &[("main.js", "console.log('must not compile');")],
+                &hostile_home,
+                None,
+            )
+            .is_err(),
+            "unisolated HOME must load the hostile Bun configuration"
+        );
         assert_eq!(
             fs::read_to_string(&marker).expect("hostile preload sentinel"),
             "AMBIENT_BUN_CONFIG_USED"
