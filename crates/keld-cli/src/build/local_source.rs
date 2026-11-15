@@ -679,6 +679,50 @@ pub(super) struct LocalSourceBuildObservation {
     pub(super) helper: PinnedFile,
 }
 
+/// Test-only exact source pins for exercising the production compiler binder.
+/// This does not create a LocalSourceBuildObservation receipt or release authority.
+#[cfg(test)]
+pub(super) fn compiler_source_observation_for_test(
+    source_root: &Path,
+    executable: &Path,
+) -> Result<LocalSourceBuildObservation, BuildError> {
+    let required = [
+        "crates/keld-cli/tools/closed-app-runner.ts",
+        "crates/keld-cli/tools/closed-app.ts",
+        "crates/keld-cli/tools/protocol.ts",
+        "crates/keld-cli/tools/static-renderer.ts",
+        "packages/@keld/kipc/scripts/package-artifacts.ts",
+        "packages/@keld/kipc/src/transport.ts",
+    ];
+    let mut directory_pins = super::windows_inputs::pin_input_root(source_root)?;
+    let mut source_pins = Vec::with_capacity(required.len());
+    for relative in required {
+        let path = source_root.join(relative);
+        let parent = path
+            .parent()
+            .ok_or_else(|| failure("test compiler source", "source parent missing"))?;
+        directory_pins.extend(super::windows_inputs::pin_input_root(parent)?);
+        source_pins.push(pin_file(&path, MAX_SOURCE_FILE)?);
+    }
+    // The compiler binder never reads these two image fields. Keep real retained
+    // handles so this fixture uses the same observation owner shape as production.
+    let host = pin_file(executable, MAX_IMAGE)?;
+    let helper = pin_file(executable, MAX_IMAGE)?;
+    Ok(LocalSourceBuildObservation {
+        source_root: source_root.to_owned(),
+        source_commit: "0".repeat(40),
+        source_sha256: [0; 32],
+        cargo_lock_sha256: [0; 32],
+        cache_sha256: None,
+        recipe_sha256: [0; 32],
+        tool_sha256: [[0; 32]; 3],
+        source_pins,
+        _directory_pins: directory_pins,
+        host,
+        helper,
+    })
+}
+
 /// Borrowing this value keeps the existing exact source-tree file/directory pins
 /// alive. Local source observation is not production-release authentication.
 pub(super) struct ObservedCompilerSources<'a> {
