@@ -350,8 +350,24 @@ fn opaque_end(bytes: &[u8], at: usize) -> Option<usize> {
         return Some(line.map_or(bytes.len(), |end| at + end));
     }
     if rest.starts_with(b"/*") {
-        let close = rest[2..].windows(2).position(|pair| pair == b"*/");
-        return Some(close.map_or(bytes.len(), |end| at + 2 + end + 2));
+        let (mut depth, mut end) = (1_usize, at + 2);
+        while end + 1 < bytes.len() {
+            match &bytes[end..end + 2] {
+                b"/*" => depth += 1,
+                b"*/" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(end + 2);
+                    }
+                }
+                _ => {
+                    end += 1;
+                    continue;
+                }
+            }
+            end += 2;
+        }
+        return Some(bytes.len());
     }
     if at > 0 && is_ident(bytes[at - 1]) {
         return None;
@@ -397,7 +413,7 @@ fn opaque_end(bytes: &[u8], at: usize) -> Option<usize> {
     None
 }
 
-/// Every `name!(...)` invocation of a format macro, with its argument text.
+/// Every format macro invocation, with any Rust delimiter and its argument text.
 fn invocations(source: &str) -> Vec<(&'static str, &str)> {
     let bytes = source.as_bytes();
     let mut found = Vec::new();
@@ -416,7 +432,7 @@ fn invocations(source: &str) -> Vec<(&'static str, &str)> {
             while bytes.get(open).is_some_and(u8::is_ascii_whitespace) {
                 open += 1;
             }
-            if bytes.get(open) == Some(&b'(') {
+            if matches!(bytes.get(open), Some(b'(' | b'[' | b'{')) {
                 let close = matching_close(bytes, open);
                 found.push((*name, &source[open + 1..close]));
                 at = open + 1;
@@ -675,5 +691,82 @@ fn untrusted_interpolation_guard_sees_every_known_binding_shape() {
             "guard flagged fixed diagnostic {fixed}: {:?}",
             untrusted_interpolations(fixed)
         );
+    }
+}
+
+#[test]
+fn macro_delimiters_preserve_private_argument_checks() {
+    let mut missed = Vec::new();
+    for (open, close) in [('(', ')'), ('[', ']'), ('{', '}')] {
+        for (name, args) in [
+            ("eprintln!", r#""{}", report"#),
+            ("eprintln!", r#""{0}", report"#),
+            ("eprintln!", r#""{value}", value = report"#),
+            ("assert_eq!", "document_nonce, other"),
+            ("debug_assert_ne!", "document(&before), document(&after)"),
+            ("panic!", r#""{}", document(&before)"#),
+            ("dbg!", "7"),
+        ] {
+            let source = format!(
+                r#"let document = |page: &Value| page.get("documentNonce");
+                {name} {open}{args}{close};"#
+            );
+            if untrusted_interpolations(&source).is_empty() {
+                missed.push(source);
+            }
+        }
+        let nested = format!(r#"eprintln!{open}"{{}}", observed_marker(dbg![7]){close};"#);
+        if !untrusted_interpolations(&nested)
+            .iter()
+            .any(|finding| finding.starts_with("dbg!"))
+        {
+            missed.push(nested);
+        }
+    }
+    assert!(missed.is_empty(), "guard missed {missed:#?}");
+}
+
+#[test]
+fn macro_delimiters_preserve_safe_diagnostics() {
+    for (open, close) in [('(', ')'), ('[', ']'), ('{', '}')] {
+        for args in [
+            r#""fixed diagnostic""#,
+            r#""{}", observed_marker(&report, PrivatePhase::Observation)"#,
+            r#""{}", output_summary(&output)"#,
+            r#""{}", report.len()"#,
+        ] {
+            let source = format!("eprintln!{open}{args}{close};");
+            assert!(
+                untrusted_interpolations(&source).is_empty(),
+                "guard flagged safe diagnostic {source}"
+            );
+        }
+    }
+}
+
+#[test]
+fn macro_delimiters_ignore_opaque_text() {
+    for (open, close) in [('(', ')'), ('[', ']'), ('{', '}')] {
+        let invocation = format!(r#"eprintln!{open}"{{}}", report{close};"#);
+        for opaque in [
+            format!("// {invocation}\n"),
+            format!("/* {invocation} */"),
+            format!("/* outer /* inner */ {invocation} */"),
+            format!("/* outer /* {invocation} */ still outer */"),
+            format!("let text = {invocation:?};"),
+            format!("let text = r###\"{invocation}\"###;"),
+        ] {
+            assert!(
+                untrusted_interpolations(&opaque).is_empty(),
+                "guard scanned opaque text {opaque}"
+            );
+            // Skipping opaque text must stop before the next live invocation.
+            let followed = format!("{opaque}\n{invocation}");
+            assert_eq!(
+                invocations(&followed),
+                vec![("eprintln!", r#""{}", report"#)],
+                "guard lost the opaque boundary: {followed}"
+            );
+        }
     }
 }
