@@ -3,12 +3,11 @@
 //!
 //! `EVFILT_PROC` keeps a fired `NOTE_EXIT` queued until a read dequeues it, and
 //! the event carries no timestamp. A dequeued event therefore proves only that
-//! the exit happened before *that read*. Every ordering class below is earned
-//! by a no-event read that happened strictly after the named point:
-//!
-//! - a sealing read immediately before Quit is released, and
-//! - optionally, a no-event read after the test first saw the selected Bun's
-//!   verified Quit-body receipt.
+//! the exit happened before *that read*. An empty sealing read before Quit
+//! orders later events after the seal, not after Quit: exit may occur between
+//! the seal and the caller's release. An event read before receipt verification
+//! is also known to precede that verification. Only an empty read after the
+//! selected Bun's verified Quit-body receipt orders a later event after receipt.
 //!
 //! An absent event is never evidence of liveness. A refused registration, a
 //! failed or interrupted read, or a read that finishes past the caller's
@@ -33,10 +32,10 @@ pub(crate) enum GuardianExitPhase {
     ObservedBeforeQuitRelease,
     /// Every read so far was empty. Never proof that the Guardian lives.
     NotObserved,
-    /// Exit after the seal; no body-receipt fence is tracked (T1B lifecycle).
-    ObservedAfterQuitRelease,
-    /// Exit after the seal, dequeued before the body receipt was verified.
-    ObservedAfterQuitReleaseBeforeBodyReceipt,
+    /// Exit after the seal, unordered with Quit; no body-receipt fence (T1B).
+    ObservedAfterSeal,
+    /// Exit after the seal, unordered with Quit, read before receipt verification.
+    ObservedAfterSealBeforeBodyReceipt,
     /// First read after receipt verification found the exit already queued,
     /// so it may have happened before or after that verification.
     ObservedUnorderedWithBodyReceipt,
@@ -53,9 +52,9 @@ impl GuardianExitPhase {
             Self::Registered => "guardian_exit_event_registered_unsealed",
             Self::ObservedBeforeQuitRelease => "guardian_exit_event_observed_before_quit_release",
             Self::NotObserved => "guardian_exit_event_not_observed",
-            Self::ObservedAfterQuitRelease => "guardian_exit_event_observed_after_quit_release",
-            Self::ObservedAfterQuitReleaseBeforeBodyReceipt => {
-                "guardian_exit_event_observed_after_quit_release_before_body_receipt"
+            Self::ObservedAfterSeal => "guardian_exit_event_observed_after_seal",
+            Self::ObservedAfterSealBeforeBodyReceipt => {
+                "guardian_exit_event_observed_after_seal_before_body_receipt"
             }
             Self::ObservedUnorderedWithBodyReceipt => {
                 "guardian_exit_event_observed_not_ordered_after_body_receipt"
@@ -110,9 +109,9 @@ impl GuardianExitWitness {
         }
     }
 
-    /// The ordering witness for Quit. Call this immediately before releasing
-    /// Quit, with no other work in between: an event read here happened before
-    /// the release, and an empty read here orders every later event after it.
+    /// Call before releasing Quit: an event read here happened before release.
+    /// An empty read orders later events after this seal, not after release;
+    /// the Guardian can exit in the gap even when the caller releases next.
     pub(crate) fn seal_before_quit_release(&mut self) {
         self.seal_with(&mut ProcessExitObserver::try_read_exit);
     }
@@ -175,9 +174,9 @@ impl GuardianExitWitness {
             }
             Ok(Some(())) => {
                 self.phase = match self.fence {
-                    BodyReceiptFence::Untracked => GuardianExitPhase::ObservedAfterQuitRelease,
+                    BodyReceiptFence::Untracked => GuardianExitPhase::ObservedAfterSeal,
                     BodyReceiptFence::Pending => {
-                        GuardianExitPhase::ObservedAfterQuitReleaseBeforeBodyReceipt
+                        GuardianExitPhase::ObservedAfterSealBeforeBodyReceipt
                     }
                     BodyReceiptFence::Verified => {
                         GuardianExitPhase::ObservedUnorderedWithBodyReceipt
@@ -294,11 +293,11 @@ mod tests {
         }
     }
 
-    /// Exit after an empty sealing read is ordered after Quit release. A
+    /// Exit after an empty sealing read is ordered only after that seal. A
     /// constant `Observed` fails at the live-child read; a dropped event fails
     /// the deadline.
     #[test]
-    fn native_exit_after_sealed_quit_release_is_ordered_after_release() {
+    fn native_exit_after_empty_seal_is_ordered_after_seal() {
         let mut child = OwnedShell::status23();
         let mut witness = GuardianExitWitness::register(child.0.id());
         assert_eq!(witness.phase(), GuardianExitPhase::Registered);
@@ -314,11 +313,57 @@ mod tests {
         );
         child.release();
         poll_until_observed(&mut witness, deadline);
-        assert_eq!(witness.phase(), GuardianExitPhase::ObservedAfterQuitRelease);
+        assert_eq!(witness.phase(), GuardianExitPhase::ObservedAfterSeal);
         child.reap_status23();
     }
 
-    /// The finding's failure mode: the exit happens after registration but
+    /// A real exit in the empty-seal-to-Quit gap is not ordered after Quit.
+    /// The independent observer confirms exit before the logical Quit channel
+    /// is released; neither witness is polled until after that release.
+    #[test]
+    fn native_exit_between_empty_seal_and_quit_release_is_only_after_seal() {
+        let deadline = Instant::now() + PROCESS_DEADLINE;
+        let mut child = OwnedShell::status23();
+        let mut oracle = ProcessExitObserver::arm(child.0.id());
+        let mut untracked = GuardianExitWitness::register(child.0.id());
+        let mut pending = GuardianExitWitness::register_with_body_receipt_fence(child.0.id());
+        let (quit_release, quit_released) = std::sync::mpsc::sync_channel(1);
+        child.assert_live();
+        untracked.seal_before_quit_release();
+        pending.seal_before_quit_release();
+        assert_eq!(untracked.phase(), GuardianExitPhase::NotObserved);
+        assert_eq!(pending.phase(), GuardianExitPhase::NotObserved);
+        child.release();
+        loop {
+            let status = oracle.try_poll_exit().expect("independent gap exit read");
+            assert!(
+                Instant::now() < deadline,
+                "gap exit exceeded original deadline"
+            );
+            if let Some(status) = status {
+                assert_eq!(status.code(), Some(23), "original child exited in the gap");
+                break;
+            }
+            thread::yield_now();
+        }
+        quit_release
+            .send(())
+            .expect("release logical Quit after exit");
+        quit_released.try_recv().expect("logical Quit was released");
+        untracked.poll(deadline);
+        pending.poll(deadline);
+        assert_eq!(
+            (untracked.marker(), pending.marker()),
+            (
+                "guardian_exit_event_observed_after_seal",
+                "guardian_exit_event_observed_after_seal_before_body_receipt",
+            ),
+            "an exit proved before Quit must not receive an after-Quit label"
+        );
+        child.reap_status23();
+    }
+
+    /// The exit happens after registration but
     /// before Quit release. The sealing read must classify it as pre-Quit,
     /// and no later poll may relabel it as a post-Quit exit.
     #[test]
@@ -378,7 +423,7 @@ mod tests {
         witness.poll(deadline);
         assert_eq!(
             witness.phase(),
-            GuardianExitPhase::ObservedAfterQuitReleaseBeforeBodyReceipt
+            GuardianExitPhase::ObservedAfterSealBeforeBodyReceipt
         );
         child.reap_status23();
     }
@@ -435,7 +480,7 @@ mod tests {
     /// A read that starts before the deadline but ends at it is unproved even
     /// though the real queued exit was dequeued. The injected clock is before
     /// the deadline for the pre-read check and at it for the post-read check;
-    /// without the post-read check this reads as `ObservedAfterQuitRelease`.
+    /// without the post-read check this reads as `ObservedAfterSeal`.
     #[test]
     fn native_exit_read_ending_at_deadline_is_unproved() {
         let mut child = OwnedShell::status23();
@@ -489,7 +534,7 @@ mod tests {
         assert_eq!(
             sealed.phase(),
             GuardianExitPhase::Unproved,
-            "an interrupted sealing read must not order later exits after Quit"
+            "an interrupted sealing read must not order later exits after the seal"
         );
         fenced.seal_before_quit_release();
         assert_eq!(fenced.phase(), GuardianExitPhase::NotObserved);
@@ -540,7 +585,7 @@ mod tests {
         assert_eq!(
             sealed.phase(),
             GuardianExitPhase::Unproved,
-            "a kernel-interrupted sealing read must not order later exits after Quit"
+            "a kernel-interrupted sealing read must not order later exits after the seal"
         );
         fenced.seal_before_quit_release();
         assert_eq!(fenced.phase(), GuardianExitPhase::NotObserved);

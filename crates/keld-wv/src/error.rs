@@ -16,7 +16,8 @@ pub enum WvError {
     },
     /// Window creation failed.
     Window(String),
-    /// Webview attach failed.
+    /// Webview creation failed: attaching the webview, or on Windows creating the
+    /// `WebView2` environment or controller (the HRESULT is kept in the message).
     Webview(String),
     /// Event loop exited with an error.
     EventLoop(String),
@@ -68,7 +69,7 @@ impl fmt::Display for WvError {
                 f,
                 "KELD-WV-003: failed to create webview — {msg}. \
                  On macOS ensure WKWebView is available (10.13+); \
-                 on Windows ensure the WebView2 runtime is installed."
+                 on Windows inspect the WebView2 HRESULT, profile permissions and controller state."
             ),
             Self::EventLoop(msg) => write!(
                 f,
