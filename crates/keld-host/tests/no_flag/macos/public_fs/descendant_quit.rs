@@ -36,14 +36,16 @@ impl DescendantQuit {
         // The product receives the same public Quit and descendant fixture.
         let require_post_parent_ack = match std::env::var("KEL118_REQUIRE_POST_PARENT_ACK") {
             Ok(value) => {
-                assert_eq!(
-                    value, "1",
+                assert!(
+                    value == "1",
                     "negative-control oracle accepts only 1 or unset"
                 );
                 true
             }
             Err(std::env::VarError::NotPresent) => false,
-            Err(error) => panic!("negative-control oracle configuration: {error}"),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                panic!("negative-control oracle configuration was not valid Unicode")
+            }
         };
         let owned = tempfile::Builder::new()
             .prefix("keld-118-")
@@ -75,8 +77,7 @@ impl DescendantQuit {
         );
         assert!(
             python.is_absolute() && python.is_file(),
-            "{}",
-            python.display()
+            "Python fixture interpreter must be an existing absolute file"
         );
         let token = fresh_nonce();
         Self {
@@ -111,17 +112,29 @@ impl DescendantQuit {
         self.writer = Some(stream.try_clone().expect("fixture control writer"));
         let mut reader = BufReader::new(stream);
         let ready = read_record(&mut reader).expect("actual descendant ready record");
-        assert_eq!(ready["phase"], "child-ready");
+        // Native records can carry a private token, executable path, PID or
+        // nonce: each original predicate stays, and a failure names only the
+        // fixed reason (the #1009 diagnostics owner withholds both values).
+        assert_private_eq(&ready["phase"], "child-ready", "child-ready phase missing");
         assert_private_eq(&ready["token"], &self.token, "descendant ready token");
-        assert_eq!(ready["pid"], family.descendant);
-        assert_eq!(ready["ppid"], family.bun);
-        assert_eq!(ready["pgid"], family.bun);
-        assert_eq!(parent_process(family.descendant), family.bun);
-        assert_eq!(process_group(family.descendant), family.bun);
-        assert_eq!(
-            fs::canonicalize(ready["python"].as_str().expect("actual Python image"))
+        assert_private_eq(&ready["pid"], &family.descendant, "child identity mismatch");
+        assert_private_eq(&ready["ppid"], &family.bun, "child parent mismatch");
+        assert_private_eq(&ready["pgid"], &family.bun, "child group mismatch");
+        assert_private_eq(
+            &parent_process(family.descendant),
+            &family.bun,
+            "child's kernel parent does not match Bun",
+        );
+        assert_private_eq(
+            &process_group(family.descendant),
+            &family.bun,
+            "child's kernel process group does not match Bun",
+        );
+        assert_private_eq(
+            &fs::canonicalize(ready["python"].as_str().expect("actual Python image"))
                 .expect("canonical Python peer image"),
-            self.python,
+            &self.python,
+            "child interpreter identity mismatch",
         );
         let bun_pipe = pipe_identity(family.bun, "1");
         let child_pipe = pipe_identity(family.descendant, "1");
@@ -135,12 +148,7 @@ impl DescendantQuit {
         self.child_exit = Some(ProcessExitObserver::arm(family.descendant));
         self.child_pid = Some(family.descendant);
         self.peer = Some(reader);
-        eprintln!(
-            "KEL118_PRODUCT_ARM bun={} descendant={} stdout_shared=true python={} ready=child-ready",
-            family.bun,
-            family.descendant,
-            self.python.display()
-        );
+        eprintln!("KEL118_PRODUCT_ARM stdout_shared=true ready=child-ready");
     }
 
     pub(super) fn observe_cooperative_exit_and_guardian_reap(&mut self) {
@@ -181,8 +189,12 @@ impl DescendantQuit {
         let observed = writer.write_all(&encoded).and_then(|()| read_record(peer));
         let alive_after_parent = match observed {
             Ok(reply) => {
-                assert_eq!(reply["phase"], "child-alive");
-                assert_eq!(reply["pid"], self.child_pid.expect("exact descendant"));
+                assert_private_eq(&reply["phase"], "child-alive", "child-alive phase missing");
+                assert_private_eq(
+                    &reply["pid"],
+                    &self.child_pid.expect("exact descendant"),
+                    "child identity changed after Bun exit",
+                );
                 assert_private_eq(&reply["nonce"], &nonce, "descendant ack nonce");
                 assert!(reply["stdout"] == "written" || reply["stdout"] == "broken-pipe");
                 eprintln!("KEL118_PRODUCT_AFTER_EXIT0 alive=true fresh_ack=child-alive");
@@ -261,4 +273,117 @@ fn read_record(reader: &mut BufReader<UnixStream>) -> std::io::Result<Value> {
     }
     serde_json::from_slice(&bytes)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::private_diagnostics::private_failure_message;
+    use super::*;
+
+    // The former local phase-marker helper is folded into the #1009
+    // diagnostics owner: both receipts are fixed literals that take no
+    // record, PID or path (pinned below), and every record predicate goes
+    // through `assert_private_eq`.
+    // The original sentinel is kept on that path: a mismatching private
+    // descendant record still fails, naming only the fixed reason, never its
+    // token, nonce, image path, PID, phase or the expected value.
+    #[test]
+    fn private_descendant_control_values_never_reach_phase_diagnostics() {
+        const PRIVATE: &str = "KELD_TEST_PRIVATE_SENTINEL_TOKEN_NONCE_ROOT_PATH";
+        const EXPECTED: &str = "KELD_TEST_EXPECTED_SENTINEL";
+        let record = json!({
+            "phase": PRIVATE, "token": PRIVATE, "nonce": PRIVATE,
+            "python": PRIVATE, "pid": PRIVATE, "stdout": PRIVATE
+        });
+        for (field, reason) in [
+            ("phase", "child-ready phase missing"),
+            ("token", "descendant ready token"),
+            ("pid", "child identity mismatch"),
+            ("python", "child interpreter identity mismatch"),
+            ("nonce", "descendant ack nonce"),
+            (
+                "stdout",
+                "descendant must inherit exact Bun stdout endpoint",
+            ),
+        ] {
+            let message = private_failure_message(|| {
+                assert_private_eq(&record[field], EXPECTED, reason);
+            });
+            assert!(message.contains(reason));
+            assert!(!message.contains(PRIVATE));
+            assert!(!message.contains(EXPECTED));
+        }
+    }
+
+    // The arm and post-exit receipts are fixed literals: the asserted-equal
+    // PIDs and Python image path of the private record never reach stderr.
+    #[test]
+    fn descendant_receipts_are_fixed_literals() {
+        let (implementation, _) = include_str!("descendant_quit.rs")
+            .split_once("#[cfg(test)]\nmod tests")
+            .expect("adjacent regression module owns the source boundary");
+        for receipt in [
+            "eprintln!(\"KEL118_PRODUCT_ARM stdout_shared=true ready=child-ready\");",
+            "eprintln!(\"KEL118_PRODUCT_AFTER_EXIT0 alive=true fresh_ack=child-alive\");",
+        ] {
+            assert!(
+                implementation.contains(receipt),
+                "descendant receipt is not fixed"
+            );
+        }
+    }
+
+    // The kernel parent, process group and Python image checks index no
+    // record, so neither the raw-record probe below nor the #1009 guard (for
+    // which PIDs and images are not private elsewhere in public_fs/) would
+    // notice one reverting to a value-rendering `assert_eq!`/`assert_ne!`.
+    // The stdout pipe identities are guarded by #1009 itself.
+    #[test]
+    fn descendant_kernel_identity_predicates_withhold_values() {
+        let (implementation, _) = include_str!("descendant_quit.rs")
+            .split_once("#[cfg(test)]\nmod tests")
+            .expect("adjacent regression module owns the source boundary");
+        let compact: String = implementation
+            .chars()
+            .filter(|char| !char.is_whitespace())
+            .collect();
+        for macro_name in ["assert_eq!(", "assert_ne!("] {
+            for operand in ["parent_process(", "process_group(", "fs::canonicalize("] {
+                assert!(
+                    !compact.contains(&format!("{macro_name}{operand}")),
+                    "a descendant kernel identity check renders its values on failure"
+                );
+            }
+        }
+        for withheld in [
+            "assert_private_eq(&parent_process(family.descendant),&family.bun,",
+            "assert_private_eq(&process_group(family.descendant),&family.bun,",
+            "assert_private_eq(&fs::canonicalize(ready[\"python\"]",
+        ] {
+            assert!(
+                compact.contains(withheld),
+                "a descendant kernel identity check left the private owner"
+            );
+        }
+    }
+
+    // A positional Debug placeholder anywhere in public_fs/ is rejected by the
+    // #1009 source guard, which would also flag that shape as a literal here.
+    #[test]
+    fn descendant_oracle_diagnostics_do_not_interpolate_raw_control_records() {
+        let source = include_str!("descendant_quit.rs");
+        for name in ["ready", "reply"] {
+            for interpolation in [
+                format!("{{{name}}}"),
+                format!("{{{name}:?}}"),
+                format!("eprintln!(\"{{}}\", {name})"),
+                format!("assert_eq!({name}["),
+            ] {
+                assert!(
+                    !source.contains(&interpolation),
+                    "raw private descendant record formatting was reintroduced"
+                );
+            }
+        }
+    }
 }
