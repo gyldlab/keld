@@ -2,8 +2,10 @@ use crate::support::DARK_BG;
 use crate::support::EVENT_DEADLINE;
 use crate::support::MARKER;
 use crate::support::TITLE;
+use crate::support::control::AcceptFailure;
 use crate::support::control::parse_pid;
 use crate::support::control::read_control_line;
+use crate::support::control::try_accept_before_observing;
 use crate::support::control::wait_child_output_observing;
 use crate::support::dev_cycle::ShippingLaunchCleanup;
 use crate::support::native_window::await_same_native_windows;
@@ -29,7 +31,6 @@ use std::process::ChildStdin;
 use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
-use std::thread;
 use std::time::Instant;
 
 pub(crate) struct RecoveryCycle {
@@ -275,22 +276,28 @@ impl RecoveryGeneration {
     }
 
     pub(crate) fn try_accept(listener: &UnixListener, label: &str) -> Result<Self, String> {
-        let deadline = Instant::now() + EVENT_DEADLINE;
-        let stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    if Instant::now() >= deadline {
-                        return Err(format!("{label}: Bun did not connect the fixture control"));
+        Self::try_accept_before(listener, label, Instant::now() + EVENT_DEADLINE)
+    }
+
+    fn try_accept_before(
+        listener: &UnixListener,
+        label: &str,
+        deadline: Instant,
+    ) -> Result<Self, String> {
+        let stream =
+            try_accept_before_observing(listener, deadline, || {}).map_err(
+                |failure| match failure {
+                    AcceptFailure::Deadline => {
+                        format!("{label}: Bun did not connect the fixture control")
                     }
-                    thread::yield_now();
-                }
-                Err(error) => return Err(format!("{label}: accept fixture control: {error}")),
-            }
-        };
-        stream
-            .set_nonblocking(false)
-            .map_err(|error| format!("{label}: normalize T3 control stream: {error}"))?;
+                    AcceptFailure::Accept(error) => {
+                        format!("{label}: accept fixture control: {error}")
+                    }
+                    AcceptFailure::Normalize(error) => {
+                        format!("{label}: normalize T3 control stream: {error}")
+                    }
+                },
+            )?;
         stream
             .set_read_timeout(Some(EVENT_DEADLINE))
             .map_err(|error| format!("{label}: T3 control deadline: {error}"))?;
@@ -354,4 +361,27 @@ impl RecoveryGeneration {
             .expect("recovery app link token")
             .1
     }
+}
+
+#[test]
+fn recovery_accept_refuses_a_queued_control_peer_after_the_original_deadline() {
+    let root = tempfile::tempdir().expect("recovery accept root");
+    let path = root.path().join("control.sock");
+    let listener = UnixListener::bind(&path).expect("own recovery control listener");
+    let deadline = Instant::now();
+    let peer = UnixStream::connect(&path).expect("queued control peer");
+    // A silent, write-closed peer: if accepted, the HELLO read fails at once.
+    peer.shutdown(std::net::Shutdown::Write)
+        .expect("close queued peer writes");
+    match RecoveryGeneration::try_accept_before(&listener, "late", deadline) {
+        Ok(_) => panic!("a queued peer after the deadline became a generation"),
+        Err(error) => assert_eq!(error, "late: Bun did not connect the fixture control"),
+    }
+    listener
+        .set_nonblocking(true)
+        .expect("probe the queue without blocking");
+    assert!(
+        listener.accept().is_ok(),
+        "the late peer was dequeued instead of left unaccepted"
+    );
 }
