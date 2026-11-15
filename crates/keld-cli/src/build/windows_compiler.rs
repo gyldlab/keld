@@ -694,7 +694,7 @@ mod rust_binder_acceptance_tests {
                 .expect("encode poison path");
         fs::write(
             hostile_home.join(".bunfig.toml"),
-            format!("preload = [{poison_path_literal}]\\n"),
+            format!("preload = [{poison_path_literal}]\n"),
         )
         .expect("write hostile Bun global configuration");
         let stage = home_negative.0.join("stage");
