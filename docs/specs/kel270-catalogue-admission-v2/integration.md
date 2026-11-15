@@ -3,7 +3,7 @@
 Part of: [index](index.md)
 Owns: The combined contract, task dependencies, approval record, and evidence limits.
 
-## 2. Spec refs
+## 2. Spec refs: Integration
 
 FACT: The repository requires human sign-off before implementation of a new feature specification.
 Source: `docs/agents/spec-template.md:7` and `docs/agents/workflow.md:96` at the index pin.
@@ -16,7 +16,7 @@ Its immutable research commit is `022d0c5640319c912e0fd34817622d836bf207bd`.
 `acceptance-plan.json` preserves its 19 groups and 110 planned case entries.
 Every product case remains NOT_RUN. Definition checks do not replace those cases.
 
-## 3. Acceptance criteria
+## 3. Acceptance criteria: Integration
 
 ### AC-80: One approval names one complete version
 
@@ -38,7 +38,7 @@ Every product case remains NOT_RUN. Definition checks do not replace those cases
   - **At-risk precondition:** The native case requires actual Windows handles or signed artifacts.
   - **Expected RED:** The evidence review rejects the unsupported qualification.
 
-## 4. Design
+## 4. Design: Integration
 
 ### D-80: Atomic owners and dependency edges
 
@@ -108,18 +108,19 @@ Merge and release remain separate decisions under their existing owners and evid
 The release record must name each supported cell. A passing fresh install cannot qualify migration or recovery.
 Do not ship a broad recovery claim while the independent authority or joined evidence is missing.
 
-## 5. Boundaries
+## 5. Boundaries: Integration
 
-This change writes only the new specification directory and its review fixtures.
+This change writes the new specification directory and its separate evidence directory.
 It does not edit runtime code, protected root policy, dependencies, production keys, or existing specifications.
 After approval, T-82 reconciles the exact affected owner documents and unsafe operations before code uses them.
 The original PR #1531 remains outside this documentation branch's write scope.
 
-## 6. Tasks
+## 6. Tasks: Integration
 
 ### T-80: Approve the complete exact specification
 
 - **Blocked by:** none
+
 Finish the draft, isolated review, finding refutation, definition checks, and repository structure check.
 Publish the exact commit and recommendation. Obtain the explicit human sign-off required by AC-80.
 Record all remaining implementation gates without declaring them passed.
@@ -127,6 +128,7 @@ Record all remaining implementation gates without declaring them passed.
 ### T-81: Commission the actual release and recovery authority
 
 - **Blocked by:** T-80
+
 The release/security owner records actual profile, issuer, repository, catalogue, and independent recovery policy evidence.
 Verify separated credential custody and recovery-origin control. Use no synthetic fixture as commissioning evidence.
 Supply two genuine changed-SPKI artifacts for the unchanged commissioned publisher profile.
@@ -135,6 +137,7 @@ This task needs the existing release owner's operational authority. No draft app
 ### T-82: Reconcile governing contracts and precise native grants
 
 - **Blocked by:** T-80
+
 Update affected KEL-53, KEL-135, KEL-254, KEL-270, and architecture contracts in their owning changes.
 Name each new token, file, or signature operation in the nearest existing unsafe owner.
 Obtain independent unsafe, permission, public API, dependency, and wire gate evidence for the exact applicable changes.
@@ -143,16 +146,19 @@ Do not add a blanket allowance or a parallel policy owner.
 ### T-83: Execute the complete joined acceptance matrix
 
 - **Blocked by:** T-24, T-43, T-62, T-81
+
 Run every applicable case in `acceptance-plan.json` and every added AC in this specification.
 Keep source, artifact, device, mutant, restored pass, and exact observed state in each receipt.
 Run required format, clippy, workspace, CI, and independent exact-head code reviews.
 Release only the cells whose authority and native evidence pass. Keep unsupported cells explicit.
 
-## 7. Test plan & evidence
+## 7. Test plan & evidence: Integration
+
+The fixture and review files are in `docs/engineering/evidence/kel270-catalogue-admission-v2/`.
 
 ### E-80: Definition and structure checks
 
-- **Run:** `python verify_identity_vectors.py` and the canonical `just spec-structure` in the owning repository.
+- **Run:** `python docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py` and the canonical `just spec-structure` in the owning repository.
 - **n:** Exact counts and outputs appear in the publication receipt.
 - **Environment:** Definition fixtures and the isolated documentation worktree at the recorded commit.
 - **Limits:** No product codec, patched client, native signature, crash, power-loss, or release qualification follows from these checks.
@@ -196,13 +202,13 @@ Release only the cells whose authority and native evidence pass. Keep unsupporte
 Each added AC requires its own discriminating test. A prior research case cannot silently substitute a different oracle.
 Use actual OS observations for OS claims. Keep physical power loss separate from process termination.
 
-## 9. Perf impact
+## 9. Perf impact: Integration
 
 The specification itself changes no runtime behavior.
 The implementation adds bounded cold acquisition and recovery work.
 Measure native overhead against the same signed baseline before making a performance claim.
 
-## 10. Open questions, blockers & unknowns
+## 10. Open questions, blockers & unknowns: Integration
 
 ### B-80: Exact-version human sign-off is pending
 
@@ -211,7 +217,7 @@ Measure native overhead against the same signed baseline before making a perform
 - **Impact:** Feature implementation cannot begin from this draft.
 - **Check:** A recorded approval names the exact complete specification commit.
 
-### B-81: Independent combined review is pending
+### B-81: Independent combined review
 
 - **Status:** closed
 - **Owner:** Isolated reviewers and the coordinating author.

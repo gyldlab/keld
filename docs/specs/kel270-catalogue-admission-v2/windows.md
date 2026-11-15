@@ -3,16 +3,16 @@
 Part of: [index](index.md)
 Owns: D-ADMISSION, actual-worker tokens, discovery, protected namespaces, source custody, one-shot admission, and native oracles.
 
-## 2. Spec refs
+## 2. Spec refs: Windows admission
 
-FACT: The Host refuses before opening the request. Source: `crates/keld-host/src/windows_initial_install.rs:53` at the product pin.
-FACT: Current per-user initialization checks only the existing non-SYSTEM token rule. Source: `crates/keld-update/src/windows_baseline/initialize.rs:224`.
-FACT: Publication reopens the TAR locator before validation. Source: `crates/keld-update/src/windows_baseline/initialize/publication.rs:15`.
-FACT: Source opens share only reads and refuse unsupported file kinds. Source: `crates/keld-update/src/windows_extraction.rs:668` and `:854`.
-FACT: Guard owns the pinned-handle verifier and matching VERIFY/CLOSE sequence. Source: `crates/keld-guard/src/windows_authenticode.rs:204`. FACT: The token owner bounds query allocations to one MiB. Source: `crates/keld-guard/src/windows_machine/uac_token.rs:35` and `:320`.
+FACT: The Host refuses before opening the request. Source: `crates/keld-host/src/windows_initial_install.rs:53@7ff41173d28d58ae61ccbb3382d055c8ef9c9c97` at the product pin.
+FACT: Current per-user initialization checks only the existing non-SYSTEM token rule. Source: `crates/keld-update/src/windows_baseline/initialize.rs:224@7ff41173d28d58ae61ccbb3382d055c8ef9c9c97`.
+FACT: Publication reopens the TAR locator before validation. Source: `crates/keld-update/src/windows_baseline/initialize/publication.rs:15@7ff41173d28d58ae61ccbb3382d055c8ef9c9c97`.
+FACT: Source opens share only reads and refuse unsupported file kinds. Source: `crates/keld-update/src/windows_extraction.rs:668@7ff41173d28d58ae61ccbb3382d055c8ef9c9c97` and `:854`.
+FACT: Guard owns the pinned-handle verifier and matching VERIFY/CLOSE sequence. Source: `crates/keld-guard/src/windows_authenticode.rs:204@7ff41173d28d58ae61ccbb3382d055c8ef9c9c97`. FACT: The token owner bounds query allocations to one MiB. Source: `crates/keld-guard/src/windows_machine/uac_token.rs:35@7ff41173d28d58ae61ccbb3382d055c8ef9c9c97` and `:320`.
 
 
-## 3. Acceptance criteria
+## 3. Acceptance criteria: Windows admission
 
 ### AC-40: Actual-worker admission
 - **Given:** A valid signed installation and a live Windows worker.
@@ -81,7 +81,7 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
   - **At-risk precondition:** The signed fixture requires a locally absent intermediate available through its controlled AIA endpoint.
   - **Expected RED:** Independent endpoint or OS telemetry observes retrieval. Restored preflight refuses offline without retrieval.
 
-## 4. Design
+## 4. Design: Windows admission
 
 ### D-40: Scope and authority
 
@@ -313,28 +313,32 @@ After restart, rederive the root and reopen it through retained parents. Repeat 
 Journal every newly created component's admitted observation before creating its child. A component created before its observation was recorded is ambiguous after interruption. Recovery halts instead of inferring ownership.
 FACT: Owners are `windows_fs.rs:103` and `windows_extraction.rs:733` at the index pin.
 
-## 5. Boundaries
+## 5. Boundaries: Windows admission
 
 Owner-authorized rollback of every local record remains outside the claimed boundary. A process-kill result does not prove physical power-loss durability. A filtered administrator token can fail the conservative initial token profile.
 Each support claim requires its own native cell. Guard's current unsafe grant does not authorize every new query in D-42. Implementation requires exact owner-file updates and independent unsafe review before the additional queries ship.
 Offline preflight can refuse a valid image when the local certificate chain is unavailable. It cannot fall back to network before discovery. Native zero-network qualification remains required.
 
-## 6. Tasks
+## 6. Tasks: Windows admission
 
 ### T-40: Implement the admitted worker
 - **Blocked by:** T-80, T-82
+
 Extend Guard's existing query owner and captured-SID descriptor contract. Run AC-40 on each claimed token cell.
 
 ### T-41: Implement source and acquisition custody
 - **Blocked by:** T-40, T-20
+
 Extend the existing source and metadata owners. Run AC-41, AC-42, and AC-43 against actual Windows objects.
 
 ### T-42: Integrate one-shot admission
 - **Blocked by:** T-41, T-1, T-60, T-23
+
 Join the approved codecs, metadata generation, native custody, and recovery journal. Run AC-44 and AC-45 with controlled subprocess boundaries.
 
 ### T-43: Qualify installed behavior
 - **Blocked by:** T-42, T-81
+
 Use commissioned production policy and signed artifacts. Run the full applicable acceptance matrix and independent source review. Do not enable the Host entry before its authority and qualification gates pass.
 
 | Existing owner path | Concrete implementation change after specification approval |
@@ -352,7 +356,7 @@ Use commissioned production policy and signed artifacts. Run the full applicable
 The current Host refuses unconditionally. The new adapter cannot replace that refusal before authority commissioning and its required checks. The first code slice can strengthen token and retained-source ownership while keeping the Host closed.
 That slice still needs approved specification scope and its unsafe/public-API/security review gates. No native tests, physical power-loss tests, production signatures, release approval, or merge occurred in this work.
 
-## 7. Test plan & evidence
+## 7. Test plan & evidence: Windows admission
 
 ### E-40: Exact source inspection
 - **Run:** GitHub file reads at the index source pin and current PR metadata on 2026-11-15.
@@ -406,11 +410,11 @@ Official references retrieved 2026-11-15:
 Context7 discovery used `/websites/learn_microsoft_en-us_windows_win32_api` on 2026-11-15. The query covered current-user known folders and query-only thread-token behavior.
 Context7 returned related known-folder APIs and OpenThreadToken. Direct Microsoft documentation confirmed the selected APIs.
 
-## 9. Perf impact
+## 9. Perf impact: Windows admission
 
 The cold installation path adds bounded token queries and retained handles. No throughput or latency improvement is claimed. Metadata deadlines and payload bounds remain with D-METADATA.
 
-## 10. Open questions, blockers & unknowns
+## 10. Open questions, blockers & unknowns: Windows admission
 
 ### B-40: Native qualification
 - **Status:** open

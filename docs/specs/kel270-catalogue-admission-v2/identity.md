@@ -2,7 +2,7 @@
 Part of: [index](index.md)
 Owns: D-WIRE. KEL-135 owns identity. KEL-254 owns signed-image expectations. KEL-53 and KEL-270 own installation state.
 
-## 2. Spec refs
+## 2. Spec refs: Identity
 
 FACT: Product pin P is `7ff41173d28d58ae61ccbb3382d055c8ef9c9c97`. PR #1531 still named P during this source check.
 FACT: `crates/keld-pack/src/expected_identity.rs:16@7ff41173d28d58ae61ccbb3382d055c8ef9c9c97` owns the existing payload.
@@ -12,7 +12,7 @@ FACT: `crates/keld-update/src/records.rs:345@7ff41173d28d58ae61ccbb3382d055c8ef9
 FACT: `crates/keld-host/src/windows_initial_install.rs:53@7ff41173d28d58ae61ccbb3382d055c8ef9c9c97` refuses initial installation.
 This draft changes none of those approved contracts until the complete specification receives approval.
 
-## 3. Acceptance criteria
+## 3. Acceptance criteria: Identity
 
 ### AC-1: One version has one interpretation
 
@@ -54,7 +54,7 @@ This draft changes none of those approved contracts until the complete specifica
   - **At-risk precondition:** Run old and new launch attempts while the transition owns the installation lease.
   - **Expected RED:** The oracle detects concurrent ownership of one store.
 
-## 4. Design
+## 4. Design: Identity
 
 ### D-1: Reuse and ownership
 
@@ -381,7 +381,7 @@ Fresh-v2 and v2-to-v2 tests do not depend on a legacy bridge.
 Enable v1-to-v2 only after an authentic original-signer/U1 bridge exists and passes joined AC-4.
 An unavailable old signer blocks that legacy cell. It does not block pure v2 codec or native v2 qualification.
 
-## 5. Boundaries
+## 5. Boundaries: Identity
 
 Implement codecs in `crates/keld-pack/src/expected_identity.rs` and its existing test module.
 Reuse `crates/keld-pack/src/host_identity.rs` for section selection and container validation.
@@ -391,21 +391,23 @@ Update KEL-135, KEL-254, KEL-53, and KEL-270 owning specifications in the same a
 Do not open Host initial-install authority in the codec slice.
 Do not modify v1 bytes, the manifest signature format, strict-principal policy, production keys, or release permissions.
 
-## 6. Tasks
+## 6. Tasks: Identity
 
 ### T-1: Implement the additive identity codec
 
 - **Blocked by:** T-80
+
 Add the v2 byte codec and exact vectors. Retain existing v1 vectors unchanged.
 Run AC-1 and every malformed enum, OID, size, and cross-version case.
 
 ### T-2: Integrate one admitted identity transition
 
 - **Blocked by:** T-1, T-23, T-42, T-81
+
 Implement D-3 through D-9 with the existing owners. Run AC-2 through AC-4.
 Keep the legacy support cell disabled until its bridge and joined recovery evidence pass.
 
-## 7. Test plan & evidence
+## 7. Test plan & evidence: Identity
 
 ### E-1: Definition-only vectors
 
@@ -418,12 +420,12 @@ The vector files contain synthetic public fixture keys and identities. They comm
 The executable checks byte bounds, closed fields, canonical OIDs, cross-version refusal, signatures, and single-field tampering.
 Native AC-2 and AC-4 remain NOT_RUN. Require genuine changed-SPKI and joined browser/floor/LKG observations.
 
-## 9. Perf impact
+## 9. Perf impact: Identity
 
 No measured runtime result exists. The new parsing and hashing remain on cold installation or update paths.
 Measure the approved native path against the same signed baseline. Apply the existing architecture performance budget.
 
-## 10. Open questions, blockers & unknowns
+## 10. Open questions, blockers & unknowns: Identity
 
 ### B-1: Actual publisher authority is not commissioned
 

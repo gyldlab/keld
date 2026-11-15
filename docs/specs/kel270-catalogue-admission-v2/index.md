@@ -47,19 +47,25 @@ The release owner commissions actual authority through T-81 before signed produc
 | [Recovery](recovery.md) | D-RECOVERY: initial interruption and independent key replacement | Recovery behavior changes |
 | [Integration](integration.md) | Approval, task graph, evidence, release boundaries | Scheduling, review, or approval |
 
+Evidence is stored outside the specification directory:
+
+- [Independent review receipt](../../engineering/evidence/kel270-catalogue-admission-v2/review-receipt.json).
+- [Definition results](../../engineering/evidence/kel270-catalogue-admission-v2/identity-validation.json).
+- [Original acceptance plan](../../engineering/evidence/kel270-catalogue-admission-v2/acceptance-plan.json).
+
 ## Current blockers
 
-- B-1: Actual publisher authority is not commissioned.
-- B-2: The legacy bridge is not qualified.
-- B-20: Pinned client qualification remains unexecuted.
-- B-21: Native durability requires execution.
-- B-22: Production authority and trusted clock remain uncommissioned.
-- B-40: Native qualification remains unexecuted.
-- B-41: Commissioned policy remains unavailable.
-- B-60: Independent recovery authority is not commissioned.
-- B-61: Native recovery and joined migration remain unqualified.
-- B-62: Compromised-system and unavailable-authority cells require operator recovery.
-- B-80: Exact-version human sign-off is pending.
+- B-1
+- B-2
+- B-20
+- B-21
+- B-22
+- B-40
+- B-41
+- B-60
+- B-61
+- B-62
+- B-80
 
 ## 8. Review gates triggered
 

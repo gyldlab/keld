@@ -3,7 +3,7 @@
 Part of: [index](index.md)
 Owns: D-RECOVERY, initial-admission interruption, and manual key-loss recovery.
 
-## 2. Spec refs
+## 2. Spec refs: Recovery
 
 FACT: KEL-53 owns installation state, version floors, current selection, and LKG recovery.
 KEL-270 owns the common Windows transaction. KEL-135 owns browser identity and its physical store lease.
@@ -19,7 +19,7 @@ Source: `docs/specs/kel53-full-package-activation.md:218@7ff41173d28d58ae61ccbb3
 The identity and metadata parts define the proposed bytes consumed below.
 No operation below is implemented or qualified by this document.
 
-## 3. Acceptance criteria
+## 3. Acceptance criteria: Recovery
 
 ### AC-60: Initial admission has one recoverable owner
 
@@ -81,7 +81,7 @@ No operation below is implemented or qualified by this document.
   - **At-risk precondition:** The incident class requires clean-system recovery.
   - **Expected RED:** The application claims an in-place secure recovery completed.
 
-## 4. Design
+## 4. Design: Recovery
 
 ### D-60: Separate four recovery operations
 
@@ -362,34 +362,37 @@ If cleanup fails, refuse the next attempt. Do not grow the store through repeate
 Add process-termination cuts before and after pointer publication, after terminal readback, and during pointer removal.
 An intact pointer with a missing, corrupt, or inconsistent journal requires recovery. It cannot become an absent operation.
 
-## 5. Boundaries
+## 5. Boundaries: Recovery
 
 Implement in the existing Guard verifier, Host role decoder, KEL-53 records, and KEL-270 transaction owners.
 Reuse KEL-135 physical-store ownership and identity codecs.
 Do not change sandbox grants, KIPC authority, machine-seamless support, or managed deployment ownership.
 Do not add a second recovery service, installer, or general-purpose broker.
 
-## 6. Tasks
+## 6. Tasks: Recovery
 
 ### T-60: Implement durable initial-admission recovery
 
-- **Blocked by:** T-80, T-21, T-40, T-41.
+- **Blocked by:** T-80, T-21, T-40, T-41
+
 Implement D-64 through the existing writer. Run AC-60 with every publication cut and its isolated mutant.
 Include D-68 pointer lookup, exact-attempt exclusion, bounded retention, and every pointer cut.
 
 ### T-61: Implement independent manual recovery authorization
 
-- **Blocked by:** T-80, T-1, T-40, T-81.
+- **Blocked by:** T-80, T-1, T-40, T-81
+
 Implement the exact policy, dedicated verifier role, directive, and native confirmation.
 Run AC-61, AC-62, and AC-65. Reject unattended recovery and incomplete authority commissioning.
 
 ### T-62: Join and qualify the common recovery transaction
 
-- **Blocked by:** T-61, T-60, T-23, T-2.
+- **Blocked by:** T-61, T-60, T-23, T-2
+
 Implement D-65 and D-66 without another writer. Run AC-63 and AC-64 with joined browser/LKG/floor observation.
 Qualify loss-only recovery separately from fresh-v2 and legacy cells.
 
-## 7. Test plan & evidence
+## 7. Test plan & evidence: Recovery
 
 ### E-60: Primary-source recovery boundary
 
@@ -405,13 +408,13 @@ Qualify loss-only recovery separately from fresh-v2 and legacy cells.
 - **Environment:** Required Windows x64 direct per-user installation with genuine independent recovery signer evidence.
 - **Limits:** No implementation, process-crash, physical-power-loss, compromise-cleanup, or real browser migration pass is claimed.
 
-## 9. Perf impact
+## 9. Perf impact: Recovery
 
 Manual recovery is cold and user initiated. It starts no persistent service.
 One request and confirmation retain the metadata part's deadlines and byte bounds.
 UNKNOWN: Native latency and filesystem durability cost require measurement during qualification.
 
-## 10. Open questions, blockers & unknowns
+## 10. Open questions, blockers & unknowns: Recovery
 
 ### B-60: Independent recovery authority is not commissioned
 

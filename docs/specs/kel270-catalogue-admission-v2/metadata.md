@@ -3,7 +3,7 @@
 Part of: [index](index.md)
 Owns: D-METADATA, the metadata store, protocol profile, and M-CLIENT qualification.
 
-## 2. Spec refs
+## 2. Spec refs: Metadata
 
 FACT: The source baseline is product commit `7ff41173d28d58ae61ccbb3382d055c8ef9c9c97`. KEL-53 owns installation mutation and application recovery. KEL-270 owns its Windows transaction. The metadata store does not acquire a second installation writer.
 
@@ -18,7 +18,7 @@ Primary source aliases:
 - S5: [original metadata proposal](https://github.com/0monish/keld-research/blob/022d0c5640319c912e0fd34817622d836bf207bd/inputs/external/keld-2026-11-15-pr1531-execution/metadata-spec.md).
 - S6: [Python TUF reference workflow](https://github.com/theupdateframework/python-tuf/blob/e897eec93e37843884d0f37e37d40aa45393e1bb/tuf/ngclient/updater.py).
 
-## 3. Acceptance criteria
+## 3. Acceptance criteria: Metadata
 
 ### AC-20: Only a coherent, current metadata revision can authorize installation
 
@@ -110,13 +110,17 @@ Primary source aliases:
   - **At-risk precondition:** The stored version 100 has one valid signature. Both incoming candidates meet the new two-signature threshold.
   - **Expected RED:** Version 1 passes the affected timestamp or snapshot comparison, or lowers a referenced targets version.
 
-## 4. Design
+## 4. Design: Metadata
 
 ### D-20: Select one client with an explicit correction contract
 
 PROPOSED: Use `tough =0.24.0` as the patch baseline. The crate archive SHA-256 is `35b378d98765c2ae9cdc3e9963ea7e670da8cdd9ee39611b8d722083c7f1ac11`. The source commit is `98d8eb8b2ce63515d9b4981c938ef6453c5b5771`. Pin the reviewed patch and resolved dependency graph before product integration. Do not select a moving branch.
 
-FACT: S1 provides the top-level verification workflow. Its default datastore uses ordinary path writes. It deletes the old root before replacement. Malformed cached metadata can bypass comparisons. See `tough/src/datastore.rs:47-122` and `tough/src/lib.rs:813-850,929-968,1087-1162` at S1.
+FACT: S1 provides the top-level verification workflow. Its default datastore uses ordinary path writes. It deletes the old root before replacement. Malformed cached metadata can bypass comparisons.
+See S1 [datastore lines 47–122](https://github.com/awslabs/tough/blob/98d8eb8b2ce63515d9b4981c938ef6453c5b5771/tough/src/datastore.rs#L47-L122).
+The corresponding workflow ranges are [813–850](https://github.com/awslabs/tough/blob/98d8eb8b2ce63515d9b4981c938ef6453c5b5771/tough/src/lib.rs#L813-L850),
+[929–968](https://github.com/awslabs/tough/blob/98d8eb8b2ce63515d9b4981c938ef6453c5b5771/tough/src/lib.rs#L929-L968),
+and [1087–1162](https://github.com/awslabs/tough/blob/98d8eb8b2ce63515d9b4981c938ef6453c5b5771/tough/src/lib.rs#L1087-L1162).
 
 FACT: The prior storage-and-clock-only proposal is insufficient. The following client differences need exact disposition:
 
@@ -260,7 +264,10 @@ PROPOSED: Timestamp loading returns `Advanced`, `Unchanged`, or a typed failure.
 
 Then continue snapshot and targets verification against the retained timestamp. Use matching cached objects or fetch their exact authenticated versions and hashes. Recheck their signatures, rollback rules, and expiry against this refresh's fixed time. This can complete a previous interrupted refresh without trusting changed same-version metadata.
 
-FACT: S6 `tuf/ngclient/updater.py:174-177,427-467` follows this sequence. Its timestamp loader discards equality. The outer refresh still loads snapshot and targets. The trusted-set comparison is at `tuf/ngclient/_internal/trusted_metadata_set.py:247-278` at the same pin.
+FACT: S6 follows this sequence in [refresh lines 174–177](https://github.com/theupdateframework/python-tuf/blob/e897eec93e37843884d0f37e37d40aa45393e1bb/tuf/ngclient/updater.py#L174-L177).
+Its [timestamp loader](https://github.com/theupdateframework/python-tuf/blob/e897eec93e37843884d0f37e37d40aa45393e1bb/tuf/ngclient/updater.py#L427-L467) discards equality.
+The outer refresh still loads snapshot and targets.
+The [trusted-set comparison](https://github.com/theupdateframework/python-tuf/blob/e897eec93e37843884d0f37e37d40aa45393e1bb/tuf/ngclient/_internal/trusted_metadata_set.py#L247-L278) uses the same pin.
 
 A successful unchanged timestamp is an online outcome. A failed fetch cannot use it. An expired retained timestamp refuses. A signed same-version replacement with a new expiry cannot extend authority. A signed same-version replacement with another snapshot description cannot select another graph.
 
@@ -335,18 +342,19 @@ D-65 owns the recovery journal and completion across stores. A pending D-65 oper
 The fixed D-68 pending pointer lets this repository owner detect incomplete operations without accepting an installation path.
 Check that pointer under the lease before ordinary open, refresh, or admission. Only the recorded recovery operation can proceed.
 
-## 5. Boundaries
+## 5. Boundaries: Metadata
 
 Implement the client port and protocol corrections against S1. Add the reviewed dependency through the workspace owner only when consumed. Implement the protected backend within `crates/keld-update/src/windows_baseline/`. Extend `crates/keld-update/src/windows_fs.rs` only through its existing unsafe owner.
 Reuse its retained-parent publication and readback primitives. Any new replaceable record kind needs the explicit updater unsafe review.
 
 Do not alter Host admission until the joined native contract passes. Do not alter package-manager ownership, update signatures, application floor, or browser profile policy. Do not add keys, production origins, or production authorization from test fixtures.
 
-## 6. Tasks
+## 6. Tasks: Metadata
 
 ### T-20: Qualify and correct the pinned client
 
-- **Blocked by:** T-80.
+- **Blocked by:** T-80
+
 - T-80 includes the approved specification and design-level dependency review.
 - Compare the crate archive with the pinned source and checksum.
 - Record exact features, transitive lockfile, license, advisories, and supported targets.
@@ -358,7 +366,8 @@ Do not alter Host admission until the joined native contract passes. Do not alte
 
 ### T-21: Implement the durable store
 
-- **Blocked by:** T-20, T-40.
+- **Blocked by:** T-20, T-40
+
 - Implement D-22 through D-24 with one KEL-53 writer.
 - Run AC-21, AC-22, and AC-26 at every persistent cut.
 - Repeat AC-28 after restart. Reject a Host or repository policy with a different app ID from the anchor.
@@ -367,28 +376,31 @@ Do not alter Host admission until the joined native contract passes. Do not alte
 
 ### T-22: Implement bounds and clock handling
 
-- **Blocked by:** T-20.
+- **Blocked by:** T-20
+
 - Implement D-21, D-25, and D-26.
 - Run AC-23 and AC-24.
 - Test exact limits, limit-plus-one, cancellation, stalls, rollback, and expiry equality.
 
 ### T-23: Join metadata to native admission
 
-- **Blocked by:** T-21, T-22, T-1, T-41.
+- **Blocked by:** T-21, T-22, T-1, T-41
+
 - Run AC-20, AC-25, and AC-27.
 - Prove zero installation effects after changed revision or expired authority.
 - Preserve one consumed permit and the existing transaction.
 
 ### T-24: Qualify the supported recovery cells
 
-- **Blocked by:** T-23, T-2, T-62, T-81.
+- **Blocked by:** T-23, T-2, T-62, T-81
+
 - Ordinary rotation and counter-poisoning tests can run before this task.
 - Qualify full supported recovery only after T-62 completes its manual recovery implementation.
 - Run the joined identity/browser/LKG migration case and each supported manual recovery cell.
 - Keep root-quorum-loss and installed-key-loss cells separately visible.
 - Do not infer those passes from ordinary v2 qualification.
 
-## 7. Test plan & evidence
+## 7. Test plan & evidence: Metadata
 
 ### E-20: Source comparison
 
@@ -413,13 +425,13 @@ Do not alter Host admission until the joined native contract passes. Do not alte
 
 Every AC above remains NOT_RUN. Definition review and golden-record checks do not change that status. A patch must make each negative control fail at its intended predicate. A later restored pass must use the same exact source.
 
-## 9. Perf impact
+## 9. Perf impact: Metadata
 
 No performance improvement is claimed. The metadata profile bounds each object, refresh, request, and retained state operation. Reuse immutable blobs to avoid copying every role on each root transition. Garbage collection cannot delete the current generation, its referenced blobs, or pending recovery evidence.
 Keep at most three generation files: current, its immediate predecessor, and one prepared successor. Retain every blob referenced by those files. A root-reset intent stays in current until completion. Delete only unreferenced objects after successful readback, under the store lease.
 If cleanup fails, refuse the next mutation before another generation is prepared. Never delete the enrollment anchor. Never restore an older current record to satisfy storage bounds. A prepared successor cannot coexist with another successor. Measure native I/O and cold-start overhead before claiming acceptable latency.
 
-## 10. Open questions, blockers & unknowns
+## 10. Open questions, blockers & unknowns: Metadata
 
 ### B-20: Pinned client qualification remains unexecuted
 
