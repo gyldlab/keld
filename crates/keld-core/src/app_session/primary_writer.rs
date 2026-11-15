@@ -134,6 +134,8 @@ struct Shared {
 struct DeterministicWaiters {
     capacity: Condvar,
     worker: Condvar,
+    // One-shot controlled mutation for the actual-writer liveness regression.
+    notify_one_next: std::sync::atomic::AtomicBool,
 }
 
 pub(super) struct Reservation {
@@ -190,7 +192,43 @@ impl PrimaryWriter {
             Some(Arc::new(DeterministicWaiters {
                 capacity: Condvar::new(),
                 worker: Condvar::new(),
+                notify_one_next: std::sync::atomic::AtomicBool::new(false),
             }));
+    }
+
+    #[cfg(test)]
+    pub(super) fn arm_notify_one_next_for_test(&self) {
+        let waiters = self
+            .shared
+            .deterministic_waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned()
+            .expect("deterministic waiter mode is enabled");
+        waiters
+            .notify_one_next
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(super) fn hold_next_completion_for_test(
+        &self,
+    ) -> (
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::SyncSender<()>,
+    ) {
+        let (arrived, observed) = std::sync::mpsc::sync_channel(1);
+        let (resume, proceed) = std::sync::mpsc::sync_channel(1);
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .after_write_before_completion = Some(Arc::new(worker::CompletionHook {
+            arrived,
+            resume: Mutex::new(proceed),
+        }));
+        (observed, resume)
     }
 
     #[cfg(test)]
@@ -398,8 +436,20 @@ impl Shared {
             .as_ref()
             .cloned()
         {
-            waiters.capacity.notify_all();
-            waiters.worker.notify_all();
+            if waiters
+                .notify_one_next
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                // Deliberately model the allowed single-wake selection: the
+                // full-capacity producer wakes, while the physical writer does not.
+                waiters.capacity.notify_one();
+            } else {
+                waiters.capacity.notify_all();
+                waiters.worker.notify_all();
+            }
+            // Receipts and quiescence observations still wait on the original
+            // condition variable. Test-only split waiters must not strand them.
+            self.changed.notify_all();
             return;
         }
         self.changed.notify_all();
