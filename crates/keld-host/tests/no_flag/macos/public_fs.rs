@@ -39,6 +39,8 @@ mod private_diagnostics;
 mod process_image;
 #[path = "public_fs/project.rs"]
 mod project;
+#[path = "public_fs/quit_phase.rs"]
+mod quit_phase;
 #[path = "public_fs/retirement.rs"]
 mod retirement;
 use application_link::assert_single_application_link;
@@ -157,34 +159,34 @@ fn run_launch(fixture: &PublicFsProject, launch: usize, exercise: Exercise) -> L
     run_launch_with_descendant_quit(fixture, launch, exercise, None)
 }
 
-// This observer samples only while the original real Host is live, before
-// wait_child_output_observing checks the unchanged original exit deadline.
 fn wait_public_host_with_phase(
     child: std::process::Child,
     observer: &Observation,
     observation_succeeded: bool,
 ) -> Output {
-    let mut last_live_http_quit_stage = 0_u8;
-    let host_exit = catch_unwind(AssertUnwindSafe(|| {
-        wait_child_output_observing(child, EVENT_DEADLINE, || {
-            last_live_http_quit_stage = observer
-                .quit_progress
-                .load(std::sync::atomic::Ordering::Acquire);
-        })
-    }));
-    host_exit.unwrap_or_else(|failure| {
-        if observation_succeeded {
-            let stage = match last_live_http_quit_stage {
-                0 => "no_http_quit_observed",
-                1 => "http_quit_received",
-                2 => "observer_response_written",
-                _ => "invalid_observer_stage",
-            };
-            // Fixed phase enum only; never reveal HTTP/IPC data or native IDs.
-            eprintln!("KELD_KEL140_NATIVE_QUIT_PHASE last_live_http_stage={stage}");
-        }
-        resume_unwind(failure)
-    })
+    public_host_wait(child, observer).public(observation_succeeded)
+}
+
+fn wait_retirement_host_with_phase(
+    child: std::process::Child,
+    observer: &Observation,
+    after_wait: impl FnOnce(),
+) -> Output {
+    public_host_wait(child, observer).retirement(after_wait)
+}
+
+// The unchanged process wait owns custody, the 20s deadline and live-only callbacks.
+fn public_host_wait(
+    child: std::process::Child,
+    observer: &Observation,
+) -> quit_phase::Wait<'_, impl FnOnce(&mut dyn FnMut()) -> Output, impl FnMut(&str)> {
+    quit_phase::Wait::new(
+        &observer.quit_progress,
+        move |observe: &mut dyn FnMut()| {
+            wait_child_output_observing(child, EVENT_DEADLINE, observe)
+        },
+        |line: &str| eprintln!("{line}"),
+    )
 }
 
 fn run_launch_with_descendant_quit(
@@ -546,7 +548,7 @@ fn observe_recovery_actions(
     );
     // Until every independent census above passes, fallback cleanup retains
     // only the already-attributed G1 group. Ordinary HTTP data grants no custody.
-    cleanup.bun_group = Some(successor_boot.pid);
+    cleanup.record_bun_group(successor_boot.pid, first.guardian);
     assert_retired_credentials(&first_boot.app_link, &successor_boot.app_link, prepared);
     observer.send_recovery_command(RecoveryCommand::Admit(successor_boot.pid));
     let ready = observer
@@ -1040,7 +1042,7 @@ fn await_ready(
             assert_app_identity(&report, family, host_pid, prepared);
             // Ordinary app data gains fallback custody only after the
             // independent live host/guardian/group/image/link census passes.
-            cleanup.bun_group = Some(bun);
+            cleanup.record_bun_group(bun, guardian);
             evidence.family = Some(family);
         }
         assert!(
