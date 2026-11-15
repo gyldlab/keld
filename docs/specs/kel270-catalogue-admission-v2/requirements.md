@@ -295,6 +295,7 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
 - **Given:** A commissioned recovery policy and an independently authenticated recovery Host.
 - **When:** One source, destination, operation, issuer, profile, epoch, expiry, or consent binding differs.
 - **Then:** Recovery refuses before mutation of established metadata or installation state.
+- The verifier also refuses an ordinary application signer before a recovery authorization exists.
 - **Negative control:**
   - **Single fault:** Omit the source update-key comparison.
   - **At-risk precondition:** A valid directive names another installation key under the same publisher.
@@ -329,6 +330,43 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
   - **Single fault:** Treat a valid replacement signature as proof that the operating system is clean.
   - **At-risk precondition:** The incident class requires clean-system recovery.
   - **Expected RED:** The application claims an in-place secure recovery completed.
+
+### AC-66: Recovery signer authorization is a separate cryptographic role
+
+- **Given:** An independently commissioned recovery signer and a valid normal application signer.
+- **When:** Each signs a recovery-role image with valid Authenticode and otherwise valid directive inputs.
+- **Then:** Only the signer matching all protected recovery profile, issuer, and SPKI pins authorizes recovery.
+- The application-signed image MUST fail at recovery signer authorization, before trust or application mutation.
+- **Negative control:**
+  - **Single fault:** Replace the recovery-only signer predicate with ordinary application publisher verification.
+  - **At-risk precondition:** Keep both Windows signature chains, directives, destination, and user consent valid.
+  - **Expected RED:** The application-signed recovery image wrongly obtains recovery authorization.
+
+### AC-67: An expired prepared recovery aborts durably before retry
+
+- **Given:** A `prepared` journal and pending pointer, with the old metadata and application state still current.
+- **When:** The process crashes, the directive expires, and the recovery owner restarts.
+- **Then:** It refuses expired trust commit and readback-verifies terminal `aborted` before pointer removal.
+- A new signed directive and fresh consent MAY start a new attempt only after verified pointer absence.
+- Recheck old generation, provenance, epoch, protected policies, destination, current/LKG, and browser binding.
+- An altered replacement or ambiguous first attempt MUST refuse without replacing established trust.
+- **Negative control:**
+  - **Single fault:** Resume the expired `prepared` journal as though its original directive remained valid.
+  - **At-risk precondition:** Keep source, replacement graph, and all unrelated authorization checks valid.
+  - **Expected RED:** The stale attempt commits trust without fresh authority or leaves conflicting pending state.
+
+### AC-68: Loss-only policy changes are limited to bootstrap root replacement
+
+- **Given:** A protected installed policy, unchanged recovery signer pins, and a valid replacement root/U1.
+- **When:** The owner compares canonical source and destination repository policy before trust commit.
+- **Then:** Only `bootstrapRootSha256` and increasing `bootstrapRootVersion` MAY change.
+- All other repository-policy fields and the installed recovery policy MUST remain exact.
+- Repeat with one isolated change each to recovery policy, recovery signer, catalogue keys, URLs, and discovery.
+- Each unauthorized change MUST refuse before established trust changes.
+- **Negative control:**
+  - **Single fault:** Compare only repository identity and replacement root, omitting the closed field matrix.
+  - **At-risk precondition:** Independently authenticate the directive and keep all other policy fields valid.
+  - **Expected RED:** An unrelated policy substitution enters the newly trusted repository view.
 
 ## 3. Acceptance criteria: Integration
 
