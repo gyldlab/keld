@@ -40,6 +40,8 @@ mod process_image;
 mod project;
 #[path = "public_fs/quit_body_receipt.rs"]
 mod quit_body_receipt;
+#[path = "public_fs/quit_phase.rs"]
+mod quit_phase;
 #[path = "public_fs/retirement.rs"]
 mod retirement;
 use application_link::assert_single_application_link;
@@ -49,11 +51,11 @@ use outcomes::{
     assert_natural_outcomes, assert_page_outcomes,
 };
 use process_image::process_image_path;
+use quit_body_receipt::QuitBodyReceipt;
 use project::{
     CONTENT, Exercise, Policy, PreparedLaunch, PublicFsProject, RECOVERY_AFTER_CONTENT, SENTINEL,
     TITLE,
 };
-use quit_body_receipt::QuitBodyReceipt;
 
 #[derive(Clone, Copy, Debug)]
 struct ProcessFamily {
@@ -124,10 +126,7 @@ fn renderer_public_fs_recovers_same_document_after_real_bun_loss() {
 fn renderer_pending_public_fs_call_rejects_once_and_rebinds_replaced_root() {
     let fixture = PublicFsProject::new(Policy::Narrow);
     let recovered = run_launch(&fixture, 0, Exercise::RendererPendingRecovery);
-    // Bind before shipping Host spawn; only the second ordinary app is armed.
-    let mut receipt = QuitBodyReceipt::arm();
-    let relaunched =
-        run_launch_with_quit_body_receipt(&fixture, 1, Exercise::PublicAppComponent, &mut receipt);
+    let relaunched = run_launch(&fixture, 1, Exercise::PublicAppComponent);
     let document = |evidence: &LaunchEvidence| {
         evidence
             .reports
@@ -158,57 +157,66 @@ fn run_launch(fixture: &PublicFsProject, launch: usize, exercise: Exercise) -> L
     run_launch_with_descendant_quit(fixture, launch, exercise, None)
 }
 
-// This observer samples only while the original real Host is live, before
-// wait_child_output_observing checks the unchanged original exit deadline.
 fn wait_public_host_with_phase(
     child: std::process::Child,
     observer: &Observation,
     observation_succeeded: bool,
-    mut body_receipt: Option<&mut QuitBodyReceipt>,
-    mut guardian_exit: Option<&mut GuardianExitWitness>,
+    body_receipt: Option<&mut QuitBodyReceipt>,
+    guardian_exit: Option<&mut GuardianExitWitness>,
 ) -> Output {
-    let mut last_live_http_quit_stage = 0_u8;
-    let mut last_live_bun_body_stage = "not_armed";
-    let mut last_live_guardian_stage = "not_armed";
-    // Conservative bound begins BEFORE the original Host wait begins; nothing
-    // accepted here can evade the original EVENT_DEADLINE inside that wait.
-    let receipt_deadline = Instant::now() + EVENT_DEADLINE;
-    let host_exit = catch_unwind(AssertUnwindSafe(|| {
-        wait_child_output_observing(child, EVENT_DEADLINE, || {
-            last_live_http_quit_stage = observer
-                .quit_progress
-                .load(std::sync::atomic::Ordering::Acquire);
-            if let Some(receipt) = body_receipt.as_deref_mut() {
-                receipt.poll(receipt_deadline);
-                last_live_bun_body_stage = receipt.stage();
-                // Read the Guardian on every live callback from the seal on. The
-                // read right after the receipt is first seen verified is the one
-                // that can order a later exit after that receipt.
-                if let Some(exit) = guardian_exit.as_deref_mut() {
+    // One conservative clock starts before the unchanged Host Child wait.
+    // Test-only native observations never authorize process-group cleanup.
+    let deadline = Instant::now() + EVENT_DEADLINE;
+    match (body_receipt, guardian_exit) {
+        (Some(receipt), Some(exit)) => {
+            public_host_wait(child, observer).public_with_joint_poll(
+                observation_succeeded,
+                || {
+                    receipt.poll(deadline);
+                    // The Guardian event is ordered after body verification
+                    // only if an empty post-verification native read fences it.
                     if receipt.is_verified() {
                         exit.note_body_receipt_verified();
                     }
-                    exit.poll(receipt_deadline);
-                    last_live_guardian_stage = exit.marker();
-                }
-            }
-        })
-    }));
-    host_exit.unwrap_or_else(|failure| {
-        if observation_succeeded {
-            let stage = match last_live_http_quit_stage {
-                0 => "no_http_quit_observed",
-                1 => "http_quit_received",
-                2 => "observer_response_written",
-                _ => "invalid_observer_stage",
-            };
-            // Fixed phase enum only; never reveal HTTP/IPC data or native IDs.
-            eprintln!(
-                "KELD_KEL140_NATIVE_QUIT_PHASE last_live_http_stage={stage} bun_body_stage={last_live_bun_body_stage} guardian_exit_stage={last_live_guardian_stage}"
-            );
+                    exit.poll(deadline);
+                    (receipt.stage(), exit.marker())
+                },
+            )
         }
-        resume_unwind(failure)
-    })
+        (Some(receipt), None) => {
+            public_host_wait(child, observer).public_with_poll(
+                observation_succeeded,
+                || {
+                    receipt.poll(deadline);
+                    receipt.stage()
+                },
+            )
+        }
+        (None, None) => public_host_wait(child, observer).public(observation_succeeded),
+        (None, Some(_)) => panic!("Guardian exit witness requires a native Bun body receipt"),
+    }
+}
+
+fn wait_retirement_host_with_phase(
+    child: std::process::Child,
+    observer: &Observation,
+    after_wait: impl FnOnce(),
+) -> Output {
+    public_host_wait(child, observer).retirement(after_wait)
+}
+
+// The unchanged process wait owns custody, the 20s deadline and live-only callbacks.
+fn public_host_wait(
+    child: std::process::Child,
+    observer: &Observation,
+) -> quit_phase::Wait<'_, impl FnOnce(&mut dyn FnMut()) -> Output, impl FnMut(&str)> {
+    quit_phase::Wait::new(
+        &observer.quit_progress,
+        move |observe: &mut dyn FnMut()| {
+            wait_child_output_observing(child, EVENT_DEADLINE, observe)
+        },
+        |line: &str| eprintln!("{line}"),
+    )
 }
 
 fn run_launch_with_descendant_quit(
@@ -403,9 +411,11 @@ fn run_launch_with_causal_receipt(
         body_receipt.as_deref_mut(),
         guardian_exit.as_mut(),
     );
+    // CI diagnostics must never serialize private observer reports or Host output.
     eprintln!(
-        "KELD_KEL140_PUBLIC_DIAGNOSTICS policy={:?} launch={launch} click={:?} reports={:?} host_output={output:?}",
-        fixture.policy, evidence.click, evidence.reports,
+        "KELD_KEL140_PUBLIC_DIAGNOSTICS launch={launch} report_count={} host_exit_success={}",
+        evidence.reports.len(),
+        output.status.success(),
     );
     if let Err(failure) = observation_result {
         resume_unwind(failure);
@@ -676,7 +686,7 @@ fn observe_recovery_actions(
     );
     // Until every independent census above passes, fallback cleanup retains
     // only the already-attributed G1 group. Ordinary HTTP data grants no custody.
-    cleanup.bun_group = Some(successor_boot.pid);
+    cleanup.record_bun_group(successor_boot.pid, first.guardian);
     assert_retired_credentials(&first_boot.app_link, &successor_boot.app_link, prepared);
     observer.send_recovery_command(RecoveryCommand::Admit(successor_boot.pid));
     let ready = observer
@@ -1164,7 +1174,7 @@ fn await_ready(
             assert_app_identity(&report, family, host_pid, prepared);
             // Ordinary app data gains fallback custody only after the
             // independent live host/guardian/group/image/link census passes.
-            cleanup.bun_group = Some(bun);
+            cleanup.record_bun_group(bun, guardian);
             evidence.family = Some(family);
         }
         assert!(

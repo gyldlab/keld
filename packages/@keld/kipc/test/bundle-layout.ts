@@ -1,9 +1,11 @@
 /**
  * App-layout runner for the GH-527 §4.2 and #653 staging tests: builds an app
- * layout in a fresh directory, runs it with Bun against a live Unix listener,
+ * layout in a fresh directory, runs it with Bun against a Unix-domain socket on
+ * Linux/macOS or a Windows named-pipe listener,
  * and reports stdout, the listener's connection count and an evaluation
  * counter. Each run is its own process, because a realm opens one link.
  */
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,7 +37,9 @@ export interface BundleLayout {
 // and the counter. Each run is its own process: a realm opens one link.
 export async function runLayout(layout: BundleLayout): Promise<BundleRun> {
   const dir = mkdtempSync(join(tmpdir(), "keld-wl-"));
-  const path = join(dir, "s.sock");
+  const path = process.platform === "win32"
+    ? `\\\\.\\pipe\\keld-${randomBytes(32).toString("hex")}`
+    : join(dir, "s.sock");
   const evalsPath = join(dir, "evals.txt");
   let connections = 0;
   const listener = Bun.listen({
