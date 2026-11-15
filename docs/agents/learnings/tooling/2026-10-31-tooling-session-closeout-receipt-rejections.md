@@ -17,7 +17,7 @@ related: []
 
 1. If the baseline carries `git_common_dir` and `source_ref`, the ref must start with `refs/heads/` and `git rev-parse <ref>` must equal the receipt `head` (lines 128 and 132). On a detached checkout with a stale local `main`, drop both optional fields together instead.
 2. Finding rows accept only `id`, `summary`, `status`, `evidence` plus `issue`, `remote_receipt`, `owner`, `next_action` (lines 228 and 229). The remote link field is `remote_receipt`; a `url` key fails as `unknown fields`.
-3. A `tracked` or `implemented` row needs `issue` (`KEL-n` or `GH-n`), a `remote_receipt` URL on linear.app whose path contains `/issue/KEL-n`, and non-empty `owner` and `next_action` (lines 95 and 238).
+3. A `tracked` or `implemented` row needs `issue`, `remote_receipt`, and non-empty `owner` and `next_action` (lines 95 and 238–249). For `KEL-n`, use an HTTPS URL on `linear.app` with `/issue/KEL-n` in its path. For `GH-n`, use `https://github.com/gyldlab/keld/issues/n`.
 4. Outcome `handoff` needs at least one unresolved row, for example a `blocked` finding (line 329). Outcome `complete` forbids new untracked files.
 
 Negative control: the same receipt with `url` in place of `remote_receipt` fails with `unknown fields`; renaming the key passes. Evidence: prompt-tracker PR https://github.com/0monish/prompt-tracker/pull/58, file `session-closeout/p06-closeout-20261031.json`.
