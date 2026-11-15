@@ -967,7 +967,7 @@ pub(super) fn release_all(
 
 #[cfg(test)]
 mod tests {
-    use super::{appkit_registry_bounds, registry_frame};
+    use super::{appkit_registry_bounds, next_view_id, registry_frame};
     use objc2_foundation::{NSPoint, NSRect, NSSize};
 
     #[test]
