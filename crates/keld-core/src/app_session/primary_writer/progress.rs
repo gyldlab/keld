@@ -162,6 +162,7 @@ impl Shared {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.closed = true;
+            drop(state);
             self.notify_all();
         }
     }
