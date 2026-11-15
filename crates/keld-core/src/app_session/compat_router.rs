@@ -400,7 +400,10 @@ fn exact_document(document: &MacNativeDocumentLease, key: NativeRouteKey) -> boo
     document.stamp().view().0 == key.webview
         && document.stamp().observed_generation() == key.navigation
 }
-fn refused_stale_send(request: &RendererBridgeRequest, key: NativeRouteKey) -> RendererBridgeOutcome {
+fn refused_stale_send(
+    request: &RendererBridgeRequest,
+    key: NativeRouteKey,
+) -> RendererBridgeOutcome {
     RendererBridgeOutcome::SendResult {
         webview: request.webview(),
         navigation: request.navigation(),
@@ -882,11 +885,9 @@ impl PrimaryRouterHandle {
                 request.operation(),
                 RendererBridgeOperation::PreflightAborted
             ) {
-                state.ledger.clear_matching_preflight(
-                    key,
-                    &caller,
-                    request.document_lease(),
-                );
+                state
+                    .ledger
+                    .clear_matching_preflight(key, &caller, request.document_lease());
                 return Ok(());
             }
             drop(state); // order: transition -> current -> Registry -> compat
