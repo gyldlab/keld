@@ -468,7 +468,7 @@ mod rust_binder_acceptance_tests {
     use std::fs::{self, OpenOptions};
     use std::io::{Seek, SeekFrom};
     use std::path::{Path, PathBuf};
-    use std::process::{Command, Stdio};
+    use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     const RENDERER: &[u8] =
