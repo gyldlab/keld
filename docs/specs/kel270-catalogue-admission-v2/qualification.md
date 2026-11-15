@@ -7,10 +7,10 @@ Owns: Definition and native evidence, performance limits, and open release or ap
 
 ### E-1: Definition-only vectors
 
-- **Run:** `python docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py`
-- **n:** Read the exact test count in `identity-validation.json`.
-- **Environment:** Python 3.10 or newer with the `cryptography` package
-  installed; specification work only, product source pinned at P.
+- **Run:** `python3 -B docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py --check`.
+- **n:** 94 definition checks. The exact output digest is in the compact review receipt.
+- **Environment:** Python 3.10 or newer with the test-only `cryptography` package.
+  Hosted CI installs version 46.0.5 in an isolated virtual environment.
 - **Limits:** This validates candidate bytes and signature domains. It does not execute product codecs, Authenticode, Windows storage, or migration.
 
 The vector files contain synthetic public fixture keys and identities. They commission no real authority.
@@ -142,9 +142,11 @@ The fixture and review files are in `docs/engineering/evidence/kel270-catalogue-
 
 ### E-80: Definition and structure checks
 
-- **Run:** `python docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py` and the canonical `just spec-structure` in the owning repository.
-- **n:** Exact counts and outputs appear in the publication receipt.
-- **Environment:** Definition fixtures and the isolated documentation worktree at the recorded commit.
+- **Run:** `just spec-evidence` and `just spec-structure` in the owning repository.
+- **n:** 94 identity cases, nine evidence-capacity cases, and two isolated
+  stale-evidence negative controls. The compact receipt pins both report digests.
+- **Environment:** The source tree is not modified. Hosted CI publishes
+  full generated JSON as a 30-day job artifact, not tracked source.
 - **Limits:** No product codec, patched client, native signature, crash, power-loss, or release qualification follows from these checks.
 
 ### E-81: Independent specification review
@@ -192,9 +194,10 @@ Prove a 25th distinct object and over-limit aggregate bytes refuse
 before journal publication. No synthetic count can qualify the native
 retained-handle and filesystem acceptance.
 The definition-only helper
-`python docs/engineering/evidence/kel270-catalogue-admission-v2/verify_evidence_capacity.py`
+`python3 -B docs/engineering/evidence/kel270-catalogue-admission-v2/verify_evidence_capacity.py --check`
 checks 20 required distinct objects, byte caps, duplicate references and
-the over-limit mutants. Its recorded JSON is synthetic evidence only.
+over-limit mutants. The detailed output is regenerated in CI scratch.
+The research archive pins the earlier nine-case output.
 
 ## 9. Perf impact: Identity
 

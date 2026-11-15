@@ -267,6 +267,11 @@ spec-structure:
     rustc --edition=2024 -D warnings tools/spec_structure.rs -o target/spec-structure/spec-structure
     target/spec-structure/spec-structure check .
 
+# Validate KEL-270 golden vectors, synthetic reports and the archive receipt.
+# The test-only cryptography package must be available to this Python.
+spec-evidence:
+    {{python_command}} -B docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py --check
+
 # Contract tests: one single-fault mutant per rule, plus the ratchet bypasses.
 spec-structure-test:
     mkdir -p target/spec-structure

@@ -7,6 +7,7 @@ journals are executed. See AC-3 and E-82 for the later native oracle.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -70,7 +71,7 @@ def assert_case(name: str, work, expected: bool) -> dict:
             "result": "PASS", "observation": result}
 
 
-def run() -> None:
+def run(output_dir: Path | None = None) -> None:
     old = policies("before")
     new = policies("after")
     # Distinct application and recovery issuers in each policy cohort.
@@ -134,12 +135,25 @@ def run() -> None:
         "failed": 0,
         "cases": cases,
     }
-    (ROOT / "evidence-capacity-validation.json").write_text(
-        json.dumps(report, indent=2) + "\n", encoding="utf-8",
-    )
+    report_bytes=(json.dumps(report, indent=2)+"\n").encode("utf-8")
+    if output_dir is None:
+        receipt=json.loads((ROOT/"review-receipt.json").read_text(encoding="utf-8"))
+        pin=receipt["definition_reports"]["capacity"]
+        if pin["sha256"]!=hashlib.sha256(report_bytes).hexdigest() or pin["passed"]!=len(cases):
+            raise SystemExit("generated capacity report differs from pinned summary")
+    else:
+        output_dir.mkdir(parents=True,exist_ok=True)
+        (output_dir/"evidence-capacity-validation.json").write_bytes(report_bytes)
     print(json.dumps({"suite": "synthetic evidence-capacity", "passed": len(cases),
-                      "failed": 0, "positive_objects": len(transition)}))
+                      "failed": 0, "positive_objects": len(transition),
+                      "mode": "check" if output_dir is None else "generate"}))
 
 
 if __name__ == "__main__":
-    run()
+    p=argparse.ArgumentParser(description="Synthetic D-9 evidence capacity verification")
+    p.add_argument("--check",action="store_true",help="Check pinned report digest without writes")
+    p.add_argument("--output-dir",type=Path,help="Generate report in an explicit scratch directory")
+    args=p.parse_args()
+    if args.check and args.output_dir is not None:
+        p.error("--check and --output-dir are exclusive")
+    run(args.output_dir)
