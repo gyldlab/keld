@@ -147,6 +147,10 @@ impl WriteReceipt {
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return Err(WriterRefusal::Deadline);
             };
+            #[cfg(test)]
+            if let Some(observed) = state.completion_wait_observer.take() {
+                let _ = observed.try_send(());
+            }
             let (next, _) = self
                 .shared
                 .changed
