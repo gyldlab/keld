@@ -10,7 +10,7 @@
  *   and pass. Their implementing ticket inverts the case and flips the cell to
  *   `pass` in the same diff, so adding a member without that edit fails here.
  *   The GH-452 session-fact cells record the fail-closed half of that ticket
- *   (`docs/specs/gh452-app-session-facts.md` T1): the member exists and throws
+ *   (`docs/specs/gh452-app-session-facts/contract.md` T1): the member exists and throws
  *   KELD-COMPAT-040 until the Host delivers the payload (T2 flips them).
  *
  * Every case reads `app` from the `electron` entry (`./index`), the module

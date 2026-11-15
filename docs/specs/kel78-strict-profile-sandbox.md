@@ -47,7 +47,7 @@ Non-goals:
   Updating §4.2 is a follow-up PR after this spec is approved, not this change.
 - `docs/architecture/06-runtime-and-tooling.md` §1 (KEL-70 supervisor; KEL-75
   role spawn; KEL-78 owns real-OS sandbox admission)
-- `docs/specs/kel75-principalized-bun-child-roles.md` AC6 and T6
+- `docs/specs/kel75-principalized-bun-child-roles/roles.md` AC6 and T6
 - `crates/keld-runtime/src/lib.rs` (live supervisor; no sandbox)
 - `crates/keld-guard/src/lib.rs` (`Principal` has no addon-worker variant)
 - `crates/keld-guard/AGENTS.md` (default-deny; no engine special case)
@@ -170,9 +170,9 @@ default-deny.
 
 Three states. They are not a confidence slider.
 
-| State | Who chooses it | Zero-authority claim | Child starts? |
+| State| Who chooses it| Zero-authority claim| Child starts? |
 |---|---|---|---|
-| `unverified` | Default until a complete per-OS OS-containment archive exists | Forbidden | Only if the caller did not request `strict`. Reporting must say `unverified`. |
+| `unverified`| Default until a complete per-OS OS-containment archive exists| Forbidden| Only if the caller did not request `strict`. Reporting must say `unverified`. |
 | `legacy` | Explicit Keld profile key | Forfeited, and the forfeit is printed | Yes: authenticated + guarded, unsandboxed |
 | `strict` | Admission + complete OS-containment archive for that OS/artifact/profile | Allowed | Yes, only after admission |
 

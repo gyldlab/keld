@@ -53,9 +53,9 @@ Non-goals:
 Four identities exist near a window. Each has one minter. This document uses no other
 form of the word.
 
-| Name | Minter | Rotates | Used here for |
+| Name| Minter| Rotates| Used here for |
 |---|---|---|---|
-| **WindowGeneration** | keld-core app-session window registry (this spec, KEL-75) | once per window incarnation; never reused within the app session | addressing one window incarnation |
+| **WindowGeneration**| keld-core app-session window registry (this spec, KEL-75)| once per window incarnation; never reused within the app session| addressing one window incarnation |
 | **RoleInstance generation** | keld-core app-session role registry (KEL-75) | on every Bun role spawn | the role that receives window events and whose loss ends a pending close |
 | **navigation generation** | keld-wv per-WebView host navigation state, the only minter (F04-A4 #400, decided; implementation #542) | on cross-document commit | nothing; this spec neither mints nor reads it |
 | **guard webview-principal generation** | the guard `Principal::Webview` field; under F04-A4 option A its value is stamped from the navigation generation (#542) | with the navigation generation | nothing; webview principals cannot reach the window channel (§4.g) |
@@ -77,7 +77,7 @@ form of the word.
   `window` module on the keld-native surface. keld-native cannot own native windows,
   since it does not depend on keld-wv. The amendment says the keld-core registry over
   keld-wv handles owns the `window` row (§5 lists the changed sentences).
-- `docs/specs/kel75-principalized-bun-child-roles.md` §T4a: the app-session registry
+- `docs/specs/kel75-principalized-bun-child-roles/roles.md` §T4a: the app-session registry
   owns monotonic identity counters; `WindowClosing(w)` is a monotonic tombstone; a
   native window number is never an identity.
 - `docs/specs/kel139-macos-product-spine.md` AC5 (recovery keeps the same window), AC6

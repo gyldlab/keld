@@ -1,45 +1,7 @@
-# Spec: `app` session facts — fail-closed facade half and Host-minted delivery (GH-452)
+# GH452 session-facts contract and scoped T2 amendments
 
-Status: approved (T1, T2a, version/path T2b and locale T2c; full T2/T3 remain pending)
-Linear: GH-452 (#517) · Owner: @0monish · Updated: 2026-11-01
-Disposition: **DO NOT MERGE until independent review and all execution gates pass.**
-The owner delegated technical decisions and continuation on 2026-11-01; the bounded
-decision is recorded on GH452 comment 6549729612. That delegation approves the T1
-contract and T2a in §11, not independent review, execution evidence or full T2/T3.
-PR1362 comment 6550291308 extends the delegated decision to §12 after independent
-architecture review; exact implementation review and execution gates remain required.
-
-## 1. Goal & non-goals
-
-drawio-desktop's main process reads `app.getPath('userData')` and `app.getVersion()` at
-import (`new Store()` at `electron.js:30`, inside a try/catch), `app.getPath('userData')`
-at `:58` and `:3796`, `app.getVersion()` at `:70`, `app.getLocale()` at `:767`, `app.name`
-at `:2020`/`:2023`, `app.getPath('documents')` at `:4175`, and
-`process.env.DRAWIO_DISABLE_UPDATE` at `:75` (pinned desktop source, GH499 §table).
-Electron derives these from the loaded application's `package.json`, from Chromium's
-locale and from the packaging state. Under Keld they are **session facts** owned by the
-Host (issue #452): the Host owns the launch root, the compiled descriptor `name`, every
-filesystem path grant and the webview engine whose locale the renderer sees.
-
-Outcome of this spec: the `app` facade exposes the seven members Electron code calls
-(`getPath`, `getVersion`, `getName`, `name`, `getAppPath`, `getLocale`, `isPackaged`),
-and each one fails closed with a typed `KELD-COMPAT-040` error naming the missing fact
-and this issue whenever the Host has delivered no session facts, which at
-`origin/main` `b72e4c19` is every launch. `getPath` additionally rejects a non-string or
-undocumented name with `KELD-COMPAT-041`; `name` and `isPackaged` are non-enumerable
-accessors as in Electron, and assigning `app.name` (Electron's `setName`, a non-goal) is
-refused with `KELD-COMPAT-042`. No value is derived in the Bun role from `HOME`,
-`APPDATA`, `XDG_*`, `LANG`/`LC_*`, `argv`, `cwd`, `Intl` or any `package.json`, and an
-observer with a recording `process.env` Proxy proves it. The Host-minted delivery (T2) and the declared role environment (T3) are
-specified here but blocked on owner decisions.
-
-Non-goals:
-
-- Minting any session-fact value in the Bun role (the whole point of T1 is that it does
-  not); `process.*` observables (#570); the module exports map (#565); single-instance
-  lock (#453); `setPath`/`setAppLogsPath` (F01-T11); strict-profile `userData` (F01-T9);
-  `getSystemLocale`/`getPreferredSystemLanguages`/`setName`; filesystem authority over
-  any returned path (keld-guard owns grants); the `isPackaged` true half (KEL-141).
+Part of: [index](index.md)
+Owns: sections 2–4
 
 ## 2. Spec refs
 
@@ -47,10 +9,10 @@ Non-goals:
   generic API; Electron names and listener behaviour live in `@keld/electron`).
 - `docs/architecture/03-security.md` §1 (principals are Host-minted) and §2 (filesystem
   paths are grants in `keld.permissions.jsonc`; the role has no path authority of its own).
-- `docs/specs/kel75-principalized-bun-child-roles.md` (`KELD_APP_LINK` is the sole child
+- `docs/specs/kel75-principalized-bun-child-roles/roles.md` (`KELD_APP_LINK` is the sole child
   bootstrap variable; requested `env` is applied per key through `RoleConfig::env`,
   `crates/keld-runtime/src/role.rs:456`).
-- `docs/specs/kel96-no-flag-host-boot.md` §4.1 (`KEL-96-D3`: no-flag boot reads only the
+- `docs/specs/kel96-no-flag-host-boot/boot.md` §4.1 (`KEL-96-D3`: no-flag boot reads only the
   compiled `keld.boot.json` schema v1, fields `schema,name,entry,renderer,permissions`;
   `KEL-96-D11`: `keld-core` owns boot validation).
 - `docs/specs/gh532-first-proof-evidence-rules.md` rule 3 (red-until-implemented cells)
@@ -67,15 +29,21 @@ T1 deviates from no architecture section (`No boundary change`: no handle owners
 crash ownership or principal minting moves). T2 amends KEL-75 and KEL-96 and must update
 both specs in its own PR.
 
-## 3. Acceptance criteria (binary, each becomes a test)
+## 3. Acceptance criteria
 
 T1 (this PR). "Not delivered" means the Host passed no session-facts payload, which is
 every role at `b72e4c19`.
 
-1. Given session facts are not delivered, when `app.getPath('userData')` is called at
-   module evaluation (before `whenReady`), then it throws an `Error` whose `code` is
-   `KELD-COMPAT-040`, whose `fact` is `path.userData`, and whose message names
-   `app.getPath('userData')`, `path.userData` and `GH-452`.
+### AC-1: Absent Host facts refuse before facade Ready
+
+- **Given:** the Host has delivered no session-facts payload.
+- **When:** module evaluation calls `app.getPath('userData')` before `whenReady`.
+- **Then:** throw an Error with code `KELD-COMPAT-040`, fact `path.userData`, and a message naming `app.getPath('userData')`, `path.userData` and `GH-452`.
+- **Negative control:** make only the absent-fact branch return a guessed path.
+  - **Single fault:** replace the typed refusal with a path fallback.
+  - **At-risk precondition:** the Host record is absent during import.
+  - **Expected RED:** the existing missing-fact test observes a value rather than code 040.
+
 2. Same state, `app.getVersion()` throws `KELD-COMPAT-040` with `fact` `version`.
 3. Same state, `app.getName()` and a read of `app.name` each throw `KELD-COMPAT-040`
    with `fact` `name`; `name` is a non-enumerable, non-configurable accessor with a
@@ -168,12 +136,24 @@ T3 (declared role environment; blocked on §10 Q5). Restated from the issue.
 | Member | Electron source of the value | Keld owner of the value | Why the Bun role cannot mint it honestly at `b72e4c19` |
 |---|---|---|---|
 | `getPath(name)` | Chromium path service; `userData` = `appData` + app name | Host owns path provenance; a returned string is not a grant | Role-side HOME/XDG/APPDATA lookup is decoy-sensitive and violates the one-owner value contract; access authority is a separate boundary |
-| `getVersion()` | loaded app's `package.json` `version` | Host via a schema-v1 field (`version` does not exist in schema v1; adding it is a KEL-96/KEL-15 change) | `keld dev` stages only the entry and the kipc sidecar (`crates/keld-cli/src/boot.rs:475-482`); no `package.json` is staged; walking up from the staged entry crosses the launch root (a layout coincidence under dev, denied under strict `/app`) |
+| `getVersion()` | loaded app's `package.json` `version` | Host via a schema-v1 field (`version` does not exist in schema v1; adding it is a KEL-96/KEL-15 change) | See `getVersion()` detail after this table |
 | `getName()` / `name` | `package.json` `name` or `productName` | Host: the compiled descriptor `name` (issue text; `boot.rs:521`) | The role receives no descriptor value; parsing `keld.boot.json` in the role would be a duplicate parser of a Host-owned schema (GH499 A18) |
 | `getAppPath()` | app directory | Host: the launch root it staged | `dirname(Bun.main)` is `src/`, not the app directory; the launch root is not delivered |
-| `getLocale()` | Chromium `l10n_util` UI locale | Host: the webview engine's locale | `Intl.DateTimeFormat().resolvedOptions().locale` is the Bun process's ICU default; measured `en-US` on Bun 1.4.4/macOS 25.5 under `LANG=de_DE.UTF-8` and under `LC_ALL=fr_FR.UTF-8` (system `AppleLanguages` is `en-US`, so tracking of the macOS preference was not distinguishable from a constant without changing the user's system setting). No contract binds it to the Host webview |
+| `getLocale()` | Chromium `l10n_util` UI locale | Host: the webview engine's locale | See `getLocale()` detail after this table |
 | `isPackaged` | packaging state | Host: knows dev lease vs installed provenance (`KELD_DEV_LEASE`, KEL-254) | Dev vs installed is indistinguishable from inside the role; no installed artifact exists (KEL-141, KEL-103), so a constant `false` is a stub whose cell would prove only the stub |
 | `DRAWIO_DISABLE_UPDATE` | app-declared env | Host spawn contract (KEL-75 amendment, permission-model gate) | A facade write to `process.env` would be a second environment path; GH497 M06 and GH499 A08 bind it to the Host declaration |
+
+**`getVersion()` (full table-cell detail):**
+`keld dev` stages only the entry and the kipc sidecar (`crates/keld-cli/src/boot.rs:475-482`);
+no `package.json` is staged; walking up from the staged entry crosses the launch root (a layout
+coincidence under dev, denied under strict `/app`)
+
+**`getLocale()` (full table-cell detail):**
+`Intl.DateTimeFormat().resolvedOptions().locale` is the Bun process's ICU default; measured
+`en-US` on Bun 1.4.4/macOS 25.5 under `LANG=de_DE.UTF-8` and under `LC_ALL=fr_FR.UTF-8` (system
+`AppleLanguages` is `en-US`, so tracking of the macOS preference was not distinguishable from a
+constant without changing the user's system setting). No contract binds it to the Host webview
+
 
 Failure facts: a throw at `electron.js:30` is caught by draw.io's own try/catch (`store`
 becomes `null`); the reads at `:58`/`:70` then throw `KELD-COMPAT-040` inside
@@ -268,116 +248,8 @@ is absent.
   (`name`/`getName`/`getPath`/`getVersion`/`isPackaged`, timing unknown). No adapter;
   the permanent facade is the `app` object.
 
-## 5. Boundaries
 
-- Implement in (T1): `packages/@keld/electron/src/app.ts`,
-  `packages/@keld/electron/src/app-session-facts.ts` (new),
-  `packages/@keld/electron/src/app-session-facts.test.ts` (new),
-  `packages/@keld/electron/src/app-surface.test.ts`,
-  `packages/@keld/electron/fixtures/app_surface_locale_after_ready.ts`,
-  `packages/@keld/electron/fixtures/app_session_facts_decoy_env.ts` (new),
-  `crates/keld-compat/fixtures/app-corpus/corpus.json` and `denominator.json`,
-  `docs/engineering/keld-error-codes.md`.
-- Must not touch: `packages/@keld/electron/src/index.ts` (#565), any `process.*`
-  installation (#570), `crates/keld-runtime/src/role.rs`,
-  `crates/keld-core/src/app_session.rs` (#449), `crates/keld-cli/src/boot.rs`,
-  `crates/keld-guard/**`, `keld.boot.json` schema, workspace `Cargo.toml`.
-
-## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
-
-- [ ] T1 — Fail-closed facade half: the seven members, `KELD-COMPAT-040`/`041`/`042`,
-  the re-recorded red cells and the environment-read negative control (criteria 1–11).
-  This PR, draft, do-not-merge until this text is approved.
-- [ ] T2 — Host-minted session facts: KEL-96 schema-v1 extension and KEL-75 spawn
-  amendment approved by their owners; Host mints and delivers the payload; facade reads
-  it; the seven cells flip (criteria 12–17). Blocked on Q1–Q4 and Q9.
-- [ ] T3 — Declared role environment: literal-name validation, reserved-name floor,
-  `RoleConfig::env` application, policy-identity proof (criteria 18–20). Blocked on Q5;
-  permission-model gate.
-- [ ] T4 — `isPackaged` true half after KEL-141 (an installed macOS artifact); stays
-  `unknown` until then.
-
-## 7. Test plan
-
-| Criterion | Test | Kind |
-|---|---|---|
-| 1–4, 6 | `app-surface.test.ts` red-cell today-tests (exact names recorded in `corpus.json`) | Bun unit, in-process |
-| 5 | `app-surface.test.ts` via observer `fixtures/app_surface_locale_after_ready.ts` (reaches `ready` through a `ready` listener; prints one `GH445_LOCALE_AFTER_READY` line) | Bun, child process |
-| 7 | `app-session-facts.test.ts`: `getPath('bogus')` is 041 and says "documented"; `ELECTRON_PATH_NAMES` equals the names parsed from the pinned snapshot | Bun unit; oracle is the committed doc bytes |
-| 8 | `app-session-facts.test.ts` via `fixtures/app_session_facts_decoy_env.ts` (recording `process.env` Proxy and `process.cwd` counter installed before any facade import; reads at import and after `ready`; decoy `HOME`, `XDG_CONFIG_HOME`, `APPDATA`, `LANG`, `LC_ALL`) | Bun, child process |
-| 9 | `app-session-facts.test.ts`: `app.name = …` is 042 (string and Symbol); non-string `getPath` arguments are 041 naming the type | Bun unit |
-| 10 | `cargo test -p keld-compat` corpus registry (gh566 owner): digest, red-cell keys, exact Bun case names | Rust integration |
-| 11 | `cargo test -p keld-cli --test error_registry` | Rust integration |
-| 12–20 | Owned by T2/T3; bound when their specs are approved | — |
-
-Anti-flake: observers use the existing `OBSERVER_KILL_MS` (4 s) as a kill switch only
-and exit on their own; no sleeps; the decoy environment is passed through `Bun.spawnSync`
-`env`, never set in the test process; `LifecycleLink.connect` is replaced only inside
-observer children (bun test shares one module cache per process).
-
-Failure-first proof: the re-recorded today-tests are committed before the facade change
-and fail against the unchanged facade (`TypeError`/`undefined` instead of
-`KELD-COMPAT-040`); the implementation commit turns them green. The module-contract
-file cannot load at that commit (its module does not exist yet), so criteria 7–9 are
-proved by mutation instead, recorded in the PR: a `getPath` that reads `process.env.HOME`
-into its message fails criterion 8 through the recorded reads; members that return
-values once `isReady()` is true fail criterion 8 in the after-`ready` phase; removing the
-non-string guard fails criterion 9 with an untyped `TypeError`.
-
-## 8. Review gates triggered
-
-- public API: yes (seven new `app` members, three `KELD-COMPAT` codes, and the runtime
-  `code`/`fact` fields on the thrown error; the class itself is not exported from the
-  package entry, see §4.3).
-- permission model: none in T1 (no grant or policy change); T3 triggers it.
-- wire protocol: none in T1; T2 triggers it (schema-v1 field, spawn amendment).
-- dependency addition: none.
-- unsafe: none.
-
-## 9. Perf impact
-
-none. Cold path; each member throws once on the caller's stack. No kipc frame, no
-steady-state allocation.
-
-## 10. Open questions
-
-1. **Payload carrier (KEL-75 owner).** Bun `--define` constants (precedent:
-   `KELD_NATIVE_WINDOW_FACADE`), a Host-written file in the launch root read before the
-   entry, or a kipc pre-entry frame? The issue requires delivery "beside KELD_APP_LINK"
-   without a second environment path. Recommendation: the define carrier for immutable
-   scalars, because it already exists and cannot be altered by a runtime config
-   (`KELD-CORE-037` refuses staged `bunfig.toml`).
-2. **Schema v1 `version`/`productName` (KEL-96/KEL-15 owner).** Add both fields, or
-   derive `version` from `package.json` at `keld migrate`/`keld dev` compile time only
-   (Host-side) and keep `productName` out?
-3. **`name` semantics.** Electron prefers `productName` over `name`. Is the descriptor
-   `name` the Electron `app.name`, and does `getName()` equal `name` with no
-   `productName` (the #656 cell negative controls assume so)?
-4. **`getLocale` source and pre-ready behaviour.** Host webview locale or the OS
-   preferred language, and what a pre-ready call returns once the payload exists?
-5. **Declared role environment grammar.** Exact literal-name grammar, reserved floor,
-   and the Bun-honoured environment names to add to the floor (the issue records this
-   as UNKNOWN; cite Bun's primary documentation before approval).
-6. **Throwing accessors.** `app.name` and `app.isPackaged` throw on read in T1.
-   `electron-is-dev` reads `app.isPackaged` at import; today that read yields
-   `undefined` (silently "dev"). Accept the typed throw as the honest first-proof
-   behaviour, or keep `isPackaged` absent until T2?
-7. **Code numbering.** The registry's "Adding a code" rule says next free number;
-   `040`–`042` were taken from the upper-middle of the free range so #565/#570 can take
-   `013+` without collision (`origin/agent/gh-570-process-facts-20261031` already uses
-   `013`). Accept or renumber at approval.
-8. **Rewriting a red cell's today-test without flipping it.** gh532 rule 3 says the
-   implementing change inverts the mapped test and flips the cell in one PR; it does
-   not say whether the same ticket may first re-record the today-test (here: from
-   "throws a TypeError" to "throws KELD-COMPAT-040") while the cell stays `fail`.
-   This PR does that. Accept as the rule's intended reading for a two-step ticket, or
-   require the cells' texts to stay as at #656 until T2 flips them.
-9. **Undocumented `getPath` names.** Electron's source accepts `cache`, `userCache`
-   and `userDesktop`, which the pinned page does not document, and limits `assets` and
-   `recent` by platform. T1 treats the documented list as the oracle. Should the T2
-   payload carry the undocumented names, and per-platform absence?
-
-## 11. T2a — existing development-launch facts only
+### T2a — existing development-launch facts only
 
 This bounded vertical slice does not add a boot-descriptor field. It consumes the
 already validated descriptor `name`, canonical stage root, and actual development
@@ -431,7 +303,8 @@ already published 040–042 assignments; Q8 permits honest re-recording while ve
 stay fail. Q2/Q4/Q5/Q9 remain with the remaining value-producing slices, not reasons to
 fabricate a version, locale, path or declared environment in this change.
 
-## 12. T2b — explicit version and macOS directory facts
+
+### T2b — explicit version and macOS directory facts
 
 The current literal template may declare one root `version` string. The existing
 root-property scanner and config capture own its extraction; no configuration code
@@ -473,7 +346,8 @@ Q2 selects explicit version only; Q9 remains bounded to the documented three pat
 Locale, other paths, installed delivery and declared environment remain outside this
 slice. No complete Draw.io or all-facts corpus cell may be promoted on this proof.
 
-## 13. T2c — retained macOS preferred-language fact
+
+### T2c — retained macOS preferred-language fact
 
 Status: approved under the user's standing technical-design delegation; independent
 architecture/public-contract review by `/root/locale_contract_review` on 2026-11-01.
@@ -517,7 +391,7 @@ boundary change to authority. The safe Foundation wrapper reuses the existing
 pinned objc2-foundation dependency with its macOS-only NSLocale feature enabled;
 there is no new package, version or unsafe operation.
 
-### Acceptance and first falsifiers
+#### Acceptance and first falsifiers
 
 | Atom | Observable | First falsifier |
 |---|---|---|
@@ -546,7 +420,7 @@ claimed. Other paths, declared environment, Windows/Linux, installed delivery,
 original draw.io renderer/document acceptance and full T2/T3 remain open. Existing
 whole-app/all-facts conformance verdicts must not be promoted from this partial proof.
 
-### Current-documentation receipt
+#### Current-documentation receipt
 
 - Applicability: applied: native preferred-language selection and Electron
   `app.getLocale()` semantics.

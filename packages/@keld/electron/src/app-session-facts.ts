@@ -1,6 +1,6 @@
 /**
  * `app` session facts: typed absence plus the bounded development-launch slice
- * (`docs/specs/gh452-app-session-facts.md`, T1, T2a, version/path T2b and locale T2c).
+ * (`docs/specs/gh452-app-session-facts/contract.md`, T1, T2a, version/path T2b and locale T2c).
  *
  * Electron reads `getPath`, `getVersion`, `getName`/`name`, `getAppPath`,
  * `getLocale` and `isPackaged` from the loaded application's package.json, from

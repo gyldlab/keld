@@ -193,7 +193,7 @@ export const app = defineSessionFactAccessors({
   removeListener: removeAppListener,
   off: removeAppListener,
 
-  // GH-452 session facts (docs/specs/gh452-app-session-facts.md, T1). The Host
+  // GH-452 session facts (docs/specs/gh452-app-session-facts/contract.md, T1). The Host
   // owns every value; until it delivers the payload each read fails closed with
   // KELD-COMPAT-040 naming the missing fact. Nothing here reads the environment.
   getPath(name: string): string {

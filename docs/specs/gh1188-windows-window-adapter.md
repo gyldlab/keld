@@ -86,7 +86,7 @@ Non-goals (owners in parentheses):
   id 5, no frame or `HELLO` change); `03-security.md`; `04-electron-compat.md` (#1181
   sentence "Linux and Windows currently refuse facade-window subscription");
   `05-webview-and-native.md` §3 "Window ownership" (`:302-304`).
-- `docs/specs/kel96-no-flag-host-boot.md`; `kel259-windows-test-layout.md` (test
+- `docs/specs/kel96-no-flag-host-boot/index.md`; `kel259-windows-test-layout.md` (test
   families; `support/window.rs` owns HWND observation); `kel135-persistent-profile-identity.md`
   (profile lifecycle record owner; A21 reads its "store/context attached"); `kel254-windows-installed-root-boot.md`
   (installed/persistent harness); KEL-53 §4 handover (`crates/keld-wv/src/engine.rs:93-99`).
@@ -941,7 +941,7 @@ by `DestroyWindow` on the loop thread (FACT, `event_loop.rs:2238-2240`), whose
 inside that `DestroyWindow`, so the event is not completed teardown (A8). So no
 second WndProc is needed; Keld chooses *when* to drop.
 
-| # | Atom | Owner / boundary (in → out) | Failure mode | Observable | Edges | First falsifier | Status |
+| #| Atom| Owner / boundary (in → out)| Failure mode| Observable| Edges| First falsifier | Status |
 |---|---|---|---|---|---|---|---|
 | A1 | Windows Init milestone | keld-wv Windows loop → keld-core coordinator; in: first `NewEvents(StartCause::Init)` of `run_return` (FACT, tao `event_loop/runner.rs:310-312`); out: `HostInitialized { observed_at }`, then Ready | Ready before the loop runs, or never for a zero-window boot | AC1, AC2 | ← A13 | Ready on `HELLO` | FACT: the loop already observes its first turn (`webview2/mod.rs:3262-3270`); emission is the delta; reuse `first_host_init_turn` generalised over the user-event type (`wkwebview/mod.rs:1039-1045`) |
 | A2 | Schema-2 admission | keld-core `validate_windows_boot_files` / `run_app_direct`; in: descriptor; out: `ValidatedInitialWindow::None` | unverified descriptor admitted; renderer boot changed | AC3 | → A12, A17, A18 | `schema 2` plus `renderer` admitted | FACT: refused at `:1447` and inline at `:3431-3438`; today `main` matches on `parsed.initial` (`:1450-1451`); its `None` arm exists (`:1458`) but is unreachable because `:1447` refuses first. The `main` test `app_session/tests/windows_profile_and_boot.rs::windows_boot_files_refuse_a_schema_2_facade_boot` (1372fbd3) pins the `KELD-CORE-034` refusal that D2 removes; T2 replaces it with AC3's admission test, in the diff that admits product facade boots (D2, AC23), as a recorded contract change, not a weakened test |

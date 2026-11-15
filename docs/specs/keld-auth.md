@@ -154,12 +154,12 @@ Non-goals (v0):
 
 ## 2. Spec refs
 
-- Approved Keld specs @ `c6e14f1`: `docs/specs/kel96-no-flag-host-boot.md` (host
+- Approved Keld specs @ `c6e14f1`: `docs/specs/kel96-no-flag-host-boot/index.md` (host
   owns event loop/windows/app-link; diagnostics unprivileged),
   `kel102-host-guard-enforcement.md` (verified snapshot; `evaluate` +
   `dispatch_privileged` only; T2→T3→T4→T5 order; V0AppLink→AppProcess),
   `kel101-windows-named-pipe-dacl.md` (Windows app-link transport),
-  `kel75-principalized-bun-child-roles.md`, `kel78-strict-profile-sandbox.md`.
+  `kel75-principalized-bun-child-roles/roles.md`, `kel78-strict-profile-sandbox.md`.
 - Architecture: `02-ipc.md` §§1-2, `03-security.md` §§1-3,
   `05-webview-and-native.md` §1/§3 (native modules incl. `deeplink`, `secrets`
   destinations), `06-runtime-and-tooling.md` §3, and `07-agent-experience.md` §2,
@@ -528,17 +528,17 @@ loopback+PKCE external browser; each rung names ownership and unavailability).**
 
 Windows:
 
-| Rung | When | Ownership | Unavailable/inapplicable |
-| --- | --- | --- | --- |
-| 1. WAM (**T2 spike GO, 2026-09-09 — see §4 addendum, D1**) | Entra/MSA issuer, WAM available | Host HWND into interop; host-owned COM apartment (`!Send`/`!Sync`); child: nothing | WAM missing, or non-WAM issuer (e.g. Google) → rung 3 (rung 2 requires registration that v0 packaging cannot emit). Single-tenant authority-URL format and Entra-joined/PRT behavior remain untested (241 §7) |
-| 2. Custom scheme | IdP documents desktop scheme support AND registration exists | Host is handler; correlates host-minted `state`; registration is unauthenticated last-writer on Windows — delivery ≠ ownership | v0: effectively unavailable (no MSIX/`uap:Protocol` emitter exists; keld-pack is a name-only enum) → rung 3. Google: skipped by policy (AC8 quote) |
-| 3. Loopback + PKCE | Default | Host binds per AC5a/AC5b, launches system browser, correlates callback | Bind/launch failure → typed `KELD-AUTH*` error with fix |
+| Rung| When| Ownership| Unavailable/inapplicable |
+| ---| ---| ---| --- |
+| 1. WAM (**T2 spike GO, 2026-09-09 — see §4 addendum, D1**)| Entra/MSA issuer, WAM available| Host HWND into interop; host-owned COM apartment (`!Send`/`!Sync`); child: nothing| WAM missing, or non-WAM issuer (e.g. Google) → rung 3 (rung 2 requires registration that v0 packaging cannot emit). Single-tenant authority-URL format and Entra-joined/PRT behavior remain untested (241 §7) |
+| 2. Custom scheme| IdP documents desktop scheme support AND registration exists| Host is handler; correlates host-minted `state`; registration is unauthenticated last-writer on Windows — delivery ≠ ownership| v0: effectively unavailable (no MSIX/`uap:Protocol` emitter exists; keld-pack is a name-only enum) → rung 3. Google: skipped by policy (AC8 quote) |
+| 3. Loopback + PKCE| Default| Host binds per AC5a/AC5b, launches system browser, correlates callback| Bind/launch failure → typed `KELD-AUTH*` error with fix |
 
 macOS:
 
-| Rung | When | Ownership | Unavailable/inapplicable |
-| --- | --- | --- | --- |
-| 0. Enterprise SSO broker | **Never claimed in v0** (D6). Device-compliance CA → AC7b typed deny | n/a | Destination tier: broker-aware routing on MDM-managed devices, own spec + managed-hardware proof |
+| Rung| When| Ownership| Unavailable/inapplicable |
+| ---| ---| ---| --- |
+| 0. Enterprise SSO broker| **Never claimed in v0** (D6). Device-compliance CA → AC7b typed deny | n/a | Destination tier: broker-aware routing on MDM-managed devices, own spec + managed-hardware proof |
 | 1. ASWebAuthenticationSession | Preferred interactive path with an explicit valid operator AS return binding; omitted/null binding retains the pre-T4 direct rung 3 route | Host retains session + provider; `NSWindow` anchor on main thread; in-process custom-scheme initializer callback needs no Info.plist (168:74) and does not transit OS scheme dispatch (226 K11/F12, per 176:75; the narrow defensible form of the old "hijack-proof" claim) | API/start failure → rung 3. `prefersEphemeralWebBrowserSession` is an ignorable preference — never an isolation claim. Third-party default browsers without `CallbackURLMatchingIsSupported` route to Safari |
 | 2. Custom scheme (app-launch form) | Registered via `CFBundleURLTypes` when relaunch-by-URL is required | Host receives URL via bundle registration | v0: no `.app` bundle/plist emitter exists → not reachable; Google: skipped by policy (AC8 quote); use rung 1's in-process form or rung 3 |
 | 3. Loopback + PKCE | Fallback | As Windows rung 3 | As Windows rung 3 |
@@ -555,7 +555,7 @@ Linux:
 original pin (`c6e14f1`) Keld's no-flag host failed closed on Linux and
 KEL-96/T4 was open. **That edge has since landed**: `c41ec5e`
 (`feat(linux): wire no-flag host sessions`, #145, 2026-09-04) checks
-`kel96-no-flag-host-boot.md` T4; `KELD-CORE-034` is now gated
+`kel96-no-flag-host-boot/lifecycle.md` T4; `KELD-CORE-034` is now gated
 `#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]`
 (`crates/keld-core/src/app_session.rs`), i.e. it fires only outside
 mac/linux/windows, and `crates/keld-host/tests/no_flag_linux.rs` exists.

@@ -884,7 +884,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: @keld/electron
 - message: An `app` session fact (`getPath`, `getVersion`, `getName`/`name`, `getAppPath`, `getLocale`, `isPackaged`) was read, but the Host delivered no session facts to this role; the facade does not derive these values from HOME, APPDATA, XDG_*, LANG/LC_*, argv, cwd, Intl or package.json
-- fix: No Keld host delivers session facts yet (GH-452 T2, `docs/specs/gh452-app-session-facts.md`): code that can continue without the named fact should catch this error; otherwise wait for T2. Do not derive the value in the role.
+- fix: No Keld host delivers session facts yet (GH-452 T2, `docs/specs/gh452-app-session-facts/index.md`): code that can continue without the named fact should catch this error; otherwise wait for T2. Do not derive the value in the role.
 
 ## KELD-COMPAT-041
 

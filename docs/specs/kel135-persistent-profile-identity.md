@@ -63,7 +63,7 @@ Non-goals:
   explicit backend differences.
 - `docs/architecture/06-runtime-and-tooling.md` §2 and §4: packaging/update artifacts
   authenticate release inputs and own install/update/uninstall workflow.
-- `docs/specs/kel96-no-flag-host-boot.md` §4.2: the live dev stage is owner-private but
+- `docs/specs/kel96-no-flag-host-boot/boot.md` §4.2: the live dev stage is owner-private but
   per-launch and not release-authenticated; the current KEL-103 scope authenticates no
   app-specific sidecar facts.
 - KEL-63: the current Windows fix moved WebView2 data away from the executable but left
@@ -229,9 +229,9 @@ This is an architecture change because it adds an authenticated application-iden
 input to webview/profile ownership. It does not change process, window, renderer, origin,
 wire, capability, or Bun-principal ownership.
 
-| Atom | Owner and boundary | Input → output | Failure and direct observable | Independence |
+| Atom| Owner and boundary| Input → output| Failure and direct observable| Independence |
 |---|---|---|---|---|
-| Release identity | platform package verifier in `keld-core` | validated platform publisher scope + canonical signed `app.id` → private identity input | unsigned/config/page/Bun value → no persistent identity | does not choose a platform path |
+| Release identity| platform package verifier in `keld-core` | validated platform publisher scope + canonical signed `app.id` → private identity input | unsigned/config/page/Bun value → no persistent identity | does not choose a platform path |
 | Profile identity | host-agnostic `keld-wv::profile` policy called only after core verification | validated publisher-scope/app-id bytes → opaque 32-byte `ProfileIdentity` | noncanonical tuple or substitution → `KELD-WV-009` before engine | not filesystem containment; preserves `keld-core → keld-wv` dependency direction |
 | Dev mode | host boot | current unsigned dev stage + OS randomness → per-launch ephemeral selection | any persistent fallback → startup failure | makes no release identity claim |
 | Namespace | shared owner in `keld-wv::profile` | profile identity + platform root → exact key/path or Apple UUID | collision/marker mismatch/link escape → `KELD-WV-009` | backend does not mint identity |

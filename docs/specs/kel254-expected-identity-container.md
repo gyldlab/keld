@@ -115,7 +115,7 @@ Non-goals:
   (`keld-pack`, cross-host assembly target, signer tools), §4 client verification step 1
   (on Windows direct installs the prebuilt host carries the key, app id, channel and
   target in its signed `ExpectedAppIdentity` payload).
-- `docs/specs/kel96-no-flag-host-boot.md` T1a (prebuilt `keld-host[.exe]` plus compiled
+- `docs/specs/kel96-no-flag-host-boot/boot.md` T1a (prebuilt `keld-host[.exe]` plus compiled
   app files) and `docs/specs/kel135-persistent-profile-identity.md` (Windows carrier:
   exactly one Authenticode signature; `SPC_SP_OPUS_INFO` program name
   `keld.app-id/v1:<canonical-app-id>`; no fallback carrier).
@@ -214,9 +214,9 @@ Architecture 01 §3.
 
 ### First-principles and reuse decision
 
-| Atom / owner | Boundary and input → output | Failure mode | Independent observable |
+| Atom / owner| Boundary and input → output| Failure mode| Independent observable |
 |---|---|---|---|
-| 1. Coverage / Microsoft Authenticode format; proven by T2 | signed PE image → the byte ranges the image hash covers | container bytes in an excluded or unhashed range, so a changed expectation still verifies | AC8: payload, padding and section-header flips fail `WinVerifyTrust`; the `CheckSum` flip control passes |
+| 1. Coverage / Microsoft Authenticode format; proven by T2| signed PE image → the byte ranges the image hash covers| container bytes in an excluded or unhashed range, so a changed expectation still verifies | AC8: payload, padding and section-header flips fail `WinVerifyTrust`; the `CheckSum` flip control passes |
 | 2. Container choice and placement / `keld-pack` | unsigned prebuilt host → exactly one new section after the existing sections | placement in overlay, the certificate table, headers or an ambiguous resource tree | AC1 byte-diff oracle; AC9 overlap and position refusals |
 | 3. PE surgery validity / `keld-pack` writer | admissible host + payload → loadable image with existing bytes unmoved | loader refuses the image, or an existing section, directory or RVA shifts | AC1 byte-diff; AC2 real launch reaches the Keld typed refusal |
 | 4. Signed-state ordering / writer + `keld build` | certificate directory and trailing bytes → unsigned admission only | embedding into a signed image silently breaks or strips a signature | AC4 refusal; AC8 sign-after-embed verifies |

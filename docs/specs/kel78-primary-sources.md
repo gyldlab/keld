@@ -48,7 +48,7 @@ of a sandbox, not containment.
 | `spawn_piped` sets `stdout`/`stderr` to pipes and then `Command::spawn`. It does not close other inherited descriptors or set a handle allowlist. | `crates/keld-runtime/src/lib.rs` `spawn_piped` |
 | `keld-guard` principals are `AppProcess`, `Webview`, and `Plugin`. There is no addon-worker principal. | `crates/keld-guard/src/lib.rs` `Principal` |
 | Architecture 03 §4.2 still names a progressive `sandbox_init` / restricted-token / landlock+seccomp sketch. That sketch is destination prose, not a passed proof. | `docs/architecture/03-security.md` §4 |
-| KEL-75 already requires fail-closed admission when a strict profile cannot be applied, and assigns real-OS proof to KEL-78. | `docs/specs/kel75-principalized-bun-child-roles.md` AC6, T6 |
+| KEL-75 already requires fail-closed admission when a strict profile cannot be applied, and assigns real-OS proof to KEL-78. | `docs/specs/kel75-principalized-bun-child-roles/index.md` AC6, T6 |
 
 ---
 

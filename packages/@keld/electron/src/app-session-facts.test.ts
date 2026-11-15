@@ -1,6 +1,6 @@
 /**
  * GH-452 T1: the fail-closed half of the `app` session-facts contract
- * (`docs/specs/gh452-app-session-facts.md` §3 criteria 1–9).
+ * (`docs/specs/gh452-app-session-facts/contract.md` §3 criteria 1–9).
  *
  * The corpus-mapped today-tests live in `app-surface.test.ts`; this file holds
  * the module contract: the pinned `getPath` name list, the three typed codes,
