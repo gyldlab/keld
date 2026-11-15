@@ -184,6 +184,16 @@ The fixture and review files are in `docs/engineering/evidence/kel270-catalogue-
 
 Each added AC requires its own discriminating test. A prior research case cannot silently substitute a different oracle.
 Use actual OS observations for OS claims. Keep physical power loss separate from process termination.
+The new D-9 evidence-capacity check is planned separately from the original
+110 product cases. Require a genuine U1!=U2 signed transition with
+distinct app/recovery issuer cohorts and the complete 20-object set.
+Prove a 25th distinct object and over-limit aggregate bytes refuse
+before journal publication. No synthetic count can qualify the native
+retained-handle and filesystem acceptance.
+The definition-only helper
+`python docs/engineering/evidence/kel270-catalogue-admission-v2/verify_evidence_capacity.py`
+checks 20 required distinct objects, byte caps, duplicate references and
+the over-limit mutants. Its recorded JSON is synthetic evidence only.
 
 ## 9. Perf impact: Identity
 

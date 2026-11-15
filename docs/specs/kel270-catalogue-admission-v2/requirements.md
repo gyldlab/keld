@@ -97,6 +97,13 @@ Every product case remains NOT_RUN. Definition checks do not replace those cases
   - **At-risk precondition:** Keep fresh metadata, U2 proof, catalogue, package, and OS admission valid.
   - **Expected RED:** The transition owner refuses without protected installation mutation.
 
+Also materialize an authentic U1-different-from-U2 positive transition
+with two distinct seven-reference policy cohorts. Include both
+provenance records, one transition, both signature objects, and metadata
+admission. All 20 required objects MUST fit and remain authenticated.
+Add a 25th distinct evidence object as an isolated negative control.
+The evidence owner MUST refuse before a consuming journal becomes effectful.
+
 ### AC-4: Joined migration and recovery preserve one complete state
 
 - **Given:** An admitted predecessor has browser data and a last-known-good artifact.

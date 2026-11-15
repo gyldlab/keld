@@ -55,6 +55,7 @@ Evidence is stored outside the specification directory:
 - [Independent review receipt](../../engineering/evidence/kel270-catalogue-admission-v2/review-receipt.json).
 - [Definition results](../../engineering/evidence/kel270-catalogue-admission-v2/identity-validation.json).
 - [Original acceptance plan](../../engineering/evidence/kel270-catalogue-admission-v2/acceptance-plan.json).
+- [Evidence capacity definition results](../../engineering/evidence/kel270-catalogue-admission-v2/evidence-capacity-validation.json).
 
 ## Current blockers
 
