@@ -109,7 +109,19 @@ fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_rep
     assert!(router.shutdown.is_running());
     assert!(!router.window_ready.load(Ordering::Acquire));
     assert!(router.current.try_lock().is_ok());
-    assert!(router.shutdown.transition.try_lock().is_ok());
+    // The Quit hook sends just before Condvar::wait_timeout releases its mutex.
+    // Receiving the hook is not evidence that the transition lock is free.
+    // Verify the real unlock while Ready stays blocked, without a sleep or a
+    // scheduling-sensitive immediate try_lock.
+    let (available, available_rx) = mpsc::sync_channel(1);
+    let waiting_router = router.clone();
+    let mutex_witness = thread::spawn(move || {
+        let _transition = waiting_router.shutdown.transition_guard();
+        available
+            .send(waiting_router.current.try_lock().is_ok())
+            .expect("transition release witness");
+    });
+    let transition_released_during_wait = available_rx.recv_timeout(Duration::from_secs(3));
     let writer = router.primary_writer_owner().expect("one primary writer");
     let (quit_dequeued, quit_write) = writer.hold_next_dequeue_for_test();
     ready_resume.send(()).expect("allow canonical Ready commit");
@@ -180,10 +192,17 @@ fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_rep
         ["arm", "prepare", "shutdown"]
     );
     assert!(router.current.lock().expect("retired current").is_none());
+    // Join only after all Ready/Quit writer barriers have been released; even a
+    // failed mutex observation must not leave the actual peer/worker stranded.
+    mutex_witness.join().expect("transition witness joins");
     worker.stop_and_join().expect("physical writer joins");
     drop(worker);
     drop(router);
     drop(windows);
+    assert!(
+        matches!(transition_released_during_wait, Ok(true)),
+        "Quit must release transition/current locks before awaiting Ready: {transition_released_during_wait:?}"
+    );
 }
 
 #[test]
