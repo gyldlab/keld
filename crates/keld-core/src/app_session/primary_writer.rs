@@ -134,6 +134,11 @@ struct Shared {
 struct DeterministicWaiters {
     capacity: Condvar,
     worker: Condvar,
+    // Explicit test-only wake tokens make spurious Condvar wakeups non-events.
+    capacity_wake_generation: std::sync::atomic::AtomicU64,
+    worker_wake_generation: std::sync::atomic::AtomicU64,
+    capacity_wait_count: std::sync::atomic::AtomicUsize,
+    capacity_rewait_observer: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
     // One-shot controlled mutation for the actual-writer liveness regression.
     notify_one_next: std::sync::atomic::AtomicBool,
 }
@@ -192,6 +197,10 @@ impl PrimaryWriter {
             Some(Arc::new(DeterministicWaiters {
                 capacity: Condvar::new(),
                 worker: Condvar::new(),
+                capacity_wake_generation: std::sync::atomic::AtomicU64::new(0),
+                worker_wake_generation: std::sync::atomic::AtomicU64::new(0),
+                capacity_wait_count: std::sync::atomic::AtomicUsize::new(0),
+                capacity_rewait_observer: Mutex::new(None),
                 notify_one_next: std::sync::atomic::AtomicBool::new(false),
             }));
     }
@@ -209,6 +218,40 @@ impl PrimaryWriter {
         waiters
             .notify_one_next
             .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(super) fn observe_capacity_rewait_for_test(
+        &self,
+        observed: std::sync::mpsc::SyncSender<()>,
+    ) {
+        let waiters = self
+            .shared
+            .deterministic_waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned()
+            .expect("deterministic waiter mode is enabled");
+        *waiters
+            .capacity_rewait_observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(observed);
+    }
+
+    #[cfg(test)]
+    pub(super) fn worker_wake_generation_for_test(&self) -> u64 {
+        let waiters = self
+            .shared
+            .deterministic_waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned()
+            .expect("deterministic waiter mode is enabled");
+        waiters
+            .worker_wake_generation
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     #[cfg(test)]
@@ -358,14 +401,13 @@ impl PrimaryWriter {
                         continue;
                     }
                     serviced = None;
-                    let remaining = deadline.saturating_duration_since(Instant::now());
                     #[cfg(test)]
                     if let Some(observed) = state.capacity_wait_observer.take() {
                         let _ = observed.try_send(());
                     }
                     let (next, _) = self
                         .shared
-                        .wait_capacity_timeout(state, remaining)
+                        .wait_capacity_timeout(state, deadline)
                         .map_err(|_| WriterRefusal::Poisoned)?;
                     state = next;
                 }
@@ -395,7 +437,7 @@ impl Shared {
     fn wait_capacity_timeout<'a>(
         &self,
         state: MutexGuard<'a, State>,
-        remaining: Duration,
+        deadline: Instant,
     ) -> std::sync::LockResult<(MutexGuard<'a, State>, WaitTimeoutResult)> {
         // Extract the test waiter handle before waiting. In an if-let
         // scrutinee the MutexGuard temporary otherwise survives into the
@@ -411,9 +453,41 @@ impl Shared {
         };
         #[cfg(test)]
         if let Some(waiters) = deterministic {
-            return waiters.capacity.wait_timeout(state, remaining);
+            let wait_index = waiters
+                .capacity_wait_count
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            if wait_index != 0 {
+                if let Some(observed) = waiters
+                    .capacity_rewait_observer
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                {
+                    let _ = observed.try_send(());
+                }
+            }
+            let generation = waiters
+                .capacity_wake_generation
+                .load(std::sync::atomic::Ordering::Acquire);
+            let mut state = state;
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let (next, timeout) = waiters.capacity.wait_timeout(state, remaining)?;
+                state = next;
+                if waiters
+                    .capacity_wake_generation
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    != generation
+                    || timeout.timed_out()
+                {
+                    return Ok((state, timeout));
+                }
+                // A spurious wake is not a capacity notification. Keep waiting
+                // against the original absolute deadline and wake generation.
+            }
         }
-        self.changed.wait_timeout(state, remaining)
+        self.changed
+            .wait_timeout(state, deadline.saturating_duration_since(Instant::now()))
     }
 
     fn wait_worker<'a>(
@@ -432,7 +506,21 @@ impl Shared {
         };
         #[cfg(test)]
         if let Some(waiters) = deterministic {
-            return waiters.worker.wait(state);
+            let generation = waiters
+                .worker_wake_generation
+                .load(std::sync::atomic::Ordering::Acquire);
+            let mut state = state;
+            loop {
+                state = waiters.worker.wait(state)?;
+                if waiters
+                    .worker_wake_generation
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    != generation
+                {
+                    return Ok(state);
+                }
+                // A spurious wake without a new token cannot advance the writer.
+            }
         }
         self.changed.wait(state)
     }
@@ -446,12 +534,30 @@ impl Shared {
             .as_ref()
             .cloned()
         {
-            if waiters
+            let single_capacity_wake = waiters
                 .notify_one_next
-                .swap(false, std::sync::atomic::Ordering::AcqRel)
+                .swap(false, std::sync::atomic::Ordering::AcqRel);
+            // Serialize token publication with the same State mutex used by
+            // both waiters. This closes the check-to-sleep window: a publisher
+            // cannot advance a token before a waiter has atomically released
+            // State in its Condvar wait.
             {
-                // Deliberately model the allowed single-wake selection: the
-                // full-capacity producer wakes, while the physical writer does not.
+                let _state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                waiters
+                    .capacity_wake_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::Release);
+                if !single_capacity_wake {
+                    waiters
+                        .worker_wake_generation
+                        .fetch_add(1, std::sync::atomic::Ordering::Release);
+                }
+            }
+            if single_capacity_wake {
+                // Model the allowed single-wake selection: the capacity
+                // producer receives a token, but the physical worker does not.
                 waiters.capacity.notify_one();
             } else {
                 waiters.capacity.notify_all();
