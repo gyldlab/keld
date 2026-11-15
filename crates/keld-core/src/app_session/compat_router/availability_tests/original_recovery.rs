@@ -1,8 +1,8 @@
 //! Actual Core writer/subscriptions and native lease owner with modeled callbacks.
 //! Runtime authentication and real `WebKit` effects remain separate native gates.
 
-use super::{active_caller, availability_session};
 use super::super::{CompatLedger, Direction, NativeRouteKey, PreflightAdmission};
+use super::{active_caller, availability_session};
 use crate::app_session::window_registry::WindowOwner;
 use crate::app_session::window_router::WindowSession;
 use keld_ipc::codec::decode;
@@ -399,23 +399,24 @@ fn stale_forwarded_send_frees_only_matching_preflight_and_keeps_data_custody() -
     ));
     assert!(!ledger.clear_matching_preflight(key, &caller, None));
     let mut separate = WindowSession::new(true);
-    let (_second_root, second_native, _, _) =
-        separate.fixture_original_recovery_document(owner)?;
+    let (_second_root, second_native, _, _) = separate.fixture_original_recovery_document(owner)?;
     let separate_document = second_native.document();
     assert!(!document.same_binding(&separate_document));
-    assert!(!ledger.clear_matching_preflight(
-        key,
-        &caller,
-        Some(&separate_document),
-    ));
-    assert!(ledger.preflight.is_some(), "foreign aborts cannot free capacity");
+    assert!(!ledger.clear_matching_preflight(key, &caller, Some(&separate_document),));
+    assert!(
+        ledger.preflight.is_some(),
+        "foreign aborts cannot free capacity"
+    );
 
     // After native forwarding, the original document can be retired before
     // the Core Send callback. Its retained lease still identifies the charge.
     original.revoke();
     assert!(!document.is_current());
     assert!(ledger.clear_matching_preflight(key, &caller, Some(&document)));
-    assert!(ledger.preflight.is_none(), "next valid preflight has capacity");
+    assert!(
+        ledger.preflight.is_none(),
+        "next valid preflight has capacity"
+    );
     assert!(
         ledger.occupied(Direction::MainToRenderer),
         "preflight refusal cannot refund independent DATA custody"
@@ -427,7 +428,10 @@ fn stale_forwarded_send_frees_only_matching_preflight_and_keeps_data_custody() -
         call: 42,
         channel: String::from("rendererReq"),
     });
-    assert!(ledger.preflight.is_some(), "successor can reserve preflight");
+    assert!(
+        ledger.preflight.is_some(),
+        "successor can reserve preflight"
+    );
     Ok(())
 }
 
