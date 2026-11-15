@@ -49,9 +49,33 @@ pub(super) fn prove_held_registration(
 }
 
 pub(super) fn await_executed_bun(marker: &Path, group: i32, pre_ack_image: &str) -> i32 {
-    let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
+    await_executed_bun_until(
+        marker,
+        group,
+        pre_ack_image,
+        Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE,
+        || {},
+        || {},
+    )
+}
+
+// Private witness seam: the production caller retains one original 5s
+// deadline. Tests may receipt the *actual* successful filesystem read and
+// release it only after that same deadline has elapsed. The second receipt
+// proves the real kernel group/image assertions reached the success path;
+// a deadline guard placed before those assertions must fail the negative
+// oracle. Neither callback grants numeric PID or process-group authority.
+fn await_executed_bun_until(
+    marker: &Path,
+    group: i32,
+    pre_ack_image: &str,
+    deadline: Instant,
+    mut after_marker_read: impl FnMut(),
+    mut after_native_validation: impl FnMut(),
+) -> i32 {
     loop {
         if let Ok(contents) = std::fs::read_to_string(marker) {
+            after_marker_read();
             let ids: Vec<i32> = contents
                 .split_whitespace()
                 .filter_map(|value| value.parse().ok())
@@ -68,6 +92,11 @@ pub(super) fn await_executed_bun(marker: &Path, group: i32, pre_ack_image: &str)
                     pre_ack_image,
                     "CONTROL_REGISTERED must permit Bun's executable image"
                 );
+                after_native_validation();
+                assert!(
+                    Instant::now() < deadline,
+                    "native marker accepted after original deadline"
+                );
                 return ids[1];
             }
         }
@@ -78,3 +107,7 @@ pub(super) fn await_executed_bun(marker: &Path, group: i32, pre_ack_image: &str)
         thread::yield_now();
     }
 }
+
+#[cfg(test)]
+#[path = "observers/deadline_tests.rs"]
+mod deadline_tests;
