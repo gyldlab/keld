@@ -5,7 +5,7 @@ use crate::support::{
     control::{accept_control_or_host_failure, assert_nonzero_descendant, read_control_line},
     process::{wait_child, wait_for_strict_generation, wait_process_identity_gone},
     project::{DARK_BG, PRODUCT_TITLE, ProductFixture},
-    renderer::serve_renderer_beacon,
+    renderer::{expect_renderer_beacon, spawn_renderer_beacon},
 };
 use std::{
     fs,
@@ -14,8 +14,6 @@ use std::{
     os::unix::net::UnixListener,
     path::Path,
     process::{Command, Stdio},
-    sync::mpsc,
-    thread,
     time::Instant,
 };
 
@@ -62,8 +60,7 @@ pub(crate) fn run_product_cycle(fixture: &ProductFixture, label: &str) -> Produc
         .expect("nonblocking control listener");
     let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind renderer beacon");
     let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
-    let (beacon_tx, beacon_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || serve_renderer_beacon(&beacon_listener, &beacon_tx));
+    let beacon = spawn_renderer_beacon(beacon_listener);
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -108,9 +105,7 @@ pub(crate) fn run_product_cycle(fixture: &ProductFixture, label: &str) -> Produc
     assert!(fields.next().is_none(), "{hello}");
     assert_nonzero_descendant(&read_control_line(&mut reader));
     let generation = wait_for_strict_generation(host_pid, Instant::now() + PRODUCT_DEADLINE);
-    beacon_rx
-        .recv_timeout(PRODUCT_DEADLINE)
-        .expect("WebKitGTK renderer requested the exact beacon");
+    expect_renderer_beacon(beacon, "WebKitGTK renderer beacon");
     assert_eq!(read_control_line(&mut reader), "READY");
     assert_eq!(read_control_line(&mut reader), "ECHO1");
     assert_eq!(read_control_line(&mut reader), "ECHO2");
@@ -132,7 +127,6 @@ pub(crate) fn run_product_cycle(fixture: &ProductFixture, label: &str) -> Produc
     }
     wait_process_identity_gone(&generation.bun, Instant::now() + PRODUCT_DEADLINE);
     wait_process_identity_gone(&generation.descendant, Instant::now() + PRODUCT_DEADLINE);
-    beacon.join().expect("renderer beacon thread");
     drop(stage);
 
     ProductEvidence {
