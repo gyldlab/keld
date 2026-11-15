@@ -16,13 +16,23 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     for mode in [WvLinkMode::LegacyV1, WvLinkMode::CompatV2] {
         if let Ok(envelope) = decode_wv_link_for_mode(data, mode) {
             match envelope {
-                WvLinkEnvelope::Bind => {}
+                WvLinkEnvelope::Bind => {
+                    if mode == WvLinkMode::CompatV2 {
+                        assert!(data.len() <= 4096);
+                    }
+                }
                 WvLinkEnvelope::Invoke {
                     request,
                     channel,
                     payload,
-                    ..
+                    document,
                 } => {
+                    if mode == WvLinkMode::CompatV2 {
+                        assert_eq!(document.len(), 32);
+                        assert!(document.bytes().all(|byte| {
+                            byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+                        }));
+                    }
                     assert_ne!(request.get(), 0);
                     assert_ne!(channel.get(), 0);
                     assert!(payload.len() <= 4096);
