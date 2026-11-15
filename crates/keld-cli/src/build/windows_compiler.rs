@@ -374,7 +374,7 @@ pub(super) fn compile(
         compiler.tsconfig.path.as_os_str().to_owned(),
         OsString::from("--preload"),
         compiler.preload.path.as_os_str().to_owned(),
-        compiler.source.entry().path.as_os_str().to_owned(),
+        compiler.entry.path.as_os_str().to_owned(),
         compiler.source.kipc_root().as_os_str().to_owned(),
         compiler.tools.parser.path.as_os_str().to_owned(),
     ];
