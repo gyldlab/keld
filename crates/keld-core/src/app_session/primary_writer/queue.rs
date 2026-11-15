@@ -66,6 +66,8 @@ pub(super) struct State {
     #[cfg(test)]
     pub(super) capacity_wait_observer: Option<std::sync::mpsc::SyncSender<()>>,
     #[cfg(test)]
+    pub(super) writer_idle_wait_observer: Option<std::sync::mpsc::SyncSender<()>>,
+    #[cfg(test)]
     pub(super) quiescence_wait_observer: Option<std::sync::mpsc::SyncSender<()>>,
 }
 impl State {
@@ -84,6 +86,8 @@ impl State {
             after_dequeue: None,
             #[cfg(test)]
             capacity_wait_observer: None,
+            #[cfg(test)]
+            writer_idle_wait_observer: None,
             #[cfg(test)]
             quiescence_wait_observer: None,
         }

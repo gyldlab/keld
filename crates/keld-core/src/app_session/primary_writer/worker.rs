@@ -80,11 +80,29 @@ pub(in crate::app_session) struct PrimaryWriterWorker {
 }
 impl PrimaryWriterWorker {
     pub(in crate::app_session) fn start(
+        router: PrimaryRouterHandle,
+    ) -> Result<(PrimaryWriter, Self), HostAppError> {
+        let writer = PrimaryWriter::new(router.window_commands.clone());
+        Self::start_with_writer(router, writer)
+    }
+
+    // A test can register a real capacity waiter on the same condition before
+    // starting the sole physical worker. Production always constructs its own
+    // writer via `start` and never accepts an injected writer.
+    #[cfg(test)]
+    pub(super) fn start_existing_for_test(
+        router: PrimaryRouterHandle,
+        writer: PrimaryWriter,
+    ) -> Result<(PrimaryWriter, Self), HostAppError> {
+        Self::start_with_writer(router, writer)
+    }
+
+    fn start_with_writer(
         mut router: PrimaryRouterHandle,
+        writer: PrimaryWriter,
     ) -> Result<(PrimaryWriter, Self), HostAppError> {
         #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
         let physical_hold = super::physical_value_hold::PhysicalValueHold::from_env()?;
-        let writer = PrimaryWriter::new(router.window_commands.clone());
         router.primary_writer = Some(writer.clone());
         if let Some(compat) = &router.compat {
             compat
@@ -231,6 +249,10 @@ fn next(shared: &Shared) -> Result<Option<(Position, Packet)>, HostAppError> {
         }
         if state.closed {
             return Ok(None);
+        }
+        #[cfg(test)]
+        if let Some(observer) = state.writer_idle_wait_observer.take() {
+            let _ = observer.try_send(());
         }
         state = shared
             .changed

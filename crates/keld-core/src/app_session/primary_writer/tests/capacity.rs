@@ -139,3 +139,87 @@ fn enqueue_notifies_every_predicate_waiter_on_the_shared_condition() {
     ));
     drop(receipt);
 }
+
+#[test]
+fn actual_writer_advances_when_an_earlier_capacity_waiter_cannot() {
+    let (router, mut peer, _owner, _windows) = initial_ready_router_with_window_loop();
+    let link = target(&router);
+    let writer = PrimaryWriter::new(router.window_commands.clone());
+    // Reserving the only VALUE slot creates a genuine blocked producer. Keep
+    // the reservation, payload and future receipt charged until after I/O.
+    let prepared = frame(&writer, &link, &[0x42, 0x24]);
+    let (capacity_observed, capacity_registered) = mpsc::sync_channel(1);
+    writer.observe_next_capacity_wait_for_test(capacity_observed);
+    let competing = writer.clone();
+    let capacity_waiter = thread::spawn(move || {
+        competing.reserve_waiting_serviced(
+            Class::Value,
+            true,
+            Instant::now() + Duration::from_secs(3),
+            || false,
+            || Ok(()),
+        )
+    });
+    capacity_registered
+        .recv_timeout(Duration::from_secs(2))
+        .expect("real producer reaches full-capacity wait first");
+    // The shared mutex fence proves the capacity waiter released it in wait.
+    drop(
+        writer
+            .shared
+            .state
+            .lock()
+            .expect("capacity wait registration"),
+    );
+
+    let (idle_observed, idle_registered) = mpsc::sync_channel(1);
+    writer
+        .shared
+        .state
+        .lock()
+        .expect("idle hook")
+        .writer_idle_wait_observer = Some(idle_observed);
+    let (writer, mut worker) =
+        PrimaryWriterWorker::start_existing_for_test(router, writer).expect("real physical owner");
+    idle_registered
+        .recv_timeout(Duration::from_secs(2))
+        .expect("physical writer reaches second condition wait");
+    drop(
+        writer
+            .shared
+            .state
+            .lock()
+            .expect("writer wait registration"),
+    );
+
+    // Without a broadcast, the first waiter can consume the only notification
+    // even though its capacity predicate remains false, stranding this worker.
+    let receipt = send(prepared);
+    peer.set_app_link_read_deadline(Some(Duration::from_secs(2)))
+        .expect("bounded physical proof");
+    let (header, payload) =
+        keld_ipc::link::read_frame(&mut peer).expect("worker physically wrote without release");
+    assert_eq!(header.corr, CorrelationId(9));
+    assert_eq!(payload, [0x42, 0x24]);
+    assert_eq!(
+        receipt
+            .wait(deadline())
+            .expect("same retained receipt settles"),
+        WriteCompletion::Written
+    );
+    assert_eq!(count(&writer), 1, "completed receipt still owns the slot");
+    assert!(matches!(
+        writer.try_reserve_value(deadline()),
+        Err(WriterRefusal::Full)
+    ));
+    drop(receipt);
+    drop(
+        capacity_waiter
+            .join()
+            .expect("bounded genuine capacity waiter")
+            .expect("capacity becomes available only after receipt release"),
+    );
+    worker
+        .stop_and_join()
+        .expect("real owner terminates cleanly");
+}
