@@ -7,13 +7,9 @@ use std::path::{Component, Path, PathBuf, Prefix};
 
 fn canonical_fixture() -> (Fixture, PathBuf) {
     let mut fixture = Fixture::new();
-    // The independent caller spelling is built from the ordinary TempDir path,
-    // not by calling the production prefix-conversion helper.
-    let ordinary = fixture.root.join("bootstrap").join("app-preload.cjs");
-    assert!(matches!(
-        ordinary.components().next(),
-        Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_))
-    ));
+    // TEMP may name a junction. Exercise the two exact DOS spellings of the
+    // real selected directory, not an unrelated alias of that directory.
+    // Construct the ordinary spelling without the production conversion helper.
     fixture.root = fixture
         .root
         .canonicalize()
@@ -21,6 +17,14 @@ fn canonical_fixture() -> (Fixture, PathBuf) {
     assert!(matches!(
         fixture.root.components().next(),
         Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::VerbatimDisk(_))
+    ));
+    let root = fixture.root.to_str().expect("canonical UTF8");
+    // The graph member uses '/', while an ordinary Windows selector uses '\'.
+    let ordinary = Path::new(root.strip_prefix(r"\\?\").expect("local disk root"))
+        .join(PRELOAD.replace('/', "\\"));
+    assert!(matches!(
+        ordinary.components().next(),
+        Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_))
     ));
     let canonical = fixture.root.join(PRELOAD);
     assert_eq!(
