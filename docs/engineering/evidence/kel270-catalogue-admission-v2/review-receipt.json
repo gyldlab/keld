@@ -1,6 +1,6 @@
 {
   "schema": "keld.specification-review/v1",
-  "status": "design-review-complete; human-signoff-pending",
+  "status": "historical-R3-review-preserved; current-independent-review-pending; human-signoff-pending",
   "source_main": "ec29b7ce2b155a8c98f96036cbb9c54488b5c302",
   "source_pr1531": "7ff41173d28d58ae61ccbb3382d055c8ef9c9c97",
   "reviewed_snapshot": "R3",
@@ -23,15 +23,17 @@
     "docs/engineering/evidence/kel270-catalogue-admission-v2/identity-vectors.json": "400e007fc279f1895910aeeaaf5b3c78788656cc5982b6f49eeeee6fae3caf51",
     "docs/engineering/evidence/kel270-catalogue-admission-v2/metadata-golden.json": "e9c0eb71df1a8c6f62373a8977c20405afc54f83752a7da4b7f3e6e582a7abea",
     "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py": "8d55714a03bf68d401c593d0c7471d47622462585152fe02308416418839b461",
-    "docs/specs/kel270-catalogue-admission-v2/identity.md": "0e4ff6d80e71c12fc93720bc6bc63f729c945134e3064f1d4982cb714fed4d08",
-    "docs/specs/kel270-catalogue-admission-v2/implementation.md": "f6e2fb5488927a7c5f3651183bebe100ab86bc60924fea09627f2dc626ed2695",
-    "docs/specs/kel270-catalogue-admission-v2/index.md": "1dd2ee5191f6b6ae69f5387857fef292a8713bb46fabd131871e4f1678584b49",
+    "docs/specs/kel270-catalogue-admission-v2/identity.md": "5634bd627985407710fd13e72fa8bde8345c26c88bf2890d3c1ea9b672561ece",
+    "docs/specs/kel270-catalogue-admission-v2/implementation.md": "05c0a2db3ddec8931f63c19d24b89e37f36047a8f745a97f89495e5a608851a6",
+    "docs/specs/kel270-catalogue-admission-v2/index.md": "2263de25d66c7262eff86f3a621a5630f419482def1dd5840ccbb2608d543520",
     "docs/specs/kel270-catalogue-admission-v2/integration.md": "10ea8844e3baa1a9799f2a7b4d76f2d394da6d23564bc9769aa038ab285b3a0d",
-    "docs/specs/kel270-catalogue-admission-v2/metadata.md": "7839a0f1e5de4aadd48882075297543cd715e763b037d442a8af57e8ea0618fd",
-    "docs/specs/kel270-catalogue-admission-v2/qualification.md": "6b75566ce1ede090a4a6ebddcf0c3c7a8937c3418f9d72e167ea4d6b08bf8cb3",
-    "docs/specs/kel270-catalogue-admission-v2/recovery.md": "6ec46ca5563c5d7aee1912d62b7e8059453d6c3c23d5793b086ac603bc2206f5",
-    "docs/specs/kel270-catalogue-admission-v2/requirements.md": "35ae496755c1acbf02b7ff0bf2f8fcb0e9fe5a4c0090480bfd05ea0206ec39bf",
-    "docs/specs/kel270-catalogue-admission-v2/windows.md": "4bf869fb42468b7bdaa07c75367177f192df65495fd068119f7819b3b52748dc"
+    "docs/specs/kel270-catalogue-admission-v2/metadata.md": "aed578a676d0f821abd85892b2af2507640a231fce5887bf117da773653ce5bf",
+    "docs/specs/kel270-catalogue-admission-v2/qualification.md": "2e4dde16f80fb07afc648aff3fbedd742ba98b16023722711e7f54b3fe37c344",
+    "docs/specs/kel270-catalogue-admission-v2/recovery.md": "2dea655af708f1b07d9fa71e37352493342bfae4da3c353523c321354a63dff0",
+    "docs/specs/kel270-catalogue-admission-v2/requirements.md": "972cb72982881b9bf526f7602c9841ce51b136fe59f27d9fa25d8c4e80d6187a",
+    "docs/specs/kel270-catalogue-admission-v2/windows.md": "4bf869fb42468b7bdaa07c75367177f192df65495fd068119f7819b3b52748dc",
+    "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_evidence_capacity.py": "470176962fd16c4918628c07e7571aa6140339826cda10ad129b27c0e8939779",
+    "docs/engineering/evidence/kel270-catalogue-admission-v2/evidence-capacity-validation.json": "10ea1da408a256c7982dddab279009deccab0b0e1e23c84a3b8cfa67ab6eb83e"
   },
   "publication_changes_after_R3": [
     "index.md removes closed B-81 from the open-blocker list",
@@ -42,7 +44,12 @@
     "List only stable blocker IDs in the index and remove terminal punctuation from task dependency fields.",
     "Place unchanged fixtures and review evidence outside the Markdown-only specification directory.",
     "Add direct evidence links, pin Windows source citations, and express external citations as source URLs.",
-    "Group source and acceptance sections in requirements.md, retain each owner design as section 4, and group later sections in implementation.md and qualification.md. The part table now follows the canonical global section order without removing contract text."
+    "Group source and acceptance sections in requirements.md, retain each owner design as section 4, and group later sections in implementation.md and qualification.md. The part table now follows the canonical global section order without removing contract text.",
+    "After later Amisha review, replace rotating recovery leaf-SPKI pin with durable recovery-only profile EKU and two-role exclusion.",
+    "Add expired-prepared successor retirement and current-root-versus-bootstrap continuity checks.",
+    "Increase the transition evidence cap to 24 distinct objects / 1310720 bytes with 20 required positive references.",
+    "Add synthetic nine-case evidence-capacity verification; all original 19 groups and 110 product cases remain unexecuted.",
+    "Reopen B-81 independent current-head review and recalculate all current publication file hashes without modifying historical R3 evidence."
   ],
   "independence": "Three isolated reviewers received the exact source and one named lens without author rationale. Each surviving R2 finding received independent refutation. R3 rechecks cover the corrections and added pending-operation contract.",
   "reports": {
@@ -1559,5 +1566,16 @@
       "evidence_subdir": "retry-bun-path"
     },
     "limits": "Historical source-bound repository tests; not final-head execution or Windows product acceptance. All later publication changes remain documentation and fixture placement only."
+  },
+  "reviewed_snapshot_scope": "R3 reviewed_file_sha256 and reviewed_manifest_sha256 remain immutable historical evidence. They do NOT certify later normative edits.",
+  "current_publication": {
+    "source_commit_before_receipt": "29bdd6824b306dd3ac88f28bddf176ef8b11e9bf",
+    "hash_algorithm": "SHA-256 of exact tracked bytes",
+    "file_count": 16,
+    "self_reference_excluded": true,
+    "old_review_threads": "3 resolved at specification level; no production/native passes inferred",
+    "new_review_threads": "certificate rotation corrected; capacity corrected; current-head independent design review and evidence closeout pending",
+    "human_signoff": "NOT_GRANTED",
+    "native_product_tests": "NOT_RUN"
   }
 }
