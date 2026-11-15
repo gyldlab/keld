@@ -658,8 +658,8 @@ mod tests {
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
             [
-                "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\"".as_ref(),
                 "--define=__KELD_HOST_LAUNCH_FACTS__:undefined".as_ref(),
+                "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\"".as_ref(),
                 "run".as_ref(),
                 entry.as_os_str()
             ]
@@ -679,11 +679,11 @@ mod tests {
         )
         .expect("canonical sidecar launch");
         let args = command.get_args().collect::<Vec<_>>();
+        assert_eq!(args[0], "--define=__KELD_HOST_LAUNCH_FACTS__:undefined");
         assert_eq!(
-            args[0],
+            args[1],
             "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\""
         );
-        assert_eq!(args[1], "--define=__KELD_HOST_LAUNCH_FACTS__:undefined");
         assert_eq!(args[2], format!("--preload={}", sidecar.display()).as_str());
         assert_eq!(args[3], "run");
         assert_eq!(args[4], entry.as_os_str());
@@ -733,12 +733,14 @@ mod tests {
                     "/tmp/link#token",
                 )
                 .expect("raw no-sidecar launch remains supported");
-                let mut expected = vec![std::ffi::OsString::from(if native_facade {
-                    "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\""
-                } else {
-                    "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"0\""
-                })];
-                expected.push("--define=__KELD_HOST_LAUNCH_FACTS__:undefined".into());
+                let mut expected = vec![
+                    std::ffi::OsString::from("--define=__KELD_HOST_LAUNCH_FACTS__:undefined"),
+                    std::ffi::OsString::from(if native_facade {
+                        "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\""
+                    } else {
+                        "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"0\""
+                    }),
+                ];
                 if with_sidecar {
                     expected.push(format!("--preload={}", sidecar.display()).into());
                 }
@@ -808,10 +810,15 @@ mod tests {
         .expect("qualified command");
         let observed: Vec<_> = command.get_args().collect();
         assert!(
-            observed[1]
+            observed[0]
                 .to_string_lossy()
                 .starts_with("--define=__KELD_HOST_LAUNCH_FACTS__:")
         );
+        assert_eq!(
+            observed[1],
+            "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\""
+        );
+        assert_eq!(observed.len(), 4);
         assert_eq!(observed[2], "run");
         assert_eq!(observed[3], temp.path().join("entry.ts"));
         args[7] =
