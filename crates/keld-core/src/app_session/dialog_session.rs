@@ -362,6 +362,9 @@ impl DialogSession {
         let due = now >= deadline && completed_at.is_none_or(|at| at >= deadline);
         if due {
             self.expire(owner)?;
+        }
+        if now >= deadline {
+            // A timely callback preserves the selection, not unlimited custody.
             self.begin_cleanup(owner, deadline + Duration::from_secs(10))?;
         }
         Ok(due)

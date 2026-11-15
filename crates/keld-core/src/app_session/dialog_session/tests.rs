@@ -246,6 +246,14 @@ fn delayed_poll_preserves_only_pre_cutoff_native_completion() {
                 .unwrap(),
             expected_expiry
         );
+        // Even a timely callback must not retain physical custody indefinitely.
+        let cleanup = cutoff + std::time::Duration::from_secs(10);
+        assert_eq!(
+            session.state.lock().unwrap().cleanup_deadline,
+            Some(cleanup)
+        );
+        assert!(session.check_cleanup(owner, || cleanup).is_err());
+        assert!(!session.has_capacity());
         let outcome = MacDialogUiOutcome::Selected {
             response: 0,
             checkbox_checked: false,
@@ -277,6 +285,7 @@ fn deadline_arbitration_preserves_prior_cancel_and_retirement() {
         let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
         let owner = original(1, 1);
         session.reserve(owner, options(), WebviewId(3)).unwrap();
+        assert!(session.take_work().unwrap().is_some());
         let cutoff = Instant::now();
         if retired {
             session.retire(owner.identity, owner.attempt);
@@ -313,6 +322,7 @@ fn cleanup_deadline_fails_without_releasing_custody_and_never_restarts() {
     let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
     let owner = original(1, 1);
     session.reserve(owner, options(), WebviewId(3)).unwrap();
+    assert!(session.take_work().unwrap().is_some());
     let started = Instant::now();
     let cutoff = started + Duration::from_secs(10);
     session.begin_cleanup(owner, cutoff).unwrap();
