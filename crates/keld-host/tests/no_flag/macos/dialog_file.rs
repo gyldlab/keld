@@ -282,7 +282,7 @@ struct FilePaths {
 }
 
 impl FilePaths {
-    fn new(fixture: &ProductFixture, directory_hint: bool) -> Self {
+    fn new() -> Self {
         // macOS NSOpenPanel hides entries in process-private /var/folders
         // temporary locations. Put only fixture-owned directories under a
         // visible HOME or explicit parent and retain them through Host exit.
@@ -348,11 +348,8 @@ impl FilePaths {
         fs::write(package.join("Contents/Info.plist"),
             b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundlePackageType</key><string>APPL</string></dict></plist>",
         ).expect("package identity fixture");
-        let destination = if directory_hint {
-            directory.join("gh478-chosen.drawio")
-        } else {
-            fixture.root.path().join("gh478-chosen.drawio")
-        };
+        // Both defaultPath modes must satisfy the AX helper's owned-parent guard.
+        let destination = directory.join("gh478-chosen.drawio");
         assert!(!destination.exists(), "Save is path-only, not a write");
         Self {
             _accessible_directory: accessible_directory,
@@ -529,7 +526,7 @@ fn run_real_host_files(scenario: FileScenario, cancel_cycles: usize) {
         "native repeated proof must cover Open and Save"
     );
     let fixture = ProductFixture::new("gh478-real-open-save");
-    let paths = FilePaths::new(&fixture, directory_hint);
+    let paths = FilePaths::new();
     let staged = stage(&fixture);
     let socket = fixture.root.path().join("native-file.sock");
     let listener = UnixListener::bind(&socket).expect("owned single control listener");
@@ -623,7 +620,7 @@ fn real_host_invalid_native_filter_keeps_dialog_custody_and_healthy_next_message
     // or fabricated native completion. Each rejected filter must deliver the
     // original correlation, retain zero sheets, and permit the next Message.
     let fixture = ProductFixture::new("gh478-invalid-native-filter");
-    let _paths = FilePaths::new(&fixture, false);
+    let _paths = FilePaths::new();
     let staged = stage(&fixture);
     let socket = fixture.root.path().join("native-file.sock");
     let listener = UnixListener::bind(&socket).expect("owned control socket");
