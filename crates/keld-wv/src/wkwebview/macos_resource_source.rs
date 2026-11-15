@@ -933,7 +933,10 @@ mod tests {
             let url = format!("{base}index.html{suffix}");
             assert_eq!(source.qualify_document_url(&url), Ok(()), "{url}");
             assert!(
-                matches!(source.qualify_url(&url), Err(ResourceSourceError::InvalidUrl)),
+                matches!(
+                    source.qualify_url(&url),
+                    Err(ResourceSourceError::InvalidUrl)
+                ),
                 "a resource selector must never include a fragment: {url}"
             );
         }
