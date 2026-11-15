@@ -95,13 +95,16 @@ impl Fixture {
     }
 
     pub(crate) fn url(&self, member: &str) -> String {
-        // Independent fixture spelling, not the production URL constructor.
+        // Independent OS-normalized fixture spelling, not the production URL constructor.
+        // The runner TEMP name may be an alias of the retained directory's DOS name.
+        // Resolve the test-owned directory through the OS before spelling the URL;
+        // this grants no asset, document, source, or native navigation authority.
+        let canonical = fs::canonicalize(&self.root).expect("owned fixture canonical path");
+        let path = canonical.to_str().expect("fixture canonical UTF8");
+        let path = path.strip_prefix(r"\\?\").unwrap_or(path);
         format!(
             "file:///{}/{}",
-            self.root
-                .to_str()
-                .expect("fixture UTF8")
-                .replace('\\', "/")
+            path.replace('\\', "/")
                 .replace('%', "%25")
                 .replace('#', "%23"),
             member
