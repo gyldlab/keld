@@ -102,6 +102,19 @@ impl fmt::Display for BuildError {
 
 impl std::error::Error for BuildError {}
 
+/// Require exactly the bytes the KEL-96 Windows developer stage actually
+/// writes. Check captured source before signing and emitted bytes once again.
+#[cfg(any(windows, test))]
+fn require_developer_policy_replay(policy: &[u8]) -> Result<(), BuildError> {
+    if policy != crate::boot::PERMISSIONS_BYTES {
+        return Err(BuildError::input(
+            "Windows developer policy replay",
+            "Windows KEL-96 dev stage cannot replay source permission policy bytes; only the exact empty undeclared policy is supported",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(any(target_os = "macos", test))]
 fn require_local_legacy_profile(
     manifest: &keld_guard::PermissionsManifest,
@@ -543,6 +556,36 @@ fn run_macos_native() -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn developer_policy_replay_requires_exact_staged_bytes() {
+        require_developer_policy_replay(crate::boot::PERMISSIONS_BYTES)
+            .expect("exact Windows developer policy must replay");
+        for (case, bytes) in [
+            ("no final newline", b"{}".as_slice()),
+            (
+                "filesystem grant",
+                br#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#.as_slice(),
+            ),
+            (
+                "window CSP",
+                br#"{"windows":{"primary":{"web":{"csp":"original-editor-offline"}}}}"#.as_slice(),
+            ),
+            ("alternate whitespace", b"{ }\n".as_slice()),
+            ("commented empty", b"// comment\n{}\n".as_slice()),
+        ] {
+            keld_guard::parse_manifest(std::str::from_utf8(bytes).expect("valid fixture UTF-8"))
+                .expect("each negative policy must be syntactically valid");
+            let error = require_developer_policy_replay(bytes)
+                .expect_err("valid but nonreplayable policy must refuse");
+            assert!(
+                error
+                    .to_string()
+                    .contains("cannot replay source permission policy bytes"),
+                "{case}: {error}"
+            );
+        }
+    }
 
     #[test]
     fn help_succeeds_without_target_or_project_inputs() {
