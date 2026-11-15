@@ -5946,6 +5946,29 @@ fn append_pre_ready_bun_exit_evidence(
     }
 }
 
+// Keep a distinct supervisor/retirement failure visible without replacing the
+// original pre-Ready owner cause. This is the existing error's diagnostic only:
+// no extra task, authority, process, or restart is created. Bound and scrub the
+// runtime's text just as the captured Bun evidence is bounded.
+#[cfg(any(target_os = "linux", windows))]
+fn append_pre_ready_supervisor_failure(
+    error: &mut HostAppError,
+    outcome: &keld_runtime::SupervisorOutcome,
+) {
+    if error.code != "KELD-CORE-037" || error.phase != PRIMARY_PRE_READY_PHASE {
+        return;
+    }
+    if let keld_runtime::SupervisorOutcome::Failed(failure) = outcome {
+        let bounded: String = failure
+            .to_string()
+            .chars()
+            .take(384)
+            .map(|ch| if ch.is_control() { ' ' } else { ch })
+            .collect();
+        let _ = write!(error.detail, "; supervisor cleanup failed: {bounded}");
+    }
+}
+
 #[cfg(any(target_os = "linux", windows))]
 fn terminate_direct_primary_owner(
     error: HostAppError,
@@ -5964,8 +5987,9 @@ fn terminate_direct_primary_owner(
         // The owner was already terminal. Wait for the sole runtime supervisor
         // to reap/publish its exit record before taking a diagnostic snapshot.
         // This cannot enable a successor or replace the original failure.
-        let _ = supervisor.wait_for_outcome();
+        let outcome = supervisor.wait_for_outcome();
         append_pre_ready_bun_exit_evidence(&mut error, &supervisor.crash_ledger());
+        append_pre_ready_supervisor_failure(&mut error, &outcome);
     }
     error
 }

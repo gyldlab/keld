@@ -324,7 +324,12 @@ fn pre_ready_bun_diagnostic_uses_only_matching_bounded_termination_evidence() {
     assert!(error.detail.contains("crash-marker"), "{}", error.detail);
     assert!(!error.detail.contains('\u{1b}'), "{}", error.detail);
     assert!(!error.detail.contains('\n'), "{}", error.detail);
-    assert!(error.detail.len() < 900, "diagnostic exceeded bound");
+    let appended = error
+        .detail
+        .split_once("; bounded Bun stderr tail: ")
+        .expect("retained stderr")
+        .1;
+    assert_eq!(appended.chars().count(), 384, "{}", error.detail);
 
     let mut no_record = app_detail(super::PRIMARY_PRE_READY_PHASE, ORIGINAL);
     super::append_pre_ready_bun_exit_evidence(&mut no_record, &CrashLedger::default());
@@ -342,6 +347,54 @@ fn pre_ready_bun_diagnostic_uses_only_matching_bounded_termination_evidence() {
 
     let mut after_teardown = app_detail(super::PRIMARY_AFTER_TEARDOWN_PHASE, ORIGINAL);
     super::append_pre_ready_bun_exit_evidence(&mut after_teardown, &ledger);
+    assert_eq!(after_teardown.detail, ORIGINAL);
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn pre_ready_supervisor_failure_preserves_primary_cause_and_bounded_cleanup_detail() {
+    use keld_runtime::{RuntimeError, SupervisorOutcome};
+
+    const ORIGINAL: &str = "Bun terminated before the initial window became ready";
+    let short = SupervisorOutcome::Failed(RuntimeError::Lifecycle {
+        phase: "capture retirement",
+        source: std::io::Error::other("cleanup-marker"),
+    });
+    let mut error = app_detail(super::PRIMARY_PRE_READY_PHASE, ORIGINAL);
+    super::append_pre_ready_supervisor_failure(&mut error, &short);
+    assert_eq!(error.code(), "KELD-CORE-037");
+    assert_eq!(error.phase, super::PRIMARY_PRE_READY_PHASE);
+    assert!(error.detail.starts_with(ORIGINAL), "{}", error.detail);
+    assert!(
+        error
+            .detail
+            .contains("supervisor cleanup failed: KELD-RUNTIME-003"),
+        "{}",
+        error.detail
+    );
+    assert!(error.detail.contains("cleanup-marker"), "{}", error.detail);
+
+    let long = SupervisorOutcome::Failed(RuntimeError::Lifecycle {
+        phase: "capture retirement",
+        source: std::io::Error::other(format!("{}{}", "\u{1b}[31m\n", "Z".repeat(1200))),
+    });
+    let mut bounded = app_detail(super::PRIMARY_PRE_READY_PHASE, ORIGINAL);
+    super::append_pre_ready_supervisor_failure(&mut bounded, &long);
+    let tail = bounded
+        .detail
+        .split_once("; supervisor cleanup failed: ")
+        .expect("independently identified cleanup failure")
+        .1;
+    assert_eq!(tail.chars().count(), 384, "{}", bounded.detail);
+    assert!(!tail.contains('\u{1b}'), "{}", bounded.detail);
+    assert!(!tail.contains('\n'), "{}", bounded.detail);
+
+    let mut stopped = app_detail(super::PRIMARY_PRE_READY_PHASE, ORIGINAL);
+    super::append_pre_ready_supervisor_failure(&mut stopped, &SupervisorOutcome::Stopped);
+    assert_eq!(stopped.detail, ORIGINAL);
+
+    let mut after_teardown = app_detail(super::PRIMARY_AFTER_TEARDOWN_PHASE, ORIGINAL);
+    super::append_pre_ready_supervisor_failure(&mut after_teardown, &short);
     assert_eq!(after_teardown.detail, ORIGINAL);
 }
 
