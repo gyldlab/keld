@@ -5,13 +5,16 @@ use super::{Fixture, PRELOAD, PRELOAD_BYTES};
 use std::fs;
 use std::path::{Component, Path, PathBuf, Prefix};
 
-fn canonical_fixture() -> (Fixture, PathBuf) {
+fn canonical_fixture() -> (Fixture, PathBuf, Option<PathBuf>) {
     let mut fixture = Fixture::new();
-    // The independent caller spelling is built from the ordinary TempDir path,
-    // not by calling the production prefix-conversion helper.
-    let ordinary = fixture.root.join("bootstrap").join("app-preload.cjs");
+    // The runner's TEMP spelling can contain a short-name alias (RUNNER~1).
+    // That alias is not the same canonical source component and must not be
+    // promoted into a positive preload selector. Use only the independently
+    // OS-resolved test-owned root, then strip its verbatim prefix to model the
+    // ordinary Bun spelling of that *canonical* selected member.
+    let initial = fixture.root.join(PRELOAD);
     assert!(matches!(
-        ordinary.components().next(),
+        initial.components().next(),
         Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_))
     ));
     fixture.root = fixture
@@ -23,12 +26,36 @@ fn canonical_fixture() -> (Fixture, PathBuf) {
         Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::VerbatimDisk(_))
     ));
     let canonical = fixture.root.join(PRELOAD);
-    assert_eq!(
-        canonical.to_str().expect("canonical UTF8"),
-        format!(r"\\?\{}", ordinary.to_str().expect("ordinary UTF8")),
-        "the two observed namespace spellings differ only by the verbatim prefix"
+    let canonical_text = canonical.to_str().expect("canonical UTF8");
+    let ordinary = PathBuf::from(
+        canonical_text
+            .strip_prefix(r"\\?\")
+            .expect("canonical file has a disk-path spelling"),
     );
-    (fixture, ordinary)
+    assert!(matches!(
+        ordinary.components().next(),
+        Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_))
+    ));
+    assert_eq!(
+        canonical_text,
+        format!(r"\\?\{}", ordinary.to_str().expect("ordinary UTF8")),
+        "the two qualified namespace spellings differ only by the verbatim prefix"
+    );
+    // Keep the original TEMP spelling as a hostile alias if this Windows
+    // host exposes one. Do not count a canonical TEMP path as an alias test.
+    let original_alias = (initial != ordinary).then_some(initial);
+    if std::env::var_os("GITHUB_ACTIONS").is_some() {
+        let alias = original_alias
+            .as_ref()
+            .expect("GitHub Windows runner must expose its original TEMP short-name spelling");
+        assert!(
+            alias
+                .components()
+                .any(|component| { component.as_os_str().to_string_lossy().contains('~') }),
+            "GitHub Windows TEMP must provide an observable 8.3 short-name component: {alias:?}"
+        );
+    }
+    (fixture, ordinary, original_alias)
 }
 
 fn close_fixture(fixture: Fixture) {
@@ -59,7 +86,7 @@ fn assert_selector_refused(graph: &super::AdmittedStageGraph, selector: &Path, l
 
 #[test]
 fn canonical_root_accepts_only_exact_selected_preload_spellings() {
-    let (fixture, ordinary) = canonical_fixture();
+    let (fixture, ordinary, original_alias) = canonical_fixture();
     let graph = fixture.admitted();
     let canonical = fixture.root.join(PRELOAD);
     assert_ne!(
@@ -132,6 +159,16 @@ fn canonical_root_accepts_only_exact_selected_preload_spellings() {
         assert_selector_refused(&graph, Path::new(&selector), label);
     }
     assert_selector_refused(&graph, Path::new(PRELOAD), "relative selector");
+    if let Some(alias) = original_alias {
+        assert_eq!(
+            fs::canonicalize(&alias).expect("original TEMP alias names a real file"),
+            canonical,
+            "the rejected original TEMP spelling must name this same sealed file"
+        );
+        assert_selector_refused(&graph, &alias, "original TEMP alias (e.g. RUNNER~1)");
+    } else {
+        eprintln!("original TEMP path is canonical; no short-name alias refusal was exercised");
+    }
     drop(graph);
     close_fixture(fixture);
 }
@@ -139,7 +176,7 @@ fn canonical_root_accepts_only_exact_selected_preload_spellings() {
 #[test]
 fn ordinary_selected_spelling_still_rechecks_identity_and_bytes() {
     for mutation in ["changed bytes", "identical replacement", "hardlink alias"] {
-        let (fixture, ordinary) = canonical_fixture();
+        let (fixture, ordinary, _original_alias) = canonical_fixture();
         let graph = fixture.admitted();
         assert_eq!(
             graph
