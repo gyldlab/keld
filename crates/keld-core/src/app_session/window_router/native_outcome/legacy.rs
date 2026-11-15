@@ -19,6 +19,13 @@ impl PrimaryRouterHandle {
             reason = "Preserve the complete existing legacy native-outcome dispatch and its owned success/failure carriers."
         )
     )]
+    #[cfg_attr(
+        target_os = "linux",
+        expect(
+            clippy::too_many_lines,
+            reason = "Keep the exhaustive legacy native-outcome match and its ordered publication effects together."
+        )
+    )]
     pub(in crate::app_session::window_router) fn publish_window_native_locked(
         &self,
         session: &mut WindowSession,
