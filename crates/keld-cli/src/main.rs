@@ -117,6 +117,28 @@ fn main() {
     }
 }
 
+/// Parse only the literal application identity required to bind a signed
+/// launcher. No project code is evaluated by this admission step.
+#[cfg(windows)]
+fn named_developer_app_id(project: &Path, expected_name: &str) -> Result<String, String> {
+    let config = std::fs::read_to_string(project.join("keld.config.ts"))
+        .map_err(|e| format!("KELD-CLI-032: missing application configuration: {e}"))?;
+    let title = keld_core::title_from_config_ts(&config)
+        .ok_or("KELD-CLI-032: app name must be a quoted literal in config")?;
+    if !title.eq_ignore_ascii_case(expected_name) {
+        return Err(String::from(
+            "KELD-CLI-048: launcher filename and application title disagree",
+        ));
+    }
+    config
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("id:"))
+        .and_then(|literal| {
+            serde_json::from_str::<String>(literal.trim().trim_end_matches(',')).ok()
+        })
+        .ok_or_else(|| String::from("KELD-CLI-032: missing literal application identity"))
+}
+
 /// Only a locally signed, application-named developer bundle enters this path.
 /// This does not activate an installed package and never bypasses the normal
 /// KEL-96 Host's Authenticode, developer lease, profile or IPC checks.
@@ -154,22 +176,7 @@ fn run_named_developer_entry(args: &[String]) -> Option<Result<(), String>> {
         let _launch_guards = boot::pin_windows_launch_ancestors(parent)
             .map_err(|e| format!("KELD-CLI-048: bundled launch namespace refused: {e}"))?;
         let project = parent.join("project");
-        let config = std::fs::read_to_string(project.join("keld.config.ts"))
-            .map_err(|e| format!("KELD-CLI-032: missing application configuration: {e}"))?;
-        let title = keld_core::title_from_config_ts(&config)
-            .ok_or("KELD-CLI-032: app name must be a quoted literal in config")?;
-        if !title.eq_ignore_ascii_case(name) {
-            return Err(String::from(
-                "KELD-CLI-048: launcher filename and application title disagree",
-            ));
-        }
-        let id = config
-            .lines()
-            .find_map(|line| line.trim().strip_prefix("id:"))
-            .and_then(|literal| {
-                serde_json::from_str::<String>(literal.trim().trim_end_matches(',')).ok()
-            })
-            .ok_or("KELD-CLI-032: missing literal application identity")?;
+        let id = named_developer_app_id(&project, name)?;
         let image = keld_guard::WindowsAuthenticodeImage::open(&executable)
             .and_then(keld_guard::WindowsAuthenticodeImage::verify)
             .map_err(|e| format!("KELD-WV-009: developer application image refused: {e}"))?;
