@@ -9,7 +9,8 @@ Owns: Definition and native evidence, performance limits, and open release or ap
 
 - **Run:** `python docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py`
 - **n:** Read the exact test count in `identity-validation.json`.
-- **Environment:** Linux scratch, specification work only, product source pinned at P.
+- **Environment:** Python 3.10 or newer with the `cryptography` package
+  installed; specification work only, product source pinned at P.
 - **Limits:** This validates candidate bytes and signature domains. It does not execute product codecs, Authenticode, Windows storage, or migration.
 
 The vector files contain synthetic public fixture keys and identities. They commission no real authority.
@@ -204,7 +205,13 @@ Measure the approved native path against the same signed baseline. Apply the exi
 
 No performance improvement is claimed. The metadata profile bounds each object, refresh, request, and retained state operation. Reuse immutable blobs to avoid copying every role on each root transition. Garbage collection cannot delete the current generation, its referenced blobs, or pending recovery evidence.
 Keep at most three generation files: current, its immediate predecessor, and one prepared successor. Retain every blob referenced by those files. A root-reset intent stays in current until completion. Delete only unreferenced objects after successful readback, under the store lease.
-If cleanup fails, refuse the next mutation before another generation is prepared. Never delete the enrollment anchor. Never restore an older current record to satisfy storage bounds. A prepared successor cannot coexist with another successor. Measure native I/O and cold-start overhead before claiming acceptable latency.
+Ordinary orphan retirement requires every D-24 proof and an absent D-68
+pending pointer. Manual recovery cleanup requires an authenticated terminal
+`aborted` record under its still-matching pointer. Do not substitute one
+rule for the other. If either cleanup fails, refuse new mutation and
+preserve evidence for the KEL-53 operator. Never delete enrollment,
+restore older current, or permit two prepared successors. Measure native
+I/O and cold-start overhead before claiming acceptable latency.
 
 ## 9. Perf impact: Windows admission
 

@@ -133,6 +133,34 @@ A failed operation returns no authority. Destroy the associated metadata client.
 On restart, the current record determines the accepted generation. A valid unreferenced next generation is not automatically committed. A corrupt current record cannot select an older generation. A missing established current record requires recovery. An interrupted publish can resolve to the old or new complete current record.
 Native qualification must prove each claimed crash and power-loss behavior. Source inspection alone does not prove durable replacement.
 
+Before **any** ordinary metadata mutation, the owner MUST inspect the
+fixed D-68 pending-operation pointer under the repository lease. A
+matching pointer delegates only to its recorded owner; ordinary refresh
+MUST refuse. A protected `current` record at sequence N is authoritative.
+An existing `generations/<N+1>.json` cannot be overwritten with different
+bytes and cannot be silently adopted as committed state.
+
+With no pending pointer, the metadata owner MAY retire an unreferenced
+ordinary-publication successor at that fixed next-sequence path. It MUST
+first verify the old current, established enrollment, repository ID,
+previous-generation digest, successor sequence, recovery epoch, protection,
+record format, referenced blobs, and absence of all current/LKG/other
+protected references. Retire only that fully authenticated orphan and
+exclusively owned unreachable preparation blobs through the retained
+parent writer. Then verify the successor path is absent and the complete
+old state is unchanged. A new mutation MAY create new authenticated bytes
+at N+1 only after that readback.
+
+A crash during retirement permits the same proof and idempotent cleanup
+on restart; absence of the removed orphan does not authorize deleting
+any other object. Unknown, corrupt, foreign, ambiguous or reachable
+successor evidence MUST halt without deletion. The existing KEL-53
+operator recovery owner then investigates the exact preserved state.
+There is no caller-provided cleanup flag or empty-store fallback.
+When `current` already names N+1, the successor is committed and MUST
+NOT be retired. Manual recovery with a pending pointer uses only
+D-65's explicit terminal-`aborted` path, not ordinary orphan cleanup.
+
 For D-65 manual recovery only, when an expired `prepared` journal and the
 protected old `current` are verified intact, a recorded terminal `aborted`
 permits the same KEL-53 writer to retire exactly that attempt's

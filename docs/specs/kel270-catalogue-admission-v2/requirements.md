@@ -7,7 +7,7 @@ Owns: Source facts and acceptance criteria for every owner contract.
 
 FACT: Product pin P is `7ff41173d28d58ae61ccbb3382d055c8ef9c9c97`. PR #1531 still named P during this source check.
 FACT: `crates/keld-pack/src/expected_identity.rs:16@7ff41173d28d58ae61ccbb3382d055c8ef9c9c97` owns the existing payload.
-FACT: `docs/specs/kel135-persistent-profile-identity.md:327@7ff41173d28d58ae61ccbb3382d055c8ef9c9c97` defines SPKI-based Windows identity.
+FACT: `docs/specs/kel135-persistent-profile-identity.md:330@7ff41173d28d58ae61ccbb3382d055c8ef9c9c97` defines SPKI-based Windows identity.
 FACT: `crates/keld-update/src/records.rs:232@7ff41173d28d58ae61ccbb3382d055c8ef9c9c97` defines provenance v2.
 FACT: `crates/keld-update/src/records.rs:345@7ff41173d28d58ae61ccbb3382d055c8ef9c9c97` requires a separately versioned lifecycle contract for a changed projection.
 FACT: `crates/keld-host/src/windows_initial_install.rs:53@7ff41173d28d58ae61ccbb3382d055c8ef9c9c97` refuses initial installation.
@@ -135,6 +135,14 @@ The evidence owner MUST refuse before a consuming journal becomes effectful.
   - **Single fault:** Reconstruct the reset comparison from the recovered new root.
   - **At-risk precondition:** The process dies after root replacement and before downstream-role invalidation.
   - **Expected RED:** Valid replacement timestamp metadata cannot recover the poisoned counter.
+
+Also terminate ordinary metadata publication after durable next-generation
+write but before current-pointer replacement. The next valid refresh MUST
+either authenticate and retire the exact orphan, or refuse and retain it
+for named operator recovery. A different valid successor MUST not be
+written over the orphan. After verified retirement, a different
+authenticated successor MAY use the same N+1 name without lowering
+metadata, application, or UTC floors.
 
 ### AC-22: Established state cannot become first use through partial loss
 
