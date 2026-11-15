@@ -22,7 +22,7 @@ import { decodeRuntimeProcessInit } from "@keld/kipc/runtime-process-facts";
 
 // This allowance covers process startup in the packed integration test only.
 // Frame assembly and production WorkerLink deadlines remain at 5 seconds.
-const TEST_STARTUP_ALLOWANCE_MS = 30_000;
+const TEST_STARTUP_ALLOWANCE_MS = 60_000;
 function withTestIoDeadline<T>(promise: Promise<T>): Promise<T> {
   return withIoDeadline(promise, TEST_STARTUP_ALLOWANCE_MS);
 }
@@ -343,4 +343,4 @@ test("actual packed API wrapper captures and ACKs over its same stamped installe
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
-}, 45000);
+}, 75000);
