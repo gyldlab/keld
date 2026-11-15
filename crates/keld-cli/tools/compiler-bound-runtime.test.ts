@@ -1,295 +1,77 @@
-// Windows native acceptance for the exact projected local compiler entry.
-// Supply KELD_COMPILER_TEST_TYPESCRIPT_ROOT and KELD_COMPILER_TEST_TSGO from
-// the already qualified toolchain. KELD_COMPILER_TEST_BUN defaults to Bun.
-// A successful test requires a real Bun child, TypeScript 7.0.2 and tsgo.
+// Qualified Windows acceptance for the Rust production compiler binder.
+// Set KELD_COMPILER_TEST_REQUIRED=1 in the native acceptance run. That makes
+// missing tool paths/digests a hard failure instead of a skipped test.
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { resolve } from "node:path";
 
 const repo = resolve(import.meta.dir, "../../..");
-const tools = import.meta.dir;
-const typescript = process.env.KELD_COMPILER_TEST_TYPESCRIPT_ROOT;
-const parser = process.env.KELD_COMPILER_TEST_TSGO;
+const required = process.env.KELD_COMPILER_TEST_REQUIRED === "1";
 const bun = process.env.KELD_COMPILER_TEST_BUN ?? process.execPath;
-const runtimeTest = typescript && parser ? test : test.skip;
-const renderer = new TextEncoder().encode(
-  "<html><head><title>Keld</title></head><body><main>Bound fixture</main></body></html>",
-);
-const bytes = (value: string): Uint8Array => new TextEncoder().encode(value);
-const sha256 = (value: Uint8Array): Buffer =>
-  createHash("sha256").update(value).digest();
+const qualified = [
+  process.env.KELD_COMPILER_TEST_TYPESCRIPT_ROOT,
+  process.env.KELD_COMPILER_TEST_TSGO,
+  process.env.KELD_COMPILER_TEST_BUN_SHA256,
+  process.env.KELD_COMPILER_TEST_TSGO_SHA256,
+].every(Boolean);
+const acceptanceTest = required || qualified ? test : test.skip;
 
-function checkedProjection(
-  path: string,
-  bindings: readonly (readonly [string, string])[],
-): string {
-  // Model the reviewed Rust binder's public file URL output; the execution
-  // oracle below is Bun's actual compiler response, not this string transform.
-  let text = readFileSync(path, "utf8");
-  for (const [literal, target] of bindings) {
-    const source = JSON.stringify(literal);
-    if (text.split(source).length !== 2)
-      throw new Error(
-        "Exact compiler import source no longer matches its binding",
-      );
-    text = text.replace(source, JSON.stringify(pathToFileURL(target).href));
-  }
-  return text;
-}
-
-function appendNumber(chunks: Buffer[], value: number): void {
-  const number = Buffer.alloc(4);
-  number.writeUInt32LE(value, 0);
-  chunks.push(number);
-}
-
-function request(modules: readonly (readonly [string, string])[]): Buffer {
-  const chunks = [Buffer.from("KELDCIN3")];
-  const entry = bytes("main.js");
-  appendNumber(chunks, entry.length);
-  chunks.push(Buffer.from(entry));
-  appendNumber(chunks, modules.length);
-  for (const [name, source] of modules) {
-    const member = bytes(name);
-    const content = bytes(source);
-    appendNumber(chunks, member.length);
-    chunks.push(Buffer.from(member));
-    appendNumber(chunks, content.length);
-    chunks.push(Buffer.from(content));
-  }
-  appendNumber(chunks, renderer.length);
-  chunks.push(Buffer.from(renderer));
-  return Buffer.concat(chunks);
-}
-
-function assertOfficialCompiler(root: string): void {
-  const manifest: Record<string, string> = JSON.parse(
-    readFileSync(
-      join(repo, "crates/keld-cli/src/build/typescript-files.json"),
-      "utf8",
-    ),
-  ) as Record<string, string>;
-  expect(Object.keys(manifest)).toHaveLength(416);
-  for (const [name, expected] of Object.entries(manifest)) {
-    const actual = sha256(readFileSync(join(root, name))).toString("hex");
-    expect(actual, name).toBe(expected);
-  }
-}
-
-function stageCompiler(stage: string): string {
-  if (!typescript || !parser) throw new Error("Qualified Bun inputs required");
-  const compiler = checkedProjection(join(tools, "closed-app.ts"), [
-    ["typescript/unstable/ast", join(typescript, "dist/ast/index.js")],
-    ["typescript/unstable/async", join(typescript, "dist/api/async/api.js")],
-    ["typescript/unstable/fs", join(typescript, "dist/api/fs.js")],
-  ]);
-  const boundCompiler = join(stage, "closed-app-bound.ts");
-  writeFileSync(boundCompiler, compiler, { flag: "wx" });
-  const entry = checkedProjection(join(tools, "closed-app-runner.ts"), [
-    ["./closed-app.ts", boundCompiler],
-    ["./protocol.ts", join(tools, "protocol.ts")],
-    ["./static-renderer.ts", join(tools, "static-renderer.ts")],
-    [
-      "../../../packages/@keld/kipc/scripts/package-artifacts.ts",
-      join(repo, "packages/@keld/kipc/scripts/package-artifacts.ts"),
-    ],
-    [
-      "../../../packages/@keld/kipc/src/transport.ts",
-      join(repo, "packages/@keld/kipc/src/transport.ts"),
-    ],
-  ]);
-  const runner = join(stage, "compiler-bound-runner.ts");
-  writeFileSync(runner, entry, { flag: "wx" });
-  writeFileSync(
-    join(stage, "compiler-preload.ts"),
-    "// Fixed explicit compiler imports; no runtime resolver hook.\n",
-    { flag: "wx" },
-  );
-  writeFileSync(
-    join(stage, "bunfig.toml"),
-    "# KELD empty local compiler configuration\n",
-    {
-      flag: "wx",
-    },
-  );
-  writeFileSync(
-    join(stage, ".bunfig.toml"),
-    "# KELD empty global compiler configuration\n",
-    {
-      flag: "wx",
-    },
-  );
-  writeFileSync(join(stage, "tsconfig.json"), '{"compilerOptions":{}}\n', {
-    flag: "wx",
-  });
-  return runner;
-}
-
-function execute(
-  modules: readonly (readonly [string, string])[],
-  hostileAmbient: boolean,
-  homeMode: "isolated" | "hostile" = "isolated",
-): {
-  status: number | null;
-  stdout: Buffer;
-  stderr: string;
-  artifacts: string[];
-} {
-  if (!typescript || !parser) throw new Error("Qualified Bun inputs required");
-  if (homeMode === "hostile" && !hostileAmbient)
-    throw new Error("Hostile HOME negative requires its poison fixture");
-  const outer = mkdtempSync(join(tmpdir(), "keld-projected-compiler-"));
-  try {
-    const stage = join(outer, "private");
-    mkdirSync(stage);
-    const runner = stageCompiler(stage);
-    const hostileHome = join(outer, "ambient-home");
-    const sourceParent = join(outer, "node_modules", "ambient-test-only");
-    if (hostileAmbient) {
-      mkdirSync(hostileHome);
-      mkdirSync(sourceParent, { recursive: true });
-      writeFileSync(
-        join(hostileHome, ".bunfig.toml"),
-        'preload = ["./poison.ts"]\n',
-      );
-      writeFileSync(
-        join(hostileHome, "poison.ts"),
-        'throw new Error("AMBIENT_BUN_CONFIG_USED");',
-      );
-      writeFileSync(
-        join(outer, "tsconfig.json"),
-        '{"compilerOptions":{"paths":{"*":["node_modules/ambient-test-only/index.js"]}}}',
-      );
-      writeFileSync(
-        join(sourceParent, "index.js"),
-        'throw new Error("AMBIENT_MODULE_USED");',
-      );
-      writeFileSync(
-        join(sourceParent, "package.json"),
-        '{"name":"ambient-test-only","type":"module","main":"index.js"}',
-      );
-    }
-    const args = [
-      "--no-install",
-      "--no-env-file",
-      "--config=" + join(stage, "bunfig.toml"),
-      "--tsconfig-override",
-      join(stage, "tsconfig.json"),
-      "--preload",
-      join(stage, "compiler-preload.ts"),
-      runner,
-      parser,
+acceptanceTest(
+  "Rust production binder executes the exact pinned Bun/TypeScript compiler closure",
+  () => {
+    const requiredVariables = [
+      "KELD_COMPILER_TEST_TYPESCRIPT_ROOT",
+      "KELD_COMPILER_TEST_TSGO",
+      "KELD_COMPILER_TEST_BUN_SHA256",
+      "KELD_COMPILER_TEST_TSGO_SHA256",
     ];
-    const output = spawnSync(bun, args, {
-      cwd: stage,
-      input: request(modules),
-      env: {
-        ...process.env,
-        // The normal path isolates all Windows and Unix home lookups. The
-        // failure-first HOME mutant deliberately exposes the prewritten poison.
-        HOME: homeMode === "hostile" ? hostileHome : stage,
-        USERPROFILE: homeMode === "hostile" ? hostileHome : stage,
-        APPDATA: homeMode === "hostile" ? hostileHome : stage,
-        LOCALAPPDATA: homeMode === "hostile" ? hostileHome : stage,
-        TEMP: stage,
-        TMP: stage,
-        NODE_PATH: join(outer, "node_modules"),
-      },
-      windowsHide: true,
-      timeout: 90_000,
-      maxBuffer: 8 * 1024 * 1024,
-    });
-    if (output.error) throw output.error;
-    const artifacts = [
-      join(stage, "app.keld.tar.zst.candidate"),
-      join(stage, "signed-app.exe"),
-      join(stage, "manifest.sig"),
-    ].filter(existsSync);
-    return {
-      status: output.status,
-      stdout: output.stdout,
-      stderr: output.stderr.toString("utf8"),
-      artifacts,
-    };
-  } finally {
-    rmSync(outer, { recursive: true, force: true });
-  }
-}
+    const missing = requiredVariables.filter(
+      (name) => !process.env[name] || process.env[name]!.length === 0,
+    );
+    expect(
+      missing,
+      "qualified acceptance must provide every pinned tool path and digest",
+    ).toEqual([]);
 
-runtimeTest(
-  "real Bun projected runner emits the captured app and stamped transport despite ambient configuration",
-  () => {
-    assertOfficialCompiler(typescript!);
-    const result = execute(
+    const result = spawnSync(
+      process.env.CARGO ?? "cargo",
       [
-        [
-          "main.js",
-          'import { answer } from "./value.js"; console.log(answer);',
-        ],
-        ["value.js", "export const answer = 45272;"],
+        "test",
+        "--frozen",
+        "--offline",
+        "-p",
+        "keld-cli",
+        "--lib",
+        "rust_production_binder_runs_five_qualified_compiler_acceptance_cases",
+        "--",
+        "--nocapture",
       ],
-      true,
+      {
+        cwd: repo,
+        env: {
+          ...process.env,
+          KELD_COMPILER_TEST_REQUIRED: "1",
+          KELD_COMPILER_TEST_BUN: bun,
+        },
+        windowsHide: true,
+        timeout: 600_000,
+        maxBuffer: 16 * 1024 * 1024,
+      },
     );
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout.subarray(0, 8).toString("utf8")).toBe("KELDCOT2");
-    expect(result.stdout.subarray(8, 40)).toEqual(sha256(renderer));
-    const appLength = result.stdout.readUInt32LE(40);
-    const app = result.stdout.subarray(44, 44 + appLength).toString("utf8");
-    expect(app).toContain("45272");
-    const transportLength = result.stdout.readUInt32LE(44 + appLength);
-    const transport = result.stdout.subarray(48 + appLength);
-    expect(transport.length).toBe(transportLength);
-    expect(transport.toString("utf8")).toContain(
-      "@keld/kipc-transport sha256:",
-    );
-    expect(result.artifacts).toEqual([]);
+    if (result.error) throw result.error;
+    const stdout = result.stdout.toString("utf8");
+    const stderr = result.stderr.toString("utf8");
+    expect(result.status, stdout + "\n" + stderr).toBe(0);
+    expect(stdout).toContain("KELD_COMPILER_BINDER_ACCEPTANCE: 5/5");
+    for (const name of [
+      "positive",
+      "hostile HOME",
+      "ambient package",
+      "missing member",
+      "filesystem escape",
+    ]) {
+      expect(stdout).toContain("KELD_COMPILER_BINDER_CASE: " + name);
+    }
   },
-  120_000,
+  620_000,
 );
-
-runtimeTest(
-  "unisolated HOME loads the poisoned Bun config before compiler output",
-  () => {
-    const result = execute(
-      [["main.js", 'console.log("compiler must not run");']],
-      true,
-      "hostile",
-    );
-    expect(result.status, result.stderr).toBe(1);
-    expect(result.stderr).toContain("AMBIENT_BUN_CONFIG_USED");
-    expect(result.stdout.length).toBe(0);
-    expect(result.artifacts).toEqual([]);
-  },
-  120_000,
-);
-
-for (const [name, source] of [
-  ["hostile ambient package", 'import "ambient-test-only";'],
-  ["missing captured member", 'import "./outside.js";'],
-  ["filesystem escape", 'import "node:fs";'],
-] as const) {
-  runtimeTest(
-    "real projected runner refuses " + name + " with no output or signed file",
-    () => {
-      const result = execute([["main.js", source]], true);
-      expect(result.status, result.stderr).toBe(1);
-      expect(result.stdout.length).toBe(0);
-      expect(result.stderr).toContain(
-        "Captured application compiler refused input or output",
-      );
-      expect(result.artifacts).toEqual([]);
-    },
-    120_000,
-  );
-}
