@@ -7,11 +7,14 @@ use std::path::{Component, Path, PathBuf, Prefix};
 
 fn canonical_fixture() -> (Fixture, PathBuf) {
     let mut fixture = Fixture::new();
-    // The independent caller spelling is built from the ordinary TempDir path,
-    // not by calling the production prefix-conversion helper.
-    let ordinary = fixture.root.join("bootstrap").join("app-preload.cjs");
+    // The runner's TEMP spelling can contain a short-name alias (RUNNER~1).
+    // That alias is not the same canonical source component and must not be
+    // promoted into a positive preload selector. Use only the independently
+    // OS-resolved test-owned root, then strip its verbatim prefix to model the
+    // ordinary Bun spelling of that *canonical* selected member.
+    let initial = fixture.root.join(PRELOAD);
     assert!(matches!(
-        ordinary.components().next(),
+        initial.components().next(),
         Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_))
     ));
     fixture.root = fixture
@@ -23,10 +26,20 @@ fn canonical_fixture() -> (Fixture, PathBuf) {
         Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::VerbatimDisk(_))
     ));
     let canonical = fixture.root.join(PRELOAD);
+    let canonical_text = canonical.to_str().expect("canonical UTF8");
+    let ordinary = PathBuf::from(
+        canonical_text
+            .strip_prefix(r"\\?\")
+            .expect("canonical file has a disk-path spelling"),
+    );
+    assert!(matches!(
+        ordinary.components().next(),
+        Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_))
+    ));
     assert_eq!(
-        canonical.to_str().expect("canonical UTF8"),
+        canonical_text,
         format!(r"\\?\{}", ordinary.to_str().expect("ordinary UTF8")),
-        "the two observed namespace spellings differ only by the verbatim prefix"
+        "the two qualified namespace spellings differ only by the verbatim prefix"
     );
     (fixture, ordinary)
 }
