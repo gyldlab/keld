@@ -1,6 +1,8 @@
 //! One owner for host-side primary generation control and recovery transitions.
 use super::generation_wire::initial_generation_record_timeout;
-use super::process_group::{terminate_attested_group, validate_guardian_child_group};
+use super::process_group::{
+    require_attested_group_absence, terminate_attested_group, validate_guardian_child_group,
+};
 use super::{
     BoundRoleGeneration, CONTROL_CLEAR, CONTROL_CLEARED, CONTROL_PREPARE, CONTROL_PREPARED,
     CONTROL_REGISTERED, CONTROL_REVOKE, CONTROL_REVOKED, CONTROL_SPAWNED,
@@ -342,6 +344,10 @@ pub(super) fn run_generation_host(
                             expected_attempt,
                         ));
                     }
+                    // Reuse one existing shutdown budget for both the native
+                    // signal and the read-only group-absence witness. Keep
+                    // current_generation_owner locked until that proof passes.
+                    let absence_deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
                     // CONTROL_REVOKED only proves that app-link capability was
                     // revoked. The authenticated Guardian's CLEAR record is
                     // not evidence that it actually killed its Bun group:
@@ -349,9 +355,14 @@ pub(super) fn run_generation_host(
                     // before relinquishing the host's last fail-safe owner or
                     // admitting a successor. A forged/early CLEAR must never
                     // make a still-running descendant invisible to the host.
+                    // SIGKILL success is not sufficient: a held zombie still
+                    // has a live PGID. Only dual ESRCH permits CLEARED.
                     if let Some(generation) = registered_generation {
                         match generation.group_identity {
-                            Some(group) => terminate_attested_group(group)?,
+                            Some(group) => {
+                                terminate_attested_group(group)?;
+                                require_attested_group_absence(group, absence_deadline)?;
+                            }
                             #[cfg(test)]
                             None => {} // Synthetic EOF/transition-only fixtures.
                             #[cfg(not(test))]
