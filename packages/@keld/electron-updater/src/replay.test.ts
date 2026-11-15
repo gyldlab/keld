@@ -49,6 +49,13 @@ const PROBE_COVERS = [
   "child_process.execSync",
   "child_process.execFileSync",
   "worker_threads.Worker",
+  "fs.open",
+  "fs.openSync",
+  "fs.write",
+  "fs.writeSync",
+  "fs.writev",
+  "fs.writevSync",
+  "fs/promises.open",
   "fs.writeFile",
   "fs.writeFileSync",
   "fs.appendFile",
@@ -151,6 +158,13 @@ test("electron-updater.probe.self-check: the refusing probe observes fetch, an E
   expect(run.probe.counts).toEqual({
     fetch: 1,
     "net.connect": 1,
+    "fs.open": 1,
+    "fs.openSync": 2,
+    "fs.write": 1,
+    "fs.writeSync": 1,
+    "fs.writev": 1,
+    "fs.writevSync": 1,
+    "fs/promises.open": 1,
     "fs.writeFileSync": 1,
     "child_process.spawnSync": 1,
     "Bun.connect": 1,
@@ -158,9 +172,19 @@ test("electron-updater.probe.self-check: the refusing probe observes fetch, an E
   });
   expect(run.probe.uncovered).toEqual([]);
   expect(run.probe.covers).toEqual(PROBE_COVERS);
+  expect(run.result.syncRead).toBe(true);
+  expect(run.result.asyncRead).toBe(true);
   expect(run.result.caught).toEqual({
     fetch: "GH491 probe: fetch refused",
     "net.connect": "GH491 probe: net.connect refused",
+    "fs.open": "GH491 probe: fs.open refused",
+    "fs.openSync": "GH491 probe: fs.openSync refused",
+    "fs.openSync.numeric": "GH491 probe: fs.openSync refused",
+    "fs.write": "GH491 probe: fs.write refused",
+    "fs.writeSync": "GH491 probe: fs.writeSync refused",
+    "fs.writev": "GH491 probe: fs.writev refused",
+    "fs.writevSync": "GH491 probe: fs.writevSync refused",
+    "fs/promises.open": "GH491 probe: fs/promises.open refused",
     "fs.writeFileSync": "GH491 probe: fs.writeFileSync refused",
     "child_process.spawnSync": "GH491 probe: child_process.spawnSync refused",
     "Bun.connect": "GH491 probe: Bun.connect refused",

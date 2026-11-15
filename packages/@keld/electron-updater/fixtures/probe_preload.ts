@@ -83,6 +83,37 @@ patchAll(builtin("node:child_process"), "child_process", [
   "execFileSync",
 ]);
 patchAll(builtin("node:worker_threads"), "worker_threads", ["Worker"]);
+// Read-only opens remain available; deny creation/truncation before a handle exists.
+const fs = require("node:fs") as typeof import("node:fs");
+const writeFlags =
+  fs.constants.O_WRONLY |
+  fs.constants.O_RDWR |
+  fs.constants.O_CREAT |
+  fs.constants.O_TRUNC |
+  fs.constants.O_APPEND;
+function patchOpen(target: object, key: string, label: string): void {
+  const original = Reflect.get(target, key) as (...args: unknown[]) => unknown;
+  patch(target, key, label);
+  if (!covers.includes(label)) return;
+  Object.defineProperty(target, key, {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: (...args: unknown[]) => {
+      const flags = args[1];
+      if (
+        (typeof flags === "number" && (flags & writeFlags) !== 0) ||
+        (typeof flags === "string" && /[wa+]/.test(flags))
+      )
+        refuse(label);
+      return Reflect.apply(original, target, args);
+    },
+  });
+}
+patchOpen(fs, "open", "fs.open");
+patchOpen(fs, "openSync", "fs.openSync");
+patchAll(fs, "fs", ["write", "writeSync", "writev", "writevSync"]);
+patchOpen(builtin("node:fs/promises"), "open", "fs/promises.open");
 patchAll(builtin("node:fs"), "fs", [
   "writeFile",
   "writeFileSync",

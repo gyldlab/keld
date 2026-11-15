@@ -5,7 +5,19 @@
  * attempt is expected to be refused by the probe; `caught` records what happened.
  */
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import {
+  constants,
+  closeSync,
+  readFileSync,
+  open,
+  openSync,
+  write,
+  writeSync,
+  writev,
+  writevSync,
+  writeFileSync,
+} from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import { connect } from "node:net";
 
 const caught: Record<string, string> = {};
@@ -30,4 +42,36 @@ attempt("Bun.connect", () =>
 );
 attempt("Worker", () => new Worker("data:text/javascript,"));
 
-process.stdout.write(`GH491_RESULT ${JSON.stringify({ caught })}\n`);
+for (const [label, run] of [
+  ["fs.open", () => open("/nonexistent-gh491/never-written", "w", () => {})],
+  ["fs.openSync", () => openSync("/nonexistent-gh491/never-written", "w")],
+  ["fs.write", () => write(-1, "x", () => {})],
+  ["fs.writeSync", () => writeSync(-1, "x")],
+  ["fs.writev", () => writev(-1, [Buffer.from("x")], () => {})],
+  ["fs.writevSync", () => writevSync(-1, [Buffer.from("x")])],
+] as const)
+  attempt(label, run);
+attempt("fs.openSync.numeric", () =>
+  openSync(
+    "/nonexistent-gh491/never-written",
+    constants.O_CREAT | constants.O_WRONLY,
+  ),
+);
+try {
+  const handle = await fsPromises.open("/nonexistent-gh491/never-written", "w");
+  await handle.close();
+  caught["fs/promises.open"] = "no-throw";
+} catch (error) {
+  caught["fs/promises.open"] =
+    error instanceof Error ? error.message : String(error);
+}
+
+const readFd = openSync(import.meta.path, "r");
+const syncRead = readFileSync(readFd, "utf8").includes("GH491_RESULT");
+closeSync(readFd);
+const readHandle = await fsPromises.open(import.meta.path, "r");
+const asyncRead = (await readHandle.readFile("utf8")).includes("GH491_RESULT");
+await readHandle.close();
+process.stdout.write(
+  `GH491_RESULT ${JSON.stringify({ caught, syncRead, asyncRead })}\n`,
+);
