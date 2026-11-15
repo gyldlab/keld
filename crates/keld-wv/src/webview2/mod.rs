@@ -1587,16 +1587,16 @@ fn create_environment_with_options_until(
             )),
         )
     };
-    if let Err(err) = launched {
-        return Err(WvError::WebView2RuntimeMissing {
-            detail: err.to_string(),
-        });
-    }
+    launched.map_err(|error| environment_creation_error("launch", &error))?;
 
     let environment = wait_for_launch_with_message_pump_until(&rx, deadline)?;
-    environment.map_err(|err| WvError::WebView2RuntimeMissing {
-        detail: err.to_string(),
-    })
+    environment.map_err(|error| environment_creation_error("completion", &error))
+}
+
+fn environment_creation_error(phase: &'static str, error: &windows::core::Error) -> WvError {
+    // The Evergreen availability check belongs to runtime_version(). A
+    // creation HRESULT can instead mean profile access, COM or launch failure.
+    WvError::Webview(format!("WebView2 environment {phase} failed: {error}"))
 }
 
 /// Creates the controller that hosts one webview inside `hwnd`.
@@ -1609,9 +1609,7 @@ fn create_controller(
     environment: &ICoreWebView2Environment,
     hwnd: HWND,
 ) -> Result<ICoreWebView2Controller, WvError> {
-    create_controller_observed(environment, hwnd).map_err(|error| WvError::WebView2RuntimeMissing {
-        detail: error.to_string(),
-    })
+    create_controller_observed(environment, hwnd).map_err(ControllerCreationError::into_wv_error)
 }
 
 enum ControllerCreationError {
@@ -1620,6 +1618,19 @@ enum ControllerCreationError {
 }
 
 impl ControllerCreationError {
+    fn into_wv_error(self) -> WvError {
+        match self {
+            // The caller already owns a successfully created environment.
+            // A controller HRESULT is not evidence that Evergreen is missing.
+            Self::Windows(error) => {
+                WvError::Webview(format!("WebView2 controller creation failed: {error}"))
+            }
+            // Preserve the original pump/deadline error and its public code,
+            // rather than hiding it behind false runtime-install guidance.
+            Self::Pump(error) => error,
+        }
+    }
+
     fn is_invalid_state(&self) -> bool {
         matches!(
             self,
@@ -1866,11 +1877,7 @@ fn probe_exclusive_udf_with_observer(
     let controller = match create_controller_observed_until(environment, window, launch_deadline) {
         Ok(controller) => controller,
         Err(error) if error.is_invalid_state() => return ExclusiveUdfRelease::Busy,
-        Err(error) => {
-            return ExclusiveUdfRelease::Unproven(WvError::WebView2RuntimeMissing {
-                detail: error.to_string(),
-            });
-        }
+        Err(error) => return ExclusiveUdfRelease::Unproven(error.into_wv_error()),
     };
     // SAFETY: the controller was created on this STA for the live recovery
     // window. No navigation or content is created by this probe.
@@ -3645,6 +3652,74 @@ mod tests {
                 assert!(msg.contains("Evergreen Runtime"), "missing fix in: {msg}");
             }
         }
+    }
+
+    #[test]
+    fn controller_creation_failure_never_masquerades_as_missing_evergreen() {
+        let invalid_state = super::ControllerCreationError::Windows(windows::core::Error::from(
+            windows::core::HRESULT::from_win32(windows::Win32::Foundation::ERROR_INVALID_STATE.0),
+        ));
+        let error = invalid_state.into_wv_error();
+        assert!(
+            matches!(error, WvError::Webview(_)),
+            "a controller HRESULT after environment creation is not a missing runtime: {error}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("KELD-WV-003"), "{message}");
+        assert!(message.contains("controller creation failed"), "{message}");
+        assert!(!message.contains("KELD-WV-008"), "{message}");
+
+        let pump = super::ControllerCreationError::Pump(WvError::EventLoop(String::from(
+            "test-owned pump failure",
+        )));
+        let error = pump.into_wv_error();
+        assert!(
+            matches!(error, WvError::EventLoop(_)),
+            "the original pump error must survive controller classification: {error}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("KELD-WV-004"), "{message}");
+        assert!(message.contains("test-owned pump failure"), "{message}");
+        assert!(!message.contains("KELD-WV-008"), "{message}");
+    }
+
+    #[test]
+    fn real_controller_launch_deadline_keeps_its_profile_failure_kind() {
+        let (_sender, receiver) = std::sync::mpsc::channel::<()>();
+        let observed =
+            super::wait_for_launch_with_message_pump_until(&receiver, std::time::Instant::now())
+                .expect_err("a deadline that already elapsed must refuse before pumping messages");
+        let error = super::ControllerCreationError::Pump(observed).into_wv_error();
+        let WvError::ProfileSelection(profile) = error else {
+            panic!("the real pump deadline must preserve its typed profile error: {error}");
+        };
+        assert_eq!(profile.kind(), ProfileErrorKind::LifecycleUnproven);
+        let message = profile.to_string();
+        assert!(message.contains("KELD-WV-009"), "{message}");
+        assert!(
+            message.contains(super::LAUNCH_DEADLINE_EXPIRED),
+            "{message}"
+        );
+        assert!(!message.contains("KELD-WV-008"), "{message}");
+    }
+
+    #[test]
+    fn environment_creation_hresult_keeps_its_phase_and_does_not_claim_missing_runtime() {
+        let error = super::environment_creation_error(
+            "completion",
+            &windows::core::Error::from(windows::Win32::Foundation::E_POINTER),
+        );
+        assert!(
+            matches!(error, WvError::Webview(_)),
+            "an environment completion HRESULT is not an Evergreen version probe: {error}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("KELD-WV-003"), "{message}");
+        assert!(
+            message.contains("environment completion failed"),
+            "{message}"
+        );
+        assert!(!message.contains("KELD-WV-008"), "{message}");
     }
 
     /// Shared process kill switch for native COM and media fixture children.
