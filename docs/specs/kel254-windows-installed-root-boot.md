@@ -74,8 +74,8 @@ Non-goals:
 - `docs/architecture/06-runtime-and-tooling.md` §§2, 3, 4, 4a: boot ownership,
   Windows x64 canonical package, signed full-artifact identity, and unsupported-cell
   refusal.
-- `docs/specs/kel96-no-flag-host-boot/boot.md` §§3, 4.1 D4, 4.2, 4.3, 4.8: strict boot
-  descriptor, no caller-selected mode, and current dev-stage-only consumer. This spec
+- KEL96 `kel96-no-flag-host-boot/`: `boot.md` §§3, 4.1–4.3 D4; `lifecycle.md` §4.8:
+  strict boot descriptor, no caller-selected mode, dev-stage-only consumer. This spec
   is a proposed successor to D4 only for Windows direct-installed packages, and on
   Windows it also ends lease-less dev-stage boot (AC2).
 - `docs/specs/kel53-full-package-activation.md` §§3, 4, 5, 7, 8: installer-owned

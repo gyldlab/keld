@@ -9,9 +9,11 @@
 Disposition: **DO NOT MERGE until independent review and all execution gates pass.**
 The owner delegated technical decisions and continuation on 2026-11-01; the bounded
 decision is recorded on GH452 comment 6549729612. That delegation approves the T1
-contract and T2a in §11, not independent review, execution evidence or full T2/T3.
-PR1362 comment 6550291308 extends the delegated decision to §12 after independent
-architecture review; exact implementation review and execution gates remain required.
+contract and T2a in §11 of the pre-split spec (pin `249e7a64`; now `contract.md` §4),
+not independent review, execution evidence or full T2/T3.
+PR1362 comment 6550291308 extends the delegated decision to §12 of that pre-split
+spec (now `contract.md` §4) after independent architecture review. Exact implementation
+review and execution gates remain required.
 
 
 ## 1. Goal & non-goals

@@ -47,7 +47,7 @@ Non-goals:
   Updating §4.2 is a follow-up PR after this spec is approved, not this change.
 - `docs/architecture/06-runtime-and-tooling.md` §1 (KEL-70 supervisor; KEL-75
   role spawn; KEL-78 owns real-OS sandbox admission)
-- `docs/specs/kel75-principalized-bun-child-roles/roles.md` AC6 and T6
+- KEL75: `kel75-principalized-bun-child-roles/` roles AC6; routing T6
 - `crates/keld-runtime/src/lib.rs` (live supervisor; no sandbox)
 - `crates/keld-guard/src/lib.rs` (`Principal` has no addon-worker variant)
 - `crates/keld-guard/AGENTS.md` (default-deny; no engine special case)

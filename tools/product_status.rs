@@ -268,6 +268,7 @@ struct Record {
     evidence: Vec<Evidence>,
     target: Target,
     target_source: Option<String>,
+    verified_target_source: Option<String>,
     issues: Vec<String>,
     last_verified_sha: String,
 }
@@ -366,6 +367,28 @@ fn parse_evidence(value: &str, line: usize) -> Result<Vec<Evidence>, String> {
     Ok(evidence)
 }
 
+// A split spec can retain its original verification pin. The migration syntax
+// only admits the flat predecessor of that spec's current index, never an
+// arbitrary historical target.
+fn parse_target_sources(source: &str, line: usize) -> Result<(String, Option<String>), String> {
+    let Some((current, verified)) = source.split_once("@verified=") else {
+        return Ok((source.to_owned(), None));
+    };
+    let Some(stem) = current.strip_suffix("/index.md") else {
+        return Err(invalid(
+            line,
+            "verified target migration must use a split spec index",
+        ));
+    };
+    if !stem.starts_with("docs/specs/") || verified != format!("{stem}.md") {
+        return Err(invalid(
+            line,
+            "verified target migration must name the same spec's former flat file",
+        ));
+    }
+    Ok((current.to_owned(), Some(verified.to_owned())))
+}
+
 fn parse_record(line_number: usize, line: &str) -> Result<Record, String> {
     let fields = line.split('\t').collect::<Vec<_>>();
     if fields.len() != FIELD_COUNT {
@@ -413,15 +436,18 @@ fn parse_record(line_number: usize, line: &str) -> Result<Record, String> {
     }
     validate_sha(sha, line_number)?;
     let target = Target::parse(target, line_number)?;
-    let target_source = match (target, *target_source) {
+    let (target_source, verified_target_source) = match (target, *target_source) {
         (Target::Specified, "-") => {
             return Err(invalid(
                 line_number,
                 "specified target is missing target_source",
             ));
         }
-        (Target::Specified, source) => Some(source.to_owned()),
-        (Target::None, "-") => None,
+        (Target::Specified, source) => {
+            let (current, verified) = parse_target_sources(source, line_number)?;
+            (Some(current), verified)
+        }
+        (Target::None, "-") => (None, None),
         (Target::None, _) => {
             return Err(invalid(
                 line_number,
@@ -440,6 +466,7 @@ fn parse_record(line_number: usize, line: &str) -> Result<Record, String> {
         evidence: parse_evidence(evidence, line_number)?,
         target,
         target_source,
+        verified_target_source,
         issues: parse_issues(issues, line_number)?,
         last_verified_sha: (*sha).to_owned(),
     })
@@ -558,12 +585,10 @@ fn is_root_roadmap(root: &Path, canonical: &Path) -> bool {
 }
 
 fn is_normative_target_path(path: &Path) -> bool {
-    ["docs/architecture", "docs/specs"]
-        .iter()
-        .any(|prefix| {
-            path.strip_prefix(prefix)
-                .is_ok_and(|suffix| !suffix.as_os_str().is_empty())
-        })
+    ["docs/architecture", "docs/specs"].iter().any(|prefix| {
+        path.strip_prefix(prefix)
+            .is_ok_and(|suffix| !suffix.as_os_str().is_empty())
+    })
 }
 
 fn run_git(root: &Path, args: &[&str], line: usize) -> Result<std::process::Output, String> {
@@ -951,7 +976,13 @@ fn validate_records(root: &Path, records: &[Record]) -> Result<(), String> {
                 ));
             }
             if git_checkout {
-                validate_git_file_at(root, &record.last_verified_sha, source, record.line)?;
+                let verified_source = record.verified_target_source.as_deref().unwrap_or(source);
+                validate_git_file_at(
+                    root,
+                    &record.last_verified_sha,
+                    verified_source,
+                    record.line,
+                )?;
             }
         }
     }
@@ -1959,7 +1990,10 @@ mod tests {
             ),
         );
         let error = check(temp.path()).expect_err("a gate missing from the group must fail");
-        assert!(error.contains("must include product-status-test"), "{error}");
+        assert!(
+            error.contains("must include product-status-test"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -2121,7 +2155,10 @@ mod tests {
         generate(temp.path()).expect("generate missing-crate mutation");
         let error = check(temp.path()).expect_err("missing crate row must fail");
         assert!(error.starts_with("KELD-DOCS007:"), "{error}");
-        assert!(error.contains("Update `docs/engineering/product-status.tsv`"), "{error}");
+        assert!(
+            error.contains("Update `docs/engineering/product-status.tsv`"),
+            "{error}"
+        );
         assert!(error.contains("just product-status-check"), "{error}");
     }
 
@@ -2423,6 +2460,84 @@ mod tests {
             "test:crates/keld-core/tests/live.rs\tspecified\tREADME-target.md",
         );
         expect_check_error(&temp, "must be owned by docs/architecture or docs/specs");
+    }
+
+    #[test]
+    fn verified_target_migration_must_name_the_same_pre_split_spec() {
+        let temp = fixture();
+        temp.replace(
+            LEDGER_REL,
+            "test:crates/keld-core/tests/live.rs\tspecified\tdocs/architecture/01-overview.md",
+            "test:crates/keld-core/tests/live.rs\tspecified\tdocs/specs/kel96-no-flag-host-boot/index.md@verified=docs/specs/unrelated.md",
+        );
+        expect_check_error(&temp, "same spec's former flat file");
+    }
+
+    #[test]
+    fn verified_target_migration_must_use_an_index() {
+        let temp = fixture();
+        temp.replace(
+            LEDGER_REL,
+            "test:crates/keld-core/tests/live.rs\tspecified\tdocs/architecture/01-overview.md",
+            "test:crates/keld-core/tests/live.rs\tspecified\tdocs/specs/kel96-no-flag-host-boot/boot.md@verified=docs/specs/kel96-no-flag-host-boot.md",
+        );
+        expect_check_error(&temp, "must use a split spec index");
+    }
+
+    #[test]
+    fn verified_target_migration_cannot_claim_an_absent_pinned_predecessor() {
+        let (temp, _) = git_fixture();
+        temp.write(
+            "docs/specs/kel96-no-flag-host-boot/index.md",
+            "# New index\n",
+        );
+        temp.replace(
+            LEDGER_REL,
+            "test:crates/keld-core/tests/live.rs\tspecified\tdocs/architecture/01-overview.md",
+            "test:crates/keld-core/tests/live.rs\tspecified\tdocs/specs/kel96-no-flag-host-boot/index.md@verified=docs/specs/kel96-no-flag-host-boot.md",
+        );
+        let error = generate(temp.path()).expect_err("missing pinned predecessor must fail");
+        assert!(
+            error.contains("not a tracked regular file"),
+            "expected a historical target-path refusal: {error}"
+        );
+    }
+
+    #[test]
+    fn verified_target_migration_preserves_historical_pin_and_current_link() {
+        let temp = fixture();
+        temp.write(
+            "docs/specs/kel96-no-flag-host-boot.md",
+            "# Original flat contract\n",
+        );
+        generate(temp.path()).expect("generate original ledger");
+        temp.git(&["init", "--quiet"]);
+        temp.git(&["config", "maintenance.auto", "false"]);
+        temp.git(&["config", "user.email", "fixture@example.invalid"]);
+        temp.git(&["config", "user.name", "Keld fixture"]);
+        temp.git(&["add", "-A"]);
+        temp.git(&["commit", "--quiet", "-m", "verified flat spec"]);
+        let verified_sha = temp.git(&["rev-parse", "HEAD"]);
+        temp.replace_all(LEDGER_REL, SHA, &verified_sha);
+        fs::remove_file(temp.path().join("docs/specs/kel96-no-flag-host-boot.md"))
+            .expect("remove moved flat spec");
+        temp.write(
+            "docs/specs/kel96-no-flag-host-boot/index.md",
+            "# New index\n",
+        );
+        temp.replace(
+            LEDGER_REL,
+            "test:crates/keld-core/tests/live.rs\tspecified\tdocs/architecture/01-overview.md",
+            "test:crates/keld-core/tests/live.rs\tspecified\tdocs/specs/kel96-no-flag-host-boot/index.md@verified=docs/specs/kel96-no-flag-host-boot.md",
+        );
+        generate(temp.path()).expect("render moved target");
+        temp.git(&["add", "-A"]);
+        temp.git(&["commit", "--quiet", "-m", "move spec after verification"]);
+        check(temp.path()).expect("verified old source and current index both pass");
+        let output = temp.read(OUTPUT_REL);
+        assert!(output.contains("[Specified](../../docs/specs/kel96-no-flag-host-boot/index.md)"));
+        assert!(!output.contains("@verified="));
+        assert!(output.contains(&verified_sha));
     }
 
     #[test]
@@ -2966,7 +3081,12 @@ mod tests {
         std::os::unix::fs::symlink("../../../ROADMAP.md", &source)
             .expect("replace source with current roadmap symlink");
         temp.git(&["add", "crates/keld-core/src/lib.rs"]);
-        temp.git(&["commit", "--quiet", "-m", "replace source with roadmap symlink"]);
+        temp.git(&[
+            "commit",
+            "--quiet",
+            "-m",
+            "replace source with roadmap symlink",
+        ]);
 
         expect_check_error(&temp, "public planning narrative");
     }
