@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   FrameKind,
   FrameReader,
@@ -31,7 +32,7 @@ type Message = {
 async function launch(
   observer: boolean,
   mutant = false,
-  installed?: { wrapper: string; entry: string },
+  installed?: { wrapper: string; entry: string; startupProbe?: boolean },
 ) {
   const dir = mkdtempSync(join(tmpdir(), "krp-"));
   const endpoint =
@@ -119,26 +120,73 @@ async function launch(
       )
     );
   }
-  const socket = await withIoDeadline(opened);
-  const writer = new WriteQueue(socket, drain);
-  const hello = await withIoDeadline(reader.readFrame());
-  expect(hello.header.kind).toBe(FrameKind.Hello);
-  await writer.writeFrame(
-    FrameKind.Hello,
-    0,
-    0,
-    0,
-    new Uint8Array(32).fill(0x72),
-  );
-  const init = await withIoDeadline(reader.readFrame());
-  expect(init.header).toMatchObject({
-    kind: FrameKind.Call,
-    channel: LIFECYCLE_CHANNEL,
-    corr: 1,
-    flags: 0,
+  // Child startup failures must not masquerade as a silent peer timeout.
+  // This race keeps the existing per-operation I/O deadline unchanged.
+  const exited = proc.exited.then((code): never => {
+    throw new Error(`preload child exited with code ${code}`);
   });
-  const captured = decodeRuntimeProcessInit(init.payload);
-  const saved = init.payload.slice();
+  void exited.catch(() => undefined);
+  async function startup<T>(stage: string, operation: Promise<T>): Promise<T> {
+    try {
+      if (installed?.startupProbe) proc.send({ kind: "startup-stage", stage });
+      return await withIoDeadline(Promise.race([operation, exited]));
+    } catch (error) {
+      throw new Error(`preload startup ${stage}: ${String(error)}`);
+    }
+  }
+  let socket: Bun.Socket<undefined>;
+  let writer: WriteQueue;
+  let captured: ReturnType<typeof decodeRuntimeProcessInit>;
+  let saved: Uint8Array;
+  try {
+    socket = await startup("connect", opened);
+    writer = new WriteQueue(socket, drain);
+    const hello = await startup("HELLO", reader.readFrame());
+    expect(hello.header.kind).toBe(FrameKind.Hello);
+    await writer.writeFrame(
+      FrameKind.Hello,
+      0,
+      0,
+      0,
+      new Uint8Array(32).fill(0x72),
+    );
+    const init = await startup("Init", reader.readFrame());
+    expect(init.header).toMatchObject({
+      kind: FrameKind.Call,
+      channel: LIFECYCLE_CHANNEL,
+      corr: 1,
+      flags: 0,
+    });
+    captured = decodeRuntimeProcessInit(init.payload);
+    saved = init.payload.slice();
+  } catch (error) {
+    let stderr = "";
+    let cleanupFailure = "";
+    try {
+      proc.kill();
+      await withIoDeadline(proc.exited);
+      stderr = await withIoDeadline(new Response(proc.stderr).text());
+    } catch (cleanupError) {
+      cleanupFailure = `\npreload cleanup: ${String(cleanupError)}`;
+    } finally {
+      for (const clean of [
+        () => server.stop(true),
+        () => rmSync(dir, { recursive: true, force: true }),
+        () => {
+          if (mutant) rmSync(wrapper, { force: true });
+        },
+      ]) {
+        try {
+          clean();
+        } catch (cleanupError) {
+          cleanupFailure += `\npreload cleanup: ${String(cleanupError)}`;
+        }
+      }
+    }
+    throw new Error(
+      `${String(error)}\npreload child stderr:\n${stderr}${cleanupFailure}`,
+    );
+  }
   return {
     proc,
     reader,
@@ -187,6 +235,86 @@ async function launch(
       if (mutant) rmSync(wrapper, { force: true });
     },
   };
+}
+
+test("preload startup reports an early child exit instead of a peer timeout", async () => {
+  const stage = mkdtempSync(join(tmpdir(), "krp-missing-"));
+  try {
+    let failure: unknown;
+    try {
+      const run = await launch(false, false, {
+        wrapper: join(stage, "missing-preload.mjs"),
+        entry: join(import.meta.dir, "runtime-preload-entry.fixture.mjs"),
+      });
+      await run.dispose();
+    } catch (error) {
+      failure = error;
+    }
+    expect(String(failure)).toContain("preload startup connect:");
+    expect(String(failure)).toContain("preload child exited with code");
+    expect(String(failure)).toContain("missing-preload.mjs");
+    expect(String(failure)).not.toContain("I/O deadline exceeded");
+  } finally {
+    rmSync(stage, { recursive: true, force: true });
+  }
+}, 15000);
+
+for (const phase of ["HELLO", "Init"] as const) {
+  test(`preload startup reports child failure during ${phase}`, async () => {
+    const stage = mkdtempSync(join(tmpdir(), "krp-exit-"));
+    try {
+      const wrapper = join(stage, "empty-preload.mjs");
+      const entry = join(stage, "exit-entry.mjs");
+      writeFileSync(
+        wrapper,
+        "// No API preload: this child is the failing protocol peer.\n",
+      );
+      const transport = pathToFileURL(
+        Bun.resolveSync("@keld/kipc", import.meta.dir),
+      ).href;
+      writeFileSync(
+        entry,
+        `
+import { encodeHeader, FrameKind } from ${JSON.stringify(transport)};
+const phase = ${JSON.stringify(phase)};
+const stop = () => { console.error("intentional peer failure " + phase); process.exit(23); };
+process.on("message", (message) => {
+  if (phase === "HELLO" && message?.kind === "startup-stage" && message.stage === "HELLO") stop();
+});
+await Bun.connect({
+  unix: process.env.KELD_APP_LINK.split("#")[0],
+  socket: {
+    open(socket) {
+      if (phase === "HELLO") return;
+      const header = encodeHeader(FrameKind.Hello, 0, 0, 0, 32);
+      const hello = new Uint8Array(header.length + 32);
+      hello.set(header); hello.fill(0x72, header.length);
+      socket.write(hello);
+    },
+    data() { stop(); },
+    error() { process.exit(24); },
+  },
+});
+`,
+      );
+      let failure: unknown;
+      try {
+        const run = await launch(false, false, {
+          wrapper,
+          entry,
+          startupProbe: true,
+        });
+        await run.dispose();
+      } catch (error) {
+        failure = error;
+      }
+      expect(String(failure)).toContain(`preload startup ${phase}:`);
+      expect(String(failure)).toContain(`intentional peer failure ${phase}`);
+      expect(String(failure)).not.toContain("I/O deadline exceeded");
+    } finally {
+      rmSync(stage, { recursive: true, force: true });
+    }
+  }, 15000);
 }
 
 test("one real API preload holds entry through Init ACK then reuses one WorkerLink", async () => {
