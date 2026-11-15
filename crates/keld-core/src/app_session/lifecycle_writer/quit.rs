@@ -183,7 +183,7 @@ impl PrimaryRouterHandle {
             // must observe that the independent lock witness cannot acquire it.
             #[cfg(test)]
             if std::env::var_os("KELD_TEST_QUIT_RETAIN_TRANSITION_LOCK").is_some() {
-                std::thread::sleep(remaining);
+                std::thread::sleep(remaining.max(std::time::Duration::from_secs(5)));
                 continue;
             }
             // The original Ready owner must commit or retire before this Quit
