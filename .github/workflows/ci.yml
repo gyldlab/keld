@@ -158,7 +158,7 @@ jobs:
         with:
           toolchain: 1.99.1
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --all --check
       # `cargo fmt` never visits `include!`d files, `#[path]` mods declared
       # inside macro bodies, or the `mod` files under either.
@@ -193,7 +193,7 @@ jobs:
         with:
           toolchain: 1.99.1
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-on-failure: true
       - name: Check keld-ipc fuzz workspace
@@ -295,7 +295,7 @@ jobs:
         run: |
           $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $HOME '.cargo' }
           New-Item -ItemType Directory -Force -Path (Join-Path $cargoHome 'bin') | Out-Null
-      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: nextest,just@1.58.0
       # The rest of the `cache-check-test` ci-policy recipe, hosted on all three
@@ -546,7 +546,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master pinned commit
         with:
           toolchain: 1.99.1
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: cargo test --doc
         shell: bash
         env:
@@ -618,7 +618,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master pinned commit
         with:
           toolchain: 1.99.1
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-on-failure: true
       # The .deb set comes from a first-party cache keyed by the exact package
@@ -686,7 +686,7 @@ jobs:
         with:
           toolchain: 1.99.1
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Read MSRV from workspace metadata
         id: msrv
         run: |
@@ -713,19 +713,31 @@ jobs:
         with:
           toolchain: 1.99.1
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # #676: the upstream release binary, checksum-verified, replaces the Docker
+      # cargo-deny-action whose image build pulled anonymously from Docker Hub. The
+      # advisory database still comes from cargo-deny's default GitHub URL. Bump the
+      # version and SHA-256 together with tools/ci_workflow_security.ts.
+      - name: Install cargo-deny 0.20.2
+        run: |
+          set -euo pipefail
+          version=0.20.2
+          release="cargo-deny-${version}-x86_64-unknown-linux-musl"
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o "${release}.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${version}/${release}.tar.gz"
+          echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  ${release}.tar.gz" | sha256sum -c -
+          mkdir cargo-deny
+          tar -xzf "${release}.tar.gz" -C cargo-deny --strip-components=1 "${release}/cargo-deny"
+          cargo-deny/cargo-deny --version
+      - name: cargo-deny check
+        run: |
+          "$RUNNER_TEMP/cargo-deny/cargo-deny" --log-level warn --manifest-path ./Cargo.toml --all-features check
       # KEL-53 §4: the elevated updater helper's edge set, with the helper as the sole
       # graph root and the ban list its own deny.toml owns.
       - name: Updater helper edge set (KEL-53 T4d S9c)
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          manifest-path: crates/keld-updater-helper/Cargo.toml
-          arguments: --all-features --config crates/keld-updater-helper/deny.toml
-          command: check
-          command-arguments: bans
+        run: |
+          "$RUNNER_TEMP/cargo-deny/cargo-deny" --log-level warn --manifest-path crates/keld-updater-helper/Cargo.toml --all-features --config crates/keld-updater-helper/deny.toml check bans
 
   secrets:
     name: gitleaks
@@ -912,12 +924,12 @@ jobs:
       # pull_request runners without secrets or repository write permission.
       # macOS avoids another GTK apt lane; this is not all-OS containment proof.
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3, bundle 2.27.2
+        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0, bundle 2.27.2
         with:
           languages: rust
           build-mode: none
       - name: Analyze and upload CodeQL results
-        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3, bundle 2.27.2
+        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0, bundle 2.27.2
         with:
           category: /language:rust
           upload: always
@@ -938,12 +950,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3, bundle 2.27.2
+        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0, bundle 2.27.2
         with:
           languages: javascript-typescript
           build-mode: none
       - name: Analyze and upload CodeQL results
-        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3, bundle 2.27.2
+        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0, bundle 2.27.2
         with:
           category: /language:javascript-typescript
           upload: always
@@ -964,12 +976,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3, bundle 2.27.2
+        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0, bundle 2.27.2
         with:
           languages: actions
           build-mode: none
       - name: Analyze and upload CodeQL results
-        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3, bundle 2.27.2
+        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0, bundle 2.27.2
         with:
           category: /language:actions
           upload: always
