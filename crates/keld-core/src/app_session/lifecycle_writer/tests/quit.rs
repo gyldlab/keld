@@ -58,7 +58,9 @@ fn wait_quit_child(
         if Instant::now() >= deadline {
             let _ = child.kill();
             let status = child.wait().map_err(|error| error.to_string())?;
-            return Err(format!("child exceeded {timeout:?} and was killed ({status})"));
+            return Err(format!(
+                "child exceeded {timeout:?} and was killed ({status})"
+            ));
         }
         thread::sleep(Duration::from_millis(10));
     }
@@ -119,7 +121,6 @@ fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_rep
 fn quit_ready_lock_witness_child() {
     run_written_ready_quit_drain_scenario();
 }
-
 
 #[cfg_attr(
     windows,
