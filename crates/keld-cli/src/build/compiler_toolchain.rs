@@ -112,6 +112,8 @@ pub(super) struct BoundCompilerEntry<'a> {
     pub(super) source: local_source::ObservedCompilerSources<'a>,
     pub(super) tools: &'a CapturedCompilerToolchain,
     pub(super) preload: local_source::PinnedFile,
+    pub(super) entry: local_source::PinnedFile,
+    _projected_compiler: local_source::PinnedFile,
     pub(super) configuration: local_source::PinnedFile,
     pub(super) tsconfig: local_source::PinnedFile,
     _global_configuration: local_source::PinnedFile,
@@ -124,26 +126,55 @@ impl<'a> BoundCompilerEntry<'a> {
         stage: &Path,
     ) -> Result<Self, BuildError> {
         let directories = windows_inputs::pin_input_root(stage)?;
-        let mut imports = BTreeMap::new();
+        let closed_app = source.closed_app()?;
+        let mut imports = Vec::new();
         for (name, relative) in [
             ("typescript/unstable/ast", "dist/ast/index.js"),
             ("typescript/unstable/async", "dist/api/async/api.js"),
             ("typescript/unstable/fs", "dist/api/fs.js"),
         ] {
-            let path = tools.package_root.join(relative);
-            imports.insert(
-                name,
-                path.to_str()
-                    .ok_or_else(|| refuse("compiler path is not UTF8"))?
-                    .replace('\\', "/"),
-            );
+            imports.push((name, local_file_url(&tools.package_root.join(relative))?));
         }
-        let map = serde_json::to_string(&imports).map_err(refuse)?;
-        // Fixed code plus JSON-escaped paths; never application code or shell.
-        let text = format!(
-            "const paths = {map};\nBun.plugin({{name:'keld-owned-typescript',setup(build){{build.onResolve({{filter:/^typescript(?:\\/|$)/}},args=>{{const path=paths[args.path];if(!path)throw new Error('Unadmitted TypeScript import');return {{path,namespace:'file'}};}});}}}});\n"
-        );
-        let preload = write_generated_input(stage, "compiler-preload.ts", text.as_bytes())?;
+        let projected = project_imports(
+            &read_compiler_source(closed_app)?,
+            include_bytes!("../../tools/closed-app.ts"),
+            &imports,
+        )?;
+        let projected_compiler = write_generated_input(stage, "closed-app-bound.ts", &projected)?;
+        let tool_root = source
+            .entry()
+            .path
+            .parent()
+            .ok_or_else(|| refuse("compiler entry parent absent"))?;
+        let projected = project_imports(
+            &read_compiler_source(source.entry())?,
+            include_bytes!("../../tools/closed-app-runner.ts"),
+            &[
+                ("./closed-app.ts", local_file_url(&projected_compiler.path)?),
+                (
+                    "./protocol.ts",
+                    local_file_url(&tool_root.join("protocol.ts"))?,
+                ),
+                (
+                    "./static-renderer.ts",
+                    local_file_url(&tool_root.join("static-renderer.ts"))?,
+                ),
+                (
+                    "../../../packages/@keld/kipc/scripts/package-artifacts.ts",
+                    local_file_url(&source.kipc_root().join("scripts/package-artifacts.ts"))?,
+                ),
+                (
+                    "../../../packages/@keld/kipc/src/transport.ts",
+                    local_file_url(&source.kipc_root().join("src/transport.ts"))?,
+                ),
+            ],
+        )?;
+        let entry = write_generated_input(stage, "compiler-bound-runner.ts", &projected)?;
+        let preload = write_generated_input(
+            stage,
+            "compiler-preload.ts",
+            b"// Fixed explicit compiler imports; no runtime resolver hook.\n",
+        )?;
         // Bun1.4.4 loads HOME/.bunfig.toml even with --config. Both are exact
         // create-new retained files, not an absence check vulnerable to creation.
         let configuration = write_generated_input(
@@ -156,29 +187,104 @@ impl<'a> BoundCompilerEntry<'a> {
             ".bunfig.toml",
             b"# KELD empty global compiler configuration\n",
         )?;
-        // Bun 1.4.4 resolves these TypeScript modules through tsconfig paths
-        // even when a pinned Bun.plugin preload has been supplied. Generate the
-        // three exact mappings from the SAME captured official import map:
-        // no ambient package lookup, caller-supplied alias or mutable config.
-        let aliases: BTreeMap<_, _> = imports
-            .iter()
-            .map(|(name, path)| (*name, [path.clone()]))
-            .collect();
-        let mut tsconfig_bytes =
-            serde_json::to_vec(&serde_json::json!({ "compilerOptions": { "paths": aliases } }))
-                .map_err(refuse)?;
-        tsconfig_bytes.push(b'\n');
-        let tsconfig = write_generated_input(stage, "tsconfig.json", &tsconfig_bytes)?;
+        let tsconfig =
+            write_generated_input(stage, "tsconfig.json", b"{\"compilerOptions\":{}}\n")?;
         Ok(Self {
             source,
             tools,
             preload,
+            entry,
+            _projected_compiler: projected_compiler,
             configuration,
             tsconfig,
             _global_configuration: global_configuration,
             _directories: directories,
         })
     }
+}
+
+// The caller retains the exact original compiler source and official package.
+// This is a fixed source projection, not an application import parser/resolver.
+fn project_imports(
+    bytes: &[u8],
+    expected: &[u8],
+    bindings: &[(&str, String)],
+) -> Result<Vec<u8>, BuildError> {
+    if bytes != expected {
+        return Err(refuse(
+            "captured compiler source differs from this CLI's reviewed tool bytes",
+        ));
+    }
+    let mut text = std::str::from_utf8(bytes).map_err(refuse)?.to_owned();
+    for (literal, target) in bindings {
+        let old = serde_json::to_string(literal).map_err(refuse)?;
+        if text.matches(&old).count() != 1 {
+            return Err(refuse("fixed compiler import literal is not unique"));
+        }
+        text = text.replace(&old, &serde_json::to_string(target).map_err(refuse)?);
+    }
+    Ok(text.into_bytes())
+}
+
+pub(super) fn local_file_url(path: &Path) -> Result<String, BuildError> {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    if !path.is_absolute()
+        || !matches!(path.components().next(),
+        Some(std::path::Component::Prefix(prefix))
+            if matches!(prefix.kind(), std::path::Prefix::Disk(_)))
+    {
+        return Err(refuse(
+            "compiler URL requires an ordinary absolute local disk path",
+        ));
+    }
+    if path.components().skip(1).any(|component| {
+        !matches!(
+            component,
+            std::path::Component::RootDir | std::path::Component::Normal(_)
+        )
+    }) {
+        return Err(refuse("compiler URL path traversal refused"));
+    }
+    let normalized = path
+        .to_str()
+        .ok_or_else(|| refuse("compiler path is not UTF8"))?
+        .replace('\\', "/");
+    let mut result = String::from("file:///");
+    for byte in normalized.bytes() {
+        if byte.is_ascii_alphanumeric() || b"/-._~:".contains(&byte) {
+            result.push(char::from(byte));
+        } else {
+            result.push('%');
+            result.push(char::from(HEX[usize::from(byte >> 4)]));
+            result.push(char::from(HEX[usize::from(byte & 15)]));
+        }
+    }
+    Ok(result)
+}
+
+fn read_compiler_source(source: &local_source::PinnedFile) -> Result<Vec<u8>, BuildError> {
+    use std::os::windows::fs::FileExt as _;
+    let size = source.file.metadata().map_err(refuse)?.len();
+    if size > 64 * 1024 {
+        return Err(refuse("compiler source projection bound"));
+    }
+    let mut bytes = vec![0; usize::try_from(size).map_err(refuse)?];
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let count = source
+            .file
+            .seek_read(&mut bytes[offset..], u64::try_from(offset).map_err(refuse)?)
+            .map_err(refuse)?;
+        if count == 0 {
+            return Err(refuse("retained compiler source truncated"));
+        }
+        offset += count;
+    }
+    let observed: [u8; 32] = Sha256::digest(&bytes).into();
+    if observed != source.sha256 {
+        return Err(refuse("retained compiler source hash changed"));
+    }
+    Ok(bytes)
 }
 
 fn write_generated_input(
@@ -256,5 +362,50 @@ mod generated_preload_tests {
         );
         std::fs::remove_file(&path).expect("remove owned fixture file");
         std::fs::remove_dir(&root).expect("remove empty owned fixture directory");
+    }
+}
+
+#[cfg(test)]
+mod explicit_projection_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_url_encodes_path_data_and_refuses_unqualified_prefixes() {
+        assert_eq!(
+            local_file_url(Path::new(r"C:\Keld Tools\a#b?c%é.js")).expect("ordinary disk URL"),
+            "file:///C:/Keld%20Tools/a%23b%3Fc%25%C3%A9.js"
+        );
+        for path in [
+            r"\\?\C:\typescript",
+            r"\\server\share\typescript",
+            r"C:\a\..\b",
+            "relative",
+        ] {
+            assert!(local_file_url(Path::new(path)).is_err());
+        }
+    }
+
+    #[test]
+    fn projection_requires_exact_expected_source_and_unique_known_literal() {
+        let source = b"import * as ts from \"typescript/unstable/ast\";\n";
+        let bindings = [(
+            "typescript/unstable/ast",
+            "file:///C:/owned/ast.js".to_owned(),
+        )];
+        assert_eq!(
+            project_imports(source, source, &bindings).expect("fixed projection"),
+            b"import * as ts from \"file:///C:/owned/ast.js\";\n"
+        );
+        assert!(project_imports(b"changed", source, &bindings).is_err());
+        assert!(
+            project_imports(
+                source,
+                source,
+                &[("absent", "file:///C:/owned/ast.js".into())]
+            )
+            .is_err()
+        );
+        let duplicated = [source.as_slice(), source.as_slice()].concat();
+        assert!(project_imports(&duplicated, &duplicated, &bindings).is_err());
     }
 }
