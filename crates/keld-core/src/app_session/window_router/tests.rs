@@ -855,12 +855,9 @@ fn window_router_duplicate_live_correlation_closes_link_before_second_effect() -
 }
 
 #[test]
-#[cfg_attr(
-    windows,
-    expect(
-        clippy::too_many_lines,
-        reason = "Keep actual reader admission, native disposition, correlated replies and original thread/writer joins in one ordered fixture."
-    )
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep actual reader admission, native disposition, correlated replies and original thread/writer joins in one ordered fixture."
 )]
 fn window_router_existing_primary_reader_admits_the_named_window_policy() -> TestResult {
     let mut fixture = LegacyPolicyFixture::new(Some(true))?;
@@ -926,7 +923,17 @@ fn window_router_existing_primary_reader_admits_the_named_window_policy() -> Tes
         panic!("native build command")
     };
     assert_eq!((width, height), (11, 12));
+    #[cfg(windows)]
     let disposition = fixture
+        .handle
+        .window_native_event(AppWindowEvent::WindowBuilt {
+            build,
+            view: WebviewId(17),
+            snapshot: snapshot(),
+        })
+        .expect("native result");
+    #[cfg(not(windows))]
+    fixture
         .handle
         .window_native_event(AppWindowEvent::WindowBuilt {
             build,
@@ -939,8 +946,6 @@ fn window_router_existing_primary_reader_admits_the_named_window_policy() -> Tes
         disposition,
         super::NativePublicationDisposition::Handled
     ));
-    #[cfg(not(windows))]
-    let () = disposition;
     let (event_header, bytes) = read_frame(&mut fixture.peer).expect("Created event");
     let WindowEvent::Created { window, .. } = decode(&bytes).expect("Created payload") else {
         panic!("Created")
@@ -1479,7 +1484,7 @@ fn original_menu_quit_selection_reuses_exact_bootstrap_source_and_subscribed_own
 }
 
 /// The actual socket/error owner and inherited stderr are independent observers.
-/// LegacyPolicyFixture identities are component inputs, not Runtime/native authentication.
+/// `LegacyPolicyFixture` identities are component inputs, not Runtime/native authentication.
 #[test]
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn window_refusal_diagnostic_matches_actual_reply_without_private_message() -> TestResult {
