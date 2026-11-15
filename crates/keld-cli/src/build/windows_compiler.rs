@@ -454,3 +454,330 @@ mod scaffold_source_tests {
         assert!(!reserved_transport("src/echo.generated.ts"));
     }
 }
+
+
+
+#[cfg(test)]
+mod rust_binder_acceptance_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    use std::fs::{self, OpenOptions};
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const RENDERER: &[u8] =
+        b"<html><head><title>Keld</title></head><body><main>Bound fixture</main></body></html>";
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new(label: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "keld-rust-binder-{label}-{}-{}",
+                std::process::id(),
+                SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&root).expect("fresh compiler acceptance directory");
+            Self(root)
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn required_path(name: &str) -> PathBuf {
+        PathBuf::from(std::env::var_os(name).unwrap_or_else(|| {
+            panic!("qualified compiler acceptance requires {name}")
+        }))
+    }
+
+    fn required_digest(name: &str) -> [u8; 32] {
+        let value = std::env::var(name)
+            .unwrap_or_else(|_| panic!("qualified compiler acceptance requires {name}"));
+        assert_eq!(value.len(), 64, "{name} must be 64 hexadecimal characters");
+        let mut digest = [0_u8; 32];
+        for (index, byte) in digest.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
+                .unwrap_or_else(|_| panic!("{name} contains non-hexadecimal data"));
+        }
+        digest
+    }
+
+    fn version(path: &Path) -> String {
+        let output = Command::new(path)
+            .arg("--version")
+            .output()
+            .unwrap_or_else(|error| panic!("run qualified tool {}: {error}", path.display()));
+        assert!(
+            output.status.success(),
+            "qualified tool version failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    }
+
+    fn compiler_environment(
+        home: &Path,
+        stage: &Path,
+        node_path: Option<&Path>,
+    ) -> Vec<(OsString, OsString)> {
+        let mut environment = Vec::new();
+        let system_root =
+            std::env::var_os("SystemRoot").expect("Windows SystemRoot is required");
+        environment.push((OsString::from("SystemRoot"), system_root.clone()));
+        environment.push((
+            OsString::from("WINDIR"),
+            std::env::var_os("WINDIR").unwrap_or(system_root),
+        ));
+        for name in ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"] {
+            environment.push((OsString::from(name), home.as_os_str().to_owned()));
+        }
+        for name in ["TEMP", "TMP"] {
+            environment.push((OsString::from(name), stage.as_os_str().to_owned()));
+        }
+        if let Some(path) = node_path {
+            environment.push((OsString::from("NODE_PATH"), path.as_os_str().to_owned()));
+        }
+        environment
+    }
+
+    fn write_app(root: &Path, modules: &[(&str, &str)]) {
+        fs::create_dir(root).expect("create captured application root");
+        for (name, source) in modules {
+            let path = root.join(name);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("create captured module parent");
+            }
+            fs::write(path, source).expect("write captured application module");
+        }
+        fs::write(root.join("index.html"), RENDERER).expect("write retained renderer");
+    }
+
+    fn run_bound_case(
+        sources: &super::super::local_source::ObservedCompilerSources<'_>,
+        tools: &super::super::compiler_toolchain::CapturedCompilerToolchain,
+        root: &Path,
+        modules: &[(&str, &str)],
+        home: &Path,
+        node_path: Option<&Path>,
+    ) -> Result<CompiledApp, BuildError> {
+        let app_root = root.join("app");
+        let stage = root.join("stage");
+        write_app(&app_root, modules);
+        crate::boot::create_windows_stage_root(&stage).map_err(refusal)?;
+        let names = modules
+            .iter()
+            .map(|(name, _)| (*name).to_owned())
+            .collect::<Vec<_>>();
+        let captured = CapturedModules::open(&app_root, &names, "main.js", "Keld", sources)?;
+        let compiler =
+            super::super::compiler_toolchain::BoundCompilerEntry::bind(sources, tools, &stage)?;
+        let mut request = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(stage.join("compiler-request.bin"))
+            .map_err(refusal)?;
+        let environment = compiler_environment(home, &stage, node_path);
+        compile(&captured, &compiler, &stage, &environment, &mut request)
+    }
+
+    fn assert_no_signing_artifacts(stage: &Path) {
+        for name in ["app.keld.tar.zst.candidate", "signed-app.exe", "manifest.sig"] {
+            assert!(
+                !stage.join(name).exists(),
+                "compiler acceptance created forbidden signing artifact {name}"
+            );
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep all five qualified compiler acceptance cases under one explicit toolchain gate."
+    )]
+    fn rust_production_binder_runs_five_qualified_compiler_acceptance_cases() {
+        if std::env::var("KELD_COMPILER_TEST_REQUIRED").as_deref() != Ok("1") {
+            return;
+        }
+
+        let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root");
+        let typescript_root = required_path("KELD_COMPILER_TEST_TYPESCRIPT_ROOT");
+        let bun = required_path("KELD_COMPILER_TEST_BUN");
+        let parser = required_path("KELD_COMPILER_TEST_TSGO");
+        let bun_sha = required_digest("KELD_COMPILER_TEST_BUN_SHA256");
+        let parser_sha = required_digest("KELD_COMPILER_TEST_TSGO_SHA256");
+
+        assert_eq!(version(&bun).trim(), "1.4.4", "Bun 1.4.4 is required");
+        assert!(
+            version(&parser).contains("7.0.2"),
+            "TypeScript parser 7.0.2 is required"
+        );
+        let package: serde_json::Value = serde_json::from_slice(
+            &fs::read(typescript_root.join("package.json"))
+                .expect("read official TypeScript package manifest"),
+        )
+        .expect("parse official TypeScript package manifest");
+        assert_eq!(package["version"], "7.0.2");
+        let tools = super::super::compiler_toolchain::CapturedCompilerToolchain::capture(
+            &typescript_root,
+            &bun,
+            &bun_sha,
+            &parser,
+            &parser_sha,
+        )
+        .expect("capture exact 416-file TypeScript 7.0.2 manifest and qualified executables");
+        let observation =
+            super::super::local_source::compiler_source_observation_for_test(&repository, &bun)
+                .expect("pin exact Rust production compiler source closure");
+        let sources = observation
+            .compiler_sources()
+            .expect("retain production compiler source closure");
+
+        // 1/5: execute the exact entry generated by BoundCompilerEntry::bind.
+        let positive = Scratch::new("positive");
+        let stage = positive.0.join("stage");
+        let compiled = run_bound_case(
+            &sources,
+            &tools,
+            &positive.0,
+            &[
+                (
+                    "main.js",
+                    "import { answer } from './value.js'; console.log(answer);",
+                ),
+                ("value.js", "export const answer = 45272;"),
+            ],
+            &stage,
+            None,
+        )
+        .expect("Rust-generated compiler entry emits the captured application");
+        assert!(String::from_utf8_lossy(&compiled.main).contains("45272"));
+        assert!(
+            String::from_utf8_lossy(&compiled.transport)
+                .contains("@keld/kipc-transport sha256:")
+        );
+        let expected_renderer: [u8; 32] = Sha256::digest(RENDERER).into();
+        assert_eq!(compiled.renderer_sha256, expected_renderer);
+        assert_no_signing_artifacts(&stage);
+        println!("KELD_COMPILER_BINDER_CASE: positive");
+
+        // 2/5: deliberately expose a hostile HOME poison. It must execute before
+        // compiler output, proving that the isolated positive does not hide it.
+        let home_negative = Scratch::new("hostile-home");
+        let hostile_home = home_negative.0.join("ambient-home");
+        fs::create_dir(&hostile_home).expect("create hostile HOME");
+        let marker = home_negative.0.join("ambient-home-loaded.marker");
+        let marker_literal =
+            serde_json::to_string(marker.to_str().expect("Windows marker path is UTF8"))
+                .expect("encode marker path");
+        fs::write(
+            hostile_home.join("poison.ts"),
+            format!(
+                "await Bun.write({marker_literal}, 'AMBIENT_BUN_CONFIG_USED');\nthrow new Error('AMBIENT_BUN_CONFIG_USED');\n"
+            ),
+        )
+        .expect("write hostile Bun preload");
+        fs::write(
+            hostile_home.join(".bunfig.toml"),
+            "preload = ['./poison.ts']\n",
+        )
+        .expect("write hostile Bun global configuration");
+        let stage = home_negative.0.join("stage");
+        let error = run_bound_case(
+            &sources,
+            &tools,
+            &home_negative.0,
+            &[("main.js", "console.log('must not compile');")],
+            &hostile_home,
+            None,
+        )
+        .expect_err("unisolated HOME must load the hostile Bun configuration");
+        assert!(error.to_string().contains("captured compiler"));
+        assert_eq!(
+            fs::read_to_string(&marker).expect("hostile preload sentinel"),
+            "AMBIENT_BUN_CONFIG_USED"
+        );
+        assert_no_signing_artifacts(&stage);
+        println!("KELD_COMPILER_BINDER_CASE: hostile HOME");
+
+        // 3/5: a physical ambient package must not enter the captured virtual
+        // application graph or produce a compiler response.
+        let ambient = Scratch::new("ambient-module");
+        let node_modules = ambient.0.join("node_modules");
+        let package_root = node_modules.join("ambient-test-only");
+        fs::create_dir_all(&package_root).expect("create hostile ambient package");
+        fs::write(
+            package_root.join("package.json"),
+            r#"{"name":"ambient-test-only","type":"module","main":"index.js"}"#,
+        )
+        .expect("write ambient package manifest");
+        fs::write(
+            package_root.join("index.js"),
+            "throw new Error('AMBIENT_MODULE_USED'); export const ambient = 1;",
+        )
+        .expect("write ambient package entry");
+        let stage = ambient.0.join("stage");
+        assert!(
+            run_bound_case(
+                &sources,
+                &tools,
+                &ambient.0,
+                &[("main.js", "import 'ambient-test-only'; console.log('bad');")],
+                &stage,
+                Some(&node_modules),
+            )
+            .is_err(),
+            "ambient package import must be refused"
+        );
+        assert_no_signing_artifacts(&stage);
+        println!("KELD_COMPILER_BINDER_CASE: ambient package");
+
+        // 4/5: an undeclared relative import cannot read outside the captured map.
+        let missing = Scratch::new("missing-member");
+        let stage = missing.0.join("stage");
+        assert!(
+            run_bound_case(
+                &sources,
+                &tools,
+                &missing.0,
+                &[("main.js", "import './outside.js'; console.log('bad');")],
+                &stage,
+                None,
+            )
+            .is_err(),
+            "missing captured member must be refused"
+        );
+        assert_no_signing_artifacts(&stage);
+        println!("KELD_COMPILER_BINDER_CASE: missing member");
+
+        // 5/5: a filesystem namespace escape cannot enter the captured graph.
+        let escape = Scratch::new("filesystem-escape");
+        let stage = escape.0.join("stage");
+        assert!(
+            run_bound_case(
+                &sources,
+                &tools,
+                &escape.0,
+                &[("main.js", "import 'node:fs'; console.log('bad');")],
+                &stage,
+                None,
+            )
+            .is_err(),
+            "filesystem namespace import must be refused"
+        );
+        assert_no_signing_artifacts(&stage);
+        println!("KELD_COMPILER_BINDER_CASE: filesystem escape");
+        println!("KELD_COMPILER_BINDER_ACCEPTANCE: 5/5");
+    }
+}
