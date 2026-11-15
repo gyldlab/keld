@@ -941,6 +941,13 @@ jobs:
           target/spec-structure/spec-structure-test
           rustc --edition=2024 -D warnings tools/spec_structure.rs -o target/spec-structure/spec-structure
           target/spec-structure/spec-structure check .
+      # KEL-270 B-82 candidate: synthetic definitions only; native product NOT_RUN.
+      # Use the existing read-only checkout and runner Python; no artifact action,
+      # extra permission, or change to trusted-base provenance policy.
+      - name: KEL-270 definition evidence (read-only)
+        run: |
+          set -euo pipefail
+          python3 -B docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py --check
       # The `hygiene` recipe's hello-command regression reads the justfile and
       # two onboarding docs, both of which select this job (#650).
       - name: Hello command contract
