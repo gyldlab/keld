@@ -456,15 +456,14 @@ impl Shared {
             let wait_index = waiters
                 .capacity_wait_count
                 .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-            if wait_index != 0 {
-                if let Some(observed) = waiters
+            if wait_index != 0
+                && let Some(observed) = waiters
                     .capacity_rewait_observer
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .take()
-                {
-                    let _ = observed.try_send(());
-                }
+            {
+                let _ = observed.try_send(());
             }
             let generation = waiters
                 .capacity_wake_generation
@@ -527,13 +526,15 @@ impl Shared {
 
     fn notify_all(&self) {
         #[cfg(test)]
-        if let Some(waiters) = self
-            .deterministic_waiters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .cloned()
-        {
+        let deterministic = {
+            self.deterministic_waiters
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .cloned()
+        };
+        #[cfg(test)]
+        if let Some(waiters) = deterministic {
             let single_capacity_wake = waiters
                 .notify_one_next
                 .swap(false, std::sync::atomic::Ordering::AcqRel);
