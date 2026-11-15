@@ -70,6 +70,13 @@ steady-state allocation.
 
 ## 10. Open questions, blockers & unknowns
 
+### B-1: Full delivery and installed-artifact gates
+
+- Status: open
+- Owner: @0monish
+- Impact: Full T2/T3 and the installed-artifact T4 remain gated. Scoped T1/T2a/T2b/T2c approval is unchanged.
+- Check: Verify the remaining section 6 dependencies against section 10 decisions and record exact-scope approval and execution evidence.
+
 1. **Payload carrier (KEL-75 owner).** Bun `--define` constants (precedent:
    `KELD_NATIVE_WINDOW_FACADE`), a Host-written file in the launch root read before the
    entry, or a kipc pre-entry frame? The issue requires delivery "beside KELD_APP_LINK"

@@ -344,6 +344,13 @@ fixtures; moving work into Rust is not itself a measured improvement.
 
 ## 10. Open questions, blockers & unknowns
 
+### B-1: Recorded execution and final-head review gates
+
+- Status: open
+- Owner: GYLDLAB
+- Impact: The four execution gates below and exact-final-head review remain required. Architecture decision approval does not clear them.
+- Check: Reconcile each listed gate with its owning evidence and record the exact final commit and spec blob review.
+
 The eleven architecture decisions are frozen and the approval provenance is
 recorded in §2. Four execution gates remain:
 

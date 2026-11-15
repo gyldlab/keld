@@ -55,7 +55,7 @@ Non-goals:
 
 ## Current blockers
 
-none
+- B-1
 
 ## 8. Review gates triggered
 

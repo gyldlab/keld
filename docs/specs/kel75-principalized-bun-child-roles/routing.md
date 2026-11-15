@@ -190,6 +190,13 @@ P13 new-run evidence and `docs/research/campaigns/vscode/reports/48-p13-new-run-
 
 ## 10. Open questions, blockers & unknowns
 
+### B-1: Cross-owner lifecycle and compatibility gates
+
+- Status: open
+- Owner: GYLDLAB
+- Impact: Platform descendant reaping, the compatibility-record format and privileged Windows transport retain their section 10 gates.
+- Check: Record KEL-78 reaper proof, KEL-74 format approval and KEL-101 transport proof before the respective dependent capability.
+
 - KEL-78 must select and prove the platform lifecycle/reaping mechanism used to ensure
   host death cannot orphan role descendants on each supported OS.
 - KEL-74 must freeze the versioned compatibility-record format that stores the Electron

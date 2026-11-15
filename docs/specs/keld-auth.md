@@ -154,12 +154,12 @@ Non-goals (v0):
 
 ## 2. Spec refs
 
-- Approved Keld specs @ `c6e14f1`: `docs/specs/kel96-no-flag-host-boot/index.md` (host
+- Approved Keld specs @ `c6e14f1`: `docs/specs/kel96-no-flag-host-boot.md` (host
   owns event loop/windows/app-link; diagnostics unprivileged),
   `kel102-host-guard-enforcement.md` (verified snapshot; `evaluate` +
   `dispatch_privileged` only; T2→T3→T4→T5 order; V0AppLink→AppProcess),
   `kel101-windows-named-pipe-dacl.md` (Windows app-link transport),
-  `kel75-principalized-bun-child-roles/roles.md`, `kel78-strict-profile-sandbox.md`.
+  `kel75-principalized-bun-child-roles.md`, `kel78-strict-profile-sandbox.md`.
 - Architecture: `02-ipc.md` §§1-2, `03-security.md` §§1-3,
   `05-webview-and-native.md` §1/§3 (native modules incl. `deeplink`, `secrets`
   destinations), `06-runtime-and-tooling.md` §3, and `07-agent-experience.md` §2,
@@ -555,7 +555,7 @@ Linux:
 original pin (`c6e14f1`) Keld's no-flag host failed closed on Linux and
 KEL-96/T4 was open. **That edge has since landed**: `c41ec5e`
 (`feat(linux): wire no-flag host sessions`, #145, 2026-09-04) checks
-`kel96-no-flag-host-boot/lifecycle.md` T4; `KELD-CORE-034` is now gated
+`kel96-no-flag-host-boot.md` T4; `KELD-CORE-034` is now gated
 `#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]`
 (`crates/keld-core/src/app_session.rs`), i.e. it fires only outside
 mac/linux/windows, and `crates/keld-host/tests/no_flag_linux.rs` exists.
