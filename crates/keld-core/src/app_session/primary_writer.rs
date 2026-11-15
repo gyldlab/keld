@@ -397,14 +397,20 @@ impl Shared {
         state: MutexGuard<'a, State>,
         remaining: Duration,
     ) -> std::sync::LockResult<(MutexGuard<'a, State>, WaitTimeoutResult)> {
+        // Extract the test waiter handle before waiting. In an if-let
+        // scrutinee the MutexGuard temporary otherwise survives into the
+        // body, holding this control mutex across the condvar wait and
+        // deadlocking every notifier that needs to inspect it.
         #[cfg(test)]
-        if let Some(waiters) = self
-            .deterministic_waiters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .cloned()
-        {
+        let deterministic = {
+            self.deterministic_waiters
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .cloned()
+        };
+        #[cfg(test)]
+        if let Some(waiters) = deterministic {
             return waiters.capacity.wait_timeout(state, remaining);
         }
         self.changed.wait_timeout(state, remaining)
@@ -414,14 +420,18 @@ impl Shared {
         &self,
         state: MutexGuard<'a, State>,
     ) -> std::sync::LockResult<MutexGuard<'a, State>> {
+        // The worker must not hold deterministic_waiters' MutexGuard while
+        // sleeping; the queue publisher also needs it to issue the wake.
         #[cfg(test)]
-        if let Some(waiters) = self
-            .deterministic_waiters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .cloned()
-        {
+        let deterministic = {
+            self.deterministic_waiters
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .cloned()
+        };
+        #[cfg(test)]
+        if let Some(waiters) = deterministic {
             return waiters.worker.wait(state);
         }
         self.changed.wait(state)
