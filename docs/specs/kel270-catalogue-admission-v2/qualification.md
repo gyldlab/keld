@@ -106,10 +106,26 @@ Context7 returned related known-folder APIs and OpenThreadToken. Direct Microsof
 
 ### E-61: Recovery implementation qualification
 
-- **Run:** NOT_RUN. Execute AC-60 through AC-65 after implementation and authority commissioning.
+- **Run:** NOT_RUN. Execute AC-60 through AC-68 after implementation and authority commissioning.
 - **n:** Zero executed native cases.
 - **Environment:** Required Windows x64 direct per-user installation with genuine independent recovery signer evidence.
 - **Limits:** No implementation, process-crash, physical-power-loss, compromise-cleanup, or real browser migration pass is claimed.
+
+### E-62: Recovery requested-change negative-control plan
+
+- **Run:** NOT_RUN. This is the follow-up definition plan for PR #1541's three blocking review findings.
+- **n:** Three independent control groups, each with a positive and targeted refusal paths.
+- **Environment:** Future signed native Windows x64 recovery qualification, not this documentation workspace.
+- **Limits:** Proposed tests do not prove product behavior. The 19 original groups and 110 entries remain unchanged.
+
+| Group | Positive | Single-fault refusal and independent oracle |
+|---|---|---|
+| R1 / AC-66 | Genuinely independent recovery signer accepted under pinned profile, issuer, and SPKI | Ordinary application signer with valid Authenticode and directive must fail the recovery signer predicate; record zero trust mutations |
+| R2 / AC-67 | Crash after `prepared` and pointer, expire directive, persist/read `aborted`, clear pointer, then confirm fresh matching attempt | Expired original, mismatched new directive, and crashes on each abort/pointer edge refuse; read pointer, journal, epoch, provenance, app current/LKG independently |
+| R3 / AC-68 | Authenticated loss-only root/U1 replacement with otherwise identical repository policy | Mutate recovery digest, recovery signer, catalogue keys, metadata/targets URLs, discovery digest, publisher digest, or root version separately; compare protected current trust before/after |
+
+Keep Windows signature validity, source-state integrity, and unrelated checks valid in each negative control.
+The review addenda are new planned coverage, not retroactive passes for any of the 110 product cases.
 
 ## 7. Test plan & evidence: Integration
 

@@ -49,7 +49,13 @@ The Public Trust profile must match the full commissioned OID. A common prefix g
 
 The provider enum value `1` means `microsoft-artifact-signing-public-trust`.
 The provider requires the code-signing EKU `1.3.6.1.5.5.7.3.3` and Public Trust EKU `1.3.6.1.4.1.311.97.1.0`.
-The same verified primary signer supplies the complete profile OID, leaf SPKI, and authenticated app carrier.
+For an ordinary application or candidate Host, the same verified primary
+signer supplies the complete application profile OID, leaf SPKI, and
+authenticated app carrier. A dedicated Recovery Host instead uses D-61's
+separately pinned recovery-only profile for signer authorization; its signed
+expected-identity section still names the destination application. It is
+not an ordinary application Host, and its recovery signer MUST NOT acquire
+ordinary launch or catalogue permission.
 Retain the existing one-primary/zero-secondary signature rule and Authenticode trust, timestamp, and revocation policy.
 Unrelated additional EKUs do not count as extra signers.
 
@@ -236,6 +242,11 @@ Never turn a missing planned-transition signature into recovery authorization.
 Manual recovery supports only the defined v2 loss-only cell under the same application publisher and issuer policies.
 It cannot change publisher, profile, identity scheme, discovery policy, or root policy.
 A dedicated RecoveryImage is distinct from the candidate Host. It cannot satisfy the candidate catalogue's Host digest.
+In a RecoveryImage, the signed `.keldea2` application profile and issuer
+identify the destination application; they do not authorize its distinct
+recovery-signing credential. D-61 binds the primary signer separately.
+The recovery role MUST NOT use a matching destination application profile
+as a fallback when any recovery-only signer pin fails.
 
 ### D-8: Protected provenance and lifecycle
 
@@ -296,14 +307,26 @@ The existing KEL-53 writer retains validated parents during object creation, pub
 Create objects without replacement. Verify exact length, digest, protection, type, and schema before referencing an object.
 Publish and verify every required object before publishing the journal reference that consumes it.
 An existing object must pass the same readback checks. Digest equality alone does not prove protected custody.
-Fresh admission publishes the complete five-policy set before its admission record or provenance can reference that set.
-The set contains the repository, publisher, issuer, discovery, and recovery policy objects with their exact authenticated digests.
+Fresh admission publishes the complete seven logical policy references
+before its admission record or provenance can reference that set.
+The set contains repository policy, application publisher policy,
+application issuer policy, discovery policy, recovery policy, recovery
+publisher policy and recovery issuer policy, each with its exact authenticated
+digest. The installed repository policy pins the recovery policy; the latter
+pins its recovery-only publisher and issuer objects through D-61. If the
+application and recovery issuer bytes are identical, one content-addressed
+issuer object can satisfy both references, but a shared issuer never
+authorizes the wrong signer profile.
 This publication uses D-64 and the same retained-parent writer. A partial policy set grants no installation authority.
 
 Each transition evidence set permits at most 12 objects and at most 786,432 aggregate bytes.
 Count every required evidence object, including policy objects. Shared references count once within the set.
 Permit at most one pending set and one retained recovery set for an installation.
-Retain one current five-policy set independently of transition sets. Apply the same per-object and per-set bounds.
+Retain one current seven-reference policy set independently of transition
+sets. Apply the same per-object and per-set bounds, deduplicating only exact
+kind-and-digest-identical objects. A missing recovery-only signing policy
+MUST fail the initial commissioned profile; do not silently fall back to
+the application publisher policy.
 Reject admission when the complete required set exceeds either bound. Do not omit evidence to fit a bound.
 Keep all objects needed by current, LKG, previous-LKG, or pending state.
 Current provenance and a durable initial-admission record also root policy retention, even when `recovery_bindings` is empty.

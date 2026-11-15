@@ -158,13 +158,16 @@ Include D-68 pointer lookup, exact-attempt exclusion, bounded retention, and eve
 - **Blocked by:** T-80, T-1, T-40, T-81
 
 Implement the exact policy, dedicated verifier role, directive, and native confirmation.
-Run AC-61, AC-62, and AC-65. Reject unattended recovery and incomplete authority commissioning.
+Run AC-61, AC-62, AC-65, AC-66, and AC-68.
+Reject ordinary application signers, unattended recovery, unauthorized policy changes, and incomplete commissioning.
 
 ### T-62: Join and qualify the common recovery transaction
 
 - **Blocked by:** T-61, T-60, T-23, T-2
 
-Implement D-65 and D-66 without another writer. Run AC-63 and AC-64 with joined browser/LKG/floor observation.
+Implement D-65 and D-66 without another writer. Run AC-63, AC-64, and AC-67.
+Crash after `prepared`, terminal `aborted`, and pending-pointer removal.
+Observe the metadata epoch and current/LKG state independently before a fresh attempt.
 Qualify loss-only recovery separately from fresh-v2 and legacy cells.
 
 ## 6. Tasks: Integration
@@ -182,7 +185,9 @@ Record all remaining implementation gates without declaring them passed.
 - **Blocked by:** T-80
 
 The release/security owner records actual profile, issuer, repository, catalogue, and independent recovery policy evidence.
-Verify separated credential custody and recovery-origin control. Use no synthetic fixture as commissioning evidence.
+Commission a recovery-only profile OID and pin its exact signer SPKI in protected policy.
+Verify separate signing credentials, application-signer refusal, and recovery-origin control.
+Use no synthetic fixture as commissioning evidence.
 Supply two genuine changed-SPKI artifacts for the unchanged commissioned publisher profile.
 This task needs the existing release owner's operational authority. No draft approval manufactures those credentials.
 

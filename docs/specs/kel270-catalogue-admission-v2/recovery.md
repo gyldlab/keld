@@ -40,26 +40,54 @@ Its maximum length is 16,384 bytes. Its ordered fields are:
 | `repositoryId` | Exact 32-byte repository ID, lowercase hexadecimal |
 | `recoveryPublisherPolicySha256` | SHA-256 of one exact `PublisherPolicy` |
 | `recoveryIssuerPolicySha256` | SHA-256 of that publisher's exact `IssuerPolicy` |
+| `recoverySignerSpkiSha256` | `h32`, pinned SPKI digest of the independently commissioned recovery signing credential |
 | `recoveryOrigin` | One canonical HTTPS origin, under the identity part's URL rules |
 | `method` | `manual-authenticode-bootstrap-v1` |
 | `incidentClasses` | Ordered array containing only `loss-only` |
 | `maximumDirectiveLifetimeSeconds` | Integer `86400` |
 | `inPlaceManagedRecovery` | JSON `false` |
 
-The recovery publisher authority uses the existing verified Authenticode publisher owner.
-It is independent of TUF signing credentials, catalogue credentials, and installed U1 credentials.
-Independent means separate credential custody and incident access, not merely another public-key identifier.
-The release/security owner records that separation before commissioning.
-This loss-only cell requires the same application publisher and issuer policies in the source, recovery Host, and destination.
-Both recovery policy digests must equal the installed application policy digests.
-It cannot change publisher scope, identity scheme, discovery policy, install mode, or root policy.
+The recovery publisher authority reuses the existing Authenticode verification owner, not the application's signing credential.
+Commission a distinct recovery-only `PublisherPolicy.profileOid` and the exact recovery signer SPKI before distribution.
+The protected installed `RecoveryPolicy` pins both the recovery publisher/issuer policy digests and that SPKI.
+The recovery profile OID MUST differ from the installed application profile OID.
+The recovery signer SPKI MUST differ from the installed application's current and retained admitted Host signing SPKIs.
+The recovery verifier MUST match its verified primary leaf against the pinned recovery profile, issuer policy, and SPKI.
+The pinned recovery publisher's `issuerPolicySha256` MUST equal `RecoveryPolicy.recoveryIssuerPolicySha256`.
+Normal Authenticode success or application-publisher success alone MUST NOT authorize recovery.
+An ordinary application signer MUST fail recovery authorization even if its Windows chain and application profile are valid.
+The same recovered application publisher and issuer policies remain required in the source and destination.
+The recovery Host instead uses the separately pinned recovery-only signer policy; it carries the application's destination identity.
+Recovery signing custody remains separate from TUF, catalogue, application signing, and installed U1 credentials.
+The release/security owner MUST record that separation before commissioning. A distinct label alone is insufficient.
+The installed recovery policy digest remains constant throughout a loss-only operation.
+Loss-only recovery cannot change application publisher scope, identity scheme, discovery, install mode, or root policy.
 The source must use the v2 identity scheme. Legacy recovery remains conditional on B-2.
 No new custom signature algorithm, emergency signing envelope, or generic broker is introduced.
 
 The recovery origin supplies instructions and authenticated recovery artifacts.
 TLS alone does not authorize a replacement. A downloaded digest from the affected TUF repository grants no recovery authority.
 The user obtains the recovery Host through the separately commissioned recovery origin.
-Windows validates the Host against the installed recovery publisher and issuer policies.
+Windows validates the Host against all three installed recovery signer pins.
+Do not read replacement recovery-signing policy from the directive, candidate, or newly self-signed root.
+
+Loss-only recovery compares source and destination `RepositoryPolicy` using this closed matrix.
+Compare exact canonical decoded fields against the protected installed source policy before any trust change.
+
+| RepositoryPolicy field | Loss-only rule |
+|---|---|
+| `schema`, `repositoryId`, `appId`, `target`, `metadataProfile` | Exact source/destination equality |
+| `metadataBaseUrl`, `targetsBaseUrl` | Exact equality; no origin or path substitution |
+| `catalogueKeys` | Exact equality, including key IDs, public keys, and order |
+| `publisherPolicySha256`, `discoveryPolicySha256`, `recoveryPolicySha256` | Exact equality to protected installed values |
+| `bootstrapRootSha256` | Must change to the directive-bound, independently authorized, verified replacement root |
+| `bootstrapRootVersion` | Must equal the new verified root version and exceed the installed root version without overflow |
+
+The destination repository-policy digest MAY differ only because the two bootstrap-root fields change.
+Verify its complete canonical bytes against the directive and the destination Host and catalogue.
+Retain the installed recovery policy and all of its recovery signer pins throughout the operation.
+No other field change inherits authority from the directive or from a newly self-signed root.
+Broader policy rotation requires a separately approved planned transition, not the loss-only path.
 
 If the recovery signing authority is also lost, this in-place method is unavailable.
 Do not lower a threshold, replace a policy from caller input, or invent a fresh identity.
@@ -81,7 +109,10 @@ The ordinary initial-install and application roles cannot consume `.keldrec` as 
 The Guard returns a distinct private `RecoveryImage`. It cannot convert into an admitted catalogue Host.
 Its `.keldea2` binds the destination lane, repository policy, and U2. The directive binds the exact source and destination.
 The recovery Host and candidate Host can have different hashes. The catalogue must match the separately verified candidate Host.
-The recovery Host's signer satisfies the unchanged application publisher policy and the installed recovery policy.
+The recovery Host's signer satisfies the installed recovery-only profile, issuer policy, and pinned recovery SPKI.
+It need not satisfy the ordinary application's signer profile.
+The destination candidate Host MUST satisfy the unchanged installed application publisher and issuer policies.
+The recovery-only signer MUST NOT qualify as a normal Host or catalogue signer.
 
 The directive has these ordered fields:
 
@@ -156,7 +187,8 @@ Sequence is a positive u64. Epoch is a nonnegative u64. Digest fields use `h32`;
 `ownerSid` is the canonical SID string captured by D-42, at most 184 ASCII bytes.
 The one-shot permit becomes consumed before the admission-record write.
 Publish and reread `admitted` while holding the metadata admission lease.
-Before that record, publish and reread the complete five-policy set at D-9's derivable content-addressed paths.
+Before that record, publish and reread D-9's complete seven-reference policy set.
+It includes the separately commissioned recovery publisher and issuer policies.
 Retain those objects while admission or committed provenance references them. Never search arbitrary attempts to reconstruct missing policy bytes.
 Publish D-68's pending pointer before installation creation.
 Only then create installation parents, scaffold, and KEL-53's exclusive bootstrap lock.
@@ -199,7 +231,7 @@ Its canonical record has a 65,536-byte cap and these ordered fields:
 | `sourceGenerationSha256`, `sourceProvenanceSha256`, `sourceEpoch` | Protected before-state |
 | `destinationGenerationSha256`, `destinationProvenanceSha256`, `destinationEpoch` | Complete proposed after-state |
 | `applicationFloor`, `utcFloorMillis`, `browserBindingSha256`, `rollbackBindingSha256` | Invariants and finite LKG authority |
-| `phase` | `prepared`, `trust-committed`, `activation-bound`, or `complete` |
+| `phase` | `prepared`, `aborted`, `trust-committed`, `activation-bound`, or `complete` |
 
 Persist `prepared` before either store changes.
 Persist the record at `recoveries/<attemptId>.json`. Publish D-68's pending pointer before changing established trust or application state.
@@ -221,13 +253,32 @@ The finite LKG binding permits only the exact recorded rollback artifact.
 Failed candidate health never reverses metadata recovery or lowers either floor.
 The physical browser store and its lease identity remain unchanged throughout recovery.
 
+An expired `prepared` attempt does not gain new authorization from its old directive.
+Use abort-and-retry, never in-place replacement of the recorded directive or its journal bindings.
+Only the KEL-53 recovery owner may abort under the existing repository and installation leases.
+First verify the protected journal, pending pointer, original signature evidence, and exact installed source generation.
+Check the old epoch, provenance, policy pins, and unchanged application current/LKG and browser bindings.
+Check that the metadata current pointer still selects the old generation and no trust or activation effect occurred.
+An unreferenced prepared successor is not committed trust; retain it until safe bounded cleanup.
+Any ambiguous or changed state MUST refuse abortion and preserve all evidence for diagnosis.
+Persist and reread terminal `aborted` before clearing the pending pointer.
+Reread the unchanged old metadata current, provenance, epoch, and application state before pointer removal.
+Remove and reread the pointer under the same lease. An interrupted removal resumes this terminal cleanup only.
+If any readback or removal fails, keep the operation blocked; never infer success from a missing response.
+Only after verified pointer absence MAY a new random attempt and independently signed directive enter `prepared`.
+The new attempt requires a fresh native confirmation and full source, destination, policy, epoch, and expiry verification.
+Matching desired destination state is permitted; the expired directive itself never authorizes the new attempt.
+Reject a stale directive or a changed replacement without changing the established trust.
+
 ### D-66: Define every recovery cut
 
 | Last durable state | Next permitted action |
 |---|---|
 | No journal | Established state remains authoritative. Discard only unreferenced owned preparation objects. |
-| `prepared`, old metadata current | Reverify the same authorization and source state, then complete trust commit or refuse. |
+| `prepared`, old metadata current, directive valid | Reverify the original authorization and all source/policy bindings, then commit or refuse. |
+| `prepared`, old metadata current, directive expired | Verify no trust or application effect, durably mark `aborted`, clear the pointer after readback, then require a new attempt. |
 | `prepared`, new metadata current | Match the recorded destination generation. Advance the journal without repeating the epoch change. |
+| `aborted`, old metadata current | Verify no trust/application effect and complete pending-pointer cleanup; never resume trust commit. |
 | `trust-committed` | Complete the exact activation binding. Refuse all unrelated selection until that binding exists. |
 | `activation-bound` | Resume only the corresponding KEL-53 activation phase. |
 | `complete` | Use the coherent new view or its finite LKG view. |
@@ -236,7 +287,9 @@ The physical browser store and its lease identity remain unchanged throughout re
 Recovery authenticates persisted directive and verifier evidence before continuing.
 Ordinary startup performs read-only diagnosis. It cannot mint a recovery authorization or create a replacement journal.
 After trust commit, existing durable authorization controls completion. Expiry does not authorize replacement inputs.
-Before trust commit, an expired directive requires a newly authenticated directive and fresh user confirmation.
+Before trust commit, an expired directive MUST NOT resume trust commit.
+Follow the D-65 abort path before accepting a new directive and confirmation in a fresh attempt.
+If metadata current is new, finish only the committed exact attempt under the recorded durable authorization.
 No normal update may run while a manual-recovery journal is pending.
 All persisted edges need process-termination and separately named physical-power-loss qualification.
 
@@ -268,14 +321,15 @@ It selects exactly `admissions/<attemptId>.json` or `recoveries/<attemptId>.json
 
 Allow one pending operation per repository. Publish and reread its complete journal before publishing the pointer.
 Publish and reread the pointer before the first installation effect or manual trust switch.
-An existing different pointer refuses another operation. A matching pointer permits only the recorded attempt's recovery path.
+An existing different pointer refuses another operation. A matching pointer permits only the recorded attempt's recovery or terminal abort cleanup.
 Every ordinary metadata open and admission checks this fixed pointer under the repository lease.
 Pending state blocks unrelated refresh, admission, update, and launch selection. Diagnosis may read the recorded state.
 The initial recovery path may refresh the same exact target before `bootstrap-owned`, as D-64 requires.
 It must update the admission revision before discarding any superseded evidence. Manual recovery follows D-66 instead.
 
 Keep every generation and object needed by the pending operation. Refuse a new mutation if the retention cap cannot hold them.
-Clear the pointer only after protected readback proves the recorded terminal state and coherent current application state.
+Clear the pointer only after protected readback proves `complete` or `aborted` and coherent current application state.
+For `aborted`, the old metadata generation, epoch, provenance, and application state MUST all remain unchanged.
 Keep current/LKG evidence after pointer removal. Do not garbage-collect reachable policy objects.
 An unreferenced prepared journal cannot have caused installation or trust effects under the required order.
 Clean only such owned preparation records under the lease before creating another journal. Refuse ambiguous orphan state.
