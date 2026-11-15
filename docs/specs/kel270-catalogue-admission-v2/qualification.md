@@ -145,8 +145,9 @@ The fixture and review files are in `docs/engineering/evidence/kel270-catalogue-
 - **Run:** `just spec-evidence` and `just spec-structure` in the owning repository.
 - **n:** 94 identity cases, nine evidence-capacity cases, and two isolated
   stale-evidence negative controls. The compact receipt pins both report digests.
-- **Environment:** The source tree is not modified. Hosted CI publishes
-  full generated JSON as a 30-day job artifact, not tracked source.
+- **Environment:** The source tree is not modified. Hosted CI regenerates
+  synthetic JSON in runner scratch and logs the SHA-256 values. Immutable
+  full historical outputs remain in the pinned research archive.
 - **Limits:** No product codec, patched client, native signature, crash, power-loss, or release qualification follows from these checks.
 
 ### E-81: Independent specification review

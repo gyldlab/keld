@@ -93,7 +93,7 @@
     "docs/specs/kel270-catalogue-admission-v2/index.md": "4c223cfa9599de97f31ab8b3ef7dfb9bfad1d236149cf6c6350d930881f123e1",
     "docs/specs/kel270-catalogue-admission-v2/integration.md": "10ea8844e3baa1a9799f2a7b4d76f2d394da6d23564bc9769aa038ab285b3a0d",
     "docs/specs/kel270-catalogue-admission-v2/metadata.md": "0cd13b1da317b7ee4049c23dd3d8f5f13b3f9a5dbdde658a97c52c955cdef80d",
-    "docs/specs/kel270-catalogue-admission-v2/qualification.md": "2e57a45d82c652d3906b3d85eb4a7b94b5aafc41b7d3a0a7c32dd96aebeedeeb",
+    "docs/specs/kel270-catalogue-admission-v2/qualification.md": "56cf7dccecde8449280996d9f42776d74a04ca1c63993ec815f00492f633b581",
     "docs/specs/kel270-catalogue-admission-v2/recovery.md": "2dea655af708f1b07d9fa71e37352493342bfae4da3c353523c321354a63dff0",
     "docs/specs/kel270-catalogue-admission-v2/requirements.md": "685c99908fe667c29e4cf96e750961946b23d20488ca9be9043285da60c3aad1",
     "docs/specs/kel270-catalogue-admission-v2/windows.md": "4bf869fb42468b7bdaa07c75367177f192df65495fd068119f7819b3b52748dc"
@@ -101,7 +101,7 @@
   "reproduction": {
     "command": "just spec-evidence",
     "mode": "no-write byte-for-byte golden and synthetic-report digest verification",
-    "ci_artifact": "kel270-definition-reports (30 days)",
+    "ci_artifact": "CI scratch JSON with logged SHA-256, not uploaded; immutable full historical reports remain archived in keld-research",
     "immutable_history": "Archived original report bytes and SHA-256 manifest in keld-research; historical reviews are not new exact-head approvals."
   },
   "qualification": {
