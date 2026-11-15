@@ -688,9 +688,13 @@ mod rust_binder_acceptance_tests {
             ),
         )
         .expect("write hostile Bun preload");
+        let poison_path = hostile_home.join("poison.ts");
+        let poison_path_literal =
+            serde_json::to_string(poison_path.to_str().expect("Windows poison path is UTF8"))
+                .expect("encode poison path");
         fs::write(
             hostile_home.join(".bunfig.toml"),
-            "preload = ['./poison.ts']\n",
+            format!("preload = [{poison_path_literal}]\\n"),
         )
         .expect("write hostile Bun global configuration");
         let stage = home_negative.0.join("stage");
