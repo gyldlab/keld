@@ -298,6 +298,10 @@ impl MacFilePanel {
         native_delegate.attach_to(owner.panel.save_panel());
         owner.delegate = Some(native_delegate);
         owner.apply_filter()?;
+        // Match Electron: retain the visible default filename extension.
+        if matches!(&owner.panel, FilePanel::Save(_)) {
+            owner.panel.save_panel().setExtensionHidden(false);
+        }
         // Configure native content-type admission before selecting the first
         // directory. The modern panel may rebuild its file browser when the
         // type set changes; a path hint applied earlier can be lost.

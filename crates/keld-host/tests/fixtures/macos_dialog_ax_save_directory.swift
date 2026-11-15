@@ -4,13 +4,15 @@ import AppKit
 import ApplicationServices
 import Foundation
 
-guard CommandLine.arguments.count == 3,
+guard CommandLine.arguments.count == 4,
+      ["directory", "filename"].contains(CommandLine.arguments[3]),
       let pid = Int32(CommandLine.arguments[1]), pid > 0 else {
     fputs("INVALID_PID_OR_DESTINATION\n", stderr); exit(2)
 }
 guard AXIsProcessTrusted() else {
     fputs("ACCESSIBILITY_NOT_TRUSTED\n", stderr); exit(3)
 }
+let directoryHint = CommandLine.arguments[3] == "directory"
 let destination = CommandLine.arguments[2]
 let directory = (destination as NSString).deletingLastPathComponent
 let filename = (destination as NSString).lastPathComponent
@@ -81,10 +83,18 @@ while Date() < deadline {
             exit(7)
         }
         fputs("SAVE_INITIAL_HINT_VERIFIED directory=\(shownFolder) filename=\(initialName)\n", stderr)
-        let status = AXUIElementSetAttributeValue(names[0], kAXValueAttribute as CFString, filename as CFString)
-        guard status == .success,
-              attr(names[0], kAXValueAttribute as String) as? String == filename else {
-            fputs("SAVE_FILENAME_INPUT_FAILED ax_status=\(status.rawValue)\n", stderr); exit(8)
+        if directoryHint {
+            let status = AXUIElementSetAttributeValue(names[0], kAXValueAttribute as CFString, filename as CFString)
+            guard status == .success,
+                  attr(names[0], kAXValueAttribute as String) as? String == filename else {
+                fputs("SAVE_FILENAME_INPUT_FAILED ax_status=\(status.rawValue)\n", stderr); exit(8)
+            }
+        } else {
+            // Observe the actual default, without repairing a hidden extension.
+            guard initialName == filename else {
+                fputs("WRONG_VISIBLE_SAVE_FILENAME expected=\(filename) actual=\(initialName)\n", stderr)
+                exit(11)
+            }
         }
         guard attr(save, kAXEnabledAttribute as String) as? Bool == true,
               AXUIElementPerformAction(save, kAXPressAction as CFString) == .success else {

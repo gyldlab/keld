@@ -12,7 +12,7 @@ pub(super) fn selected_paths(
     directory_hint: bool,
 ) {
     let selector = compile_ax(fixture, "select_file");
-    let save_observer = directory_hint.then(|| compile_ax(fixture, "save_directory"));
+    let save_observer = compile_ax(fixture, "save_directory");
     for (operation, prefix, selected) in [
         ("SAVE_SELECT", "SAVE_SELECTED false ", &paths.destination),
         ("OPEN_SELECT", "OPEN_SELECTED false ", &paths.source),
@@ -29,24 +29,23 @@ pub(super) fn selected_paths(
                     .arg(dialog.host_pid.to_string())
                     .arg(selected),
             )
-        } else if let Some(observer) = &save_observer {
-            run_ax(
-                Command::new(observer)
-                    .arg(dialog.host_pid.to_string())
-                    .arg(selected),
-            )
         } else {
             run_ax(
-                Command::new(&dialog.button_helper)
+                Command::new(&save_observer)
                     .arg(dialog.host_pid.to_string())
-                    .arg("Save"),
+                    .arg(selected)
+                    .arg(if directory_hint {
+                        "directory"
+                    } else {
+                        "filename"
+                    }),
             )
         };
         assert!(
             activation.status.success(),
             "{operation} UI selection unavailable: {activation:?}"
         );
-        if directory_hint && operation == "SAVE_SELECT" {
+        if operation == "SAVE_SELECT" {
             eprintln!("{}", String::from_utf8_lossy(&activation.stderr));
         }
         eprintln!("GH478_POSITIVE_PHASE {operation} button pressed");
