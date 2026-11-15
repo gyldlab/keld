@@ -140,6 +140,10 @@ fn enqueue_notifies_every_predicate_waiter_on_the_shared_condition() {
     drop(receipt);
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep the failure-first mutant, actual pipe write, receipt waiters and cleanup in one ordered regression."
+)]
 #[test]
 fn actual_writer_advances_when_an_earlier_capacity_waiter_cannot() {
     let (router, mut peer, _owner, _windows) = initial_ready_router_with_window_loop();
