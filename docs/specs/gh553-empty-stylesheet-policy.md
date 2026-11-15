@@ -1,8 +1,12 @@
 # Spec: Explicit empty-stylesheet admission for installed original content
-Status: proposed (exact independent permission review required before implementation)
-Tracker: GH-553 / GH-1404 · Owner: Guard catalog and original-source composition · Updated: 2026-11-06
 
-## 1. Goal and non-goals
+- Status: draft
+- Tracker: GH-553
+- Owner: Guard catalog and original-source composition
+- Updated: 2026-11-15
+- Pin: 3a514aa3cdbeb0b2fd22bd6311dbf89372a60fe5
+
+## 1. Goal & non-goals
 
 Support a verified application that creates an empty stylesheet and populates it
 through CSSOM (the browser's stylesheet object API). Preserve the existing strict
@@ -14,7 +18,7 @@ nonempty inline style text, inline style attributes, inline scripts or a new nat
 principal. Do not patch draw.io or its spinner. This is not proof of complete editor
 styling, iframe/print behavior, public release readiness or another platform.
 
-## 2. Existing contracts and evidence
+## 2. Spec refs
 
 The predecessor is GH-553's `gh553-verified-csp-admission-d1.md`, immutable source
 `53593f96c9d1aa9518758cc065ae0ab56ccb6d6c`. Its original H2 policy remains unchanged.
@@ -61,7 +65,17 @@ identifies its exact path separately from the original worker source.
    Run original editor workflows and negative controls on those bytes. A spinner
    mechanism pass alone cannot qualify the editor, its print path or all styles.
 
-## 4. Design and rejected alternatives
+### AC-1: Empty stylesheet selector leaves the strict default unchanged
+
+- **Given:** The application explicitly selects the separately named empty-stylesheet policy.
+- **When:** Original content writes an initially empty stylesheet through CSSOM.
+- **Then:** The selected policy admits the use and preserves the original strict selector.
+- **Negative control:** Change one boundary input and verify the operation refuses it.
+- **Single fault:** Attempt the same CSSOM write under the unchanged strict selector.
+- **At-risk precondition:** The old selector and new selector exist in Guard's catalog.
+- **Expected RED:** The old strict selector still refuses the newly admitted content.
+
+## 4. Design
 
 The sole Guard catalog adds `OriginalEditorOfflineEmptyStyle`, serialized as
 `original-editor-offline-empty-style`. Its exact header H2E is:
@@ -94,7 +108,7 @@ existing selected semantics); editing the original app/spinner (not framework
 compatibility); intercepting DOM constructors (another implicit policy owner);
 loosening source hashes or native resource checks (unrelated authority bypass).
 
-## 5. Implementation boundaries
+## 5. Boundaries
 
 Guard `window_csp.rs`, `verified_manifest.rs` and their existing tests own policy.
 Core installed source/facts carries the actual resolved selector. The canonical
@@ -103,7 +117,7 @@ the decoded record. The native handler already consumes `ResolvedWindowCsp` and
 must not gain raw-header overrides. The original app's declared manifest changes
 only its selected catalog name; source, preload, channels and other grants do not.
 
-## 6. Ordered tasks
+## 6. Tasks
 
 - [ ] Exact independent design approval and owning tracker record.
 - [ ] Failure-first parser/catalog/mixed-ambiguity and schema7 controls.
@@ -111,7 +125,13 @@ only its selected catalog name; source, preload, channels and other grants do no
 - [ ] Qualified fresh providers/Host, explicit manifest, signed original app and
   real workflow, including the required denied-resource and cleanup controls.
 
-## 7. Failure-first validation
+### T-1: Add Guard's distinct selector and negative controls
+
+- **Blocked by:** none
+
+Retain the AC-1 acceptance oracle and its negative control.
+
+## 7. Test plan & evidence
 
 Keep old exact-header assertions. New selector must reject before implementation.
 Its selected header must differ from H2 by exactly one hash token. Mutating that
@@ -121,18 +141,18 @@ signature cannot substitute for manifest provenance or actual resource denial.
 Use the same canonical schema7 literal vectors in Rust/JS metadata tests; the
 decoder's acceptance is not native authority. Preserve every native failed run.
 
-## 8. Review gates
+## 8. Review gates triggered
 
 Permission model and public configuration: independent exact-source security and
 architecture review. No new unsafe operation, dependency or wire channel is planned.
 Do not score this as full GH-553/473 completion or dismiss existing review requests.
 
-## 9. Performance
+## 9. Perf impact
 
 One cold catalog selection and one constant header; no new process, queue, runtime,
 DOM interception or per-frame allocation. No performance improvement is claimed.
 
-## 10. Remaining evidence and sources
+## 10. Open questions, blockers & unknowns
 
 The native extended resource-denial controls, complete installed editor, final
 exact-source review, repository gates and second-Mac acceptance remain separate.

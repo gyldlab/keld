@@ -1,15 +1,19 @@
 # Spec: Generic original source and preload in a local macOS installation
-Status: draft
-Linear: GH-1404 (#517 fallback) · Owner: GYLDLAB · Updated: 2026-11-06
+
+- Status: draft
+- Tracker: GH-1404
+- Owner: GYLDLAB
+- Updated: 2026-11-15
+- Pin: 3a514aa3cdbeb0b2fd22bd6311dbf89372a60fe5
+
+## 1. Goal & non-goals
 
 This is the proposed original-content integration amendment to
-[GH-1404 macOS local packaging](macos-local-app-packaging.md) §§4.3–4.6, A12 and A14.
+[GH-1404 macOS local packaging](gh1404-macos-local-app-packaging/index.md) §§4.3–4.6, A12 and A14.
 The user already authorized the local ad-hoc goal and routine technical decisions.
 The exact source/boot/graph extension below still needs independent root review and
 recorded delegated spec approval before implementation. No native acceptance is
 claimed by this draft.
-
-## 1. Goal & non-goals
 
 Ship the original, source-pinned draw.io desktop application through KELD's real
 installed macOS Host, bundled Bun, guarded Electron facade, original preload and
@@ -25,11 +29,11 @@ notarization, an updater, Windows/Linux implementation, a native harness launche
 or a whole-checkout copy. Source qualification is evidence of *our delivered
 original app*, not an entitlement that every developer must obtain from KELD.
 
-## 2. Spec refs and observed baseline
+## 2. Spec refs
 
 - [Architecture 01](../architecture/01-overview.md), [03](../architecture/03-security.md),
   [04](../architecture/04-electron-compat.md), [06](../architecture/06-runtime-and-tooling.md);
-  [GH-1404](macos-local-app-packaging.md) is the approved packaging/installed-boot
+  [GH-1404](gh1404-macos-local-app-packaging/index.md) is the approved packaging/installed-boot
   mission. [GH-499](https://github.com/gyldlab/keld/issues/499) owns graph admission,
   [GH-502](https://github.com/gyldlab/keld/issues/502) provider receipts,
   [GH-553](https://github.com/gyldlab/keld/issues/553) verified window CSP,
@@ -64,7 +68,7 @@ original app*, not an entitlement that every developer must obtain from KELD.
   is optional review evidence, not a build input, secret, qualified provider or
   signed-release receipt. No foreign WIP is automatically adopted.
 
-## 3. Acceptance criteria (binary)
+## 3. Acceptance criteria
 
 1. **Configuration:** An explicit-Legacy local facade with closed
    `rendererSource:{root,entry}` and one build-selected preload path/digest
@@ -116,6 +120,16 @@ original app*, not an entitlement that every developer must obtain from KELD.
    observe refusal. Record actual Host/Bun/app/graph/DMG hashes and cleanup
    outcomes. The **first Mac only** is evaluated; a second Mac, Intel and
    non-macOS targets remain unverified.
+
+### AC-1: Capture the installed graph from the retained source tree
+
+- **Given:** Pack holds the copied source root and approved source digests.
+- **When:** The finalizer constructs installed boot from that retained copy.
+- **Then:** The signed graph contains only approved members and verified source data.
+- **Negative control:** Change one boundary input and verify the operation refuses it.
+- **Single fault:** Tamper with a copied preload byte after its digest is pinned.
+- **At-risk precondition:** The actual Pack copy is available to the one authorized finalizer.
+- **Expected RED:** Graph admission refuses the mismatch before accepting installed boot.
 
 ## 4. Design
 
@@ -291,7 +305,7 @@ Do not touch Windows/Linux production code, root `AGENTS.md`,
 workspace manifests, global IPC wire format, private credentials,
 foreign working trees, main branch or unowned native/GUI work.
 
-## 6. Tasks (ordered vertical slices)
+## 6. Tasks
 
 - [ ] **T0 — independent exact-content approval.** Root reviews this
   amendment against GH-1404/GH-499/GH-553/GH-484 and records delegated
@@ -314,7 +328,13 @@ foreign working trees, main branch or unowned native/GUI work.
   readback, child-generation and cleanup observations. Final evidence
   and the second-Mac gap are reported separately.
 
-## 7. Test plan
+### T-1: Build the retained graph and verify tamper refusal
+
+- **Blocked by:** none
+
+Retain the AC-1 acceptance oracle and its negative control.
+
+## 7. Test plan & evidence
 
 | Criteria | Independent oracle and single-fault control |
 | --- | --- |
@@ -356,7 +376,7 @@ and 8 MiB aggregate. Compare native startup and retained memory against
 the same installed inputs before making a performance claim. No new
 runtime/service/process or performance gain is proposed.
 
-## 10. Open questions / approval and evidence gates
+## 10. Open questions, blockers & unknowns
 
 No additional user account, maintainer secret or signing purchase is
 required for the approved **local ad-hoc** goal. Pending gates are

@@ -1,8 +1,13 @@
 # Installed original-application runtime facts
 
-Status: implementing (delegated design approval recorded; native acceptance open).
+- Status: implementing
+- Tracker: GH-1404
+- Owner: Core installed session and existing launch-facts codec
+- Updated: 2026-11-15
+- Pin: 3a514aa3cdbeb0b2fd22bd6311dbf89372a60fe5
 
-Owner: Core installed session and existing launch-facts codec. Execution record:
+## 1. Goal & non-goals
+
 [GH-1404](https://github.com/gyldlab/keld/issues/1404).
 [Independent approval 6692318686](https://github.com/gyldlab/keld/issues/1404#issuecomment-6692318686)
 approved the prior exact design at SHA-256
@@ -13,8 +18,6 @@ and make directory cardinality and retained-lock failure states explicit. The
 updated content requires its own recorded review digest; the earlier hash is not
 approval of changed bytes. This status claims neither implementation completion
 nor native acceptance.
-
-## Requirement and verified gap
 
 An original application may need a native user-data directory and locale before
 its first import, then the existing cooperative single-instance verdict at Ready.
@@ -28,7 +31,7 @@ facts schemas 4–5 and private graph launch route are not installed provenance.
 Installed schema 6 already has a closed different meaning. Preserve it unchanged.
 
 For the **installed original-graph cell only**, this amendment supersedes the
-[graph-source amendment](macos-installed-graph-source.md) §4.4 sentence reusing
+[graph-source amendment](gh1404-macos-installed-graph-source.md) §4.4 sentence reusing
 launch-facts schema 6 and `local-bundle-v1`. That cell uses launch-facts schema 7
 and the twelve-argument `local-bundle-v2` role defined here. Its sealed **boot
 schema 6** remains the installed graph selector; boot and launch-facts schema
@@ -36,7 +39,25 @@ numbers are separate contracts. Non-graph installed launches retain launch-facts
 schema 6 and the eleven-argument `local-bundle-v1` role. Developer schemas and the
 seven-argument role are not reinterpreted.
 
-## Selected minimum extension
+## 2. Spec refs
+
+GH-1404 owns installed original-application migration. Existing Core
+launch-facts and KIPC protocol contracts remain the source of authority.
+The historical approval link above identifies the earlier design revision.
+
+## 3. Acceptance criteria
+
+### AC-1: Closed native runtime facts follow the admitted installed source
+
+- **Given:** Native Host has captured the original application facts from an authenticated installed source.
+- **When:** Core validates and forwards the closed runtime facts to the admitted original process.
+- **Then:** The admitted process receives only the verified bounded facts for its own generation.
+- **Negative control:** Change one independently bound native fact while preserving the remaining record.
+- **Single fault:** Replace the preferred-language value after Host captures the native string.
+- **At-risk precondition:** The replacement process requests facts for the already selected installed graph.
+- **Expected RED:** The facts admission test refuses the modified record before any forged fact reaches the process.
+
+## 4. Design
 
 1. **Authoring and sealed boot.** Only the installed graph cell accepts the two
    existing optional application declarations: `singleInstance:{id}` and
@@ -104,18 +125,30 @@ refused before any getter/application code or resource effect. Optional means
 **omitted**, never `null` or an inferred fallback. Rust and the canonical JavaScript
 codec share these literal contract fixtures, not separate inferred shapes.
 
-| Field | Required shape and source |
-|---|---|
-| `schema` | Exactly integer `7`; no coercion. |
-| `kind` | Exactly `"local-development"`; never relabel as development. |
-| `name` | Exact sealed `CFBundleName` and parsed boot name. |
-| `version` | Exact sealed `CFBundleShortVersionString`. |
-| `root` | Absolute verified `Contents/Resources/app`, equal to the Guardian's independent retained root. |
-| `resourcesRoot` | Absolute verified `Contents/Resources`; appending literal `app` equals `root`. |
-| `paths` | Required closed object; zero or more `appData`, `userData`, `documents` own string fields. Each is an absolute native path. Each native directory query admits exactly one result, omits an empty result, and refuses multiple results. `userData` may exist only with `appData`, and equals `appData/name` with `name` exactly one safe path component. No `..`, environment expansion or app-provided directory. |
-| `locale` | Optional native preferred-language string: the exact first value from `NSLocale.preferredLanguages`, subject to the ordinary 4,096-byte, nonempty, NUL-free UTF-8 string bound. Preserve spelling, case and separators; do not normalize or impose an ASCII-only rule. An empty native list omits it. Multiple ordered preferences do not make the first choice ambiguous; a malformed first value fails rather than selecting a later value. No `Intl`, environment, renderer negotiation or default locale. |
-| `singleInstance` | Optional closed object `{ "verdict": "acquired" | "contended" }`. Required if and only if the verified boot contains `singleInstance`; its declaration ID already equals the verified canonical application ID. Either verdict requires an available `paths.appData` native namespace. Available `appData` alone does not imply a declaration or verdict. No ID, PID, path, lock descriptor or arbitrary field is accepted in this record. |
-| `originalResourcePolicy` | Required closed object with exactly the five string fields below. It describes the prepared source; it grants no permission and is not native load evidence. |
+- **Field:** `schema`
+  - **Required shape and source:** Exactly integer `7`; no coercion.
+- **Field:** `kind`
+  - **Required shape and source:** Exactly `"local-development"`; never relabel as development.
+- **Field:** `name`
+  - **Required shape and source:** Exact sealed `CFBundleName` and parsed boot name.
+- **Field:** `version`
+  - **Required shape and source:** Exact sealed `CFBundleShortVersionString`.
+- **Field:** `root`
+  - **Required shape and source:** Absolute verified `Contents/Resources/app`, equal to the Guardian's independent retained root.
+- **Field:** `resourcesRoot`
+  - **Required shape and source:** Absolute verified `Contents/Resources`; appending literal `app` equals `root`.
+- **Field:** `paths`
+  - **Required shape and source:** Required closed object; zero or more `appData`, `userData`, `documents` own string fields. Each is an absolute native path. Each native directory query admits exactly one result, omits an empty result, and refuses multiple results. `userData` may exist only with `appData`, and equals `appData/name` with `name`
+exactly one safe path component. No `..`, environment expansion or app-provided directory.
+- **Field:** `locale`
+  - **Required shape and source:** Optional native preferred-language string: the exact first value from `NSLocale.preferredLanguages`, subject to the ordinary 4,096-byte, nonempty, NUL-free UTF-8 string bound. Preserve spelling, case and separators; do not normalize or impose an ASCII-only rule. An empty native list omits it. Multiple ordered
+preferences do not make the first choice ambiguous; a malformed first value fails rather than selecting a later value. No `Intl`, environment, renderer negotiation or default locale.
+- **Field:** `singleInstance`
+  - **Required shape and source:** Optional closed object `{ "verdict": "acquired" | "contended" }`. Required if and only if the verified boot contains `singleInstance`; its declaration ID already equals the verified canonical application ID. Either verdict requires an available `paths.appData` native namespace. Available `appData` alone does not
+imply a declaration or verdict. No ID, PID, path, lock descriptor or arbitrary field is accepted in this record.
+- **Field:** `originalResourcePolicy`
+  - **Required shape and source:** Required closed object with exactly the five string fields below. It describes the prepared source; it grants no permission and is not native load evidence.
+
 
 `originalResourcePolicy` has exactly:
 
@@ -221,7 +254,7 @@ as bounded data; an empty, NUL-containing or 4,097-byte value refuses. These
 controls test representation, not the language values normally returned by macOS.
 Unchanged schema-6 and developer fixtures remain required compatibility controls.
 
-## Alternatives and decision tests
+### Alternatives and decision tests
 
 Deriving directories or a successful lock from configuration/environment is
 rejected: it has no OS evidence. Calling the developer facts factory for an
@@ -232,7 +265,22 @@ lock is larger and changes the established GH-453 lifetime/dispatch contract.
 The versioned private record reuses the already authenticated startup and existing
 Host resource owner, with no new transport or supervisor.
 
-## Failure-first acceptance
+## 5. Boundaries
+
+The existing Core installed session and launch-facts codec own fact validation.
+The Host captures native facts. The implementation does not add a principal,
+permission, independent transport owner, or browser trust claim.
+
+## 6. Tasks
+
+### T-1: Verify closed installed runtime facts with the real Host source
+
+- **Blocked by:** none
+
+Run AC-1 against the actual selected source and native caller before
+claiming installed draw.io acceptance.
+
+## 7. Test plan & evidence
 
 - Existing schema-6 fixtures and seven/eleven-argument role tests remain unchanged.
   Mixed records, unsupported versions, duplicates, accessors, unknown fields,
@@ -267,3 +315,23 @@ Platform scope is macOS only. Windows/Linux packaging, lock semantics and native
 directory acceptance are not implemented or claimed by this addition. No main
 merge is authorized. Final source, wire/data, lifetime and native review are
 separate required evidence.
+
+## 8. Review gates triggered
+
+Public installed launch facts, native source ownership, identity and
+generation boundaries require independent exact-source review.
+No release or installed-original acceptance follows from unit fixtures.
+
+## 9. Perf impact
+
+The record remains bounded and captured on the installed launch path.
+No performance improvement is claimed without a native measurement.
+
+## 10. Open questions, blockers & unknowns
+
+### B-1: Installed native acceptance
+
+- **Status:** open
+- **Owner:** GH-1404 integration and native acceptance reviewer
+- **Impact:** A source-only result cannot qualify original draw.io startup or recovery.
+- **Check:** Run the exact source-built signed installed app and record real Host facts.
