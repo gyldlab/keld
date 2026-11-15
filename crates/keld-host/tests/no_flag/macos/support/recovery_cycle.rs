@@ -34,6 +34,7 @@ use std::process::Stdio;
 use std::time::Instant;
 
 pub(crate) struct RecoveryCycle {
+    pub(crate) stage_root: PathBuf,
     pub(crate) host: Option<Child>,
     pub(crate) dev_lease_writer: Option<ChildStdin>,
     pub(crate) host_pid: u32,
@@ -65,6 +66,7 @@ impl RecoveryCycle {
         )
         .expect("T3 renderer with exact beacon");
         let stage = fixture.stage();
+        let stage_root = stage.root().to_path_buf();
         let control_path = fixture.root.path().join(format!("{name}.sock"));
         let listener = UnixListener::bind(&control_path).expect("bind T3 fixture control");
         listener
@@ -91,6 +93,7 @@ impl RecoveryCycle {
         let first_group = current.bun_pid;
         cleanup.bun_group = Some(first_group);
         let mut cycle = Self {
+            stage_root,
             host: Some(cleanup.release()),
             dev_lease_writer,
             host_pid,

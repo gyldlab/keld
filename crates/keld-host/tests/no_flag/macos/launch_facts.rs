@@ -185,21 +185,19 @@ appendFileSync({observation_json}, JSON.stringify({{
     fixture.entry_source = fs::read_to_string(fixture.project.join("src/main.ts"))
         .expect("exact facade plus existing recovery harness bundle");
     let mut cycle = RecoveryCycle::launch(&fixture, "launch-facts-recovery");
-    let staged_roots: Vec<_> = fs::read_dir(fixture.project.join(".keld/dev"))
-        .expect("physical staged roots")
-        .map(|entry| entry.expect("stage entry").path())
-        .collect();
-    assert_eq!(
-        staged_roots.len(),
-        1,
-        "fixture must have one actual Host stage"
-    );
-    // Resolve the independently discovered fixture path while the stage exists.
-    // Host validation publishes its canonical root, not the /var symlink spelling.
-    // Keep the observed payload untouched so a foreign or stale root still fails.
-    let expected_root = staged_roots[0]
+    // A source-local decoy must never become the expected physical stage.
+    let decoy = fixture.project.join(".keld/dev/gh452-decoy");
+    fs::create_dir_all(&decoy).expect("source-local stage decoy");
+    // Retain the fixture producer's path, independently of Host-reported facts.
+    // Canonicalize while it exists, including the macOS /var symlink spelling.
+    let expected_root = cycle
+        .stage_root
         .canonicalize()
         .expect("canonical physical stage before recovery");
+    assert_ne!(
+        expected_root,
+        decoy.canonicalize().expect("canonical decoy")
+    );
     fs::write(
         fixture.project.join("keld.config.ts"),
         "export default { name: 'FORGED', version: 'FORGED' };\n",
@@ -232,7 +230,11 @@ appendFileSync({observation_json}, JSON.stringify({{
         );
     }
     assert!(
-        !staged_roots[0].exists(),
+        !cycle.stage_root.exists(),
         "accepted Quit removes the retained stage"
+    );
+    assert!(
+        decoy.exists(),
+        "Quit must not remove the source-local decoy"
     );
 }
