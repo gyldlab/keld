@@ -491,6 +491,7 @@ fn capture_source_pipe(
 pub(super) struct CapturedToolOutput {
     pub(super) status: u32,
     pub(super) stdout: Vec<u8>,
+    #[cfg(test)]
     pub(super) stderr: Vec<u8>,
 }
 
@@ -706,6 +707,7 @@ fn run_captured_with_output(
     Ok(CapturedToolOutput {
         status,
         stdout,
+        #[cfg(test)]
         stderr,
     })
 }
