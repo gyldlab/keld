@@ -951,13 +951,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/keld270-definition-reports"
           "$RUNNER_TEMP/keld270-python/bin/python" -B docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py --output-dir "$RUNNER_TEMP/keld270-definition-reports"
           "$RUNNER_TEMP/keld270-python/bin/python" -B docs/engineering/evidence/kel270-catalogue-admission-v2/verify_evidence_capacity.py --output-dir "$RUNNER_TEMP/keld270-definition-reports"
-      - name: Preserve synthetic catalogue definition reports
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: kel270-definition-reports
-          path: ${{ runner.temp }}/keld270-definition-reports/*.json
-          if-no-files-found: error
-          retention-days: 30
+          sha256sum "$RUNNER_TEMP"/keld270-definition-reports/*.json
       # The `hygiene` recipe's hello-command regression reads the justfile and
       # two onboarding docs, both of which select this job (#650).
       - name: Hello command contract
