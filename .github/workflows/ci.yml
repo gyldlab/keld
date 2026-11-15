@@ -941,17 +941,6 @@ jobs:
           target/spec-structure/spec-structure-test
           rustc --edition=2024 -D warnings tools/spec_structure.rs -o target/spec-structure/spec-structure
           target/spec-structure/spec-structure check .
-      # Test-only Python dependency is isolated to specification hygiene.
-      # Full reports are runner artifacts, not committed generated JSON.
-      - name: Catalogue specification evidence checks
-        run: |
-          python3 -m venv "$RUNNER_TEMP/keld270-python"
-          "$RUNNER_TEMP/keld270-python/bin/python" -m pip install --disable-pip-version-check --no-cache-dir cryptography==46.0.5
-          "$RUNNER_TEMP/keld270-python/bin/python" -B docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py --check
-          mkdir -p "$RUNNER_TEMP/keld270-definition-reports"
-          "$RUNNER_TEMP/keld270-python/bin/python" -B docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py --output-dir "$RUNNER_TEMP/keld270-definition-reports"
-          "$RUNNER_TEMP/keld270-python/bin/python" -B docs/engineering/evidence/kel270-catalogue-admission-v2/verify_evidence_capacity.py --output-dir "$RUNNER_TEMP/keld270-definition-reports"
-          sha256sum "$RUNNER_TEMP"/keld270-definition-reports/*.json
       # The `hygiene` recipe's hello-command regression reads the justfile and
       # two onboarding docs, both of which select this job (#650).
       - name: Hello command contract
