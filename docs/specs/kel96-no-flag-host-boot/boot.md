@@ -82,7 +82,12 @@ readable; the existing Host/Guardian retain one captured value for all generatio
 
 - **Given:** the shipping Host receives a compiled `keld.boot.json` descriptor.
 - **When:** the Host validates this schema-v1 document.
-- **Then:** it enforces a 64 KiB UTF-8 bound and exactly `schema`, `name`, `entry`, `renderer`, `permissions`; permissions contains only `file` and `content_sha256`. Reject duplicates, unknown fields, unknown schemas, invalid UTF-8 and oversized input.
+- **Then:** it enforces a 64 KiB UTF-8 bound and requires `schema`, `name`,
+  `entry`, `renderer`, and `permissions`. The shipping Host also admits only
+  the separately approved optional `version` (GH452 T2b) and `auth` (KEL89)
+  fields, under their owning validation contracts. `permissions` contains only
+  `file` and `content_sha256`. Reject duplicates, other unknown fields, unknown
+  schemas, invalid UTF-8 and oversized input.
 - **Negative control:** admit one extra or duplicate descriptor key.
   - **Single fault:** skip closed-field verification.
   - **At-risk precondition:** the boot descriptor is processed before any resource creation.
