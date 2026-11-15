@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { generateRefreshCensus } from "./ci_provenance_codegen";
 
 const refreshSource = readFileSync(
   ".github/workflows/ci-verisentry-refresh.yml",
@@ -39,6 +40,14 @@ function protectedPathBlock(code: string): string {
   return code.slice(begin, end).trim();
 }
 
+function immutableChangedPathsBlock(code: string): string {
+  const begin = code.indexOf("// __IMMUTABLE_CHANGED_PATHS_BEGIN__");
+  const end = code.indexOf("// __IMMUTABLE_CHANGED_PATHS_END__", begin);
+  if (begin < 0 || end < 0)
+    throw Error("Immutable census helper no longer found");
+  return code.slice(begin, end).trim();
+}
+
 function scenario(
   options: {
     eventName?: string;
@@ -65,6 +74,12 @@ function scenario(
     runAttempt?: string;
     triggeringActor?: string;
     failedCompare?: boolean;
+    failedGitTree?: boolean;
+    comparisonMergeBase?: string;
+    baseTreeEntries?: Record<string, unknown>[];
+    headTreeEntries?: Record<string, unknown>[];
+    truncatedTree?: "base" | "head";
+    wrongTreeSha?: "base" | "head";
     batchIndex?: string;
     clockMillis?: number;
   } = {},
@@ -86,8 +101,12 @@ function scenario(
   const failures: string[] = [];
   let reads = 0;
   let compareReads = 0;
+  let treeReads = 0;
   let checkReads = 0;
   let mainReads = 0;
+  const mergeBaseSha = options.comparisonMergeBase ?? "e".repeat(40);
+  const baseTreeSha = "f".repeat(40);
+  const headTreeSha = "1".repeat(40);
   const context = {
     repo: { owner: options.owner ?? "gyldlab", repo: options.repo ?? "keld" },
     eventName: options.eventName ?? "schedule",
@@ -98,6 +117,51 @@ function scenario(
   const github = {
     rest: {
       git: {
+        getCommit: async (args: Record<string, unknown>) => {
+          if (options.failedGitTree) throw Error("Git tree API unavailable");
+          const side = args.commit_sha === mergeBaseSha ? "base" : "head";
+          expect(args).toEqual({
+            owner: "gyldlab",
+            repo: "keld",
+            commit_sha: side === "base" ? mergeBaseSha : head,
+          });
+          return {
+            data: {
+              sha: args.commit_sha,
+              tree: { sha: side === "base" ? baseTreeSha : headTreeSha },
+            },
+          };
+        },
+        getTree: async (args: Record<string, unknown>) => {
+          if (options.failedGitTree) throw Error("Git tree API unavailable");
+          treeReads++;
+          const side = args.tree_sha === baseTreeSha ? "base" : "head";
+          expect(args).toEqual({
+            owner: "gyldlab",
+            repo: "keld",
+            tree_sha: side === "base" ? baseTreeSha : headTreeSha,
+            recursive: "1",
+          });
+          const headEntries = (
+            options.files ?? [{ filename: "docs/normal.md" }]
+          ).map((file) => ({
+            path: file.filename,
+            type: "blob",
+            mode: "100644",
+            sha: "2".repeat(40),
+          }));
+          return {
+            data: {
+              sha:
+                options.wrongTreeSha === side ? "0".repeat(40) : args.tree_sha,
+              truncated: options.truncatedTree === side,
+              tree:
+                side === "base"
+                  ? (options.baseTreeEntries ?? [])
+                  : (options.headTreeEntries ?? headEntries),
+            },
+          };
+        },
         getRef: async (args: Record<string, unknown>) => {
           mainReads++;
           expect(args).toEqual({
@@ -154,9 +218,12 @@ function scenario(
           return {
             data: {
               base_commit: { sha: options.compareBase ?? base },
-              files: options.files ?? [
-                { filename: "docs/normal.md", status: "modified" },
-              ],
+              merge_base_commit: { sha: mergeBaseSha },
+              files: (
+                options.files ?? [
+                  { filename: "docs/normal.md", status: "modified" },
+                ]
+              ).slice(0, 300),
             },
           };
         },
@@ -237,6 +304,7 @@ function scenario(
     failures,
     getReads: () => reads,
     getCompareReads: () => compareReads,
+    getTreeReads: () => treeReads,
     getCheckReads: () => checkReads,
     getMainReads: () => mainReads,
   };
@@ -289,6 +357,9 @@ test("refresh is a protected-main-only cron and authorized manual dispatch, with
   );
   expect(refreshSource).not.toMatch(/actions\/checkout|\n\s+-\s+run:/);
   expect(protectedPathBlock(body)).toBe(protectedPathBlock(verifierBody));
+  expect(immutableChangedPathsBlock(body)).toBe(
+    immutableChangedPathsBlock(verifierBody),
+  );
 });
 
 test("a normal current PR gets exactly one App ID 5550363 success on test merge, never head", async () => {
@@ -319,12 +390,110 @@ test("protected CI path is a real App failure, not an omitted or neutral result"
   expect(s.failures).toHaveLength(0);
 });
 
-test("300 changed files is failure despite missing immutable comparison", async () => {
-  const s = scenario({ changedFiles: 300 });
+test("601 changed files is a verified policy DENY before immutable comparison", async () => {
+  const s = scenario({ changedFiles: 601 });
   await expect(s.run()).resolves.toBeUndefined();
   expect(s.getCompareReads()).toBe(0);
+  expect(s.getTreeReads()).toBe(0);
   expect(s.statuses).toHaveLength(1);
   expect(s.statuses[0].conclusion).toBe("failure");
+});
+
+test.each([300, 448, 600])(
+  "%i benign files get a trusted App PASS using immutable commit trees",
+  async (count) => {
+    const files = Array.from({ length: count }, (_, i) => ({
+      filename: `docs/benign-${i}.md`,
+      status: "added",
+    }));
+    const s = scenario({ changedFiles: count, files });
+    await expect(s.run()).resolves.toBeUndefined();
+    expect(s.getCompareReads()).toBe(1);
+    expect(s.getTreeReads()).toBe(2);
+    expect(s.statuses).toHaveLength(1);
+    expect(s.statuses[0].conclusion).toBe("success");
+  },
+);
+
+test("refresh cannot sign a 300-file PASS when the immutable tree has 448 distinct additions", async () => {
+  const files = Array.from({ length: 448 }, (_, i) => ({
+    filename: `docs/add-${i}.md`,
+    status: "added",
+  }));
+  const s = scenario({ changedFiles: 300, files });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.getTreeReads()).toBe(2);
+  expect(s.statuses).toHaveLength(0);
+  expect(s.failures).toHaveLength(1);
+});
+
+test("refresh admits immutable exact-content rename pairs", async () => {
+  const files = Array.from({ length: 300 }, (_, i) => ({
+    filename: `docs/add-${i}.md`,
+    status: "added",
+  }));
+  const s = scenario({
+    changedFiles: 300,
+    files,
+    baseTreeEntries: [
+      {
+        path: "docs/old-name.md",
+        type: "blob",
+        mode: "100644",
+        sha: "2".repeat(40),
+      },
+    ],
+  });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.statuses).toHaveLength(1);
+  expect(s.statuses[0].conclusion).toBe("success");
+});
+
+test("refresh rechecks a stable file count before App success publication", async () => {
+  const initial = {
+    number: 345,
+    state: "open",
+    changed_files: 1,
+    base: { ref: "main", sha: base, repo: { full_name: "gyldlab/keld" } },
+    head: { sha: head },
+    mergeable: true,
+    merge_commit_sha: merge,
+  };
+  const modifiedCount = { ...initial, changed_files: 2 };
+  const s = scenario({ readSequence: [initial, modifiedCount, modifiedCount] });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.statuses).toHaveLength(0);
+  expect(s.failures).toHaveLength(1);
+});
+
+test("refresh rejects a protected path beyond the first 300 files", async () => {
+  const files = Array.from({ length: 448 }, (_, i) => ({
+    filename: `docs/benign-${i}.md`,
+    status: "added",
+  }));
+  files[447].filename = ".github/workflows/ci.yml";
+  const s = scenario({ changedFiles: 448, files });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.getTreeReads()).toBe(2);
+  expect(s.statuses).toHaveLength(1);
+  expect(s.statuses[0].conclusion).toBe("failure");
+});
+
+test("refresh cannot sign a PASS for an unbound/truncated immutable tree", async () => {
+  const files = Array.from({ length: 300 }, (_, i) => ({
+    filename: `docs/benign-${i}.md`,
+    status: "added",
+  }));
+  for (const options of [
+    { truncatedTree: "head" as const },
+    { wrongTreeSha: "base" as const },
+    { failedGitTree: true },
+  ]) {
+    const s = scenario({ changedFiles: 300, files, ...options });
+    await expect(s.run()).resolves.toBeUndefined();
+    expect(s.statuses).toHaveLength(0); // transient proof failure, not sticky App FAIL
+    expect(s.failures).toHaveLength(1);
+  }
 });
 
 test.each([
@@ -764,4 +933,103 @@ test("cross-batch duplicate parent commits are denied even if other PR list merg
     ),
   ).toBe(false);
   expect(s.statuses.length).toBeGreaterThan(0);
+});
+
+test("refresh census is generated from the automatic verifier's sole source", () => {
+  expect(generateRefreshCensus(trustedSource, refreshSource)).toBe(
+    refreshSource,
+  );
+  const marker = "const immutableChangedPaths = async";
+  const changedOwner = trustedSource.replace(
+    marker,
+    "// owner change\n            " + marker,
+  );
+  const changedOutput = generateRefreshCensus(changedOwner, refreshSource);
+  expect(changedOutput).not.toBe(refreshSource);
+  expect(generateRefreshCensus(changedOwner, changedOutput)).toBe(
+    changedOutput,
+  );
+  const manualEdit = refreshSource.replace(
+    marker,
+    "// manual edit\n            " + marker,
+  );
+  expect(generateRefreshCensus(trustedSource, manualEdit)).toBe(refreshSource);
+});
+
+test("census generation rejects missing and duplicate markers", () => {
+  const marker = "            // __IMMUTABLE_CHANGED_PATHS_BEGIN__";
+  expect(() => generateRefreshCensus("", refreshSource)).toThrow(
+    "one complete",
+  );
+  expect(() => generateRefreshCensus(trustedSource, "")).toThrow(
+    "one complete",
+  );
+  expect(() =>
+    generateRefreshCensus(trustedSource + "\n" + marker, refreshSource),
+  ).toThrow("one complete");
+  expect(() =>
+    generateRefreshCensus(trustedSource, refreshSource + "\n" + marker),
+  ).toThrow("one complete");
+});
+
+test("refresh tree census rechecks a 300-file count before App publication", async () => {
+  const files = Array.from({ length: 300 }, (_, i) => ({
+    filename: `docs/tree-${i}.md`,
+    status: "added",
+  }));
+  const initial = {
+    number: 345,
+    state: "open",
+    changed_files: 300,
+    base: { ref: "main", sha: base, repo: { full_name: "gyldlab/keld" } },
+    head: { sha: head },
+    mergeable: true,
+    merge_commit_sha: merge,
+  };
+  const changed = { ...initial, changed_files: 301 };
+  const s = scenario({
+    changedFiles: 300,
+    files,
+    readSequence: [initial, changed, changed],
+  });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.getTreeReads()).toBe(2);
+  expect(s.statuses).toHaveLength(0);
+  expect(s.failures).toHaveLength(1);
+});
+
+test("refresh binds final publication to the verified 300-file census", async () => {
+  const files = Array.from({ length: 300 }, (_, i) => ({
+    filename: `docs/final-${i}.md`,
+    status: "added",
+  }));
+  const current = {
+    number: 345,
+    state: "open",
+    changed_files: 300,
+    base: { ref: "main", sha: base, repo: { full_name: "gyldlab/keld" } },
+    head: { sha: head },
+    mergeable: true,
+    merge_commit_sha: merge,
+  };
+  for (const count of [300, 601, 301, -1, 1.5, NaN, undefined]) {
+    const final = { ...current, changed_files: count };
+    const s = scenario({
+      changedFiles: 300,
+      files,
+      readSequence: [current, current, current, final],
+    });
+    await expect(s.run()).resolves.toBeUndefined();
+    expect(s.getReads()).toBe(4);
+    expect(s.getTreeReads()).toBe(2);
+    if (count === 300) {
+      expect(s.statuses).toHaveLength(1);
+      expect(s.statuses[0].conclusion).toBe("success");
+      expect(s.failures).toHaveLength(0);
+    } else {
+      expect(s.statuses).toHaveLength(0);
+      expect(s.failures).toHaveLength(1);
+      expect(s.warnings.join(" ")).toContain("prewrite changed-file count");
+    }
+  }
 });
