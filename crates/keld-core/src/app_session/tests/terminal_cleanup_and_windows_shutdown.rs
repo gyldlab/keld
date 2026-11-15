@@ -316,7 +316,11 @@ fn pre_ready_bun_diagnostic_uses_only_matching_bounded_termination_evidence() {
     assert_eq!(error.code(), "KELD-CORE-037");
     assert_eq!(error.phase, super::PRIMARY_PRE_READY_PHASE);
     assert!(error.detail.starts_with(ORIGINAL), "{}", error.detail);
-    assert!(error.detail.contains("pid=42 status=Some(23)"), "{}", error.detail);
+    assert!(
+        error.detail.contains("pid=42 status=Some(23)"),
+        "{}",
+        error.detail
+    );
     assert!(error.detail.contains("crash-marker"), "{}", error.detail);
     assert!(!error.detail.contains('\u{1b}'), "{}", error.detail);
     assert!(!error.detail.contains('\n'), "{}", error.detail);
