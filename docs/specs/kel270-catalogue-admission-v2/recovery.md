@@ -40,7 +40,6 @@ Its maximum length is 16,384 bytes. Its ordered fields are:
 | `repositoryId` | Exact 32-byte repository ID, lowercase hexadecimal |
 | `recoveryPublisherPolicySha256` | SHA-256 of one exact `PublisherPolicy` |
 | `recoveryIssuerPolicySha256` | SHA-256 of that publisher's exact `IssuerPolicy` |
-| `recoverySignerSpkiSha256` | `h32`, pinned SPKI digest of the independently commissioned recovery signing credential |
 | `recoveryOrigin` | One canonical HTTPS origin, under the identity part's URL rules |
 | `method` | `manual-authenticode-bootstrap-v1` |
 | `incidentClasses` | Ordered array containing only `loss-only` |
@@ -48,11 +47,21 @@ Its maximum length is 16,384 bytes. Its ordered fields are:
 | `inPlaceManagedRecovery` | JSON `false` |
 
 The recovery publisher authority reuses the existing Authenticode verification owner, not the application's signing credential.
-Commission a distinct recovery-only `PublisherPolicy.profileOid` and the exact recovery signer SPKI before distribution.
-The protected installed `RecoveryPolicy` pins both the recovery publisher/issuer policy digests and that SPKI.
+Commission a distinct recovery-only `PublisherPolicy.profileOid` before distribution.
+The protected installed `RecoveryPolicy` pins both recovery publisher and issuer policy digests.
 The recovery profile OID MUST differ from the installed application profile OID.
-The recovery signer SPKI MUST differ from the installed application's current and retained admitted Host signing SPKIs.
-The recovery verifier MUST match its verified primary leaf against the pinned recovery profile, issuer policy, and SPKI.
+The recovery verifier MUST match the verified primary signer's full recovery-only
+profile OID and issuer policy, and MUST refuse a signer leaf containing the ordinary
+application profile OID. Its issuer comparison applies to the same verified primary
+signer. An OID prefix, subject, or generic Public Trust/code-signing EKU is
+not a substitute for the commissioned recovery-only full OID.
+Microsoft Artifact Signing rotates short-lived leaf certificates daily.
+Therefore observed leaf SPKI and thumbprint are artifact evidence, not
+installed durable signing-authority pins. An otherwise valid later leaf
+from the same commissioned recovery profile MUST NOT be rejected merely
+because its SPKI changed. Recreating the profile changes its OID and
+requires separately approved authority transition; never fall back
+to ordinary application signing.
 The pinned recovery publisher's `issuerPolicySha256` MUST equal `RecoveryPolicy.recoveryIssuerPolicySha256`.
 Normal Authenticode success or application-publisher success alone MUST NOT authorize recovery.
 An ordinary application signer MUST fail recovery authorization even if its Windows chain and application profile are valid.
@@ -68,7 +77,9 @@ No new custom signature algorithm, emergency signing envelope, or generic broker
 The recovery origin supplies instructions and authenticated recovery artifacts.
 TLS alone does not authorize a replacement. A downloaded digest from the affected TUF repository grants no recovery authority.
 The user obtains the recovery Host through the separately commissioned recovery origin.
-Windows validates the Host against all three installed recovery signer pins.
+Windows validates the Host against the separately installed recovery-only
+publisher/profile and issuer policies and the full existing chain, timestamp,
+revocation, and one-primary/zero-secondary signature requirements.
 Do not read replacement recovery-signing policy from the directive, candidate, or newly self-signed root.
 
 Loss-only recovery compares source and destination `RepositoryPolicy` using this closed matrix.
@@ -81,9 +92,21 @@ Compare exact canonical decoded fields against the protected installed source po
 | `catalogueKeys` | Exact equality, including key IDs, public keys, and order |
 | `publisherPolicySha256`, `discoveryPolicySha256`, `recoveryPolicySha256` | Exact equality to protected installed values |
 | `bootstrapRootSha256` | Must change to the directive-bound, independently authorized, verified replacement root |
-| `bootstrapRootVersion` | Must equal the new verified root version and exceed the installed root version without overflow |
+| `bootstrapRootVersion` | Must equal the new verified root version and strictly exceed the currently accepted root version recorded by protected metadata, without overflow |
 
 The destination repository-policy digest MAY differ only because the two bootstrap-root fields change.
+The directive's `source.rootSha256` MUST match the actual currently accepted
+root in the protected current metadata generation. That root may differ from
+the source policy's original commissioning `bootstrapRootSha256` after
+ordinary authenticated root rotations. Do not confuse the bootstrap pin
+with the current root or compare a proposed new version only against the
+original commissioning floor. The source policy digest MUST agree with
+protected current metadata's policy reference, installed provenance and
+retained authenticated policy evidence. The new independently authorized
+root version must strictly exceed the *current* root version; this
+conservative loss-only profile does not permit a version reset. If the
+available genuine independent replacement cannot meet that condition,
+refuse this in-place profile rather than lowering a protected floor.
 Verify its complete canonical bytes against the directive and the destination Host and catalogue.
 Retain the installed recovery policy and all of its recovery signer pins throughout the operation.
 No other field change inherits authority from the directive or from a newly self-signed root.
@@ -109,7 +132,8 @@ The ordinary initial-install and application roles cannot consume `.keldrec` as 
 The Guard returns a distinct private `RecoveryImage`. It cannot convert into an admitted catalogue Host.
 Its `.keldea2` binds the destination lane, repository policy, and U2. The directive binds the exact source and destination.
 The recovery Host and candidate Host can have different hashes. The catalogue must match the separately verified candidate Host.
-The recovery Host's signer satisfies the installed recovery-only profile, issuer policy, and pinned recovery SPKI.
+The recovery Host's signer satisfies the installed recovery-only profile and
+issuer policy; its verified leaf MUST NOT contain the ordinary app profile EKU.
 It need not satisfy the ordinary application's signer profile.
 The destination candidate Host MUST satisfy the unchanged installed application publisher and issuer policies.
 The recovery-only signer MUST NOT qualify as a normal Host or catalogue signer.
@@ -259,10 +283,26 @@ Only the KEL-53 recovery owner may abort under the existing repository and insta
 First verify the protected journal, pending pointer, original signature evidence, and exact installed source generation.
 Check the old epoch, provenance, policy pins, and unchanged application current/LKG and browser bindings.
 Check that the metadata current pointer still selects the old generation and no trust or activation effect occurred.
-An unreferenced prepared successor is not committed trust; retain it until safe bounded cleanup.
+An unreferenced prepared successor is not committed trust; retain it until
+safe bounded cleanup while the matching pending pointer still guards the repository.
 Any ambiguous or changed state MUST refuse abortion and preserve all evidence for diagnosis.
-Persist and reread terminal `aborted` before clearing the pending pointer.
-Reread the unchanged old metadata current, provenance, epoch, and application state before pointer removal.
+Persist and reread terminal `aborted` before any cleanup. Under the same
+metadata, installation and physical-profile leases, retire the *exact*
+unreferenced prepared successor generation at
+`generations/<oldSequence+1>.json` and exclusively owned preparation blobs.
+Verify its recorded digest, protection and ownership and prove it was
+never selected by current, LKG, previous LKG or another protected owner.
+The aborted journal remains as bounded diagnostic evidence; its destination
+digest is historical, not live authority to keep uncommitted successor bytes.
+The immutable next-sequence filename MUST be absent before a new attempt
+can prepare different bytes at that same required sequence.
+Retirement is idempotent only for an exactly authenticated, already
+removed *unreferenced* object. Missing authoritative old-state files refuse.
+After a crash following durable `aborted`, the matching pending pointer
+permits only finishing that same retirement and pointer cleanup.
+Reread the unchanged old metadata current, provenance, epoch, application
+state, and the verified absence of prepared successor files before
+removing the pointer.
 Remove and reread the pointer under the same lease. An interrupted removal resumes this terminal cleanup only.
 If any readback or removal fails, keep the operation blocked; never infer success from a missing response.
 Only after verified pointer absence MAY a new random attempt and independently signed directive enter `prepared`.
@@ -276,9 +316,9 @@ Reject a stale directive or a changed replacement without changing the establish
 |---|---|
 | No journal | Established state remains authoritative. Discard only unreferenced owned preparation objects. |
 | `prepared`, old metadata current, directive valid | Reverify the original authorization and all source/policy bindings, then commit or refuse. |
-| `prepared`, old metadata current, directive expired | Verify no trust or application effect, durably mark `aborted`, clear the pointer after readback, then require a new attempt. |
+| `prepared`, old metadata current, directive expired | Verify no trust or application effect, durably mark `aborted`, retire only authenticated unreferenced preparation, verify old state and clear matching pointer, then require a new attempt. |
 | `prepared`, new metadata current | Match the recorded destination generation. Advance the journal without repeating the epoch change. |
-| `aborted`, old metadata current | Verify no trust/application effect and complete pending-pointer cleanup; never resume trust commit. |
+| `aborted`, old metadata current | Verify no trust/application effect, idempotently finish exact successor retirement and pending-pointer cleanup; never resume trust commit. |
 | `trust-committed` | Complete the exact activation binding. Refuse all unrelated selection until that binding exists. |
 | `activation-bound` | Resume only the corresponding KEL-53 activation phase. |
 | `complete` | Use the coherent new view or its finite LKG view. |
@@ -329,7 +369,8 @@ It must update the admission revision before discarding any superseded evidence.
 
 Keep every generation and object needed by the pending operation. Refuse a new mutation if the retention cap cannot hold them.
 Clear the pointer only after protected readback proves `complete` or `aborted` and coherent current application state.
-For `aborted`, the old metadata generation, epoch, provenance, and application state MUST all remain unchanged.
+For `aborted`, the old metadata generation, epoch, provenance, and application state MUST all remain unchanged,
+and no abandoned prepared successor at the required next sequence may remain.
 Keep current/LKG evidence after pointer removal. Do not garbage-collect reachable policy objects.
 An unreferenced prepared journal cannot have caused installation or trust effects under the required order.
 Clean only such owned preparation records under the lease before creating another journal. Refuse ambiguous orphan state.

@@ -133,6 +133,21 @@ A failed operation returns no authority. Destroy the associated metadata client.
 On restart, the current record determines the accepted generation. A valid unreferenced next generation is not automatically committed. A corrupt current record cannot select an older generation. A missing established current record requires recovery. An interrupted publish can resolve to the old or new complete current record.
 Native qualification must prove each claimed crash and power-loss behavior. Source inspection alone does not prove durable replacement.
 
+For D-65 manual recovery only, when an expired `prepared` journal and the
+protected old `current` are verified intact, a recorded terminal `aborted`
+permits the same KEL-53 writer to retire exactly that attempt's
+unreferenced prepared generation at `generations/<oldSequence+1>.json`.
+Before deletion, verify its recorded digest, protection, owner and absence
+from every current/LKG/previous-LKG or other live reference. Preserve the
+old generation, all reachable blobs and both application/UTC floors.
+After crash, continue this exact idempotent cleanup under the original
+pending pointer. Verify the successor path is absent and all old-state
+readbacks agree **before** D-68 clears the pending pointer. A newly
+authenticated attempt can then safely create a different immutable
+generation at the required next sequence; it MUST NOT overwrite stale
+successor bytes. If current already selected the new generation, abort is
+forbidden and the exact committed recovery must resume instead.
+
 Before root catch-up, persist `phase=root-refresh`. Record fingerprints of the timestamp and snapshot key sets in the starting trusted root. Use canonical sorted key IDs and their canonical public-key bytes. Persist each accepted N-to-N+1 root before the next fetch. Keep the starting fingerprints across every successor and process interruption.
 
 Fingerprint encoding is SHA-256 over the following concatenation:

@@ -57,7 +57,15 @@ expected-identity section still names the destination application. It is
 not an ordinary application Host, and its recovery signer MUST NOT acquire
 ordinary launch or catalogue permission.
 Retain the existing one-primary/zero-secondary signature rule and Authenticode trust, timestamp, and revocation policy.
-Unrelated additional EKUs do not count as extra signers.
+Unrelated additional EKUs do not count as extra signers. The separately
+commissioned recovery profile OID is **not** unrelated. An ordinary
+application/candidate Host MUST match the full installed application profile
+OID and MUST NOT contain the full installed recovery-only profile OID
+in its verified primary signer leaf. A RecoveryImage MUST match the recovery
+profile OID and MUST NOT contain the application profile OID. Reject a
+single valid leaf carrying both role-specific EKUs before either role grants
+authority; chain success, the generic Public Trust marker and the
+one-primary-signature rule do not override role exclusivity.
 
 `PublisherPolicy` has these ordered fields:
 

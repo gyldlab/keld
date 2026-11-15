@@ -104,6 +104,14 @@ Context7 returned related known-folder APIs and OpenThreadToken. Direct Microsof
 - **Environment:** Primary-source review against the product and research pins cited above.
 - **Limits:** The source explains trust replacement. It does not approve this new recovery contract or prove native behavior.
 
+Microsoft [Artifact Signing certificate management](https://learn.microsoft.com/en-us/azure/artifact-signing/concept-certificate-management)
+(retrieved 2026-11-15) states that leaf signing certificates renew daily,
+but each commissioned certificate profile has a durable, unique EKU OID.
+The recovery-only profile OID is therefore the durable installed signing
+identity, not its short-lived leaf SPKI. Provider documentation does not
+prove credential custody, native verifier correctness or real signer
+commissioning; those remain separate T-81/AC-66 gates.
+
 ### E-61: Recovery implementation qualification
 
 - **Run:** NOT_RUN. Execute AC-60 through AC-68 after implementation and authority commissioning.
@@ -120,8 +128,8 @@ Context7 returned related known-folder APIs and OpenThreadToken. Direct Microsof
 
 | Group | Positive | Single-fault refusal and independent oracle |
 |---|---|---|
-| R1 / AC-66 | Genuinely independent recovery signer accepted under pinned profile, issuer, and SPKI | Ordinary application signer with valid Authenticode and directive must fail the recovery signer predicate; record zero trust mutations |
-| R2 / AC-67 | Crash after `prepared` and pointer, expire directive, persist/read `aborted`, clear pointer, then confirm fresh matching attempt | Expired original, mismatched new directive, and crashes on each abort/pointer edge refuse; read pointer, journal, epoch, provenance, app current/LKG independently |
+| R1 / AC-66 | Genuinely independent recovery signer accepted under pinned durable profile/issuer, including a renewed leaf with a different SPKI | Ordinary application signer, recovery signer on an ordinary candidate, or a dual-profile leaf with valid Authenticode and directive must fail the role-specific signer predicate; record zero trust mutations |
+| R2 / AC-67 | Crash after `prepared` and pointer, expire directive, persist/read `aborted`, retire exact unreferenced successor, clear pointer, then confirm fresh matching attempt | Expired original, mismatched new directive, and crashes on each abort/retirement/pointer edge refuse; read pointer, journal, immutable successor filename, epoch, provenance, app current/LKG independently |
 | R3 / AC-68 | Authenticated loss-only root/U1 replacement with otherwise identical repository policy | Mutate recovery digest, recovery signer, catalogue keys, metadata/targets URLs, discovery digest, publisher digest, or root version separately; compare protected current trust before/after |
 
 Keep Windows signature validity, source-state integrity, and unrelated checks valid in each negative control.
@@ -308,10 +316,20 @@ No design approval or release approval is recorded by this draft.
 
 ### B-81: Independent combined review
 
-- **Status:** closed
+- **Status:** open
 - **Owner:** Isolated reviewers and the coordinating author.
-- **Impact:** The three R3 design lenses reported no remaining concrete draft defect. Implementation gates remain open.
-- **Check:** `review-receipt.json` binds the exact R3 snapshot, independent finding refutations, corrections, and final lens dispositions.
+- **Impact:** The original three R3 design lenses and `review-receipt.json`
+  remain historical evidence for their exact earlier source. Amisha's
+  requested-change review and later corrective commits introduce a new
+  normative snapshot. Neither the old independent receipt nor green
+  definition/hosted documentation checks constitute a new independent
+  design disposition for that changed contract.
+- **Check:** Independently re-review the new complete exact commit for
+  recovery signer profile rotation, signed-role exclusivity, expired
+  prepared successor retirement, source-current-root continuity and
+  field-level policy equality; refute surviving counterexamples,
+  reconcile all three original review threads and publish a new
+  exact-head receipt before asking the owner for T-80 sign-off.
 
 No unresolved design choice may be hidden as a release gate.
 Product and native unknowns remain in the owning parts until their stated execution checks pass.
