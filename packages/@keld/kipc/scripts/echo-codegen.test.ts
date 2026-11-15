@@ -69,7 +69,7 @@ function withGeneratorCheckout(
     env.GIT_CONFIG_NOSYSTEM = "1";
     for (const args of [
       ["init", "--quiet", "--template="],
-      ["config", "--local", "maintenance.auto", "false"],
+      ["config", "maintenance.auto", "false"],
     ]) {
       const result = Bun.spawnSync(["git", ...args], { cwd, env });
       expect(result.exitCode, result.stderr.toString()).toBe(0);

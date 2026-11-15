@@ -95,13 +95,14 @@ impl Fixture {
     }
 
     pub(crate) fn url(&self, member: &str) -> String {
-        // Independent fixture spelling, not the production URL constructor.
+        // Use the actual selected directory behind TEMP aliases and junctions.
+        // Encoding remains independent of the production URL constructor.
+        let canonical = fs::canonicalize(&self.root).expect("selected native fixture root");
+        let root = canonical.to_str().expect("fixture UTF8");
+        let dos = root.strip_prefix(r"\\?\").unwrap_or(root);
         format!(
             "file:///{}/{}",
-            self.root
-                .to_str()
-                .expect("fixture UTF8")
-                .replace('\\', "/")
+            dos.replace('\\', "/")
                 .replace('%', "%25")
                 .replace('#', "%23"),
             member
@@ -124,6 +125,27 @@ impl Drop for Fixture {
         drop(self.source.take());
         let _ = fs::remove_dir_all(&self.owned);
     }
+}
+
+#[test]
+fn selected_entry_url_fixture_resolves_extended_windows_temp_spelling() {
+    let mut fixture = Fixture::new();
+    let path = fixture.root.to_str().expect("fixture UTF8");
+    let extended = if path.starts_with(r"\\?\") {
+        path.to_owned()
+    } else {
+        format!(r"\\?\{path}")
+    };
+    fixture.root = PathBuf::from(extended);
+    let url = fixture.url(ENTRY);
+    assert_eq!(
+        url,
+        fixture
+            .source()
+            .admitted_entry_url(None)
+            .expect("exact admitted entry")
+    );
+    assert!(fixture.source().qualify_document_url(&url).is_ok());
 }
 
 #[test]
