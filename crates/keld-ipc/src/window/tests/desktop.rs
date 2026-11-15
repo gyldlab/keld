@@ -79,8 +79,10 @@ fn desktop_literals_pin_optional_facts_and_full_epoch() -> Result<(), Box<dyn st
 
 #[test]
 fn desktop_rejects_unknown_tag_and_invalid_optional_payload() {
-    // A complete otherwise-valid invalidation distinguishes unknown tag 10 from truncation.
+    // Tag 10 is DocumentRecovered; these bytes truncate a known variant.
     assert!(decode::<WindowEvent>(&[10, 1, 0]).is_err());
+    // 0x7f is not allocated to any WindowEvent variant.
+    assert!(decode::<WindowEvent>(&[0x7f, 1, 0]).is_err());
     assert!(decode::<WindowEvent>(&[7, 1, 2]).is_err());
 }
 
