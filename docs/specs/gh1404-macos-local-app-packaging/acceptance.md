@@ -1,6 +1,6 @@
 # Spec: local macOS application packaging: acceptance
 
-Part of: [index](../index.md)
+Part of: [index](index.md)
 Owns: Performance and remaining original app acceptance
 
 ## 9. Perf impact

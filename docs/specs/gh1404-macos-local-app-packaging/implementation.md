@@ -1,6 +1,6 @@
 # Spec: local macOS application packaging: implementation
 
-Part of: [index](../index.md)
+Part of: [index](index.md)
 Owns: Implementation ownership, tasks and native tests
 
 ## 5. Boundaries

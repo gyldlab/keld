@@ -51,10 +51,10 @@ and all other platform cells remain unverified until actually exercised.
 
 | Part | Owns | Load when |
 |---|---|---|
-| [requirements.md](../requirements.md) | Source contracts, acceptance criteria and primary documentation | Auditing source and installed artifact requirements |
-| [design.md](../design.md) | Native packaging, signed graph, boot and platform design | Reviewing signing, artifact identity and installed boot |
-| [implementation.md](../implementation.md) | Implementation ownership, tasks and native tests | Implementing and validating local packaging |
-| [acceptance.md](../acceptance.md) | Performance and remaining original app acceptance | Deciding whether signed artifacts qualify for release |
+| [requirements.md](requirements.md) | Source contracts, acceptance criteria and primary documentation | Auditing source and installed artifact requirements |
+| [design.md](design.md) | Native packaging, signed graph, boot and platform design | Reviewing signing, artifact identity and installed boot |
+| [implementation.md](implementation.md) | Implementation ownership, tasks and native tests | Implementing and validating local packaging |
+| [acceptance.md](acceptance.md) | Performance and remaining original app acceptance | Deciding whether signed artifacts qualify for release |
 
 ## Current blockers
 

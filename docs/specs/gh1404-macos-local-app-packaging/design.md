@@ -1,6 +1,6 @@
 # Spec: local macOS application packaging: design
 
-Part of: [index](../index.md)
+Part of: [index](index.md)
 Owns: Native packaging, signed graph, boot and platform design
 
 ## 4. Design

@@ -1,6 +1,6 @@
 # Spec: local macOS application packaging: requirements
 
-Part of: [index](../index.md)
+Part of: [index](index.md)
 Owns: Source contracts, acceptance criteria and primary documentation
 
 ## 2. Spec refs
