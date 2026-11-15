@@ -9,3 +9,4 @@
 # any other secret match remains reportable.
 69ce0730c2b23a631dc8324bafb4264f90a4e394:packages/@keld/electron/src/preload-runtime.test.ts:generic-api-key:21
 60160f3ebf4681f6a97ef2ab2e465d5bbbdecc49:packages/@keld/electron/src/preload-runtime.test.ts:generic-api-key:21
+bd71f5a4ed7c8a8891294650e1a9cd8860a5c238:packages/@keld/electron/src/preload-runtime.test.ts:generic-api-key:21
