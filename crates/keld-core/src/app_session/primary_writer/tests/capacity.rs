@@ -84,3 +84,58 @@ fn completion_between_source_service_and_sleep_rechecks_existing_slot_serial() {
     );
     drop(reservation);
 }
+
+#[test]
+fn enqueue_notifies_every_predicate_waiter_on_the_shared_condition() {
+    let (router, _peer, _owner, _windows) = initial_ready_router_with_window_loop();
+    let link = target(&router);
+    let writer = PrimaryWriter::new(router.window_commands.clone());
+    let prepared = frame(&writer, &link, &[4, 2]);
+    let (ready, registered) = mpsc::channel();
+    let until = deadline();
+    let mut waiters = Vec::new();
+    for _ in 0..2 {
+        let shared = Arc::clone(&writer.shared);
+        let ready = ready.clone();
+        waiters.push(thread::spawn(move || {
+            let mut state = shared.state.lock().expect("shared predicate lock");
+            ready.send(()).expect("registration observer");
+            loop {
+                let remaining = until
+                    .checked_duration_since(Instant::now())
+                    .unwrap_or_default();
+                let (next, timeout) = shared
+                    .changed
+                    .wait_timeout(state, remaining)
+                    .expect("shared notification");
+                state = next;
+                // Deadline expiry is not a notification or progress proof.
+                if timeout.timed_out() {
+                    return false;
+                }
+                if matches!(state.slots[0].phase, queue::Phase::Queued) {
+                    return true;
+                }
+            }
+        }));
+        registered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("waiter holds the shared state before sleep");
+        // Acquiring the same mutex proves the preceding wait released it.
+        drop(writer.shared.state.lock().expect("wait registration fence"));
+    }
+    let receipt = send(prepared);
+    // Keep the receipt and reservation charged: dropping either would introduce
+    // another notification and hide the enqueue-only lost-wakeup regression.
+    let notified: Vec<_> = waiters
+        .into_iter()
+        .map(|waiter| waiter.join().expect("bounded waiter"))
+        .collect();
+    assert_eq!(notified, [true, true]);
+    assert_eq!(count(&writer), 1);
+    assert!(matches!(
+        writer.try_reserve_value(deadline()),
+        Err(WriterRefusal::Full)
+    ));
+    drop(receipt);
+}
