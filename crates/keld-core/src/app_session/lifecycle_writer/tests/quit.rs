@@ -68,7 +68,8 @@ fn wait_quit_child(
 fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_reply() {
     const MUTANT: &str = "KELD_TEST_QUIT_RETAIN_TRANSITION_LOCK";
     let executable = std::env::current_exe().expect("current test executable");
-    let test_name = thread::current().name().expect("named test");
+    let current_thread = thread::current();
+    let test_name = current_thread.name().expect("named test").to_owned();
     let child_name = test_name.replace(
         "written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_reply",
         "quit_ready_lock_witness_child",
