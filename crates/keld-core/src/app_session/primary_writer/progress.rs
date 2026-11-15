@@ -83,7 +83,7 @@ impl PrimaryWriter {
         // The existing condition variable also serves the one synchronous
         // Window/Compat publisher. A queued UI marker does not consume this
         // actual release observation or require the UI to dispatch anything.
-        self.shared.changed.notify_all();
+        self.shared.notify_all();
         self.shared.wake(wake);
     }
 
