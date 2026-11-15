@@ -21,9 +21,6 @@ export type CompatDiagnostic = {
 const DATA_MAX = 16384;
 const CONTROL_MAX = 4096;
 const VALUE_MAX = 4096;
-// Capture trusted typed-array byte copying before page code can replace built-ins.
-const trustedSlice = Uint8Array.prototype.slice;
-const trustedApply = Reflect.apply;
 
 function invalid(detail: string): never {
   throw kipcError("KELD-IPC-003", detail);
@@ -122,7 +119,9 @@ function readBytes(bytes: Uint8Array, at: number): [Uint8Array, number] {
   const [count, start] = decodeVarint(bytes, at);
   if (count > VALUE_MAX || count > bytes.byteLength - start)
     return invalid("compat endpoint bytes exceed declared bound");
-  return [trustedApply(trustedSlice, bytes, [start, start + count]) as Uint8Array, start + count];
+  const copied = new Uint8Array(count);
+  for (let i = 0; i < count; i++) copied[i] = bytes[start + i]!;
+  return [copied, start + count];
 }
 
 function readDiagnostic(

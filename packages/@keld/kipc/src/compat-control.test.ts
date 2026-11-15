@@ -131,42 +131,36 @@ test("DocumentBound decode rejects truncation, zero identities, unknown tags and
   }
 });
 
-test("compat decoder never invokes a late-poisoned typed-array slice", () => {
-  // The generated decoder was imported above before application globals changed.
-  const payload = Uint8Array.of(21, 34, 55);
-  const message: CompatControlEvent = {
+test("compat payload decode never invokes mutated typed-array slice", () => {
+  const event: CompatControlEvent = {
     variant: "RendererMessage",
     webview: 1,
     navigation: 2,
     message: 3,
     window_id: 7,
     window_incarnation: 258n,
-    url: "keld-resource://test/index.html",
+    url: "x",
     origin: "null",
-    topic: "message",
-    payload,
+    topic: "safety",
+    payload: Uint8Array.of(1, 2, 3),
   };
-  const wire = encodeCompatControlEvent(message);
-  const nativeSlice = Uint8Array.prototype.slice;
-  let poisonedCalls = 0;
+  const encoded = encodeCompatControlEvent(event);
+  const originalSlice = Uint8Array.prototype.slice;
+  let hijacked = 0;
   let decoded: CompatControlEvent | undefined;
   try {
-    Object.defineProperty(Uint8Array.prototype, "slice", {
-      value: function () {
-        poisonedCalls += 1;
-        return Uint8Array.of(0);
-      },
-      configurable: true,
-      writable: true,
-    });
-    decoded = decodeCompatControlEvent(wire);
+    Uint8Array.prototype.slice = function () {
+      hijacked++;
+      return Uint8Array.of(0xde, 0xad, 0xbe, 0xef);
+    };
+    decoded = decodeCompatControlEvent(encoded);
   } finally {
-    Object.defineProperty(Uint8Array.prototype, "slice", {
-      value: nativeSlice,
-      configurable: true,
-      writable: true,
-    });
+    Uint8Array.prototype.slice = originalSlice;
   }
-  expect(poisonedCalls).toBe(0);
-  expect(decoded).toEqual(message);
+  expect(hijacked).toBe(0);
+  expect(decoded).toEqual(event);
+  encoded[encoded.length - 1] = 0;
+  if (decoded?.variant !== "RendererMessage")
+    throw new Error("decoded wrong event");
+  expect(decoded.payload).toEqual(Uint8Array.of(1, 2, 3));
 });

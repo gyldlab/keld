@@ -80,38 +80,14 @@ const MAX_CALLBACKS = 60; // Four fixed method proxies share the 64 endpoint cap
 const apply = Reflect.apply;
 const ownKeys = Reflect.ownKeys;
 const descriptor = Object.getOwnPropertyDescriptor;
+const getPrototypeOf = Object.getPrototypeOf;
+const ordinaryObjectPrototype = Object.prototype;
+const dateGetTime = Date.prototype.getTime;
+const mapSize = descriptor(Map.prototype, "size")?.get;
+const setSize = descriptor(Set.prototype, "size")?.get;
 const define = Object.defineProperty;
 const freeze = Object.freeze;
 const isArray = Array.isArray;
-const getPrototype = Object.getPrototypeOf;
-const recordPrototype = Object.prototype;
-const isBufferView = ArrayBuffer.isView;
-// Brand probes use captured native internal-slot checks. A prototype-erased
-// Map/Date must not become an empty object after page crossing.
-const nativeRecordRejectors = [
-  Map.prototype.has,
-  Set.prototype.has,
-  WeakMap.prototype.has,
-  WeakSet.prototype.has,
-  Date.prototype.getTime,
-  Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength")?.get,
-  Object.getOwnPropertyDescriptor(RegExp.prototype, "source")?.get,
-];
-function ordinaryPageRecord(value: object): boolean {
-  const proto = getPrototype(value);
-  if ((proto !== null && proto !== recordPrototype) || isBufferView(value))
-    return false;
-  for (const probe of nativeRecordRejectors) {
-    if (!probe) continue;
-    try {
-      apply(probe, value, [undefined]);
-      return false;
-    } catch {
-      // Native internal-slot mismatch: this is not that exotic brand.
-    }
-  }
-  return true;
-}
 const stringify = JSON.stringify;
 const parse = JSON.parse;
 const encoder = new TextEncoder();
@@ -211,13 +187,10 @@ export function installPage(facts: PreloadFacts): void {
       }
       if (typeof value !== "object" || seen.has(value))
         refuse("unsupported or cyclic local crossing");
-      const array = isArray(value);
-      if (!array && !ordinaryPageRecord(value))
-        refuse("unsupported local object kind");
       seen.add(value);
       const names = ownKeys(value);
       if (names.length > MAX_KEYS - keys) refuse("local key bound exceeded");
-      if (array) {
+      if (isArray(value)) {
         const length = descriptor(value, "length")?.value as unknown;
         if (
           typeof length !== "number" ||
@@ -237,6 +210,25 @@ export function installPage(facts: PreloadFacts): void {
         }
         return { k: "array", values: result };
       }
+      const prototype = getPrototypeOf(value);
+      if (prototype !== ordinaryObjectPrototype && prototype !== null)
+        refuse("unsupported local object prototype");
+      // Replacing a Map's prototype does not remove its internal slots.
+      // Probe built-in brands through captured native methods, never user getters.
+      const hasBrand = (probe: (...args: unknown[]) => unknown): boolean => {
+        try {
+          apply(probe, value, []);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      if (
+        hasBrand(dateGetTime) ||
+        (mapSize !== undefined && hasBrand(mapSize)) ||
+        (setSize !== undefined && hasBrand(setSize))
+      )
+        refuse("unsupported local object brand");
       const entries: [string, Local][] = [];
       for (const key of names) {
         if (
@@ -453,10 +445,8 @@ export function installApp(
         });
         if (invoking.watch && typeof value.path === "string") {
           watchCharges.set(invoking.call, invoking.watchBytes);
-          const previous = watches.get(value.path);
-          watches.set(value.path, invoking.call);
-          if (previous !== undefined && previous !== invoking.call)
-            retireSupersededWatch(previous);
+          // Keep the acknowledged watcher until the replacement succeeds.
+          // Denied registration must not displace its retained callback.
         }
       }
       post({
@@ -938,17 +928,18 @@ export function installApp(
           if (req && typeof response.reqId === "number") {
             requests.delete(response.reqId);
             charged -= req.bytes;
-            if (!response.error && req.watchPath)
+            if (!response.error && req.watchPath) {
               activeWatches.add(req.watchPath);
+              const previous = watches.get(req.watchPath);
+              if (previous === undefined || previous < req.call) {
+                watches.set(req.watchPath, req.call);
+                if (previous !== undefined) retireSupersededWatch(previous);
+              }
+            }
             if (!response.error && req.unwatchPath)
               activeWatches.delete(req.unwatchPath);
-            if (req.watchPath) {
-              // A native denial never established a live watch. The current
-              // failed path must no longer keep its page callback or charge.
-              if (response.error && watches.get(req.watchPath) === req.call)
-                watches.delete(req.watchPath);
-              retireSupersededWatch(req.call);
-            } else if (![...watches.values()].includes(req.call))
+            if (req.watchPath) retireSupersededWatch(req.call);
+            else if (![...watches.values()].includes(req.call))
               releaseCall(req.call);
           }
         }

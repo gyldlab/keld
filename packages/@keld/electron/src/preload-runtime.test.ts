@@ -393,6 +393,158 @@ describe("original preload runtime only", () => {
       f.restore();
     }
   });
+  test("denied watches release callbacks and leave later requests usable", () => {
+    const f = fixture();
+    try {
+      for (let i = 0; i < 70; i++) {
+        const path = `/test/denied-${i}.xml`;
+        const before = f.sends().length;
+        f.call(
+          "request",
+          { action: "watchFile", path, listener: () => {} },
+          () => {},
+          () => {},
+        );
+        expect(f.sends()).toHaveLength(before + 1);
+        const sent = decodeEndpointArguments(
+          new Uint8Array(f.sends().at(-1)!.payload as number[]),
+        )[0] as { reqId: number };
+        expect(
+          f.event("mainResp", [{ reqId: sent.reqId, error: "denied" }], i + 1)
+            .disposition,
+        ).toEqual({ status: "consumed" });
+        expect(
+          (
+            f.event("fileChanged", [{ path }], 100 + i).disposition as {
+              status: string;
+            }
+          ).status,
+        ).toBe("refused");
+      }
+      const observed: unknown[] = [];
+      f.call(
+        "request",
+        { action: "isFullscreen" },
+        (value: unknown) => observed.push(value),
+        () => {},
+      );
+      const sent = decodeEndpointArguments(
+        new Uint8Array(f.sends().at(-1)!.payload as number[]),
+      )[0] as { reqId: number };
+      f.event("mainResp", [{ reqId: sent.reqId, data: false }], 200);
+      expect(observed).toEqual([false]);
+      expect(f.sends()).toHaveLength(71);
+    } finally {
+      f.restore();
+    }
+  });
+  test("denied same-path replacement retains the acknowledged callback owner", () => {
+    const f = fixture();
+    try {
+      const path = "/test/keep-existing.xml";
+      const released: number[] = [];
+      f.page.document.addEventListener(
+        "__keld_page_refusal_data_v1",
+        (event) => {
+          released.push((event as CustomEvent<number>).detail);
+        },
+      );
+      const earlier = f.call(
+        "request",
+        { action: "watchFile", path, listener: () => {} },
+        () => {},
+        () => {},
+      );
+      const first = decodeEndpointArguments(
+        new Uint8Array(f.sends().at(-1)!.payload as number[]),
+      )[0] as { reqId: number };
+      f.event("mainResp", [{ reqId: first.reqId, data: true }], 1);
+      const denied = f.call(
+        "request",
+        { action: "watchFile", path, listener: () => {} },
+        () => {},
+        () => {},
+      );
+      const replacement = decodeEndpointArguments(
+        new Uint8Array(f.sends().at(-1)!.payload as number[]),
+      )[0] as { reqId: number };
+      f.event("mainResp", [{ reqId: replacement.reqId, error: "denied" }], 2);
+      expect(released).toContain(denied.call as number);
+      expect(released).not.toContain(earlier.call as number);
+      let newestEvents = 0;
+      f.call(
+        "request",
+        { action: "watchFile", path, listener: () => newestEvents++ },
+        () => {},
+        () => {},
+      );
+      const latest = decodeEndpointArguments(
+        new Uint8Array(f.sends().at(-1)!.payload as number[]),
+      )[0] as { reqId: number };
+      f.event("mainResp", [{ reqId: latest.reqId, data: true }], 3);
+      expect(
+        f.event(
+          "fileChanged",
+          [{ path, curr: { size: 1 }, prev: { size: 0 } }],
+          4,
+        ).disposition,
+      ).toEqual({ status: "consumed" });
+      expect(newestEvents).toBe(1);
+    } finally {
+      f.restore();
+    }
+  });
+  test("page-facing methods refuse Date and Map brands without erasing values", () => {
+    const f = fixture();
+    try {
+      const page = f.page.electron as Record<
+        string,
+        (...args: unknown[]) => void
+      >;
+      const map = new Map([["preserved", 3]]);
+      const erasedMap = new Map([["preserved", 4]]);
+      Object.setPrototypeOf(erasedMap, Object.prototype);
+      for (const method of [
+        "request",
+        "registerMsgListener",
+        "sendMessage",
+        "listenOnce",
+      ]) {
+        for (const input of [new Date(0), map, erasedMap]) {
+          const before = f.pageMessages.length;
+          expect(() => page[method]!(input)).toThrow("KELD-COMPAT-103");
+          expect(f.pageMessages).toHaveLength(before);
+        }
+      }
+      const guarded = Object.create(null) as object;
+      let getterCalls = 0;
+      Object.defineProperty(guarded, Symbol.toStringTag, {
+        get() {
+          getterCalls++;
+          throw new Error("hostile tag getter");
+        },
+      });
+      expect(() => page.request!(guarded)).toThrow("KELD-COMPAT-103");
+      expect(getterCalls).toBe(0);
+      page.sendMessage!({ plain: [1, null, { ok: true }] });
+      expect(f.pageMessages.at(-1)?.args).toEqual([
+        {
+          k: "object",
+          entries: [
+            [
+              "plain",
+              {
+                k: "array",
+                values: [1, null, { k: "object", entries: [["ok", true]] }],
+              },
+            ],
+          ],
+        },
+      ]);
+    } finally {
+      f.restore();
+    }
+  });
   test("local registration has no send dependency and once removes before reentry", () => {
     const f = fixture();
     try {
