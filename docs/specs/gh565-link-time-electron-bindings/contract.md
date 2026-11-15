@@ -87,8 +87,8 @@ and principal minting are untouched; the facade sends no frame.
 ### AC-7: The native platform's member census is exact
 - **Given:** The platform table in section 4.3 and a real macOS, Linux, or Windows CI runner.
 - **When:** The test enumerates every binding's own members and checks available kinds and tickets.
-- **Then:** Its census exactly matches section 4.3 on that OS, including the absent-name rules.
-- **Then:** Absent members read undefined without throwing; Menu.sendActionToFirstResponder is own undefined off macOS.
+- **Then:** The census matches section 4.3 on that OS, including absent-name rules. Absent members read undefined.
+  Reads must not throw. Menu.sendActionToFirstResponder remains own undefined outside macOS.
 - **Negative control:**
   - **Single fault:** Add an unavailable name or re-kind a present name.
   - **At-risk precondition:** All native CI lanes run the independent census, not a mocked platform value.
@@ -98,9 +98,9 @@ and principal minting are untouched; the facade sends no frame.
 - **Given:** Electron v44.4.5 clipboard-item constructor behavior and GH-559 payload ownership.
 - **When:** The caller constructs ClipboardItem with a MIME-keyed record or an invalid input.
 - **Then:** A nonempty own-enumerable string-key record constructs locally without Host traffic.
-- **Then:** Missing, null, primitive, array, empty, inherited-only and symbol-only records throw TypeError.
-- **Then:** Enumerable payload getters run exactly once and their thrown errors propagate synchronously.
-- **Then:** types and getType still refuse with GH-559. Do not validate payload MIME or values prematurely.
+  Missing, null, primitive, array, empty, inherited-only and symbol-only inputs throw TypeError.
+  Enumerable payload getters run once and propagate exceptions synchronously.
+  types and getType still refuse with GH-559. MIME and payload validation stays deferred.
 - **Negative control:**
   - **Single fault:** Accept an empty record or skip a payload getter.
   - **At-risk precondition:** Dedicated tests construct invalid and valid records with observable getters.
@@ -127,8 +127,8 @@ and principal minting are untouched; the facade sends no frame.
 ### AC-11: Both conformance corpora remain meaningful
 - **Given:** electron-main-bindings-v1 and the re-recorded electron-native-v1 observations.
 - **When:** cargo test -p keld-compat runs against the pinned snapshots and Bun cases.
-- **Then:** Nine main-binding cells pass with their Process: Main citations and no implementing ticket.
-- **Then:** Unimplemented native-member cells stay RED with their implementing tickets despite linkable names.
+- **Then:** Nine main-binding cells pass with Process: Main citations and no implementing ticket.
+  Unimplemented native-member cells stay RED with implementing tickets despite linkable names.
 - **Negative control:**
   - **Single fault:** Change a manifest byte or remove a quote from the pinned page.
   - **At-risk precondition:** Corpus admission checks both digests and sourced statements.
