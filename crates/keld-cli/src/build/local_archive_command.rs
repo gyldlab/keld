@@ -116,6 +116,21 @@ pub(super) struct CompilerRequest {
     pub(super) tsc_sha256: [u8; 32],
 }
 pub(super) fn run(args: &[String]) -> Result<(), BuildError> {
+    // The native Host does not implement the initial-install role or its
+    // required Cargo features. Refuse before image capture or signing, even
+    // through this explicit LOCAL TEST archive entry point.
+    if args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--initial-install-inputs"
+                | "--initial-install-observed-inputs"
+                | "--initial-install-create-scaffold-inputs"
+        )
+    }) {
+        return Err(BuildError::invocation(
+            "Windows initial installation is unavailable until the installed Host admission path is implemented and qualified",
+        ));
+    }
     let invocation = parse(args)?;
     let t = invocation.tools;
     let compiler = CompilerRequest {
@@ -546,6 +561,23 @@ mod tests {
             "ordinary local path should reach the independent compiler tool gate: {error}"
         );
         assert!(!ordinary_session.exists());
+    }
+
+    #[test]
+    fn archive_entry_refuses_unimplemented_install_before_image_capture() {
+        for flag in [
+            "--initial-install-inputs",
+            "--initial-install-observed-inputs",
+            "--initial-install-create-scaffold-inputs",
+        ] {
+            let args = vec![flag.into(), "D:/owned/install.json".into()];
+            assert_eq!(
+                run(&args)
+                    .expect_err("unimplemented installed Host must refuse")
+                    .exit_code(),
+                2
+            );
+        }
     }
 
     #[test]

@@ -169,9 +169,9 @@ impl CapturedInputs {
             }
             _ => {}
         }
-        // The ordinary KEL-96 Windows dev stage substitutes these exact bytes.
-        // Reject any other valid undeclared policy before signer capture, Host
-        // image staging, or session creation; do not weaken the Strict lane.
+        // Refuse valid but nonreplayable policies before signer capture, source
+        // preparation or any signed image. Only the undeclared developer lease
+        // stages the fixed policy; explicit Strict follows its original owner.
         if profile == ProfileAdmission::UndeclaredDeveloper {
             super::require_developer_policy_replay(&policy)?;
         }

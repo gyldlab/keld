@@ -741,6 +741,21 @@ fn keld_build_requires_the_explicit_supported_target_before_io() {
     }
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_build_developer_target_reaches_input_admission_before_output() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let output = keld()
+        .args(["build", "--target", "windows-x64"])
+        .current_dir(dir.path())
+        .output()
+        .expect("windows developer preflight");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("KELD-CLI-052"), "{stderr}");
+    assert!(!dir.path().join("output").exists());
+}
+
 #[test]
 fn keld_unknown_verb_exits_2_with_046() {
     let dir = tempfile::tempdir().expect("tempdir");

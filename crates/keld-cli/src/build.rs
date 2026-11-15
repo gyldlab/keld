@@ -102,8 +102,8 @@ impl fmt::Display for BuildError {
 
 impl std::error::Error for BuildError {}
 
-/// Require exactly the bytes the KEL-96 Windows developer stage actually writes.
-/// Check the captured source before signing, then check the emitted bundle again.
+/// Require exactly the bytes the KEL-96 Windows developer stage actually
+/// writes. Check captured source before signing and emitted bytes once again.
 #[cfg(any(windows, test))]
 fn require_developer_policy_replay(policy: &[u8]) -> Result<(), BuildError> {
     if policy != crate::boot::PERMISSIONS_BYTES {
@@ -158,11 +158,6 @@ fn is_windows_app_input_check(args: &[String]) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WindowsProductRoute<'a> {
     Developer,
-    DeveloperInitialInstall {
-        inputs: &'a str,
-        published_at: &'a str,
-        create_scaffold: bool,
-    },
     LocalTest(&'a str),
 }
 fn windows_product_session(args: &[String]) -> Result<Option<WindowsProductRoute<'_>>, BuildError> {
@@ -177,22 +172,22 @@ fn windows_product_session(args: &[String]) -> Result<Option<WindowsProductRoute
         Some([flag, path]) if flag == "--local-test-session" && !path.is_empty() => {
             Ok(Some(WindowsProductRoute::LocalTest(path)))
         }
-        Some([flag, inputs, stamp_flag, stamp])
-            if matches!(
-                flag.as_str(),
-                "--initial-install-observed-inputs" | "--initial-install-create-scaffold-inputs"
-            ) && !inputs.is_empty()
-                && stamp_flag == "--published-at"
-                && !stamp.is_empty() =>
+        Some(rest)
+            if rest.iter().any(|arg| {
+                matches!(
+                    arg.as_str(),
+                    "--initial-install-inputs"
+                        | "--initial-install-observed-inputs"
+                        | "--initial-install-create-scaffold-inputs"
+                )
+            }) =>
         {
-            Ok(Some(WindowsProductRoute::DeveloperInitialInstall {
-                inputs,
-                published_at: stamp,
-                create_scaffold: flag == "--initial-install-create-scaffold-inputs",
-            }))
+            Err(BuildError::invocation(
+                "Windows initial installation is not supported by the developer-local build command; the installed Host feature and signed admission implementation are not available",
+            ))
         }
         Some(_) => Err(BuildError::invocation(
-            "Windows build accepts developer-local keld.build.ts, an explicit --local-test-session ABS_JSON, or --initial-install-{observed,create-scaffold}-inputs ABS_JSON --published-at UTC; install requires separate signed catalog and one-use manifest signer",
+            "Windows build accepts developer-local keld.build.ts or an explicit --local-test-session ABS_JSON",
         )),
     }
 }
@@ -201,15 +196,6 @@ fn windows_product_session(args: &[String]) -> Result<Option<WindowsProductRoute
 fn run_windows_product(route: WindowsProductRoute<'_>) -> Result<(), BuildError> {
     match route {
         WindowsProductRoute::Developer => windows_product::run_developer(None),
-        WindowsProductRoute::DeveloperInitialInstall {
-            inputs,
-            published_at,
-            create_scaffold,
-        } => windows_product::run_developer(Some((
-            std::path::Path::new(inputs),
-            published_at,
-            create_scaffold,
-        ))),
         WindowsProductRoute::LocalTest(session) => {
             windows_product::run(std::path::Path::new(session))
         }
@@ -231,17 +217,15 @@ const BUILD_USAGE: &str = "usage:
   keld build --target windows-x64 --check-app-inputs
   keld build --target windows-x64
   keld build --target windows-x64 --local-test-session ABS_JSON
-  keld build --target windows-x64 --initial-install-create-scaffold-inputs ABS_JSON --published-at UTC
 
 Targets require their native operating system; macos-arm64 requires Apple Silicon.
 Windows --check-app-inputs validates authoring only; it does not build an app.
 Windows developer-local builds select an existing certificate through closed
 keld.build.ts authoring (developerSigner); the build never imports private keys.
 Windows --local-test-session preserves the original explicit LOCAL TEST route.
-Windows initial installation requires an existing signed catalog, an authorized
-one-use Ed25519 manifest signer and explicit install/update roots; it invokes the
-existing verified Host in the same retained build transaction. Build success alone
-is not proof of installation, app launch or Strict runtime qualification.
+Windows initial installation is not supported by this command until the signed
+installed Host admission owner implements and qualifies that separate route.
+Build success alone is not proof of installation, app launch or Strict runtime qualification.
 Public release trust and Store publication are not part of this developer build.";
 
 /// Builds the selected local cell using the invocation directory.
@@ -558,13 +542,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn developer_policy_replay_requires_exact_empty_staged_bytes() {
+    fn developer_policy_replay_requires_exact_staged_bytes() {
         require_developer_policy_replay(crate::boot::PERMISSIONS_BYTES)
-            .expect("the exact empty Windows developer policy must replay");
+            .expect("exact Windows developer policy must replay");
         for (case, bytes) in [
-            ("no newline", b"{}".as_slice()),
+            ("no final newline", b"{}".as_slice()),
             (
-                "app grant",
+                "filesystem grant",
                 br#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#.as_slice(),
             ),
             (
@@ -574,10 +558,10 @@ mod tests {
             ("alternate whitespace", b"{ }\n".as_slice()),
             ("commented empty", b"// comment\n{}\n".as_slice()),
         ] {
-            keld_guard::parse_manifest(std::str::from_utf8(bytes).expect("negative fixture UTF-8"))
-                .expect("negative fixture must be a valid undeclared manifest");
+            keld_guard::parse_manifest(std::str::from_utf8(bytes).expect("valid fixture UTF-8"))
+                .expect("each negative policy must be syntactically valid");
             let error = require_developer_policy_replay(bytes)
-                .expect_err("nonidentical source policy must refuse before any signer");
+                .expect_err("valid but nonreplayable policy must refuse");
             assert!(
                 error
                     .to_string()
@@ -599,10 +583,11 @@ mod tests {
     }
 
     #[test]
-    fn windows_initial_install_requires_explicit_closed_invocation() {
-        for (flag, create_scaffold) in [
-            ("--initial-install-observed-inputs", false),
-            ("--initial-install-create-scaffold-inputs", true),
+    fn windows_initial_install_is_unavailable_before_any_build() {
+        for flag in [
+            "--initial-install-inputs",
+            "--initial-install-observed-inputs",
+            "--initial-install-create-scaffold-inputs",
         ] {
             for target in [
                 vec!["--target", "windows-x64"],
@@ -615,13 +600,9 @@ mod tests {
                     "--published-at".to_owned(),
                     "2026-11-13T15:00:00Z".to_owned(),
                 ]);
-                assert_eq!(
-                    windows_product_session(&args).unwrap(),
-                    Some(WindowsProductRoute::DeveloperInitialInstall {
-                        inputs: "D:/owned/install-inputs.json",
-                        published_at: "2026-11-13T15:00:00Z",
-                        create_scaffold,
-                    })
+                assert!(
+                    windows_product_session(&args).is_err(),
+                    "unsupported install route must refuse before building: {args:?}"
                 );
             }
         }
@@ -667,6 +648,17 @@ mod tests {
             windows_product_session(&["--target=windows-x64".into()]).unwrap(),
             Some(WindowsProductRoute::Developer)
         );
+        assert_eq!(
+            windows_product_session(&[
+                "--target".into(),
+                "windows-x64".into(),
+                "--local-test-session".into(),
+                "D:/owned/local-test.json".into()
+            ])
+            .unwrap(),
+            Some(WindowsProductRoute::LocalTest("D:/owned/local-test.json"))
+        );
+        assert!(!BUILD_USAGE.contains("--initial-install-create-scaffold-inputs"));
     }
 
     #[test]
