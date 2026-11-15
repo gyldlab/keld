@@ -164,7 +164,7 @@ impl Drop for WorkerEnded<'_> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .worker_ended();
-        self.shared.changed.notify_all();
+        self.shared.notify_all();
         self.shared.wake(wake);
     }
 }
@@ -255,8 +255,7 @@ fn next(shared: &Shared) -> Result<Option<(Position, Packet)>, HostAppError> {
             let _ = observer.try_send(());
         }
         state = shared
-            .changed
-            .wait(state)
+            .wait_worker(state)
             .map_err(|_| WriterRefusal::Poisoned.into_host_error("primary writer idle"))?;
     }
 }
@@ -338,7 +337,7 @@ fn run(
             .lock()
             .map_err(|_| WriterRefusal::Poisoned.into_host_error("primary writer completion"))?
             .complete_at(position, outcome, completed_at);
-        shared.changed.notify_all();
+        shared.notify_all();
         shared.wake(wake);
         retirement?;
     }
