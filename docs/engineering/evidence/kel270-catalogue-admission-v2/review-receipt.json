@@ -23,12 +23,15 @@
     "docs/engineering/evidence/kel270-catalogue-admission-v2/identity-vectors.json": "400e007fc279f1895910aeeaaf5b3c78788656cc5982b6f49eeeee6fae3caf51",
     "docs/engineering/evidence/kel270-catalogue-admission-v2/metadata-golden.json": "e9c0eb71df1a8c6f62373a8977c20405afc54f83752a7da4b7f3e6e582a7abea",
     "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py": "8d55714a03bf68d401c593d0c7471d47622462585152fe02308416418839b461",
-    "docs/specs/kel270-catalogue-admission-v2/identity.md": "61718260e95618d167005c59ab528bdbcc0d19114f376d21adab46c6074797db",
-    "docs/specs/kel270-catalogue-admission-v2/index.md": "c6e41bff4b70f17414d0d855e8ad458f812b8b016de4867791c41a14a7a13cc1",
-    "docs/specs/kel270-catalogue-admission-v2/integration.md": "b63816b11481086a922999294c07ccc2afac705664c1a778a1340198249114a0",
-    "docs/specs/kel270-catalogue-admission-v2/metadata.md": "439aca379912d5d2a5471e9a5e362cfbab27182c6a4cdec08e649ccf434a7788",
-    "docs/specs/kel270-catalogue-admission-v2/recovery.md": "4574eab7b3bfe79454c35771587bfddeb7430e3ab9f69d3e85b76b203f30ae1c",
-    "docs/specs/kel270-catalogue-admission-v2/windows.md": "2f2be1f21ac75b7f22ce47e03c11bf10e87eb700b3bb9aba16b41325cbee6934"
+    "docs/specs/kel270-catalogue-admission-v2/identity.md": "0e4ff6d80e71c12fc93720bc6bc63f729c945134e3064f1d4982cb714fed4d08",
+    "docs/specs/kel270-catalogue-admission-v2/implementation.md": "f6e2fb5488927a7c5f3651183bebe100ab86bc60924fea09627f2dc626ed2695",
+    "docs/specs/kel270-catalogue-admission-v2/index.md": "1dd2ee5191f6b6ae69f5387857fef292a8713bb46fabd131871e4f1678584b49",
+    "docs/specs/kel270-catalogue-admission-v2/integration.md": "10ea8844e3baa1a9799f2a7b4d76f2d394da6d23564bc9769aa038ab285b3a0d",
+    "docs/specs/kel270-catalogue-admission-v2/metadata.md": "7839a0f1e5de4aadd48882075297543cd715e763b037d442a8af57e8ea0618fd",
+    "docs/specs/kel270-catalogue-admission-v2/qualification.md": "6b75566ce1ede090a4a6ebddcf0c3c7a8937c3418f9d72e167ea4d6b08bf8cb3",
+    "docs/specs/kel270-catalogue-admission-v2/recovery.md": "6ec46ca5563c5d7aee1912d62b7e8059453d6c3c23d5793b086ac603bc2206f5",
+    "docs/specs/kel270-catalogue-admission-v2/requirements.md": "35ae496755c1acbf02b7ff0bf2f8fcb0e9fe5a4c0090480bfd05ea0206ec39bf",
+    "docs/specs/kel270-catalogue-admission-v2/windows.md": "4bf869fb42468b7bdaa07c75367177f192df65495fd068119f7819b3b52748dc"
   },
   "publication_changes_after_R3": [
     "index.md removes closed B-81 from the open-blocker list",
@@ -38,7 +41,8 @@
     "Give each split canonical section a unique part subtitle.",
     "List only stable blocker IDs in the index and remove terminal punctuation from task dependency fields.",
     "Place unchanged fixtures and review evidence outside the Markdown-only specification directory.",
-    "Add direct evidence links, pin Windows source citations, and express external citations as source URLs."
+    "Add direct evidence links, pin Windows source citations, and express external citations as source URLs.",
+    "Group source and acceptance sections in requirements.md, retain each owner design as section 4, and group later sections in implementation.md and qualification.md. The part table now follows the canonical global section order without removing contract text."
   ],
   "independence": "Three isolated reviewers received the exact source and one named lens without author rationale. Each surviving R2 finding received independent refutation. R3 rechecks cover the corrections and added pending-operation contract.",
   "reports": {
@@ -1133,7 +1137,7 @@
     "Repository validation is recorded separately on PR #1541. The initial publication failed canonical layout checks; the publication correction changes layout, references and evidence placement only."
   ],
   "published_files_root": "repository root",
-  "publication_layout_review": {
+  "publication_layout_review_v2": {
     "reviewer": "review_identity_contract",
     "task": "KEL-270 corrected publication layout check",
     "snapshot": "publish-v2",
@@ -1183,5 +1187,377 @@
       "Read-only for both snapshots and product source. Only this requested check receipt was written."
     ]
   },
-  "publication_layout_review_limit": "After the layout review, one trailing space was removed from metadata.md. Published hashes below bind the resulting bytes."
+  "publication_layout_review_v2_limit": "After the layout review, one trailing space was removed from metadata.md. Published hashes below bind the resulting bytes.",
+  "repository_validation_history": [
+    {
+      "source_head": "53dca0b5a1287e4b97461d4a3fbe83d08ed92a8c",
+      "status": "failed",
+      "spec_structure_defects": 50,
+      "job": "https://github.com/gyldlab/keld/actions/runs/43699491823/job/132767429524"
+    },
+    {
+      "source_head": "6b88e6518ea6c8dbddafdaa2ba84c33d97466384",
+      "status": "failed",
+      "spec_structure_defects": 28,
+      "cause": "Canonical sections must follow global part-table order.",
+      "job": "https://github.com/gyldlab/keld/actions/runs/43700274717/job/132769775879"
+    }
+  ],
+  "publication_layout_review_v3": {
+    "schema": "keld.publication-preservation-review/v1",
+    "reviewer": "/root/review_publication_v3",
+    "created_at": "2026-11-15T10:04:16.652255+00:00",
+    "lens": "Complete publication content, source custody, task graph, and canonical part ordering; no boundary change.",
+    "disposition": "Qualified no unintended normative change, missing deliverable, or internal publication inconsistency identified in this lens.",
+    "scope": {
+      "candidate": "publish-v3",
+      "previous_publication": "publish-v2",
+      "frozen_design": "review-r3",
+      "target_pr": "https://github.com/gyldlab/keld/pull/1541",
+      "no_remote_mutation": true
+    },
+    "atoms": [
+      {
+        "owner": "Specification author",
+        "boundary": "Frozen and prior contract blocks to candidate blocks",
+        "first_falsifier": "An acceptance criterion, decision, stable ID, task instruction, or dependency changes outside the declared publication transformations."
+      },
+      {
+        "owner": "Publication author",
+        "boundary": "Index part table to complete globally ordered section traversal",
+        "first_falsifier": "A missing part, descending canonical section number, duplicate section title, broken local link, or mismatched open blocker set."
+      },
+      {
+        "owner": "Evidence publisher",
+        "boundary": "Reviewed snapshot and fixture bytes to receipt hashes and claims",
+        "first_falsifier": "A changed fixture, missing hash entry, altered original review report, source-pin substitution, or unsupported validation/approval claim."
+      }
+    ],
+    "checks": {
+      "canonical_section_bodies": {
+        "count": 40,
+        "v2_preserved": 39,
+        "only_other_change": "E-1 now names the correct repository-relative verifier script path."
+      },
+      "stable_ids": {
+        "all_equal_to_v2_and_R3": true,
+        "counts": {
+          "D": 40,
+          "AC": 28,
+          "T": 18,
+          "E": 11,
+          "B": 12,
+          "U": 2
+        }
+      },
+      "acceptance_criteria": {
+        "count": 28,
+        "byte_identical_to_v2_and_R3": true
+      },
+      "design_blocks": {
+        "count": 40,
+        "byte_identical_to_v2": true,
+        "R3_delta": "D-20 and D-25 change source-citation rendering only. Existing source commits and ranges remain the same."
+      },
+      "tasks": {
+        "count": 18,
+        "dependency_edges": 45,
+        "acyclic": true,
+        "ordered_dependencies_equal_to_v2_and_R3": true,
+        "task_body_equal_after_declared_paragraph_and_terminal_punctuation_changes": true,
+        "graph": {
+          "T-1": [
+            "T-80"
+          ],
+          "T-2": [
+            "T-1",
+            "T-23",
+            "T-42",
+            "T-81"
+          ],
+          "T-20": [
+            "T-80"
+          ],
+          "T-21": [
+            "T-20",
+            "T-40"
+          ],
+          "T-22": [
+            "T-20"
+          ],
+          "T-23": [
+            "T-21",
+            "T-22",
+            "T-1",
+            "T-41"
+          ],
+          "T-24": [
+            "T-23",
+            "T-2",
+            "T-62",
+            "T-81"
+          ],
+          "T-40": [
+            "T-80",
+            "T-82"
+          ],
+          "T-41": [
+            "T-40",
+            "T-20"
+          ],
+          "T-42": [
+            "T-41",
+            "T-1",
+            "T-60",
+            "T-23"
+          ],
+          "T-43": [
+            "T-42",
+            "T-81"
+          ],
+          "T-60": [
+            "T-80",
+            "T-21",
+            "T-40",
+            "T-41"
+          ],
+          "T-61": [
+            "T-80",
+            "T-1",
+            "T-40",
+            "T-81"
+          ],
+          "T-62": [
+            "T-61",
+            "T-60",
+            "T-23",
+            "T-2"
+          ],
+          "T-80": [],
+          "T-81": [
+            "T-80"
+          ],
+          "T-82": [
+            "T-80"
+          ],
+          "T-83": [
+            "T-24",
+            "T-43",
+            "T-62",
+            "T-81"
+          ]
+        }
+      },
+      "part_table": {
+        "order": [
+          "requirements.md",
+          "identity.md",
+          "metadata.md",
+          "windows.md",
+          "recovery.md",
+          "integration.md",
+          "implementation.md",
+          "qualification.md"
+        ],
+        "all_eight_non_index_parts_listed_once": true,
+        "canonical_section_sequence": [
+          2,
+          2,
+          2,
+          2,
+          2,
+          3,
+          3,
+          3,
+          3,
+          3,
+          4,
+          4,
+          4,
+          4,
+          4,
+          5,
+          5,
+          5,
+          5,
+          5,
+          6,
+          6,
+          6,
+          6,
+          6,
+          7,
+          7,
+          7,
+          7,
+          7,
+          9,
+          9,
+          9,
+          9,
+          9,
+          10,
+          10,
+          10,
+          10,
+          10
+        ],
+        "nondecreasing": true,
+        "unique_section_titles": true
+      },
+      "open_blockers": {
+        "count": 11,
+        "index_equals_open_B_ids": true,
+        "B_81": "Closed status and corrected heading agree with three embedded final R3 dispositions."
+      },
+      "local_links": {
+        "checked": 19,
+        "unresolved": 0,
+        "all_stay_within_candidate_repository_paths": true
+      },
+      "source_pins": {
+        "unchanged_from_R3": true,
+        "commits": [
+          "022d0c5640319c912e0fd34817622d836bf207bd",
+          "7ff41173d28d58ae61ccbb3382d055c8ef9c9c97",
+          "98d8eb8b2ce63515d9b4981c938ef6453c5b5771",
+          "d4cb70582ba507b9265672792c0fc8a5f390b851",
+          "e897eec93e37843884d0f37e37d40aa45393e1bb",
+          "ec29b7ce2b155a8c98f96036cbb9c54488b5c302"
+        ]
+      },
+      "fixtures": {
+        "unchanged_from_v2": [
+          "acceptance-plan.json",
+          "identity-validation.json",
+          "identity-vectors.json",
+          "metadata-golden.json",
+          "verify_identity_vectors.py"
+        ]
+      },
+      "review_reports": {
+        "count": 8,
+        "unchanged_from_original_JSON_after_declared_path_normalization": true
+      },
+      "hashes": {
+        "published_entries": 14,
+        "all_actual_files_covered_except_receipt_itself": true,
+        "all_match": true,
+        "R3_manifest_sha256": "5c7c5a975d1d29e954fa98468a194a98daa45b804025f7c3f17a340787dee8f1",
+        "R3_all_10_entries_match": true
+      },
+      "bounds": {
+        "all_pass_static_caps": true,
+        "files": [
+          {
+            "path": "identity.md",
+            "lines": 330,
+            "bytes": 23137,
+            "max_line_chars": 238
+          },
+          {
+            "path": "implementation.md",
+            "lines": 205,
+            "bytes": 10906,
+            "max_line_chars": 307
+          },
+          {
+            "path": "index.md",
+            "lines": 77,
+            "bytes": 4021,
+            "max_line_chars": 191
+          },
+          {
+            "path": "integration.md",
+            "lines": 74,
+            "bytes": 5563,
+            "max_line_chars": 170
+          },
+          {
+            "path": "metadata.md",
+            "lines": 236,
+            "bytes": 22859,
+            "max_line_chars": 375
+          },
+          {
+            "path": "qualification.md",
+            "lines": 301,
+            "bytes": 19018,
+            "max_line_chars": 321
+          },
+          {
+            "path": "recovery.md",
+            "lines": 285,
+            "bytes": 21318,
+            "max_line_chars": 181
+          },
+          {
+            "path": "requirements.md",
+            "lines": 353,
+            "bytes": 23316,
+            "max_line_chars": 357
+          },
+          {
+            "path": "windows.md",
+            "lines": 236,
+            "bytes": 22540,
+            "max_line_chars": 292
+          }
+        ]
+      },
+      "claims": {
+        "definition_result_preserved": "94 passed, 0 failed, definition-only; this reviewer did not rerun the suite.",
+        "original_product_matrix": "19 groups, 110 cases; every group remains NOT_RUN.",
+        "human_signoff": "Pending.",
+        "native_and_production_qualification": "No pass claimed.",
+        "canonical_repository_validation": "Separate primary/native-agent gate; not executed by this reviewer."
+      }
+    },
+    "findings": [],
+    "reviewed_file_sha256": {
+      "docs/engineering/evidence/kel270-catalogue-admission-v2/acceptance-plan.json": "a48f0519d7dcf08054dfaad9c8b4f75ef39d32052066a2d15518ef0326f2a295",
+      "docs/engineering/evidence/kel270-catalogue-admission-v2/identity-validation.json": "70bd03deb5d287a97d8ec6044351f811a6fad42df467ff72545a3dc39c917e52",
+      "docs/engineering/evidence/kel270-catalogue-admission-v2/identity-vectors.json": "400e007fc279f1895910aeeaaf5b3c78788656cc5982b6f49eeeee6fae3caf51",
+      "docs/engineering/evidence/kel270-catalogue-admission-v2/metadata-golden.json": "e9c0eb71df1a8c6f62373a8977c20405afc54f83752a7da4b7f3e6e582a7abea",
+      "docs/engineering/evidence/kel270-catalogue-admission-v2/review-receipt.json": "3e496522964bd511c10f54f28fd3e0ac3447fc01d442a86904172fdec2c5aa17",
+      "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py": "8d55714a03bf68d401c593d0c7471d47622462585152fe02308416418839b461",
+      "docs/specs/kel270-catalogue-admission-v2/identity.md": "0e4ff6d80e71c12fc93720bc6bc63f729c945134e3064f1d4982cb714fed4d08",
+      "docs/specs/kel270-catalogue-admission-v2/implementation.md": "f6e2fb5488927a7c5f3651183bebe100ab86bc60924fea09627f2dc626ed2695",
+      "docs/specs/kel270-catalogue-admission-v2/index.md": "1dd2ee5191f6b6ae69f5387857fef292a8713bb46fabd131871e4f1678584b49",
+      "docs/specs/kel270-catalogue-admission-v2/integration.md": "10ea8844e3baa1a9799f2a7b4d76f2d394da6d23564bc9769aa038ab285b3a0d",
+      "docs/specs/kel270-catalogue-admission-v2/metadata.md": "7839a0f1e5de4aadd48882075297543cd715e763b037d442a8af57e8ea0618fd",
+      "docs/specs/kel270-catalogue-admission-v2/qualification.md": "6b75566ce1ede090a4a6ebddcf0c3c7a8937c3418f9d72e167ea4d6b08bf8cb3",
+      "docs/specs/kel270-catalogue-admission-v2/recovery.md": "6ec46ca5563c5d7aee1912d62b7e8059453d6c3c23d5793b086ac603bc2206f5",
+      "docs/specs/kel270-catalogue-admission-v2/requirements.md": "35ae496755c1acbf02b7ff0bf2f8fcb0e9fe5a4c0090480bfd05ea0206ec39bf",
+      "docs/specs/kel270-catalogue-admission-v2/windows.md": "4bf869fb42468b7bdaa07c75367177f192df65495fd068119f7819b3b52748dc"
+    },
+    "hash_scope": "These hashes bind the input snapshot at review time. Inserting this report into review-receipt.json changes that receipt, not the reviewed contract or fixture files; the publisher must record and verify the resulting publication.",
+    "limits": [
+      "This is a complete publication-preservation review, not a new implementation or signing-authority review.",
+      "Static layout checks do not substitute for canonical just spec-structure execution.",
+      "Existing or interrupted workspace tests do not qualify an unimplemented Windows product path.",
+      "No human approval, PR approval, merge, release, or native test pass is granted by this report."
+    ]
+  },
+  "prior_workspace_validation": {
+    "source_head": "53dca0b5a1287e4b97461d4a3fbe83d08ed92a8c",
+    "host": "CENTILLIONAIREs-Mac-mini.local",
+    "corrected_path_format_exit": 0,
+    "clippy_exit": 0,
+    "workspace_tests": {
+      "command": "just test",
+      "exit_code": 0,
+      "started_utc": "2026-11-15T09:37:52.637882Z",
+      "ended_utc": "2026-11-15T09:44:48.873567Z",
+      "passed": 1703,
+      "failed": 0,
+      "skipped": 17,
+      "duration_seconds": 415.409,
+      "stdout_sha256": "cf401feb3495b0d5be5f5795bc988efced30322e9f31488292dfca782bcc8d42",
+      "stdout_bytes": 216199,
+      "stdout_lines": 1718,
+      "evidence_subdir": "retry-bun-path"
+    },
+    "limits": "Historical source-bound repository tests; not final-head execution or Windows product acceptance. All later publication changes remain documentation and fixture placement only."
+  }
 }
