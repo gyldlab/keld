@@ -16,6 +16,7 @@ pub(in crate::app_session::window_router) enum WindowCloseControl {
 }
 
 impl PrimaryRouterHandle {
+    #[cfg_attr(target_os = "linux", expect(clippy::unused_self, reason = "The receiver supplies native route retirement on macOS and Windows; Linux keeps the same registry admission signature."))]
     pub(super) fn prepare_window_destroy_locked(
         &self,
         session: &mut WindowSession,
@@ -92,6 +93,7 @@ impl PrimaryRouterHandle {
         }
     }
 
+    #[cfg_attr(target_os = "linux", expect(clippy::unused_self, reason = "The receiver supplies native route retirement on macOS and Windows; Linux keeps the same registry admission signature."))]
     pub(super) fn prepare_window_close_reply_locked(
         &self,
         session: &mut WindowSession,
@@ -157,6 +159,7 @@ impl PrimaryRouterHandle {
     }
 
     #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg_attr(target_os = "linux", expect(clippy::unused_self, reason = "The native original-document destroy command exists only on macOS and Windows."))]
     pub(super) fn prepare_window_original_destroy_locked(
         &self,
         _session: &mut WindowSession,
