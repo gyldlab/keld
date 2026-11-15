@@ -405,23 +405,6 @@ impl Shared {
         self.changed.notify_all();
     }
 
-    #[cfg(test)]
-    fn notify_one(&self) {
-        if let Some(waiters) = self
-            .deterministic_waiters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .cloned()
-        {
-            // This is the adversarial allowed selection: a shared-condition
-            // single wake is consumed by the full-capacity producer, whose
-            // predicate remains false, while the physical writer stays asleep.
-            waiters.capacity.notify_one();
-            return;
-        }
-        self.changed.notify_one();
-    }
 
     fn release(&self, position: Position, reservation: bool) {
         let wake = {
