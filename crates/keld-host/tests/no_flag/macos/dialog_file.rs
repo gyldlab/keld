@@ -75,6 +75,15 @@ for await (const command of createInterface({ input: control })) {
     void pending.then((value) => report("SAVE_PREFERRED_SELECTED " + value.canceled + " " + value.filePath),
       (error) => report("SAVE_ERROR " + (error?.code ?? String(error))));
     report("SUBMITTED");
+  } else if (command === "OPEN_PACKAGE") {
+    const pending = dialog.showOpenDialog(win, {
+      defaultPath: process.env.KELD_T1B_PACKAGE_PARENT!,
+      filters: [{ name: "All Files", extensions: ["*"] }],
+      properties: ["openFile"],
+    });
+    void pending.then((value) => report(`PACKAGE_SELECTED ${value.canceled} ${value.filePaths.join("|")}`),
+      (error) => report(`OPEN_ERROR ${error?.code ?? String(error)}`));
+    report("SUBMITTED");
   } else if (command === "OPEN_SELECT") {
     const pending = dialog.showOpenDialog(win, {
       defaultPath: process.env.KELD_T1B_OPEN_PATH!,
@@ -259,6 +268,7 @@ struct FilePaths {
     _vsdx_directory: tempfile::TempDir,
     _mermaid_directory: tempfile::TempDir,
     _mixed_directory: tempfile::TempDir,
+    _package_directory: tempfile::TempDir,
     directory: PathBuf,
     source: PathBuf,
     svg: PathBuf,
@@ -267,6 +277,7 @@ struct FilePaths {
     mermaid: PathBuf,
     mixed_file: PathBuf,
     mixed_folder: PathBuf,
+    package: PathBuf,
     destination: PathBuf,
 }
 
@@ -328,6 +339,15 @@ impl FilePaths {
         fs::write(&mixed_file, b"<mxfile>real mixed selection</mxfile>")
             .expect("owned mixed-selection file");
         fs::create_dir(&mixed_folder).expect("owned mixed-selection ordinary directory");
+        let package_directory = tempfile::Builder::new()
+            .prefix("keld-gh478-visible-package-")
+            .tempdir_in(&visible_parent)
+            .expect("owned OS-visible package parent");
+        let package = package_directory.path().join("GH478Fixture.app");
+        fs::create_dir_all(package.join("Contents")).expect("owned application package");
+        fs::write(package.join("Contents/Info.plist"),
+            b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundlePackageType</key><string>APPL</string></dict></plist>",
+        ).expect("package identity fixture");
         let destination = if directory_hint {
             directory.join("gh478-chosen.drawio")
         } else {
@@ -341,6 +361,7 @@ impl FilePaths {
             _vsdx_directory: vsdx_directory,
             _mermaid_directory: mermaid_directory,
             _mixed_directory: mixed_directory,
+            _package_directory: package_directory,
             directory,
             source,
             svg,
@@ -349,6 +370,7 @@ impl FilePaths {
             mermaid,
             mixed_file,
             mixed_folder,
+            package,
             destination,
         }
     }
@@ -456,6 +478,10 @@ fn file_host_command(
             "KELD_T1B_PREFERRED_SAVE_DEST",
             paths.directory.join("gh478-native-preferred"),
         )
+        .env(
+            "KELD_T1B_PACKAGE_PARENT",
+            paths.package.parent().expect("owned package parent"),
+        )
         .env("KELD_T1B_XML_SVG_PATH", &paths.svg)
         .env(
             "KELD_T1B_XML_SVG_DIR",
@@ -487,6 +513,7 @@ enum FileScenario {
     NativeXml,
     FilterSwitching,
     MixedSelection,
+    PackageAsFile,
     PhysicalSvgDenial,
 }
 
@@ -565,6 +592,9 @@ fn run_real_host_files(scenario: FileScenario, cancel_cycles: usize) {
         }
         FileScenario::MixedSelection => {
             selection::verify_native_mixed_selection(&mut dialog, &fixture, &paths);
+        }
+        FileScenario::PackageAsFile => {
+            selection::verify_package_as_file(&mut dialog, &fixture, &paths.package);
         }
         FileScenario::PhysicalSvgDenial => {
             selection::verify_physical_svg_denial(&mut dialog, &fixture, &paths.svg);
@@ -729,4 +759,9 @@ fn real_host_native_open_with_files_and_directories_selects_each_and_both() {
 #[test]
 fn real_host_257_file_panels_cancel_then_message_healthy_on_same_link() {
     run_real_host_files(FileScenario::CancelOnly, 257);
+}
+
+#[test]
+fn real_host_open_package_as_file_preserves_contents_and_next_message() {
+    run_real_host_files(FileScenario::PackageAsFile, 2);
 }

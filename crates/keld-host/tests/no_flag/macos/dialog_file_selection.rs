@@ -602,3 +602,56 @@ fn capture_open_sheet(dialog: &NativeDialog) {
         );
     }
 }
+
+/// A package is a directory on disk but a file in the native picker contract.
+/// Replacing native package classification with `path.is_dir()` must fail this
+/// real-Host case; this is not a pure classifier or mocked callback test.
+pub(super) fn verify_package_as_file(
+    dialog: &mut NativeDialog,
+    fixture: &ProductFixture,
+    package: &Path,
+) {
+    let contents = package.join("Contents");
+    let plist = contents.join("Info.plist");
+    let original = std::fs::read(&plist).expect("original package content");
+    assert!(
+        package.is_dir(),
+        "fixture must exercise a filesystem directory"
+    );
+    let selector = compile_ax(fixture, "select_file");
+    dialog.submit("OPEN_PACKAGE");
+    let output = run_ax(
+        Command::new(&selector)
+            .arg(dialog.host_pid.to_string())
+            .arg(package),
+    );
+    assert!(
+        output.status.success(),
+        "native package selection: {output:?}"
+    );
+    assert_eq!(
+        read_control_line(&mut dialog.reader),
+        format!("PACKAGE_SELECTED false {}", package.display()),
+        "openFile must return exactly one package path, not navigate or refuse"
+    );
+    dialog.await_detached("OPEN_PACKAGE");
+    assert_eq!(
+        std::fs::read(&plist).expect("retained package content"),
+        original
+    );
+    for directory in [
+        package.parent().expect("package parent"),
+        package,
+        contents.as_path(),
+    ] {
+        assert_eq!(
+            std::fs::read_dir(directory)
+                .expect("unchanged fixture directory")
+                .count(),
+            1,
+            "Open must not create extra entries in {}",
+            directory.display()
+        );
+    }
+    // run_real_host_files checks MESSAGE_NEXT and process cleanup after this.
+}
