@@ -688,21 +688,21 @@ class RouterFailureBoundaryTests(unittest.TestCase):
 
 
 class ProductionConsumerTests(unittest.TestCase):
-    def test_gh569_shipping_host_observer_inputs_select_compat_without_fallback(self):
+    def test_gh569_shipping_host_observer_inputs_preserve_v2_routing(self):
         source = Path(__file__).resolve().parent.parent
+        # Schema v2 widens changed registered readers, not ordinary input edges.
         host_inputs = [
-            "crates/keld-host/src/main.rs",
-            "crates/keld-host/tests/no_flag_macos.rs",
-            "crates/keld-host/tests/no_flag/macos/module_process.rs",
-            "crates/keld-host/tests/fixtures/module_process_early.ts",
-            "crates/keld-cli/src/boot.rs",
-            "crates/keld-cli/src/config.rs",
-            "crates/keld-cli/src/template.rs",
+            ("crates/keld-host/src/main.rs", False),
+            ("crates/keld-host/tests/no_flag_macos.rs", True),
+            ("crates/keld-host/tests/no_flag/macos/module_process.rs", True),
+            ("crates/keld-host/tests/fixtures/module_process_early.ts", False),
+            ("crates/keld-cli/src/boot.rs", False),
+            ("crates/keld-cli/src/config.rs", False),
+            ("crates/keld-cli/src/template.rs", True),
         ]
         with tempfile.TemporaryDirectory(prefix="keld-gh569-host-input-route-") as temporary:
             root = Path(temporary)
             tracked_snapshot(source, root)
-            self.assertEqual(ci_inputs.stale(root), [], "fresh digest binding before path cases")
             bound_contract = ci_inputs.load(root)
             readers = set(bound_contract["reader_sets"]["rust-readers"]["patterns"])
             for reader in (
@@ -711,7 +711,7 @@ class ProductionConsumerTests(unittest.TestCase):
                 "crates/keld-compat/tests/module_process_corpus.rs",
                 "crates/keld-compat/tests/module_process_reference.rs",
             ):
-                self.assertIn(reader, readers, "new GH569 reader must stay bound to its source bytes")
+                self.assertIn(reader, readers, "GH569 reader must stay registered for v2 widening")
 
             def route(path):
                 return subprocess.run(
@@ -721,10 +721,10 @@ class ProductionConsumerTests(unittest.TestCase):
                     capture_output=True,
                 )
 
-            for path in host_inputs:
+            for path, widens in host_inputs:
                 with self.subTest(path=path):
                     selected = ci_inputs.classify(root, [path], paths_only=True)
-                    self.assertFalse(selected["input_all"], selected)
+                    self.assertEqual(selected["input_all"], widens, selected)
                     self.assertTrue(selected["input_package_keld-compat"], selected)
                     result = route(path)
                     self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
@@ -735,7 +735,7 @@ class ProductionConsumerTests(unittest.TestCase):
                     )
                     packages = set(selection["packages"].split())
                     self.assertIn("keld-compat", packages, selection)
-                    self.assertFalse(selection["workspace"] == "true", selection)
+                    self.assertEqual(selection["workspace"] == "true", widens, selection)
 
             # Core/runtime and their Host dependency closure already reach the
             # observer through Cargo reverse dependencies; do not duplicate
@@ -792,10 +792,11 @@ class ProductionConsumerTests(unittest.TestCase):
 
             # One-fault negatives: removing either exact external edge loses
             # only its observing package while the direct Host/package route stays.
+            # Use non-reader inputs so v2 widening cannot mask the missing edge.
             current_inputs = bound_contract["rust_package_inputs"]["keld-compat"]
             for edge, path in (
-                ("crates/keld-host/**", "crates/keld-host/tests/no_flag_macos.rs"),
-                ("crates/keld-cli/src/**", "crates/keld-cli/src/template.rs"),
+                ("crates/keld-host/**", "crates/keld-host/src/main.rs"),
+                ("crates/keld-cli/src/**", "crates/keld-cli/src/boot.rs"),
             ):
                 # On the intentionally-red baseline the edge is absent; the
                 # first assertion above is the regression's failure-first proof.
