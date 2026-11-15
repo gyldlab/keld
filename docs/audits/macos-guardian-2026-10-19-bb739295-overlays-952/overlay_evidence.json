@@ -1,0 +1,140 @@
+{
+  "schema_version": 1,
+  "scope": "Only the three historically changed #949-to-#952 source blobs and the one newly added #952-only native test module. LIMITED review of pinned #952 source and named direct callers, never a review of subsequent tip changes.",
+  "reviews": [
+    {
+      "id": "authenticated-runner-952",
+      "path": "crates/keld-runtime/src/macos_guardian/authenticated_runner.rs",
+      "kind": "changed-949-to-952",
+      "blob_949": "f00e42607ef8f1c5b8877dd81d487ea7c0ef1092",
+      "blob_952": "8a3a1368f6bd5ff364ca181e4e9b2f181b216e07",
+      "parent_historical_status": "changed-since-949-pending",
+      "review_status": "source-reviewed-limited-952-overlay",
+      "diff_added": 69,
+      "diff_deleted": 9,
+      "source_sections": [
+        {"first": 1, "last": 12, "purpose": "private legacy Guardian imports and retained exact Child"},
+        {"first": 13, "last": 49, "purpose": "untrusted command and liveness admission, local birth witness before KGR1"},
+        {"first": 50, "last": 108, "purpose": "spawn failure, registration result and pre-exec group lineage with fail-closed rejection"},
+        {"first": 109, "last": 138, "purpose": "reject_spawn still waits unbounded after a failed birth-attested group signal"},
+        {"first": 139, "last": 165, "purpose": "host EOF to revocation and group signal failure aggregation"},
+        {"first": 166, "last": 202, "purpose": "original-deadline exact Child fallback and typed group-signal error preservation"},
+        {"first": 203, "last": 233, "purpose": "retained direct Child kill/try_wait loop and newly included native test module"}
+      ],
+      "source_anchors": [13, 32, 37, 42, 50, 55, 68, 70, 91, 106, 126, 131, 132, 145, 148, 153, 159, 173, 174, 176, 194, 199, 209, 213, 216, 218, 220, 232],
+      "caller_anchors": [
+        {"path": "crates/keld-runtime/src/macos_guardian.rs", "first": 167, "last": 185, "needle": "run_with_authenticated_registration(", "role": "public one-group run authenticates KGR1 then delegates retained child process"},
+        {"path": "crates/keld-runtime/src/macos_guardian/authenticated_runner/tests.rs", "first": 63, "last": 68, "needle": "run_live_group(child, stale_birth", "role": "new native wrong-birth direct-child-fallback test"}
+      ],
+      "native_oracles": [
+        {"path": "crates/keld-runtime/src/macos_guardian/authenticated_runner/tests.rs", "selector": "denied_attested_kgr1_group_signal_never_blocks_on_live_direct_child_wait", "line": 39, "needle": "fn denied_attested_kgr1_group_signal_never_blocks_on_live_direct_child_wait", "observes": "real /bin/sleep separate group, EOF, native pre-rescue ESRCH and waitpid ECHILD; retained original group denial"}
+      ],
+      "responsibility_and_boundary": "The Guardian receives an authenticated registration writer and host liveness reader, installs pre-exec SpawnAdmission, retains a direct Child and local kernel birth, revokes host resources at EOF and tries the original process group. Input: command, liveness and KGR1 channel. Output: GuardianReport or typed RuntimeError. No numeric registration PID alone confers kill authority.",
+      "source_finding": "New #952 path handles a denied original-group signal by attempting Child::kill then bounded Child::try_wait within the original post-EOF shutdown budget, while retaining the denied-group error. Older reject_spawn:126-135 still uses unconditional Child.wait after a failed native signal. Child.kill itself is a fallible OS call; a failure can leave the exact direct child live and un-reaped. Successful direct-child termination does not prove that another group member or escaped descendant is absent.",
+      "native_falsifier_and_limit": "The native test supplies an intentionally altered original birth, a real isolated /bin/sleep Child and closed pipe, samples product completion and ESRCH before attested true-birth rescue, and uses waitpid ECHILD to reject zombie-only fake success. The 400ms result sample and subsequent unconditional worker.join on failed rescue are test-specific bounds/cleanup limits. This is not a simultaneous host-plus-Guardian death, detached descendant or kernel-pinned group-handle test.",
+      "disposition": "LIMITED #952 legacy one-group source reviewed. Subsequent current HEAD and all OS scheduling remain unverified. No permission to signal a recycled PGID or claim whole-generation retirement."
+    },
+    {
+      "id": "process-group-952",
+      "path": "crates/keld-runtime/src/macos_guardian/process_group.rs",
+      "kind": "changed-949-to-952",
+      "blob_949": "ab6e23fb010dc810deb91e4b83d5939dfb4a4cec",
+      "blob_952": "213047a5ece30b591d1af8460af5d543303ac663",
+      "parent_historical_status": "changed-since-949-pending",
+      "review_status": "source-reviewed-limited-952-overlay",
+      "diff_added": 48,
+      "diff_deleted": 4,
+      "source_sections": [
+        {"first": 1, "last": 64, "purpose": "Darwin GroupIdentity start-time/uid witness and pre-exec local custody"},
+        {"first": 65, "last": 128, "purpose": "test-only ambiguous ESRCH+EPERM first-observation receipt and forged-birth helpers"},
+        {"first": 129, "last": 164, "purpose": "positive PGID validation and kernel group-leader identity"},
+        {"first": 165, "last": 228, "purpose": "read-only exact-size proc_pidinfo and actual direct Guardian-child lineage"},
+        {"first": 229, "last": 300, "purpose": "birth-attested signal; extinct leader and ambiguous zombie-group retries"},
+        {"first": 301, "last": 377, "purpose": "CONTROL_CLEAR native group absence requires dual ESRCH under original deadline"},
+        {"first": 378, "last": 400, "purpose": "native SIGKILL and EPERM handling without forgiving occupied groups"},
+        {"first": 401, "last": 489, "purpose": "new #952 original-clock post-reap EPERM reconciliation and test clock/probe injection"},
+        {"first": 490, "last": 570, "purpose": "pending Guardian Child reap; unbounded wait after failed kill and bootstrap rejection"}
+      ],
+      "source_anchors": [19, 21, 41, 42, 130, 145, 169, 183, 196, 208, 213, 236, 238, 245, 256, 268, 269, 272, 275, 311, 317, 326, 330, 332, 379, 388, 393, 394, 410, 415, 434, 441, 444, 457, 460, 469, 472, 481, 493, 499, 507, 515, 523, 528, 536, 548, 555],
+      "caller_anchors": [
+        {"path": "crates/keld-runtime/src/macos_guardian/guarded_lease.rs", "first": 307, "last": 324, "needle": "reconcile_denied_signal_after_reap(identity, error, reap_deadline)", "role": "host/Guardian registered lease reconciles only after owned direct Child reap"},
+        {"path": "crates/keld-runtime/src/macos_guardian/generation_host.rs", "first": 347, "last": 365, "needle": "require_attested_group_absence(group, absence_deadline)", "role": "host validates native group absence before CONTROL_CLEARED"},
+        {"path": "crates/keld-runtime/src/macos_guardian/authenticated_runner.rs", "first": 126, "last": 129, "needle": "terminate_attested_group(group)", "role": "legacy rejected spawn retains birth before cleanup"},
+        {"path": "crates/keld-runtime/src/macos_guardian/bootstrap.rs", "first": 326, "last": 335, "needle": "reap_pending_guardian(&mut child)", "role": "abandoned pre-registration GuardianBootstrap owns direct Child and EOF"}
+      ],
+      "native_oracles": [
+        {"path": "crates/keld-runtime/src/macos_guardian/tests/process_group_failsafe.rs", "selector": "expired_post_reap_reconciliation_cannot_accept_late_native_absence", "line": 268, "needle": "fn expired_post_reap_reconciliation_cannot_accept_late_native_absence", "observes": "real SIGKILL/reap and dual ESRCH, plus injected monotonic before/after clock to falsify missing post-probe deadline"},
+        {"path": "crates/keld-runtime/src/macos_guardian/tests/process_group_failsafe.rs", "selector": "guardian_signal_eperm_reconciles_only_after_native_group_absence", "line": 112, "needle": "fn guardian_signal_eperm_reconciles_only_after_native_group_absence", "observes": "real native same-group member held zombie and probe receipt before reaping"}
+      ],
+      "responsibility_and_boundary": "Shared native group owner reads Darwin proc_pidinfo for real uid/birth/direct-child relationship; validates group PID, signals birth-matching groups, retries read-only group-state probes and supports guarded lease, generation CLEAR, bootstrap and legacy runner. Inputs: original GroupIdentity and native kernel statuses. Outputs: typed refusal or bounded scoped absence evidence; no kernel-held process generation handle.",
+      "source_finding": "The #952 reconciliation first checks original deadline, reads real getpgid plus kill(-pgid,0), and accepts dual ESRCH only if a second clock check remains before deadline. Test-only closures permit a late-success mutant to be falsified. terminate_attested_group may still send a raw numeric group SIGKILL after an observation-to-signal gap; it documents TOCTOU/reuse. A reaped leader with persistent EPERM group stays denied. Separate reap_pending_guardian:507-520 and :528-540 issues unconditional Child.wait after potentially failing Child.kill; these waits are source-visible unbounded on native failure.",
+      "native_falsifier_and_limit": "Named macOS tests use actual /bin/sleep groups, an independently owned second member and kernel ESRCH/EPERM. The new expiration test injects a clock progression after the real dual-ESRCH probes and checks both pre- and post-probe guards. The clock progression is controlled, not a demonstrated slow native syscall. Native group disappearance is an instant observation and cannot prove kernel-pinned custody, detached descendants or joint host-and-Guardian death.",
+      "disposition": "LIMITED #952 revised process-group source reviewed. Original 77 historical status unchanged, current HEAD and known stale numeric-PGID race unresolved."
+    },
+    {
+      "id": "process-group-failsafe-test-952",
+      "path": "crates/keld-runtime/src/macos_guardian/tests/process_group_failsafe.rs",
+      "kind": "changed-949-to-952",
+      "blob_949": "5a1002b04be7a26df047079829aa9c63d9abb66f",
+      "blob_952": "a1d3bc8722872ea03bc59f14a99d653ee0efce33",
+      "parent_historical_status": "changed-since-949-pending",
+      "review_status": "source-reviewed-limited-952-overlay",
+      "diff_added": 123,
+      "diff_deleted": 3,
+      "source_sections": [
+        {"first": 1, "last": 38, "purpose": "test-owned Child and nested native descendant/cleanup modules; Drop wait limitation"},
+        {"first": 39, "last": 105, "purpose": "real foreign group lineage, live descendant after leader reap, EPERM denial matrix"},
+        {"first": 106, "last": 197, "purpose": "two real same-PGID /bin/sleep children; held member, EPERM receipt, actual post-reap ESRCH"},
+        {"first": 198, "last": 263, "purpose": "persistently held zombie and unrelated-native-error refusal oracles"},
+        {"first": 264, "last": 377, "purpose": "new expired-deadline native dual-ESRCH and controlled clock post-probe oracle"},
+        {"first": 378, "last": 413, "purpose": "forged original birth must not kill a still-live test-owned outsider"},
+        {"first": 414, "last": 457, "purpose": "native descendant remains in original group after original leader reap"},
+        {"first": 458, "last": 525, "purpose": "temporary zombie ambiguity and receipt-driven native cleanup"},
+        {"first": 526, "last": 590, "purpose": "permanent zombie-only EPERM cannot claim native CLEAR success"}
+      ],
+      "source_anchors": [28, 32, 35, 40, 62, 84, 85, 99, 112, 124, 140, 150, 163, 168, 170, 172, 178, 190, 202, 212, 216, 225, 234, 244, 253, 268, 280, 284, 298, 312, 318, 319, 334, 342, 349, 355, 361, 365, 367, 370, 379, 393, 400, 415, 422, 436, 442, 445, 459, 490, 500, 509, 511, 517, 527, 557, 566, 568, 576, 581, 589],
+      "caller_anchors": [
+        {"path": "crates/keld-runtime/src/macos_guardian/tests.rs", "first": 23, "last": 30, "needle": "mod process_group_failsafe;", "role": "cfg(test) module from root Guardian tests"},
+        {"path": "crates/keld-runtime/src/macos_guardian/process_group.rs", "first": 480, "last": 489, "needle": "pub(super) fn reconcile_denied_signal_after_reap_for_test", "role": "new test-only clock/probe seam consumed by this native fixture"}
+      ],
+      "native_oracles": [
+        {"path": "crates/keld-runtime/src/macos_guardian/tests/process_group_failsafe.rs", "selector": "expired_post_reap_reconciliation_cannot_accept_late_native_absence", "line": 268, "needle": "fn expired_post_reap_reconciliation_cannot_accept_late_native_absence", "observes": "existing native group absent, expired clock before probe, then injected late second clock"},
+        {"path": "crates/keld-runtime/src/macos_guardian/tests/process_group_failsafe.rs", "selector": "reaped_leader_with_persistently_unreaped_member_must_not_claim_clear", "line": 527, "needle": "fn reaped_leader_with_persistently_unreaped_member_must_not_claim_clear", "observes": "native zombie-only EPERM denial remains until independent member reaping"},
+        {"path": "crates/keld-runtime/src/macos_guardian/tests/process_group_failsafe.rs", "selector": "stale_group_birth_cannot_signal_a_live_unrelated_native_group", "line": 379, "needle": "fn stale_group_birth_cannot_signal_a_live_unrelated_native_group", "observes": "native outsider survival before true-birth test cleanup"}
+      ],
+      "responsibility_and_boundary": "A macOS-only crate test module owns real /bin/sleep leader/member processes, native group tests and explicit observer oracles; it imports production group controls but is not a shipping process owner. Input: test-controlled GroupIdentity and OS child handles. Output: test assertions about EPERM/ESRCH, born/reaped children, deadline and error phase.",
+      "source_finding": "#952 extends the test module with native absent-group and controlled post-probe expiration oracles, including exact clock read counts. Holding another test-owned zombie prevents retry false-green; foreign-birth tests sample survivor before rescue. The test-owned Child Drop:28-36 still uses unconditional wait following an ignored kill failure; a failed native rescue or member-reap thread can block without its own bounded join. Injected clock tests do not independently prove all real kernel stall schedules.",
+      "native_falsifier_and_limit": "The new expiry selector observes real dual-ESRCH, then injects before/after monotonic values so deletion of the post-probe guard would turn RED. Earlier tests use actual OS groups and held member receipts. The module tests specific previous schedules, not all possible native PID reuse, detached setsid descendants, simultaneous host/Guardian SIGKILL, or kernel-pinned group descriptors.",
+      "disposition": "LIMITED #952 changed test module reviewed; exact selectors and source anchors identified, but static inspection is not a rerun or independent proof of every runtime oracle."
+    },
+    {
+      "id": "authenticated-runner-native-test-952",
+      "path": "crates/keld-runtime/src/macos_guardian/authenticated_runner/tests.rs",
+      "kind": "added-952-only",
+      "blob_949": null,
+      "blob_952": "3fc77f68ed73e2f8f87391de515658dff200e42a",
+      "parent_historical_status": "outside-original-77",
+      "review_status": "source-reviewed-limited-952-addition",
+      "diff_added": 122,
+      "diff_deleted": 0,
+      "source_sections": [
+        {"first": 1, "last": 37, "purpose": "test imports, PendingDirectChild exact native Child ownership and conditional Drop wait"},
+        {"first": 38, "last": 69, "purpose": "real isolated /bin/sleep leader, retained start time, host EOF and wrong-birth runner worker"},
+        {"first": 70, "last": 100, "purpose": "bounded product result and before-rescue process ESRCH/ECHILD sampling, true-birth test rescue"},
+        {"first": 101, "last": 122, "purpose": "negative assertions for direct-child reap, live-child drop, typed original birth mismatch"}
+      ],
+      "source_anchors": [18, 26, 31, 34, 39, 43, 47, 57, 60, 62, 65, 66, 76, 77, 87, 90, 91, 92, 93, 95, 98, 101, 106, 109, 113, 116, 119],
+      "caller_anchors": [
+        {"path": "crates/keld-runtime/src/macos_guardian/authenticated_runner.rs", "first": 231, "last": 233, "needle": "mod tests;", "role": "test-only module added under authenticated_runner source"},
+        {"path": "crates/keld-runtime/src/macos_guardian.rs", "first": 39, "last": 42, "needle": "mod authenticated_runner;", "role": "Guardian module includes authenticated runner that owns this cfg(test) child"}
+      ],
+      "native_oracles": [
+        {"path": "crates/keld-runtime/src/macos_guardian/authenticated_runner/tests.rs", "selector": "denied_attested_kgr1_group_signal_never_blocks_on_live_direct_child_wait", "line": 39, "needle": "fn denied_attested_kgr1_group_signal_never_blocks_on_live_direct_child_wait", "observes": "400ms product completion, native ESRCH and waitpid ECHILD sampled before true-birth rescue, preserved typed group error"}
+      ],
+      "responsibility_and_boundary": "The additional #952-only test module owns a spawned native /bin/sleep Child until one transfer to the actual runner, simulates host EOF through a real pipe, forges start-time identity only in test and uses independent true-birth rescue. It is separate from the original 77 historical paths.",
+      "source_finding": "The native fixture checks the exact source-proven former unbounded direct-child wait failure using bounded receipt plus real PID/group disappearance and ECHILD before cleanup. PendingDirectChild::Drop:26-35 still has unconditional wait after ignored Child.kill failure; after a failed product result its worker.join:92-94 can block even though initial rx has a 400ms timeout, unless original native rescue wakes the worker. This limitation affects negative mutation and cleanup reliability, not a demonstrated shipping group-ownership guarantee.",
+      "native_falsifier_and_limit": "A no-op/dropped live Child mutant should fail the pre-rescue ESRCH/ECHILD assertions; an unbounded Child.wait mutant should fail the 400ms result receipt if true-birth cleanup permits worker exit. Source review alone does not demonstrate the mutants ran here or establish independent held group-member custody; no native suites executed for this docs-only child.",
+      "disposition": "LIMITED #952-only module source reviewed separately; never add this test module to historical 77 or promote its unrelated version history."
+    }
+  ]
+}
