@@ -473,7 +473,14 @@ mod rust_binder_acceptance_tests {
 
     const RENDERER: &[u8] =
         b"<html><head><title>Keld</title></head><body><main>Bound fixture</main></body></html>";
+    const IMPORT_REFUSAL: &str = "Captured application compiler refused input or output";
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    enum NativeCaseControl<'a> {
+        None,
+        HostileConfig(&'a Path),
+        RejectedImport(&'a str),
+    }
 
     struct Scratch(PathBuf);
     impl Scratch {
@@ -565,24 +572,25 @@ mod rust_binder_acceptance_tests {
         fs::write(root.join("index.html"), RENDERER).expect("write retained renderer");
     }
 
-    fn prove_hostile_config_is_effective(
+    fn observe_rust_bound_execution(
         compiler: &super::super::compiler_toolchain::BoundCompilerEntry<'_>,
         stage: &Path,
         environment: &[(OsString, OsString)],
         request: &mut File,
-        hostile_config: &Path,
-    ) {
-        // Bun 1.4.4 on Windows does not consult HOME/.bunfig.toml when invoked
-        // with a direct script entry. Prove the poison is genuinely executable
-        // by selecting it as a deliberate test-only config mutation.
-        // Everything else is the same Rust-bound entry, preload, parser,
-        // request and environment used by production compile().
+        hostile_config: Option<&Path>,
+    ) -> std::process::Output {
+        // Production run_captured intentionally suppresses error output.
+        // A diagnostic retry uses the exact Rust-bound runner, request,
+        // environment and production argument builder to assert the negative
+        // cases emit no bytes and carry their expected refusal sentinel.
         request
             .seek(SeekFrom::Start(0))
             .expect("rewind retained compiler request");
         let mut args = compiler_arguments(compiler);
-        args[2] = bun_config_argument(hostile_config);
-        let output = Command::new(&compiler.tools.bun.path)
+        if let Some(config) = hostile_config {
+            args[2] = bun_config_argument(config);
+        }
+        Command::new(&compiler.tools.bun.path)
             .args(args)
             .current_dir(stage)
             .env_clear()
@@ -591,19 +599,7 @@ mod rust_binder_acceptance_tests {
                 request.try_clone().expect("clone retained request"),
             ))
             .output()
-            .expect("probe exact Rust-bound compiler with poisoned config");
-        assert!(
-            !output.status.success(),
-            "poisoned config unexpectedly succeeded"
-        );
-        assert!(
-            output.stdout.is_empty(),
-            "poisoned config emitted compiler output"
-        );
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("AMBIENT_BUN_CONFIG_USED"),
-            "poisoned config did not emit its expected sentinel"
-        );
+            .expect("observe exact Rust-bound compiler negative response")
     }
 
     fn run_bound_case(
@@ -613,7 +609,7 @@ mod rust_binder_acceptance_tests {
         modules: &[(&str, &str)],
         home: &Path,
         node_path: Option<&Path>,
-        hostile_config_control: Option<&Path>,
+        control: NativeCaseControl<'_>,
     ) -> Result<CompiledApp, BuildError> {
         let app_root = root.join("app");
         // A fragment character forces the real Rust local_file_url() encoder
@@ -636,17 +632,55 @@ mod rust_binder_acceptance_tests {
             .open(stage.join("compiler-request.bin"))
             .map_err(refusal)?;
         let environment = compiler_environment(home, &stage, node_path);
-        let compiled = compile(&captured, &compiler, &stage, &environment, &mut request)?;
-        if let Some(hostile_config) = hostile_config_control {
-            prove_hostile_config_is_effective(
-                &compiler,
-                &stage,
-                &environment,
-                &mut request,
-                hostile_config,
-            );
+        let result = compile(&captured, &compiler, &stage, &environment, &mut request);
+        match control {
+            NativeCaseControl::None => result,
+            NativeCaseControl::HostileConfig(hostile_config) => {
+                // Bun 1.4.4 does not automatically read HOME/.bunfig.toml for
+                // direct script entries. The real compiler must succeed with
+                // poisoned HOME, and changing just its config selection must
+                // demonstrate the poison would execute if admitted.
+                let compiled = result?;
+                let output = observe_rust_bound_execution(
+                    &compiler,
+                    &stage,
+                    &environment,
+                    &mut request,
+                    Some(hostile_config),
+                );
+                assert!(!output.status.success(), "poisoned config succeeded");
+                assert!(output.stdout.is_empty(), "poisoned config emitted output");
+                assert!(
+                    String::from_utf8_lossy(&output.stderr).contains("AMBIENT_BUN_CONFIG_USED"),
+                    "poisoned config did not emit its sentinel"
+                );
+                Ok(compiled)
+            }
+            NativeCaseControl::RejectedImport(sentinel) => {
+                assert!(
+                    result.is_err(),
+                    "production compiler accepted invalid import"
+                );
+                let output = observe_rust_bound_execution(
+                    &compiler,
+                    &stage,
+                    &environment,
+                    &mut request,
+                    None,
+                );
+                assert!(!output.status.success(), "invalid import runner succeeded");
+                assert!(
+                    output.stdout.is_empty(),
+                    "invalid import emitted compiler output"
+                );
+                assert!(
+                    String::from_utf8_lossy(&output.stderr).contains(sentinel),
+                    "invalid import did not emit its exact refusal sentinel: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                result
+            }
         }
-        Ok(compiled)
     }
 
     fn assert_no_signing_artifacts(stage: &Path) {
@@ -725,7 +759,7 @@ mod rust_binder_acceptance_tests {
             ],
             &stage,
             None,
-            None,
+            NativeCaseControl::None,
         )
         .expect("Rust-generated compiler entry emits the captured application");
         assert!(String::from_utf8_lossy(&compiled.main).contains("45272"));
@@ -771,7 +805,7 @@ mod rust_binder_acceptance_tests {
             &[("main.js", "console.log('home-isolated');")],
             &hostile_home,
             None,
-            Some(&hostile_home.join(".bunfig.toml")),
+            NativeCaseControl::HostileConfig(&hostile_home.join(".bunfig.toml")),
         )
         .expect("production binder must isolate the malicious HOME configuration");
         assert!(String::from_utf8_lossy(&isolated.main).contains("home-isolated"));
@@ -807,7 +841,7 @@ mod rust_binder_acceptance_tests {
                 &[("main.js", "import 'ambient-test-only'; console.log('bad');")],
                 &stage,
                 Some(&node_modules),
-                None,
+                NativeCaseControl::RejectedImport(IMPORT_REFUSAL),
             )
             .is_err(),
             "ambient package import must be refused"
@@ -826,7 +860,7 @@ mod rust_binder_acceptance_tests {
                 &[("main.js", "import './outside.js'; console.log('bad');")],
                 &stage,
                 None,
-                None,
+                NativeCaseControl::RejectedImport(IMPORT_REFUSAL),
             )
             .is_err(),
             "missing captured member must be refused"
@@ -845,7 +879,7 @@ mod rust_binder_acceptance_tests {
                 &[("main.js", "import 'node:fs'; console.log('bad');")],
                 &stage,
                 None,
-                None,
+                NativeCaseControl::RejectedImport(IMPORT_REFUSAL),
             )
             .is_err(),
             "filesystem namespace import must be refused"

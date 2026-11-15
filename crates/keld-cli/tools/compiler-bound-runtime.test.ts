@@ -1,7 +1,7 @@
 // Qualified Windows acceptance for the Rust production compiler binder.
 // Set KELD_COMPILER_TEST_REQUIRED=1 in the native acceptance run. That makes
 // missing tool paths/digests a hard failure instead of a skipped test.
-import { test } from "bun:test";
+import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 
