@@ -42,6 +42,8 @@ use std::ffi::OsStr;
 #[cfg(windows)]
 use std::ffi::OsString;
 use std::fmt;
+#[cfg(any(target_os = "linux", windows))]
+use std::fmt::Write as _;
 #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), windows))]
 use std::fs;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -5896,6 +5898,54 @@ fn drain_direct_primary_role_events(
     Ok(())
 }
 
+// Keep the original pre-Ready CORE-037 cause: the runtime already retains the
+// sole, bounded child self-termination record. It is only meaningful after the
+// supervisor's terminal observation (before that, Revoked may precede ledger
+// publication). A stale crash's output must never be attributed to this child.
+#[cfg(any(target_os = "linux", windows))]
+fn append_pre_ready_bun_exit_evidence(
+    error: &mut HostAppError,
+    ledger: &keld_runtime::CrashLedger,
+) {
+    if error.code != "KELD-CORE-037"
+        || error.phase != PRIMARY_PRE_READY_PHASE
+        || ledger.self_termination_count == 0
+    {
+        return;
+    }
+    let Some(record) = ledger.last_self_termination else {
+        return;
+    };
+    let _ = write!(
+        error.detail,
+        "; supervised Bun exit pid={} status={:?}",
+        record.pid, record.exit_code
+    );
+    if let Some(keld_runtime::RuntimeError::ChildCrashed {
+        pid,
+        exit_code,
+        stderr_tail,
+    }) = ledger.last.as_ref()
+        && *pid == record.pid
+        && *exit_code == record.exit_code
+        && !stderr_tail.is_empty()
+    {
+        // Reuse KEL-134's already-bounded stderr, with a stricter display cap.
+        // Strip terminal controls; never invent stderr for zero/unknown exits.
+        let tail: String = stderr_tail
+            .chars()
+            .rev()
+            .take(384)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|ch| if ch.is_control() { ' ' } else { ch })
+            .collect();
+        error.detail.push_str("; bounded Bun stderr tail: ");
+        error.detail.push_str(&tail);
+    }
+}
+
 #[cfg(any(target_os = "linux", windows))]
 fn terminate_direct_primary_owner(
     error: HostAppError,
@@ -5905,10 +5955,18 @@ fn terminate_direct_primary_owner(
     shutdown: &SessionShutdownState,
 ) -> HostAppError {
     // Ranked before the Fatal that ends the window loop.
-    let error = owner_failure_by_causality(error, shutdown);
+    let mut error = owner_failure_by_causality(error, shutdown);
+    let pre_ready = error.code == "KELD-CORE-037" && error.phase == PRIMARY_PRE_READY_PHASE;
     let _ = recovery.deny();
     supervisor.shutdown();
     let _ = window_commands.send(AppWindowCommand::Fatal);
+    if pre_ready {
+        // The owner was already terminal. Wait for the sole runtime supervisor
+        // to reap/publish its exit record before taking a diagnostic snapshot.
+        // This cannot enable a successor or replace the original failure.
+        let _ = supervisor.wait_for_outcome();
+        append_pre_ready_bun_exit_evidence(&mut error, &supervisor.crash_ledger());
+    }
     error
 }
 
