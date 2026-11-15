@@ -4,12 +4,18 @@
     "fs": {
       "read": [
         "/foo/exact",
-        "/foo/bar/**",
+        "/foo/bar/**"
+      ],
+      "write": []
+    },
+    // Capability-agnostic matcher regressions stay separate from the filesystem
+    // consumer's absolute normalized request grammar.
+    "matcher": {
+      "read": [
         "$APPDATA/**",
         "https://example.com/a//b",
         "/foo/*literal*/bar"
-      ],
-      "write": []
+      ]
     },
     // Permanent wildcard-swallow bypass fixture (KEL-208), one hostile spelling per
     // capability. They are deliberately not pooled into one grant list: pooled, a row

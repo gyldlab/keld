@@ -5,27 +5,80 @@
 #![allow(clippy::expect_used, clippy::panic)] // extra test crate: process and OS observations are assertion oracles
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use std::ffi::c_void;
+use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+use std::os::windows::io::OwnedHandle;
 use std::path::Path;
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[path = "no_flag/windows/media.rs"]
+mod media;
+
+#[path = "no_flag/windows/profiles/mod.rs"]
+mod profiles;
+
+#[path = "no_flag/windows/dev_lifecycle.rs"]
+mod dev_lifecycle;
+
+#[path = "no_flag/windows/console.rs"]
+mod console;
+
+#[path = "no_flag/windows/lifecycle.rs"]
+mod lifecycle;
+
+#[path = "no_flag/windows/facade_ready.rs"]
+mod facade_ready;
+
+#[path = "no_flag/windows/recovery.rs"]
+mod recovery;
+
+#[path = "no_flag/windows/staging.rs"]
+mod staging;
+
+#[path = "no_flag/windows/control_contract.rs"]
+mod control_contract;
+
+#[path = "no_flag/windows/renderer_http_contract.rs"]
+mod renderer_http_contract;
+
+#[path = "no_flag/windows/renderer_publication.rs"]
+mod renderer_publication;
+
+#[path = "no_flag/windows/renderer_deadlines.rs"]
+mod renderer_deadlines;
+
+#[path = "no_flag/windows/renderer_connections.rs"]
+mod renderer_connections;
+
+#[path = "no_flag/windows/support/mod.rs"]
+mod support;
+
+#[path = "../../keld-wv/tests/fixtures/windows_renderer_http.rs"]
+mod windows_renderer_http;
+
+use console::{
+    accept_console_timeout_readiness, run_console_ctrl_c_case, run_console_timeout_fixture,
+    run_isolated_console_case,
+};
+use support::cross_user::{
+    profile_request_address, profile_test_token_sids, profile_test_user_sid,
+    read_profile_coordinator, write_profile_coordinator,
+};
+use support::process::{
+    assert_process_signaled, process_exists, wait_child, wait_for_process_signal,
+};
+use support::product::ProductFixture;
+use support::profile_response::validate_profile_state_atom;
+use support::profile_run::{SignedProfileStateCase, SignedProfileStateRun};
+use support::signed_identity::signed_fixture_profile_namespace;
+use support::window::wait_for_host_window;
+
 use serde_json::Value;
-use windows_sys::Win32::Foundation::{
-    CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, WAIT_OBJECT_0,
-};
-use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
-use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, GetExitCodeProcess, GetProcessHandleCount, OpenProcess, PROCESS_DUP_HANDLE,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess,
-    WaitForSingleObject,
-};
+use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 
 /// Dark background for fixture renderers, so a test run does not flash
 /// white windows across the operator's desktop. Cosmetic only: no test
@@ -34,42 +87,42 @@ const DARK_BG: &str = "<style>html,body{background:#111;color:#eee}</style>";
 const PRODUCT_TITLE: &str = "KEL96 T4 Windows Fixture";
 const PRODUCT_DEADLINE: Duration = Duration::from_secs(20);
 const RENDERER_ACCEPT_POLL: Duration = Duration::from_millis(10);
-const RENDERER_CONNECTION_LIMIT: usize = 16;
-const RENDERER_REQUEST_LINE_LIMIT: usize = 2048;
-const SYSTEM_EXTENDED_HANDLE_INFORMATION: u32 = 64;
-const STATUS_INFO_LENGTH_MISMATCH: i32 = -1_073_741_820;
-const OBJ_INHERIT: u32 = 0x0000_0002;
+const CONTROL_LINE_LIMIT: usize = 4096;
 
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    fn SetConsoleCtrlHandler(
-        handler: Option<unsafe extern "system" fn(u32) -> i32>,
-        add: i32,
-    ) -> i32;
-    fn GenerateConsoleCtrlEvent(event: u32, process_group: u32) -> i32;
-    fn GetConsoleProcessList(processes: *mut u32, capacity: u32) -> u32;
+/// Kill switch over a host exit that includes a `WebView2` UI end (after `Quit` or a
+/// host-fatal Bun exit), never a synchronization wait. The `WebView2` teardown is
+/// bounded by its one owner, `keld_wv::webview2::WEBVIEW2_TEARDOWN_BOUND`: the UI end
+/// plus, on a dev host, the post-release scavenge probe of a stale ephemeral leaf
+/// that an earlier (for example killed) dev host left in the shared `LocalAppData`.
+/// `PRODUCT_DEADLINE` covers the rest of the exit. A healthy UI end is not bounded by
+/// `PRODUCT_DEADLINE`; the owner's documentation records the measured healthy
+/// releases that exceed it.
+/// `profiles::handover::kill_switches_stay_below_the_nextest_terminate` pins this
+/// switch below the binary's nextest per-test terminate.
+fn ui_end_kill_switch() -> Duration {
+    keld_wv::webview2::WEBVIEW2_TEARDOWN_BOUND + PRODUCT_DEADLINE
 }
 
-unsafe extern "system" {
-    fn NtQuerySystemInformation(
-        system_information_class: u32,
-        system_information: *mut c_void,
-        system_information_length: u32,
-        return_length: *mut u32,
-    ) -> i32;
+/// Kill switch over a wait that includes a `WebView2` startup (a session's `Ready`
+/// after its Bun generation is bound, or a renderer request made by the initial
+/// navigation), never a synchronization wait. The host builds its engine only after
+/// Bun binds, so the startup is bounded by its one owner,
+/// `keld_wv::webview2::WEBVIEW2_STARTUP_BOUND`; `PRODUCT_DEADLINE` covers the rest
+/// of the wait (the Ready event's delivery and Bun's control record). A healthy
+/// startup is not bounded by `PRODUCT_DEADLINE`: its launch and navigation deadlines
+/// alone sum past it.
+fn startup_kill_switch() -> Duration {
+    keld_wv::webview2::WEBVIEW2_STARTUP_BOUND + PRODUCT_DEADLINE
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-struct SystemHandleEntry {
-    object: *mut c_void,
-    unique_process_id: usize,
-    handle_value: usize,
-    granted_access: u32,
-    creator_backtrace_index: u16,
-    object_type_index: u16,
-    handle_attributes: u32,
-    reserved: u32,
+/// Kill switch over a host exit after a held initial navigation, measured from the
+/// renderer's first connection. That connection proves the launch phases of
+/// `WEBVIEW2_STARTUP_BOUND` are done, so what remains is the initial-navigation
+/// deadline (`keld_wv::INITIAL_MILESTONE_DEADLINE`) and then the UI end
+/// ([`ui_end_kill_switch`]); the latter's `PRODUCT_DEADLINE` also covers the
+/// untimed tail before that deadline is armed, as in [`startup_kill_switch`].
+fn stalled_navigation_end_kill_switch() -> Duration {
+    keld_wv::INITIAL_MILESTONE_DEADLINE + ui_end_kill_switch()
 }
 
 #[test]
@@ -80,638 +133,97 @@ fn keld_dev_windows_helper() {
     keld_cli::dev::run_dev(Path::new(&project)).expect("shipping Windows keld dev helper");
 }
 
+fn profile_state_run_nonce(fixture: &ProductFixture) -> String {
+    let leaf = fixture
+        .root
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("UTF-8 product fixture nonce");
+    format!("{}-{leaf}", std::process::id())
+}
+
 #[test]
-fn windows_stage_is_current_user_protected_and_byte_consistent() {
-    let fixture = StageFixture::new();
-    let stage = keld_cli::boot::stage_dev_boot(
-        &fixture.project,
-        Path::new(env!("CARGO_BIN_EXE_keld-host")),
-    )
-    .expect("KEL-96/T4 must stage the Windows no-flag host");
-
-    assert_eq!(
-        stage.host().file_name().and_then(|name| name.to_str()),
-        Some("keld-host.exe")
+#[ignore = "operator launches this controller under the second ordinary account"]
+fn kel135_second_user_storage_helper() {
+    let request_path = env::var_os("KELD_KEL135_SECOND_USER_REQUEST")
+        .expect("operator supplies the live request path");
+    let mut bytes = Vec::new();
+    fs::File::open(request_path)
+        .expect("open parent request")
+        .take(u64::try_from(CONTROL_LINE_LIMIT + 1).expect("request limit fits u64"))
+        .read_to_end(&mut bytes)
+        .expect("read bounded parent request");
+    assert!(
+        bytes.len() <= CONTROL_LINE_LIMIT,
+        "cross-user request is bounded"
     );
-    assert_eq!(
-        fs::read(stage.host()).expect("read staged host"),
-        fs::read(env!("CARGO_BIN_EXE_keld-host")).expect("read source host"),
-        "the staged executable must copy the exact already-built host bytes"
+    let request: Value = serde_json::from_slice(&bytes).expect("cross-user request JSON");
+    let coordinator = profile_request_address(&request, "coordinator");
+    let address = profile_request_address(&request, "server");
+    let nonce = request["nonce"].as_str().expect("request nonce");
+    validate_profile_state_atom(nonce, false).expect("request nonce domain");
+    let host = std::ffi::OsStr::new(request["host"].as_str().expect("signed host path"));
+    let installer =
+        std::ffi::OsStr::new(request["installer"].as_str().expect("install fixture path"));
+    let identity =
+        std::ffi::OsStr::new(request["identity"].as_str().expect("signed identity path"));
+    let namespace = signed_fixture_profile_namespace(identity, Some(host));
+    let user_sid = profile_test_user_sid();
+    let administrator = profile_test_token_sids("/groups")
+        .iter()
+        .any(|sid| sid == "S-1-5-32-544");
+    assert!(
+        !administrator,
+        "the second user must not be an administrator"
     );
-    assert!(stage.root().join("keld.boot.json").is_file());
-    assert!(stage.root().join("keld.permissions.jsonc").is_file());
-    assert!(stage.root().join("src/main.ts").is_file());
-    assert!(stage.root().join("index.html").is_file());
-
-    let acl = acl_observation(stage.root());
-    assert_eq!(acl["protected"], true, "stage DACL must reject inheritance");
-    assert_eq!(acl["count"], 1, "stage DACL must contain one ACE: {acl}");
-    assert_eq!(
-        acl["sid"], acl["current"],
-        "only TokenUser may access the stage"
+    let stream = TcpStream::connect_timeout(&coordinator, PRODUCT_DEADLINE)
+        .expect("connect to waiting controller");
+    let mut peer = BufReader::new(stream);
+    write_profile_coordinator(
+        peer.get_mut(),
+        &serde_json::json!({
+            "kind": "hello", "nonce": nonce, "namespace": namespace,
+            "user_sid": user_sid, "administrator": administrator, "server": address.to_string(),
+        }),
     );
-    assert_eq!(acl["rights"], "FullControl");
-    assert_eq!(acl["kind"], "Allow");
-    assert_eq!(acl["inherited"], false);
-    assert_eq!(acl["inheritance"], "ContainerInherit, ObjectInherit");
-    assert_eq!(acl["propagation"], "None");
-    for parent in [
-        fixture.project.join(".keld"),
-        fixture.project.join(".keld/dev"),
-    ] {
-        let parent_acl = acl_observation(&parent);
-        assert_eq!(parent_acl["protected"], true, "{parent_acl}");
-        assert_eq!(parent_acl["count"], 1, "{parent_acl}");
-        assert_eq!(parent_acl["sid"], parent_acl["current"], "{parent_acl}");
-        assert_eq!(parent_acl["rights"], "FullControl", "{parent_acl}");
+    let fixture = ProductFixture::new();
+    let control = TcpListener::bind(("127.0.0.1", 0)).expect("second-user host control");
+    loop {
+        let message = read_profile_coordinator(&mut peer);
+        if message["kind"] == "stop" {
+            write_profile_coordinator(peer.get_mut(), &serde_json::json!({"kind": "stopped"}));
+            break;
+        }
+        assert_eq!(message["kind"], "run");
+        let case = SignedProfileStateCase {
+            name: message["case"].as_str().expect("remote case name"),
+            host,
+            installer,
+            before: message["before"].as_str().expect("remote before value"),
+            after: message["after"].as_str().expect("remote after value"),
+        };
+        let run = SignedProfileStateRun::start(
+            &fixture,
+            &control,
+            address,
+            nonce,
+            &case,
+            Instant::now() + PRODUCT_DEADLINE,
+        );
+        write_profile_coordinator(
+            peer.get_mut(),
+            &serde_json::json!({
+                "kind": "ready", "case": case.name, "host_pid": run.process.host_pid(), "bun_pid": run.bun_pid,
+            }),
+        );
+        assert_eq!(read_profile_coordinator(&mut peer)["kind"], "finish");
+        run.finish();
+        write_profile_coordinator(
+            peer.get_mut(),
+            &serde_json::json!({"kind": "finished", "case": case.name}),
+        );
     }
-}
-
-#[test]
-fn windows_stage_namespace_is_pinned_until_the_host_owner_releases_it() {
-    let fixture = StageFixture::new();
-    let stage = keld_cli::boot::stage_dev_boot(
-        &fixture.project,
-        Path::new(env!("CARGO_BIN_EXE_keld-host")),
-    )
-    .expect("stage namespace-pinning fixture");
-    let keld_root = fixture.project.join(".keld");
-    let moved = fixture.project.join(".keld-moved");
-
-    fs::rename(&keld_root, &moved)
-        .expect_err("a retained no-share-delete handle must pin the staged pathname chain");
-    assert!(stage.host().is_file(), "pinned host path disappeared");
-
-    drop(stage);
-    fs::rename(&keld_root, &moved).expect("releasing the stage must release namespace guards");
-    fs::rename(&moved, &keld_root).expect("restore fixture namespace");
-}
-
-#[test]
-fn windows_stage_rejects_a_dev_junction_before_writing_through_it() {
-    let fixture = StageFixture::new();
-    let external = tempfile::tempdir().expect("external junction target");
-    let initial = keld_cli::boot::stage_dev_boot(
-        &fixture.project,
-        Path::new(env!("CARGO_BIN_EXE_keld-host")),
-    )
-    .expect("create protected .keld parent");
-    drop(initial);
-    fs::remove_dir_all(fixture.project.join(".keld/dev")).expect("remove initial dev root");
-    let junction = fixture.project.join(".keld/dev");
-    let output = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "New-Item -ItemType Junction -Path $env:KELD_TEST_JUNCTION -Target $env:KELD_TEST_TARGET | Out-Null",
-        ])
-        .env("KELD_TEST_JUNCTION", &junction)
-        .env("KELD_TEST_TARGET", external.path())
-        .output()
-        .expect("create dev junction");
-    assert!(
-        output.status.success(),
-        "junction creation failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let error = keld_cli::boot::stage_dev_boot(
-        &fixture.project,
-        Path::new(env!("CARGO_BIN_EXE_keld-host")),
-    )
-    .expect_err("a reparse-point dev root must fail before staging");
-    assert!(error.to_string().contains("launch namespace"), "{error}");
-    assert_eq!(
-        fs::read_dir(external.path())
-            .expect("read external target")
-            .filter_map(Result::ok)
-            .count(),
-        0,
-        "staging wrote through the rejected junction"
-    );
-}
-
-#[test]
-fn windows_host_validates_the_staged_descriptor_before_platform_session_start() {
-    let fixture = StageFixture::new();
-    let stage = keld_cli::boot::stage_dev_boot(
-        &fixture.project,
-        Path::new(env!("CARGO_BIN_EXE_keld-host")),
-    )
-    .expect("stage Windows no-flag host");
-    fs::write(
-        stage.root().join("keld.boot.json"),
-        br#"{"schema":1,"name":"invalid","entry":"src/main.ts","renderer":"index.html","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"},"foreign":true}"#,
-    )
-    .expect("replace descriptor with an invalid closed-schema document");
-
-    let output = Command::new(stage.host())
-        .current_dir(stage.root())
-        .output()
-        .expect("launch staged Windows host");
-    assert!(!output.status.success(), "invalid boot became success");
-    let stderr = String::from_utf8(output.stderr).expect("host stderr is UTF-8");
-    assert!(stderr.contains("KELD-CORE-035"), "{stderr}");
-    assert!(stderr.contains("unknown field"), "{stderr}");
-    assert!(!stderr.contains("KELD-CORE-034"), "{stderr}");
-}
-
-#[test]
-fn windows_host_rejects_an_added_stage_acl_principal() {
-    let fixture = StageFixture::new();
-    let stage = keld_cli::boot::stage_dev_boot(
-        &fixture.project,
-        Path::new(env!("CARGO_BIN_EXE_keld-host")),
-    )
-    .expect("stage ACL-negative host");
-    let script = r"
-$acl = New-Object System.Security.AccessControl.DirectorySecurity
-$acl.SetAccessRuleProtection($true, $false)
-$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-$ownerRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-  $current,
-  [System.Security.AccessControl.FileSystemRights]::FullControl,
-  [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
-  [System.Security.AccessControl.PropagationFlags]::None,
-  [System.Security.AccessControl.AccessControlType]::Allow)
-$world = New-Object System.Security.Principal.SecurityIdentifier('S-1-1-0')
-$worldRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-  $world,
-  [System.Security.AccessControl.FileSystemRights]::ReadAndExecute,
-  [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
-  [System.Security.AccessControl.PropagationFlags]::None,
-  [System.Security.AccessControl.AccessControlType]::Allow)
-$acl.AddAccessRule($ownerRule)
-$acl.AddAccessRule($worldRule)
-[System.IO.Directory]::SetAccessControl($env:KELD_TEST_ACL_PATH, $acl)
-";
-    let mutation = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .env("KELD_TEST_ACL_PATH", stage.root())
-        .output()
-        .expect("add foreign stage ACE");
-    assert!(
-        mutation.status.success(),
-        "ACL mutation failed: {}",
-        String::from_utf8_lossy(&mutation.stderr)
-    );
-
-    let output = Command::new(stage.host())
-        .current_dir(stage.root())
-        .output()
-        .expect("launch ACL-negative host");
-    assert!(!output.status.success(), "foreign stage ACE became success");
-    let stderr = String::from_utf8(output.stderr).expect("ACL-negative stderr UTF-8");
-    assert!(stderr.contains("KELD-CORE-036"), "{stderr}");
-    assert!(stderr.contains("expected one access rule"), "{stderr}");
-}
-
-#[test]
-fn windows_no_flag_host_owns_window_two_calls_ordered_quit_and_relaunch() {
-    let fixture = ProductFixture::new();
-    let first = run_product_cycle(&fixture, "first");
-    let second = run_product_cycle(&fixture, "second");
-
-    assert_ne!(
-        first.host_pid, second.host_pid,
-        "relaunch must be a new host process"
-    );
-    assert_ne!(
-        first.bun_pid, second.bun_pid,
-        "relaunch must be a new Bun process"
-    );
-    assert_ne!(
-        first.app_link, second.app_link,
-        "relaunch must mint fresh authority"
-    );
-}
-
-#[test]
-fn windows_no_flag_host_recovers_bun_in_the_same_native_window() {
-    run_same_window_recovery("CRASH");
-}
-
-#[test]
-fn windows_link_only_failure_uses_the_supervisor_owned_restart_path() {
-    run_same_window_recovery("CLOSE_LINK");
-}
-
-#[test]
-fn windows_status_zero_self_termination_keeps_pid_and_status_in_the_host_error() {
-    let fixture = ProductFixture::new();
-    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind exit-zero control");
-    let control_port = control_listener
-        .local_addr()
-        .expect("control address")
-        .port();
-    let stage = keld_cli::boot::stage_dev_boot(
-        &fixture.project,
-        Path::new(env!("CARGO_BIN_EXE_keld-host")),
-    )
-    .expect("stage exit-zero host");
-    let mut child = Command::new(stage.host())
-        .current_dir(stage.root())
-        .env("KELD_T1B_CONTROL", control_port.to_string())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("launch exit-zero host");
-    let (_reader, mut writer, bun_pid, _link) =
-        accept_ready_generation(&control_listener, &mut child);
-
-    writer.write_all(b"EXIT0\n").expect("request status zero");
-    writer.flush().expect("flush status-zero request");
-    let status = wait_child(&mut child, Instant::now() + PRODUCT_DEADLINE);
-    assert!(
-        !status.success(),
-        "status-zero Bun exit became host success"
-    );
-    let mut stderr = String::new();
-    child
-        .stderr
-        .take()
-        .expect("captured exit-zero stderr")
-        .read_to_string(&mut stderr)
-        .expect("read exit-zero stderr");
-    assert!(stderr.trim_start().starts_with("KELD-CORE-033"), "{stderr}");
-    assert!(stderr.contains(&bun_pid.to_string()), "{stderr}");
-    assert!(stderr.contains("status Some(0)"), "{stderr}");
-}
-
-#[test]
-fn windows_fast_revoked_g2_is_never_installed_ahead_of_g3() {
-    let fixture = ProductFixture::new();
-    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fast-g2 control");
-    let control_port = control_listener
-        .local_addr()
-        .expect("control address")
-        .port();
-    let marker = fixture.project.join("generation-attempt");
-    let stage = keld_cli::boot::stage_dev_boot(
-        &fixture.project,
-        Path::new(env!("CARGO_BIN_EXE_keld-host")),
-    )
-    .expect("stage fast-g2 host");
-    let mut child = Command::new(stage.host())
-        .current_dir(stage.root())
-        .env("KELD_T1B_CONTROL", control_port.to_string())
-        .env("KELD_T4_GENERATION_MARKER", &marker)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("launch fast-g2 host");
-    let host_pid = child.id();
-
-    let (_g1_reader, mut g1_writer, g1_pid, _g1_link) =
-        accept_ready_generation(&control_listener, &mut child);
-    let g1_window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
-    g1_writer.write_all(b"CRASH\n").expect("crash g1");
-    g1_writer.flush().expect("flush g1 crash");
-
-    let g2 = accept_control_or_host_failure(
-        &control_listener,
-        &mut child,
-        Instant::now() + PRODUCT_DEADLINE,
-    );
-    g2.set_read_timeout(Some(PRODUCT_DEADLINE))
-        .expect("g2 control deadline");
-    let mut g2_writer = g2.try_clone().expect("g2 control acknowledgment writer");
-    let mut g2_reader = BufReader::new(g2);
-    let g2_hello = read_control_line_or_host_failure(&mut g2_reader, &mut child, "g2 HELLO");
-    let mut g2_fields = g2_hello.split_whitespace();
-    assert_eq!(g2_fields.next(), Some("HELLO"), "{g2_hello}");
-    let g2_pid = g2_fields
-        .next()
-        .expect("g2 pid")
-        .parse::<u32>()
-        .expect("numeric g2 pid");
-    let g2_descendant =
-        read_control_line_or_host_failure(&mut g2_reader, &mut child, "g2 DESCENDANT");
-    assert_eq!(parse_descendant_pid(&g2_descendant), 0);
-    g2_writer
-        .write_all(b"G2_WITNESSED\n")
-        .expect("acknowledge observed g2 records");
-    g2_writer
-        .flush()
-        .expect("flush g2 observation acknowledgment");
-
-    let (_g3_reader, mut g3_writer, g3_pid, _g3_link) =
-        accept_ready_generation(&control_listener, &mut child);
-    let g3_window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
-    assert_ne!(g1_pid, g2_pid);
-    assert_ne!(g2_pid, g3_pid);
-    assert_eq!(g1_window["handle"], g3_window["handle"]);
-
-    g3_writer.write_all(b"QUIT\n").expect("request g3 Quit");
-    g3_writer.flush().expect("flush g3 Quit");
-    let status = wait_child(&mut child, Instant::now() + PRODUCT_DEADLINE);
-    assert!(status.success(), "fast-g2 recovery host exited {status}");
-}
-
-#[test]
-fn windows_crash_loop_keeps_core033_as_the_outer_host_error() {
-    let fixture = ProductFixture::new();
-    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind crash-loop control");
-    let control_port = control_listener
-        .local_addr()
-        .expect("control address")
-        .port();
-    let stage = keld_cli::boot::stage_dev_boot(
-        &fixture.project,
-        Path::new(env!("CARGO_BIN_EXE_keld-host")),
-    )
-    .expect("stage crash-loop host");
-    let mut child = Command::new(stage.host())
-        .current_dir(stage.root())
-        .env("KELD_T1B_CONTROL", control_port.to_string())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("launch crash-loop host");
-
-    for _ in 0..3 {
-        let (_reader, mut writer, _pid, _link) =
-            accept_ready_generation(&control_listener, &mut child);
-        writer.write_all(b"CRASH\n").expect("crash generation");
-        writer.flush().expect("flush generation crash");
-    }
-    let status = wait_child(&mut child, Instant::now() + PRODUCT_DEADLINE);
-    assert!(!status.success(), "crash loop became host success");
-    let mut stderr = String::new();
-    child
-        .stderr
-        .take()
-        .expect("captured crash-loop stderr")
-        .read_to_string(&mut stderr)
-        .expect("read crash-loop stderr");
-    assert!(stderr.trim_start().starts_with("KELD-CORE-033"), "{stderr}");
-    assert!(stderr.contains("KELD-RUNTIME-002"), "{stderr}");
-}
-
-fn run_same_window_recovery(failure_command: &str) {
-    let fixture = ProductFixture::new();
-    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind recovery control");
-    let control_port = control_listener
-        .local_addr()
-        .expect("control address")
-        .port();
-    let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind recovery beacon");
-    let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
-    let beacon = spawn_renderer_beacon(beacon_listener);
-    fs::write(
-        fixture.project.join("index.html"),
-        format!(
-            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><p id=exact>{failure_command}</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
-        ),
-    )
-    .expect("write recovery renderer");
-    let stage = keld_cli::boot::stage_dev_boot(
-        &fixture.project,
-        Path::new(env!("CARGO_BIN_EXE_keld-host")),
-    )
-    .expect("stage recovery host");
-    let mut child = Command::new(stage.host())
-        .current_dir(stage.root())
-        .env("KELD_T1B_CONTROL", control_port.to_string())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("launch recovery host");
-    let host_pid = child.id();
-
-    let (mut g1_reader, mut g1_writer, g1_pid, g1_link) =
-        accept_ready_generation(&control_listener, &mut child);
-    expect_renderer_beacon(beacon, "initial renderer beacon");
-    let g1_window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
-    writeln!(g1_writer, "{failure_command}").expect("fail g1 app link or process");
-    g1_writer.flush().expect("flush g1 failure command");
-    let mut closed = String::new();
-    let _ = g1_reader.read_line(&mut closed);
-
-    let (mut g2_reader, mut g2_writer, g2_pid, g2_link) =
-        accept_ready_generation(&control_listener, &mut child);
-    let g2_window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
-    assert_ne!(g1_pid, g2_pid, "recovery must spawn a new Bun process");
-    assert_ne!(
-        g1_link, g2_link,
-        "recovery must mint fresh app-link authority"
-    );
-    assert_eq!(g1_window["handle"], g2_window["handle"], "HWND changed");
-    assert_eq!(g2_window["title"], PRODUCT_TITLE);
-
-    g2_writer.write_all(b"QUIT\n").expect("request g2 Quit");
-    g2_writer.flush().expect("flush g2 Quit");
-    assert_eq!(read_control_line(&mut g2_reader), "QUIT_REPLY");
-    assert_eq!(read_control_line(&mut g2_reader), "LINK_EOF");
-    let status = wait_child(&mut child, Instant::now() + PRODUCT_DEADLINE);
-    assert!(status.success(), "recovery host exited with {status}");
-    assert!(!process_exists(g1_pid), "retired g1 Bun survived");
-    assert!(!process_exists(g2_pid), "g2 Bun survived Quit");
-}
-
-#[test]
-fn windows_pre_ready_crash_denies_successor_before_provisioning() {
-    let fixture = ProductFixture::new();
-    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind pre-ready control");
-    control_listener
-        .set_nonblocking(true)
-        .expect("nonblocking pre-ready control");
-    let control_port = control_listener
-        .local_addr()
-        .expect("control address")
-        .port();
-    let marker = fixture.project.join("pre-ready-attempt");
-    let stage = keld_cli::boot::stage_dev_boot(
-        &fixture.project,
-        Path::new(env!("CARGO_BIN_EXE_keld-host")),
-    )
-    .expect("stage pre-ready host");
-    let mut child = Command::new(stage.host())
-        .current_dir(stage.root())
-        .env("KELD_T1B_CONTROL", control_port.to_string())
-        .env("KELD_T3_CRASH_BEFORE_HELLO", "1")
-        .env("KELD_T3_PRE_READY_MARKER", &marker)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("launch pre-ready host");
-    let host_pid = child.id();
-    let status = wait_child(&mut child, Instant::now() + PRODUCT_DEADLINE);
-    assert!(!status.success(), "pre-Ready crash became success");
-    let mut stderr = String::new();
-    child
-        .stderr
-        .take()
-        .expect("captured pre-ready stderr")
-        .read_to_string(&mut stderr)
-        .expect("read pre-ready stderr");
-    assert!(
-        stderr.contains("terminated before its initial authenticated generation bound"),
-        "{stderr}"
-    );
-    let attempts = fs::read_dir(&fixture.project)
-        .expect("list pre-ready markers")
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("pre-ready-attempt.")
-        })
-        .count();
-    assert_eq!(attempts, 1, "a pre-Ready crash provisioned a successor");
-    assert!(
-        matches!(
-            control_listener.accept(),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
-        ),
-        "pre-Ready child reached the control service"
-    );
-    assert!(!process_exists(host_pid), "failed host remained live");
-}
-
-#[test]
-fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
-    let fixture = ProductFixture::new();
-    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind shipping control");
-    let control_port = control_listener
-        .local_addr()
-        .expect("control address")
-        .port();
-    let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind shipping beacon");
-    let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
-    let beacon = spawn_renderer_beacon(beacon_listener);
-    fs::write(
-        fixture.project.join("index.html"),
-        format!(
-            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><p id=exact>shipping</p><script>\
-             const leaked=(typeof process!=='undefined'&&process.env?.KELD_APP_LINK)||globalThis.KELD_APP_LINK;\
-             const image=document.createElement('img');\
-             image.src='http://127.0.0.1:{beacon_port}/'+(leaked?'leaked':'ready')+'.png';\
-             document.body.append(image);</script>\n"
-        ),
-    )
-    .expect("write shipping renderer");
-    let helper = prepare_keld_dev_helper(&fixture);
-    let mut cli = Command::new(&helper)
-        .arg("keld_dev_windows_helper")
-        .arg("--exact")
-        .arg("--nocapture")
-        .env("KELD_T4_HELPER_PROJECT", &fixture.project)
-        .env("KELD_T1B_CONTROL", control_port.to_string())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("launch shipping keld dev helper");
-    let cli_pid = cli.id();
-    let host_pid =
-        wait_for_child_process(cli_pid, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
-    let (mut reader, mut writer, bun_pid, _) = accept_ready_generation(&control_listener, &mut cli);
-    expect_renderer_beacon(beacon, "shipping renderer beacon");
-    let window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
-    assert_eq!(window["title"], PRODUCT_TITLE);
-    writer.write_all(b"QUIT\n").expect("shipping Quit");
-    writer.flush().expect("flush shipping Quit");
-    assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
-    assert_eq!(read_control_line(&mut reader), "LINK_EOF");
-    let status = wait_child(&mut cli, Instant::now() + PRODUCT_DEADLINE);
-    if !status.success() {
-        let mut stdout = String::new();
-        let mut stderr = String::new();
-        cli.stdout
-            .take()
-            .expect("captured shipping stdout")
-            .read_to_string(&mut stdout)
-            .expect("read shipping stdout");
-        cli.stderr
-            .take()
-            .expect("captured shipping stderr")
-            .read_to_string(&mut stderr)
-            .expect("read shipping stderr");
-        panic!("shipping keld dev exited with {status}\nstdout:\n{stdout}\nstderr:\n{stderr}");
-    }
-    assert!(
-        !process_exists(host_pid),
-        "delegated host survived orderly exit"
-    );
-    assert!(
-        !process_exists(bun_pid),
-        "delegated Bun survived orderly exit"
-    );
-    assert_eq!(dev_stage_count(&fixture.project), 0, "orderly stage leaked");
-}
-
-#[test]
-fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
-    let fixture = ProductFixture::new();
-    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind lease control");
-    let control_port = control_listener
-        .local_addr()
-        .expect("control address")
-        .port();
-    let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind lease beacon");
-    let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
-    let beacon = spawn_renderer_beacon(beacon_listener);
-    fs::write(
-        fixture.project.join("index.html"),
-        format!(
-            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><p id=exact>lease</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
-        ),
-    )
-    .expect("write lease renderer");
-    let helper = prepare_keld_dev_helper(&fixture);
-    let mut cli = Command::new(&helper)
-        .arg("keld_dev_windows_helper")
-        .arg("--exact")
-        .arg("--nocapture")
-        .env("KELD_T4_HELPER_PROJECT", &fixture.project)
-        .env("KELD_T1B_CONTROL", control_port.to_string())
-        .env("KELD_TEST_WINDOWS_LEASE_CENSUS", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("launch leased keld dev helper");
-    let cli_pid = cli.id();
-    let host_pid =
-        wait_for_child_process(cli_pid, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
-    let cleanup_pid = wait_for_cleanup_sentinel(cli_pid, Instant::now() + PRODUCT_DEADLINE);
-    let (mut reader, _writer, bun_pid, _, lease_handle) =
-        accept_ready_generation_with_lease(&control_listener, &mut cli);
-    expect_renderer_beacon(beacon, "lease renderer beacon");
-    let _window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
-    let controller_pipe = cli
-        .stdout
-        .as_ref()
-        .expect("captured CLI stdout for File object type")
-        .as_raw_handle()
-        .cast();
-    let handle_census = assert_dev_lease_handle_isolation(
-        cli_pid,
-        host_pid,
-        bun_pid,
-        controller_pipe,
-        lease_handle,
-    );
-
-    cli.kill()
-        .expect("kill only the terminal-facing CLI helper");
-    let cli_status = wait_child(&mut cli, Instant::now() + PRODUCT_DEADLINE);
-    assert!(!cli_status.success(), "killed CLI reported success");
-    assert_eq!(read_control_line(&mut reader), "LINK_EOF");
-    wait_process_gone(host_pid, Instant::now() + PRODUCT_DEADLINE);
-    wait_process_gone(bun_pid, Instant::now() + PRODUCT_DEADLINE);
-    wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
-    wait_process_gone(cleanup_pid, Instant::now() + PRODUCT_DEADLINE);
-    println!(
-        "KELD_WINDOWS_STAGE_CLEANUP cli_pid={cli_pid} host_pid={host_pid} bun_pid={bun_pid} \
-         sentinel_pid={cleanup_pid} stage_count=0 cli_handles={} host_handles={} bun_handles={} \
-         lease_host_handle=0x{:x} lease_inheritable=false",
-        handle_census.cli_count,
-        handle_census.host_count,
-        handle_census.bun_count,
-        handle_census.lease_host_handle,
-    );
 }
 
 #[test]
@@ -719,234 +231,116 @@ fn shipping_windows_ctrl_c_preserves_host_output_and_ordered_cleanup() {
     // A separate hidden console keeps the real broadcast away from nextest and
     // unrelated tests. Only the inner observer ignores Ctrl+C, after CLI spawn.
     if std::env::var_os("KELD_T4_CONSOLE_CASE").is_none() {
-        let capture = tempfile::tempdir().expect("console test captures");
-        let stdout = capture.path().join("stdout");
-        let stderr = capture.path().join("stderr");
-        let output = Command::new("powershell.exe")
-            .args([
-                "-NoProfile", "-NonInteractive", "-Command",
-                "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath $env:KELD_T4_CONSOLE_EXE -ArgumentList @('shipping_windows_ctrl_c_preserves_host_output_and_ordered_cleanup','--exact','--nocapture') -WindowStyle Hidden -RedirectStandardOutput $env:KELD_T4_CONSOLE_STDOUT -RedirectStandardError $env:KELD_T4_CONSOLE_STDERR -PassThru; $null=$p.Handle; if (!$p.WaitForExit(90000)) { $p.Kill(); throw 'isolated console regression timed out' }; if ($null -eq $p.ExitCode) { throw 'missing isolated console exit status' }; exit $p.ExitCode",
-            ])
-            .env("KELD_T4_CONSOLE_CASE", "1")
-            .env("KELD_T4_CONSOLE_PARENT", std::process::id().to_string())
-            .env("KELD_T4_CONSOLE_EXE", std::env::current_exe().expect("test executable"))
-            .env("KELD_T4_CONSOLE_STDOUT", &stdout)
-            .env("KELD_T4_CONSOLE_STDERR", &stderr)
-            .output()
-            .expect("start isolated console regression");
-        let stdout = fs::read_to_string(stdout).expect("console stdout");
-        let stderr = fs::read_to_string(stderr).expect("console stderr");
-        assert!(
-            output.status.success(),
-            "isolated console failed: {}\n{stdout}\n{stderr}\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let stdout = run_isolated_console_case(
+            "shipping_windows_ctrl_c_preserves_host_output_and_ordered_cleanup",
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
         print!("{stdout}");
+        return;
+    }
+    // Emergency process ownership only: normal cleanup is asserted before this
+    // observer exits. Forced death can still retain its temporary stage files.
+    let _host_death_job = keld_runtime::windows_job::install_host_death_job()
+        .expect("install isolated observer death Job before descendants");
+    if let Ok(port) = env::var("KELD_T4_CONSOLE_TIMEOUT_PORT") {
+        run_console_timeout_fixture("observer", port.parse().expect("timeout fixture port"));
         return;
     }
     run_console_ctrl_c_case();
 }
 
-fn run_console_ctrl_c_case() {
-    // SAFETY: this disposable console observer may inherit nextest's Ctrl+C
-    // ignore attribute. Establish the ordinary terminal disposition before the
-    // CLI inherits it; null changes the attribute without installing a callback.
-    assert_ne!(unsafe { SetConsoleCtrlHandler(None, 0) }, 0);
-    let fixture = ProductFixture::new();
-    let control = TcpListener::bind(("127.0.0.1", 0)).expect("console control");
-    let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("console beacon");
-    let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
-    let beacon = spawn_renderer_beacon(beacon_listener);
-    fs::write(fixture.project.join("index.html"), format!(
-        "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
-    )).expect("console renderer");
-    let helper = prepare_keld_dev_helper(&fixture);
-    let mut cli = Command::new(helper)
-        .args(["keld_dev_windows_helper", "--exact", "--nocapture"])
-        .env("KELD_T4_HELPER_PROJECT", &fixture.project)
-        .env(
-            "KELD_T1B_CONTROL",
-            control
-                .local_addr()
-                .expect("control address")
-                .port()
-                .to_string(),
+#[test]
+fn isolated_console_timeout_reaps_ready_descendants() {
+    if let Ok(role) = env::var("KELD_T4_CONSOLE_TIMEOUT_ROLE") {
+        let port = env::var("KELD_T4_CONSOLE_TIMEOUT_PORT")
+            .expect("timeout fixture port")
+            .parse()
+            .expect("numeric timeout fixture port");
+        run_console_timeout_fixture(&role, port);
+        return;
+    }
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("timeout fixture controller");
+    let port = listener
+        .local_addr()
+        .expect("timeout controller address")
+        .port();
+    let mut worker = Some(thread::spawn(move || {
+        run_isolated_console_case(
+            "shipping_windows_ctrl_c_preserves_host_output_and_ordered_cleanup",
+            Some(port),
         )
-        .env("KELD_T4_JOB_DESCENDANT", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("console CLI");
+    }));
+    let mut controls = Vec::<(String, BufReader<TcpStream>)>::new();
+    let mut processes = Vec::<(String, u32, OwnedHandle)>::new();
     let observation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let host_pid =
-            wait_for_child_process(cli.id(), "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
-        let sentinel_pid = wait_for_cleanup_sentinel(cli.id(), Instant::now() + PRODUCT_DEADLINE);
-        let (reader, _writer, bun_pid, _, descendant_pid) =
-            accept_ready_generation_with_descendant(&control, &mut cli);
-        expect_renderer_beacon(beacon, "console rendered state");
-        let _window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
-        let host = open_process_for_wait(host_pid, false);
-        let bun = open_process_for_wait(bun_pid, false);
-        let descendant = open_process_for_wait(descendant_pid, false);
-        let sentinel = open_process_for_wait(sentinel_pid, false);
-        assert_console_broadcast_scope(cli.id(), host_pid);
-
-        // SAFETY: null selects the documented per-process ignore attribute. The CLI
-        // already inherited the enabled disposition; only this disposable observer
-        // changes. No callback or borrowed pointer crosses the call.
-        assert_ne!(unsafe { SetConsoleCtrlHandler(None, 1) }, 0);
-        // SAFETY: CTRL_C_EVENT (0), group 0 broadcasts to this isolated console.
-        // The parent test runner is attached to a different console.
-        assert_ne!(unsafe { GenerateConsoleCtrlEvent(0, 0) }, 0);
-        let cli_status = wait_child(&mut cli, Instant::now() + PRODUCT_DEADLINE);
-        assert_process_signaled(&host, "Ctrl+C host");
-        assert_process_signaled(&bun, "Ctrl+C Bun");
-        assert_process_signaled(&descendant, "Ctrl+C descendant");
-        assert_process_signaled(&sentinel, "Ctrl+C sentinel");
-        wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
-        drop(reader);
-        let mut host_status = 0;
-        // SAFETY: the retained, signaled process handle has query access and the
-        // output points to a live u32 for the duration of the call.
-        assert_ne!(
-            unsafe { GetExitCodeProcess(host.as_raw_handle().cast(), &raw mut host_status) },
-            0
-        );
-        let mut stdout = String::new();
-        let mut stderr = String::new();
-        cli.stdout
+        let launcher_pid =
+            accept_console_timeout_readiness(&listener, &mut controls, &mut processes);
+        let (_, observer_pid, observer) = processes
+            .iter()
+            .find(|(role, _, _)| role == "observer")
+            .expect("ready observer");
+        assert_eq!(launcher_pid, *observer_pid);
+        let (_, launcher) = controls
+            .iter_mut()
+            .find(|(role, _)| role == "launcher")
+            .expect("launcher timeout control");
+        launcher
+            .get_mut()
+            .write_all(b"TIMEOUT\n")
+            .expect("force the ready timeout branch");
+        launcher.get_mut().flush().expect("flush timeout command");
+        // Observe death before joining capture: an unfixed descendant may keep
+        // an inherited capture pipe open after the observer and launcher exit.
+        assert_process_signaled(observer, "timeout observer");
+        for role in ["direct", "descendant"] {
+            let (_, _, process) = processes
+                .iter()
+                .find(|(found, _, _)| found == role)
+                .expect("ready descendant handle");
+            assert_process_signaled(process, role);
+        }
+        let error = worker
             .take()
-            .expect("console stdout")
-            .read_to_string(&mut stdout)
-            .expect("read console stdout");
-        cli.stderr
-            .take()
-            .expect("console stderr")
-            .read_to_string(&mut stderr)
-            .expect("read console stderr");
-        println!(
-            "KELD_WINDOWS_CTRL_C cli={} host={host_pid} bun={bun_pid} descendant={descendant_pid} sentinel={sentinel_pid} cli_status={cli_status} host_status={host_status} stages=0 stdout={stdout:?} stderr={stderr:?}",
-            cli.id()
-        );
-        assert_eq!(
-            cli_status.code(),
-            Some(-1_073_741_510),
-            "native CLI interrupt classification"
-        );
-        assert_eq!(
-            host_status, 0,
-            "Ctrl+C must close the CLI lease and preserve the host shutdown tail; stdout={stdout:?}, stderr={stderr:?}"
-        );
+            .expect("timeout launcher worker")
+            .join()
+            .expect("timeout launcher did not panic")
+            .expect_err("the live observer must reach the timeout error");
         assert!(
-            stdout.contains("KEL96_T2_FORWARDED_LOG"),
-            "host capture lost: {stdout:?}"
+            error.contains("isolated console regression timed out"),
+            "{error}"
         );
-        let relaunched = run_product_cycle(&fixture, "post-ctrl-c");
+        assert!(error.contains("KELD_CONSOLE_WAIT_EXPIRED"), "{error}");
+        assert!(
+            !error.contains("timeout fixture control failed:"),
+            "a control failure cannot substitute for an expired native wait: {error}"
+        );
+        assert_eq!(
+            wait_for_process_signal(observer, 0),
+            WAIT_OBJECT_0,
+            "observer not reaped: {error}"
+        );
+        assert!(error.contains("KELD_CONSOLE_TIMEOUT_REAPED"), "{error}");
         println!(
-            "KELD_WINDOWS_CTRL_C_RELAUNCH host={} bun={}",
-            relaunched.host_pid, relaunched.bun_pid
+            "KELD_CONSOLE_TIMEOUT_TREE observer={observer_pid} direct_and_descendant_signaled=true\n{error}"
         );
     }));
+    // Keep failure cleanup after the saved observation. EOF releases only these
+    // benign fixture processes when the no-Job negative control leaves them live.
+    drop(controls);
+    drop(listener);
+    if let Some(worker) = worker {
+        let result = worker
+            .join()
+            .expect("reap timeout launcher after fixture failure");
+        eprintln!("timeout fixture failure cleanup: {result:?}");
+    }
+    for (role, _, process) in &processes {
+        assert_process_signaled(process, &format!("timeout fixture cleanup {role}"));
+    }
     if let Err(failure) = observation {
-        // Keep precondition failures from orphaning the terminal-facing helper.
-        // Killing this exact fixture child closes the existing host lease.
-        let _ = cli.kill();
-        let _ = cli.wait();
         std::panic::resume_unwind(failure);
     }
-}
-
-fn assert_console_broadcast_scope(cli_pid: u32, host_pid: u32) {
-    let mut processes = [0_u32; 64];
-    // SAFETY: the writable array holds exactly the advertised number of PIDs.
-    let count = unsafe { GetConsoleProcessList(processes.as_mut_ptr(), 64) };
-    assert!(
-        count > 0 && count <= 64,
-        "console census failed or exceeded capacity: {count}"
-    );
-    let attached = &processes[..usize::try_from(count).expect("bounded console count")];
-    let parent: u32 = std::env::var("KELD_T4_CONSOLE_PARENT")
-        .expect("outer test process identity")
-        .parse()
-        .expect("outer test PID");
-    assert!(
-        !attached.contains(&parent),
-        "broadcast would reach outer runner: {attached:?}"
-    );
-    assert!(
-        attached.contains(&std::process::id()),
-        "observer absent: {attached:?}"
-    );
-    assert!(attached.contains(&cli_pid), "CLI absent: {attached:?}");
-    assert!(attached.contains(&host_pid), "host absent: {attached:?}");
-    println!("KELD_WINDOWS_CTRL_C_CONSOLE outer={parent} attached={attached:?}");
-}
-
-#[test]
-fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches() {
-    let fixture = ProductFixture::new();
-    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind host-death control");
-    let control_port = control_listener
-        .local_addr()
-        .expect("host-death control address")
-        .port();
-    let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind host-death beacon");
-    let beacon_port = beacon_listener
-        .local_addr()
-        .expect("host-death beacon address")
-        .port();
-    let beacon = spawn_renderer_beacon(beacon_listener);
-    fs::write(
-        fixture.project.join("index.html"),
-        format!(
-            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><p id=exact>host-death</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
-        ),
-    )
-    .expect("write host-death renderer");
-    let helper = prepare_keld_dev_helper(&fixture);
-    let mut cli = Command::new(&helper)
-        .arg("keld_dev_windows_helper")
-        .arg("--exact")
-        .arg("--nocapture")
-        .env("KELD_T4_HELPER_PROJECT", &fixture.project)
-        .env("KELD_T1B_CONTROL", control_port.to_string())
-        .env("KELD_T4_JOB_DESCENDANT", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("launch host-death keld dev helper");
-    let cli_pid = cli.id();
-    let host_pid =
-        wait_for_child_process(cli_pid, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
-    let cleanup_pid = wait_for_cleanup_sentinel(cli_pid, Instant::now() + PRODUCT_DEADLINE);
-    let (reader, _writer, bun_pid, _, descendant_pid) =
-        accept_ready_generation_with_descendant(&control_listener, &mut cli);
-    expect_renderer_beacon(beacon, "host-death renderer beacon");
-    let _window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
-
-    let host = open_process_for_wait(host_pid, true);
-    let bun = open_process_for_wait(bun_pid, false);
-    let descendant = open_process_for_wait(descendant_pid, false);
-    terminate_test_process(&host);
-    assert_process_signaled(&host, "no-flag host");
-    assert_process_signaled(&bun, "Bun direct child");
-    assert_process_signaled(&descendant, "Bun descendant");
-    drop(host);
-    drop(reader);
-
-    let cli_status = wait_child(&mut cli, Instant::now() + PRODUCT_DEADLINE);
-    assert!(!cli_status.success(), "host death became CLI success");
-    wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
-    wait_process_gone(cleanup_pid, Instant::now() + PRODUCT_DEADLINE);
-
-    let relaunched = run_product_cycle(&fixture, "post-host-death");
-    println!(
-        "KELD_WINDOWS_HOST_DEATH cli_pid={cli_pid} host_pid={host_pid} bun_pid={bun_pid} \
-         descendant_pid={descendant_pid} sentinel_pid={cleanup_pid} stage_count=0 \
-         relaunch_host_pid={} relaunch_bun_pid={}",
-        relaunched.host_pid, relaunched.bun_pid
-    );
 }
 
 fn prepare_keld_dev_helper(fixture: &ProductFixture) -> std::path::PathBuf {
@@ -982,1384 +376,11 @@ fn wait_for_dev_stage_count(project: &Path, expected: usize, deadline: Instant) 
     }
 }
 
-#[derive(Debug)]
-struct LeaseHandleCensus {
-    cli_count: usize,
-    host_count: usize,
-    bun_count: usize,
-    lease_host_handle: usize,
-}
-
-fn assert_dev_lease_handle_isolation(
-    cli_pid: u32,
-    host_pid: u32,
-    bun_pid: u32,
-    known_file_handle: HANDLE,
-    lease_handle_value: usize,
-) -> LeaseHandleCensus {
-    let cli = open_process_for_census(cli_pid);
-    let host = open_process_for_census(host_pid);
-    let bun = open_process_for_census(bun_pid);
-    let cli_entries = census_matching_handle_count(&cli, cli_pid);
-    let host_entries = census_matching_handle_count(&host, host_pid);
-    let bun_entries = census_matching_handle_count(&bun, bun_pid);
-    let current_entries = raw_process_handle_census(std::process::id());
-    let known_value = known_file_handle.addr();
-    let file_type_index = current_entries
-        .iter()
-        .find(|entry| entry.handle_value == known_value)
-        .map(|entry| entry.object_type_index)
-        .expect("known controller pipe exists in the raw handle table");
-    let lease = host_entries
-        .iter()
-        .find(|entry| entry.handle_value == lease_handle_value)
-        .expect("reported host stdin lease handle exists in raw table");
-    assert_eq!(
-        lease.object_type_index, file_type_index,
-        "reported host lease is not a kernel File/pipe object"
-    );
-    assert_eq!(
-        lease.granted_access, FILE_GENERIC_READ,
-        "host lease is not the read-only pipe endpoint"
-    );
-    assert_eq!(
-        lease.handle_attributes & OBJ_INHERIT,
-        0,
-        "host lease reader remained inheritable in the raw handle table"
-    );
-    let lease_object = duplicate_process_handle(&host, lease.handle_value)
-        .expect("duplicate exact host lease reader for comparison");
-    assert!(
-        !process_contains_same_object(&bun, &bun_entries, file_type_index, &lease_object),
-        "Bun inherited the host's exact lease reader object"
-    );
-    LeaseHandleCensus {
-        cli_count: cli_entries.len(),
-        host_count: host_entries.len(),
-        bun_count: bun_entries.len(),
-        lease_host_handle: lease.handle_value,
-    }
-}
-
-fn open_process_for_census(pid: u32) -> OwnedHandle {
-    // SAFETY: numeric PID belongs to a live test-owned process; the returned
-    // handle requests query/duplicate rights only and is converted once.
-    let raw = unsafe {
-        OpenProcess(
-            PROCESS_DUP_HANDLE | PROCESS_QUERY_LIMITED_INFORMATION,
-            0,
-            pid,
-        )
-    };
-    assert!(
-        !raw.is_null(),
-        "open PID {pid} for handle census: {}",
-        std::io::Error::last_os_error()
-    );
-    // SAFETY: raw is the fresh non-null owning process handle returned above.
-    unsafe { OwnedHandle::from_raw_handle(raw.cast()) }
-}
-
-fn open_process_for_wait(pid: u32, terminate: bool) -> OwnedHandle {
-    let access = PROCESS_SYNCHRONIZE
-        | PROCESS_QUERY_LIMITED_INFORMATION
-        | if terminate { PROCESS_TERMINATE } else { 0 };
-    // SAFETY: PID belongs to a live test-owned process. Access permits wait and
-    // exit-status observation plus optional host-only termination. The returned
-    // handle is converted once.
-    let raw = unsafe { OpenProcess(access, 0, pid) };
-    assert!(
-        !raw.is_null(),
-        "open PID {pid} for exact wait: {}",
-        std::io::Error::last_os_error()
-    );
-    // SAFETY: raw is the fresh non-null owning process handle returned above.
-    unsafe { OwnedHandle::from_raw_handle(raw.cast()) }
-}
-
-fn terminate_test_process(process: &OwnedHandle) {
-    // SAFETY: this is the live test-owned host handle opened with terminate access.
-    assert_ne!(
-        unsafe { TerminateProcess(process.as_raw_handle().cast(), 1) },
-        0,
-        "terminate only the no-flag host: {}",
-        std::io::Error::last_os_error()
-    );
-}
-
-fn assert_process_signaled(process: &OwnedHandle, label: &str) {
-    // SAFETY: process is a live retained handle; signaling is the kernel's
-    // exact process-termination oracle and the timeout only bounds failure.
-    let result = unsafe { WaitForSingleObject(process.as_raw_handle().cast(), 10_000) };
-    assert_eq!(result, WAIT_OBJECT_0, "{label} survived host death");
-}
-
-fn raw_process_handle_census(pid: u32) -> Vec<SystemHandleEntry> {
-    let mut bytes = 1_u32 << 20;
-    loop {
-        let words = usize::try_from(bytes)
-            .expect("NT handle table size fits usize")
-            .div_ceil(std::mem::size_of::<usize>());
-        let mut storage = vec![0_usize; words];
-        let mut returned = 0_u32;
-        // SAFETY: aligned storage supplies `bytes` writable bytes and returned
-        // length is live. Class 64 is the extended system handle table.
-        let status = unsafe {
-            NtQuerySystemInformation(
-                SYSTEM_EXTENDED_HANDLE_INFORMATION,
-                storage.as_mut_ptr().cast(),
-                bytes,
-                &raw mut returned,
-            )
-        };
-        if status == STATUS_INFO_LENGTH_MISMATCH {
-            bytes = returned.max(bytes.saturating_mul(2));
-            continue;
-        }
-        assert_eq!(
-            status,
-            0,
-            "NtQuerySystemInformation failed: 0x{:08x}",
-            status.cast_unsigned()
-        );
-        let count = storage[0];
-        let header_bytes = 2 * std::mem::size_of::<usize>();
-        let available = usize::try_from(bytes)
-            .expect("NT handle table size fits usize")
-            .saturating_sub(header_bytes)
-            / std::mem::size_of::<SystemHandleEntry>();
-        assert!(count <= available, "NT handle table count exceeds buffer");
-        // SAFETY: class 64 begins with two usize fields followed by `count`
-        // aligned entries, and count was bounded by the allocated buffer.
-        let entries = unsafe {
-            std::slice::from_raw_parts(storage.as_ptr().add(2).cast::<SystemHandleEntry>(), count)
-        };
-        return entries
-            .iter()
-            .copied()
-            .filter(|entry| entry.unique_process_id == pid as usize)
-            .collect();
-    }
-}
-
-fn process_handle_count(process: &OwnedHandle) -> usize {
-    let mut count = 0_u32;
-    // SAFETY: process is live and count is writable storage.
-    assert_ne!(
-        unsafe { GetProcessHandleCount(process.as_raw_handle().cast(), &raw mut count) },
-        0,
-        "GetProcessHandleCount failed: {}",
-        std::io::Error::last_os_error()
-    );
-    usize::try_from(count).expect("process handle count fits usize")
-}
-
-fn census_matching_handle_count(process: &OwnedHandle, pid: u32) -> Vec<SystemHandleEntry> {
-    let deadline = Instant::now() + PRODUCT_DEADLINE;
-    loop {
-        let entries = raw_process_handle_census(pid);
-        let reported_count = process_handle_count(process);
-        if entries.len() == reported_count {
-            return entries;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "raw handle census for PID {pid} never agreed with GetProcessHandleCount: raw={}, reported={reported_count}",
-            entries.len()
-        );
-        thread::park_timeout(Duration::from_millis(20));
-    }
-}
-
-fn duplicate_process_handle(process: &OwnedHandle, value: usize) -> Option<OwnedHandle> {
-    let mut duplicate: HANDLE = std::ptr::null_mut();
-    // SAFETY: process is live; value came from its raw handle table; target is
-    // the current-process pseudo-handle; output receives one handle on success.
-    if unsafe {
-        DuplicateHandle(
-            process.as_raw_handle().cast(),
-            std::ptr::with_exposed_provenance_mut(value),
-            GetCurrentProcess(),
-            &raw mut duplicate,
-            0,
-            0,
-            DUPLICATE_SAME_ACCESS,
-        )
-    } == 0
-        || duplicate.is_null()
-    {
-        return None;
-    }
-    // SAFETY: duplicate is the fresh non-null owning handle returned above.
-    Some(unsafe { OwnedHandle::from_raw_handle(duplicate.cast()) })
-}
-
-fn process_contains_same_object(
-    process: &OwnedHandle,
-    entries: &[SystemHandleEntry],
-    file_type_index: u16,
-    object: &OwnedHandle,
-) -> bool {
-    entries.iter().any(|entry| {
-        if entry.object_type_index != file_type_index {
-            return false;
-        }
-        let Some(candidate) = duplicate_process_handle(process, entry.handle_value) else {
-            return false;
-        };
-        // SAFETY: both duplicated handles are live for this comparison.
-        (unsafe {
-            CompareObjectHandles(
-                object.as_raw_handle().cast(),
-                candidate.as_raw_handle().cast(),
-            )
-        }) != 0
-    })
-}
-
-fn accept_ready_generation(
-    listener: &TcpListener,
-    child: &mut Child,
-) -> (BufReader<TcpStream>, TcpStream, u32, String) {
-    let (reader, writer, pid, link, _, lease_handle) =
-        accept_ready_generation_inner(listener, child, false);
-    assert!(lease_handle.is_none(), "unexpected lease census disclosure");
-    (reader, writer, pid, link)
-}
-
-fn parse_descendant_pid(record: &str) -> u32 {
-    record
-        .strip_prefix("DESCENDANT ")
-        .expect("descendant record prefix")
-        .parse()
-        .expect("numeric descendant PID")
-}
-
-fn accept_ready_generation_with_lease(
-    listener: &TcpListener,
-    child: &mut Child,
-) -> (BufReader<TcpStream>, TcpStream, u32, String, usize) {
-    let (reader, writer, pid, link, _, lease_handle) =
-        accept_ready_generation_inner(listener, child, true);
-    (
-        reader,
-        writer,
-        pid,
-        link,
-        lease_handle.expect("host lease handle census value"),
-    )
-}
-
-fn accept_ready_generation_with_descendant(
-    listener: &TcpListener,
-    child: &mut Child,
-) -> (BufReader<TcpStream>, TcpStream, u32, String, u32) {
-    let (reader, writer, pid, link, descendant_pid, lease_handle) =
-        accept_ready_generation_inner(listener, child, false);
-    assert!(lease_handle.is_none(), "unexpected lease census disclosure");
-    assert_ne!(
-        descendant_pid, 0,
-        "host-death proof needs a real descendant"
-    );
-    (reader, writer, pid, link, descendant_pid)
-}
-
-fn accept_ready_generation_inner(
-    listener: &TcpListener,
-    child: &mut Child,
-    expect_lease_handle: bool,
-) -> (
-    BufReader<TcpStream>,
-    TcpStream,
-    u32,
-    String,
-    u32,
-    Option<usize>,
-) {
-    let control =
-        accept_control_or_host_failure(listener, child, Instant::now() + PRODUCT_DEADLINE);
-    control
-        .set_read_timeout(Some(PRODUCT_DEADLINE))
-        .expect("generation control read deadline");
-    let writer = control.try_clone().expect("generation control writer");
-    let mut reader = BufReader::new(control);
-    let hello = read_control_line_or_host_failure(&mut reader, child, "HELLO");
-    let mut fields = hello.split_whitespace();
-    assert_eq!(fields.next(), Some("HELLO"), "{hello}");
-    let pid = fields
-        .next()
-        .expect("generation pid")
-        .parse::<u32>()
-        .expect("numeric generation pid");
-    let link = fields.next().expect("generation app link").to_owned();
-    assert!(fields.next().is_none(), "{hello}");
-    let descendant_record = read_control_line_or_host_failure(&mut reader, child, "DESCENDANT");
-    let descendant_pid = parse_descendant_pid(&descendant_record);
-    let lease_handle = if expect_lease_handle {
-        let lease_record = read_control_line_or_host_failure(&mut reader, child, "LEASE_HANDLE");
-        let value = lease_record
-            .strip_prefix("LEASE_HANDLE ")
-            .expect("lease census line prefix");
-        Some(usize::from_str_radix(value, 16).expect("hexadecimal host lease handle"))
-    } else {
-        None
-    };
-    assert_eq!(
-        read_control_line_or_host_failure(&mut reader, child, "READY"),
-        "READY"
-    );
-    assert_eq!(
-        read_control_line_or_host_failure(&mut reader, child, "ECHO1"),
-        "ECHO1"
-    );
-    assert_eq!(
-        read_control_line_or_host_failure(&mut reader, child, "ECHO2"),
-        "ECHO2"
-    );
-    (reader, writer, pid, link, descendant_pid, lease_handle)
-}
-
-struct ProductEvidence {
-    host_pid: u32,
-    bun_pid: u32,
-    app_link: String,
-}
-
-fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
-    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind control listener");
-    let control_port = control_listener
-        .local_addr()
-        .expect("control address")
-        .port();
-    let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind beacon listener");
-    let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
-    let beacon = spawn_renderer_beacon(beacon_listener);
-    fs::write(
-        fixture.project.join("index.html"),
-        format!(
-            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><p id=exact>{label}</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
-        ),
-    )
-    .expect("write renderer");
-    let stage = keld_cli::boot::stage_dev_boot(
-        &fixture.project,
-        Path::new(env!("CARGO_BIN_EXE_keld-host")),
-    )
-    .expect("stage Windows product host");
-    let mut child = Command::new(stage.host())
-        .current_dir(stage.root())
-        .env("KELD_T1B_CONTROL", control_port.to_string())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("launch staged no-flag Windows host");
-    let host_pid = child.id();
-    let control = accept_control_or_host_failure(
-        &control_listener,
-        &mut child,
-        Instant::now() + PRODUCT_DEADLINE,
-    );
-    control
-        .set_read_timeout(Some(PRODUCT_DEADLINE))
-        .expect("control read deadline");
-    let mut writer = control.try_clone().expect("control writer clone");
-    let mut reader = BufReader::new(control);
-
-    let hello = read_control_line(&mut reader);
-    let mut hello_fields = hello.split_whitespace();
-    assert_eq!(hello_fields.next(), Some("HELLO"), "{hello}");
-    let bun_pid = hello_fields
-        .next()
-        .expect("HELLO pid")
-        .parse::<u32>()
-        .expect("numeric Bun pid");
-    let app_link = hello_fields.next().expect("HELLO app link").to_owned();
-    assert!(hello_fields.next().is_none(), "{hello}");
-    let descendant_record = read_control_line(&mut reader);
-    assert_eq!(parse_descendant_pid(&descendant_record), 0);
-
-    expect_renderer_beacon(beacon, "WebView2 renderer requested the exact beacon");
-    assert_eq!(read_control_line(&mut reader), "READY");
-    assert_eq!(read_control_line(&mut reader), "ECHO1");
-    assert_eq!(read_control_line(&mut reader), "ECHO2");
-    let window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
-    assert_ne!(window["handle"].as_u64(), Some(0), "{window}");
-    assert_eq!(window["title"], PRODUCT_TITLE, "{window}");
-
-    writer.write_all(b"QUIT\n").expect("request lifecycle Quit");
-    writer.flush().expect("flush lifecycle Quit");
-    assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
-    assert_eq!(read_control_line(&mut reader), "LINK_EOF");
-    let status = wait_child(&mut child, Instant::now() + PRODUCT_DEADLINE);
-    assert!(status.success(), "host exited with {status}");
-    assert!(
-        !process_exists(bun_pid),
-        "Bun {bun_pid} survived orderly host exit"
-    );
-
-    ProductEvidence {
-        host_pid,
-        bun_pid,
-        app_link,
-    }
-}
-
-struct RendererBeacon {
-    observed: mpsc::Receiver<Result<(), String>>,
-    worker: thread::JoinHandle<()>,
-    activate_deadline: mpsc::Sender<Instant>,
-}
-
-fn spawn_renderer_beacon(listener: TcpListener) -> RendererBeacon {
-    let (observed_tx, observed) = mpsc::channel();
-    let (activate_deadline, deadline_rx) = mpsc::channel();
-    let worker = thread::spawn(move || {
-        let result = serve_renderer_beacon_loop(&listener, &deadline_rx);
-        let _ = observed_tx.send(result);
-    });
-    RendererBeacon {
-        observed,
-        worker,
-        activate_deadline,
-    }
-}
-
-fn expect_renderer_beacon(beacon: RendererBeacon, context: &str) {
-    let RendererBeacon {
-        observed,
-        worker,
-        activate_deadline,
-    } = beacon;
-    let deadline = Instant::now() + PRODUCT_DEADLINE;
-    let _ = activate_deadline.send(deadline);
-    let remaining = deadline
-        .checked_duration_since(Instant::now())
-        .unwrap_or_default();
-    let initial_result = observed.recv_timeout(remaining);
-    finish_renderer_beacon(&observed, worker, initial_result, context)
-        .unwrap_or_else(|error| panic!("{error}"));
-}
-
-fn finish_renderer_beacon(
-    observed: &mpsc::Receiver<Result<(), String>>,
-    worker: thread::JoinHandle<()>,
-    initial_result: Result<Result<(), String>, mpsc::RecvTimeoutError>,
-    context: &str,
-) -> Result<(), String> {
-    worker
-        .join()
-        .map_err(|_| format!("{context}: beacon worker panicked"))?;
-    let result = match initial_result {
-        Ok(result) => result,
-        Err(receive_error) => match observed.try_recv() {
-            Ok(Err(error)) => Err(error),
-            Ok(Ok(())) | Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => {
-                return Err(format!(
-                    "{context}: beacon worker did not report: {receive_error}"
-                ));
-            }
-        },
-    };
-    result.map_err(|error| format!("{context}: {error}"))
-}
-
-struct PendingRendererRequest {
-    stream: TcpStream,
-    request: Vec<u8>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum RendererRequestRead {
-    Pending,
-    Empty,
-    Complete(Vec<u8>),
-}
-
-fn serve_renderer_beacon_until(listener: &TcpListener, deadline: Instant) -> Result<(), String> {
-    let (deadline_tx, deadline_rx) = mpsc::channel();
-    deadline_tx
-        .send(deadline)
-        .expect("activate fixed renderer beacon deadline");
-    serve_renderer_beacon_loop(listener, &deadline_rx)
-}
-
-fn serve_renderer_beacon_loop(
-    listener: &TcpListener,
-    deadline_rx: &mpsc::Receiver<Instant>,
-) -> Result<(), String> {
-    serve_renderer_beacon_loop_with_clock(listener, deadline_rx, Instant::now)
-}
-
-fn serve_renderer_beacon_loop_with_clock(
-    listener: &TcpListener,
-    deadline_rx: &mpsc::Receiver<Instant>,
-    mut now: impl FnMut() -> Instant,
-) -> Result<(), String> {
-    listener
-        .set_nonblocking(true)
-        .map_err(|error| format!("set renderer beacon listener nonblocking: {error}"))?;
-    let mut pending = Vec::<PendingRendererRequest>::new();
-    let mut deadline = None;
-
-    loop {
-        if deadline.is_none() {
-            match deadline_rx.try_recv() {
-                Ok(activated) => deadline = Some(activated),
-                Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    return Err("renderer beacon deadline owner ended before awaiting".to_owned());
-                }
-            }
-        }
-        let remaining = deadline
-            .map(|deadline| renderer_beacon_remaining(deadline, now()))
-            .transpose()?;
-
-        let mut index = 0;
-        while index < pending.len() {
-            let request = {
-                let PendingRendererRequest { stream, request } = &mut pending[index];
-                read_renderer_request_line(request, |buffer| stream.read(buffer))
-            }?;
-            match request {
-                RendererRequestRead::Pending => index += 1,
-                RendererRequestRead::Empty => {
-                    pending.swap_remove(index);
-                }
-                RendererRequestRead::Complete(request) => {
-                    let mut matched = pending.swap_remove(index);
-                    if !request.starts_with(b"GET /ready.png ") {
-                        return Err(format!(
-                            "renderer requested an unexpected beacon: {}",
-                            String::from_utf8_lossy(&request)
-                        ));
-                    }
-                    matched.stream.set_nonblocking(false).map_err(|error| {
-                        format!("set renderer beacon reply stream blocking: {error}")
-                    })?;
-                    let write_timeout = deadline
-                        .map(|deadline| renderer_beacon_remaining(deadline, now()))
-                        .transpose()?
-                        .unwrap_or(PRODUCT_DEADLINE);
-                    matched
-                        .stream
-                        .set_write_timeout(Some(write_timeout))
-                        .map_err(|error| format!("set renderer beacon write deadline: {error}"))?;
-                    matched
-                        .stream
-                        .write_all(
-                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                        )
-                        .map_err(|error| format!("reply renderer beacon: {error}"))?;
-                    return Ok(());
-                }
-            }
-        }
-
-        match listener.accept() {
-            Ok((stream, _)) => {
-                if pending.len() == RENDERER_CONNECTION_LIMIT {
-                    return Err(format!(
-                        "renderer beacon exceeded {RENDERER_CONNECTION_LIMIT} pending connections"
-                    ));
-                }
-                stream
-                    .set_nonblocking(true)
-                    .map_err(|error| format!("set renderer beacon stream nonblocking: {error}"))?;
-                pending.push(PendingRendererRequest {
-                    stream,
-                    request: Vec::new(),
-                });
-                continue;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(error) => return Err(format!("accept renderer beacon: {error}")),
-        }
-
-        // This only backs off the nonblocking kernel poll; socket readiness
-        // and the parent-activated absolute deadline remain the observables.
-        thread::park_timeout(remaining.map_or(RENDERER_ACCEPT_POLL, |remaining| {
-            remaining.min(RENDERER_ACCEPT_POLL)
-        }));
-    }
-}
-
-fn renderer_beacon_remaining(deadline: Instant, now: Instant) -> Result<Duration, String> {
-    deadline
-        .checked_duration_since(now)
-        .filter(|remaining| !remaining.is_zero())
-        .ok_or_else(|| "renderer beacon deadline elapsed before the exact request".to_owned())
-}
-
-fn read_renderer_request_line(
-    request: &mut Vec<u8>,
-    mut read_chunk: impl FnMut(&mut [u8]) -> std::io::Result<usize>,
-) -> Result<RendererRequestRead, String> {
-    loop {
-        if request.len() == RENDERER_REQUEST_LINE_LIMIT {
-            return Err(format!(
-                "renderer beacon request line exceeded {RENDERER_REQUEST_LINE_LIMIT} bytes"
-            ));
-        }
-        let mut chunk = [0_u8; 256];
-        let available = (RENDERER_REQUEST_LINE_LIMIT - request.len()).min(chunk.len());
-        let read = match read_chunk(&mut chunk[..available]) {
-            Ok(read) => read,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                return Ok(RendererRequestRead::Pending);
-            }
-            Err(error) if request.is_empty() && error.kind() == std::io::ErrorKind::TimedOut => {
-                return Ok(RendererRequestRead::Pending);
-            }
-            Err(error)
-                if request.is_empty()
-                    && matches!(
-                        error.kind(),
-                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
-                    ) =>
-            {
-                return Ok(RendererRequestRead::Empty);
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
-                ) =>
-            {
-                return Err(format!(
-                    "renderer beacon request reset after {} bytes: {error}",
-                    request.len()
-                ));
-            }
-            Err(error) => return Err(format!("read renderer beacon request: {error}")),
-        };
-        if read == 0 {
-            return if request.is_empty() {
-                Ok(RendererRequestRead::Empty)
-            } else {
-                Err(format!(
-                    "renderer beacon request ended before CRLF: {}",
-                    String::from_utf8_lossy(request)
-                ))
-            };
-        }
-        request.extend_from_slice(&chunk[..read]);
-        if let Some(line_end) = request.windows(2).position(|bytes| bytes == b"\r\n") {
-            let mut complete = std::mem::take(request);
-            complete.truncate(line_end);
-            return Ok(RendererRequestRead::Complete(complete));
-        }
-    }
-}
-
-#[test]
-fn renderer_beacon_accumulates_a_fragmented_request_line() {
-    let mut chunks = [
-        b"G".as_slice(),
-        b"ET /ready.png HTTP/1.1\r".as_slice(),
-        b"\nHost: 127.0.0.1\r\n\r\n".as_slice(),
-    ]
-    .into_iter();
-    let mut request = Vec::new();
-    let result = read_renderer_request_line(&mut request, |buffer| {
-        let chunk = chunks.next().unwrap_or_default();
-        buffer[..chunk.len()].copy_from_slice(chunk);
-        Ok(chunk.len())
-    })
-    .expect("read fragmented renderer request");
-
-    assert_eq!(
-        result,
-        RendererRequestRead::Complete(b"GET /ready.png HTTP/1.1".to_vec())
-    );
-}
-
-#[test]
-fn renderer_beacon_prefers_worker_error_published_after_initial_receive_timeout() {
-    let (observed_tx, observed) = mpsc::channel();
-    let (publish_tx, publish_rx) = mpsc::channel();
-    let worker = thread::spawn(move || {
-        publish_rx
-            .recv()
-            .expect("release late renderer beacon publication");
-        observed_tx
-            .send(Err("precise worker failure".to_owned()))
-            .expect("publish precise renderer beacon failure");
-    });
-    let initial_result = observed.recv_timeout(Duration::from_millis(1));
-    assert_eq!(initial_result, Err(mpsc::RecvTimeoutError::Timeout));
-    publish_tx
-        .send(())
-        .expect("release worker after initial receive timeout");
-
-    let result = finish_renderer_beacon(&observed, worker, initial_result, "late publication");
-    assert_eq!(
-        result,
-        Err("late publication: precise worker failure".to_owned())
-    );
-}
-
-#[test]
-fn renderer_beacon_rejects_worker_success_published_after_initial_receive_timeout() {
-    let (observed_tx, observed) = mpsc::channel();
-    let (publish_tx, publish_rx) = mpsc::channel();
-    let worker = thread::spawn(move || {
-        publish_rx
-            .recv()
-            .expect("release late renderer beacon success");
-        observed_tx
-            .send(Ok(()))
-            .expect("publish late renderer beacon success");
-    });
-    let initial_result = observed.recv_timeout(Duration::from_millis(1));
-    assert_eq!(initial_result, Err(mpsc::RecvTimeoutError::Timeout));
-    publish_tx
-        .send(())
-        .expect("release success after initial receive timeout");
-
-    let result = finish_renderer_beacon(&observed, worker, initial_result, "late success");
-    assert_eq!(
-        result,
-        Err("late success: beacon worker did not report: timed out waiting on channel".to_owned())
-    );
-}
-
-#[test]
-fn renderer_beacon_preserves_initial_timeout_when_worker_publishes_nothing() {
-    let (observed_tx, observed) = mpsc::channel::<Result<(), String>>();
-    let (release_tx, release_rx) = mpsc::channel();
-    let worker = thread::spawn(move || {
-        release_rx
-            .recv()
-            .expect("release renderer beacon worker without publication");
-        drop(observed_tx);
-    });
-    let initial_result = observed.recv_timeout(Duration::from_millis(1));
-    assert_eq!(initial_result, Err(mpsc::RecvTimeoutError::Timeout));
-    release_tx
-        .send(())
-        .expect("release non-publishing worker after initial timeout");
-
-    let result = finish_renderer_beacon(&observed, worker, initial_result, "no publication");
-    assert_eq!(
-        result,
-        Err(
-            "no publication: beacon worker did not report: timed out waiting on channel".to_owned()
-        )
-    );
-}
-
-#[test]
-fn renderer_beacon_request_line_enforces_exact_maximum_and_maximum_plus_one() {
-    let exact = vec![b'a'; RENDERER_REQUEST_LINE_LIMIT - 2];
-    let mut exact_wire = exact.clone();
-    exact_wire.extend_from_slice(b"\r\n");
-    let mut exact_cursor = std::io::Cursor::new(exact_wire);
-    let mut request = Vec::new();
-    let result = read_renderer_request_line(&mut request, |buffer| exact_cursor.read(buffer))
-        .expect("exact-limit request line");
-    assert_eq!(result, RendererRequestRead::Complete(exact));
-
-    let mut oversized_wire = vec![b'b'; RENDERER_REQUEST_LINE_LIMIT - 1];
-    oversized_wire.extend_from_slice(b"\r\n");
-    let mut oversized_cursor = std::io::Cursor::new(oversized_wire);
-    let mut request = Vec::new();
-    let error = read_renderer_request_line(&mut request, |buffer| oversized_cursor.read(buffer))
-        .expect_err("maximum-plus-one request line must fail");
-    assert_eq!(
-        error,
-        format!("renderer beacon request line exceeded {RENDERER_REQUEST_LINE_LIMIT} bytes")
-    );
-}
-
-#[test]
-fn renderer_beacon_rechecks_the_absolute_deadline_before_replying() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind reply-deadline listener");
-    let address = listener.local_addr().expect("reply-deadline address");
-    let mut target = TcpStream::connect(address).expect("connect reply-deadline request");
-    target
-        .set_read_timeout(Some(Duration::from_secs(1)))
-        .expect("reply-deadline response kill switch");
-    target
-        .write_all(b"GET /ready.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
-        .expect("write reply-deadline request");
-
-    let before = Instant::now();
-    let deadline = before + Duration::from_secs(1);
-    let after = deadline + Duration::from_nanos(1);
-    let (deadline_tx, deadline_rx) = mpsc::channel();
-    deadline_tx
-        .send(deadline)
-        .expect("activate injected reply deadline");
-    let mut observations = [before, before, after].into_iter();
-    let result = serve_renderer_beacon_loop_with_clock(&listener, &deadline_rx, || {
-        observations
-            .next()
-            .expect("renderer beacon sampled the clock beyond the reply boundary")
-    });
-
-    assert_eq!(
-        result,
-        Err("renderer beacon deadline elapsed before the exact request".to_owned())
-    );
-    assert!(
-        observations.next().is_none(),
-        "the reply boundary did not consume its fresh clock observation"
-    );
-    let mut response = Vec::new();
-    target
-        .read_to_end(&mut response)
-        .expect("read reply-deadline response");
-    assert!(response.is_empty(), "late response escaped: {response:?}");
-}
-
-#[test]
-fn renderer_beacon_ignores_an_empty_preconnect_before_the_exact_request() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind beacon regression listener");
-    let address = listener.local_addr().expect("beacon regression address");
-    let beacon = spawn_renderer_beacon(listener);
-
-    drop(TcpStream::connect(address).expect("connect empty preconnect"));
-    let mut target = TcpStream::connect(address).expect("connect target renderer request");
-    target
-        .write_all(b"GET /ready.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
-        .expect("write target renderer request");
-
-    expect_renderer_beacon(
-        beacon,
-        "exact renderer request observed after empty preconnect",
-    );
-}
-
-#[test]
-fn renderer_beacon_serves_before_the_parent_activates_its_wait_deadline() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind early beacon listener");
-    let address = listener.local_addr().expect("early beacon address");
-    let beacon = spawn_renderer_beacon(listener);
-    let mut target = TcpStream::connect(address).expect("connect early renderer request");
-    target
-        .set_read_timeout(Some(Duration::from_secs(1)))
-        .expect("early response kill switch");
-    target
-        .write_all(b"GET /ready.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
-        .expect("write early renderer request");
-    let mut response = [0_u8; 128];
-    let read = target
-        .read(&mut response)
-        .expect("worker replied before parent await");
-    assert!(
-        response[..read].starts_with(b"HTTP/1.1 200 OK\r\n"),
-        "{}",
-        String::from_utf8_lossy(&response[..read])
-    );
-
-    expect_renderer_beacon(beacon, "early renderer request");
-}
-
-#[test]
-fn renderer_beacon_does_not_serialize_idle_preconnects_before_the_exact_request() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind idle-preconnect listener");
-    let address = listener.local_addr().expect("idle-preconnect address");
-    let idle = (0..(RENDERER_CONNECTION_LIMIT - 1))
-        .map(|_| TcpStream::connect(address).expect("queue idle preconnect"))
-        .collect::<Vec<_>>();
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let (observed_tx, observed_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || {
-        let result = serve_renderer_beacon_until(&listener, deadline);
-        let _ = observed_tx.send(result);
-    });
-
-    let mut target = TcpStream::connect(address).expect("connect exact request behind idle peer");
-    target
-        .write_all(b"GET /ready.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
-        .expect("write exact request behind idle peer");
-
-    let observed = observed_rx.recv_timeout(Duration::from_secs(1));
-    drop(idle);
-    beacon.join().expect("idle-preconnect beacon thread");
-    let result = observed.expect("idle peers serialized ahead of the exact request");
-    assert_eq!(result, Ok(()));
-}
-
-#[test]
-fn renderer_beacon_reaps_closed_pending_connections_before_applying_the_live_cap() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind stale-pending listener");
-    let address = listener.local_addr().expect("stale-pending address");
-    let stale = (0..RENDERER_CONNECTION_LIMIT)
-        .map(|_| TcpStream::connect(address).expect("queue stale pending connection"))
-        .collect::<Vec<_>>();
-    drop(stale);
-
-    let mut target = TcpStream::connect(address).expect("connect behind stale pending peers");
-    target
-        .set_read_timeout(Some(Duration::from_secs(1)))
-        .expect("stale-pending response kill switch");
-    target
-        .write_all(b"GET /ready.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
-        .expect("write exact request behind stale pending peers");
-
-    let result = serve_renderer_beacon_until(&listener, Instant::now() + Duration::from_secs(1));
-    assert_eq!(result, Ok(()));
-    let mut response = Vec::new();
-    target
-        .read_to_end(&mut response)
-        .expect("read exact response behind stale pending peers");
-    assert_eq!(
-        response,
-        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-    );
-}
-
-#[test]
-fn renderer_beacon_rejects_maximum_plus_one_pending_connections() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind connection-limit listener");
-    let address = listener.local_addr().expect("connection-limit address");
-    let pending = (0..=RENDERER_CONNECTION_LIMIT)
-        .map(|_| TcpStream::connect(address).expect("queue pending connection"))
-        .collect::<Vec<_>>();
-    let result = serve_renderer_beacon_until(&listener, Instant::now() + Duration::from_secs(1));
-    drop(pending);
-
-    assert_eq!(
-        result,
-        Err(format!(
-            "renderer beacon exceeded {RENDERER_CONNECTION_LIMIT} pending connections"
-        ))
-    );
-}
-
-#[test]
-fn renderer_beacon_reports_its_absolute_deadline_instead_of_disconnect() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind beacon deadline listener");
-    let deadline = Instant::now() + Duration::from_millis(50);
-    let (observed_tx, observed_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || {
-        let result = serve_renderer_beacon_until(&listener, deadline);
-        observed_tx
-            .send(result)
-            .expect("publish beacon deadline result");
-    });
-
-    let result = observed_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("beacon worker honored its absolute deadline");
-    assert_eq!(
-        result,
-        Err("renderer beacon deadline elapsed before the exact request".to_owned())
-    );
-    beacon.join().expect("beacon deadline thread");
-}
-
-#[test]
-fn renderer_beacon_empty_preconnect_does_not_renew_the_deadline() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind preconnect deadline listener");
-    let address = listener.local_addr().expect("preconnect deadline address");
-    drop(TcpStream::connect(address).expect("queue empty preconnect before deadline"));
-
-    let deadline = Instant::now() + Duration::from_millis(50);
-    let (observed_tx, observed_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || {
-        let result = serve_renderer_beacon_until(&listener, deadline);
-        observed_tx
-            .send(result)
-            .expect("publish preconnect deadline result");
-    });
-
-    let result = observed_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("empty preconnect retained the original absolute deadline");
-    assert_eq!(
-        result,
-        Err("renderer beacon deadline elapsed before the exact request".to_owned())
-    );
-    beacon.join().expect("preconnect deadline thread");
-}
-
-#[test]
-fn renderer_beacon_ignores_only_idle_or_reset_before_request_bytes() {
-    for kind in [
-        std::io::ErrorKind::ConnectionReset,
-        std::io::ErrorKind::ConnectionAborted,
-    ] {
-        let mut request = Vec::new();
-        let empty = read_renderer_request_line(&mut request, |_| {
-            Err(std::io::Error::new(kind, "empty preconnect ended"))
-        })
-        .expect("pre-request close is an empty preconnect");
-        assert_eq!(empty, RendererRequestRead::Empty);
-    }
-    for kind in [std::io::ErrorKind::TimedOut, std::io::ErrorKind::WouldBlock] {
-        let mut request = Vec::new();
-        let idle = read_renderer_request_line(&mut request, |_| {
-            Err(std::io::Error::new(kind, "empty preconnect ended"))
-        })
-        .expect("pre-request idle remains pending");
-        assert_eq!(idle, RendererRequestRead::Pending);
-    }
-
-    let mut first = true;
-    let mut request = Vec::new();
-    let partial = read_renderer_request_line(&mut request, |buffer| {
-        if first {
-            first = false;
-            buffer[..3].copy_from_slice(b"GET");
-            Ok(3)
-        } else {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::ConnectionReset,
-                "partial request reset",
-            ))
-        }
-    })
-    .expect_err("a reset after request bytes must remain a failure");
-    assert!(
-        partial.starts_with("renderer beacon request reset after 3 bytes:"),
-        "{partial}"
-    );
-}
-
-#[test]
-fn renderer_beacon_preserves_the_unexpected_path_failure() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind wrong-path listener");
-    let address = listener.local_addr().expect("wrong-path address");
-    let deadline = Instant::now() + Duration::from_secs(1);
-    let beacon = thread::spawn(move || serve_renderer_beacon_until(&listener, deadline));
-    let mut request = TcpStream::connect(address).expect("connect wrong-path request");
-    request
-        .write_all(b"GET /leaked.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
-        .expect("write wrong-path request");
-
-    let error = beacon
-        .join()
-        .expect("wrong-path beacon thread")
-        .expect_err("wrong renderer path must fail");
-    assert_eq!(
-        error,
-        "renderer requested an unexpected beacon: GET /leaked.png HTTP/1.1"
-    );
-}
-
-fn accept_control_or_host_failure(
-    listener: &TcpListener,
-    child: &mut Child,
-    deadline: Instant,
-) -> TcpStream {
-    listener
-        .set_nonblocking(true)
-        .expect("nonblocking product control listener");
-    loop {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                stream
-                    .set_nonblocking(false)
-                    .expect("blocking product control stream");
-                return stream;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(error) => panic!("product control accept failed: {error}"),
-        }
-        if let Some(status) = child.try_wait().expect("observe early host exit") {
-            let mut stdout = String::new();
-            let mut stderr = String::new();
-            child
-                .stdout
-                .take()
-                .expect("captured host stdout")
-                .read_to_string(&mut stdout)
-                .expect("read host stdout");
-            child
-                .stderr
-                .take()
-                .expect("captured host stderr")
-                .read_to_string(&mut stderr)
-                .expect("read host stderr");
-            panic!(
-                "host exited before control bind: {status}\nstdout:\n{stdout}\nstderr:\n{stderr}"
-            );
-        }
-        assert!(
-            Instant::now() < deadline,
-            "product control accept timed out"
-        );
-        thread::park_timeout(Duration::from_millis(10));
-    }
-}
-
-fn read_control_line(reader: &mut BufReader<TcpStream>) -> String {
-    let mut line = String::new();
-    reader.read_line(&mut line).expect("read control line");
-    assert!(line.ends_with('\n'), "incomplete control line: {line:?}");
-    line.pop();
-    line
-}
-
-fn read_control_line_or_host_failure(
-    reader: &mut BufReader<TcpStream>,
-    child: &mut Child,
-    label: &str,
-) -> String {
-    let mut line = String::new();
-    match reader.read_line(&mut line) {
-        Ok(_) if line.ends_with('\n') => {
-            line.pop();
-            line
-        }
-        result => {
-            let deadline = Instant::now() + Duration::from_secs(2);
-            loop {
-                if let Some(status) = child.try_wait().expect("observe failed host") {
-                    let mut stdout = String::new();
-                    let mut stderr = String::new();
-                    child
-                        .stdout
-                        .take()
-                        .expect("captured failed host stdout")
-                        .read_to_string(&mut stdout)
-                        .expect("read failed host stdout");
-                    child
-                        .stderr
-                        .take()
-                        .expect("captured failed host stderr")
-                        .read_to_string(&mut stderr)
-                        .expect("read failed host stderr");
-                    panic!(
-                        "host exited while awaiting {label}: {status}; read={result:?}; line={line:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
-                    );
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "control failed while awaiting {label}: read={result:?}; line={line:?}"
-                );
-                thread::park_timeout(Duration::from_millis(10));
-            }
-        }
-    }
-}
-
-fn wait_child(child: &mut Child, deadline: Instant) -> ExitStatus {
-    loop {
-        if let Some(status) = child.try_wait().expect("observe host exit") {
-            return status;
-        }
-        assert!(Instant::now() < deadline, "host exit timed out");
-        thread::park_timeout(Duration::from_millis(10));
-    }
-}
-
-fn wait_for_host_window(pid: u32, deadline: Instant) -> Value {
-    loop {
-        let script = format!(
-            "$p=Get-Process -Id {pid} -ErrorAction Stop; [pscustomobject]@{{handle=[uint64]$p.MainWindowHandle.ToInt64();title=$p.MainWindowTitle}} | ConvertTo-Json -Compress"
-        );
-        let output = Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .output()
-            .expect("query host window");
-        if output.status.success() {
-            let observation: Value =
-                serde_json::from_slice(&output.stdout).expect("host window observation JSON");
-            if observation["handle"]
-                .as_u64()
-                .is_some_and(|handle| handle != 0)
-                && observation["title"] == PRODUCT_TITLE
-            {
-                return observation;
-            }
-        }
-        assert!(
-            Instant::now() < deadline,
-            "host HWND/title observation timed out"
-        );
-        thread::park_timeout(Duration::from_millis(20));
-    }
-}
-
-fn process_exists(pid: u32) -> bool {
-    Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            &format!("if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit 0 }} else {{ exit 1 }}"),
-        ])
-        .status()
-        .expect("query process")
-        .success()
-}
-
-fn wait_process_gone(pid: u32, deadline: Instant) {
-    while process_exists(pid) {
-        assert!(Instant::now() < deadline, "process {pid} remained live");
-        thread::park_timeout(Duration::from_millis(20));
-    }
-}
-
-fn wait_for_child_process(parent_pid: u32, name: &str, deadline: Instant) -> u32 {
-    loop {
-        let script = format!(
-            "$p=Get-CimInstance Win32_Process -Filter \"ParentProcessId={parent_pid}\" | Where-Object {{$_.Name -eq '{name}' -and $_.CommandLine -notmatch 'keld-windows-dev-stage-cleanup'}} | Select-Object -First 1 -ExpandProperty ProcessId; if ($p) {{$p}}"
-        );
-        let output = Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .output()
-            .expect("query delegated child process");
-        if output.status.success()
-            && let Ok(pid) = String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .parse::<u32>()
-        {
-            return pid;
-        }
-        if Instant::now() >= deadline {
-            let dump = Command::new("powershell.exe")
-                .args([
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    &format!(
-                        "Get-CimInstance Win32_Process -Filter \"ParentProcessId={parent_pid}\" | ForEach-Object {{ $_.Name + ' pid=' + $_.ProcessId + ' ' + $_.CommandLine }}"
-                    ),
-                ])
-                .output()
-                .expect("dump delegated children");
-            panic!(
-                "delegated child `{name}` did not appear under {parent_pid}; parent_alive={}; children:\n{}",
-                process_exists(parent_pid),
-                String::from_utf8_lossy(&dump.stdout)
-            );
-        }
-        thread::park_timeout(Duration::from_millis(20));
-    }
-}
-
-fn wait_for_cleanup_sentinel(parent_pid: u32, deadline: Instant) -> u32 {
-    loop {
-        let script = format!(
-            "$p=Get-CimInstance Win32_Process -Filter \"ParentProcessId={parent_pid}\" | Where-Object {{$_.CommandLine -match 'keld-windows-dev-stage-cleanup-v1'}} | Select-Object -First 1 -ExpandProperty ProcessId; if ($p) {{$p}}"
-        );
-        let output = Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .output()
-            .expect("query cleanup sentinel process");
-        if output.status.success()
-            && let Ok(pid) = String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .parse::<u32>()
-        {
-            return pid;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "cleanup sentinel did not appear as a CLI-owned host sibling"
-        );
-        thread::park_timeout(Duration::from_millis(20));
-    }
-}
-
-fn acl_observation(path: &Path) -> Value {
-    let script = r"
-$acl = Get-Acl -LiteralPath $env:KELD_TEST_ACL_PATH
-$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$rules = @($acl.Access)
-$sid = ''
-$rights = ''
-$kind = ''
-$inherited = $false
-$inheritance = ''
-$propagation = ''
-if ($rules.Count -eq 1) {
-  $sid = $rules[0].IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
-  $rights = $rules[0].FileSystemRights.ToString()
-  $kind = $rules[0].AccessControlType.ToString()
-  $inherited = $rules[0].IsInherited
-  $inheritance = $rules[0].InheritanceFlags.ToString()
-  $propagation = $rules[0].PropagationFlags.ToString()
-}
-[pscustomobject]@{
-  protected = $acl.AreAccessRulesProtected
-  current = $current
-  count = $rules.Count
-  sid = $sid
-  rights = $rights
-  kind = $kind
-  inherited = $inherited
-  inheritance = $inheritance
-  propagation = $propagation
-} | ConvertTo-Json -Compress
-";
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .env("KELD_TEST_ACL_PATH", path)
-        .output()
-        .expect("query stage ACL with the Windows security API through PowerShell");
-    assert!(
-        output.status.success(),
-        "ACL query failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("PowerShell ACL observation is JSON")
-}
-
-struct StageFixture {
-    _root: tempfile::TempDir,
-    project: std::path::PathBuf,
-}
-
-impl StageFixture {
-    fn new() -> Self {
-        let root = tempfile::tempdir().expect("stage fixture root");
-        let project = root.path().join("project");
-        fs::create_dir_all(project.join("src")).expect("project src");
-        fs::write(
-            project.join("keld.config.ts"),
-            "export default {\n  name: \"KEL96 T4 Fixture\",\n  entry: \"src/main.ts\",\n  renderer: \"index.html\",\n} as const;\n",
-        )
-        .expect("project config");
-        fs::write(project.join("src/main.ts"), "console.log('fixture');\n").expect("project entry");
-        fs::write(project.join("index.html"), "<p id=exact>fixture</p>\n")
-            .expect("project renderer");
-        Self {
-            _root: root,
-            project,
-        }
-    }
-}
-
-struct ProductFixture {
-    root: tempfile::TempDir,
-    project: std::path::PathBuf,
-}
-
-impl ProductFixture {
-    fn new() -> Self {
-        let root = tempfile::tempdir().expect("product fixture root");
-        let project = root.path().join("project");
-        fs::create_dir_all(project.join("src")).expect("product project src");
-        fs::write(
-            project.join("keld.config.ts"),
-            format!(
-                "export default {{\n  name: \"{PRODUCT_TITLE}\",\n  entry: \"src/main.ts\",\n  renderer: \"index.html\",\n}} as const;\n"
-            ),
-        )
-        .expect("product config");
-        fs::write(
-            project.join("src/kipc-transport.ts"),
-            include_str!("../../../packages/@keld/kipc/src/transport.ts"),
-        )
-        .expect("canonical kipc transport");
-        let link = include_str!("../../../packages/@keld/electron/src/link.ts")
-            .replace("../../kipc/src/transport.ts", "./kipc-transport.ts");
-        fs::write(
-            project.join("src/main.ts"),
-            format!("{}{}", link, include_str!("fixtures/t1b_harness.ts")),
-        )
-        .expect("product entry");
-        fs::write(
-            project.join("index.html"),
-            format!("<!doctype html>{DARK_BG}\n"),
-        )
-        .expect("product renderer");
-        Self { root, project }
-    }
+fn dev_stage_command(root: &Path, host: &Path) -> Command {
+    let mut command = Command::new(host);
+    command
+        .current_dir(root)
+        .env("KELD_DEV_LEASE", "stdin-v1")
+        .stdin(Stdio::piped());
+    command
 }

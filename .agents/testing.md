@@ -34,8 +34,8 @@ evidence only when a plausible defect can make it fail.
 - Tests MUST await observable conditions, bind port `0`, use isolated temporary paths,
   and clean up resources. They MUST NOT use sleeps for synchronization; a timeout is
   only a kill switch.
-- Keep tests colocated with the owned module/fixture when the repository layout permits.
-  Document why a non-obvious wait/resource boundary is the real condition, not timing.
+- [test-layout.md](test-layout.md) owns placement, extraction and discovery safeguards.
+  Explain non-obvious waits by the observed condition, not timing.
 - Crash, lifetime, and hostile-shutdown tests MUST run the risky action in a child
   process and assert the relevant stdout, stderr, exit code, signal, cleanup, and next
   successful operation.
@@ -45,6 +45,23 @@ evidence only when a plausible defect can make it fail.
 - Platform code MUST be verified against the real OS API on each claimed platform or
   be reported unverified there. A model or mock may prove state logic, not platform
   behavior.
+
+## Cross-runtime migration cases
+
+For a changed runtime/FFI seam, select applicable approved-contract cases and reuse
+existing regressions; source presence is not run evidence.
+
+- Distinguish absent/null/empty/zero/false, numeric bounds/fractions, encoding, errors,
+  callback/event order and sync/async behavior; name config/environment/clock capture.
+- Exercise callers, handlers, callbacks, generated and stored-value consumers, not
+  only imports/declarations. Stateful comparisons use separate disposable resources.
+- Separate cancellation before admission, during work, after commit and after reply.
+  Rejection proves neither stopped work nor released resources. Do not claim rollback
+  or replay an ambiguous effect without the accepted idempotency/no-effect contract.
+- Observe callback quiescence, stale-generation rejection, one release per reservation,
+  aggregate retained work and a healthy follow-up; wrapper tests prove only wrapper state.
+- Complete-app criteria require actual installed callers, permitted/denied operations
+  and relevant recovery/cleanup on each claimed OS, not a HELLO/window/readiness token.
 
 ## Taxonomy
 
@@ -81,7 +98,7 @@ evidence only when a plausible defect can make it fail.
   cannot detect a reversed edge, misleading grouping or clipped semantic label.
 - The PR or hand-off MUST contain an actual render report: source files and block count,
   renderer name, version and digest, exact command, output format, and observed pass/fail.
-  Temporary render output SHOULD live outside the repository and MUST NOT be committed
+  Temporary render output SHOULD live in managed scratch and MUST NOT be committed
   unless it is itself a reviewed documentation artifact. If rendering cannot run, report
   the blocker and do not call the diagram change verified.
 

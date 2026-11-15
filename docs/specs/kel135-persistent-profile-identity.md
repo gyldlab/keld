@@ -1,13 +1,30 @@
 # Spec: host-owned persistent webview profile identity
 Status: approved
-Linear: KEL-135 · Owner: GYLDLAB · Updated: 2026-09-02
+Linear: KEL-135 · Owner: GYLDLAB · Updated: 2026-10-14
 Approval: Linear comment `75d75f6e-76e9-4fd1-a130-9d57548d0372` · decision SHA-256 `b9f48f14a5d6fefe4cd0f94b1a97b14292cead5ba0202facbd81c6b6a1a44040`
+
+Windows release-barrier clarification, 2026-10-08 (KEL-132 hosted-CI diagnosis; §4
+Platform policy): the `BrowserProcessExited` waits are liveness-gated on the browser
+process handle with a measured 85 s post-exit grace and a measured 240 s shutdown hang
+guard that fails closed while the browser stays alive, and an unproven scavenge probe
+retains the leaf without failing the current host. No boundary change: it names the
+barrier the approved contract already required and claims no new approval; the fix PR
+carries the owner's review. Post-exit grace re-measured, 2026-10-14 (KEL-270 finding
+F55): the former 5 s grace was unmeasured and expired under full-core load; 85 s is four
+times the largest healthy termination-to-event latency observed uncensored (21.2 s at the
+host site), the hang guard's rule. No boundary change.
 
 Media acceptance amendment: **adopted**, 2026-09-10; see §7.1. The approved
 status and approval above apply to the original T0 contract, not retrospectively
 to this amendment. Its authoring assignment is Linear comment
 `06e32d67-7ab8-4b8b-a308-199d2053a7c9`; reviewed adoption under the user's
 explicit assignment is recorded in `ac75562f-ee34-46e2-9694-a26224b0f701`.
+
+macOS media correction: **adopted**, 2026-09-24; see §7.3. In the KEL-135/T3
+continuation, the user answered **“yes”** to adopting the documented restart-denial
+contract after its independent GPT-6 Astra security review. This approval changes the
+macOS media evidence predicate and dependent KEL-132 mapping; it is not an execution
+pass or a claim that a grant was stored on disk.
 
 ## 1. Goal & non-goals
 
@@ -70,7 +87,11 @@ changes the public engine-construction boundary.
   `FOLDERID_LocalAppData` is a per-user known folder.
 - Microsoft, [`WinVerifyTrust`](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/nf-wintrust-winverifytrust):
   Windows T2 validates the packaged object under Authenticode policy before extracting
-  its signer scope and signed app manifest.
+  its signer scope and signed app-id carrier.
+- Microsoft, [`CMSG_SIGNER_INFO`](https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/ns-wincrypt-cmsg_signer_info)
+  and [SignTool](https://learn.microsoft.com/en-us/windows/win32/seccrypto/signtool):
+  `AuthAttrs` contains the signer's authenticated attributes, and SignTool `/d` supplies
+  the signed-content description used by the Windows carrier below.
 - Apple, [`WKWebsiteDataStore`](https://developer.apple.com/documentation/webkit/wkwebsitedatastore):
   default is persistent, nonpersistent is memory-only, and identifier-addressed stores
   provide persistent profiles.
@@ -78,8 +99,12 @@ changes the public engine-construction boundary.
   release every using `WKWebView` before removal.
 - Apple, [code-signing information keys](https://developer.apple.com/documentation/security/signing-information-dictionary-keys)
   and [`SecCodeCopySigningInformation`](https://developer.apple.com/documentation/security/seccodecopysigninginformation%28_%3A_%3A_%3A%29):
-  macOS T3 first validates code, then consumes the Team Identifier and signed identifier;
-  copying signing information without validity checking is insufficient.
+  macOS T3 first validates the current process against `anchor apple generic and
+  certificate leaf[subject.OU] exists`, then consumes its Team Identifier and signed
+  identifier; copying signing information without validity checking is insufficient.
+- Apple, [Code Signing Requirement Language](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/RequirementLang/RequirementLang.html):
+  `anchor apple generic` requires a chain anchored in Apple-issued code-signing
+  certificates; Apple-issued developer certificate `subject.OU` is the Team Identifier.
 - WebKit, [profiles with identified data stores](https://webkit.org/blog/14423/building-profiles-with-new-webkit-api/):
   identifier-addressed persistent stores are a macOS 14 addition.
 - WebKitGTK, [`WebKitWebsiteDataManager`](https://webkitgtk.org/reference/webkit2gtk/unstable/class.WebsiteDataManager.html)
@@ -216,6 +241,10 @@ wire, capability, or Bun-principal ownership.
 | Lifecycle | packaging/update owner plus host teardown | stable identity + lifecycle event → retain/isolate/preserve/purge | early/wrong-identity delete → typed failure and untouched store | Bun generation never owns data |
 | Evidence | per-platform implementation task | real engine/OS effect → isolated/persistent result | mock/source string/other OS → no pass | KEL-79 remains separate |
 
+KEL-270 D4 cross-reference (2026-10-06): the Windows Authenticode verifier is
+`keld-guard`'s `WindowsAuthenticodeImage` (`src/windows_authenticode.rs`); `keld-core`
+calls it, applies the canonical app-id check and mints `ValidatedAppIdentity`.
+
 The live state proves why the identity input cannot be inferred:
 
 - `ValidatedBootSelection` currently contains only the per-launch root, display `name`,
@@ -307,6 +336,19 @@ container and the app id it covers:
   Ed25519 signature verifies the literal package-manifest bytes containing `app.id`
   against the installer-pinned key.
 
+Windows T2 freezes that package relationship as exactly one Authenticode signature:
+one primary and zero secondary signatures. Its authenticated `SPC_SP_OPUS_INFO` program
+name is `keld.app-id/v1:<canonical-app-id>`. The packager supplies the exact value through
+SignTool `/d` before the signature is produced. Core verifies the current executable
+with `WINTRUST_ACTION_GENERIC_VERIFY_V2`, retains the provider state, derives publisher
+scope from the primary signer's leaf-certificate SPKI DER, and decodes the program name
+from that same signer's authenticated attributes before closing the state. Missing,
+duplicate, malformed, unsigned, untrusted, multi-primary-signer, noncanonical, or
+app-id portions over 255 bytes fail with `KELD-WV-009`. The fixed 15-byte prefix is not
+part of that app-id limit, so the complete ASCII carrier is at most 270 UTF-16 code
+units. No version resource, executable name, sidecar, config, page, or Bun value is a
+fallback carrier.
+
 `ProfileIdentity` is SHA-256 over the exact length-delimited byte sequence
 `"keld.profile.identity/v1\0" || publisher_scope || u16be(app_id.len) || app_id`.
 `CanonicalAppId` is 1–255 bytes of lowercase ASCII dot-separated segments; each segment
@@ -361,13 +403,15 @@ owner-only Keld metadata, not WebKit storage. One `WkWebViewEngine` retains exac
 selected persistent or nonpersistent store and supplies it to every view it creates.
 
 Windows does not copy KEL-101's named-pipe DACL. The WebView2 runtime may need
-LowIL/AppContainer access inside its UDF. T2 starts from the normal per-user known-folder
-inheritance, rejects broad ordinary-user write access, observes the actual engine-created
-descriptor, and freezes a validation/read-back predicate rather than rewriting the
-Microsoft-managed ACL. Any ACL mutation requires a separately justified real-WebView2
-result and must preserve engine-managed ACEs and labels. This is a permission-model
-review gate, not an implementation guess in T0. T2 also rejects a remote/network final
-volume and sets WebView2 exclusive UDF access. After host crash, `ERROR_INVALID_STATE`
+LowIL/AppContainer access inside its UDF. T2 atomically creates each Keld-owned profile
+directory with a protected inheritable DACL granting full control only to the current
+user, SYSTEM and Administrators. Validation rejects any foreign ordinary-user
+read/write/execute access while preserving and reading back engine-created
+AppContainer/capability ACEs. Any later ACL mutation requires a separately justified
+real-WebView2 result and must preserve engine-managed ACEs and labels. This is a
+permission-model review gate, not an implementation guess in T0. T2 also rejects a
+remote/network final volume and sets WebView2 exclusive UDF access. After host crash,
+`ERROR_INVALID_STATE`
 or equivalent controller failure remains required until `BrowserProcessExited` proves
 the old collection released the UDF; a process-local Keld lease alone cannot pass.
 
@@ -384,7 +428,23 @@ quarantine. The first successful exclusive controller proves the old browser col
 released the UDF; the host verifies the environment-reported path, closes the recovery
 webview/controller after registering `BrowserProcessExited` on
 `ICoreWebView2Environment5`, retains that environment object until the event, then
-releases it. Only after the event does it atomically/fsync `quarantined → idle` and begin a fresh normal
+releases it. That wait is liveness-gated: the host opens a `SYNCHRONIZE` handle to the
+probe's browser process before `Close`; while that handle is unsignaled no correctness
+bound applies, and only a measured shutdown hang guard (240 s: four times the largest
+observed healthy shutdown, a kill switch in the pattern of the navigation deadline;
+the first load sample behind it was right-censored by the fixture's 60 s watchdog, and
+the uncensored KEL-270 F55 re-sample stayed inside its basis) bounds the wait; once the
+handle is signaled, a measured 85 s post-exit grace bounds the event (KEL-270 F55: four
+times the largest healthy termination-to-event latency observed uncensored under
+full-core load, 21.2 s at the host site; the former 5 s was unmeasured and expired under
+that load), because WebView2 raises it only after the collection has released the UDF. An abnormal
+exit of the expected process, a dropped observer, that grace expiry, or the hang guard
+expiring while the browser is still alive proves failure: the hang guard never passes
+the barrier, so recovery and purge fail typed and the store stays quarantined, exactly
+as after a browser crash. An exit event for any other process is ignored and cannot
+prove release, so a mismatched exit fails only through that grace once the expected
+process is gone. A separate launch-only deadline bounds environment and controller
+creation. Only after the event does it atomically/fsync `quarantined → idle` and begin a fresh normal
 `starting → running` startup. A crash before durable `idle` leaves quarantine intact; a
 crash after `idle` has no live recovery collection. No suffix/new/default store is
 created, and normal store lookup/navigation cannot precede durable `idle`.
@@ -397,9 +457,15 @@ is admissible without the exclusive-UDF recovery sequence.
 Windows dev-ephemeral UDFs live at a unique owner-private
 `FOLDERID_LocalAppData/Keld/ephemeral/v1/<launch-nonce>` leaf with a durable schema
 marker and exclusive lease; they are never selected by a later app session. Graceful
-exit waits for `BrowserProcessExited` before guarded deletion. After host crash, the next
-host performs bounded marker-validated scavenging; a still-busy leaf remains quarantined
-for a later pass and is never reused. Here `ephemeral` means nonpersistent session
+exit waits for `BrowserProcessExited` under the same liveness-gated barrier (browser
+process handle opened before `Close`; the 240 s shutdown hang guard while it stays alive;
+the 85 s post-exit grace once it is signaled) before guarded deletion. A hang-guard
+expiry fails the host's own release typed: the host exits, its host-death Job reaps the
+browser, and the next launch treats the leaf as a predecessor. After host crash, the
+next host performs bounded marker-validated scavenging; a still-busy leaf, or one whose
+exclusive-UDF probe could not prove release (including a probe browser that outlives
+the hang guard), remains quarantined for a later pass, never fails the current host's
+own release, and is never reused. Here `ephemeral` means nonpersistent session
 selection, not a false guarantee that a crashed WebView2 process leaves zero disk bytes
 immediately.
 
@@ -504,6 +570,9 @@ Future implementation ownership:
 - `keld-core` platform verifier adapters in T2/T3/T4: validate Authenticode, macOS code
   signing, or Linux Ed25519 facts and mint `ValidatedAppIdentity`; these are identity
   gates as well as distribution gates;
+  KEL-270 D4 cross-reference (2026-10-06): the Windows Authenticode verifier is
+  `keld-guard`'s `WindowsAuthenticodeImage` (`src/windows_authenticode.rs`); `keld-core`
+  calls it, applies the canonical app-id check and mints `ValidatedAppIdentity`.
 - `keld-update`/packaging lifecycle: update/rollback continuity, package lock and purge
   authority;
 - `keld-wv::profile`: host-agnostic identity derivation, namespace/registry state,
@@ -632,7 +701,10 @@ The six approved T0 decisions and every existing task row remain unchanged.
 | `KEL-135/T3` / `webview-profile-macos` | `macos-media-saved-grant` | `macos-dev-ephemeral` |
 | `KEL-135/T4` / `webview-profile-linux` | `linux-media-saved-grant` | `linux-dev-ephemeral` |
 
-For each saved-grant row, camera and microphone have separate results:
+For each saved-grant row, camera and microphone have separate results. The macOS
+correction adopted in §7.3 supersedes this section's disk-persisted-grant predicate
+for `macos-media-saved-grant` and its strengthened dev-media checks. The following
+original requirements remain the contract for Windows and Linux:
 
 1. Start a controlled fixture with the platform task's validated app identity and
    selected persistent profile. Record the actual profile identity, exact origin,
@@ -680,6 +752,300 @@ acceptance requirements, not product evidence. Independent
 permission-model and evidence review preceded adoption; the original T0 approval
 remains preserved and does not retroactively approve these additional rows.
 
+### 7.2 T3 local execution snapshot — 2026-09-24
+
+This is an execution note for the current KEL-135/T3 worktree, not the final §6 task
+artifact. The final artifact must bind a landed source revision and applicable review
+evidence. On an Apple Silicon Mac mini running macOS 26.5.1 (build 25F80), with Xcode
+SDK 26.5 and WebKit 21624.2.5.11.4, signed fixtures used Apple Development Team
+`Z3XFZ88BPW`. These were real signed Keld host processes and real WKWebsiteDataStores;
+they do not establish an Apple-managed physical store path or ACL.
+
+| T3 row | Local result | Direct evidence / limit |
+|---|---|---|
+| `macos-app-ab` | Passed on this runner | One loopback origin; App A retained cookie, localStorage, IndexedDB, CacheStorage and service-worker registration across clean relaunch; App B with the same publisher and a different signed identifier read all five as empty. Both actual UUID and `persistent=true` read-backs matched their identities. |
+| `macos-concurrency` | Passed on this runner | A second signed process with the same identity failed with profile-in-use while the first owned the store. The first process exited before exact-identity purge. |
+| `macos-package-identity` | Passed on this runner | Apple-issued signing requirement accepted the running signed fixture; same-publisher/different-identifier and different-publisher/same-identifier pairs yielded distinct identities. Tampered and intact ad-hoc signatures disclosed no identity. |
+| `macos-dev-ephemeral` | Passed on this runner, including adopted §7.3 media checks | The original launch A/B test covered all five storage kinds with `persistent=false`, identifier `none`. The final signed media replay additionally observed live seed/repeat tracks, a distinct view reusing A's nonpersistent store and reading its IndexedDB nonce, and fresh launch B with no nonce and guarded no-track/no-sheet denial. Actual retained-store/page observations were rejected by the shared evaluator. Selected devices were the independently qualified Camo OS virtual camera (with frame progress) and physical built-in External Microphone. |
+| `macos-binding-recovery` | Passed for exercised intent phases | Child-process crashes after reverse-record, store creation and StoreVerified were recovered and opened the same deterministic UUID. The latter two phases used a test-only changed boot UUID to pass lifecycle admission; this is not evidence of a real reboot. |
+| `macos-purge-recovery` | Passed on this runner | A purge process exited after WebKit's removal callback; a new signed process resumed the exact intent and verified the UUID absent by follow-up enumeration. |
+| `macos-second-user-state` | Passed on this runner | Same Apple-signed identity and deterministic UUID under UID 501 and temporary standard UID 503; same origin `127.0.0.1:65331`. User B read cookie, localStorage, IndexedDB, CacheStorage and service-worker state empty while User A retained all five before and after User B's purge. Both per-user exact purges completed; the runner confirmed the temporary account record and home were removed. Team `Z3XFZ88BPW`, identifier `dev.keld.fixture.profile.second-user.50705`, profile identity `a84e8f3097c7208cdba5e18cac2c6c78c7f18adaa2022a4a9f05b0d3944efb97`, UUID `b5a1206d-8aa7-8839-9b53-4d5e4af1a3ea`. No Apple-managed path or ACL claim. |
+| `macos-crash-quarantine-reboot-recovery` | Passed on this runner | The signed app seeded all five stores, was SIGKILLed while active, and a same-boot relaunch failed before window creation. After a physical restart, the same signed identity/UUID reopened all five values and exact purge completed. The resumed host's `kern.bootsessionuuid` matched an independent `sysctl` call; independent `kern.boottime` postdated the pre-reboot SIGKILL owner's log. The initial prepare manifest omitted its old UUID, so that output is marked `not-retained-by-original-prepare`; the current two-phase harness retains and compares it on future runs. |
+| `macos-older-fail-closed` | Deferred to [KEL-249](https://linear.app/gyldlab-keld/issue/KEL-249/kel-135t3-run-macos-13-or-earlier-fail-closed-acceptance) | This runner is macOS 26.5.1. No macOS 13-or-earlier host or installer is available locally; KEL-249 owns the exact signed debug/release acceptance. This row remains open. |
+| `macos-media-saved-grant` | Passed on this runner under adopted §7.3 (`public-grant-restart-v1`) | Separate camera/microphone public-Prompt seeds produced live tracks twice on the same page with one callback and one observed AppKit sheet. Clean same-identity/UUID/origin restart retained the IndexedDB nonce, invoked the guarded denying callback and completed without a track or sheet; the requesting host's pre-request TCC status was Authorized. An Allow-response control produced a live track again. Actual omitted-seed, changed-origin, changed-profile, retained-page and Allow observations failed their named predicates in the shared evaluator. Each signed run retained validated identity plus executable SHA-256/CDHash. Camo is an independently reviewed OS virtual camera; physical camera backing and disk-persisted permission revocation are not claimed. |
+
+The browser probe uses the W3C camera and microphone Permissions integration. In that
+contract, `granted` means the user agent will not prompt; it does not guarantee capture
+success. It also does not identify which component retained the decision. Apple's
+public `WKUIDelegate` media method supplies a request decision without promising a
+durable site-permission record in `WKWebsiteDataStore`. ([W3C Media Capture and Streams §13](https://www.w3.org/TR/mediacapture-streams/#permissions-integration),
+[Apple media permission delegate](https://developer.apple.com/documentation/webkit/wkuidelegate/webview%28_%3Arequestmediacapturepermissionfor%3Ainitiatedbyframe%3Atype%3Adecisionhandler%3A))
+
+The independent 2026-09-24 investigation found a concrete explanation for the observed
+`prompt` → `granted` → restart `prompt` sequence. At WebKit revision
+`f10733ef7744ff20f5cb4bbe94d430bf100bb62d`, the Cocoa permission query returns `Prompt`
+when the embedder has no private query selector; the page's media-request history can
+then upgrade it to `Granted`. Accepted requests are held in that page's
+`m_grantedRequests`. Wry 0.56.1 implements the public capture-request selector but not
+the private query selector. Therefore the query does not independently enumerate
+saved permissions in the website store. This explains the earlier observation without
+proving either durable permission storage or its removal. The reviewed upstream
+revision is not asserted to be the exact source of installed WebKit
+21624.2.5.11.4. ([Cocoa query implementation](https://github.com/WebKit/WebKit/blob/f10733ef7744ff20f5cb4bbe94d430bf100bb62d/Source/WebKit/UIProcess/Cocoa/UIDelegate.mm#L1924),
+[page query filtering](https://github.com/WebKit/WebKit/blob/f10733ef7744ff20f5cb4bbe94d430bf100bb62d/Source/WebKit/UIProcess/WebPageProxy.cpp#L15441),
+[media request history](https://github.com/WebKit/WebKit/blob/f10733ef7744ff20f5cb4bbe94d430bf100bb62d/Source/WebKit/UIProcess/UserMediaPermissionRequestManagerProxy.cpp#L513))
+
+The query-only diagnostic subsequently passed on this Mac without requesting capture:
+camera and microphone each returned `prompt` on fresh pages configured with public
+Deny, Prompt and Allow callbacks, and on a fresh ephemeral page. No capture callback
+ran. The signed persistent runs retained their nonce; the ephemeral run had none.
+The fixture used Team `Z3XFZ88BPW`, identifier
+`dev.keld.fixture.profile.media-query.24786`, UUID
+`fed589fe-55bf-82dc-a94d-8759f4d4f881` and origin `127.0.0.1:55245`; exact purge
+completed. Output is retained in `target/kel135-media-query-diagnostic.log`.
+This checks the query call-path prediction on installed WebKit; it does not seed a
+permission or prove permission persistence. Repeat with:
+
+```sh
+cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
+  --target aarch64-apple-darwin \
+  media::query::kel135_macos_media_permission_query_is_observed_without_capture \
+  -- --exact --ignored --nocapture
+```
+
+The original saved-grant harness previously returned success even when its required
+stored-Allow evidence was missing. Before §7.3 adoption, a regression made that
+incomplete result fail. The adopted evaluator now consumes actual browser reports,
+native callback/probe output, clean exits, origin/store facts and each requesting
+process's validated signed identity and executable fingerprint. Missing facts fail
+closed. Negative controls assert failure of their named predicates. The final
+`kel135_macos_media_restart_oracle_rejects_missing_boundaries` regression passed;
+query-only observations cannot satisfy the adopted row.
+
+The final §7.3 replays passed in
+`target/kel135-media-persistent-restart-final.log` (192.35 seconds) and
+`target/kel135-media-dev-ephemeral-final.log` (10.09 seconds). The persistent run used
+identifier `dev.keld.fixture.profile.media.55694`, UUID
+`3737b841-6a47-8c69-abe0-59ec2a51813f` and origin `127.0.0.1:58479`; exact purges
+completed for both fixture identities. Its signed executable SHA-256 was
+`cb208fc38d6d67cd4645be42435247f514f4cbde42854c6cc7a34b5dff64fda3`, CDHash
+`ba833f72bc80dd0c0af79d27b8eca4ef9c545f72`. The dev run used identifier
+`dev.keld.fixture.profile.dev-media.66452` and origin `127.0.0.1:59096`, with actual
+store identifier `none` and `persistent=false`. Its signed executable SHA-256 was
+`d0b421e78e19bebb081cfbbed6be1c1f058a28ad111050c7bca77f31304c077d`, CDHash
+`113db07a632bffc8239843ac41a559acff159bf4`. Device inventory and qualification are in
+`target/kel135-media-device-inventory.json` and
+`target/kel135-media-camo-qualification.json`. GPT-6 Astra's final bounded review
+inspected both complete logs and the exact final source, including host-test SHA-256
+`b36edaacf47605f7d69fdbd575ca6e9936329a36cdecba4d72b6a8fd8b9979b9`, and found no
+remaining findings in that scope. This is local execution evidence, not a landed
+whole-T3 artifact. The original five-storage acceptance remains separate from the
+media row's transaction-complete IndexedDB nonce.
+
+The first second-user run exposed a fixture permissions error: the app's
+`Contents/_CodeSignature` directory was mode `0700`, so User B's running-signature
+check returned OSStatus 100013 before B's WebKit store was opened. The fixture now
+sets that directory to `0755`, verifies the bundle as User B, and checks B's signed
+identity before User A seeds state. The recovery run independently queried WebKit's
+current-app identifier registry under the same signed Team/identifier and observed the
+failed run's User A UUID absent (`target/kel135-old-first-store-presence.log`). The prior Keld metadata directory and signed fixture
+were moved to Finder Trash after that read-only absence result, keeping cleanup
+recoverable. The shell tool rejected recursive permanent deletion with
+`rm -f style commands are not permitted. Use a safer approach`. This does not affect
+the passed second-user row or claim an Apple-managed path/ACL.
+
+To repeat the completed signed rows from the Keld checkout on Apple Silicon, first
+confirm an Apple Development identity with `security find-identity -v -p codesigning`,
+then run:
+
+```sh
+cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
+  --target aarch64-apple-darwin \
+  profiles::identity::kel135_macos_package_identity_uses_only_validated_running_signature_facts \
+  -- --exact --ignored --nocapture
+cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
+  --target aarch64-apple-darwin \
+  profiles::storage::kel135_macos_signed_profiles_isolate_same_origin_state_across_launches \
+  -- --exact --ignored --nocapture
+cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
+  --target aarch64-apple-darwin \
+  profiles::lifecycle::kel135_macos_same_signed_profile_rejects_concurrent_owner \
+  -- --exact --ignored --nocapture
+cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
+  --target aarch64-apple-darwin \
+  profiles::lifecycle::kel135_macos_binding_recovers_after_process_crash \
+  -- --exact --ignored --nocapture
+cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
+  --target aarch64-apple-darwin \
+  profiles::storage::kel135_macos_dev_profiles_are_ephemeral_across_launches \
+  -- --exact --nocapture
+```
+
+The remaining older-OS run is tracked by
+[KEL-249](https://linear.app/gyldlab-keld/issue/KEL-249/kel-135t3-run-macos-13-or-earlier-fail-closed-acceptance)
+and needs macOS 13 or earlier for `macos-older-fail-closed`. KEL-135 remains in
+progress until that real signed debug/release run passes. The adopted §7.3 media rows passed in the final replays
+above. The earlier query-only result remains diagnostic. The second-user harness below is implemented;
+its real run needs the temporary standard account and one local administrator
+authentication in the same Terminal session. The staged reboot/recovery row passed on
+this Mac; its two-phase commands below are retained for reproduction. Do not send
+account passwords or claim a physical path/ACL for Apple's store.
+
+The 2026-09-24 runner inventory identifies this machine as Mac16,10 / Apple M4,
+with no older restore image, VM or additional mounted storage available. Apple's
+Ventura compatibility list does not include this Mac mini. A Ventura guest is not
+categorically excluded: Apple's DTS reports an older-guest fix in macOS 15.2, and
+Virtualization.framework requires checking the specific restore image's host
+support. A real guest run would first need an Apple Ventura restore image and enough
+storage for installation, or access to an existing Ventura Mac. No restore-image
+support check or older guest execution has occurred; this remains an unmet real-OS
+requirement, not a simulated OS-version pass.
+([Apple Ventura compatibility](https://support.apple.com/en-us/102861),
+[Apple restore-image support](https://developer.apple.com/documentation/virtualization/vzmacosrestoreimage/issupported),
+[Apple DTS older-guest fix](https://developer.apple.com/forums/thread/768674?answerId=815179022))
+
+To run `macos-second-user-state`, provision one temporary standard (non-admin) local
+account and authenticate once with `sudo -v` in Terminal. The wrapper below generates a
+random temporary login and password, creates the non-admin account, verifies it, runs
+the test, and deletes the account and home after both profiles pass exact WebKit purge.
+Failure cleanup retries both exact purges. If either purge cannot be verified, it
+retains the account and profile metadata for recovery. The password is kept in a private
+temporary file only until account creation; it is never placed in argv or the evidence
+log. The test validates the account's UID/group and home, launches the signed fixture
+through `sudo -n`, and removes only its PID-scoped test directory from that account's
+cache. Run from the Keld checkout:
+
+```sh
+crates/keld-host/tests/fixtures/run_macos_second_user_acceptance.sh
+```
+
+Each invocation uses a unique temporary login and writes its row output to
+`target/kel135-macos-second-user-test-<login>.log`; account deletion is allowed only
+when that invocation's log contains the exact-purge completion marker. A retained
+account from a failed run requires its own recovery evidence before deletion; a later
+test run's purge does not prove the earlier store absent, so the wrapper never reuses
+an account.
+
+To repeat the test against an already-created, temporary standard account with an
+authenticated sudo session, run:
+
+```sh
+KELD_KEL135_SECOND_USER=<temporary-login-name> \
+cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
+  --target aarch64-apple-darwin \
+  profiles::cross_user::kel135_macos_second_user_cannot_read_same_signed_profile_state \
+  -- --exact --ignored --nocapture
+```
+
+To reproduce the reboot row, use one persistent user-owned `TMPDIR` for both phases so
+macOS does not discard the fixture at boot. Run the prepare command first:
+
+```sh
+mkdir -p "$HOME/Library/Application Support/Keld/KEL-135-T3-Reboot"
+KELD_TEST_TMP="$HOME/Library/Application Support/Keld/KEL-135-T3-Reboot"
+TMPDIR="$KELD_TEST_TMP" \
+KELD_KEL135_REBOOT_ROOT="$KELD_TEST_TMP/reboot-run" \
+KELD_KEL135_REBOOT_PHASE=prepare \
+cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
+  --target aarch64-apple-darwin \
+  profiles::reboot::kel135_macos_crash_quarantine_recovers_only_after_real_reboot \
+  -- --exact --ignored --nocapture
+```
+
+Then save work, choose Apple menu > Restart, sign back in, and run the resume command:
+
+```sh
+KELD_TEST_TMP="$HOME/Library/Application Support/Keld/KEL-135-T3-Reboot"
+TMPDIR="$KELD_TEST_TMP" \
+KELD_KEL135_REBOOT_ROOT="$KELD_TEST_TMP/reboot-run" \
+KELD_KEL135_REBOOT_PHASE=resume \
+cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
+  --target aarch64-apple-darwin \
+  profiles::reboot::kel135_macos_crash_quarantine_recovers_only_after_real_reboot \
+  -- --exact --ignored --nocapture
+```
+
+This must show the same signed Team/identifier/UUID, all five browser values after the
+real boot change, matching `kern.bootsessionuuid`/`sysctl` facts, same-boot quarantine,
+and exact-identity purge completion. On success the test removes its isolated fixture
+root.
+
+### 7.3 Adopted macOS media acceptance correction — 2026-09-24
+
+No boundary change. The user's explicit **“yes”** in the KEL-135/T3 continuation
+adopts the reviewed correction and authorizes its implementation. It changes the
+macOS evidence contract, while preserving product permission policy. GPT-6 Astra's
+2026-09-24 independent review preceded adoption. The legacy stable artifact row name
+`macos-media-saved-grant` is retained, with required evidence marker
+`macos_media_contract=public-grant-restart-v1`; it now carries the predicate below.
+KEL-132 consumes this versioned row and the strengthened `macos-dev-ephemeral` row.
+Approval does not promote either row to passed; the final artifact still needs the
+landed source revision, approval provenance, independent review and actual OS results.
+
+The adopted row proves **media authority after clean restart**:
+
+1. Separately for camera and microphone, accept the site's public WebKit permission
+   prompt and prove live capture using physical hardware or an independently reviewed
+   OS-level virtual device, as specified by KEL-132 §3.6. Bind the selected device's
+   actual classification, validated signed identity, actual
+   persistent store UUID, exact origin, unrelated nonce, device, OS and WebKit version.
+2. Stop capture and complete clean host teardown. Restart the same identity, UUID and
+   origin with the production Keld denying handler. Require the nonce to survive,
+   a new request to reach that handler with principal/policy provenance, and completed
+   denial without capture or a permission prompt. Prompt absence needs direct evidence;
+   a hardcoded log field is insufficient.
+   The test-only native probe reads `AVCaptureDevice.authorizationStatus` in the
+   requesting signed host before the request and requires Authorized for the denying
+   phase. It registers a public `NSWindowWillBeginSheetNotification` observer before
+   navigation, calibrates it against the positive site-prompt seed, and requires zero
+   sheet events during denial. Its process-wide scope conservatively counts any sheet;
+   it cannot observe another process's TCC UI. The separate authorization preflight
+   covers that earlier OS decision path. Initial seed consent may begin from
+   NotDetermined; a helper process's status cannot replace the requesting host's status.
+   ([Apple authorization status](https://developer.apple.com/documentation/avfoundation/avcapturedevice/authorizationstatus(for:)),
+   [Apple sheet notification](https://developer.apple.com/documentation/appkit/nswindow/willbeginsheetnotification))
+3. In a separate clean restart, change only the fixture response to Allow. Require
+   actual capture and require the denial oracle to reject this control. Missing seed,
+   changed identity/UUID/origin, incomplete teardown or absent callback provenance must
+   also invalidate acceptance. Keep Wry's handler installed in every case.
+4. As a lifecycle control, attempt a second request on the initially granted page.
+   Record whether it captures without another delegate call; retaining such a page
+   must fail the clean-restart/callback oracle. Unsupported cached reuse remains
+   explicit instead of being inferred from the query state.
+
+This proves that authority from the exercised public permission path cannot bypass
+Keld's denial after restart. It does not claim that a browser grant was written to
+disk, removed from disk, or absent from every possible native storage mechanism.
+Permissions API queries remain diagnostic. The distinction between v0 default denial
+and KEL-102/T4's verified session policy remains mandatory.
+
+The strengthened dev row must separately seed grant and nonce in launch A, then show
+launch B on the same origin is nonpersistent, has no nonce, and completes a new
+guarded denial without capture/prompt. Retaining A's store must fail nonce isolation;
+retaining A's granted page must fail lifecycle/callback evidence. Those controls prove
+different properties: reusing a store does not establish reuse of a page's grant.
+
+Device qualification correction, 2026-09-24: the draft's phrase “physical capture”
+was narrower than the governing KEL-132 §3.6 physical-or-reviewed-virtual rule. The
+independent GPT-6 Astra review qualified the installed Camo 2.4.0/build 17515 endpoint
+under that existing rule: macOS reports the enabled, active CMIO extension
+`com.reincubate.macos.cam.avextension`, Team `Q248YREB53`, and `Camo Camera` in its
+camera inventory. The fixture must bind the actual selected track label, kind, live
+state and settings to this inventory; opaque browser device IDs are not macOS device
+identifiers. The microphone is classified independently from its selected track.
+This records a reviewed OS-level virtual camera, not a physical sensor or a WebKit
+SPI/TestRunner mock. Its physical backing source remains unverified. All origin,
+profile, lifecycle, prompt and policy predicates above remain required.
+([Apple Core Media I/O](https://developer.apple.com/documentation/CoreMediaIO),
+[Camo camera-extension release history](https://camo.com/support/camo/release-notes?platform=macos))
+
+The native evidence probe is debug/test-hook only. It uses the existing pinned objc2
+bindings and already-locked optional AppKit/block2 versions, public read-only
+AVFoundation status and public Foundation notification registration/removal. The
+observer token and callback block remain owned until observation completes; they are
+removed on the AppKit thread before profile shutdown. Production permission policy,
+release startup and the prohibition on private WebKit/TCC APIs remain unchanged.
+
 ## 8. Review gates triggered
 
 T0 review gates:
@@ -695,6 +1061,17 @@ T0 review gates:
 Packaging/signing review also applies to T2/T3/T4/T5 because authenticated platform
 identity and lifecycle ordering cross that boundary. KEL-79 security/origin review
 remains separate.
+
+KEL-135/T3 review gates:
+
+- unsafe: applies — Security.framework calls, CoreFoundation reference handling, and
+  `proc_pidinfo` use the exact Core/Wv platform owners and need final-diff review;
+- public API: applies — the WK engine now requires a host-selected profile mode;
+- permission model: applies — profile identity, exclusive ownership, dev ephemerality,
+  crash quarantine, and exact purge affect persistent browser state;
+- dependency addition: applies — direct macOS bindings are centrally workspace-pinned;
+  all selected versions already existed in the lockfile and no new version is added;
+- wire protocol: none — no kipc or app-link bytes change.
 
 ## 9. Perf impact
 

@@ -17,8 +17,7 @@
 | **Engineering narrative** | What we chose, why, what we rejected, and what is not next. **Not** RFC 2119 — [`AGENTS.md`](../../AGENTS.md) still binds. Onboarding pointer for “why.” | [`docs/engineering/decisions.md`](../engineering/decisions.md) |
 | **Exploratory / historical** | Informs decisions, does not bind them. Dated. Cite it as evidence, never as a requirement. | [`docs/research/`](../research/), other [`docs/engineering/`](../engineering/) audits, and historical Linear comments |
 
-Two rules that follow directly from that table, both from
-[`docs/agents/learnings.md`](../agents/learnings.md) and [`AGENTS.md`](../../AGENTS.md):
+Two rules that follow directly from that table:
 
 - **Never cite `docs/research/inputs/external/` in your work.** Those are raw external
   research exports. Canonical `docs/research/library/` notes are exploratory evidence, not
@@ -48,7 +47,7 @@ numbered research is not.
 | [`docs/engineering/product-status.md`](../engineering/product-status.md) | Generated Current/Target/Evidence tables for crates, packages, phases, and platform slices. | When you need repository status rather than normative design or live Linear execution state. |
 | [`docs/engineering/linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md) | Tracked translation between Linear project placement and product phases. | When linking an issue to a product phase without confusing scheduling with implementation. |
 | [`llms.txt`](../../llms.txt) · [`llms-full.txt`](../../llms-full.txt) | Generated agent-readable documentation: a compact curated index and the corresponding concatenated corpus. `tools/llms_docs.rs` fixes source order and excludes research/local-only paths; `just llms-check` rejects drift. | When wiring up agent tooling, bulk-ingesting the authoritative docs corpus, or checking what the official MCP docs search embeds. |
-| [`justfile`](../../justfile) · [`Cargo.toml`](../../Cargo.toml) · [`clippy.toml`](../../clippy.toml) · [`deny.toml`](../../deny.toml) · [`rustfmt.toml`](../../rustfmt.toml) · [`rust-toolchain.toml`](../../rust-toolchain.toml) · [`.config/nextest.toml`](../../.config/nextest.toml) | Not prose, but they are the enforcement layer behind `AGENTS.md`. `just ci` runs every gate CI would run. Workspace lints (pedantic clippy, `missing_docs`, `unsafe_code = "deny"`) live in `Cargo.toml`, with comments explaining each choice. | When a lint fails and you want to know whether it's negotiable (it usually isn't). |
+| [`justfile`](../../justfile) · [`Cargo.toml`](../../Cargo.toml) · [`clippy.toml`](../../clippy.toml) · [`deny.toml`](../../deny.toml) · [`rustfmt.toml`](../../rustfmt.toml) · [`rust-toolchain.toml`](../../rust-toolchain.toml) · [`.config/nextest.toml`](../../.config/nextest.toml) | Not prose, but they are the enforcement layer behind `AGENTS.md`. `just ci` runs all applicable gates; Mermaid is changed-input routed. `just ci-full` forces full-corpus Mermaid rendering. Workspace lints (pedantic clippy, `missing_docs`, `unsafe_code = "deny"`) live in `Cargo.toml`, with comments explaining each choice. | When a lint fails and you want to know whether it's negotiable (it usually isn't). |
 
 ## `docs/architecture/` — normative for v0.x
 
@@ -62,13 +61,15 @@ on day one; read the others when you touch their area.
 | [`03-security.md`](../architecture/03-security.md) | Principals and trust levels, the `keld.permissions.jsonc` manifest, why it's generated rather than hand-written, defense-in-depth enforcement mechanics, update security, and the honesty ledger of what Keld does **not** promise (§6). | Any work in `keld-guard`, any new privileged operation, any capability question. |
 | [`04-electron-compat.md`](../architecture/04-electron-compat.md) | The migration developer experience end to end, the exact five-file config surface (§2), how the shim is layered, compat tiers and the public scoreboard, native-module policy, the migration corpus harness, and the updater bridge trap every migrator hits. | Compat work, migration work, or any time you need to answer "how does this behave under `@keld/electron`?" — which principle #1 says is every time. |
 | [`05-webview-and-native.md`](../architecture/05-webview-and-native.md) | Why `keld-wv` is Keld's own binding layer (wry-informed, not wry-bound), the `WebEngine` trait, the `window.keld` renderer bridge contract, the `keld-native` API surface, and the `keld-ext` plugin path. | Any `keld-wv` or `keld-native` work. |
-| [`06-runtime-and-tooling.md`](../architecture/06-runtime-and-tooling.md) | Bun as a supervised primary child plus named compatibility roles, never embedded (§1); the CLI contract (§2); cross-target assembly with explicit signing flows; delta updates and a minimal relaunch helper; and dev-loop targets. | CLI, packaging, updater, or runtime-supervisor work. |
+| [`06-runtime-and-tooling.md`](../architecture/06-runtime-and-tooling.md) | Bun as a supervised primary child plus named compatibility roles, never embedded (§1); the CLI contract (§2); cross-target assembly with explicit signing flows; verified full-package activation before optional delta transport; and dev-loop targets. | CLI, packaging, updater, or runtime-supervisor work. |
 | [`07-agent-experience.md`](../architecture/07-agent-experience.md) | Agents as a first-class user persona: the framework-wide "errors state the fix" standard with the `KELD-<area><nnn>` code shape (§2), docs-for-agents rules, the official MCP server design, the agent-eval harness as a CI metric, guardrails for vibe-coded apps, and the CLI contract for agents. | Before designing any error type, CLI output, or public API. §2 governs error messages everywhere in the codebase. |
 
 ## `docs/specs/` — scoped feature designs
 
-Feature specs use [`docs/agents/spec-template.md`](../agents/spec-template.md), name the
-owning Linear issue, expose a visible status, and turn acceptance criteria into tests.
+Feature specs use [`docs/agents/spec-template.md`](../agents/spec-template.md) and follow
+the size, layout and ID standard in [`.agents/specs.md`](../../.agents/specs.md). A spec
+over a cap is a directory: read its `index.md`, then only the parts your task needs. Specs name the
+owning tracker issue (Linear, or GitHub under #517), expose a visible status, and turn acceptance criteria into tests.
 `Status: draft` is design work only. `approved` authorizes the ordered implementation;
 `implementing` means approved slices are in progress; `done` means the spec's entire
 contract has landed and passed its gates. Read the current status and task checklist—do
@@ -148,8 +149,8 @@ captured input, and nine `twiter*.md` files are
 digests of practitioner discourse (the Rust tooling wave, Bun's Rust rewrite, the desktop
 framework conversation, agentic-engineering practitioners, AX leaders).
 
-**These are inputs, not sources.** The rule is explicit in
-[`docs/agents/learnings.md`](../agents/learnings.md): never cite raw external inputs directly —
+**These are inputs, not sources.** The rule is the first one under
+[The tiers, up front](#the-tiers-up-front): never cite raw external inputs directly —
 cite the polished numbered doc that consumed it.
 
 `45-P1.md` through `45-P20.md` are another source packet, now grouped under
@@ -162,8 +163,8 @@ source ledger before promoting any unresolved claim.
 
 | Doc | What's in it |
 |---|---|
-| [`workflow.md`](../agents/workflow.md) | The development loop: pick up a Linear issue → spec gate → isolated worktree → implementation/tests → verification → adversarial review → PR. Operational branch/OS rules live in `.agents/coordination.md`; current-head and PR rules live in `.agents/review.md`. |
-| [`spec-template.md`](../agents/spec-template.md) | The ten-section template every change bigger than a bug fix needs, copied to `docs/specs/<kebab-name>.md`: goal and non-goals, spec refs, binary acceptance criteria (each becomes a test), design, boundaries (including "must not touch"), ordered tasks, test plan, review gates triggered, perf impact, open questions. Implementation may begin only after human approval; an approved spec may then move to `Status: implementing`. |
+| [`workflow.md`](../agents/workflow.md) | The development loop: pick up the tracker issue (Linear, or GitHub under #517) → spec gate → isolated worktree → implementation/tests → verification → adversarial review → PR. Operational branch/OS rules live in `.agents/coordination.md`; current-head and PR rules live in `.agents/review.md`. |
+| [`spec-template.md`](../agents/spec-template.md) | The ten-section template every change bigger than a bug fix needs, copied to `docs/specs/<id>-<slug>.md` under the standard in [`.agents/specs.md`](../../.agents/specs.md): goal and non-goals, spec refs, binary acceptance criteria (each becomes a test), design, boundaries (including "must not touch"), ordered tasks, test plan, review gates triggered, perf impact, open questions. Implementation may begin only after human approval; an approved spec may then move to `Status: implementing`. |
 | [`learnings.md`](../agents/learnings.md) | The searchable evidence log. Query relevant areas only; it is not loaded wholesale into every agent session. |
 
 ### `.agents/` — conditional playbooks

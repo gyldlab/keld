@@ -61,12 +61,12 @@ class HookTests(unittest.TestCase):
         handlers = [config['hooks'][event][0]['hooks'][0] for event in config['hooks']]
         self.assertEqual(handlers[0], handlers[1])
         handler = handlers[0]
-        for name in ('session_closeout', 'session_closeout_hook'):
+        for name in ('session_closeout', 'workspace', 'session_closeout_hook'):
             source = root / 'tools' / (name + '.py')
             self.assertIn(hashlib.sha256(source.read_bytes()).hexdigest(),
                           base64.b64decode(re.search(r"b64decode\('([^']+)'\)", handler['command'])[1]).decode())
         (self.repo / 'tools').mkdir()
-        for name in ('session_closeout', 'session_closeout_hook'):
+        for name in ('session_closeout', 'workspace', 'session_closeout_hook'):
             shutil.copyfile(root / 'tools' / (name + '.py'), self.repo / 'tools' / (name + '.py'))
         command = handler['commandWindows'] if os.name == 'nt' else handler['command']
         shell = ['powershell.exe', '-NoProfile', '-Command'] if os.name == 'nt' else ['sh', '-c']
@@ -162,8 +162,10 @@ class HookTests(unittest.TestCase):
         answer = hook.response(self.payload)["hookSpecificOutput"]
         self.assertEqual(answer["hookEventName"], "UserPromptSubmit")
         self.assertIn(str(self.receipt_path), answer["additionalContext"])
+        self.assertIn(str(self.repo / ".keld-work" / "sessions" / "session_214"), answer["additionalContext"])
         self.assertNotIn("PRIVATE PROMPT", json.dumps(answer))
         self.assertFalse(self.receipt_path.parent.exists())
+        self.assertFalse((self.repo / ".keld-work").exists())
         self.publish()
         self.payload["hook_event_name"] = "Stop"
         self.assertNotIn("decision", hook.response(self.payload))
@@ -298,7 +300,7 @@ class HookTests(unittest.TestCase):
         checker = self.repo / 'tools/session_closeout.py'
         for harness in ('codex', 'claude', 'cursor'):
             with self.subTest(harness=harness):
-                for name in ('session_closeout', 'session_closeout_hook'):
+                for name in ('session_closeout', 'workspace', 'session_closeout_hook'):
                     shutil.copyfile(source_root / 'tools' / (name + '.py'),
                                     self.repo / 'tools' / (name + '.py'))
                 config = hook.configuration(harness)

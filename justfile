@@ -1,6 +1,10 @@
-# Keld task runner — full local verification superset of the dynamically routed CI gates.
-# `just ci` before pushing runs every local gate, while CI routes costly OS lanes by
-# changed-path ownership through tools/ci_changes.sh.
+# Keld task runner — exact local verification of applicable gates.
+# Mermaid follows the shared changed-input router; `just ci-full` forces its whole corpus.
+
+# `set minimum-version` exists from just 1.55.0. That release also postdates
+# `[parallel]` (1.42.0) and the 1.47.1 fix for parallel recipes that did not
+# wait on a shared running dependency (casey/just#3138).
+set minimum-version := "1.55.0"
 
 # Shebang recipes can use "$@" for *args without collapsing spaces.
 set positional-arguments
@@ -8,81 +12,88 @@ set positional-arguments
 # Windows installs expose python; Unix hosts need not provide that alias.
 python_command := if os() == "windows" { "python" } else { "python3" }
 
-# Open the current platform hello backend (Phase 1 slice).
+# Diagnostic test: open the platform hello backend window (not the keld create/dev app demo).
 hello:
-    cargo run -p keld-host -- --hello
+    cargo run -p keld-host --bin keld-host -- --hello
 
-# Run every CI gate locally (deny requires `cargo install cargo-deny --locked`).
+# Independent policy gates run together. TypeScript then Rust run one at a time:
+# measured compiler and host-test deadlines cannot share the policy batch's load.
 # gitleaks stays GitHub-only (pinned OSS CLI in .github/workflows/ci.yml).
-ci: agents-md atomic-protocol agent-context ci-router-test hooks-test doc-placeholders-test doc-placeholders-check mermaid-test mermaid-check mermaid-render-check product-status-test product-status-check llms-test llms-check hygiene typescript fmt-check clippy test doc deny
+# Run all applicable local CI gates (deny requires `cargo install cargo-deny --locked`).
+ci:
+    {{python_command}} -B tools/ci_local.py ci-inventory
+
+# Executable inventory; direct invocation runs every declared gate.
+[private]
+ci-inventory: ci-policy js-fmt-check typescript fmt-check clippy test doc deny
+
+# Full assurance mode explicitly validates every tracked Mermaid block.
+ci-full:
+    {{python_command}} -B tools/ci_local.py ci-full-inventory
+
+[private]
+ci-full-inventory: ci-policy-full js-fmt-check typescript fmt-check clippy test doc deny
+
+# Reuse Just's configured platform shell when the Python executor asks for a plan.
+[private]
+ci-route:
+    tools/ci_changes.sh local
+
+# Hosted CI runs every ci-policy gate (#650) except hooks-test, which needs the
+# hook runner's incoming recipe. The macOS Rust-check matrix installs pinned Just
+# and runs ci-router-test with stock system Bash for the portability contract below.
+# - hooks-test: the hooks under test execute `just` (its negative control runs
+#   the incoming branch's recipe through it); it fails, never skips, without just.
+# SelectionTests and the remaining hosted Python contracts run through
+# tools/ci_changes_test.sh; ci-router-test additionally drives real Just recipes.
+# agent-context's workspace.py check also runs hosted, but only a developer
+# checkout has task records for it to validate.
+# cache-check-test also runs hosted, unchanged, as two steps of the clippy + test
+# matrix on ubuntu, macos and windows: "Worktree cache tool native tests" (the
+# worktree_cache.rs unit tests) and "Worktree cache tool provenance test"
+# (tools/cache_tool_provenance_test.sh). Its cfg(windows) and cfg(unix) paths each
+# compile only on their own OS.
+[parallel]
+ci-policy: agents-md atomic-protocol agent-context-test agent-context cache-check-test ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check spec-structure-test spec-structure mermaid-ci product-status-test product-status-check llms-test llms-check hygiene
+
+[parallel]
+ci-policy-full: agents-md atomic-protocol agent-context-test agent-context cache-check-test ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check spec-structure-test spec-structure mermaid-full product-status-test product-status-check llms-test llms-check hygiene
+
+mermaid-ci:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    selected=$(tools/ci_changes.sh local | sed -n 's/^mermaid=//p')
+    case "$selected" in
+        true) just mermaid-full ;;
+        false) echo "Mermaid route: skipped; no diagram or renderer input changed." ;;
+        *) echo "Mermaid route: invalid applicability '$selected'; refusing skipped-green result." >&2; exit 1 ;;
+    esac
+
+mermaid-full: mermaid-test mermaid-check mermaid-render-check
 
 # Verify the package compiler and runtime contracts from one frozen dependency graph.
 typescript:
     cd packages/@keld/kipc && bun install --frozen-lockfile
     cd packages/@keld/kipc && bun run typecheck
     cd packages/@keld/kipc && bun test
+    cd packages/@keld/api && bun install --frozen-lockfile
+    cd packages/@keld/api && bun run typecheck
+    cd packages/@keld/api && bun test
     cd packages/@keld/electron && bun install --frozen-lockfile
     cd packages/@keld/electron && bun run typecheck
     cd packages/@keld/electron && bun test
 
 # Check playbook routing and require crate AGENTS.md wherever Rust opts into unsafe.
 agents-md:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    fail=0
-    if [[ ! -f ".agents/index.md" ]]; then
-        echo "error: .agents/index.md is missing (create the agent playbook router)"
-        fail=1
-    fi
-    for playbook in testing.md research.md dependencies.md; do
-        if [[ ! -f ".agents/$playbook" ]]; then
-            echo "error: .agents/$playbook is missing (restore the expected agent playbook)"
-            fail=1
-        elif [[ -f ".agents/index.md" ]] && ! grep -Fq "($playbook)" ".agents/index.md"; then
-            echo "error: .agents/index.md does not link $playbook (add it to the task router)"
-            fail=1
-        fi
-    done
-    matcher='allow\([[:space:]]*unsafe_code[[:space:]]*\)|unsafe[[:space:]]*(extern|fn|impl|trait|\{)'
-    # String fixtures — do not plant unsafe in crates/ just to exercise the matcher.
-    # Arrays (not heredocs): just 1.58+ still lexes heredoc bodies as justfile syntax.
-    must_match=(
-        '#[allow(unsafe_code)]'
-        '#[allow( unsafe_code )]'
-        'unsafe extern "C" fn f()'
-        'unsafe fn f()'
-        'unsafe impl Foo {}'
-        'unsafe trait Bar {}'
-        'unsafe { }'
-        'unsafe{'
-    )
-    for sample in "${must_match[@]}"; do
-        if ! printf '%s\n' "$sample" | grep -E -q "$matcher"; then
-            echo "error: agents-md matcher missed fixture: $sample"
-            fail=1
-        fi
-    done
-    must_not_match=(
-        'fn safe() {}'
-        '#[allow(dead_code)]'
-        'extern "C" fn f()'
-    )
-    for sample in "${must_not_match[@]}"; do
-        if printf '%s\n' "$sample" | grep -E -q "$matcher"; then
-            echo "error: agents-md matcher false-positive: $sample"
-            fail=1
-        fi
-    done
-    files=$(grep -R -l -E "$matcher" crates --include='*.rs' || true)
-    crates=$(printf '%s\n' "$files" | awk -F/ '$1=="crates" && NF>=2 {print $2}' | sort -u)
-    for crate in $crates; do
-        if [[ ! -f "crates/$crate/AGENTS.md" ]]; then
-            echo "error: crates/$crate uses unsafe but has no AGENTS.md (root AGENTS.md § Working invariants)"
-            fail=1
-        fi
-    done
-    if [[ "$fail" -ne 0 ]]; then exit 1; fi
-    echo "agents-md ok"
+    tools/agents_md.sh test
+    tools/agents_md.sh
+
+# Live Git publication history/ancestry is not a tracked-file diff input.
+audit-docs: audit-docs-test
+    {{python_command}} -B docs/audits/verify.py
+
+audit-docs-test:
+    {{python_command}} -B docs/audits/test_verify.py
 
 # KEL-145: one canonical atomic problem-solving protocol plus narrow references.
 atomic-protocol:
@@ -93,14 +104,114 @@ atomic-protocol:
     target/atomic-protocol/atomic-protocol check .
 
 # KEL-147: instruction inventory, routing, and Codex automatic-chain budgets.
-agent-context:
+# Live ignored workspace/task records are checked even with an empty Git diff.
+agent-context: agent-context-test
+    mkdir -p target/agent-context
+    rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context
+    target/agent-context/agent-context check .
+    {{python_command}} -B tools/workspace.py check
+
+agent-context-test:
     mkdir -p target/agent-context
     rustc --edition=2024 -D warnings --test tools/agent_context.rs -o target/agent-context/agent-context-test
     target/agent-context/agent-context-test
-    rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context
-    target/agent-context/agent-context check .
     {{python_command}} -B tools/test_session_closeout.py
     {{python_command}} -B tools/test_session_closeout_hook.py
+    {{python_command}} -B tools/test_workspace.py
+
+# Allocate an isolated task worktree below .keld-work/ (usage: just work-start <issue-id> <slug> [--session <id>]).
+work-start *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{python_command}} -B tools/workspace.py start "$@"
+
+# Inspect status of managed worktrees and task branches (read-only; pass --sizes for disk usage).
+work-status *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{python_command}} -B tools/workspace.py status "$@"
+
+# Execute a command inside a task worktree (usage: just work-run <task-name> --session <id> -- <cmd>).
+work-run *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{python_command}} -B tools/workspace.py run "$@"
+
+# Conclude an active task record with a closeout receipt (requires task, --session, and --receipt).
+work-finish *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{python_command}} -B tools/workspace.py finish "$@"
+
+# Inspect or delete released-session scratch (dry run by default; pass task, session, --receipt and --apply to delete scratch).
+work-clean *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{python_command}} -B tools/workspace.py clean "$@"
+
+work-check:
+    {{python_command}} -B tools/workspace.py check
+
+# Build a fresh executable from a verified source snapshot on every run. No
+# executable from an earlier run is ever trusted or executed: a cache under
+# $HOME cannot prove which bytes it holds. The private scratch directory lives
+# outside every worktree target/, so full cache deletion never removes it.
+[private]
+cache-tool-exec mode *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo_root=$(git rev-parse --show-toplevel)
+    cd "$repo_root"
+    source_stamp() {
+        local dir="$1"
+        {
+            git hash-object "$dir/worktree_cache.rs"
+            git hash-object "$dir/worktree_cache_delete.rs"
+            git hash-object "$dir/worktree_cache_delete_tests.rs"
+        } | git hash-object --stdin
+    }
+    stamp=$(source_stamp tools)
+    name="worktree-cache"
+    if [[ "{{os()}}" == "windows" ]]; then name="worktree-cache.exe"; fi
+    scratch=$(mktemp -d)
+    trap 'rm -rf "$scratch"' EXIT
+    # Compile a verified immutable source snapshot, never mutable checkout bytes.
+    cp tools/worktree_cache.rs tools/worktree_cache_delete.rs tools/worktree_cache_delete_tests.rs "$scratch/"
+    [[ "$(source_stamp "$scratch")" == "$stamp" ]] || {
+        echo "cache source changed during snapshot; refusing compilation" >&2; exit 1;
+    }
+    rustc --edition=2024 -D warnings -C opt-level=s -C strip=symbols "$scratch/worktree_cache.rs" -o "$scratch/$name"
+    [[ "$(source_stamp tools)" == "$stamp" ]] || {
+        echo "cache source changed during compilation; refusing stale executable" >&2; exit 1;
+    }
+    # set positional-arguments includes the named mode as $1.
+    shift
+    "$scratch/$name" "{{mode}}" . "$@"
+
+# Read-only census of every registered Git worktree build cache.
+cache-check *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just cache-tool-exec check "$@"
+
+# Explicit --all or --worktree PATH with --yes is required for deletion.
+cache-delete *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just cache-tool-exec delete "$@"
+
+# Native tests compile without the workspace Cargo graph.
+cache-check-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    scratch=$(mktemp -d)
+    trap 'rm -rf "$scratch"' EXIT
+    rustc --edition=2024 -D warnings --test tools/worktree_cache.rs -o "$scratch/cache-tests"
+    "$scratch/cache-tests"
+    bash tools/cache_tool_provenance_test.sh
+
+work-test:
+    {{python_command}} -B tools/test_workspace.py
 
 # Generate the canonical Current/Target/Evidence status view.
 product-status:
@@ -114,7 +225,7 @@ product-status-test:
     rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test
     target/product-status/product-status-test
 
-# CI gate: ledger semantics and every checked consumer must agree.
+# Live evidence-object availability and ancestry can change without a file diff.
 product-status-check:
     mkdir -p target/product-status
     rustc --edition=2024 -D warnings tools/product_status.rs -o target/product-status/product-status
@@ -150,6 +261,18 @@ doc-placeholders-test:
     rustc --edition=2024 -D warnings --test tools/doc_placeholders.rs -o target/doc-placeholders/doc-placeholders-test
     target/doc-placeholders/doc-placeholders-test
 
+# CI gate: spec size, layout, stable IDs, links and pin citations (#1321; .agents/specs.md).
+spec-structure:
+    mkdir -p target/spec-structure
+    rustc --edition=2024 -D warnings tools/spec_structure.rs -o target/spec-structure/spec-structure
+    target/spec-structure/spec-structure check .
+
+# Contract tests: one single-fault mutant per rule, plus the ratchet bypasses.
+spec-structure-test:
+    mkdir -p target/spec-structure
+    rustc --edition=2024 -D warnings --test tools/spec_structure.rs -o target/spec-structure/spec-structure-test
+    target/spec-structure/spec-structure-test
+
 # Validate Mermaid fences, accessibility metadata, stable types, and semantic palette.
 mermaid-check:
     #!/usr/bin/env bash
@@ -174,6 +297,8 @@ mermaid-render-check:
 # KEL-39: CODEOWNERS, templates, Action SHA pin, .github not gitignored.
 hygiene:
     bun --no-install test tools/ci_workflow_security.test.ts
+    {{python_command}} -B tools/test_hello_command.py
+    {{python_command}} -B tools/test_ci_attempt_metrics.py
     mkdir -p target/ci-hygiene
     rustc --edition=2024 -D warnings --test tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene-test
     target/ci-hygiene/ci-hygiene-test
@@ -183,26 +308,44 @@ hygiene:
 # KEL-81: keep change-based CI routing falsifiable outside GitHub Actions too.
 ci-router-test:
     tools/ci_changes_test.sh
+    {{python_command}} -B tools/test_ci_local.py ExecutorTests
 
 # KEL-159: checkout hooks must never execute code from the incoming revision.
 hooks-test:
     tools/hooks_test.sh
 
-# Format the workspace in place.
+# Format the workspace in place. `cargo fmt` never visits `include!`d files or
+# `#[path]` mods declared inside macro bodies, so tools/fmt_included.sh formats
+# those (and the `mod` files under them) too.
 fmt:
     cargo fmt --all
+    tools/fmt_included.sh
+    just js-fmt
 
-# CI gate: formatting.
-fmt-check:
+# CI gate: formatting, including `include!`d and macro-body `#[path]` files (#834, #1055).
+fmt-check: js-fmt-check
     cargo fmt --all --check
+    tools/fmt_included.sh test
+    tools/fmt_included.sh --check
+
+# Native Bun formatting; generated bytes/stamps remain owned by echo-codegen.
+js-fmt:
+    bun packages/@keld/kipc/scripts/echo-codegen.ts generate
+    bun fmt --no-script "**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}"
+    bun packages/@keld/kipc/scripts/echo-codegen.ts generate
+    bun packages/@keld/kipc/scripts/echo-codegen.ts check
+
+js-fmt-check:
+    bun packages/@keld/kipc/scripts/echo-codegen.ts check
+    bun fmt --no-script --check "**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}"
 
 # CI gate: lints (warnings are errors, matching CI).
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
-# CI gate: tests (unit + integration + doctests). Matches CI nextest profile.
 # The Linux host suite owns real GTK windows, so preserve its virtual-display
 # contract for the full root gate as well as the routed Ubuntu package lane.
+# Run workspace tests (matches CI nextest profile: unit + integration tests; nextest does not run doctests).
 test:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -216,21 +359,28 @@ test:
 doc:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
+# Live advisory updates can change the result without a file diff.
 # Supply-chain checks (requires `cargo install cargo-deny --locked`).
 deny:
     cargo deny check
+    cargo deny --manifest-path crates/keld-updater-helper/Cargo.toml --all-features --config crates/keld-updater-helper/deny.toml check bans
 
 # ── Maintainer local-only sync (never CI; trees stay gitignored) ─────────────
 
 # Clone or ff-only pull private research into gitignored docs/research/.
 # HTTPS first, SSH fallback. No access → warn on stderr and exit 0 (hooks-safe).
 research-sync:
+    {{python_command}} -B tools/workspace.py reference-run -- just _research-sync
+
+[private]
+_research-sync:
     #!/usr/bin/env bash
     set -uo pipefail
     ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
         echo "warning: research-sync: not inside a git work tree; skip" >&2
         exit 0
     }
+    ROOT="$({{python_command}} -B "$ROOT/tools/workspace.py" reference-root)" || exit 1
     DEST="$ROOT/docs/research"
     HTTPS="https://github.com/0monish/keld-research.git"
     SSH="git@github.com:0monish/keld-research.git"
@@ -295,11 +445,18 @@ research-sync:
 # Optional: just research-push "your message"
 research-push message="chore: sync research notes":
     #!/usr/bin/env bash
+    set -euo pipefail
+    {{python_command}} -B tools/workspace.py reference-run -- just _research-push "$1"
+
+[private]
+_research-push message:
+    #!/usr/bin/env bash
     set -uo pipefail
     ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
         echo "warning: research-push: not inside a git work tree; skip" >&2
         exit 0
     }
+    ROOT="$({{python_command}} -B "$ROOT/tools/workspace.py" reference-root)" || exit 1
     DEST="$ROOT/docs/research"
     MSG={{quote(message)}}
 
@@ -356,7 +513,14 @@ research-push message="chore: sync research notes":
 competitors-sync *args:
     #!/usr/bin/env bash
     set -euo pipefail
+    {{python_command}} -B tools/workspace.py reference-run -- just _competitors-sync "$@"
+
+[private]
+_competitors-sync *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
     ROOT="$(git rev-parse --show-toplevel)"
+    ROOT="$({{python_command}} -B "$ROOT/tools/workspace.py" reference-root)"
     mkdir -p "$ROOT/target/competitors-sync"
     rustc --edition=2024 -D warnings "$ROOT/tools/competitors_sync.rs" \
         -o "$ROOT/target/competitors-sync/competitors-sync"
@@ -364,18 +528,7 @@ competitors-sync *args:
 
 # Install reviewed hook copies outside the working tree (local config only — not --global).
 hooks-install:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    ROOT="$(git rev-parse --show-toplevel)"
-    COMMON_DIR="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)"
-    HOOKS_DIR="$COMMON_DIR/keld-hooks"
-    mkdir -p "$HOOKS_DIR"
-    cp -- "$ROOT/.githooks/post-merge" "$HOOKS_DIR/post-merge"
-    cp -- "$ROOT/.githooks/post-checkout" "$HOOKS_DIR/post-checkout"
-    chmod +x "$HOOKS_DIR/post-merge" "$HOOKS_DIR/post-checkout"
-    git -C "$ROOT" config core.hooksPath "$HOOKS_DIR"
-    echo "hooks-install: installed reviewed reminder hooks at $HOOKS_DIR (local)."
-    echo "hooks-install: checkout/merge will not execute working-tree code."
+    tools/hooks_install.sh
 
 # Validate the actual session receipt; this is local/remote-evidence admission, not CI.
 session-closeout receipt:

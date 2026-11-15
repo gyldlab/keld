@@ -6,42 +6,16 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::role::{RoleGeneration, RoleOwner};
+#[cfg(test)]
+use crate::role::RoleGeneration;
+use crate::role::RoleOwner;
+pub use crate::role::RolePrincipal;
 
 /// Default maximum queued messages per port end before send is rejected.
 pub const DEFAULT_PORT_QUEUE_CAPACITY: usize = 64;
 
 /// Maximum inline payload bytes per port message in T3.
 pub const MAX_PORT_MESSAGE_LEN: usize = 4096;
-
-/// Host-minted principal for one authenticated role generation.
-///
-/// A generation is not a PID, socket path, token, or wire field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RolePrincipal {
-    owner: RoleOwner,
-    generation: RoleGeneration,
-}
-
-impl RolePrincipal {
-    /// Creates a principal for one live role generation.
-    #[must_use]
-    pub const fn new(owner: RoleOwner, generation: RoleGeneration) -> Self {
-        Self { owner, generation }
-    }
-
-    /// Lifecycle owner category.
-    #[must_use]
-    pub const fn owner(self) -> RoleOwner {
-        self.owner
-    }
-
-    /// Host-minted generation for this coordinator instance.
-    #[must_use]
-    pub const fn generation(self) -> RoleGeneration {
-        self.generation
-    }
-}
 
 /// Monotonic host-only port-pair generation.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

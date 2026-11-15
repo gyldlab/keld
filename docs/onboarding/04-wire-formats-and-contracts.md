@@ -44,7 +44,7 @@ header := magic:u16 | ver:u8 | kind:u8 | flags:u16 | channel:u16 | corr:u32 | le
 | 2 | 1 | `ver` | `u8` | Constant `PROTOCOL_VERSION` | Currently `2` (v2 HELLO token; KEL-60) |
 | 3 | 1 | `kind` | `u8` | `FrameKind as u8` | See §2. Values `0..=10` |
 | 4 | 2 | `flags` | `u16` LE | `FrameHeader.flags` | Bitfield. Only `FLAG_RAW` (`1 << 0`) is defined |
-| 6 | 2 | `channel` | `u16` LE | `ChannelId.0` | Handle, not a name. See §4 |
+| 6 | 2 | `channel` | `u16` LE | `FrameHeader.channel` (a `ChannelId`) | Handle, not a name. See §4 |
 | 8 | 4 | `corr` | `u32` LE | `CorrelationId.0` | `0` for uncorrelated kinds |
 | 12 | 4 | `len` | `u32` LE | Payload byte count | Bytes following the header |
 
@@ -156,9 +156,10 @@ pub fn write_frame<S: Write>(
 ) -> Result<(), IpcError>
 ```
 
-`write_frame` flushes after every frame, so a header and its payload always reach the peer
-together. `read_frame` does a `read_exact` of 16 bytes, decodes, then a `read_exact` of `len`
-bytes.
+`write_frame` writes the header and payload separately, then flushes. Flushing does not make
+delivery atomic: the peer can receive a partial frame if a write fails or the link closes.
+`read_frame` uses `read_exact` for the 16-byte header and then for the declared `len` bytes;
+an incomplete header or payload is an I/O error.
 
 **Know what this is not.** `crates/keld-ipc/AGENTS.md` requires the eventual implementation to be a
 state machine with no steady-state allocation, and says so bluntly: "State-machine readers/writers.
@@ -185,12 +186,19 @@ reader. Fuzz decode paths — malformed webview input is expected.
 ## 4. `ChannelId` and `CorrelationId`
 
 ```rust
-// crates/keld-ipc/src/frame.rs:11-17
-pub struct ChannelId(pub u16);
+// crates/keld-ipc/src/frame.rs
+pub struct ChannelId(pub(crate) u16);
 pub struct CorrelationId(pub u32);
 ```
 
-**v0 contract: channel ids are hardcoded `u16` constants on both sides.**
+**`ChannelId` is unforgeable outside `keld-ipc` (#634).** Its field is private to the
+crate, so other crates get an id only from a `keld_ipc::channel_table` entry (or a
+constant derived from one) or from a header `keld-ipc` decoded, and compare it only
+with another id. Tests that need an unallocated id use `ChannelId::for_test`, behind
+keld-ipc's non-default `test-channel-ids` feature
+([gh508 §11](../specs/gh508-kipc-channel-table.md#11-implementation-record-x05-t4-597)).
+
+**v0 contract: channel ids are fixed `u16` values from that one table on both sides.**
 HELLO does not exchange a name table. Every frame still carries a two-byte
 `ChannelId` handle, never a string — that part of `crates/keld-ipc/src/lib.rs`
 ("Channel names never travel per-call") is already true. Handshake name/table
@@ -204,7 +212,7 @@ Currently allocated:
 
 | Channel | Value | Purpose | Defined at |
 |---|---:|---|---|
-| *(control)* | `0` | Handshake frames | Implicit — `link.rs` passes `ChannelId(0)`. **There is no named constant for this**; it is a convention waiting to be made explicit |
+| `HANDSHAKE_CHANNEL` | `0` | Handshake frames | `crates/keld-ipc/src/channel_table.rs` (reserved, never allocatable) |
 | `ECHO_CHANNEL` | `1` | The echo vertical slice | `crates/keld-ipc/src/echo.rs` |
 | `FS_CHANNEL` | `2` | Host `fs.read` / `fs.write` | `crates/keld-native/src/fs.rs` |
 | `LIFECYCLE_CHANNEL` | `3` | Host ready / last-window-closed / quit | `crates/keld-ipc/src/lifecycle.rs` |
@@ -212,8 +220,9 @@ Currently allocated:
 **`CorrelationId` pairs a `Reply` or `Err` with its `Call`.** The client picks it; the server echoes
 it back unchanged. Uncorrelated kinds use `0` (reserved for `HELLO`). `echo_call`
 hardcodes `CorrelationId(1)` for its one-shot path. `echo_invoke` takes the caller's
-`corr`; the Bun `AppLinkSession` allocates monotonically, skipping `0`. v0 is still
-one CALL in flight at a time (the reader has a single pending waiter).
+`corr`; the Bun `WorkerLink` under `AppLinkSession` allocates monotonically, skipping
+`0` and every id still pending. Its asynchronous calls may overlap; a role has at most
+one blocking call in flight (GH-527).
 
 ---
 
@@ -319,8 +328,8 @@ decision is normative in [`02` §2](../architecture/02-ipc.md):
 | flatbuffers / Cap'n Proto | Near zero-copy but schema tooling is heavy. Overkill for command RPC; reconsider for bulk later |
 | bincode | Fast Rust↔Rust, less portable to TypeScript. Rejected for public contracts |
 
-The framing is worth stating explicitly, because it is what every competitor got wrong: Electron
-uses structured-clone/JSON, Tauri uses serde-JSON `invoke`, Electrobun uses JSON-RPC over localhost
+The framing is worth stating explicitly, because each competitor made a different tradeoff: Electron
+uses Structured Clone IPC, Tauri uses serde-JSON `invoke`, Electrobun uses JSON-RPC over localhost
 WebSockets, and Deno Desktop deletes the boundary. Keld's position is that the mediation cost gets
 *engineered away* with binary framing plus shared memory — not avoided by removing the security
 boundary.
@@ -343,7 +352,7 @@ handler, one channel constant.
 
 ```rust
 // crates/keld-ipc/src/echo.rs:10-28
-pub const ECHO_CHANNEL: ChannelId = ChannelId(1);
+pub const ECHO_CHANNEL: ChannelId = crate::channel_table::ECHO.id();
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EchoRequest {
@@ -390,13 +399,18 @@ proves nor claims default denial for those cases; they block full KEL-132
 closure until the approved [KEL-135 profile lifecycle](../specs/kel135-persistent-profile-identity.md)
 and oldest-supported-macOS evidence land.
 
-**FS is gated.** `FS_CHANNEL` (`keld-native::fs`, KEL-71) runs every `fs.read` /
-`fs.write` `Call` through `keld_ipc::guard_dispatch::dispatch_privileged` before
-touching disk. A deny or I/O failure is a `FrameKind::Err` carrying a postcard
+**The guarded FS route is implemented on the app link.** `FS_CHANNEL`
+(`keld-native::fs`, KEL-130) runs every admitted `fs.read` / `fs.write` `Call`
+through `keld_ipc::guard_dispatch::dispatch_privileged`, borrows its first-match
+permit, and uses the matching retained `FsBroker` scope before touching disk.
+A deny or broker failure is a `FrameKind::Err` carrying a postcard
 `CallError { code, message }` (spec 02 §2) whose `code` is the guard's
-`KELD-GUARD*` or the broker's own `KELD-NATIVE-001` — read as a field, never
-parsed out of the text. Echo remaining ungated does not mean privileged frames
-skip the guard.
+`KELD-GUARD*` or one of `KELD-NATIVE-001..008` — read as a field, never parsed
+out of the text. The guarded app-link filesystem route is implemented
+(KEL-102/T3 landed); macOS project-policy verification and absent-policy broker-deny
+fallback are verified, while non-macOS policy producers, renderer forwarding, and
+full hostile/deadline/quiescence qualification remain incomplete. Echo remaining
+ungated does not mean privileged frames skip the guard.
 
 **Lifecycle is session control, not an OS grant.** `LIFECYCLE_CHANNEL` (KEL-72)
 sends `FrameKind::Event` `Ready` / `LastWindowClosed` and accepts `Call` `Quit`.
@@ -477,25 +491,31 @@ exist yet; the reviewed `windows_named_pipe` module is the current other owner.
 **`keld://` streaming (wv-link).** Engines do not reliably expose shared memory to page JS, so bulk
 data to and from webviews rides a custom scheme instead: `keld://c/{channel}` request/response with
 streaming bodies, served through `WKURLSchemeHandler`, WebView2's `WebResourceRequested`, or
-WebKitGTK 2.40+ streams. `postMessage` stays control-only — it is string-typed on WebView2. A
-renderer→app-process transfer (Electron's `send(bigBuffer)` pattern) is routed: the webview streams
-over `keld://` into the host, and the host forwards into the shm ring — one copy at the
-engine-imposed scheme boundary, zero after.
+WebKitGTK 2.40+ streams. Keld keeps `postMessage` control-only. On WebView2 the page can post
+JSON-convertible values and the host can read JSON/string representations; that path is not a
+generic binary lane. A renderer→app-process transfer (Electron's `send(bigBuffer)` pattern) is
+routed through the host. A platform adapter may forward into a qualified role-private bulk ring, but
+each engine path must measure and report its end-to-end copies; neither a custom scheme nor a binary
+codec establishes zero-copy by itself.
 
 **Backpressure.** Per-channel credit windows granted in `Grant` frames, SPSC credit counting;
 senders suspend at zero credit (a promise in JS, a state-machine pause in Rust). The design rule is
-absolute — "No unbounded queues anywhere" — which is what makes Electron's frame-starving chatty-IPC
-failure structurally impossible rather than merely discouraged.
+absolute — "No unbounded queues anywhere". Credit windows bound admitted credit-accounted units per
+channel; producer queues, handler queues, bytes per unit/window, and scheduling/fairness require
+separate bounds and qualification under load.
 
 **Cancellation.** `Cancel` frames carry the `corr` of the target `Call` or stream; handlers observe
 an `AbortSignal` in JS and a `CancelToken` in Rust.
 
-**Schema-first contracts.** Channels are meant to be declared in TypeScript `.k.ts` files using
+**Schema-first contracts.** The general destination is TypeScript `.k.ts` authoring through
 `@keld/schema`, from which `keld gen` emits TS client/server stubs, Rust `serde` types and handler
 traits, the channel table for the handshake, and — the part that matters most — the **permission
 stubs**, so that the manifest generator and the guard enforce the same source of truth
-([`02` §4](../architecture/02-ipc.md)). Neither `@keld/schema` nor `keld gen` exists; `EchoRequest`
-is hand-written.
+([`02` §4](../architecture/02-ipc.md)). Neither `@keld/schema` nor live `keld gen` exists. KEL-98's
+bounded bootstrap derives checked-in compile-time TypeScript payload declarations from the
+already-shipped Rust `EchoRequest` / `EchoResponse` structs; the current echo adapter imports and
+re-exports those declarations as types while retaining its independently tested postcard codec.
+This does not become the general schema-authoring model or replace runtime validation.
 
 ---
 
@@ -510,7 +530,7 @@ without a spec change.
 |---|---|---|---|
 | `keld.config.ts` | App identity, windows, runtime choice, engine policy, dev server | `keld migrate` / `create-keld` | **Partial** — the macOS/Windows dev compiler reads `name`, `entry`, and `renderer`; the full schema is absent, and the no-flag host consumes only compiled `keld.boot.json` |
 | `keld.permissions.jsonc` | Capability manifest — see [`03` §2](../architecture/03-security.md) | `keld migrate` + the doctor recorder | **No** |
-| `keld.build.ts` | Packaging: targets, signing, update feed, delta settings | `keld migrate`, from electron-builder config | **No** |
+| `keld.build.ts` | Packaging: targets, signing, full update feed, optional delta settings | `keld migrate`, from electron-builder config | **No** |
 | `keld.compat.ts` | Compat switches: quirks flags, `sendSync` policy, shim logging | `keld migrate`, migrated apps only | **No** |
 
 Two more files are *edited* rather than owned: `package.json` (scripts and `@keld/*` deps replacing
@@ -520,14 +540,15 @@ in the migration path.
 
 ### What `keld.config.ts` actually is today
 
-`keld create <name>` writes seven files (`crates/keld-cli/src/template.rs`):
-`keld.config.ts`, `package.json`, `index.html`, `src/kipc-transport.ts`, `src/main.ts`,
-`src/kipc.ts`, and `.gitignore`.
+`keld create <name>` writes eight files (`crates/keld-cli/src/template.rs`):
+`keld.config.ts`, `package.json`, `index.html`, `src/kipc-transport.ts`,
+`src/echo.generated.ts`, `src/main.ts`, `src/kipc.ts`, and `.gitignore`.
 The generated `src/kipc-transport.ts` is the embedded canonical transport
 (`packages/@keld/kipc/src/transport.ts`). The generated `src/main.ts` composes the
-hand-written, golden-vector-tested echo adapter with `src/main-body.ts`. The generated
-`src/kipc.ts` is a tiny compatibility re-export from `src/main.ts`, not a second wire
-implementation. The repository's
+golden-vector-tested echo adapter with `src/main-body.ts`; the adapter's type-only imports
+consume Rust-derived declarations from `src/echo.generated.ts`. That source-time-only file
+is not copied into the runtime stage. The generated `src/kipc.ts` is a tiny compatibility
+re-export from `src/main.ts`, not a second wire implementation. The repository's
 `src/kipc.test.ts` is deliberately not emitted. The config is this, in full, with `{{name}}`
 substituted at scaffold time:
 
@@ -741,7 +762,8 @@ Before you touch anything in this document's scope:
 
 | Change | Requires |
 |---|---|
-| Frame layout, `FrameKind`, flags, or handshake | Protocol version bump + spec [`02` §2](../architecture/02-ipc.md) edit + code, **one PR**, wire review gate |
+| Shared KIPC frame layout, `FrameKind`, flags, or ordinary handshake | Global protocol version bump + spec [`02` §2](../architecture/02-ipc.md) edit + code, **one PR**, wire review gate |
+| A separate protocol with a divergent handshake | It MAY use an independent version only behind a disjoint endpoint namespace selected before parsing/handshake. Document the owner and wire contract in spec [`02` §2](../architecture/02-ipc.md), and test both cross-protocol refusals; a shared endpoint requires the global version bump above. |
 | A new channel or a change to an existing payload struct | Public API review gate; contract belongs in a `.k.ts` schema once `@keld/schema` exists |
 | Manifest schema (`keld.permissions.jsonc`) | Permission-model review gate **and** wire review gate |
 | Update feed format | Wire review gate |

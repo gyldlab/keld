@@ -1,0 +1,631 @@
+{
+  "schema": "keld.ci-inputs/v2",
+  "owner": "tools/ci_inputs.py (invoked only by tools/ci_changes.sh); stateless schema v2, GH-1275",
+  "known_inputs": [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "README.md",
+    "CONTRIBUTING.md",
+    "LICENSE*",
+    "NOTICE*",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "rustfmt.toml",
+    "deny.toml",
+    "justfile",
+    "bunfig.toml",
+    "llms.txt",
+    "llms-full.txt",
+    "crates/*",
+    "packages/*",
+    "docs/*",
+    "tools/*",
+    ".agents/*",
+    ".github/*",
+    ".codex/*",
+    ".config/*",
+    ".cargo/*",
+    ".githooks/*",
+    ".gitignore",
+    ".gitleaks.toml",
+    ".gitleaksignore"
+  ],
+  "consumers": [
+    {
+      "owner": "Rust workspace external reads",
+      "outputs": [
+        "input_rust",
+        "input_registry",
+        "local_fmt-check",
+        "local_clippy",
+        "local_test"
+      ],
+      "inputs": [
+        "packages/*",
+        "tools/*.rs",
+        "tools/*.ts",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "rustfmt.toml",
+        "clippy.toml",
+        ".cargo/*",
+        ".config/nextest.toml",
+        "crates/*",
+        "crates/keld-compat/fixtures/lifecycle-corpus/report.md",
+        ".gitattributes"
+      ],
+      "documentation_inputs": [
+        "llms-full.txt",
+        "docs/onboarding/README.md",
+        "docs/onboarding/04-wire-formats-and-contracts.md",
+        "docs/architecture/01-overview.md",
+        "docs/architecture/02-ipc.md",
+        "docs/architecture/03-security.md",
+        "docs/architecture/04-electron-compat.md",
+        "docs/architecture/05-webview-and-native.md",
+        "docs/architecture/06-runtime-and-tooling.md",
+        "docs/architecture/07-agent-experience.md",
+        "docs/engineering/product-status.md",
+        "docs/engineering/decisions.md",
+        "docs/engineering/keld-error-codes.md",
+        "docs/engineering/budget-scoreboard.md",
+        "docs/engineering/compat-scoreboard.md"
+      ],
+      "contract": "Rust external reads include the CLI recursive tools registry scan, the CLI GH-508 channel-id and capability-literal scan of every crate source tree, the generated docs_search corpus and its reviewed source inventory, security docs assertions, and crate-local reports. The native public_fs/project.rs composition reader consumes the public API index through the existing bundle owner and is registered before its feature source lands. Reader-source drift invalidates this recorded scope. Agents still run full format, clippy and workspace tests before completion; ordinary invocation routing selects these gates only when relevant. documentation_inputs are read only as text by keld-cli: docs_search embeds llms-full.txt behind keld_cli::mcp, which no reverse dependent calls (keld-host tests use keld_cli::boot, create and dev only), and the registry and doctor tests are keld-cli's own. A diff whose only matching paths are documentation_inputs therefore selects keld-cli without Cargo reverse dependents (#624). A reverse dependent that starts reading one of these documents, or calling keld_cli::mcp, must move that document into inputs in the same change.",
+      "reader_set": "rust-readers"
+    },
+    {
+      "owner": "Bun package readers",
+      "outputs": [
+        "input_ts",
+        "local_typescript"
+      ],
+      "inputs": [
+        "bunfig.toml",
+        "crates/keld-ipc/tests/fixtures/*",
+        "crates/keld-cli/templates/*",
+        "crates/*.ts",
+        "*receiver-semantics-v0.tsv",
+        "crates/keld-ipc/src/lib.rs",
+        "crates/keld-ipc/src/frame.rs",
+        "crates/keld-ipc/src/echo.rs",
+        "crates/keld-ipc/src/lifecycle.rs",
+        "crates/keld-ipc/src/channel_table.rs",
+        "crates/keld-core/src/app_session/window_registry.rs",
+        "crates/keld-native/src/fs.rs",
+        "crates/keld-native/src/auth/mod.rs",
+        "crates/keld-native/tests/fixtures/fs-payload-v0.tsv",
+        "crates/keld-wv/src/wkwebview/macos_bridge.rs",
+        ".[gG][iI][tT][iI][gG][nN][oO][rR][eE]",
+        "*/.[gG][iI][tT][iI][gG][nN][oO][rR][eE]",
+        ".[oO][xX][fF][mM][tT][rR][cC].[jJ][sS][oO][nN]",
+        "*/.[oO][xX][fF][mM][tT][rR][cC].[jJ][sS][oO][nN]",
+        ".[oO][xX][fF][mM][tT][rR][cC].[jJ][sS][oO][nN][cC]",
+        "*/.[oO][xX][fF][mM][tT][rR][cC].[jJ][sS][oO][nN][cC]",
+        "[oO][xX][fF][mM][tT].[cC][oO][nN][fF][iI][gG].[tT][sS]",
+        "*/[oO][xX][fF][mM][tT].[cC][oO][nN][fF][iI][gG].[tT][sS]",
+        "[oO][xX][fF][mM][tT].[cC][oO][nN][fF][iI][gG].[mM][tT][sS]",
+        "*/[oO][xX][fF][mM][tT].[cC][oO][nN][fF][iI][gG].[mM][tT][sS]",
+        "[pP][aA][cC][kK][aA][gG][eE].[jJ][sS][oO][nN]",
+        "*/[pP][aA][cC][kK][aA][gG][eE].[jJ][sS][oO][nN]",
+        "[pP][aA][cC][kK][aA][gG][eE].[yY][aA][mM][lL]",
+        "*/[pP][aA][cC][kK][aA][gG][eE].[yY][aA][mM][lL]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[jJ][sS][oO][nN]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[jJ][sS][oO][nN]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[yY][mM][lL]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[yY][mM][lL]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[yY][aA][mM][lL]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[yY][aA][mM][lL]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[jJ][sS][oO][nN]5",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[jJ][sS][oO][nN]5",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[jJ][sS]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[jJ][sS]",
+        "[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[jJ][sS]",
+        "*/[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[jJ][sS]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[tT][sS]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[tT][sS]",
+        "[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[tT][sS]",
+        "*/[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[tT][sS]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[mM][jJ][sS]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[mM][jJ][sS]",
+        "[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[mM][jJ][sS]",
+        "*/[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[mM][jJ][sS]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[mM][tT][sS]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[mM][tT][sS]",
+        "[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[mM][tT][sS]",
+        "*/[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[mM][tT][sS]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[cC][jJ][sS]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[cC][jJ][sS]",
+        "[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[cC][jJ][sS]",
+        "*/[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[cC][jJ][sS]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[cC][tT][sS]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[cC][tT][sS]",
+        "[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[cC][tT][sS]",
+        "*/[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[cC][tT][sS]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[tT][oO][mM][lL]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[tT][oO][mM][lL]",
+        ".[eE][dD][iI][tT][oO][rR][cC][oO][nN][fF][iI][gG]",
+        "*/.[eE][dD][iI][tT][oO][rR][cC][oO][nN][fF][iI][gG]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][iI][gG][nN][oO][rR][eE]"
+      ],
+      "contract": "Bun reads IPC constants and CLI templates, generates and drift-checks the channel-table region from crates/keld-ipc/src/channel_table.rs, scans production TypeScript and the macOS bridge's injected scripts for channel-id literals, echo declaration ownership scans every production .ts under crates and packages, and transport tests census every public-tree filename ending receiver-semantics-v0.tsv. The bounded native FS generator/check reads crates/keld-native/src/fs.rs, and its semantic tests read crates/keld-native/tests/fixtures/fs-payload-v0.tsv. The bounded native auth generator/check and its semantic tests read crates/keld-native/src/auth/mod.rs. Source-reader drift invalidates exclusions. Native formatter configuration and ignore inputs also control destination-aware stdin normalization used by codegen and generated freshness tests.",
+      "reader_set": "bun-readers"
+    },
+    {
+      "owner": "Unsafe and instruction inventory",
+      "outputs": [
+        "local_agents-md"
+      ],
+      "inputs": [
+        "crates/*",
+        "AGENTS.md",
+        "*/AGENTS.md",
+        ".agents/*"
+      ],
+      "contract": "",
+      "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Atomic protocol",
+      "outputs": [
+        "local_atomic-protocol"
+      ],
+      "inputs": [
+        "AGENTS.md",
+        ".agents/*",
+        ".github/*",
+        "docs/agents/*",
+        "docs/onboarding/*",
+        "CONTRIBUTING.md"
+      ],
+      "contract": "",
+      "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Instruction and workspace self-tests",
+      "outputs": [
+        "local_agent-context-test"
+      ],
+      "inputs": [
+        ".codex/*",
+        ".agents/*",
+        "docs/agents/*"
+      ],
+      "contract": "The live agent-context and workspace checks remain unconditional because local task records are not Git diff inputs.",
+      "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Router self-tests",
+      "outputs": [
+        "local_ci-router-test"
+      ],
+      "inputs": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "packages/*",
+        ".github/*",
+        ".config/*",
+        ".cargo/*",
+        "crates/*/Cargo.toml",
+        "crates/keld-cli/tests/error_registry.rs",
+        "crates/keld-cli/src/mcp/docs_search.rs",
+        "crates/keld-cli/tests/doctor_mcp.rs",
+        "crates/keld-cli/src/template.rs",
+        "crates/keld-cli/tests/bun_echo.rs",
+        "crates/keld-compat/tests/lifecycle_corpus.rs",
+        "crates/keld-compat/tests/lifecycle_evidence_report.rs",
+        "crates/keld-compat/tests/electron_lifecycle.rs",
+        "crates/keld-core/src/app_session/tests/worker_link_e2e.rs",
+        "crates/keld-compat/tests/support/corpus_manifest.rs",
+        "crates/keld-compat/tests/support/corpus_admission.rs",
+        "crates/keld-compat/tests/support/corpus_census.rs",
+        "crates/keld-compat/tests/support/corpus_citation.rs",
+        "crates/keld-ipc/tests/worker_link.rs",
+        "crates/keld-runtime/src/unix_role_fixture.rs",
+        "crates/keld-runtime/tests/linux_strict_boundary.rs",
+        "crates/keld-runtime/tests/windows_lpac_app_link.rs",
+        "crates/keld-runtime/tests/windows_primary_generation.rs",
+        "crates/keld-host/tests/no_flag/linux/support/project.rs",
+        "crates/keld-host/tests/no_flag/windows/support/product.rs",
+        "crates/keld-host/tests/no_flag/macos/support/product.rs",
+        "crates/keld-host/tests/no_flag/macos/renderer_bridge.rs",
+        "crates/keld-update/src/windows_extraction/tests.rs",
+        "crates/keld-update/src/windows_extraction/tests/readback_integrity.rs",
+        "crates/keld-update/src/windows_extraction/tests/root_admission.rs",
+        "crates/keld-update/src/windows_extraction/tests/source_admission.rs",
+        "crates/keld-update/src/windows_extraction/tests/stage_refusals.rs",
+        "crates/keld-update/src/windows_baseline/tests/support.rs",
+        "crates/keld-update/src/records/tests.rs",
+        "crates/keld-updater-helper/tests/lint_config.rs",
+        "crates/keld-cli/tests/channel_table_scan.rs",
+        "crates/keld-cli/tests/channel_id_feature.rs",
+        "crates/keld-cli/tests/support/rust_source_scan.rs",
+        "tools/llms_docs.rs"
+      ],
+      "contract": "",
+      "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Checkout hook contract",
+      "outputs": [
+        "local_hooks-test"
+      ],
+      "inputs": [
+        "tools/hooks_test.sh"
+      ],
+      "contract": "",
+      "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Audit mutation suite",
+      "outputs": [
+        "local_audit-docs-test"
+      ],
+      "inputs": [
+        "README.md",
+        "docs/audits/*"
+      ],
+      "contract": "Copies README and the audit tree and reads historical publication anchors. Live verifier runs unconditionally for ancestry/history changes.",
+      "reader_set": "audit-readers"
+    },
+    {
+      "owner": "Placeholder scanner and self-tests",
+      "outputs": [
+        "local_doc-placeholders-test",
+        "local_doc-placeholders-check"
+      ],
+      "inputs": [
+        "docs/*",
+        ".agents/*",
+        "llms.txt",
+        "llms-full.txt",
+        "AGENTS.md",
+        "README.md"
+      ],
+      "contract": "",
+      "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Spec structure gate and self-tests",
+      "outputs": [
+        "local_spec-structure-test",
+        "local_spec-structure"
+      ],
+      "inputs": [
+        "docs/*",
+        ".agents/*",
+        "*.[lL][iI][tT][cC][oO][fF][fF][eE][eE]",
+        "*.[lL][iI][vV][eE][mM][dD]",
+        "*.[mM][aA][rR][kK][dD][oO][wW][nN]",
+        "*.[mM][dD]",
+        "*.[mM][dD][oO][wW][nN]",
+        "*.[mM][dD][wW][nN]",
+        "*.[mM][dD][xX]",
+        "*.[mM][kK][dD]",
+        "*.[mM][kK][dD][nN]",
+        "*.[mM][kK][dD][oO][wW][nN]",
+        "*.[rR][oO][nN][nN]",
+        "*.[sS][cC][dD]",
+        "*.[wW][oO][rR][kK][bB][oO][oO][kK]"
+      ],
+      "contract": "Self-tests use fixtures. The live gate reads docs/specs, the template, every tracked file with an extension in MARKDOWN_EXTENSIONS of tools/markdown_paths.rs, in any case, relative link targets and Git history. A link target outside these inputs is a LINK-CODE failure, so a change that skips this gate cannot stale a spec link.",
+      "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Product status and self-tests",
+      "outputs": [
+        "local_product-status-test",
+        "local_product-status-check"
+      ],
+      "inputs": [],
+      "contract": "Fixture self-tests consume the checker and its direct modules only. The separate live checker always validates Git evidence/ancestry and current consumers.",
+      "reader_set": "status-test-readers"
+    },
+    {
+      "owner": "Generated corpus",
+      "outputs": [
+        "local_llms-test",
+        "local_llms-check"
+      ],
+      "inputs": [
+        "docs/*",
+        "llms.txt",
+        "llms-full.txt"
+      ],
+      "contract": "tools/llms_docs.rs is in the bound reader set: widening SOURCES invalidates this consumer before any exclusion is reused.",
+      "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Repository hygiene",
+      "outputs": [
+        "local_hygiene"
+      ],
+      "inputs": [
+        "bunfig.toml",
+        "crates/keld-cli/templates/hello/.gitignore",
+        ".github/*",
+        ".gitignore",
+        ".config/*",
+        ".codex/*",
+        ".agents/*",
+        "AGENTS.md",
+        "*/AGENTS.md",
+        "crates/keld-ipc/channel_allocations.txt",
+        "crates/keld-ipc/src/channel_table.rs"
+      ],
+      "contract": "ci-hygiene check also compares crates/keld-ipc/channel_allocations.txt with its merge base (GH-508 append-only rule); the baseline and channel_table.rs select it, as the hosted router does.",
+      "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Rust documentation",
+      "outputs": [
+        "local_doc"
+      ],
+      "inputs": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/*",
+        "packages/*",
+        "llms-full.txt",
+        "tools/*",
+        "crates/*"
+      ],
+      "contract": "Rust documentation compiles workspace sources including cross-tree include_str and include_bytes inputs.",
+      "reader_set": "rustdoc-readers"
+    },
+    {
+      "owner": "Dependency policy",
+      "outputs": [
+        "local_deny"
+      ],
+      "inputs": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/*/Cargo.toml",
+        "deny.toml",
+        "crates/keld-updater-helper/deny.toml",
+        "rust-toolchain.toml",
+        ".cargo/*"
+      ],
+      "contract": "",
+      "reader_set": "dependency-command"
+    },
+    {
+      "owner": "Mermaid local wrapper",
+      "outputs": [
+        "input_mermaid"
+      ],
+      "inputs": [
+        "tools/mermaid*",
+        "tools/markdown_paths.rs",
+        "tools/markdown_contract.rs",
+        "tools/repo_path_contract.rs",
+        "tools/justfile_contract.rs",
+        ".github/workflows/*"
+      ],
+      "contract": "",
+      "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Native JavaScript formatting",
+      "outputs": [
+        "local_js-fmt-check",
+        "input_hygiene"
+      ],
+      "inputs": [
+        ".[gG][iI][tT][iI][gG][nN][oO][rR][eE]",
+        "*/.[gG][iI][tT][iI][gG][nN][oO][rR][eE]",
+        "*.js",
+        "*.jsx",
+        "*.mjs",
+        "*.cjs",
+        "*.ts",
+        "*.tsx",
+        "*.mts",
+        "*.cts",
+        "justfile",
+        "bunfig.toml",
+        "crates/keld-ipc/src/echo.rs",
+        "crates/keld-ipc/src/channel_table.rs",
+        "crates/keld-native/src/fs.rs",
+        "crates/keld-native/src/auth/mod.rs",
+        ".[oO][xX][fF][mM][tT][rR][cC].[jJ][sS][oO][nN]",
+        "*/.[oO][xX][fF][mM][tT][rR][cC].[jJ][sS][oO][nN]",
+        ".[oO][xX][fF][mM][tT][rR][cC].[jJ][sS][oO][nN][cC]",
+        "*/.[oO][xX][fF][mM][tT][rR][cC].[jJ][sS][oO][nN][cC]",
+        "[oO][xX][fF][mM][tT].[cC][oO][nN][fF][iI][gG].[tT][sS]",
+        "*/[oO][xX][fF][mM][tT].[cC][oO][nN][fF][iI][gG].[tT][sS]",
+        "[oO][xX][fF][mM][tT].[cC][oO][nN][fF][iI][gG].[mM][tT][sS]",
+        "*/[oO][xX][fF][mM][tT].[cC][oO][nN][fF][iI][gG].[mM][tT][sS]",
+        "[pP][aA][cC][kK][aA][gG][eE].[jJ][sS][oO][nN]",
+        "*/[pP][aA][cC][kK][aA][gG][eE].[jJ][sS][oO][nN]",
+        "[pP][aA][cC][kK][aA][gG][eE].[yY][aA][mM][lL]",
+        "*/[pP][aA][cC][kK][aA][gG][eE].[yY][aA][mM][lL]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[jJ][sS][oO][nN]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[jJ][sS][oO][nN]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[yY][mM][lL]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[yY][mM][lL]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[yY][aA][mM][lL]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[yY][aA][mM][lL]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[jJ][sS][oO][nN]5",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[jJ][sS][oO][nN]5",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[jJ][sS]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[jJ][sS]",
+        "[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[jJ][sS]",
+        "*/[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[jJ][sS]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[tT][sS]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[tT][sS]",
+        "[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[tT][sS]",
+        "*/[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[tT][sS]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[mM][jJ][sS]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[mM][jJ][sS]",
+        "[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[mM][jJ][sS]",
+        "*/[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[mM][jJ][sS]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[mM][tT][sS]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[mM][tT][sS]",
+        "[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[mM][tT][sS]",
+        "*/[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[mM][tT][sS]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[cC][jJ][sS]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[cC][jJ][sS]",
+        "[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[cC][jJ][sS]",
+        "*/[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[cC][jJ][sS]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[cC][tT][sS]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[cC][tT][sS]",
+        "[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[cC][tT][sS]",
+        "*/[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[cC][tT][sS]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[tT][oO][mM][lL]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[tT][oO][mM][lL]",
+        ".[eE][dD][iI][tT][oO][rR][cC][oO][nN][fF][iI][gG]",
+        "*/.[eE][dD][iI][tT][oO][rR][cC][oO][nN][fF][iI][gG]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][iI][gG][nN][oO][rR][eE]"
+      ],
+      "contract": "Direct native Bun JS/TS globs use root bunfig.toml and native ignores, including nonignored untracked files locally. The existing echo generator explicitly checks freshness/stamps. Its exact Rust enum/channel inputs select the same gate; hosted hygiene is additively routed by ci_changes.sh. Exact Bun 1.4.4 config basenames use ASCII case classes for Windows discovery; ancestor configs apply recursively, while .prettierignore is cwd-only. This same consumer selects hosted hygiene through input_hygiene.",
+      "reader_set": "policy-readers"
+    }
+  ],
+  "reader_sets": {
+    "rust-readers": {
+      "patterns": [
+        "crates/keld-cli/tests/error_registry.rs",
+        "crates/keld-cli/src/mcp/docs_search.rs",
+        "crates/keld-cli/tests/doctor_mcp.rs",
+        "crates/keld-cli/src/template.rs",
+        "crates/keld-cli/tests/bun_echo.rs",
+        "crates/keld-compat/tests/lifecycle_corpus.rs",
+        "crates/keld-compat/tests/lifecycle_evidence_report.rs",
+        "crates/keld-compat/tests/electron_lifecycle.rs",
+        "crates/keld-core/src/app_session/tests/worker_link_e2e.rs",
+        "crates/keld-compat/tests/support/corpus_manifest.rs",
+        "crates/keld-compat/tests/support/corpus_admission.rs",
+        "crates/keld-compat/tests/support/corpus_census.rs",
+        "crates/keld-compat/tests/support/corpus_citation.rs",
+        "crates/keld-ipc/tests/worker_link.rs",
+        "crates/keld-runtime/src/unix_role_fixture.rs",
+        "crates/keld-runtime/tests/linux_strict_boundary.rs",
+        "crates/keld-runtime/tests/windows_lpac_app_link.rs",
+        "crates/keld-runtime/tests/windows_primary_generation.rs",
+        "crates/keld-host/tests/no_flag/linux/support/project.rs",
+        "crates/keld-host/tests/no_flag/windows/support/product.rs",
+        "crates/keld-host/tests/no_flag/macos/support/product.rs",
+        "crates/keld-host/tests/no_flag/macos/renderer_bridge.rs",
+        "crates/keld-host/tests/no_flag_macos.rs",
+        "crates/keld-host/tests/no_flag/macos/module_process.rs",
+        "crates/keld-compat/tests/module_process_corpus.rs",
+        "crates/keld-compat/tests/module_process_reference.rs",
+        "crates/keld-host/tests/no_flag/macos/facade_ready.rs",
+        "crates/keld-host/tests/no_flag/macos/facade_window.rs",
+        "crates/keld-update/src/windows_extraction/tests.rs",
+        "crates/keld-update/src/windows_extraction/tests/readback_integrity.rs",
+        "crates/keld-update/src/windows_extraction/tests/root_admission.rs",
+        "crates/keld-update/src/windows_extraction/tests/source_admission.rs",
+        "crates/keld-update/src/windows_extraction/tests/stage_refusals.rs",
+        "crates/keld-update/src/windows_baseline/tests/support.rs",
+        "crates/keld-update/src/records/tests.rs",
+        "crates/keld-updater-helper/tests/lint_config.rs",
+        "crates/keld-cli/tests/channel_table_scan.rs",
+        "crates/keld-cli/tests/channel_id_feature.rs",
+        "crates/keld-cli/tests/support/rust_source_scan.rs",
+        "tools/llms_docs.rs",
+        "crates/keld-host/tests/no_flag/macos/public_fs/project.rs",
+        "crates/keld-host/tests/no_flag/macos/public_fs.rs",
+        "crates/keld-core/src/app_session/window_router/authenticated_tests.rs",
+        "crates/keld-core/src/app_session/window_router/fixtures/authenticated_window_role.ts",
+        "crates/keld-host/tests/no_flag/macos/multifile_staging/fixture.rs"
+      ]
+    },
+    "bun-readers": {
+      "patterns": [
+        "packages/*",
+        "justfile"
+      ]
+    },
+    "policy-readers": {
+      "patterns": [
+        "justfile",
+        "tools/*",
+        "docs/audits/*.py",
+        ".githooks/*",
+        "rust-toolchain.toml"
+      ]
+    },
+    "audit-readers": {
+      "patterns": [
+        "docs/audits/*.py",
+        "justfile"
+      ]
+    },
+    "rustdoc-readers": {
+      "patterns": [
+        "justfile",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/*"
+      ]
+    },
+    "dependency-command": {
+      "patterns": [
+        "justfile"
+      ]
+    },
+    "status-test-readers": {
+      "patterns": [
+        "tools/product_status.rs",
+        "tools/justfile_contract.rs",
+        "tools/repo_path_contract.rs",
+        "rust-toolchain.toml",
+        "justfile"
+      ]
+    }
+  },
+  "live_inputs": {
+    "agent-context": "Ignored/local workspace task and resource records are read by tools/workspace.py check; malformed records can fail with identical tracked bytes.",
+    "audit-docs": "Publication ancestry, historical report bytes and Git object availability are read by docs/audits/verify.py; missing/replaced history can fail with identical tracked bytes.",
+    "product-status-check": "The ledger names evidence commits whose object availability and ancestry are validated; that live Git state is not represented by changed source paths.",
+    "deny": "cargo deny check consumes the mutable advisory database as well as the lockfile; a new advisory can change its result with identical tracked bytes."
+  },
+  "rust_source_census": {
+    "patterns": [
+      "crates/*"
+    ],
+    "contract": "Broad census compares path membership against the comparison base: a crate path that the base did not track, or that the change removes, selects every lane. Existing crate-content edits select Rust through the crates/* input edge. A new cross-tree read in an existing source must register that reader and its input edge in the same change; a change that touches a registered reader runs every consumer behind it. Nothing is recorded between changes (GH-1275)."
+  },
+  "rust_package_inputs": {
+    "keld-runtime": [
+      "crates/keld-cli/templates/*",
+      "packages/@keld/kipc/src/transport.ts"
+    ],
+    "keld-host": [
+      "crates/keld-cli/templates/*",
+      "packages/@keld/api/*",
+      "packages/@keld/kipc/src/transport.ts"
+    ],
+    "keld-compat": [
+      "packages/@keld/electron/*",
+      "packages/@keld/api/*",
+      "packages/@keld/kipc/src/transport.ts",
+      "crates/keld-compat/fixtures/lifecycle-corpus/*",
+      "crates/keld-host/**",
+      "crates/keld-cli/src/**"
+    ],
+    "keld-update": [
+      "crates/keld-pack/tests/fixtures/windows-v0-content.tar"
+    ],
+    "keld-updater-helper": [
+      "clippy.toml"
+    ]
+  },
+  "rust_package_documentation_inputs": {
+    "keld-update": [
+      "docs/specs/kel53-full-package-activation.md"
+    ]
+  },
+  "rust_package_documentation_contract": "Each listed document is read only as text by its package's own #[cfg(test)] code (keld-update: include_str! in src/records/tests.rs), so no reverse dependent compiles or reads it. A diff whose only matching paths are these documents selects that package without Cargo reverse dependents (#624); any other input of the same package keeps the expansion."
+}

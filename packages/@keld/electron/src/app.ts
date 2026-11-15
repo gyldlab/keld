@@ -1,87 +1,88 @@
 /**
- * Electron `app` shim backed by host lifecycle kipc (KEL-72).
+ * Electron app compatibility facade over @keld/api (KEL-72 / KEL-142).
  *
- * Oracle: https://www.electronjs.org/docs/latest/api/app
- * - `app.whenReady()` resolves after the host `Ready` event, not at import.
- * - `app.quit()` is a kipc `Quit` Call; the host ending the session is the
- *   process-lifecycle oracle.
- * - `window-all-closed` is emitted only when the host sends `LastWindowClosed`.
- *   If no listener is registered, Electron's default is `app.quit()`
- *   (https://www.electronjs.org/docs/latest/api/app#event-window-all-closed).
- *   `removeListener` / `off` restore that default after the last subscriber is removed.
+ * Generic lifecycle/session ownership lives in @keld/api. This file owns only
+ * Electron event names, listener behavior, and the default quit on
+ * window-all-closed when no user listener is registered.
  */
+import {
+  app as apiApp,
+  getWindowSnapshots,
+  hasObservedHostReady,
+} from "../../api/src/app.ts";
 
-import { LifecycleLink } from "./link";
+import {
+  nativeFacadeBootSelected,
+  stateMap,
+  stateMapDelete,
+  stateMapGet,
+  stateMapSet,
+} from "../../kipc/src/transport.ts";
 
-type AppListener = () => void;
+type AppListener = (...args: never[]) => void;
 
-const listeners = new Map<string, AppListener[]>();
+const listeners = stateMap<string, AppListener[]>();
+// The canonical Host-preloaded transport captures the launch selection before
+// application dependencies. Ready/Subscribe and Host ownership still authorize
+// window access; this immutable hint only selects the fail-closed Quit policy.
+let readyEventEmitted = false;
+let readyObservation: Promise<void> | undefined;
 
-function emit(event: string): void {
-  const snapshot = listeners.get(event);
+function emit(event: string, ...args: unknown[]): void {
+  const snapshot = stateMapGet(listeners, event);
   if (!snapshot) return;
   for (const listener of snapshot.slice()) {
     try {
-      listener();
+      Reflect.apply(listener, undefined, args);
     } catch {
-      // Isolate each listener. Host Events arrive on the kipc read loop;
-      // an uncaught throw would skip remaining listeners and abort the loop.
+      // A user callback must not break lifecycle delivery.
     }
   }
 }
 
-let hostReady = false;
-let linkDead: Error | undefined;
-let readyWaiters: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
-let linkPromise: Promise<LifecycleLink> | undefined;
-/** Per-connect identity; compared by `onLinkDead` so a sync death cannot recache. */
-let linkSession: object | undefined;
-
-function onHostReady(): void {
-  if (hostReady) return;
-  hostReady = true;
-  linkDead = undefined;
-  // Drain whenReady waiters before user `ready` listeners so a throw in a
-  // listener cannot leave whenReady() pending (even if emit isolation is
-  // later weakened).
-  const waiters = readyWaiters;
-  readyWaiters = [];
-  for (const waiter of waiters) waiter.resolve();
-  emit("ready");
+/** Electron event names and application listeners have this single owner. */
+export function emitNativeAppEvent(event: string, ...args: unknown[]): void {
+  emit(event, ...args);
 }
 
-function failReadyWaiters(err: Error): void {
-  linkDead = err;
-  const waiters = readyWaiters;
-  readyWaiters = [];
-  for (const waiter of waiters) {
-    try {
-      waiter.reject(err);
-    } catch {
-      // Isolate each waiter. A throw must not skip linkPromise clear.
-    }
-  }
-}
-
-/**
- * Attach a handler so an unawaited rejection is not "unhandled", without
- * swallowing it for anyone who does await the same promise.
- */
 function ignoreIfUnawaited(promise: Promise<unknown>): void {
   void promise.catch(() => {});
 }
 
+function observeReady(): Promise<void> {
+  if (readyEventEmitted) return Promise.resolve();
+  if (readyObservation) return readyObservation;
+  // The API has already consumed the one-shot Host Ready when it is true
+  // here. An observer installed later cannot retroactively emit Electron
+  // `ready`, even though whenReady() must remain fulfilled.
+  const hostWasReady = hasObservedHostReady();
+  const ready = apiApp.whenReady();
+  readyObservation = ready;
+  ignoreIfUnawaited(ready);
+  if (hostWasReady) {
+    readyEventEmitted = true;
+    return ready;
+  }
+  void ready.then(
+    () => {
+      if (readyEventEmitted) return;
+      readyEventEmitted = true;
+      emit("ready");
+    },
+    () => {
+      if (readyObservation === ready) readyObservation = undefined;
+    },
+  );
+  return ready;
+}
+
 function hasListeners(event: string): boolean {
-  const list = listeners.get(event);
+  const list = stateMapGet(listeners, event);
   return list !== undefined && list.length > 0;
 }
 
-/**
- * Drop one matching subscriber (Node EventEmitter: last match, then stop).
- * Empty `window-all-closed` lists restore Electron's default quit.
- */
 function removeAppListener(event: string, listener: AppListener): void {
-  const list = listeners.get(event);
+  const list = stateMapGet(listeners, event);
   if (!list) return;
   for (let i = list.length - 1; i >= 0; i -= 1) {
     if (list[i] === listener) {
@@ -89,137 +90,95 @@ function removeAppListener(event: string, listener: AppListener): void {
       break;
     }
   }
-  if (list.length === 0) {
-    listeners.delete(event);
-  }
+  if (list.length === 0) stateMapDelete(listeners, event);
 }
 
-/**
- * kipc `Quit` Call. Shared by public `app.quit()` and the Electron default
- * for a listener-less `LastWindowClosed`. Always returns a Promise so a
- * failed transport is `KELD-IPC-*`, not silent `void`.
- */
-function sendQuit(): Promise<void> {
-  const done = ensureLink().then((link) => link.quit());
-  ignoreIfUnawaited(done);
-  return done;
-}
-
+// A `window-all-closed` listener that does not quit keeps the app alive, except at a
+// Keld profile handover (an in-session update), where the host closes the window,
+// delivers this event and ends the application session 10 s later if it has not
+// requested quit by then (KEL-53 §4 "Profile handover", the quit deadline D).
 function onLastWindowClosed(): void {
+  // GH531's Host wrote LastWindowClosed when the registry reached zero, but
+  // a synchronous `closed` listener may construct a replacement BrowserWindow
+  // before that event reaches this Bun role. Electron's native window list
+  // checks the *current* membership after closed callbacks. Recheck the
+  // authenticated Host mirror before notifying user `window-all-closed`
+  // listeners as well as before the default quit. An unready/retired Source is
+  // unknown, not proof of zero windows; fail closed instead of fabricating
+  // application-wide closure while a dirty replacement may still be live.
+  if (nativeFacadeBootSelected) {
+    if (!apiApp.isReady()) return;
+    try {
+      if (getWindowSnapshots().some((window) => !window.host_destroyed)) return;
+    } catch {
+      return;
+    }
+  }
   if (hasListeners("window-all-closed")) {
     emit("window-all-closed");
     return;
   }
-  // Fire-and-forget: this callback runs on the kipc read loop. Awaiting
-  // quit here would stall Events; a throw would abort the loop. Isolation
-  // for user listeners is `emit`'s per-listener try/catch.
-  void sendQuit();
+  // A synchronous `closed` listener can create a replacement window after
+  // the Host wrote LastWindowClosed but before this queued notification is
+  // delivered. Recheck the *current* mirror using the same guarded facade
+  // Quit; direct API Quit would destroy that replacement without veto.
+  const quitting = app.quit();
+  ignoreIfUnawaited(quitting);
 }
 
-function ensureLink(): Promise<LifecycleLink> {
-  if (linkPromise) return linkPromise;
-  const envLink = process.env.KELD_APP_LINK;
-  if (!envLink) {
-    return Promise.reject(
-      new Error(
-        "KELD-IPC-007: KELD_APP_LINK is unset. Run under a Keld host (`keld dev` or a lifecycle test) so the host mints <endpoint>#<64 hex chars>.",
-      ),
-    );
-  }
-  linkDead = undefined;
-  // Token must exist before connect(): onLinkDead can run before connect()
-  // returns (HELLO already failed, or a test stub). Assigning `tracked`
-  // afterward would recache a dead session.
-  const session = {};
-  linkSession = session;
-  const pending = LifecycleLink.connect(envLink, {
-    onReady: onHostReady,
-    onLastWindowClosed,
-    onLinkDead: (err: Error) => {
-      if (linkSession !== session) return;
-      try {
-        failReadyWaiters(err);
-      } finally {
-        // Drop the cached session only before Ready so a later whenReady()
-        // retries. After Ready, Electron stays isReady(); keep the (dead)
-        // link for quit().
-        if (!hostReady && linkSession === session) {
-          linkPromise = undefined;
-        }
-      }
-    },
-  });
-  const tracked = pending.catch((err: unknown) => {
-    if (linkSession === session) {
-      linkPromise = undefined;
-    }
-    throw err;
-  });
-  if (linkSession === session && !linkDead) {
-    linkPromise = tracked;
-  }
-  return tracked;
-}
-
+apiApp.onLastWindowClosed(onLastWindowClosed);
 export const app = {
-  /**
-   * Resolves after the host sends the lifecycle `Ready` event.
-   *
-   * Must not be implemented as `Promise.resolve()` at import time: a fixture
-   * that logs WAITING then awaits this, with the host still holding Ready,
-   * must not print READY. That is the KEL-72 negative control.
-   */
   whenReady(): Promise<void> {
-    if (hostReady) return Promise.resolve();
-    const ready = ensureLink().then(() => {
-      if (hostReady) return;
-      if (linkDead) return Promise.reject(linkDead);
-      return new Promise<void>((resolve, reject) => {
-        if (hostReady) {
-          resolve();
-          return;
-        }
-        if (linkDead) {
-          reject(linkDead);
-          return;
-        }
-        readyWaiters.push({ resolve, reject });
-      });
-    });
-    ignoreIfUnawaited(ready);
-    return ready;
+    return observeReady();
   },
 
-  /** True only after the host `Ready` event. */
   isReady(): boolean {
-    return hostReady;
+    return apiApp.isReady();
   },
 
-  /**
-   * Sends a kipc `Quit` Call. The host replies and ends the session.
-   *
-   * Quirk vs Electron oracle `app.quit(): void`
-   * (https://www.electronjs.org/docs/latest/api/app#appquit): this returns
-   * `Promise<void>` so callers can observe `KELD-IPC-*` when the transport
-   * fails. Electron's `void` is process-lifetime and is not a thenable.
-   * Scoreboard ▲ (`docs/engineering/compat-scoreboard.md`); not a
-   * `keld.compat.ts` toggle. Keep the Promise; do not change the public
-   * signature to `void` to paper over kipc.
-   */
   quit(): Promise<void> {
-    return sendQuit();
+    // GH451's full cancelable before-quit/window-close/will-quit choreography
+    // has not passed its independent spec gate. Never translate Electron
+    // app.quit() into the Host's *forceful* teardown while a native document
+    // window still exists: that would bypass close.preventDefault() and may
+    // discard unsaved edits. A typed refusal is safer than false compatibility.
+    // During a native facade recovery/Subscribe, the mirror deliberately
+    // returns [] until the authenticated Ready barrier. That means 'unknown',
+    // not 'no live windows'. Refuse a pre-Ready facade Quit too. Legacy
+    // renderer boots keep their existing Quit contract unchanged.
+    if (nativeFacadeBootSelected && !apiApp.isReady()) {
+      return Promise.reject(
+        new Error(
+          "KELD-COMPAT-012: native facade Quit is not authorized before Host Ready; the current window census has not been authenticated",
+        ),
+      );
+    }
+    try {
+      if (getWindowSnapshots().some((window) => !window.host_destroyed)) {
+        return Promise.reject(
+          new Error(
+            "KELD-COMPAT-012: app.quit() with live native windows is not yet a cancelable Electron Quit. Close each window with its veto policy before retrying; GH451 owns the full quit choreography.",
+          ),
+        );
+      }
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    ignoreIfUnawaited(observeReady());
+    return apiApp.quit();
   },
 
   on(event: string, listener: AppListener): void {
-    const list = listeners.get(event) ?? [];
+    // A late registration must not join a queued facade Ready notification
+    // if the underlying API already observed the Host event. Pre-Ready
+    // listeners remain enrolled in the existing one-shot observer.
+    if (event === "ready" && hasObservedHostReady()) return;
+    const list = stateMapGet(listeners, event) ?? [];
     list.push(listener);
-    listeners.set(event, list);
+    stateMapSet(listeners, event, list);
+    if (event === "ready") ignoreIfUnawaited(observeReady());
   },
 
-  /**
-   * Node EventEmitter `removeListener` / `off`. Removing the last
-   * `window-all-closed` listener restores default quit.
-   */
   removeListener: removeAppListener,
   off: removeAppListener,
 };

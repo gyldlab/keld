@@ -3,7 +3,7 @@
 //! The registry file is the docs stub. These tests fail when:
 //! - a code is listed twice
 //! - an entry is missing `crate` / `message` / `fix`
-//! - scanned crates or workspace tools emit a code that is not listed
+//! - scanned crates, TypeScript package sources or workspace tools emit an unlisted code
 //! - the registry lists a code the scanned sources do not emit
 //!
 //! Why: a deleted uniqueness check, an empty `fix`, or a new `KELD-WV-008` in
@@ -28,12 +28,25 @@ const SCAN_REL: &[&str] = &[
     "crates/keld-native/src",
     "crates/keld-compat/src",
     "crates/keld-core/src",
+    "crates/keld-update/src",
+    "crates/keld-pack/src",
     // keld-host was absent from this list, so the shipping host binary's error
     // codes sat outside the registry contract entirely. It emits KELD-CLI-044
     // today (main.rs:17), which is registered only because keld-cli/src/flags.rs
     // emits it too and IS scanned -- the coverage was accidental. A code added
     // to keld-host and nowhere else would have shipped unregistered.
     "crates/keld-host/src",
+    // The elevated updater helper binary (KEL-270 T4d S9c) emits KELD-HELPER-*.
+    "crates/keld-updater-helper/src",
+    // The canonical TypeScript transport (GH-527 §4.4): the WorkerLink wake
+    // codes KELD-IPC-022/025/026/027 are emitted only here. Before this entry
+    // a TypeScript code was registered only when Rust emitted the same string.
+    "packages/@keld/kipc/src",
+    // Application-layer errors must not rely on Rust fixture copies.
+    "packages/@keld/api/src",
+    // Public Electron facade errors must not be silently invisible just
+    // because no Rust binary emits the same KELD-COMPAT identifier.
+    "packages/@keld/electron/src",
     "tools",
 ];
 
@@ -340,4 +353,51 @@ fn scanned_source_codes_match_registry() {
         extra.is_empty(),
         "codes in {REGISTRY_REL} not emitted in scanned crates/tools (remove or emit them): {extra:?}"
     );
+}
+
+#[test]
+fn api_emitter_is_scanned_without_a_rust_shadow() {
+    let root = tempfile::tempdir().expect("isolated registry source roots");
+    for rel in SCAN_REL {
+        fs::create_dir_all(root.path().join(rel)).expect("create scanner root");
+    }
+    // An empty Rust file keeps the scanner non-empty without supplying an
+    // accidental copy of an application-layer code.
+    fs::write(root.path().join("crates/keld-core/src/lib.rs"), "")
+        .expect("write empty Rust source");
+    let api = root.path().join("packages/@keld/api/src");
+    fs::create_dir_all(&api).expect("create application source root");
+    fs::copy(
+        workspace_root().join("packages/@keld/api/src/channels.ts"),
+        api.join("channels.ts"),
+    )
+    .expect("copy actual production API emitter");
+    assert!(
+        emitted_codes(root.path()).contains("KELD-API-001"),
+        "the production application emitter must be covered without a Rust copy"
+    );
+}
+
+#[test]
+fn electron_emitter_is_scanned_without_a_rust_shadow() {
+    let root = tempfile::tempdir().expect("isolated registry source roots");
+    for rel in SCAN_REL {
+        fs::create_dir_all(root.path().join(rel)).expect("create scanner root");
+    }
+    // Neither the Rust crates nor the other packages contain these errors.
+    fs::write(root.path().join("crates/keld-core/src/lib.rs"), "")
+        .expect("write empty Rust source");
+    let electron = root.path().join("packages/@keld/electron/src");
+    fs::copy(
+        workspace_root().join("packages/@keld/electron/src/browser-window.ts"),
+        electron.join("browser-window.ts"),
+    )
+    .expect("copy real Electron facade emitter");
+    let emitted = emitted_codes(root.path());
+    for code in ["KELD-COMPAT-010", "KELD-COMPAT-011"] {
+        assert!(
+            emitted.contains(code),
+            "{code} must be covered without Rust shadows or test-only copies"
+        );
+    }
 }

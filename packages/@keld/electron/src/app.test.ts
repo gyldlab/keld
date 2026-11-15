@@ -50,6 +50,34 @@ async function waitChildOrKill(
 }
 
 describe("app.quit vs Electron void", () => {
+  test("native facade refuses pre-Ready Quit when its Host census is not yet trusted", async () => {
+    child = Bun.spawn({
+      cmd: ["bun", "./quit_native_before_ready.ts"],
+      cwd: fixtures,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, KELD_NATIVE_WINDOW_FACADE: "1" },
+    });
+    const { stdout, stderr, code } = await waitChildOrKill(child, 4_000);
+    expect(code).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain("KELD_QUIT_BEFORE_NATIVE_READY_REFUSED");
+  });
+
+  test("delayed LastWindowClosed cannot default-quit a newly created native window", async () => {
+    child = Bun.spawn({
+      cmd: ["bun", "./quit_stale_last_window_closed.ts"],
+      cwd: fixtures,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, KELD_NATIVE_WINDOW_FACADE: "1" },
+    });
+    const { stdout, stderr, code } = await waitChildOrKill(child, 4_000);
+    expect(code).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain("KELD_QUIT_STALE_LAST_WINDOW_SAFE");
+  });
+
   test("returns Promise<void> so unset KELD_APP_LINK is KELD-IPC-007, not silent void", async () => {
     const prev = process.env.KELD_APP_LINK;
     delete process.env.KELD_APP_LINK;
@@ -68,78 +96,105 @@ describe("app.quit vs Electron void", () => {
   });
 });
 
-describe("app.whenReady on link death", () => {
-  test(
-    "rejects whenReady and retries when onLinkDead runs before connect() returns",
-    async () => {
-      child = Bun.spawn({
-        cmd: ["bun", "./app_sync_link_dead.ts"],
-        cwd: fixtures,
-        stdout: "pipe",
-        stderr: "pipe",
-        env: {
-          ...process.env,
-          KELD_APP_LINK: `1#${"ab".repeat(32)}`,
-        },
-      });
-      const { stdout, stderr, code } = await waitChildOrKill(child, 8_000);
-      expect(stderr).toBe("");
-      expect(code).toBe(0);
-      expect(stdout).toContain("KEL72_SYNC_DEAD");
-      expect(stdout).toContain("KEL72_SYNC_DEAD_RETRY_READY");
-      expect(stdout).toContain("KEL72_CONNECT_CALLS=2");
-    },
-    10_000,
-  );
+describe("Electron ready event over the shared lifecycle owner", () => {
+  test("a ready listener alone starts shared-link readiness observation, isolated from a throwing one", async () => {
+    child = Bun.spawn({
+      cmd: ["bun", "./ready_listener_only.ts"],
+      cwd: fixtures,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        KELD_APP_LINK: `1#${"ab".repeat(32)}`,
+      },
+    });
+    const { stdout, stderr, code } = await waitChildOrKill(child, 4_000);
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(stdout).toContain("KEL142_READY_LISTENER_ONLY");
+    expect(stdout).toContain("KEL72_READY_SECOND");
+    expect(stdout).toContain("KEL142_CONNECT_CALLS=1");
+  });
 
-  test(
-    "rejects pending whenReady and retries connect after HELLO-then-death",
-    async () => {
-      child = Bun.spawn({
-        cmd: ["bun", "./app_link_death.ts"],
-        cwd: fixtures,
-        stdout: "pipe",
-        stderr: "pipe",
-        env: {
-          ...process.env,
-          KELD_APP_LINK: `1#${"ab".repeat(32)}`,
-        },
-      });
-      const { stdout, stderr, code } = await waitChildOrKill(child, 8_000);
-      expect(stderr).toBe("");
-      expect(code).toBe(0);
-      expect(stdout).toContain("KEL72_WHEN_READY_DEAD");
-      expect(stdout).toContain("KEL72_RETRY_READY");
-      expect(stdout).toContain("KEL72_CONNECT_CALLS=2");
-    },
-    10_000,
-  );
+  test("quit opening the shared link still delivers the host Ready event", async () => {
+    child = Bun.spawn({
+      cmd: ["bun", "./ready_via_quit.ts"],
+      cwd: fixtures,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        KELD_APP_LINK: `1#${"ab".repeat(32)}`,
+      },
+    });
+    const { stdout, stderr, code } = await waitChildOrKill(child, 4_000);
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(stdout).toContain("KEL142_READY_VIA_QUIT");
+    expect(stdout).toContain("KEL142_CONNECT_CALLS=1");
+  });
+});
+
+describe("app.whenReady on link death", () => {
+  test("rejects whenReady, and keeps rejecting without a reconnect, when onLinkDead runs before connect() returns", async () => {
+    child = Bun.spawn({
+      cmd: ["bun", "./app_sync_link_dead.ts"],
+      cwd: fixtures,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        KELD_APP_LINK: `1#${"ab".repeat(32)}`,
+      },
+    });
+    const { stdout, stderr, code } = await waitChildOrKill(child, 8_000);
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(stdout).toContain("KEL72_SYNC_DEAD");
+    expect(stdout).toContain("KEL72_SYNC_DEAD_STICKY");
+    expect(stdout).toContain("KEL72_CONNECT_CALLS=1");
+  }, 10_000);
+
+  test("rejects pending whenReady after HELLO-then-death, and keeps rejecting without a reconnect", async () => {
+    child = Bun.spawn({
+      cmd: ["bun", "./app_link_death.ts"],
+      cwd: fixtures,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        KELD_APP_LINK: `1#${"ab".repeat(32)}`,
+      },
+    });
+    const { stdout, stderr, code } = await waitChildOrKill(child, 8_000);
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(stdout).toContain("KEL72_WHEN_READY_DEAD");
+    expect(stdout).toContain("KEL72_DEATH_STICKY");
+    expect(stdout).toContain("KEL72_CONNECT_CALLS=1");
+  }, 10_000);
 });
 
 describe("window-all-closed Electron default quit", () => {
-  test(
-    "LastWindowClosed default-quits with zero listeners, after last removeListener, and not while a listener remains",
-    async () => {
-      child = Bun.spawn({
-        cmd: ["bun", "./window_all_closed_default.ts"],
-        cwd: fixtures,
-        stdout: "pipe",
-        stderr: "pipe",
-        env: {
-          ...process.env,
-          KELD_APP_LINK: `1#${"ab".repeat(32)}`,
-        },
-      });
-      const { stdout, stderr, code } = await waitChildOrKill(child, 8_000);
-      expect(stderr).toBe("");
-      expect(code).toBe(0);
-      expect(stdout).toContain("KEL72_DEFAULT_QUIT");
-      expect(stdout).toContain("KEL72_WINDOW_ALL_CLOSED_SECOND");
-      expect(stdout).toContain("KEL72_DEFAULT_QUIT_AFTER_REMOVE");
-      expect(stdout).toContain("KEL72_REMAINING");
-      expect(stdout).not.toContain("KEL72_DROPPED_FIRED");
-      expect(stdout).toContain("KEL72_QUIT_CALLS=2");
-    },
-    10_000,
-  );
+  test("LastWindowClosed default-quits with zero listeners, after last removeListener, and not while a listener remains", async () => {
+    child = Bun.spawn({
+      cmd: ["bun", "./window_all_closed_default.ts"],
+      cwd: fixtures,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        KELD_APP_LINK: `1#${"ab".repeat(32)}`,
+      },
+    });
+    const { stdout, stderr, code } = await waitChildOrKill(child, 8_000);
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(stdout).toContain("KEL72_DEFAULT_QUIT");
+    expect(stdout).toContain("KEL72_WINDOW_ALL_CLOSED_SECOND");
+    expect(stdout).toContain("KEL72_DEFAULT_QUIT_AFTER_REMOVE");
+    expect(stdout).toContain("KEL72_REMAINING");
+    expect(stdout).not.toContain("KEL72_DROPPED_FIRED");
+    expect(stdout).toContain("KEL72_QUIT_CALLS=2");
+  }, 10_000);
 });

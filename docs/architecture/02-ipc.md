@@ -1,6 +1,6 @@
 # kipc — Keld's Typed IPC Plane
 
-IPC is where every competitor cut corners (Electron structured-clone JSON, Tauri
+IPC is where every competitor made different tradeoffs (Electron Structured Clone IPC, Tauri
 serde-JSON invoke, Electrobun localhost WebSockets, Deno deleting the boundary
 entirely). Keld treats the IPC plane as a core product. Design goals: typed end-to-end,
 binary, copy-accounted, backpressured, capability-checked, and fast enough that the
@@ -26,7 +26,19 @@ Principal identity is authenticated **link metadata**, not a frame payload field
 destination supervisor mints a role principal, creates the listener/token, spawns that
 role and binds the accepted link to the principal before dispatch. A frame cannot select,
 forge or upgrade its role. KEL-70's live generic supervisor does not yet perform this
-binding; v0's token proves possession only.
+binding; the `HELLO` token itself proves possession only.
+
+**Current primary app-link identity (KEL-97):** Runtime's authenticated
+`BoundRoleGeneration` retains its canonical owner and generation; Core keeps
+that principal in the accepted primary row and reader context. Primary admission
+rejects another role owner. Before decoding a Bun-to-Host unprivileged Echo
+request, Core requires the current attempt and principal, the same reader-stop
+instance, and a running session and reader. A retired or mismatched context is
+inert before decoding or replying. macOS qualification exercises actual guardian
+retirement and a G2 public-FS successor result, with exact bytes and a scoped
+Guard denial that leaves the outside file unchanged. That successor proof does
+not claim an outbound app Echo result, renderer continuity, OS containment or
+role grants; the full named-role `RoleRegistry` composition remains Target.
 
 **Destination role-instance contract (KEL-75):** a role instance is the host-owned
 pair `(declared role, fresh generation)`. It is never inferred from a PID, listener
@@ -35,6 +47,27 @@ before spawn, admits an authenticated link, then binds that link as trusted meta
 Revocation invalidates grants, routed virtual-port capabilities and optional mapping
 handles before successor provisioning. `KELD_APP_LINK` carries only endpoint plus
 possession secret; it never carries role or principal identity.
+
+**Destination Bun-side link owner (GH-527, approved
+[spec](../specs/gh527-worker-owned-blocking-call-transport.md)):** inside a role
+process, one transport Worker owns the client end of the role generation's one
+authenticated link, from `HELLO` to close. The role's main thread opens no socket.
+Every frame it sends or receives, blocking or asynchronous, passes through that Worker.
+Frames it sends reach the Worker by `postMessage` in send order, and the Worker writes
+them to the link. Frames it receives arrive through one bounded, ordered shared-memory
+ring that only the Worker writes; the blocking call's reply uses a separate reply slot
+that keeps its place in that order. The main thread can therefore park in a blocking
+host `CALL` while the link keeps draining. A second link for the same
+generation is refused, and the Worker's death is that role's link loss. Current
+(#528 T3): both Bun consumers, the hello scaffold's `AppLinkSession` and
+`@keld/api`'s `LifecycleLink` (which `@keld/electron` re-exports), own their link
+this way; the main-thread client path is removed. The role's `Quit` is its last call:
+the link closes the moment the Quit REPLY returns, on every OS, so the host's post-Quit
+drain ends at that EOF and a call still pending then ends as `KELD-IPC-022`, which
+callers treat as the drain's `KELD-IPC-024`. The transport Worker's entry is the
+transport file itself, so the transport is never bundled into an app entry, and a
+release build strips its test hooks through the `KELD_KIPC_RELEASE` build-time
+constant.
 
 **v0 app-link (KEL-60/KEL-70/KEL-30/KEL-101):** one host-owned primary link
 (`keld-core::EchoServer` / `HostOwnedHelloSession`) uses the shared
@@ -56,6 +89,81 @@ Real Windows KEL-101/T4 evidence observed `ERROR_ACCESS_DENIED` from a distinct
 ordinary-user token before admission, followed by an authorized same-user echo
 and a fresh successor generation. The DACL does not exclude an administrator or
 a malicious process running as the same user; the HELLO token remains mandatory.
+
+**Windows updater lifecycle rendezvous (KEL-53 proof slice):** this is a distinct,
+one-peer protocol on the dedicated `\\.\pipe\keld-lifecycle-<64 lowercase hex>`
+namespace, disjoint from reusable app-link pipes. Clients reject the other namespace
+before connect, so this discriminator selects the separate parser/nonce handshake
+before any divergent record is read. After exact peer/process/token validation and
+fresh client/server nonces, the server sends a fixed-size `KELD-LC1` binding challenge;
+the client returns `KELD-LA1` only after validating install, purpose, both nonces and
+both connected-process PIDs. The listener consumes its one-shot before sending a
+same-context `KELD-LR1` receipt; the client cannot return an admitted connection before
+verifying it. A cold successor may learn attempt/channel from the authenticated
+keeper, but must revalidate them against the protected journal after lease acquisition
+before mutation. LC1/LA1/LR1 version this KEL-53 protocol separately from generic kipc
+frames; production capability handoff remains disconnected until lifecycle proof gates
+pass. See KEL-53 for the record and failure contract.
+
+**Windows activation-attempt subprotocol (KEL-53 T4d; endpoint layer, claim and health
+record codec, connect-back locator and the claim and health exchange current; host
+composition and bootstrap records target):** the candidate connect-back and the
+Machine-UAC helper bootstrap use a
+third one-peer protocol on the dedicated `\\.\pipe\keld-attempt-<64 lowercase hex>`
+namespace, disjoint from app-link and lifecycle pipes. As `keld-ipc` requires for a
+separate-version protocol, its clients reject the other `keld-*` namespaces before
+connecting. It has its own magic values and message types and reuses only the low-level
+framing, nonce, deadline and peer-verification utilities. KEL-53 §4 owns every other
+rule, which is wire-gated: "Candidate connect-back" owns the connect-back endpoint, the
+claim's quality of service and impersonation, and every record and its failures;
+"Machine-UAC bootstrap" owns the bootstrap endpoint, roles, argument shape, quality of
+service and impersonation. `keld-ipc` implements the endpoint layer. The exact name
+predicate is `WindowsNamedPipeBootstrapStream::is_attempt_endpoint` in `bootstrap.rs`,
+beside the app-link and lifecycle predicates and sharing their one locator-shape rule.
+`keld-ipc::attempt` owns the three closed descriptors (owner, single-mask protected DACL,
+explicit Medium no-write-up label), first-instance creation with readback, and the
+identification-only client, which requires the server to be in its own session and its
+descriptor to be exact before it sends. Each readback is compared with its form by the
+named-pipe owner's one comparison, which the app-link and lifecycle pipes also use with
+a DACL-only form. The shared token-fact reader
+`query_windows_peer_token_facts` also reports each token's logon session
+(`TokenStatistics.AuthenticationId`), elevation and elevation type, the facts KEL-53
+requires of the claim writer's token and of the initiating token. On the byte layouts
+KEL-53 fixes (owner decision `eff8e2fb`), `keld-ipc::attempt` also owns the claim and
+health record codec (`KELD-AH1` to `KELD-AK1`), whose reader takes the 8-byte magic
+first and refuses a record its position does not admit before reading further, and
+the purpose-`1` connect-back locator, which shares its one prefix constant with
+`is_attempt_endpoint` and is the claimant's check before `KELD-AA1`. The codec is
+crate-private pure bytes: it builds on Windows, for its tests, and with the
+non-product `fuzzing` feature, which exposes only its raw-byte fuzz hook; the locator
+is Windows-only. The exchange runs inside the endpoint and the client, which never
+expose their stream, so no other crate builds, sends or reads a record. The owner's
+connect-back endpoint derives its name from the IDs its `KELD-AC1` carries; per
+connection, under the landed per-connection deadline clamped to the claim deadline, it
+reads the client's process ID and session, `KELD-AH1`, the claim writer's
+identification-level token and the retained process pin that the caller's claimant
+policy returns, disconnects and re-arms on any refusal, and consumes its one-shot
+before `KELD-AR1`. The claim wait ends without a claimant at the claim deadline
+(`KELD-IPC-018`) or when the endpoint's claim canceller, a `Send` handle taken before
+the wait that the owner's watcher on its retained launch handle drives, ends it
+(`KELD-IPC-028`); both close the endpoint. The cancel and the one-shot are serialised
+on the instance:
+- A cancel that acts before the one-shot is taken refuses it. This includes a cancel
+  already in flight when the owner reaches the one-shot. No `KELD-AR1` is then sent,
+  and the claimant reads end of file.
+- A cancel after the one-shot is a no-op that aborts none of the accepted channel's
+  I/O.
+- The app-link bootstrap listener follows the same rule. A `shutdown` in flight at
+  admission's one-shot yields `Cancelled`, never an authenticated stream that has been
+  aborted.
+
+After `KELD-AR1` the owner reads `KELD-AB1` and `KELD-AY1` by position, decides the health window (30 seconds plus a margin G, which the caller
+passes until KEL-53 §6 S6c fixes it from its measurement) as a state machine over an
+injected clock, and then either writes `KELD-AK1` accepted and waits for the
+candidate's end of file before it closes, or writes `KELD-AK1` rolled back once without
+waiting; the candidate arms only on `KELD-AK1` accepted, read under its deadline. No
+host component composes the exchange yet (KEL-53 §6 S6c), and the bootstrap records and
+purpose-`2` locator land with S11.
 
 **macOS/Windows/Linux no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
 mints and authenticates one one-use platform bootstrap per Bun generation, then
@@ -95,8 +203,10 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   (`crates/keld-ipc/src/call_error.rs`), written by `write_call_error` on the
   channel and correlation id of the `CALL` being answered. `code` is the
   registered `KELD-*` code owned by the crate that failed — `DenyReason::code()`
-  for a guard denial, the broker's own code (e.g. `KELD-NATIVE-001`) for a
-  post-allow OS failure — and `message` is that error's full `Display` text,
+  for a guard denial, the broker's own code (`KELD-NATIVE-001` through
+  `KELD-NATIVE-008` for the retained filesystem broker) for a post-allow,
+  traversal, limit, interruption, effect, or snapshot failure — and `message`
+  is that error's full `Display` text,
   which already contains the imperative fix sentence (07 §2).
   **Two narrowings are approved but not live** (`docs/specs/keld-auth.md` §3,
   AC13(c) and AC13(d)), and they touch different halves of this bullet.
@@ -129,11 +239,12 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   `packages/@keld/kipc/src/transport.ts` as `src/kipc-transport.ts` and concatenates
   the echo adapter (`crates/keld-cli/templates/hello/src/kipc.ts`) into
   `src/main.ts`. The boot compiler stages `src/kipc-transport.ts` when present.
-  `@keld/electron` imports that same transport. `DirectedReader` parks
-  lifecycle Events while an Echo Reply is awaited so a host `Ready` cannot
-  fail stock echo. The stock scaffold consumes `LastWindowClosed` and sends a
-  correlated `Quit` on this same stream; its persistent reader leaves idle
-  Event waits open but starts the five-second frame deadline at the first byte
+  `@keld/electron` imports that same transport. Both run on the GH-527
+  `WorkerLink` (#528 T3): lifecycle Events reach their listeners from the
+  Worker's ordered ring, so a host `Ready` never fails stock echo. The stock
+  scaffold consumes `LastWindowClosed` and sends a correlated `Quit` on this
+  same link, which closes on its Reply; the Worker's reader leaves idle Event
+  waits open but starts the five-second frame deadline at the first byte
   (KEL-185). The scaffold does not decode `ERR` payloads.
 - **HELLO payload (v2):** exactly 32 bytes — the session token minted by the host
   (KEL-60). It is raw bytes, not postcard. Before token comparison, the receiver
@@ -159,10 +270,30 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 - **Legacy/diagnostic v0 app link is one session, not one endpoint.** On successful authentication
   `BootstrapListener` unlinks the Unix socket path or closes the Windows listener immediately
   (`crates/keld-ipc/src/bootstrap.rs`), so the accepted stream stays live but the
-  locator is gone. A supervised app child that dies and is restarted therefore
-  cannot re-enter the session: its `connect` fails at the OS
-  (`ErrorKind::NotFound`, asserted by `authenticated_bind_unlinks_stale_locator`),
-  not at the handshake. `keld dev` does not paper over that. It reports the death
+  locator is gone. A successor of a supervised app child that dies after
+  authenticating therefore cannot re-enter the session: its `connect` would fail
+  at the OS (`ErrorKind::NotFound`, asserted by
+  `authenticated_bind_unlinks_stale_locator`), not at the handshake. The session
+  therefore provisions no crash successor once its one admission is used
+  (GH-674): `HostOwnedHelloSession` gates the supervisor's successor boundary on
+  the echo server's single accept, so a crash before authentication still
+  restarts (KEL-70 AC1/AC3) and a crash after it ends supervision as
+  `SupervisorOutcome::Stopped` with the crash in the ledger, so a host never
+  reads that `Stopped` as a clean exit without `Supervisor::crash_ledger`. Two
+  bounded cases still differ, and both fail the run. The echo worker records its
+  admission only after `accept_authenticated` returns, so a client that dies
+  between its HELLO reply and that record, while the worker is descheduled past
+  the restart backoff (`backoff_delay` of the window's crash count: 20 ms for a
+  first crash, longer after earlier pre-authentication crashes), gets one
+  successor; that successor's failed connect
+  becomes `ledger.last`, and the gate, closed by then, stops supervision at its
+  crash. Closing this exactly needs kipc to publish admission before
+  `write_hello`. The crash-loop breaker runs before the gate, so two crashes
+  before authentication and one after it, inside the breaker window, end as
+  `KELD-RUNTIME-002`: three crashes really happened. A crash after any echo REPLY
+  is strictly after the record. Before GH-674 those successors were restarted, failed to
+  connect, and tripped the crash-loop breaker whenever teardown came late.
+  `keld dev` does not paper over the death. It reports it
   rather than pretending the app is alive: teardown reads the supervisor's
   `CrashLedger`, which records unrequested self-termination independently of exit
   status, and the window path exits 1 with `KELD-CORE-033` quoting the nested
@@ -182,7 +313,12 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   AC3 / KEL-39 remain parked).
 - **v0 host lifecycle (KEL-72):** `LIFECYCLE_CHANNEL` is `ChannelId(3)`. The host
   sends `Event` frames (`Ready`, `LastWindowClosed`); the app process sends a
-  `Call` `Quit` and the host replies, then the serve loop returns. Handshake
+  `Call` `Quit` and the host replies, then the serve loop returns. The GH-531
+  lifecycle payload also declares `Subscribe { channel }`, with `Subscribed`
+  or a closed `SubscribeRefused` reason. The standalone lifecycle server
+  refuses subscriptions; the private managed-window service owns Window
+  subscription and ordered replay. Current renderer boot constructors do not
+  install that service. Handshake
   still uses `APP_LINK_IO_DEADLINE` (5s `SO_RCVTIMEO`/`SO_SNDTIMEO`). After
   `HELLO`, cleanup is reader-only: `set_app_link_read_deadline` replaces the
   handshake recv timeout with a short poll — not `set_app_link_deadlines(None)`,
@@ -203,7 +339,9 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   planned for `--inspect-ipc` debugging (human dump) — none is live today — and would
   never sit on the hot path.
 - **Correlation ids** give request/reply without per-call allocations; channels are
-  u16 handles resolved at handshake from schema names (string names never travel per-call).
+  u16 handles whose ids come from the static `keld-ipc` channel table (§4; live since
+  X05-T4, #597), so string names never travel per-call. Resolving ids from schema
+  names at handshake is destination work (§4).
 - **Receiver semantics (KEL-133, live):** one `keld-ipc` validator owns which
   kind/flags/channel/correlation/declared-length combination each session state
   admits. The host selects a static `ReceivePolicy` (no frame chooses its
@@ -219,11 +357,16 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 - **Backpressure (destination):** per-channel credit windows granted in `GRANT`
   frames (SPSC credit counting); senders suspend (JS: promise; Rust:
   state-machine pause) at zero credit. The design goal is no unbounded queues
-  anywhere — Electron's frame-starving chatty-IPC failure becomes structurally
-  impossible once credit windows ship. **v0:** `FrameKind::Grant` exists in the
+  anywhere. Credit windows bound admitted credit-accounted units per channel;
+  producer queues, handler queues, bytes per unit/window, and scheduling/fairness
+  require separate bounds and qualification under load.
+  **v0:** `FrameKind::Grant` exists in the
   wire schema but has no live sender/receiver; bounded inline `CALL`/`REPLY`
   and the current drain-driven writer are the v0 backpressure surface; the
-  readiness-driven reader remains destination work (see §7).
+  readiness-driven reader remains destination work (see §7). GH-527 (approved spec) gives
+  `GRANT` its first payload: optional credit that the role's transport Worker sends to
+  the host, which bounds the host's `EVENT`s to that role by the Worker's free ring
+  space. It ships only behind a protocol-version bump.
 
 ## 3. Bulk plane (measured copies, optional shared memory)
 
@@ -240,9 +383,12 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 - **wv-link**: engines don't expose shm to page JS reliably (SAB needs COOP/COEP and
   still doesn't cross to native). Bulk therefore rides the custom scheme: `keld://c/{channel}`
   request/response with streaming bodies (WKURLSchemeHandler / WebView2
-  WebResourceRequested / WebKitGTK 2.40+ streams), which engines serve off the UI
-  thread and can hand to us as counted buffers. postMessage stays control-only
-  (string-typed on WebView2 — see `docs/research/library/host-platforms/06-webview-reality.md`).
+  WebResourceRequested / WebKitGTK 2.40+ streams). Engine callbacks keep their
+  platform-defined thread affinity; adapters defer expensive work where supported and
+  must not block the UI/event loop while producing counted buffers. Keld keeps
+  `postMessage` control-only. On WebView2, content-side `postMessage` accepts values
+  supported by JSON conversion and the host exposes JSON/string views; it is not a
+  generic binary-transfer lane.
 - Renderer→app-role file-ish transfers (the Electron `send(bigBuffer)` pattern) are
   routed through the host with bounded credit. A platform adapter MAY forward into that
   role's ring, but the actual engine path reports its copies; choosing a binary codec
@@ -250,7 +396,34 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 
 ## 4. Schema-first contracts
 
-Contracts are TypeScript-native (no new IDL to learn) and compiled to both sides:
+The destination general contract model is TypeScript-native (no new IDL to learn) and
+compiled to both sides. KEL-98 implements one bounded bootstrap exception: cold
+maintainer tooling derives the checked-in TypeScript `EchoRequest` / `EchoResponse`
+payload declarations from the already-shipped Rust structs, and the hello adapter
+consumes them through type-only imports. The hand-written TypeScript payload mirror is
+gone; the independently implemented postcard codec and shared golden-vector validation
+remain the runtime wire oracle. This echo-only bootstrap does not make Rust the general
+schema language, ship `@keld/schema` or live `keld gen`, or replace runtime validation.
+
+**Channel table: live slice and destination
+([GH-508 spec](../specs/gh508-kipc-channel-table.md), approved).** The live slice is one
+static, append-only table owned by `keld-ipc` (name, `u16` id, receive-policy class,
+guard reference); id `0` stays reserved for `HELLO`, and ids are never renumbered or
+reused. TypeScript constants are generated from it by the KEL-98 generator. It is live
+since X05-T4 (#597): `keld_ipc::channel_table` holds echo = 1, fs = 2, lifecycle = 3,
+the KEL-89 auth allocation = 4, and the GH-531 window allocation = 5;
+every production id derives from it, the TypeScript ids are a generated, drift-checked
+region of `transport.ts`. Window uses the existing structured Call/Reply/Event
+frame shape; its allocation and payload declarations do not change the frame or
+ordinary `HELLO` version. The managed registry and bounded macOS Host-backed
+`BrowserWindow` subset landed in [PR #1181](https://github.com/gyldlab/keld/pull/1181);
+[PR #1285](https://github.com/gyldlab/keld/pull/1285) corrected facade boot-mode provenance.
+These scoped landings are not full Electron, cross-platform native, Quit,
+physical Retina or product acceptance. Handshake-time name resolution and
+full `keld gen` emission remain destination work that needs a `HELLO` change, a protocol
+bump and wire review.
+
+The destination authoring shape remains:
 
 ```ts
 // app/contracts/notes.k.ts
@@ -313,6 +486,10 @@ compromised keeps the host's threat model uniform).
   (credit hits zero), emits a role-qualified `runtime-crashed` event and restarts per
   policy. Its in-flight calls reject with a registered role-qualified `KELD-*` error;
   other principals continue. KEL-70 currently proves generic child restart only.
+  Under GH-527 (approved spec), the death of a role's transport Worker is that role's link
+  loss and follows this path. A parked caller wakes with `KELD-IPC-025`, not at its
+  call deadline; if the link had already ended with another code, the first recorded
+  code stands.
 - Window close: the destination host revokes that window generation and virtual-port
   routes, then drains only roles declared `window-bound` to it. App-bound roles remain
   live until the host application session stops.

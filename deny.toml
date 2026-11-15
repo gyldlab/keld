@@ -48,6 +48,8 @@ allow = [
 # source. See docs/engineering/third-party-licenses.md.
 exceptions = [
   { crate = "option-ext@0.2.0", allow = ["MPL-2.0"] },
+  # Test-only KEL-53 raw-byte fuzzer; this native dependency is not in product builds.
+  { crate = "libfuzzer-sys@0.4.13", allow = ["NCSA"] },
 ]
 confidence-threshold = 0.9
 
@@ -65,4 +67,6 @@ allow-wildcard-paths = true
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-git = []
+# KEL-201: the root Cargo.toml pins this reviewed compatibility source by commit.
+# Remove with the supported dependency migration tracked in KEL-253.
+allow-git = ["https://github.com/gyldlab/glib-0.18-backport"]

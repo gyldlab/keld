@@ -73,14 +73,16 @@ fn duplicate_keys_reject_recursively_after_json_decoding() {
 
     let dangerous = r#"{"app":{"fs":{"read":[],"read":["/outside/**"]}}}"#;
     if let Ok(manifest) = parse_manifest(dangerous) {
-        assert_ne!(
-            evaluate(
-                &manifest,
-                Principal::AppProcess,
-                "fs.read",
-                "/outside/secret"
+        assert!(
+            !matches!(
+                evaluate(
+                    &manifest,
+                    Principal::AppProcess,
+                    "fs.read",
+                    "/outside/secret"
+                ),
+                Decision::Allow(_)
             ),
-            Decision::Allow,
             "last-wins decoding must never turn an ambiguous manifest into authority"
         );
     }

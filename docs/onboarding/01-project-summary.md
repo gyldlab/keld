@@ -25,8 +25,8 @@ from evidence-backed implementation without freezing source counts or branch his
 |---|---|---|
 | Version | `0.0.1`, pre-alpha | [`Cargo.toml`](../../Cargo.toml) `[workspace.package]` |
 | License | MIT OR Apache-2.0 | [`Cargo.toml`](../../Cargo.toml), [`deny.toml`](../../deny.toml) |
-| Language / edition | Rust, edition 2024, MSRV 1.97 | [`Cargo.toml`](../../Cargo.toml) |
-| Toolchain | pinned `1.97.1` + rustfmt + clippy | [`rust-toolchain.toml`](../../rust-toolchain.toml) |
+| Language / edition | Rust, edition 2024, MSRV 1.99.1 | [`Cargo.toml`](../../Cargo.toml) |
+| Toolchain | pinned `1.99.1` + rustfmt + clippy | [`rust-toolchain.toml`](../../rust-toolchain.toml) |
 | Workspace status | Current crates, packages, phases, platform slices, and evidence | [`product-status.md`](../engineering/product-status.md) |
 
 ## The problem Keld exists to solve
@@ -49,8 +49,8 @@ into five structural problems that no shipping framework has solved *together*:
    evergreen Chromium and basically fine, WKWebView is acceptable on recent macOS, and
    WebKitGTK on Linux is the problem child. See
    [`docs/research/library/host-platforms/06-webview-reality.md`](../research/library/host-platforms/06-webview-reality.md).
-4. **IPC as an afterthought.** Chatty structured-clone JSON (Electron), serde-JSON
-   `invoke` (Tauri), a localhost WebSocket on port 50000+ (Electrobun).
+4. **IPC as an afterthought.** Structured Clone IPC (Electron), serde-JSON `invoke`
+   (Tauri), a localhost WebSocket on port 50000+ (Electrobun).
 5. **Security either optional or hostile.** Electron: remember five code patterns or ship
    an RCE. Tauri: right model, painful hand-written-JSON DX. Electrobun: no model.
 
@@ -99,7 +99,7 @@ flowchart TB
         native["CURRENT keld-native<br/>scoped fs only<br/>other services target"]
         guard["CURRENT keld-guard<br/>capability evaluator plus fs dispatch<br/>target role binding"]
         runtime["CURRENT keld-runtime<br/>one generic supervisor<br/>target role identity"]
-        update["TARGET keld-update<br/>signed delta patches"]
+        update["TARGET keld-update<br/>verified full packages<br/>optional delta later"]
         native --> guard
         runtime --> guard
     end
@@ -122,7 +122,12 @@ flowchart TB
 ```
 
 - **keld-host** owns every OS resource. App developers never compile it — they download a
-  signed prebuilt binary. "No Rust toolchain for app developers" is principle #5.
+  prebuilt binary, and the host in a shipped app is signed. Target behaviour on Windows
+  (KEL-19 T3, blocked on an authenticated Keld release channel): the packaging-input
+  host is distributed unsigned, and `keld build` verifies its digest from that channel
+  and embeds the app identity before the app publisher applies the only signature
+  (`docs/specs/kel254-expected-identity-container.md`). "No Rust toolchain for app
+  developers" is principle #5.
 - **The app process** is the developer's own code with the full npm world but **zero
   ambient OS authority**. It can crash and be restarted without tearing down windows,
   because the host — not the app — owns the webviews.
@@ -206,18 +211,20 @@ platform-scoped slices, and links every current claim to tracked code/test/CI ev
 plus the immutable commit at which that evidence was verified.
 
 The seven architecture documents remain normative target design; they do not imply
-implementation. Linear remains the owner of live issue status, assignees, dependencies,
-and claims. The status-table check compares ledger crate records with Cargo workspace
+implementation. The tracker issue (Linear, or GitHub under #517) remains the owner of live
+issue status, assignees, dependencies, and claims. The status-table check compares ledger crate records with Cargo workspace
 metadata without making documentation consistency a product or real-OS completion claim.
 
 Run `just product-status-check` for semantic consistency and `just llms-check` for
-generated-corpus byte freshness. `just ci` remains the exact local gate inventory;
-gitleaks remains GitHub-only.
+generated-corpus byte freshness. `just ci` is the exact routine local gate inventory;
+its shared router selects Mermaid only when diagram/renderer inputs change. `just ci-full`
+forces full-corpus Mermaid assurance; gitleaks remains GitHub-only.
 
 ## How work is tracked
 
-- **Linear** is the issue tracker: workspace `gyldlab-keld`, team/project **KELD**, issues
-  numbered **KEL-\***. You will see these IDs everywhere in the code — `KEL-27` and
+- **Linear** is the default issue tracker: workspace `gyldlab-keld`, team/project **KELD**,
+  issues numbered **KEL-\***; a GitHub issue only when no live Linear issue covers the work
+  and Linear cannot take one (#517, `docs/agents/workflow.md` § Tracker issue). You will see these IDs everywhere in the code — `KEL-27` and
   `KEL-28` head the Windows and Linux `keld-wv` backend modules, `KEL-29`/`KEL-30`
   head the CLI and IPC modules. Grepping a KEL number is a fast way to find every file
   that participates in a work item.
@@ -236,7 +243,7 @@ gitleaks remains GitHub-only.
 
 1. Read [`AGENTS.md`](../../AGENTS.md) end to end. It is the compact binding invariant
    floor; `.agents/index.md` routes task-specific playbooks. `just ci` is the exact local
-   gate inventory.
+   gate inventory, with changed-input Mermaid selection; `just ci-full` forces every diagram.
 2. Read the crate-level `AGENTS.md` for whatever you're touching —
    [`keld-ipc`](../../crates/keld-ipc/AGENTS.md), [`keld-wv`](../../crates/keld-wv/AGENTS.md),
    [`keld-guard`](../../crates/keld-guard/AGENTS.md),

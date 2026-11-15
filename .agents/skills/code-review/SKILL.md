@@ -35,6 +35,17 @@ coderabbit --version 2>/dev/null || echo "NOT_INSTALLED"
 coderabbit auth status 2>&1
 ```
 
+On Windows, if native lookup misses, probe default WSL with
+`wsl.exe -e sh -lc "command -v coderabbit && coderabbit --version"`; all later commands MUST use it:
+`wsl.exe -e sh -lc "coderabbit auth status"` / `"coderabbit auth login"`. For reviews:
+```powershell
+$repo = (wsl.exe -e wslpath -a -- (Get-Location).Path).Trim()
+wsl.exe -e sh -lc 'coderabbit review --agent --dir "$1"' sh $repo
+```
+Put flags inside the WSL command. MUST NOT use native `coderabbit`/`cr` or suggest
+installation unless both discovery checks fail.
+Native examples below are native-only; WSL-only Windows MUST use the wrapper above.
+
 If the CLI is already installed, confirm it is an expected version from an official source before proceeding.
 
 > **Note:** The `--agent` flag requires CodeRabbit CLI v0.4.0 or later. If the installed version is older, ask the user to upgrade.

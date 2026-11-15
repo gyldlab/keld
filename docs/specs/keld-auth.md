@@ -539,7 +539,7 @@ macOS:
 | Rung | When | Ownership | Unavailable/inapplicable |
 | --- | --- | --- | --- |
 | 0. Enterprise SSO broker | **Never claimed in v0** (D6). Device-compliance CA → AC7b typed deny | n/a | Destination tier: broker-aware routing on MDM-managed devices, own spec + managed-hardware proof |
-| 1. ASWebAuthenticationSession | Default interactive path | Host retains session + provider; `NSWindow` anchor on main thread; in-process custom-scheme initializer callback needs no Info.plist (168:74) and does not transit OS scheme dispatch (226 K11/F12, per 176:75; the narrow defensible form of the old "hijack-proof" claim) | API/start failure → rung 3. `prefersEphemeralWebBrowserSession` is an ignorable preference — never an isolation claim. Third-party default browsers without `CallbackURLMatchingIsSupported` route to Safari |
+| 1. ASWebAuthenticationSession | Preferred interactive path with an explicit valid operator AS return binding; omitted/null binding retains the pre-T4 direct rung 3 route | Host retains session + provider; `NSWindow` anchor on main thread; in-process custom-scheme initializer callback needs no Info.plist (168:74) and does not transit OS scheme dispatch (226 K11/F12, per 176:75; the narrow defensible form of the old "hijack-proof" claim) | API/start failure → rung 3. `prefersEphemeralWebBrowserSession` is an ignorable preference — never an isolation claim. Third-party default browsers without `CallbackURLMatchingIsSupported` route to Safari |
 | 2. Custom scheme (app-launch form) | Registered via `CFBundleURLTypes` when relaunch-by-URL is required | Host receives URL via bundle registration | v0: no `.app` bundle/plist emitter exists → not reachable; Google: skipped by policy (AC8 quote); use rung 1's in-process form or rung 3 |
 | 3. Loopback + PKCE | Fallback | As Windows rung 3 | As Windows rung 3 |
 
@@ -584,8 +584,20 @@ AuthRequest::Token { account_id, scopes? }
 //   account_id: host-minted, opaque, host-session-scoped runtime selector
 //   (§4 "Auth session registry"), NOT an authorization scope (D11/AC13).
 
+// Core auth admission is bounded independently of Native account/scope single-flight.
+// A fresh well-framed call at capacity is not admitted and receives correlated
+// IPC005 after the complete body is consumed under its original frame deadline;
+// the link stays live. Duplicate/stale/poisoned/closed admission remains terminal.
+// This pre-handler transport refusal is not a Native AUTH016 condition.
+
 AuthResponse::Begin { account_id, granted_scopes }
 AuthResponse::Token { access_token, expires_at, token_type }  // no refresh_token field exists
+//   expires_at: u64 — whole UTC seconds since the UNIX epoch (T3 implementation
+//   decision recorded on KEL-89, 2026-10-13). Compute by checked addition of the
+//   provider's expires_in seconds to successful token-receipt wall time. Reject
+//   overflow or an invalid clock; never infer JWT exp or saturate/default to zero.
+//   Cache freshness uses a separate monotonic deadline; account-session liveness
+//   remains bounded by host exit or terminal invalid_grant, not access expiry.
 
 // Deferred, names reserved (non-goals in v0; field sketches non-normative):
 //   AuthRequest::Accounts / AuthResponse::Accounts
@@ -871,12 +883,83 @@ key: `auth: { "entra-common": { clientId: "…" } }`, with an optional
 `fixedRedirect: "…"` beside `clientId` where the operator registered a fixed
 redirect. (Errata pass 7: earlier revisions wrote `fixedRedirect?:` inside the
 value literal, which is TypeScript *type* syntax and does not parse if copied.)
+
+**T3 config-shape tightening (PR716 follow-up).** Each profile value is a
+closed object with `clientId`, `fixedRedirect`, and the T4 optional
+`asRedirect` binding described below. The static TypeScript
+config reader accepts string literals for these fields when present. The raw
+schema-1 boot DTO retains its existing `Option<String>` decoding: omission or
+JSON `null` means absence. This tightening does not add TypeScript `null`
+syntax or change that boot compatibility.
+Unknown inner fields are rejected by the one Native configuration DTO on both
+the static-config and schema-1 boot paths, instead of being silently discarded;
+Core reports the existing `KELD-CORE-035` configuration error. Unknown outer
+profile keys remain accepted when their values have this DTO shape and are
+ignored with one load-time Native warning. They cannot introduce fields,
+providers or issuer policy. This shape rule does not validate missing/empty
+client ids or redirect values early: absence remains data, and semantic
+client/redirect validation still happens only after guard Allow. This is an
+explicit acceptance-contract tightening of D14, recorded with the same PR's
+existing public-API/permission delegated review; it is not a claim that the
+original note already required unknown-field rejection.
 Rationale: it is per-application, which is what the value is; it is
 operator-authored, so the child cannot assert its own registration; an OAuth
 public-client id is **not a secret** (that is what PKCE is for), so plaintext
 config is correct; and `keld.config.ts` is already one of the four sanctioned
 config names (root `AGENTS.md`). It is **not** the permissions manifest, so D8's
 "no manifest-schema change" clause is untouched.
+
+**T4 AS return binding and compatibility.** The operator may add
+`asRedirect` beside `clientId` and `fixedRedirect`. For the closed
+`entra-common` profile its supported raw value concatenates `msal`, that
+application's configured public client id, and `://auth` without extra
+separators or normalization, as documented by
+[Microsoft's desktop configuration guide](https://learn.microsoft.com/en-us/entra/identity-platform/scenario-desktop-app-configuration).
+It is an in-process AS custom-scheme return binding, not an OS URI-handler
+registration or a new provider/issuer/grant. The operator registers it under
+Mobile and desktop applications while retaining the existing localhost return.
+The host retains exactly the same raw redirect for authorization and code
+exchange; callback correlation and provider-added slash normalization are
+separate from that immutable OAuth value. For this empty-path `entra-common`
+AS registration, callback destination validation accepts only the exact raw
+registered base or that same base followed by one `/`. This bounded return
+representation follows [Microsoft's documented no-path response rule](https://learn.microsoft.com/en-us/entra/identity-platform/reply-url)
+for query-mode callbacks; the authorization and code-exchange redirect values
+remain the original registration literal. No other scheme, authority, userinfo,
+port, case, path, extra slash or fragment is normalized or admitted, and the
+existing exact state, duplicate-parameter, response-shape and single-use rules
+still apply. This return-compatibility rule does not select another transport,
+retry a failed flow or establish actual provider completion by source review.
+
+Omitted `asRedirect`, or JSON null on the existing boot carrier, preserves the
+pre-T4 direct loopback route. This is a configured-route compatibility rule,
+not an AS API/start failure. An explicit valid binding prefers AS; a malformed
+present binding refuses only after Guard Allow and never silently falls back.
+Only AS pre-start presentation unavailability or an actual API/start failure
+may start a fresh loopback flow with its own redirect, state and PKCE custody.
+An absent or retiring initial anchor is a pre-start unavailable presentation
+context; it does not turn a completed or canceled login into a fresh attempt.
+AS completion errors for a missing or invalid presentation context (SDK codes
+2/3) are terminal after the callback and return `KELD-AUTH-017`; they MUST NOT
+replay through loopback. User cancellation,
+provider rejection, and callback-correlation failure do not trigger fallback.
+`fixedRedirect`
+retains its existing fixed-port HTTP loopback meaning. Static TypeScript
+configuration accepts a string literal; boot omission/null remain absence,
+and the shared Native DTO still rejects unknown inner fields and non-string
+present values. Structural loading does not validate registration semantics.
+
+This is the bounded T4 configuration/profile amendment under §8's delegated
+public-API and permission-model review. The Native carrier implementation and
+SDK/default-route product acceptance are separate: accepting this field is
+not a registration, AS completion, cancellation or T4 qualification claim.
+
+The public Rust carrier adds `as_redirect: Option<String>`. Fully specified
+`AuthProfileConfiguration` struct literals must add `as_redirect: None`, or
+use `..Default::default()` for optional fields. This is a Rust source-API
+addition, not a claim that old exhaustive literals compile unchanged. Existing
+omitted/null JSON and pre-T4 TypeScript operational configuration remain
+compatible under the rule above.
 
 **How it reaches the host — corrected after independent review.** An earlier
 draft of this paragraph said `keld.config.ts` is "parsed by `keld-core` and
@@ -1218,11 +1301,42 @@ compact `KELD-AUTH001`; that spelling is withdrawn.
 | `KELD-AUTH-008` | The authorization step did not complete within the host's bound | §4 Errors | Retry as a new user-initiated `auth.begin`; never an automatic retry |
 | `KELD-AUTH-009` | Terminal refresh failure (`invalid_grant`). Evicts the session from the registry, ending its liveness | §4 Errors, §4 registry | That the account must sign in again via `auth.begin`, and that the host holds no durable credential (D5) |
 | `KELD-AUTH-010` | Child-supplied `login_hint` failed host validation: over the byte bound, or containing a control character | §4 Request surface | The violated constraint (length or character class) only — **never** the offending value, which is end-user PII |
-| `KELD-AUTH-011` | Loopback/scheme callback failed correlation: unknown or mismatched `state`, or a PKCE verifier that does not match | AC4, AC10 (`state` is host-owned) | That the callback was discarded and the flow must be restarted; MUST NOT echo the received `state` |
+| `KELD-AUTH-011` | Loopback/scheme callback parsing or correlation failed, including malformed or ambiguous input and unknown or mismatched `state`; an IdP rejection of the authorization-code/verifier exchange is AUTH013 | Callback correlation, AC10 (`state` is host-owned; AC4 still requires PKCE S256) | That the callback was discarded and the flow must be restarted; MUST NOT echo the received `state` |
 | `KELD-AUTH-012` | The IdP returned an OAuth error at the callback (`access_denied`, `invalid_scope`, `interaction_required`, …) | Rung 3 callback | The IdP's error code and that it is the IdP's decision, not Keld's — **sanitised per D18(a)**: provider text is bounded to 256 bytes with truncation marked, control characters stripped, quoted in a delimited position **after** Keld's own code so it can never be read as a code line, and never parsed to select a Keld code path |
 | `KELD-AUTH-013` | The authorization-code → token exchange failed | Rung 3, `auth.begin` completion; also `auth.token` when the IdP refuses a requested scope set (D17) | Whether the failure was transport or IdP-rejection, and that no automatic retry occurs. Any provider text carried here is **sanitised per D18(a)** |
 | `KELD-AUTH-014` | Silent acquisition needs interaction (`UserInteractionRequired` / `0xCAA10001` / `interaction_required`) | Windows rung 1, `auth.token`; 241 §4.3/§4.4 `[fact]` | That the caller must run a fresh interactive `auth.begin`; MUST NOT auto-escalate to a UI |
-| `KELD-AUTH-015` | The resolved provider profile has no `clientId` configured for this application in `keld.config.ts` (D14). **Post-Allow**, so it is not a pre-Allow discriminator | §4 profile table, AC14(c) | The profile key and the `keld.config.ts` `auth` section to add; **no** account or session detail |
+| `KELD-AUTH-015` | The resolved provider profile has no `clientId` configured (D14), or its present `asRedirect` is invalid for the selected client/profile. **Post-Allow**, so neither is a pre-Allow discriminator | §4 profile table, T4 return binding, AC14(c) | Name the profile's `keld.config.ts` `auth` section: add a missing `clientId`, or correct the invalid `asRedirect` registration and rebuild. **No** account or session detail |
+| `KELD-AUTH-016` | Local authentication processing failed in entropy, encoding, a checked processing bound/conversion, clock, or internal flow state, without an existing `KELD-AUTH-001`–`015` condition | T3 implementation extension; the finite Native producer union has independent source review under §8 recorded delegated approval and is recorded with the Native source and canonical registry in the same PR. Runtime qualification is predicate-specific | A static resource-free local-processing condition and its corrective action, with no automatic retry; no raw OS/provider text, credential, account id, issuer or request value; never an unresolved-account discriminator |
+| `KELD-AUTH-017` | macOS reports a missing or invalid presentation context through the AS completion callback after an authentication attempt has started | T4 `ASWebAuthenticationSession` callback; terminal result, never a fresh loopback attempt | Ensure the Keld window remains available and start a new user-initiated sign-in; no raw OS error text and no automatic retry |
+
+**T3 implementation decision — local-processing error (reviewed source; runtime qualification scoped).**
+The AUTH016 row is a bounded implementation extension to AUTH001–015. The same
+T3 PR records its finite reviewed Native producer union: the five
+`PrimitiveError` local conditions, seven `StateFault` local conditions,
+loopback I/O/consumed-flow and browser lifecycle conditions covered by the
+delegated source reviews. This records source/API approval under §8; it does
+not ratify D1–D18 retroactively or prove reachability, platform delivery or
+completed-flow acceptance. All following restrictions and review gates remain
+binding.
+
+AUTH016 is post-Allow local processing only: entropy acquisition, encoding,
+checked internal processing bounds/conversions, clock arithmetic, or internal
+flow state. Existing provider/network/cancel/deadline/client/redirect conditions
+retain their AUTH001–015 codes and D18(a) sanitization. This row authorizes no new
+OAuth-scope filtering, caller validation limit or permission rule. The local
+message and fix are static and resource-free; no raw error or protected input
+is interpolated. The account-resolution invariant is expressly excluded:
+an unresolved/stale account still follows AC13(a–c), and actual Allow with no
+resolved session still replies with the identical granted-level GUARD002
+constant and surfaces its Native fault host-side under AC13(d), never AUTH016.
+
+The exact-source review must identify each AUTH016 emission site and its
+primitive, verify that named AUTH001–015 conditions retain their mapping, and
+exercise fault controls for the local code/constant and for AC13’s unchanged
+wire equality. Registry headings for all declared codes land only with the
+reviewed Native error-contract source required by the bidirectional registry
+gate; do not add inert code comments to manufacture scan coverage. Platform or
+unreachable target rows stay unqualified until their own route is exercised.
 
 Obligations that hold for every row: the code is the first token of the
 `Display` string; the message states the condition and then an imperative fix
@@ -1507,6 +1621,9 @@ No permanent refresh lifetimes. No durable refresh custody in v0. This spec
   AC10, AC11, AC13, AC14. **Depends on KEL-102/T3 (core admission +
   `keld-core → keld-native` edge) — the declared predecessor.**
 - [ ] T4 macOS `ASWebAuthenticationSession` rung: AC7, AC7b, AC12.
+  AC7b is a private supplied-class conditional predicate. Public v0 requests
+  remain unclassified; the unit refusal makes no runtime classifier, managed
+  device or broker-compliance outcome claim.
 - [ ] T5 Windows WAM rung (**T2 gate cleared — GO**): AC6. Still gated on
   KEL-102/T3 (T3's declared predecessor) and on the `windows` WAM-feature
   dependency review (§8).
@@ -1564,16 +1681,48 @@ No permanent refresh lifetimes. No durable refresh custody in v0. This spec
 | 11b (D17 canonical key) | unit | the single-flight key is table-driven over pairs that MUST coalesce and pairs that MUST NOT. Coalesce: `["b","a"]` vs `["a","b"]` (order), `["a","a","b"]` vs `["a","b"]` (duplicates), absent vs `[]` (absent ≡ empty). Do **not** coalesce: `["a"]` vs `["A"]` (case-sensitive per RFC 6749 §3.3), `["a"]` vs `["a","b"]` (superset), same scopes under a different `account_id`. Negative control: an implementation keyed on the raw sequence fails the order and duplicate rows, and one that lowercases fails the case row — so the test distinguishes the rule from both neighbouring rules |
 | 11c (D17 pass-through) | integration | a `Token` request whose `scopes` exceed the establishing `begin`'s `granted_scopes` is **not** refused by the host: assert the outbound token-endpoint request carries the requested set byte-for-byte, that no host-side comparison against `granted_scopes` occurs, and that an IdP refusal surfaces as `KELD-AUTH-013` carrying the provider's error. Assert `AuthResponse::Token` has no scope field, pinning the §4 non-claim rather than leaving it prose |
 | 12 | unit | cancel-class result → non-terminal typed error; no automatic re-invocation |
+| T4 AS callback context errors | Native/controller integration | After the AS completion callback reports presentation-context-not-provided or invalid (SDK codes 2/3), return `KELD-AUTH-017` and never enter the fresh T3 loopback rung. Negative control: classifying either callback result as pre-start `StartUnavailable` must fail by reaching the loopback fallback trap. Keep pre-start missing-anchor and actual `start()==false` cases on their existing fallback path. |
 
 Bind port 0; await conditions; no fixed ports; no wall-clock sleeps
 (`.agents/testing.md`).
+
+### macOS T4 owned fatal-run outcome
+
+Ordinary anchor retirement stops that anchor's presentation authority while
+preserving the host account registry and authentication admission. Only the
+existing global host cutoff permanently closes authentication and Native
+presentation admission. Per-generation reader retirement is separate from
+both stop domains. The unpublished Rust main-owner seam names these states
+`Running`, `AnchorClosing` and `HostTail`; it does not add a JS selector or wire
+field. Unclaimed starts at a retiring anchor resolve through the existing
+pre-start unavailable-context path; already-owned presentations retain their
+original cancellation and drain bounds.
+
+The top-level Core host-run result can retain unresolved main-thread presentation
+custody separately from the existing Send-compatible `HostAppError` used by
+workers. After an unexpected UI-loop return, the same main thread services
+CoreFoundation's default mode only within the Native owner's original absolute
+bound. Source handling and cancellation return are not drain receipts.
+Only actual Native operation completion permits normal window/profile release
+and blocking worker/coordinator joins.
+
+If custody remains unproved, Core returns a main-thread-only owned failure with
+the original diagnostic and the actual window/profile, AS service, physical
+worker/router, coordinator, renderer, guardian and verified policy snapshot.
+The shipping Host reports that failure by borrow and retains its payload through
+the existing failed-process exit before ordinary dev-stage deletion. This is a
+fatal failure, never a normal Quit, physical-drain pass or global SDK-quiescence
+claim. It does not require passive SDK session/block deallocation.
+The top-level `run_guarded` and diagnostic `run_unprivileged` Rust error wrapper
+is an explicit public-API addition; worker error types, wire DTOs, principals,
+grant policy and Windows lifecycle cause/tail ownership are unchanged.
 
 ## 8. Review gates triggered
 
 | Gate | This note / promote PR | Implement PRs |
 | --- | --- | --- |
 | Permission model | **Yes — owner sign-off or the recorded delegated-approval mode** (kel102 form), covering: new `auth.*` grants; exact-literal scope semantics; AC9b's load-time rejection of malformed auth grants on the shared load path — `**` **and, per D13, control characters**, which changes which manifests load at all; **(D14) an operator-authored `keld.config.ts` section and a boot-descriptor field becoming load-bearing for an auth flow**; **(D12) the change to what a denied principal observes**, which is a permission-model observable and not merely a public-API one; **and (D11 errata) AC13/AC14's resource derived from host state — a profile table for `begin`, the session registry for `token` — plus their resolve-then-authorize ordering and the recorded existence-oracle non-claim** — the largest permission-model delta in this note; **and (errata pass 4) the enumerated provider-profile table contents, which fix exactly which issuer literals an operator can grant, together with §4's recorded "no manifest bound on requested OAuth scopes" position**; **and (D17) `Token.scopes` reaching the IdP unchanged with no host-side check against the establishing session's `granted_scopes`, which fixes how far a `token` grant reaches at an authorized issuer** | re-reviewed per diff |
-| Public API | **Yes — owner sign-off or the recorded delegated-approval mode** (CALL/REPLY shapes and their normative wire names, the typed error contract — now the enumerated `KELD-AUTH-001`–`015` table in §4 plus its `docs/engineering/keld-error-codes.md` registry entries; **(D12) the narrowing of `call_error.rs`'s "message is the error's full `Display` text" for `auth.token` denials**; **(D12, boundary 2) the auth module re-deriving the guard-denial → wire mapping that `impl From<&DenyReason> for CallError` documents itself as the single owner of** — AC13 calls this the heavier of D12's two; **(AC13(d), boundary 3) the auth module synthesizing a `KELD-GUARD002` reply with no `DenyReason` behind it**, against `call_error.rs`'s and `crates/keld-ipc/AGENTS.md`'s rule that `code` is "owned by the crate that produced the failure" — the T3 PR MUST reconcile that nested crate invariant in the same commit or state the blocker; **(D14) the new `keld.config.ts` `auth` section, the optional `auth` field on the boot descriptor, and the new public `keld-core` surface needed to carry it past `ParsedBoot`** — three contracts, not one; **and `keld-guard`'s public surface**: AC9b needs a new `ManifestError` variant, which is a breaking change to a public non-`#[non_exhaustive]` enum and also forces an arm in `crates/keld-cli/src/mcp/permissions.rs`, whose `match` has no wildcard (errata pass 7 added boundaries 2 and 3, the two extra D14 contracts and the `permissions.rs` consequence; AC13's "all three are listed in §8" was false until it did) | re-reviewed per diff |
+| Public API | **Yes — owner sign-off or the recorded delegated-approval mode** (CALL/REPLY shapes and their normative wire names, the typed error contract — now the enumerated `KELD-AUTH-001`–`016` table in §4 plus its `docs/engineering/keld-error-codes.md` registry entries; **(D12) the narrowing of `call_error.rs`'s "message is the error's full `Display` text" for `auth.token` denials**; **(D12, boundary 2) the auth module re-deriving the guard-denial → wire mapping that `impl From<&DenyReason> for CallError` documents itself as the single owner of** — AC13 calls this the heavier of D12's two; **(AC13(d), boundary 3) the auth module synthesizing a `KELD-GUARD002` reply with no `DenyReason` behind it**, against `call_error.rs`'s and `crates/keld-ipc/AGENTS.md`'s rule that `code` is "owned by the crate that produced the failure" — the T3 PR MUST reconcile that nested crate invariant in the same commit or state the blocker; **(D14) the new `keld.config.ts` `auth` section, the optional `auth` field on the boot descriptor, and the new public `keld-core` surface needed to carry it past `ParsedBoot`** — three contracts, not one; **and `keld-guard`'s public surface**: AC9b needs a new `ManifestError` variant, which is a breaking change to a public non-`#[non_exhaustive]` enum and also forces an arm in `crates/keld-cli/src/mcp/permissions.rs`, whose `match` has no wildcard (errata pass 7 added boundaries 2 and 3, the two extra D14 contracts and the `permissions.rs` consequence; AC13's "all three are listed in §8" was false until it did) | re-reviewed per diff |
 | Dependency | none (prose only) | named gates: `windows` WAM features (T5), `objc2-authentication-services` (T4), `zbus`/`ashpd` (T6) |
 | Wire protocol | none (new channel payload only; frame untouched) | bump only if `02-ipc.md` §2 constants change |
 | unsafe | none (D8 clause) | owner decision executed in the first FFI PR (§4 gate-deferral clause) |

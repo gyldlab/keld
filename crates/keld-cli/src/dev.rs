@@ -2,8 +2,6 @@
 
 use std::fmt::Write as _;
 use std::fs;
-#[cfg(windows)]
-use std::io::Read as _;
 use std::io::{self, ErrorKind, Write};
 #[cfg(windows)]
 use std::io::{BufRead as _, BufReader};
@@ -26,15 +24,24 @@ use keld_core::{
 };
 use keld_runtime::RestartPolicy;
 #[cfg(windows)]
+use keld_runtime::windows_job::{
+    WINDOWS_DEV_STAGE_CLEANUP_RELEASE_V1, WINDOWS_LAUNCH_GATE_ATTEMPT_JOB_V1,
+    WINDOWS_LAUNCH_GATE_ENV, WindowsProcessJob, release_host_start_v1,
+};
+#[cfg(windows)]
 use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
 
 use crate::boot::{ProjectOwnershipError, ensure_current_principal_owns};
-use crate::doctor::{all_ok, renderer_load_message, renderer_path_problem, run_checks};
+use crate::doctor::{
+    all_ok, facade_mode_for_project, renderer_load_message, renderer_path_problem, run_checks,
+};
 
 pub use crate::doctor::RENDERER_LOAD_CODE;
 
 #[cfg(windows)]
 const WINDOWS_STAGE_CLEANUP_READY_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(windows)]
+const WINDOWS_STAGE_CLEANUP_DIAGNOSTIC_LIMIT: usize = 8 * 1024;
 
 /// Errors starting a dev session.
 #[derive(Debug)]
@@ -205,6 +212,11 @@ pub fn hello_title_for_project(project_root: &Path) -> String {
 /// Returns [`DevError::Renderer`] (`KELD-CLI-035`) for a missing file or unsafe
 /// path, or [`DevError::Io`] when the file exists but cannot be read.
 pub fn load_dev_window_html(project_root: &Path) -> Result<String, DevError> {
+    if facade_mode_for_project(project_root).map_err(DevError::Doctor)? {
+        return Err(DevError::Doctor(String::from(
+            "KELD-CLI-047: initialWindow: 'none' has no initial renderer. Use `keld dev` with the staged Host; the retained hello-window loader cannot create a facade-owned first window.",
+        )));
+    }
     let renderer =
         read_config_renderer(project_root).unwrap_or_else(|| DEFAULT_RENDERER.to_owned());
     let rel = validate_renderer_relpath(&renderer)?;
@@ -230,7 +242,11 @@ fn validate_renderer_relpath(renderer: &str) -> Result<&Path, DevError> {
 }
 
 fn doctor_or_err(project_root: &Path) -> Result<(), DevError> {
-    let checks = run_checks(Some(project_root));
+    report_checks(run_checks(Some(project_root)).into_iter())
+}
+
+fn report_checks(checks: impl Iterator<Item = crate::doctor::Check>) -> Result<(), DevError> {
+    let checks: Vec<_> = checks.collect();
     if all_ok(&checks) {
         return Ok(());
     }
@@ -240,6 +256,24 @@ fn doctor_or_err(project_root: &Path) -> Result<(), DevError> {
         let _ = writeln!(msg, "  [{mark}] {} — {}", check.label, check.detail);
     }
     Err(DevError::Doctor(msg))
+}
+
+/// The preflight of a launch whose stage goes to the no-flag host. On Windows the host
+/// owns a schema-2 boot's admission (GH-1188 D2), so its `KELD-CORE-034`, not a second
+/// CLI verdict, answers that project here; `keld doctor` keeps its own refusal until the
+/// host admits the boot in every build (D15), which removes this exception.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn staged_host_doctor_or_err(project_root: &Path) -> Result<(), DevError> {
+    #[cfg(windows)]
+    let facade = facade_mode_for_project(project_root).map_err(DevError::Doctor)?;
+    #[cfg(not(windows))]
+    let facade = false;
+    let checks = run_checks(Some(project_root));
+    report_checks(
+        checks
+            .into_iter()
+            .filter(|check| !(facade && check.label == "renderer")),
+    )
 }
 
 fn staged_host_launch_error(
@@ -324,7 +358,7 @@ pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
-    doctor_or_err(project_root)?;
+    staged_host_doctor_or_err(project_root)?;
     let cli_executable = std::env::current_exe()?;
     let developer_host = cli_executable
         .parent()
@@ -340,10 +374,14 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
         });
     let stage = crate::boot::stage_dev_boot(project_root, &developer_host)
         .map_err(|error| DevError::Doctor(error.to_string()))?;
-    #[cfg(windows)]
-    let mut stage = stage;
     let stage_root = stage.root().to_owned();
     let staged_host = stage.host().to_owned();
+    #[cfg(windows)]
+    let attempt_job = WindowsProcessJob::create().map_err(|error| {
+        DevError::Runtime(format!(
+            "KELD-CLI-049: could not create Windows host-attempt Job: {error}"
+        ))
+    })?;
     let mut command = Command::new(&staged_host);
     command
         .current_dir(stage.root())
@@ -351,6 +389,8 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    #[cfg(windows)]
+    command.env(WINDOWS_LAUNCH_GATE_ENV, WINDOWS_LAUNCH_GATE_ATTEMPT_JOB_V1);
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     command.process_group(0);
     // The terminal interrupts the CLI; its closed lease must let the host
@@ -373,34 +413,23 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
         ))
     })?;
     #[cfg(windows)]
-    let cleanup_sentinel = match start_windows_stage_cleanup_sentinel(
+    let status = finish_windows_dev_host(
+        host,
+        lease_writer,
+        stage,
+        stage_root.as_path(),
         &developer_host,
-        &stage_root,
-        host.id(),
-    ) {
-        Ok(sentinel) => sentinel,
-        Err(sentinel_error) => {
-            drop(lease_writer);
-            let host_result = host.wait();
-            stage.release_launch_guards();
-            let cleanup_result = fs::remove_dir_all(&stage_root);
-            return Err(DevError::Doctor(format!(
-                "KELD-CLI-047: Windows dev-stage cleanup owner failed before handoff: {sentinel_error}; \
-                 host cleanup={host_result:?}; stage cleanup={cleanup_result:?}. \
-                 Confirm the staged host exited, remove `{}`, and retry.",
-                stage_root.display()
-            )));
-        }
+        attempt_job,
+    )?;
+    #[cfg(not(windows))]
+    let status = {
+        let status = host.wait()?;
+        drop(lease_writer);
+        drop(stage);
+        status
     };
-    #[cfg(windows)]
-    stage.release_launch_guards();
-    let status = host.wait()?;
-    drop(lease_writer);
-    drop(stage);
     #[cfg(target_os = "linux")]
     cleanup_linux_dev_stage(&stage_root)?;
-    #[cfg(windows)]
-    cleanup_sentinel.wait(&stage_root)?;
     if status.success() {
         Ok(())
     } else {
@@ -409,6 +438,80 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
              Fix the preceding host diagnostic, then re-run `keld dev`."
         )))
     }
+}
+
+#[cfg(windows)]
+fn finish_windows_dev_host(
+    mut host: std::process::Child,
+    mut lease_writer: std::process::ChildStdin,
+    mut stage: crate::boot::DevBootStage,
+    stage_root: &Path,
+    developer_host: &Path,
+    mut attempt_job: WindowsProcessJob,
+) -> Result<std::process::ExitStatus, DevError> {
+    if let Err(error) = attempt_job.assign_child(&host) {
+        drop(lease_writer);
+        drop(attempt_job);
+        let host_result = host.wait();
+        stage.release_launch_guards();
+        let cleanup_result = fs::remove_dir_all(stage_root);
+        return Err(DevError::Runtime(format!(
+            "KELD-CLI-049: Windows attempt Job admission failed before host startup: {error}; \
+             host exit={host_result:?}; stage cleanup={cleanup_result:?}. Fix the Windows Job constraint and retry."
+        )));
+    }
+    let cleanup_sentinel = match start_windows_stage_cleanup_sentinel(
+        developer_host,
+        stage_root,
+        host.id(),
+        &attempt_job,
+    ) {
+        Ok(sentinel) => sentinel,
+        Err(sentinel_error) => {
+            drop(lease_writer);
+            let host_result =
+                attempt_job.terminate_and_wait(&host, WINDOWS_STAGE_CLEANUP_READY_TIMEOUT);
+            stage.release_launch_guards();
+            let cleanup_result = match &host_result {
+                Ok(()) => fs::remove_dir_all(stage_root).map_err(|error| error.to_string()),
+                Err(_) => Err(String::from(
+                    "retained because attempt cleanup was not proven",
+                )),
+            };
+            return Err(DevError::Doctor(format!(
+                "KELD-CLI-047: Windows dev-stage cleanup owner failed before handoff: {sentinel_error}; \
+                 attempt cleanup={host_result:?}; stage cleanup={cleanup_result:?}. \
+                 Confirm the staged host exited, remove `{}`, and retry.",
+                stage_root.display()
+            )));
+        }
+    };
+    if let Err(error) = release_host_start_v1(&mut lease_writer) {
+        drop(lease_writer);
+        stage.release_launch_guards();
+        drop(stage);
+        let cleanup_result = cleanup_sentinel.wait(stage_root);
+        return Err(DevError::Runtime(format!(
+            "KELD-CLI-049: assigned Windows host start gate could not be released: {error}; \
+             stage cleanup={cleanup_result:?}."
+        )));
+    }
+    stage.release_launch_guards();
+    let status = host.wait()?;
+    drop(lease_writer);
+    drop(stage);
+    cleanup_sentinel.wait(stage_root)?;
+    if attempt_job.active_processes().map_err(|error| {
+        DevError::Runtime(format!(
+            "KELD-CLI-049: cleanup helper exited without readable attempt Job accounting: {error}."
+        ))
+    })? != 0
+    {
+        return Err(DevError::Runtime(String::from(
+            "KELD-CLI-049: cleanup helper returned before the launcher observed zero attempt processes.",
+        )));
+    }
+    Ok(status)
 }
 
 #[cfg(target_os = "linux")]
@@ -429,31 +532,39 @@ fn start_windows_stage_cleanup_sentinel(
     installed_host: &Path,
     stage_root: &Path,
     staged_host_pid: u32,
+    attempt_job: &WindowsProcessJob,
 ) -> Result<WindowsStageCleanupSentinel, DevError> {
+    let cleanup_handle = attempt_job
+        .duplicate_cleanup_observer_handle()
+        .map_err(|error| {
+            DevError::Runtime(format!(
+                "KELD-CLI-049: cleanup Job delegation failed: {error}"
+            ))
+        })?;
     let mut sentinel = Command::new(installed_host);
     sentinel
         .arg("--keld-windows-dev-stage-cleanup-v1")
         .arg(stage_root)
         .arg(staged_host_pid.to_string())
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::from(cleanup_handle))
         .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
     let mut sentinel = sentinel.spawn()?;
+    let stdin = sentinel.stdin.take().ok_or_else(|| {
+        DevError::Runtime(String::from(
+            "Windows dev-stage cleanup sentinel has no release pipe",
+        ))
+    })?;
     let stdout = sentinel.stdout.take().ok_or_else(|| {
         DevError::Runtime(String::from(
             "Windows dev-stage cleanup sentinel has no readiness pipe",
         ))
     })?;
-    let stderr = sentinel.stderr.take().ok_or_else(|| {
-        DevError::Runtime(String::from(
-            "Windows dev-stage cleanup sentinel has no diagnostic pipe",
-        ))
-    })?;
     await_windows_stage_cleanup_sentinel(
         sentinel,
+        stdin,
         stdout,
-        stderr,
         WINDOWS_STAGE_CLEANUP_READY_TIMEOUT,
     )
 }
@@ -461,24 +572,35 @@ fn start_windows_stage_cleanup_sentinel(
 #[cfg(windows)]
 fn await_windows_stage_cleanup_sentinel(
     mut sentinel: std::process::Child,
+    stdin: std::process::ChildStdin,
     stdout: std::process::ChildStdout,
-    mut stderr: std::process::ChildStderr,
     timeout: Duration,
 ) -> Result<WindowsStageCleanupSentinel, DevError> {
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let (diagnostic_tx, diagnostic_rx) = mpsc::sync_channel(1);
     let ready_thread = thread::Builder::new()
         .name(String::from("keld-stage-cleanup-readiness"))
         .spawn(move || {
+            let mut reader = BufReader::new(stdout);
             let mut ready = String::new();
-            let result = BufReader::new(stdout).read_line(&mut ready).map(|_| ready);
-            let _ = ready_tx.send(result);
+            if let Err(source) = reader.read_line(&mut ready) {
+                let _ = ready_tx.send(Err(source));
+                return;
+            }
+            if ready_tx.send(Ok(ready)).is_err() {
+                return;
+            }
+            let result = read_windows_stage_cleanup_diagnostics(&mut reader);
+            let _ = diagnostic_tx.send(result);
         });
     let ready_thread = match ready_thread {
         Ok(thread) => thread,
         Err(source) => {
             return failed_windows_stage_cleanup_readiness(
                 &mut sentinel,
-                &mut stderr,
+                stdin,
+                None,
+                &diagnostic_rx,
                 &format!("could not start readiness reader: {source}"),
             );
         }
@@ -486,64 +608,94 @@ fn await_windows_stage_cleanup_sentinel(
     let ready = match ready_rx.recv_timeout(timeout) {
         Ok(Ok(ready)) => ready,
         Ok(Err(source)) => {
-            let _ = ready_thread.join();
             return failed_windows_stage_cleanup_readiness(
                 &mut sentinel,
-                &mut stderr,
+                stdin,
+                Some(ready_thread),
+                &diagnostic_rx,
                 &format!("readiness pipe failed: {source}"),
             );
         }
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            let _ = sentinel.kill();
-            let _ = ready_thread.join();
             return failed_windows_stage_cleanup_readiness(
                 &mut sentinel,
-                &mut stderr,
+                stdin,
+                Some(ready_thread),
+                &diagnostic_rx,
                 &format!("timed out after {timeout:?}"),
             );
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
-            let _ = sentinel.kill();
-            let _ = ready_thread.join();
             return failed_windows_stage_cleanup_readiness(
                 &mut sentinel,
-                &mut stderr,
+                stdin,
+                Some(ready_thread),
+                &diagnostic_rx,
                 "readiness reader stopped without a result",
             );
         }
     };
-    if ready_thread.join().is_err() {
-        return failed_windows_stage_cleanup_readiness(
-            &mut sentinel,
-            &mut stderr,
-            "readiness reader panicked",
-        );
-    }
     if ready.trim_end() != "KELD_WINDOWS_DEV_STAGE_CLEANUP_READY" {
         return failed_windows_stage_cleanup_readiness(
             &mut sentinel,
-            &mut stderr,
+            stdin,
+            Some(ready_thread),
+            &diagnostic_rx,
             &format!("unexpected readiness record {ready:?}"),
         );
     }
     Ok(WindowsStageCleanupSentinel {
         child: sentinel,
-        stderr,
+        stdin: Some(stdin),
+        reader_thread: Some(ready_thread),
+        diagnostics: diagnostic_rx,
     })
+}
+
+#[cfg(windows)]
+fn read_windows_stage_cleanup_diagnostics(mut reader: impl io::Read) -> io::Result<String> {
+    let mut captured = Vec::with_capacity(WINDOWS_STAGE_CLEANUP_DIAGNOSTIC_LIMIT);
+    let mut chunk = [0_u8; 1024];
+    let mut truncated = false;
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                let remaining = WINDOWS_STAGE_CLEANUP_DIAGNOSTIC_LIMIT - captured.len();
+                let retained = read.min(remaining);
+                captured.extend_from_slice(&chunk[..retained]);
+                truncated |= retained < read;
+            }
+            Err(source) if source.kind() == io::ErrorKind::Interrupted => {}
+            Err(source) => return Err(source),
+        }
+    }
+    let mut detail = String::from_utf8_lossy(&captured).into_owned();
+    if truncated {
+        detail.push_str("\n[additional cleanup diagnostics truncated]");
+    }
+    Ok(detail)
 }
 
 #[cfg(windows)]
 fn failed_windows_stage_cleanup_readiness(
     sentinel: &mut std::process::Child,
-    stderr: &mut std::process::ChildStderr,
+    stdin: std::process::ChildStdin,
+    reader_thread: Option<thread::JoinHandle<()>>,
+    diagnostics: &mpsc::Receiver<io::Result<String>>,
     reason: &str,
 ) -> Result<WindowsStageCleanupSentinel, DevError> {
+    drop(stdin);
     let _ = sentinel.kill();
     let status = sentinel.wait()?;
-    let mut detail = String::new();
-    stderr.read_to_string(&mut detail)?;
+    let reader_panicked = reader_thread.is_some_and(|thread| thread.join().is_err());
+    let detail = diagnostics
+        .recv()
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
     Err(DevError::Runtime(format!(
-        "Windows dev-stage cleanup sentinel failed readiness ({reason}) with {status}: {}",
+        "Windows dev-stage cleanup sentinel failed readiness ({reason}) with {status}: {}; reader panicked={reader_panicked}",
         detail.trim()
     )))
 }
@@ -551,21 +703,45 @@ fn failed_windows_stage_cleanup_readiness(
 #[cfg(windows)]
 struct WindowsStageCleanupSentinel {
     child: std::process::Child,
-    stderr: std::process::ChildStderr,
+    stdin: Option<std::process::ChildStdin>,
+    reader_thread: Option<thread::JoinHandle<()>>,
+    diagnostics: mpsc::Receiver<io::Result<String>>,
 }
 
 #[cfg(windows)]
 impl WindowsStageCleanupSentinel {
     fn wait(mut self, stage_root: &Path) -> Result<(), DevError> {
+        let mut stdin = self.stdin.take().ok_or_else(|| {
+            DevError::Runtime(String::from(
+                "Windows dev-stage cleanup sentinel release was already consumed",
+            ))
+        })?;
+        stdin.write_all(WINDOWS_DEV_STAGE_CLEANUP_RELEASE_V1)?;
+        drop(stdin);
         let status = self.child.wait()?;
-        let mut detail = String::new();
-        self.stderr.read_to_string(&mut detail)?;
+        let reader_panicked = self
+            .reader_thread
+            .take()
+            .is_some_and(|thread| thread.join().is_err());
         if status.success() {
             return Ok(());
         }
+        let detail = self
+            .diagnostics
+            .recv()
+            .map_err(|source| {
+                DevError::Runtime(format!(
+                    "Windows dev-stage cleanup diagnostic reader ended without a result: {source}"
+                ))
+            })?
+            .map_err(|source| {
+                DevError::Runtime(format!(
+                    "Windows dev-stage cleanup diagnostic pipe failed: {source}"
+                ))
+            })?;
         Err(DevError::Doctor(format!(
-            "KELD-CLI-047: Windows dev-stage cleanup sentinel exited with {status}: {}. \
-             Remove `{}` after confirming the host has exited.",
+            "KELD-CLI-047: Windows dev-stage cleanup sentinel exited with {status}: {} (reader panicked={reader_panicked}). \
+             Remove `{}` only after confirming the complete attempt process family has exited.",
             detail.trim(),
             stage_root.display()
         )))
@@ -592,6 +768,10 @@ where
     W: FnOnce(&str, &str) -> Result<(), DevError>,
 {
     doctor_or_err(project_root)?;
+    // Retained diagnostic/test seam can construct only a hello window. A
+    // facade app owns its first window after Host Ready; reject before Bun
+    // spawn instead of inventing one via the legacy hello window callback.
+    let html = load_dev_window_html(project_root)?;
     let ready = format!(
         "{}: main process ready (IPC echo ok)",
         hello_title_for_project(project_root)
@@ -621,7 +801,6 @@ where
 
     // Window phase while echo listener + Bun are still live.
     let title = hello_title_for_project(project_root);
-    let html = load_dev_window_html(project_root)?;
     let window_result = window(&title, &html);
     // Window returned (tao `run_return`) — reap Bun, stop the listener, and
     // read how supervision actually ended across the window phase (KEL-105).
@@ -702,22 +881,58 @@ mod tests {
                 "-Command",
                 "Start-Sleep -Seconds 60",
             ])
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .expect("spawn blocked readiness fixture");
+        let stdin = child.stdin.take().expect("sentinel release stdin");
         let stdout = child.stdout.take().expect("readiness stdout");
-        let stderr = child.stderr.take().expect("diagnostic stderr");
         let started = Instant::now();
         let Err(error) =
-            await_windows_stage_cleanup_sentinel(child, stdout, stderr, Duration::from_millis(100))
+            await_windows_stage_cleanup_sentinel(child, stdin, stdout, Duration::from_millis(100))
         else {
             panic!("silent sentinel must time out");
         };
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(error.to_string().contains("timed out"), "{error}");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn cleanup_sentinel_keeps_post_readiness_diagnostics_readable() {
+        let mut child = Command::new("cmd.exe")
+            .args([
+                "/d",
+                "/c",
+                "echo KELD_WINDOWS_DEV_STAGE_CLEANUP_READY & more & echo KELD_TEST_LATE_CLEANUP_FAILURE & exit /b 7",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("spawn diagnostic cleanup fixture");
+        let stdin = child.stdin.take().expect("cleanup release stdin");
+        let stdout = child.stdout.take().expect("cleanup diagnostic stdout");
+        let sentinel =
+            await_windows_stage_cleanup_sentinel(child, stdin, stdout, Duration::from_secs(5))
+                .expect("cleanup fixture must announce readiness");
+
+        let error = sentinel
+            .wait(Path::new("unused-test-stage"))
+            .expect_err("fixture must return a cleanup error");
+        assert!(
+            error.to_string().contains("KELD_TEST_LATE_CLEANUP_FAILURE"),
+            "post-readiness helper output must reach its owner: {error}"
+        );
+
+        let oversized =
+            std::io::Cursor::new(vec![b'x'; WINDOWS_STAGE_CLEANUP_DIAGNOSTIC_LIMIT + 1]);
+        let bounded = read_windows_stage_cleanup_diagnostics(oversized)
+            .expect("diagnostic reader must drain beyond its retained cap");
+        assert!(bounded.ends_with("[additional cleanup diagnostics truncated]"));
+        assert!(bounded.len() < WINDOWS_STAGE_CLEANUP_DIAGNOSTIC_LIMIT + 128);
     }
 
     #[test]
@@ -925,6 +1140,56 @@ mod tests {
         );
     }
 
+    /// GH-1188 D15 at T1: the staged-host preflight leaves only a valid Windows schema-2
+    /// project's renderer verdict to the host. A renderer project's missing renderer and
+    /// an invalid `initialWindow` still fail here, and `keld doctor` keeps its refusal.
+    #[cfg(windows)]
+    #[test]
+    fn staged_host_preflight_defers_only_a_valid_windows_facade_renderer_verdict() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("src")).expect("src");
+        fs::write(dir.path().join("src/main.ts"), "export {}\n").expect("main");
+        let config = dir.path().join("keld.config.ts");
+
+        fs::write(&config, "export default {}\n").expect("renderer config");
+        let msg = staged_host_doctor_or_err(dir.path())
+            .expect_err("a missing renderer must fail before staging")
+            .to_string();
+        assert!(msg.contains("[FAIL] renderer"), "{msg}");
+        assert!(msg.contains(RENDERER_LOAD_CODE), "{msg}");
+
+        fs::write(
+            &config,
+            "export default { initialWindow: \"window\" } as const;\n",
+        )
+        .expect("invalid facade config");
+        let msg = staged_host_doctor_or_err(dir.path())
+            .expect_err("an invalid initialWindow must fail before staging")
+            .to_string();
+        assert!(msg.contains("KELD-CLI-047"), "{msg}");
+
+        fs::write(
+            &config,
+            "export default { entry: \"src/main.ts\", initialWindow: \"none\" } as const;\n",
+        )
+        .expect("facade config");
+        if let Err(error) = staged_host_doctor_or_err(dir.path()) {
+            let msg = error.to_string();
+            assert!(!msg.contains("renderer"), "{msg}");
+        }
+        let doctor = run_checks(Some(dir.path()));
+        let renderer = doctor
+            .iter()
+            .find(|check| check.label == "renderer")
+            .expect("doctor renderer check");
+        assert!(!renderer.ok, "keld doctor keeps its T1 refusal");
+        assert!(
+            renderer.detail.contains("KELD-CLI-047"),
+            "{}",
+            renderer.detail
+        );
+    }
+
     #[test]
     fn window_title_comes_from_config_name() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -951,6 +1216,9 @@ mod tests {
         let html = load_dev_window_html(&root).expect("renderer");
         assert!(html.contains("<h1>demo</h1>"), "{html}");
         assert!(html.contains("<title>demo</title>"), "{html}");
+        assert!(html.contains("background: #000;"), "{html}");
+        assert!(html.contains("color: #fff;"), "{html}");
+        assert!(html.contains("color-scheme: dark;"), "{html}");
         assert!(html.contains("Rendered by the Keld host webview"), "{html}");
         assert!(
             !html.contains("Hello from WKWebView"),
@@ -992,6 +1260,22 @@ mod tests {
         .expect("html");
         let html = load_dev_window_html(dir.path()).expect("renderer");
         assert!(html.contains("default-index"), "{html}");
+    }
+
+    #[test]
+    fn legacy_window_loader_refuses_facade_instead_of_inventing_an_index_window() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("keld.config.ts"),
+            "export default { initialWindow: 'none' } as const;",
+        )
+        .expect("facade config");
+        fs::write(dir.path().join("index.html"), "<p>must not load</p>").expect("index");
+        let error = load_dev_window_html(dir.path())
+            .expect_err("facade has no initial renderer, even if index exists");
+        let text = error.to_string();
+        assert!(text.contains("KELD-CLI-047"), "{text}");
+        assert!(text.contains("no initial renderer"), "{text}");
     }
 
     #[test]

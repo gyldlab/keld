@@ -1,0 +1,149 @@
+# Windows operator acceptance for an actual signed Keld release host (GH-894).
+# No signing or build occurs here. Pinned expectations must come from an
+# independent release/build record, never be copied from the candidate executable.
+# Operator inputs: -SignedHost (genuinely signed release keld-host.exe);
+# -ExpectedReleaseSha256 (64 hex), -ExpectedCertificateThumbprint (40 hex);
+# -ExpectedAppId (canonical signed app ID), -ExpectedPublisherScope (64 hex SPKI);
+# -CoreAcceptanceExe (prebuilt keld-core libtest with KEL-135 ignored selector);
+# -UpdateInstallerExe (prebuilt keld-update libtest with KEL-254 install selector);
+# -HostAcceptanceExe (prebuilt keld-host no_flag_windows test executable);
+# and each binary's independently recorded SHA256 via -ExpectedCoreAcceptanceSha256,
+# -ExpectedUpdateInstallerSha256 and -ExpectedHostAcceptanceSha256.
+# Run: powershell -NoProfile -NonInteractive -File tools/windows_signed_installed_acceptance.ps1 <named parameters>.
+# Prints KELD_RELEASE_SIGNED_INSTALLED_PASS only after both native selectors ran
+# exactly once, the production installation emitted its receipt, and image hashes held.
+[CmdletBinding()]
+param(
+    [string]$SignedHost,
+    [string]$ExpectedReleaseSha256,
+    [string]$ExpectedCertificateThumbprint,
+    [string]$ExpectedAppId,
+    [string]$ExpectedPublisherScope,
+    [string]$CoreAcceptanceExe,
+    [string]$ExpectedCoreAcceptanceSha256,
+    [string]$UpdateInstallerExe,
+    [string]$ExpectedUpdateInstallerSha256,
+    [string]$HostAcceptanceExe,
+    [string]$ExpectedHostAcceptanceSha256
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+function Require-Input([string]$Name, [string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        throw "KELD-RELEASE-GATE: missing required $Name; no signed-installed acceptance ran"
+    }
+}
+
+function Require-Executable([string]$Name, [string]$Value) {
+    if (-not (Test-Path -LiteralPath $Value -PathType Leaf)) {
+        throw "KELD-RELEASE-GATE: $Name is not an existing file: $Value"
+    }
+    if ([IO.Path]::GetExtension($Value) -cne '.exe') {
+        throw "KELD-RELEASE-GATE: $Name must name a native .exe"
+    }
+    return (Resolve-Path -LiteralPath $Value).ProviderPath
+}
+
+function Require-PinnedTestBinary([string]$Name, [string]$Value, [string]$Digest) {
+    $binary = Require-Executable $Name $Value
+    if ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -cne $Digest.ToUpperInvariant()) {
+        throw "KELD-RELEASE-GATE: $Name differs from the independently pinned native test artifact"
+    }
+    return $binary
+}
+
+function Require-OneNativeTest([string]$Stage, [string]$Output, [int]$ExitCode) {
+    if ($ExitCode -ne 0 -or
+        $Output -notmatch 'test result: ok\.\s+1 passed;\s+0 failed;\s+0 ignored;') {
+        throw "KELD-RELEASE-GATE: $Stage failed or its exact selector ran zero tests (exit $ExitCode): $Output"
+    }
+}
+
+if ($env:OS -cne 'Windows_NT') {
+    throw 'KELD-RELEASE-GATE: acceptance requires native Windows'
+}
+foreach ($key in @(
+    'SignedHost', 'ExpectedReleaseSha256', 'ExpectedCertificateThumbprint',
+    'ExpectedAppId', 'ExpectedPublisherScope', 'CoreAcceptanceExe',
+    'ExpectedCoreAcceptanceSha256', 'UpdateInstallerExe',
+    'ExpectedUpdateInstallerSha256', 'HostAcceptanceExe',
+    'ExpectedHostAcceptanceSha256'
+)) {
+    Require-Input $key (Get-Variable -Name $key -ValueOnly)
+}
+if ($ExpectedReleaseSha256 -cnotmatch '^[0-9a-fA-F]{64}$' -or
+    $ExpectedCertificateThumbprint -cnotmatch '^[0-9a-fA-F]{40}$' -or
+    $ExpectedPublisherScope -cnotmatch '^[0-9a-fA-F]{64}$' -or
+    $ExpectedCoreAcceptanceSha256 -cnotmatch '^[0-9a-fA-F]{64}$' -or
+    $ExpectedUpdateInstallerSha256 -cnotmatch '^[0-9a-fA-F]{64}$' -or
+    $ExpectedHostAcceptanceSha256 -cnotmatch '^[0-9a-fA-F]{64}$' -or
+    $ExpectedAppId -match '\s') {
+    throw 'KELD-RELEASE-GATE: malformed pinned digest, certificate, publisher scope or app ID'
+}
+
+$hostImage = Require-Executable 'SignedHost' $SignedHost
+$releaseHash = (Get-FileHash -LiteralPath $hostImage -Algorithm SHA256).Hash
+if ($releaseHash -cne $ExpectedReleaseSha256.ToUpperInvariant()) {
+    throw "KELD-RELEASE-GATE: signed release SHA256 differs from independently pinned release record"
+}
+$signature = Get-AuthenticodeSignature -LiteralPath $hostImage
+if ($signature.Status.ToString() -cne 'Valid' -or
+    $signature.SignatureType.ToString() -cne 'Authenticode' -or
+    $null -eq $signature.SignerCertificate) {
+    throw "KELD-RELEASE-GATE: host lacks a valid embedded Authenticode certificate (status=$($signature.Status), type=$($signature.SignatureType))"
+}
+if ($signature.SignerCertificate.Thumbprint.ToUpperInvariant() -cne
+    $ExpectedCertificateThumbprint.ToUpperInvariant()) {
+    throw 'KELD-RELEASE-GATE: signer certificate thumbprint differs from pinned release publisher'
+}
+# These are prebuilt real native Rust libtest binaries, never generated by this gate.
+$coreTest = Require-PinnedTestBinary 'CoreAcceptanceExe' $CoreAcceptanceExe $ExpectedCoreAcceptanceSha256
+$installerTest = Require-PinnedTestBinary 'UpdateInstallerExe' $UpdateInstallerExe $ExpectedUpdateInstallerSha256
+$hostTest = Require-PinnedTestBinary 'HostAcceptanceExe' $HostAcceptanceExe $ExpectedHostAcceptanceSha256
+
+# The KEL-135 guard owner does WinVerifyTrust, revocation and authenticated
+# app-id/SPKI extraction. A PowerShell Valid status alone is not release authority.
+$env:KELD_KEL135_CARRIER_UNDER_TEST = $hostImage
+$coreOutput = (& $coreTest 'app_session::tests::kel135_signed_package_acceptance_fixture' '--ignored' '--exact' '--nocapture' '--test-threads=1' 2>&1 | Out-String)
+$coreExit = $LASTEXITCODE
+Require-OneNativeTest 'signed KEL-135 identity' $coreOutput $coreExit
+$identityRows = [regex]::Matches(
+    $coreOutput,
+    'KELD_KEL135_SIGNED_IDENTITY app_id=(?<app>\S+) publisher_scope=(?<publisher>[0-9a-fA-F]{64}) profile_namespace=(?<namespace>\S+)'
+)
+if ($identityRows.Count -ne 1) {
+    throw 'KELD-RELEASE-GATE: KEL-135 signed identity emitted no unique authenticated receipt'
+}
+$identity = $identityRows[0].Groups
+if ($identity['app'].Value -cne $ExpectedAppId -or
+    $identity['publisher'].Value.ToLowerInvariant() -cne
+    $ExpectedPublisherScope.ToLowerInvariant()) {
+    throw "KELD-RELEASE-GATE: authenticated signed app ID or publisher scope differs from the independent release record"
+}
+
+# Production PerUserDirect fixture installs the exact signed host; the existing
+# host selector checks renderer, window, Bun child, version pin and clean Quit.
+$env:KELD_KEL254_SIGNED_HOST_A_P1 = $hostImage
+$env:KELD_KEL254_INSTALLER_FIXTURE = $installerTest
+$hostOutput = (& $hostTest 'profiles::startup::kel135_signed_host_persistent_profile_startup' '--ignored' '--exact' '--nocapture' '--test-threads=1' 2>&1 | Out-String)
+$hostExit = $LASTEXITCODE
+Require-OneNativeTest 'signed installed host startup' $hostOutput $hostExit
+if ($hostOutput -notmatch 'KELD_KEL254_INSTALLED host=') {
+    throw 'KELD-RELEASE-GATE: host startup omitted the production-installed fixture receipt'
+}
+if ((Get-FileHash -LiteralPath $hostImage -Algorithm SHA256).Hash -cne $releaseHash) {
+    throw 'KELD-RELEASE-GATE: signed release host changed during acceptance'
+}
+foreach ($artifact in @(
+    @{ Name = 'CoreAcceptanceExe'; Path = $coreTest; Digest = $ExpectedCoreAcceptanceSha256 },
+    @{ Name = 'UpdateInstallerExe'; Path = $installerTest; Digest = $ExpectedUpdateInstallerSha256 },
+    @{ Name = 'HostAcceptanceExe'; Path = $hostTest; Digest = $ExpectedHostAcceptanceSha256 }
+)) {
+    if ((Get-FileHash -LiteralPath $artifact.Path -Algorithm SHA256).Hash -cne
+        $artifact.Digest.ToUpperInvariant()) {
+        throw "KELD-RELEASE-GATE: $($artifact.Name) changed during acceptance"
+    }
+}
+Write-Output "KELD_RELEASE_SIGNED_INSTALLED_PASS sha256=$releaseHash cert=$($signature.SignerCertificate.Thumbprint) app_id=$ExpectedAppId publisher_scope=$ExpectedPublisherScope native_core=1 native_host=1"

@@ -9,6 +9,23 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod git_base_contract;
+mod justfile_contract;
+use git_base_contract::{BASE_ENV, BaseError, base_ref, merge_base};
+use justfile_contract::{declaration_words, dependency_gates, expanded_gates};
+
+#[path = "ci_hygiene_workflow_access.rs"]
+mod workflow_access;
+use workflow_access::{
+    forbidden_workflow_control_key, workflow_direct_named_step_block,
+    workflow_direct_named_step_count, workflow_has_checkout_fetch_depth_zero,
+    workflow_has_unconditional_named_step, workflow_job_block, workflow_job_level_if,
+    workflow_job_level_property, workflow_job_sequence_values, workflow_named_step_contains,
+    workflow_named_step_direct_keys, workflow_named_step_direct_value,
+    workflow_named_step_has_property, workflow_named_step_mapping,
+    workflow_named_step_shell_commands, yaml_content, yaml_mapping_key,
+};
+
 const CODEOWNERS: &str = ".github/CODEOWNERS";
 const PR_TEMPLATE: &str = ".github/PULL_REQUEST_TEMPLATE.md";
 const ISSUE_DIR: &str = ".github/ISSUE_TEMPLATE";
@@ -23,12 +40,29 @@ const NEXTEST_CONFIG: &str = ".config/nextest.toml";
 const MERMAID_CHECKER: &str = "tools/mermaid_docs.rs";
 const MERMAID_RENDERER: &str = "tools/mermaid_render_check.sh";
 const MERMAID_CONFIG: &str = "tools/mermaid-render-config.json";
+/// GH-508 committed kipc channel allocation baseline (append-only).
+const CHANNEL_ALLOCATIONS: &str = "crates/keld-ipc/channel_allocations.txt";
+/// The hosted step that runs the append-only rule, and the base it binds.
+const CHANNEL_ALLOCATIONS_STEP: &str = "Check this checkout";
+const CHANNEL_ALLOCATIONS_STEP_IF: &str = "needs.changes.outputs.hygiene == 'true'";
+const CHANNEL_ALLOCATIONS_STEP_ENV: &[(&str, &str)] = COMPARISON_BASE_STEP_ENV;
+/// A ratchet step compares with the PR base or the previous push tip, never with itself.
+const COMPARISON_BASE_STEP_ENV: &[(&str, &str)] = &[(
+    BASE_ENV,
+    "${{ github.event.pull_request.base.sha || github.event.before }}",
+)];
+const CHANNEL_ALLOCATIONS_STEP_COMMANDS: &[&str] = &[
+    "rustc --edition=2024 -D warnings tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene",
+    "target/ci-hygiene/ci-hygiene check .",
+];
 const MERMAID_IMAGE_DIGEST: &str =
     "sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf";
 
 const REQUIRED_OWNER_PATHS: &[&str] = &[
     "crates/keld-guard",
     "crates/keld-ipc",
+    // The elevated updater helper (KEL-270 T4d S9c; owner approved in session 2026-10-07).
+    "crates/keld-updater-helper",
     "Cargo.toml",
     ".github",
     "AGENTS.md",
@@ -60,7 +94,9 @@ const WORKFLOW_TEXT_NEEDLES: &[&str] = &[
     "sha256sum -c",
     "--test tools/ci_hygiene.rs",
     "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
-    "toolchain: 1.97.1",
+    // The Rust compiler pin has one owner: `checkRustToolchainPins` in
+    // tools/ci_workflow_security.ts derives it from rust-toolchain.toml and
+    // checks every installer job (run by this same hygiene step).
     "--test tools/product_status.rs",
     "product-status check .",
     "--test tools/llms_docs.rs",
@@ -82,6 +118,32 @@ const ATOMIC_PROTOCOL_COMMANDS: &[&str] = &[
     "target/atomic-protocol/atomic-protocol check .",
 ];
 
+/// The doc-placeholders recipe pair, run by the hosted hygiene job (#650).
+const DOC_PLACEHOLDER_COMMANDS: &[&str] = &[
+    "mkdir -p target/doc-placeholders",
+    "rustc --edition=2024 -D warnings --test tools/doc_placeholders.rs -o target/doc-placeholders/doc-placeholders-test",
+    "target/doc-placeholders/doc-placeholders-test",
+    "rustc --edition=2024 -D warnings tools/doc_placeholders.rs -o target/doc-placeholders/doc-placeholders",
+    "target/doc-placeholders/doc-placeholders check .",
+];
+
+/// The spec-structure recipe pair, run by the hosted hygiene job (#1321).
+const SPEC_STRUCTURE_COMMANDS: &[&str] = &[
+    "mkdir -p target/spec-structure",
+    "rustc --edition=2024 -D warnings --test tools/spec_structure.rs -o target/spec-structure/spec-structure-test",
+    "target/spec-structure/spec-structure-test",
+    "rustc --edition=2024 -D warnings tools/spec_structure.rs -o target/spec-structure/spec-structure",
+    "target/spec-structure/spec-structure check .",
+];
+
+/// The `hygiene` recipe's hello-command regression, run by the hosted hygiene job (#650).
+const HELLO_COMMAND_COMMANDS: &[&str] = &["python3 -B tools/test_hello_command.py"];
+
+const AUDIT_DOC_COMMANDS: &[&str] = &[
+    "python3 -B docs/audits/verify.py",
+    "python3 -B docs/audits/test_verify.py",
+];
+
 const AGENT_CONTEXT_COMMANDS: &[&str] = &[
     "mkdir -p target/agent-context",
     "rustc --edition=2024 -D warnings --test tools/agent_context.rs -o target/agent-context/agent-context-test",
@@ -90,6 +152,47 @@ const AGENT_CONTEXT_COMMANDS: &[&str] = &[
     "target/agent-context/agent-context check .",
     "python3 -B tools/test_session_closeout.py",
     "python3 -B tools/test_session_closeout_hook.py",
+    "python3 -B tools/workspace.py check",
+    "python3 -B tools/test_workspace.py",
+];
+
+// The gitleaks `Scan` step scans exactly what each event admits: a pull request's own
+// commits (both SHAs must resolve, so an unresolvable range cannot pass with zero
+// commits scanned) or the pushed branch's history; any other event refuses.
+const GITLEAKS_SCAN_ENV: &[(&str, &str)] = &[
+    ("KELD_GITLEAKS_EVENT", "${{ github.event_name }}"),
+    (
+        "KELD_GITLEAKS_PR_BASE",
+        "${{ github.event.pull_request.base.sha }}",
+    ),
+    (
+        "KELD_GITLEAKS_PR_HEAD",
+        "${{ github.event.pull_request.head.sha }}",
+    ),
+];
+
+const GITLEAKS_SCAN_COMMANDS: &[&str] = &[
+    "set -euo pipefail",
+    "case \"$KELD_GITLEAKS_EVENT\" in",
+    "pull_request)",
+    "for sha in \"$KELD_GITLEAKS_PR_BASE\" \"$KELD_GITLEAKS_PR_HEAD\"; do",
+    "if [ -z \"$sha\" ] || ! git cat-file -e \"${sha}^{commit}\"; then",
+    "echo \"gitleaks: a pull_request base or head SHA is missing or not a local commit; refusing an unresolvable range\" >&2",
+    "exit 1",
+    "fi",
+    "done",
+    "KELD_GITLEAKS_RANGE=\"$KELD_GITLEAKS_PR_BASE..$KELD_GITLEAKS_PR_HEAD\"",
+    ";;",
+    "push)",
+    "KELD_GITLEAKS_RANGE=HEAD",
+    ";;",
+    "*)",
+    "echo \"gitleaks: unsupported event $KELD_GITLEAKS_EVENT; refusing to choose a scan range\" >&2",
+    "exit 1",
+    ";;",
+    "esac",
+    "echo \"gitleaks log range: $KELD_GITLEAKS_RANGE\"",
+    "gitleaks detect --source . --verbose --redact --exit-code 1 --log-opts=\"$KELD_GITLEAKS_RANGE\"",
 ];
 
 const PRODUCT_STATUS_COMMANDS: &[&str] = &[
@@ -104,6 +207,54 @@ const PRODUCT_STATUS_WINDOWS_COMMANDS: &[&str] = &[
     "mkdir -p target/product-status",
     "rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test",
     "target/product-status/product-status-test",
+];
+
+/// KEL-53 §4 "Helper launch and self-anchor" (KEL-270 T4d S9c): the release updater
+/// helper's loader acceptance and the KEL-19 container amendment's release-helper AC1
+/// and AC2 rows.
+const RELEASE_HELPER_STEP: &str =
+    "Real Windows release updater helper loader and container (KEL-53 T4d S9c)";
+const RELEASE_HELPER_CONDITION: &str = "matrix.os == 'windows-latest' && (contains(needs.changes.outputs.packages, 'keld-updater-helper') || contains(needs.changes.outputs.packages, 'keld-pack') || contains(needs.changes.outputs.packages, 'keld-host'))";
+const RELEASE_HELPER_ENV: &[(&str, &str)] = &[
+    (
+        "KELD_UPDATER_HELPER_RELEASE",
+        "${{ github.workspace }}/target/release/keld-updater-helper.exe",
+    ),
+    (
+        "KELD_PACK_REAL_HOST",
+        "${{ github.workspace }}/target/release/keld-updater-helper.exe",
+    ),
+    (
+        "KELD_PACK_REAL_HELPER",
+        "${{ github.workspace }}/target/release/keld-updater-helper.exe",
+    ),
+    (
+        "KELD_PACK_EMBEDDED_HELPER",
+        "${{ runner.temp }}/ac2-helper/keld-updater-helper.exe",
+    ),
+];
+const RELEASE_HELPER_COMMANDS: &[&str] = &[
+    "set -euo pipefail",
+    "cargo build --release -p keld-updater-helper",
+    "if ! out=\"$(cargo test -p keld-updater-helper --test release_image -- --ignored 2>&1)\"; then",
+    "printf '%s\\n' \"$out\"",
+    "exit 1",
+    "fi",
+    "printf '%s\\n' \"$out\"",
+    "grep -q 'test result: ok\\. 2 passed;' <<<\"$out\"",
+    "if ! out=\"$(cargo test -p keld-pack --test real_host real_release_host_round_trip -- --ignored --exact 2>&1)\"; then",
+    "printf '%s\\n' \"$out\"",
+    "exit 1",
+    "fi",
+    "printf '%s\\n' \"$out\"",
+    "grep -q 'test result: ok\\. 1 passed;' <<<\"$out\"",
+    "mkdir -p \"$RUNNER_TEMP/ac2-helper\"",
+    "if ! out=\"$(cargo test -p keld-pack --test real_host_acceptance -- --ignored --exact launch::ac2_embedded_release_helper_launches_to_its_self_anchor_refusal 2>&1)\"; then",
+    "printf '%s\\n' \"$out\"",
+    "exit 1",
+    "fi",
+    "printf '%s\\n' \"$out\"",
+    "grep -q 'test result: ok\\. 1 passed;' <<<\"$out\"",
 ];
 
 const WINDOWS_MEDIA_ACCEPTANCE_COMMANDS: &[&str] = &[
@@ -213,8 +364,24 @@ const WINDOWS_MEDIA_ACCEPTANCE_COMMANDS: &[&str] = &[
     "if ($invalidRows.Count -ne 0) { throw 'Windows media guard returned an invalid acceptance row' }",
 ];
 
-const FUZZ_WORKSPACE_COMMANDS: &[&str] =
-    &["cargo check --manifest-path crates/keld-ipc/fuzz/Cargo.toml"];
+const FUZZ_WORKSPACE_STEPS: &[(&str, &str)] = &[
+    (
+        "Check keld-ipc fuzz workspace",
+        "cargo check --manifest-path crates/keld-ipc/fuzz/Cargo.toml",
+    ),
+    (
+        "Test keld-ipc fuzzing hook",
+        "cargo test -p keld-ipc --features fuzzing --lib attempt::records",
+    ),
+    (
+        "Check keld-wv fuzz workspace",
+        "cargo check --manifest-path crates/keld-wv/fuzz/Cargo.toml",
+    ),
+    (
+        "Check keld-update fuzz workspace",
+        "cargo check --manifest-path crates/keld-update/fuzz/Cargo.toml",
+    ),
+];
 
 const ROOT_TEST_RECIPE_COMMANDS: &[&str] = &[
     "#!/usr/bin/env bash",
@@ -238,7 +405,10 @@ fn read(root: &Path, relative: &str) -> Result<String, String> {
 
 fn just_recipe_commands(text: &str, recipe: &str) -> Option<Vec<String>> {
     let header = format!("{recipe}:");
-    let start = text.lines().position(|line| line == header)? + 1;
+    let start = text.lines().position(|line| {
+        line.strip_prefix(&header)
+            .is_some_and(|tail| !tail.starts_with('='))
+    })? + 1;
     let mut commands = Vec::new();
     for line in text.lines().skip(start) {
         if !line.trim().is_empty() && !line.starts_with(' ') && !line.starts_with('\t') {
@@ -250,6 +420,40 @@ fn just_recipe_commands(text: &str, recipe: &str) -> Option<Vec<String>> {
         }
     }
     Some(commands)
+}
+
+fn check_root_audit_contract(root: &Path) -> Result<(), String> {
+    let justfile = read(root, JUSTFILE)?;
+    let ci_gates = expanded_gates(&justfile, "ci")
+        .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing the root `ci:` recipe."))?;
+    if !ci_gates.contains(&"audit-docs") {
+        return Err(format!(
+            "CI-HYGIENE: `{JUSTFILE}` root `ci:` must depend on `audit-docs`."
+        ));
+    }
+    let mut commands = just_recipe_commands(&justfile, "audit-docs")
+        .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing the `audit-docs:` recipe."))?;
+    if ci_gates.contains(&"audit-docs-test") {
+        commands.extend(
+            just_recipe_commands(&justfile, "audit-docs-test").ok_or_else(|| {
+                format!("CI-HYGIENE: `{JUSTFILE}` is missing `audit-docs-test:`.")
+            })?,
+        );
+    }
+    let expected = [
+        "{{python_command}} -B docs/audits/verify.py",
+        "{{python_command}} -B docs/audits/test_verify.py",
+    ];
+    if commands
+        .iter()
+        .map(String::as_str)
+        .ne(expected.iter().copied())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{JUSTFILE}` `audit-docs:` must run the verifier and mutation suite exactly."
+        ));
+    }
+    Ok(())
 }
 
 fn check_root_test_display_contract(root: &Path) -> Result<(), String> {
@@ -266,6 +470,156 @@ fn check_root_test_display_contract(root: &Path) -> Result<(), String> {
     {
         return Err(format!(
             "CI-HYGIENE: `{JUSTFILE}` `test:` must run the full workspace under `xvfb-run -a` on Linux and directly on other OSes. The Linux no-flag host suite creates a real GTK window; without the virtual display, the root gate fails before its lifecycle oracle runs."
+        ));
+    }
+    Ok(())
+}
+
+/// Gates that build, test or resolve the Rust workspace. `ci` runs them one at a time
+/// after every other gate, because the load-sensitive host tests must not share the
+/// machine with a concurrent gate.
+const SERIAL_RUST_GATES: [&str; 5] = ["fmt-check", "clippy", "test", "doc", "deny"];
+
+/// Recipes whose attribute lines include `parallel`, in declaration order. `just`
+/// rejects anything but further attributes between an attribute and its recipe.
+fn parallel_recipes(justfile: &str) -> Vec<&str> {
+    let mut recipes = Vec::new();
+    let mut parallel = false;
+    for line in justfile.lines() {
+        if line.starts_with('[') {
+            parallel |= declaration_words(line, true).contains(&"parallel");
+            continue;
+        }
+        if parallel {
+            if let Some(name) = line
+                .split([':', ' '])
+                .next()
+                .filter(|name| !name.is_empty())
+            {
+                recipes.push(name);
+            }
+        }
+        parallel = false;
+    }
+    recipes
+}
+
+fn check_serial_rust_gates(root: &Path) -> Result<(), String> {
+    let justfile = read(root, JUSTFILE)?;
+    if justfile
+        .lines()
+        .any(|line| line.trim() == "{{python_command}} -B tools/ci_local.py ci-inventory")
+    {
+        for (recipe, expected) in [
+            ("ci", "{{python_command}} -B tools/ci_local.py ci-inventory"),
+            (
+                "ci-full",
+                "{{python_command}} -B tools/ci_local.py ci-full-inventory",
+            ),
+            ("ci-route", "tools/ci_changes.sh local"),
+        ] {
+            if just_recipe_commands(&justfile, recipe).as_deref() != Some(&[expected.to_owned()]) {
+                return Err(format!(
+                    "CI-HYGIENE: `{recipe}` must invoke its declared executor/shared router exactly."
+                ));
+            }
+        }
+    }
+    let groups = parallel_recipes(&justfile);
+    for recipe in ["ci", "ci-full"] {
+        let gates = expanded_gates(&justfile, recipe).ok_or_else(|| {
+            format!("CI-HYGIENE: `{JUSTFILE}` is missing the `{recipe}:` recipe.")
+        })?;
+        let once = SERIAL_RUST_GATES
+            .iter()
+            .all(|gate| gates.iter().filter(|candidate| *candidate == gate).count() == 1);
+        if groups.contains(&recipe) || !once || !gates.ends_with(&SERIAL_RUST_GATES) {
+            return Err(format!(
+                "CI-HYGIENE: `{JUSTFILE}` `{recipe}:` must end with `{}`, each once, run one at a time after every other gate.",
+                SERIAL_RUST_GATES.join(" ")
+            ));
+        }
+    }
+    for group in groups {
+        let members = dependency_gates(&justfile, group, true).unwrap_or_default();
+        if let Some(gate) = members
+            .iter()
+            .find(|member| SERIAL_RUST_GATES.contains(member) || **member == "typescript")
+        {
+            return Err(format!(
+                "CI-HYGIENE: `{JUSTFILE}` `[parallel]` recipe `{group}` reaches `{gate}`; TypeScript and Rust gates must run one at a time after the policy batch."
+            ));
+        }
+    }
+    for recipe in ["ci", "ci-full"] {
+        if !expanded_gates(&justfile, recipe)
+            .is_some_and(|gates| gates.iter().filter(|gate| **gate == "js-fmt-check").count() == 1)
+            || just_recipe_commands(&justfile, "js-fmt-check").as_deref()
+                != Some(&[
+                    "bun packages/@keld/kipc/scripts/echo-codegen.ts check".to_owned(),
+                    "bun fmt --no-script --check \"**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}\""
+                        .to_owned(),
+                ])
+        {
+            return Err(format!(
+                "CI-HYGIENE: `{recipe}` must run js-fmt-check exactly once with codegen freshness and the direct native JS/TS formatter check."
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn check_mermaid_local_gate(root: &Path) -> Result<(), String> {
+    const MERMAID_GATES: [&str; 3] = ["mermaid-test", "mermaid-check", "mermaid-render-check"];
+    let justfile = read(root, JUSTFILE)?;
+    let ci_gates = expanded_gates(&justfile, "ci")
+        .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing the root `ci:` recipe."))?;
+    if !ci_gates.contains(&"mermaid-ci") || MERMAID_GATES.iter().any(|gate| ci_gates.contains(gate))
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{JUSTFILE}` `ci:` must use only the routed `mermaid-ci` target, not unconditional Mermaid targets."
+        ));
+    }
+    let mermaid_full = expanded_gates(&justfile, "mermaid-full")
+        .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing `mermaid-full:`."))?;
+    if !MERMAID_GATES.iter().all(|gate| mermaid_full.contains(gate)) {
+        return Err(format!(
+            "CI-HYGIENE: `{JUSTFILE}` `mermaid-full:` must retain parser tests, structural checks, and pinned rendering."
+        ));
+    }
+    let forced = ci_gates
+        .iter()
+        .flat_map(|gate| {
+            if *gate == "mermaid-ci" {
+                mermaid_full.clone()
+            } else {
+                vec![*gate]
+            }
+        })
+        .collect::<Vec<_>>();
+    if expanded_gates(&justfile, "ci-full").as_ref() != Some(&forced) {
+        return Err(format!(
+            "CI-HYGIENE: `{JUSTFILE}` `ci-full:` must force the full Mermaid path while running the same remaining local gates."
+        ));
+    }
+    let routed = just_recipe_commands(&justfile, "mermaid-ci")
+        .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing `mermaid-ci:`."))?;
+    let routed = routed.join("\n");
+    for input in [
+        "tools/ci_changes.sh local",
+        "just mermaid-full",
+        "no diagram or renderer input changed",
+    ] {
+        if !routed.contains(input) {
+            return Err(format!(
+                "CI-HYGIENE: `{JUSTFILE}` `mermaid-ci:` must route `{input}` and fail closed on unknown applicability."
+            ));
+        }
+    }
+    if !routed.contains("*)") || !routed.contains("exit 1 ;;") {
+        return Err(format!(
+            "CI-HYGIENE: `{JUSTFILE}` `mermaid-ci:` must reject unknown applicability instead of returning a skipped-green success."
         ));
     }
     Ok(())
@@ -502,443 +856,6 @@ fn check_mermaid_msys_structure(renderer: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn yaml_content(line: &str) -> Option<(usize, &str)> {
-    let indent = line.len() - line.trim_start().len();
-    let trimmed = line.trim();
-    if trimmed.is_empty() || trimmed.starts_with('#') {
-        return None;
-    }
-    let content = trimmed
-        .split_once(" #")
-        .map_or(trimmed, |(before, _)| before)
-        .trim_end();
-    Some((indent, content))
-}
-
-fn yaml_mapping_key(content: &str) -> Option<(String, &str)> {
-    let content = content.strip_prefix("- ").unwrap_or(content);
-    let (key, value) = content.split_once(':')?;
-    Some((
-        key.trim().trim_matches(['\'', '"']).to_owned(),
-        value.trim(),
-    ))
-}
-
-fn forbidden_workflow_control_key(text: &str) -> Option<String> {
-    let mut run_block_indent = None;
-    for line in text.lines() {
-        let Some((indent, content)) = yaml_content(line) else {
-            continue;
-        };
-        if let Some(run_indent) = run_block_indent {
-            if indent > run_indent {
-                continue;
-            }
-            run_block_indent = None;
-        }
-        let Some((key, value)) = yaml_mapping_key(content) else {
-            continue;
-        };
-        if key == "run" && (value.starts_with('|') || value.starts_with('>')) {
-            run_block_indent = Some(indent);
-            continue;
-        }
-        if key == "continue-on-error" || key == "defaults" {
-            return Some(key);
-        }
-    }
-    None
-}
-
-fn workflow_has_checkout_fetch_depth_zero(text: &str) -> bool {
-    let mut checkout_indent = None;
-    let mut with_indent = None;
-
-    for line in text.lines() {
-        let Some((indent, content)) = yaml_content(line) else {
-            continue;
-        };
-        if content.starts_with("- uses:") {
-            checkout_indent = content.contains("actions/checkout@").then_some(indent);
-            with_indent = None;
-            continue;
-        }
-        let Some(checkout) = checkout_indent else {
-            continue;
-        };
-        if indent <= checkout {
-            checkout_indent = None;
-            with_indent = None;
-            continue;
-        }
-        if content == "with:" {
-            with_indent = Some(indent);
-            continue;
-        }
-        if let Some(with) = with_indent {
-            if indent <= with {
-                with_indent = None;
-            } else if let Some(value) = content.strip_prefix("fetch-depth:") {
-                let value = value
-                    .trim()
-                    .trim_matches(|character| character == '\'' || character == '"');
-                if value == "0" {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-fn workflow_has_unconditional_named_step(text: &str, step_name: &str, command: &str) -> bool {
-    let expected_name = format!("- name: {step_name}");
-    let expected_command = format!("run: {command}");
-    let mut step_indent = None;
-
-    for line in text.lines() {
-        let Some((indent, content)) = yaml_content(line) else {
-            continue;
-        };
-        if content == expected_name {
-            step_indent = Some(indent);
-            continue;
-        }
-        let Some(step) = step_indent else {
-            continue;
-        };
-        if indent <= step {
-            return false;
-        }
-        if content.starts_with("if:") || content.starts_with("- if:") {
-            return false;
-        }
-        if content == expected_command {
-            return true;
-        }
-    }
-    false
-}
-
-fn workflow_named_step_has_property(text: &str, step_name: &str, property: &str) -> bool {
-    let expected_name = format!("- name: {step_name}");
-    let mut step_indent = None;
-
-    for line in text.lines() {
-        let Some((indent, content)) = yaml_content(line) else {
-            continue;
-        };
-        if content == expected_name {
-            step_indent = Some(indent);
-            continue;
-        }
-        let Some(step) = step_indent else {
-            continue;
-        };
-        if indent <= step {
-            return false;
-        }
-        if content == property {
-            return true;
-        }
-    }
-    false
-}
-
-fn workflow_named_step_contains(text: &str, step_name: &str, needle: &str) -> bool {
-    let expected_name = format!("- name: {step_name}");
-    let mut step_indent = None;
-
-    for line in text.lines() {
-        let Some((indent, content)) = yaml_content(line) else {
-            continue;
-        };
-        if content == expected_name {
-            step_indent = Some(indent);
-            continue;
-        }
-        let Some(step) = step_indent else {
-            continue;
-        };
-        if indent <= step {
-            return false;
-        }
-        if content.contains(needle) {
-            return true;
-        }
-    }
-    false
-}
-
-fn workflow_job_block<'a>(text: &'a str, job_name: &str) -> Option<String> {
-    let target = format!("{job_name}:");
-    let mut found = false;
-    let mut block = String::new();
-
-    for line in text.lines() {
-        let parsed = yaml_content(line);
-        if !found {
-            if matches!(parsed, Some((2, ref content)) if content == &target) {
-                found = true;
-                block.push_str(line);
-                block.push('\n');
-            }
-            continue;
-        }
-        if matches!(parsed, Some((indent, _)) if indent <= 2) {
-            break;
-        }
-        block.push_str(line);
-        block.push('\n');
-    }
-
-    found.then_some(block)
-}
-
-fn workflow_direct_named_step_block(text: &str, step_name: &str) -> Option<String> {
-    let expected_name = format!("- name: {step_name}");
-    let mut found = false;
-    let mut block = String::new();
-
-    for line in text.lines() {
-        let parsed = yaml_content(line);
-        if !found {
-            if matches!(parsed, Some((6, ref content)) if content == &expected_name) {
-                found = true;
-                block.push_str(line);
-                block.push('\n');
-            }
-            continue;
-        }
-        if matches!(parsed, Some((indent, _)) if indent <= 6) {
-            break;
-        }
-        block.push_str(line);
-        block.push('\n');
-    }
-
-    found.then_some(block)
-}
-
-fn workflow_direct_named_step_count(text: &str, step_name: &str) -> usize {
-    let expected_name = format!("- name: {step_name}");
-    text.lines()
-        .filter_map(yaml_content)
-        .filter(|(indent, content)| *indent == 6 && *content == expected_name)
-        .count()
-}
-
-fn workflow_job_sequence_values(block: &str, key: &str) -> Option<Vec<String>> {
-    let expected_key = format!("{key}:");
-    let mut sequence_indent = None;
-    let mut values = Vec::new();
-
-    for line in block.lines() {
-        let Some((indent, content)) = yaml_content(line) else {
-            continue;
-        };
-        if sequence_indent.is_none() {
-            if indent == 4 && content == expected_key {
-                sequence_indent = Some(indent);
-            }
-            continue;
-        }
-        let sequence = sequence_indent?;
-        if indent <= sequence {
-            break;
-        }
-        if indent == sequence + 2 {
-            values.push(content.strip_prefix("- ")?.to_owned());
-        }
-    }
-
-    sequence_indent.map(|_| values)
-}
-
-fn workflow_named_step_mapping(
-    text: &str,
-    step_name: &str,
-    mapping: &str,
-) -> Option<Vec<(String, String)>> {
-    let block = workflow_direct_named_step_block(text, step_name)?;
-    let mut found = false;
-    let mut entries = Vec::new();
-    for line in block.lines().skip(1) {
-        let Some((indent, content)) = yaml_content(line) else {
-            continue;
-        };
-        if !found {
-            if indent == 8 {
-                let (key, value) = yaml_mapping_key(content)?;
-                if key == mapping {
-                    if !value.is_empty() {
-                        return None;
-                    }
-                    found = true;
-                }
-            }
-            continue;
-        }
-        if indent <= 8 {
-            break;
-        }
-        if indent != 10 {
-            return None;
-        }
-        let (key, value) = yaml_mapping_key(content)?;
-        if entries.iter().any(|(existing, _)| existing == &key) {
-            return None;
-        }
-        entries.push((key, value.trim_matches(['\'', '"']).to_owned()));
-    }
-    found.then_some(entries)
-}
-
-fn workflow_named_step_shell_commands(text: &str, step_name: &str) -> Option<Vec<String>> {
-    let expected_name = format!("- name: {step_name}");
-    let mut step_indent = None;
-    let mut run_indent = None;
-    let mut command_text = None::<String>;
-    let mut commands = Vec::new();
-
-    for line in text.lines() {
-        let Some((indent, content)) = yaml_content(line) else {
-            continue;
-        };
-        if step_indent.is_none() {
-            if content == expected_name {
-                step_indent = Some(indent);
-            }
-            continue;
-        }
-        let step = step_indent?;
-        if indent <= step {
-            break;
-        }
-        if run_indent.is_none() {
-            if content.starts_with("run: |") {
-                run_indent = Some(indent);
-                continue;
-            }
-            continue;
-        }
-        let run = run_indent?;
-        if indent <= run {
-            break;
-        }
-        if let Some(current) = command_text.as_mut() {
-            current.push(' ');
-            current.push_str(content.trim_end_matches('\\').trim_end());
-            if !content.ends_with('\\') {
-                commands.push(command_text.take()?);
-            }
-            continue;
-        }
-        let continued = content.ends_with('\\');
-        let command = content.trim_end_matches('\\').trim_end().to_owned();
-        if continued {
-            command_text = Some(command);
-        } else {
-            commands.push(command);
-        }
-    }
-    if let Some(command) = command_text {
-        if command.is_empty() {
-            return None;
-        }
-        commands.push(command);
-    }
-    run_indent.map(|_| commands)
-}
-
-fn workflow_job_level_property(block: &str, key: &str) -> Option<String> {
-    let expected_key = format!("{key}:");
-    for line in block.lines() {
-        let Some((indent, content)) = yaml_content(line) else {
-            continue;
-        };
-        if content == "steps:" {
-            return None;
-        }
-        if indent == 4 {
-            if let Some(value) = content.strip_prefix(&expected_key) {
-                return Some(value.trim().to_owned());
-            }
-        }
-    }
-    None
-}
-
-fn workflow_named_step_direct_keys(text: &str, step_name: &str) -> Option<Vec<String>> {
-    let expected_name = format!("- name: {step_name}");
-    let mut step_indent = None;
-    let mut keys = Vec::new();
-
-    for line in text.lines() {
-        let Some((indent, content)) = yaml_content(line) else {
-            continue;
-        };
-        if step_indent.is_none() {
-            if content == expected_name {
-                step_indent = Some(indent);
-            }
-            continue;
-        }
-        let step = step_indent?;
-        if indent <= step {
-            break;
-        }
-        if indent == step + 2 {
-            let (key, _) = content.split_once(':')?;
-            keys.push(key.trim().trim_matches(['\'', '"']).to_owned());
-        }
-    }
-    step_indent.map(|_| keys)
-}
-
-fn workflow_named_step_direct_value(text: &str, step_name: &str, key: &str) -> Option<String> {
-    let expected_name = format!("- name: {step_name}");
-    let mut step_indent = None;
-
-    for line in text.lines() {
-        let Some((indent, content)) = yaml_content(line) else {
-            continue;
-        };
-        if step_indent.is_none() {
-            if content == expected_name {
-                step_indent = Some(indent);
-            }
-            continue;
-        }
-        let step = step_indent?;
-        if indent <= step {
-            break;
-        }
-        if indent == step + 2 {
-            let (candidate, value) = yaml_mapping_key(content)?;
-            if candidate == key {
-                return Some(value.to_owned());
-            }
-        }
-    }
-    None
-}
-
-fn workflow_job_level_if(block: &str) -> Option<String> {
-    for line in block.lines() {
-        let Some((_indent, content)) = yaml_content(line) else {
-            continue;
-        };
-        if content == "steps:" {
-            return None;
-        }
-        if let Some(value) = content.strip_prefix("if:") {
-            return Some(value.trim().to_owned());
-        }
-    }
-    None
-}
-
 fn check_change_router_job(text: &str) -> Result<(), String> {
     let Some(block) = workflow_job_block(text, "changes") else {
         return Err(format!(
@@ -956,10 +873,15 @@ fn check_change_router_job(text: &str) -> Result<(), String> {
         ));
     }
     for (step_name, command) in [
-        ("Router contract tests", "tools/ci_changes_test.sh"),
         (
             "Classify changed-path ownership",
             "tools/ci_changes.sh github",
+        ),
+        // agents-md reads crates/*.rs as well as AGENTS and .agents files, so
+        // it runs in the always-created router job (#650).
+        (
+            "Agent instruction inventory (agents-md)",
+            "tools/agents_md.sh",
         ),
     ] {
         if !workflow_has_unconditional_named_step(&block, step_name, command) {
@@ -967,6 +889,116 @@ fn check_change_router_job(text: &str) -> Result<(), String> {
                 "CI-HYGIENE: `{WORKFLOW}` `changes` job must have an unconditional `{step_name}` step whose exact command is `{command}`. Put it in the router job; a shell guard, GitHub `if`, or identical command in another job cannot prove routing."
             ));
         }
+    }
+    Ok(())
+}
+
+fn check_independent_router_contract_job(text: &str) -> Result<(), String> {
+    let Some(block) = workflow_job_block(text, "router-contracts") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` must retain the unconditional `router-contracts` job so slow regression tests do not block classification."
+        ));
+    };
+    if workflow_job_level_property(&block, "needs").is_some()
+        || workflow_job_level_if(&block).is_some()
+        || workflow_job_level_property(&block, "continue-on-error").is_some()
+        || workflow_job_level_property(&block, "runs-on").as_deref() != Some("ubuntu-latest")
+        || !workflow_has_checkout_fetch_depth_zero(&block)
+        || !workflow_has_unconditional_named_step(
+            &block,
+            "Router contract tests",
+            "tools/ci_changes_test.sh",
+        )
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `router-contracts` must run the exact unconditional `tools/ci_changes_test.sh` on its own full-history Ubuntu runner, never behind changes."
+        ));
+    }
+    if workflow_job_block(text, "changes").is_some_and(|changes| {
+        uncommented_line_contains(&changes, "run: tools/ci_changes_test.sh")
+            || uncommented_line_contains(&changes, "name: Router contract tests")
+    }) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `changes` must not execute the independent router contract test suite and delay every selected native lane."
+        ));
+    }
+    Ok(())
+}
+
+fn check_mermaid_job(text: &str) -> Result<(), String> {
+    let Some(changes) = workflow_job_block(text, "changes") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no `changes` job to own Mermaid applicability."
+        ));
+    };
+    if !uncommented_line_contains(&changes, "mermaid: ${{ steps.classify.outputs.mermaid }}") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `changes` must publish the shared `mermaid` applicability result."
+        ));
+    }
+    let Some(mermaid) = workflow_job_block(text, "mermaid") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no separately routed `mermaid` job. Keep renderer work out of broad docs routing."
+        ));
+    };
+    let expected_if = "needs.changes.outputs.mermaid == 'true'";
+    if workflow_job_level_if(&mermaid).as_deref() != Some(expected_if) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `mermaid` job must use exact input condition `{expected_if}`."
+        ));
+    }
+    if workflow_job_sequence_values(&mermaid, "needs").as_deref()
+        != Some(["changes".to_owned()].as_slice())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `mermaid` job must depend only on the always-created `changes` router."
+        ));
+    }
+    if workflow_job_level_property(&mermaid, "continue-on-error").is_some() {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `mermaid` job must preserve its failing status for required admission."
+        ));
+    }
+    let source_step = "Mermaid source contracts";
+    let source_block = workflow_direct_named_step_block(&mermaid, source_step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `mermaid` must validate the source contracts before rendering.")
+    })?;
+    let source_commands =
+        workflow_named_step_shell_commands(&source_block, source_step).unwrap_or_default();
+    let expected_source_commands = [
+        "mkdir -p target/mermaid-docs",
+        "rustc --edition=2024 -D warnings --test tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs-test",
+        "target/mermaid-docs/mermaid-docs-test",
+        "rustc --edition=2024 -D warnings tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs",
+        "target/mermaid-docs/mermaid-docs check .",
+    ];
+    if source_commands
+        .iter()
+        .map(String::as_str)
+        .ne(expected_source_commands)
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{source_step}` must run the parser tests and source check exactly before rendering."
+        ));
+    }
+    let render_step = "Render Mermaid docs in pinned isolated container";
+    let render_block =
+        workflow_direct_named_step_block(&mermaid, render_step).ok_or_else(|| {
+            format!("CI-HYGIENE: `{WORKFLOW}` `mermaid` job has no direct pinned render step.")
+        })?;
+    if workflow_named_step_direct_value(&render_block, render_step, "run").as_deref()
+        != Some("tools/mermaid_render_check.sh")
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{render_step}` must run the renderer directly without wrappers."
+        ));
+    }
+    if let Some(hygiene) = workflow_job_block(text, "hygiene")
+        && workflow_direct_named_step_count(&hygiene, render_step) != 0
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` must not couple Mermaid rendering to the broad documentation/hygiene job."
+        ));
     }
     Ok(())
 }
@@ -1029,45 +1061,190 @@ fn check_check_job_if_avoids_matrix(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The router owns the `check` OS list (#624): every Rust selection gets all
+/// three OSes except one reached only through documentation reads. A literal
+/// list here would silently ignore that decision in either direction.
+const CHECK_OS_MATRIX: &str = "os: ${{ fromJSON(needs.changes.outputs.check_os) }}";
+
+/// A job's `strategy.matrix.os` lines (indent 8, before `steps:`); never text
+/// elsewhere in the job, such as an `env` value or a `run` script.
+fn workflow_job_matrix_os_lines(text: &str, job: &str) -> Vec<String> {
+    let block = workflow_job_block(text, job).unwrap_or_default();
+    block
+        .lines()
+        .filter_map(yaml_content)
+        .take_while(|(_, content)| *content != "steps:")
+        .filter(|(indent, content)| *indent == 8 && content.starts_with("os:"))
+        .map(|(_, content)| content.to_owned())
+        .collect()
+}
+
+fn check_check_job_os_matrix(text: &str) -> Result<(), String> {
+    let os_lines = workflow_job_matrix_os_lines(text, "check");
+    if os_lines != [CHECK_OS_MATRIX] {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `check` must take its OS matrix from the router as exactly `{CHECK_OS_MATRIX}`; got `{}`. The router decides when documentation-only reads run on Windows alone.",
+            os_lines.join("`, `")
+        ));
+    }
+    Ok(())
+}
+
+const DOCTEST_JOB: &str = "doctest";
+const DOCTEST_STEP: &str = "cargo test --doc";
+
+/// The doctest lane's OS matrix. rustdoc compiles doctests for the host target
+/// only: macOS proves the ungated doctests and Windows the `cfg(windows)` ones
+/// (keld-update's activation entry points, KEL-270 T4d S6b2). Neither links
+/// WebKitGTK, so the lane has no network apt step; Ubuntu would need one.
+const DOCTEST_OS_MATRIX: &str = "os: [macos-latest, windows-latest]";
+
+/// nextest does not run doctests, so this lane does (#632): on exactly the
+/// macOS and Windows hosts, gated on its router output, over the router's
+/// library-package selection, with an empty selection refused rather than
+/// passing as a no-op loop.
+fn check_doctest_job(text: &str) -> Result<(), String> {
+    let Some(block) = workflow_job_block(text, DOCTEST_JOB) else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no `{DOCTEST_JOB}` job. nextest skips doctests; restore the routed `cargo test --doc` lane."
+        ));
+    };
+    if workflow_job_level_property(&block, "needs").as_deref() != Some("changes")
+        || workflow_job_level_if(&block).as_deref()
+            != Some("needs.changes.outputs.doctest == 'true'")
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{DOCTEST_JOB}` must declare `needs: changes` and job-level `if: needs.changes.outputs.doctest == 'true'`; the router owns which packages have doctests to run, and without the dependency the job cannot read its outputs."
+        ));
+    }
+    if workflow_job_level_property(&block, "runs-on").as_deref() != Some("${{ matrix.os }}") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{DOCTEST_JOB}` must use `runs-on: ${{{{ matrix.os }}}}`; a fixed runner would run every matrix row on one OS."
+        ));
+    }
+    if workflow_job_matrix_os_lines(text, DOCTEST_JOB) != [DOCTEST_OS_MATRIX] {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{DOCTEST_JOB}` must run on exactly `{DOCTEST_OS_MATRIX}`: rustdoc compiles doctests for the host target only, so Windows proves the cfg(windows) doctests and macOS the rest, and neither needs a network apt step."
+        ));
+    }
+    let env_ok = workflow_named_step_mapping(&block, DOCTEST_STEP, "env").is_some_and(|entries| {
+        entries
+            == [(
+                "KELD_CI_DOCTEST_PACKAGES".to_owned(),
+                "${{ needs.changes.outputs.doctest_packages }}".to_owned(),
+            )]
+    });
+    if !env_ok
+        || workflow_named_step_direct_keys(&block, DOCTEST_STEP).unwrap_or_default()
+            != ["shell", "env", "run"]
+        || workflow_named_step_direct_value(&block, DOCTEST_STEP, "shell").as_deref()
+            != Some("bash")
+        || workflow_named_step_shell_commands(&block, DOCTEST_STEP).unwrap_or_default()
+            != [
+                "if [ -z \"$KELD_CI_DOCTEST_PACKAGES\" ]; then",
+                "echo \"::error::doctest lane ran with no package; check the router's doctest_packages output\"",
+                "exit 1",
+                "fi",
+                "for package in $KELD_CI_DOCTEST_PACKAGES; do",
+                "cargo test -p \"$package\" --doc",
+                "done",
+            ]
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{DOCTEST_JOB}` must run `{DOCTEST_STEP}` with only `shell: bash`, `env: KELD_CI_DOCTEST_PACKAGES: ${{{{ needs.changes.outputs.doctest_packages }}}}` and the exact empty-selection guard plus `cargo test -p \"$package\" --doc` loop, without wrappers or exit suppression."
+        ));
+    }
+    Ok(())
+}
+
+/// The hosted runner set for lanes whose contracts differ per OS.
+const THREE_OS_MATRIX: &str = "os: [ubuntu-latest, macos-latest, windows-latest]";
+
+const WORKSPACE_JOB: &str = "workspace-contracts";
+const WORKSPACE_STEP: &str = "Local workspace path and process contracts";
+
+/// The workspace tool's OS-specific path and process contracts run in their own
+/// three-OS job, selected only by its router output (#624).
+fn check_workspace_contracts_job(text: &str) -> Result<(), String> {
+    let Some(block) = workflow_job_block(text, WORKSPACE_JOB) else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no `{WORKSPACE_JOB}` job. Restore the three-OS workspace path and process contracts."
+        ));
+    };
+    if workflow_job_level_property(&block, "runs-on").as_deref() != Some("${{ matrix.os }}") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must use `runs-on: ${{{{ matrix.os }}}}`; a fixed runner would run every matrix row on one OS."
+        ));
+    }
+    if workflow_job_level_property(&block, "needs").as_deref() != Some("changes")
+        || workflow_job_level_if(&block).as_deref()
+            != Some("needs.changes.outputs.workspace == 'true'")
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must declare `needs: changes` and job-level `if: needs.changes.outputs.workspace == 'true'`; the router owns which diffs reach it."
+        ));
+    }
+    if workflow_job_matrix_os_lines(text, WORKSPACE_JOB) != [THREE_OS_MATRIX] {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must run on `{THREE_OS_MATRIX}`; its path and process contracts differ per OS."
+        ));
+    }
+    if workflow_named_step_direct_keys(&block, WORKSPACE_STEP).unwrap_or_default()
+        != ["shell", "run"]
+        || workflow_named_step_shell_commands(&block, WORKSPACE_STEP).unwrap_or_default()
+            != [
+                "if [ \"${{ matrix.os }}\" = windows-latest ]; then",
+                "python -B tools/test_workspace.py",
+                "else",
+                "python3 -B tools/test_workspace.py",
+                "fi",
+            ]
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must run `{WORKSPACE_STEP}` unconditionally with only `shell` and `run`, executing tools/test_workspace.py on every OS."
+        ));
+    }
+    Ok(())
+}
+
 fn check_fuzz_workspace_step(text: &str) -> Result<(), String> {
     let Some(check_job) = workflow_job_block(text, "check") else {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` has no cross-platform `check` job for the keld-ipc fuzz workspace."
+            "CI-HYGIENE: `{WORKFLOW}` has no cross-platform `check` job for the stable fuzz workspaces."
         ));
     };
-    let step = "Check keld-ipc fuzz workspace";
-    let count = workflow_direct_named_step_count(&check_job, step);
-    if count != 1 {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `check` must contain exactly one `{step}` step; found {count}."
-        ));
-    }
-    let block = workflow_direct_named_step_block(&check_job, step).ok_or_else(|| {
-        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `check.steps`.")
-    })?;
-    let expected_keys = ["if".to_owned(), "run".to_owned()];
-    if workflow_named_step_direct_keys(&block, step).as_deref() != Some(expected_keys.as_slice()) {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must contain only its exact Ubuntu/router condition and direct run command."
-        ));
-    }
     let condition = "matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'";
-    if workflow_named_step_direct_value(&block, step, "if").as_deref() != Some(condition) {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must use the exact condition `{condition}` so the stable fuzz build runs only on the rust-routed Ubuntu row."
-        ));
-    }
-    let commands = workflow_named_step_shell_commands(&block, step).ok_or_else(|| {
-        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` has no executable multiline run block.")
-    })?;
-    if commands
-        .iter()
-        .map(String::as_str)
-        .ne(FUZZ_WORKSPACE_COMMANDS.iter().copied())
-    {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must directly run the stable fuzz-workspace cargo check without a wrapper, campaign, retry, or exit suppression."
-        ));
+    let expected_keys = ["if".to_owned(), "run".to_owned()];
+    for (step, command) in FUZZ_WORKSPACE_STEPS {
+        let count = workflow_direct_named_step_count(&check_job, step);
+        if count != 1 {
+            return Err(format!(
+                "CI-HYGIENE: `{WORKFLOW}` `check` must contain exactly one `{step}` step; found {count}."
+            ));
+        }
+        let block = workflow_direct_named_step_block(&check_job, step).ok_or_else(|| {
+            format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `check.steps`.")
+        })?;
+        if workflow_named_step_direct_keys(&block, step).as_deref()
+            != Some(expected_keys.as_slice())
+        {
+            return Err(format!(
+                "CI-HYGIENE: `{WORKFLOW}` `{step}` must contain only its exact Ubuntu/router condition and direct run command."
+            ));
+        }
+        if workflow_named_step_direct_value(&block, step, "if").as_deref() != Some(condition) {
+            return Err(format!(
+                "CI-HYGIENE: `{WORKFLOW}` `{step}` must use the exact condition `{condition}` so the stable fuzz build runs only on the rust-routed Ubuntu row."
+            ));
+        }
+        let commands = workflow_named_step_shell_commands(&block, step).ok_or_else(|| {
+            format!("CI-HYGIENE: `{WORKFLOW}` `{step}` has no executable multiline run block.")
+        })?;
+        if commands.len() != 1 || commands[0] != *command {
+            return Err(format!(
+                "CI-HYGIENE: `{WORKFLOW}` `{step}` must directly run the stable fuzz-workspace cargo check without a wrapper, campaign, retry, or exit suppression."
+            ));
+        }
     }
     Ok(())
 }
@@ -1095,7 +1272,7 @@ fn check_msrv_avoids_apt(text: &str) -> Result<(), String> {
 fn check_bun_setup_steps(text: &str, job: &str) -> Result<(), String> {
     let invalid = || {
         format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{job}` must have at least one `oven-sh/setup-bun` step, and every such step must pin its own `with.bun-version` to `1.4.2`. Use direct block-style steps and inputs; unrelated job text is not a runtime pin."
+            "CI-HYGIENE: `{WORKFLOW}` `{job}` must have at least one `oven-sh/setup-bun` step, and every such step must pin its own `with.bun-version` to `1.4.4`. Use direct block-style steps and inputs; unrelated job text is not a runtime pin."
         )
     };
     let literal_key = |key: &str| {
@@ -1196,7 +1373,7 @@ fn check_bun_setup_steps(text: &str, job: &str) -> Result<(), String> {
             .iter()
             .filter(|(key, _)| key == "bun-version")
             .collect();
-        if pins.len() != 1 || pins[0].1.trim_matches(['\'', '"']) != "1.4.2" {
+        if pins.len() != 1 || pins[0].1.trim_matches(['\'', '"']) != "1.4.4" {
             return Err(invalid());
         }
     }
@@ -1204,6 +1381,50 @@ fn check_bun_setup_steps(text: &str, job: &str) -> Result<(), String> {
         return Err(invalid());
     }
     Ok(())
+}
+
+/// The Bun lane has exactly one static three-OS matrix, not a larger matrix
+/// with include/exclude rows that can suppress a required hosted runner. Read
+/// only the actual job-level strategy.matrix mapping, never an unrelated
+/// indentation-matched `os:` line or a step/script with similar text.
+fn bun_job_has_static_three_os_matrix(block: &str) -> bool {
+    let mut strategies = 0;
+    let mut matrices = 0;
+    let mut os_entries = 0;
+    let mut in_strategy = false;
+    let mut in_matrix = false;
+
+    for (indent, content) in block.lines().filter_map(yaml_content) {
+        if indent == 4 {
+            in_matrix = false;
+            in_strategy = yaml_mapping_key(content).is_some_and(|(key, _)| key == "strategy");
+            if in_strategy {
+                strategies += 1;
+                if content != "strategy:" {
+                    return false;
+                }
+            }
+        } else if in_strategy && indent == 6 {
+            in_matrix = false;
+            if yaml_mapping_key(content).is_some_and(|(key, _)| key == "matrix") {
+                matrices += 1;
+                in_matrix = true;
+                if content != "matrix:" {
+                    return false;
+                }
+            }
+        } else if in_matrix && indent > 6 {
+            // A static inline OS list needs no other matrix entries. In
+            // particular, `exclude:` can silently drop Windows while leaving
+            // the literal three-OS list intact. Reject `include:` as well.
+            if indent != 8 || content != THREE_OS_MATRIX {
+                return false;
+            }
+            os_entries += 1;
+        }
+    }
+
+    strategies == 1 && matrices == 1 && os_entries == 1
 }
 
 /// Asserts the `bun-test` lane's decidable properties and the exact Bun pin for
@@ -1215,14 +1436,55 @@ fn check_bun_setup_steps(text: &str, job: &str) -> Result<(), String> {
 /// suites the router selected — is tracked in KEL-115, because it is a
 /// behavioural property and no reading of the text settles it.
 fn check_bun_test_job(text: &str) -> Result<(), String> {
+    let format_step = "Native JavaScript formatting";
+    let format_block = workflow_job_block(text, "hygiene").and_then(|job| {
+        (workflow_direct_named_step_count(&job, format_step) == 1)
+            .then(|| workflow_direct_named_step_block(&job, format_step))
+            .flatten()
+    });
+    let format_lines = format_block.as_deref().map(|block| {
+        block
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect::<Vec<_>>()
+    });
+    if format_lines
+        != Some(vec![
+            "- name: Native JavaScript formatting",
+            "run: |",
+            "bun packages/@keld/kipc/scripts/echo-codegen.ts check",
+            "bun fmt --no-script --check \"**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}\"",
+        ])
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` hygiene needs one unconditional codegen freshness and direct native JS/TS formatting step."
+        ));
+    }
     let Some(block) = workflow_job_block(text, "bun-test") else {
         return Err(format!(
             "CI-HYGIENE: `{WORKFLOW}` has no `bun-test` job. The `packages/` TypeScript suites need a lane of their own: the Bun install inside `check` exists so Rust tests can spawn Bun children and never runs `bun test`."
         ));
     };
-    if !uncommented_line_contains(&block, "if: needs.changes.outputs.ts == 'true'") {
+    let job_if_count = block
+        .lines()
+        .filter_map(yaml_content)
+        .filter(|(indent, content)| {
+            *indent == 4 && yaml_mapping_key(content).is_some_and(|(key, _)| key == "if")
+        })
+        .count();
+    if job_if_count != 1
+        || workflow_job_level_if(&block).as_deref() != Some("needs.changes.outputs.ts == 'true'")
+    {
         return Err(format!(
             "CI-HYGIENE: `{WORKFLOW}` `bun-test` must be gated on `if: needs.changes.outputs.ts == 'true'`. The router owns which diffs reach this lane; an ungated job wastes runners and a gate on another output silently never runs (contexts: needs, github, vars, inputs only — never `matrix`)."
+        ));
+    }
+    if workflow_job_level_property(&block, "runs-on").as_deref() != Some("${{ matrix.os }}")
+        || !bun_job_has_static_three_os_matrix(&block)
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `bun-test` must use `runs-on: ${{{{ matrix.os }}}}` over `{THREE_OS_MATRIX}`. Bun roles run on every OS, and the GH-1095 three-OS rows (AT-B1, AT-B2, AT-API2a) are proven only there (#1111)."
         ));
     }
     for job in ["bun-test", "check", "hygiene"] {
@@ -1243,7 +1505,7 @@ fn check_bun_test_job(text: &str) -> Result<(), String> {
     // against the router's `ts_packages` output. Behaviour, not text.
     if uncommented_line_contains(&block, "apt-get") {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `bun-test` must not call `apt-get`. Bun ships from `oven-sh/setup-bun`; a second live Ubuntu apt lane contends with Linux GUI smoke on the Azure mirrors."
+            "CI-HYGIENE: `{WORKFLOW}` `bun-test` must not call `apt-get`. Bun ships from `oven-sh/setup-bun` and links no WebKitGTK, so an apt step there only adds Ubuntu mirror exposure (#630)."
         ));
     }
     Ok(())
@@ -1300,7 +1562,63 @@ fn check_linux_media_guard_step(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The required gate inherits workflow-level environment, including Bash's
+/// startup-file authority. Admit only the three reviewed non-executable values.
+fn check_required_workflow_env(text: &str) -> Result<(), String> {
+    let expected = [
+        ("CARGO_TERM_COLOR", "always"),
+        ("RUST_BACKTRACE", "1"),
+        ("CARGO_INCREMENTAL", "0"),
+    ];
+    let mut found = false;
+    let mut within_env = false;
+    let mut actual = Vec::new();
+    for line in text.lines() {
+        let Some((indent, content)) = yaml_content(line) else {
+            continue;
+        };
+        if indent == 0 {
+            if yaml_mapping_key(content).is_some_and(|(key, _)| key == "env") {
+                if found || content != "env:" {
+                    return Err(format!(
+                        "CI-HYGIENE: {WORKFLOW} workflow env must have one reviewed block mapping, never a duplicate or override."
+                    ));
+                }
+                found = true;
+                within_env = true;
+            } else {
+                within_env = false;
+            }
+            continue;
+        }
+        if !within_env {
+            continue;
+        }
+        if indent != 2 {
+            return Err(format!(
+                "CI-HYGIENE: {WORKFLOW} workflow env must contain only reviewed scalar bindings."
+            ));
+        }
+        let (key, value) = yaml_mapping_key(content).ok_or_else(|| {
+            format!("CI-HYGIENE: {WORKFLOW} workflow env has a malformed binding.")
+        })?;
+        actual.push((key, value.trim_matches(['\'', '"']).to_owned()));
+    }
+    if !found
+        || actual.len() != expected.len()
+        || expected
+            .iter()
+            .any(|(key, value)| !actual.iter().any(|(name, got)| name == key && got == value))
+    {
+        return Err(format!(
+            "CI-HYGIENE: {WORKFLOW} workflow env must contain only the reviewed CARGO_TERM_COLOR, RUST_BACKTRACE, and CARGO_INCREMENTAL values. Extra BASH_ENV, PATH, or GITHUB_ENV can bypass the required gate."
+        ));
+    }
+    Ok(())
+}
+
 fn check_required_job(text: &str) -> Result<(), String> {
+    check_required_workflow_env(text)?;
     let Some(block) = workflow_job_block(text, "required") else {
         return Err(format!(
             "CI-HYGIENE: `{WORKFLOW}` has no `required` job. Add one always-created merge-admission result that consumes every conditional lane plus unconditional gitleaks."
@@ -1321,6 +1639,11 @@ fn check_required_job(text: &str) -> Result<(), String> {
             "CI-HYGIENE: `{WORKFLOW}` `required` must not set `continue-on-error`; the merge decision must preserve a failing exit status."
         ));
     }
+    if workflow_job_level_property(&block, "env").is_some() {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `required` must not set job-level env; inherited BASH_ENV or PATH could bypass the evaluator."
+        ));
+    }
     let evaluator_keys =
         workflow_named_step_direct_keys(&block, "Verify required CI results").unwrap_or_default();
     if evaluator_keys != ["env", "run"] {
@@ -1331,6 +1654,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
     }
     let expected_needs = [
         "changes",
+        "router-contracts",
         "fmt",
         "check",
         "bun-test",
@@ -1339,8 +1663,14 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "deny",
         "secrets",
         "hygiene",
-        "codeql",
+        "mermaid",
+        "codeql-rust",
+        "codeql-javascript-typescript",
+        "codeql-actions",
         "dependency-review",
+        "workspace-contracts",
+        "doctest",
+        "windows-media",
     ];
     let actual_needs = workflow_job_sequence_values(&block, "needs").ok_or_else(|| {
         format!("CI-HYGIENE: `{WORKFLOW}` `required` must declare a structured `needs` sequence.")
@@ -1352,8 +1682,12 @@ fn check_required_job(text: &str) -> Result<(), String> {
             actual_needs.join(", ")
         ));
     }
-    for (key, expression) in [
+    let expected_evaluator_env = [
         ("KELD_RESULT_CHANGES", "${{ needs.changes.result }}"),
+        (
+            "KELD_RESULT_ROUTER_CONTRACTS",
+            "${{ needs['router-contracts'].result }}",
+        ),
         ("KELD_RESULT_FMT", "${{ needs.fmt.result }}"),
         ("KELD_RESULT_CHECK", "${{ needs.check.result }}"),
         ("KELD_RESULT_BUN", "${{ needs['bun-test'].result }}"),
@@ -1362,6 +1696,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         ("KELD_RESULT_DENY", "${{ needs.deny.result }}"),
         ("KELD_RESULT_SECRETS", "${{ needs.secrets.result }}"),
         ("KELD_RESULT_HYGIENE", "${{ needs.hygiene.result }}"),
+        ("KELD_RESULT_MERMAID", "${{ needs.mermaid.result }}"),
         ("KELD_ROUTE_RUST", "${{ needs.changes.outputs.rust }}"),
         ("KELD_ROUTE_TS", "${{ needs.changes.outputs.ts }}"),
         ("KELD_ROUTE_GUI", "${{ needs.changes.outputs.gui }}"),
@@ -1369,32 +1704,98 @@ fn check_required_job(text: &str) -> Result<(), String> {
         ("KELD_ROUTE_DENY", "${{ needs.changes.outputs.deny }}"),
         ("KELD_ROUTE_HYGIENE", "${{ needs.changes.outputs.hygiene }}"),
         ("KELD_ROUTE_DOCS", "${{ needs.changes.outputs.docs }}"),
-        ("KELD_RESULT_CODEQL", "${{ needs.codeql.result }}"),
+        ("KELD_ROUTE_MERMAID", "${{ needs.changes.outputs.mermaid }}"),
+        (
+            "KELD_RESULT_CODEQL_RUST",
+            "${{ needs['codeql-rust'].result }}",
+        ),
+        (
+            "KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT",
+            "${{ needs['codeql-javascript-typescript'].result }}",
+        ),
+        (
+            "KELD_RESULT_CODEQL_ACTIONS",
+            "${{ needs['codeql-actions'].result }}",
+        ),
+        (
+            "KELD_ROUTE_CODEQL_RUST",
+            "${{ needs.changes.outputs.codeql_rust }}",
+        ),
+        (
+            "KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT",
+            "${{ needs.changes.outputs.codeql_javascript_typescript }}",
+        ),
+        (
+            "KELD_ROUTE_CODEQL_ACTIONS",
+            "${{ needs.changes.outputs.codeql_actions }}",
+        ),
         (
             "KELD_RESULT_DEPENDENCY_REVIEW",
             "${{ needs['dependency-review'].result }}",
         ),
-    ] {
-        if !workflow_named_step_mapping(&block, "Verify required CI results", "env").is_some_and(
-            |entries| {
-                entries
-                    .iter()
-                    .any(|(name, value)| name == key && value == expression)
-            },
-        ) {
+        (
+            "KELD_RESULT_WORKSPACE",
+            "${{ needs['workspace-contracts'].result }}",
+        ),
+        (
+            "KELD_ROUTE_WORKSPACE",
+            "${{ needs.changes.outputs.workspace }}",
+        ),
+        ("KELD_EVENT_NAME", "${{ github.event_name }}"),
+        (
+            "KELD_ROUTE_RUST_DOCUMENTATION_ONLY",
+            "${{ needs.changes.outputs.rust_documentation_only }}",
+        ),
+        (
+            "KELD_ROUTE_CHECK_OS",
+            "${{ needs.changes.outputs.check_os }}",
+        ),
+        ("KELD_RESULT_DOCTEST", "${{ needs.doctest.result }}"),
+        ("KELD_ROUTE_DOCTEST", "${{ needs.changes.outputs.doctest }}"),
+        ("KELD_RESULT_MEDIA", "${{ needs['windows-media'].result }}"),
+        (
+            "KELD_ROUTE_MEDIA",
+            "${{ needs.changes.outputs.rust == 'true' && contains(needs.changes.outputs.packages, 'keld-wv') }}",
+        ),
+    ];
+    let actual_evaluator_env =
+        workflow_named_step_mapping(&block, "Verify required CI results", "env").ok_or_else(
+            || format!("CI-HYGIENE: `{WORKFLOW}` required evaluator env mapping must be a reviewed block mapping."),
+        )?;
+    for &(key, expression) in &expected_evaluator_env {
+        if !actual_evaluator_env
+            .iter()
+            .any(|(name, value)| name == key && value == expression)
+        {
             return Err(format!(
                 "CI-HYGIENE: `{WORKFLOW}` `required` must bind `{key}: {expression}` in the evaluator step's `env` mapping. Do not let a missing or spoofed handoff erase the merge gate."
             ));
         }
+    }
+    if actual_evaluator_env.len() != expected_evaluator_env.len() {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` required evaluator env mapping must contain only the reviewed result and route bindings. Extra BASH_ENV, PATH, or GITHUB_ENV can bypass its exact run script."
+        ));
     }
     let expected_check_command = concat!(
         "tools/ci_required.sh check ",
         "\"$KELD_RESULT_CHANGES\" \"$KELD_RESULT_FMT\" \"$KELD_RESULT_CHECK\" ",
         "\"$KELD_RESULT_BUN\" \"$KELD_RESULT_GUI\" \"$KELD_RESULT_MSRV\" ",
         "\"$KELD_RESULT_DENY\" \"$KELD_RESULT_SECRETS\" \"$KELD_RESULT_HYGIENE\" ",
+        "\"$KELD_RESULT_MERMAID\" ",
         "\"$KELD_ROUTE_RUST\" \"$KELD_ROUTE_TS\" \"$KELD_ROUTE_GUI\" ",
         "\"$KELD_ROUTE_MSRV\" \"$KELD_ROUTE_DENY\" \"$KELD_ROUTE_HYGIENE\" ",
-        "\"$KELD_ROUTE_DOCS\" \"$KELD_RESULT_CODEQL\" \"$KELD_RESULT_DEPENDENCY_REVIEW\""
+        "\"$KELD_ROUTE_DOCS\" \"$KELD_ROUTE_MERMAID\" ",
+        "\"$KELD_RESULT_CODEQL_RUST\" \"$KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT\" ",
+        "\"$KELD_RESULT_CODEQL_ACTIONS\" ",
+        "\"$KELD_ROUTE_CODEQL_RUST\" \"$KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT\" ",
+        "\"$KELD_ROUTE_CODEQL_ACTIONS\" ",
+        "\"$KELD_RESULT_DEPENDENCY_REVIEW\" ",
+        "\"$KELD_RESULT_WORKSPACE\" \"$KELD_ROUTE_WORKSPACE\" ",
+        "\"$KELD_EVENT_NAME\" \"$KELD_ROUTE_RUST_DOCUMENTATION_ONLY\" \"$KELD_ROUTE_CHECK_OS\" ",
+        "\"$KELD_RESULT_DOCTEST\" \"$KELD_ROUTE_DOCTEST\" ",
+        "\"$KELD_RESULT_MEDIA\" \"$KELD_ROUTE_MEDIA\" ",
+        "\"$KELD_RESULT_ROUTER_CONTRACTS\""
     );
     let expected_commands = [
         "tools/ci_required.sh test".to_owned(),
@@ -1404,7 +1805,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         .unwrap_or_default();
     if actual_commands != expected_commands {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 18-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
+            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 35-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
         ));
     }
 
@@ -1414,6 +1815,16 @@ fn check_required_job(text: &str) -> Result<(), String> {
 fn check_hygiene_contract_step(
     text: &str,
     step: &str,
+    expected_commands: &[&str],
+) -> Result<(), String> {
+    check_hygiene_contract_step_env(text, step, &[], expected_commands)
+}
+
+/// The same contract for a step that binds exactly `expected_env` and nothing else.
+fn check_hygiene_contract_step_env(
+    text: &str,
+    step: &str,
+    expected_env: &[(&str, &str)],
     expected_commands: &[&str],
 ) -> Result<(), String> {
     let Some(hygiene) = workflow_job_block(text, "hygiene") else {
@@ -1447,13 +1858,36 @@ fn check_hygiene_contract_step(
     let contract_step = workflow_direct_named_step_block(&hygiene, step).ok_or_else(|| {
         format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `hygiene.steps`.")
     })?;
-    let expected_keys = ["run".to_owned()];
+    let binds_env = !expected_env.is_empty();
+    let expected_keys: Vec<String> = binds_env
+        .then(|| "env".to_owned())
+        .into_iter()
+        .chain(["run".to_owned()])
+        .collect();
     if workflow_named_step_direct_keys(&contract_step, step).as_deref()
         != Some(expected_keys.as_slice())
     {
+        let keys = if binds_env {
+            "`env` and `run` keys"
+        } else {
+            "`run` key"
+        };
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` may contain only its `run` key. A condition, custom shell, or continue-on-error can erase enforcement."
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` may contain only its {keys}. A condition, custom shell, or continue-on-error can erase enforcement."
         ));
+    }
+    if binds_env {
+        let expected: Vec<(String, String)> = expected_env
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect();
+        if workflow_named_step_mapping(&hygiene, step, "env").as_deref()
+            != Some(expected.as_slice())
+        {
+            return Err(format!(
+                "CI-HYGIENE: `{WORKFLOW}` `{step}` must bind exactly {expected_env:?}, so it compares with the PR base or the previous push tip, never with itself."
+            ));
+        }
     }
     let commands = workflow_named_step_shell_commands(&contract_step, step).ok_or_else(|| {
         format!("CI-HYGIENE: `{WORKFLOW}` `{step}` has no executable multiline `run` block.")
@@ -1478,12 +1912,190 @@ fn check_atomic_protocol_step(text: &str) -> Result<(), String> {
     )
 }
 
+/// doc-placeholders runs whenever the hygiene job runs (docs or hygiene
+/// selected); every input it scans selects one of them (#650).
+fn check_doc_placeholders_step(text: &str) -> Result<(), String> {
+    check_hygiene_contract_step(
+        text,
+        "Documentation placeholder contracts",
+        DOC_PLACEHOLDER_COMMANDS,
+    )
+}
+
+/// spec-structure runs whenever the hygiene job runs; `docs/*` selects it (#1321).
+fn check_spec_structure_step(text: &str) -> Result<(), String> {
+    check_hygiene_contract_step_env(
+        text,
+        "Spec structure contracts",
+        COMPARISON_BASE_STEP_ENV,
+        SPEC_STRUCTURE_COMMANDS,
+    )
+}
+
+/// The hello-command regression reads the justfile and onboarding docs (#650).
+fn check_hello_command_step(text: &str) -> Result<(), String> {
+    check_hygiene_contract_step(text, "Hello command contract", HELLO_COMMAND_COMMANDS)
+}
+
 fn check_agent_context_step(text: &str) -> Result<(), String> {
     check_hygiene_contract_step(
         text,
         "Agent instruction context budget",
         AGENT_CONTEXT_COMMANDS,
     )
+}
+
+fn check_public_audit_step(text: &str) -> Result<(), String> {
+    let Some(hygiene) = workflow_job_block(text, "hygiene") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no `hygiene` job for public audit contracts."
+        ));
+    };
+    if !workflow_has_checkout_fetch_depth_zero(&hygiene) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `hygiene` must checkout full history (`fetch-depth: 0`) because public audit verification binds historical commits."
+        ));
+    }
+    let step = "Public audit registry contracts";
+    if workflow_direct_named_step_count(&hygiene, step) != 1 {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `hygiene` must contain exactly one `{step}` step."
+        ));
+    }
+    let block = workflow_direct_named_step_block(&hygiene, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of hygiene.steps.")
+    })?;
+    let expected_keys = ["if".to_owned(), "run".to_owned()];
+    if workflow_named_step_direct_keys(&block, step).as_deref() != Some(expected_keys.as_slice()) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must contain only its docs condition and direct run block."
+        ));
+    }
+    let condition = "needs.changes.outputs.docs == 'true'";
+    if workflow_named_step_direct_value(&block, step, "if").as_deref() != Some(condition) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must use exact condition `{condition}`."
+        ));
+    }
+    let commands = workflow_named_step_shell_commands(&block, step)
+        .ok_or_else(|| format!("CI-HYGIENE: `{WORKFLOW}` `{step}` has no executable run block."))?;
+    if commands
+        .iter()
+        .map(String::as_str)
+        .ne(AUDIT_DOC_COMMANDS.iter().copied())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must run the public audit verifier and mutation suite exactly."
+        ));
+    }
+    Ok(())
+}
+
+fn check_gitleaks_scan_step(text: &str) -> Result<(), String> {
+    let Some(secrets) = workflow_job_block(text, "secrets") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no unconditional `secrets` (gitleaks) job."
+        ));
+    };
+    let step = "Scan";
+    let count = workflow_direct_named_step_count(&secrets, step);
+    if count != 1 {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `secrets` must contain exactly one `{step}` step; found {count}."
+        ));
+    }
+    let block = workflow_direct_named_step_block(&secrets, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `secrets.steps`.")
+    })?;
+    if workflow_named_step_direct_keys(&block, step).as_deref()
+        != Some(["env".to_owned(), "run".to_owned()].as_slice())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` gitleaks `{step}` may contain only its env and run keys; conditions and wrappers can skip or soften the secrets gate."
+        ));
+    }
+    let expected_env: Vec<(String, String)> = GITLEAKS_SCAN_ENV
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect();
+    if workflow_named_step_mapping(&secrets, step, "env").as_deref()
+        != Some(expected_env.as_slice())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` gitleaks `{step}` must bind exactly the event name and the pull request's base and head SHAs in `env`, never interpolate them into `run`."
+        ));
+    }
+    let commands = workflow_named_step_shell_commands(&block, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` gitleaks `{step}` has no multiline run block.")
+    })?;
+    if commands
+        .iter()
+        .map(String::as_str)
+        .ne(GITLEAKS_SCAN_COMMANDS.iter().copied())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` gitleaks `{step}` must run the exact scoped scan: resolve both pull-request SHAs to local commits, scan push history at HEAD, refuse other events, and pass the range with --log-opts. An unscoped, empty or unresolvable range lets the secrets gate pass without scanning the change."
+        ));
+    }
+    Ok(())
+}
+
+/// GH-508: the step that runs `ci-hygiene check` binds the comparison base the
+/// append-only rule needs: the PR base, or on push the previous tip. Without it
+/// a push to main would compare the baseline with itself.
+fn check_channel_allocations_step(text: &str) -> Result<(), String> {
+    let step = CHANNEL_ALLOCATIONS_STEP;
+    let Some(hygiene) = workflow_job_block(text, "hygiene") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no `hygiene` job for `{step}`."
+        ));
+    };
+    let count = workflow_direct_named_step_count(&hygiene, step);
+    if count != 1 {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `hygiene` must contain exactly one `{step}` step; found {count}."
+        ));
+    }
+    let block = workflow_direct_named_step_block(&hygiene, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `hygiene.steps`.")
+    })?;
+    let expected_keys = ["if".to_owned(), "env".to_owned(), "run".to_owned()];
+    if workflow_named_step_direct_keys(&block, step).as_deref() != Some(expected_keys.as_slice()) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` may contain only its `if`, `env` and `run` keys; a custom shell or continue-on-error can erase the append-only channel allocation rule."
+        ));
+    }
+    if workflow_named_step_direct_value(&block, step, "if").as_deref()
+        != Some(CHANNEL_ALLOCATIONS_STEP_IF)
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must run exactly when the router selects hygiene (`if: {CHANNEL_ALLOCATIONS_STEP_IF}`)."
+        ));
+    }
+    let expected_env: Vec<(String, String)> = CHANNEL_ALLOCATIONS_STEP_ENV
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect();
+    if workflow_named_step_mapping(&hygiene, step, "env").as_deref()
+        != Some(expected_env.as_slice())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must bind exactly `{BASE_ENV}: ${{{{ github.event.pull_request.base.sha || github.event.before }}}}` so {CHANNEL_ALLOCATIONS} is compared with the PR base or the previous push tip, never with itself."
+        ));
+    }
+    let commands = workflow_named_step_shell_commands(&block, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` has no executable multiline `run` block.")
+    })?;
+    if commands
+        .iter()
+        .map(String::as_str)
+        .ne(CHANNEL_ALLOCATIONS_STEP_COMMANDS.iter().copied())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must compile and run `ci-hygiene check .` exactly, without wrappers or exit suppression."
+        ));
+    }
+    Ok(())
 }
 
 fn check_product_status_step(text: &str) -> Result<(), String> {
@@ -1574,32 +2186,44 @@ fn check_product_status_windows_step(text: &str) -> Result<(), String> {
 }
 
 fn check_windows_media_acceptance_step(text: &str) -> Result<(), String> {
-    let Some(check_job) = workflow_job_block(text, "check") else {
+    let Some(check_job) = workflow_job_block(text, "windows-media") else {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` has no cross-platform `check` job for KEL-132 Windows media acceptance."
+            "CI-HYGIENE: `{WORKFLOW}` has no isolated `windows-media` job for KEL-132 Windows media acceptance."
         ));
     };
+    let routing = "needs.changes.outputs.rust == 'true' && contains(needs.changes.outputs.packages, 'keld-wv')";
+    if workflow_job_level_property(&check_job, "runs-on").as_deref() != Some("windows-latest")
+        || workflow_job_level_property(&check_job, "needs").as_deref() != Some("changes")
+        || workflow_job_level_if(&check_job).as_deref() != Some(routing)
+        || workflow_job_level_property(&check_job, "continue-on-error").is_some()
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `windows-media` must run on Windows, need the router, select only Rust/keld-wv changes, and preserve failures (KEL-132)."
+        ));
+    }
+    if workflow_job_block(text, "check").is_some_and(|job| {
+        workflow_direct_named_step_count(&job, "Windows media guard acceptance (KEL-132)") != 0
+    }) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` KEL-132 media acceptance must not remain in the serial cross-platform `check` job."
+        ));
+    }
     let step = "Windows media guard acceptance (KEL-132)";
     let count = workflow_direct_named_step_count(&check_job, step);
     if count != 1 {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `check` must contain exactly one `{step}` step; found {count}."
+            "CI-HYGIENE: `{WORKFLOW}` `windows-media` must contain exactly one `{step}` step; found {count}."
         ));
     }
     let block = workflow_direct_named_step_block(&check_job, step).ok_or_else(|| {
-        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `check.steps`.")
+        format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `windows-media.steps`."
+        )
     })?;
-    let expected_keys = ["if".to_owned(), "shell".to_owned(), "run".to_owned()];
+    let expected_keys = ["shell".to_owned(), "run".to_owned()];
     if workflow_named_step_direct_keys(&block, step).as_deref() != Some(expected_keys.as_slice()) {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must contain only the exact `if`, `shell: pwsh`, and `run` keys."
-        ));
-    }
-    let expected_condition =
-        "matrix.os == 'windows-latest' && contains(needs.changes.outputs.packages, 'keld-wv')";
-    if workflow_named_step_direct_value(&block, step, "if").as_deref() != Some(expected_condition) {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must use the exact Windows and routed keld-wv condition."
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must contain only `shell: pwsh` and `run` keys, without a step-level skip."
         ));
     }
     if workflow_named_step_direct_value(&block, step, "shell").as_deref() != Some("pwsh") {
@@ -1622,6 +2246,64 @@ fn check_windows_media_acceptance_step(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn check_release_updater_helper_step(text: &str) -> Result<(), String> {
+    let step = RELEASE_HELPER_STEP;
+    let Some(check_job) = workflow_job_block(text, "check") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no cross-platform `check` job for `{step}`."
+        ));
+    };
+    let count = workflow_direct_named_step_count(&check_job, step);
+    if count != 1 {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `check` must contain exactly one `{step}` step; found {count}."
+        ));
+    }
+    let block = workflow_direct_named_step_block(&check_job, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `check.steps`.")
+    })?;
+    let expected_keys = ["if", "shell", "env", "run"].map(str::to_owned);
+    if workflow_named_step_direct_keys(&block, step).as_deref() != Some(expected_keys.as_slice()) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must contain only the exact `if`, `shell: bash`, `env`, and `run` keys."
+        ));
+    }
+    if workflow_named_step_direct_value(&block, step, "if").as_deref()
+        != Some(RELEASE_HELPER_CONDITION)
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must use the exact condition `{RELEASE_HELPER_CONDITION}`: the helper, its keld-pack writer and the KEL-19 host trigger."
+        ));
+    }
+    if workflow_named_step_direct_value(&block, step, "shell").as_deref() != Some("bash") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must set `shell: bash`; `set -euo pipefail` must fail the step on a failed build."
+        ));
+    }
+    let expected_env: Vec<(String, String)> = RELEASE_HELPER_ENV
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect();
+    if workflow_named_step_mapping(&block, step, "env") != Some(expected_env) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must name the absolute release helper in exactly `KELD_UPDATER_HELPER_RELEASE`, `KELD_PACK_REAL_HOST` and `KELD_PACK_REAL_HELPER`, and the AC2 output in `KELD_PACK_EMBEDDED_HELPER` under the runner temp directory."
+        ));
+    }
+    let commands = workflow_named_step_shell_commands(&block, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` has no executable multiline run block.")
+    })?;
+    if commands
+        .iter()
+        .map(String::as_str)
+        .ne(RELEASE_HELPER_COMMANDS.iter().copied())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must build the release helper and require both ignored release-image passes, the AC1 round trip and the AC2 helper launch, without wrappers or suppression."
+        ));
+    }
+    Ok(())
+}
+
 fn check_keldbot_workflow(root: &Path) -> Result<(), String> {
     let text = read(root, KELDBOT_WORKFLOW)?;
     for needle in [
@@ -1635,13 +2317,8 @@ fn check_keldbot_workflow(root: &Path) -> Result<(), String> {
             ));
         }
     }
-    if uncommented_line_contains(&text, "actions/checkout@")
-        || uncommented_line_contains(&text, "run:")
-    {
-        return Err(format!(
-            "CI-HYGIENE: `{KELDBOT_WORKFLOW}` uses `pull_request_target` with a repository checkout or shell `run:` step. Keep PR-controlled code off this secret-bearing workflow; validate proposed workflow bytes in unprivileged CI instead."
-        ));
-    }
+    // No checkout or `run:` step under pull_request_target: owned by the parsed
+    // check in tools/ci_workflow_security.ts, which covers every such workflow.
     for job in ["gatekeeper", "title-lint"] {
         let Some(block) = workflow_job_block(&text, job) else {
             return Err(format!(
@@ -2036,7 +2713,6 @@ fn check_workflow(root: &Path) -> Result<(), String> {
             return Err(format!(
                 "CI-HYGIENE: `{WORKFLOW}` is missing `{needle}`. \
                  Restore the gitleaks job (checksummed CLI, not the org-licensed Action), \
-                 `with: toolchain:` on dtolnay/rust-toolchain, \
                 the hygiene job that compiles this file, \
                  generated-doc freshness, and the structural plus digest-pinned Mermaid render gates."
             ));
@@ -2044,18 +2720,30 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     }
 
     check_change_router_job(&text)?;
+    check_independent_router_contract_job(&text)?;
+    check_mermaid_job(&text)?;
     check_package_loop_shell(&text)?;
     check_check_job_if_avoids_matrix(&text)?;
+    check_check_job_os_matrix(&text)?;
+    check_workspace_contracts_job(&text)?;
+    check_doctest_job(&text)?;
     check_fuzz_workspace_step(&text)?;
     check_msrv_avoids_apt(&text)?;
     check_bun_test_job(&text)?;
     check_linux_media_guard_step(&text)?;
     check_required_job(&text)?;
+    check_gitleaks_scan_step(&text)?;
+    check_channel_allocations_step(&text)?;
     check_product_status_step(&text)?;
     check_product_status_windows_step(&text)?;
     check_windows_media_acceptance_step(&text)?;
+    check_release_updater_helper_step(&text)?;
     check_atomic_protocol_step(&text)?;
+    check_doc_placeholders_step(&text)?;
+    check_spec_structure_step(&text)?;
+    check_hello_command_step(&text)?;
     check_agent_context_step(&text)?;
+    check_public_audit_step(&text)?;
     for needle in WORKFLOW_RUN_NEEDLES {
         if !workflow_has_executable_run_needle(&text, needle) {
             return Err(format!(
@@ -2078,6 +2766,8 @@ fn check_mermaid_gate_files(root: &Path) -> Result<(), String> {
         "--security-opt no-new-privileges",
         "--memory 2g",
         "--pids-limit 256",
+        "run_with_timeout 8 docker info",
+        "run_with_timeout 8 docker image inspect",
         "run_with_timeout 120 docker run",
         "run_with_timeout 300 docker pull",
         "--pull never",
@@ -2087,6 +2777,7 @@ fn check_mermaid_gate_files(root: &Path) -> Result<(), String> {
         "MSYS2_ARG_CONV_EXCL='*'",
         "trap cleanup EXIT",
         r#"workspace=$(cd "$workspace" && pwd -P)"#,
+        r#"if [[ ! -x "$mermaid_docs" || "$workspace/tools/mermaid_docs.rs" -nt "$mermaid_docs" || "$workspace/tools/markdown_paths.rs" -nt "$mermaid_docs" ]]; then"#,
         r#"if [[ -L "$workspace/target" ]]; then"#,
         r#"render_parent=$(cd "$workspace/target" && pwd -P)"#,
         r#"[[ "$render_parent" == "$workspace/target" ]] || {"#,
@@ -2098,6 +2789,16 @@ fn check_mermaid_gate_files(root: &Path) -> Result<(), String> {
                 "CI-HYGIENE: `{MERMAID_RENDERER}` is missing `{needle}`. Restore the pinned, network-disabled, read-only, resource-bounded renderer contract."
             ));
         }
+    }
+    let manifest = renderer.find("\"$mermaid_docs\" manifest");
+    let empty_guard = renderer.find("if [[ ${#files[@]} -eq 0 ]]");
+    let docker_probe = renderer.find("run_with_timeout 8 docker info");
+    if !matches!((manifest, empty_guard, docker_probe), (Some(m), Some(g), Some(d)) if m < g && g < d)
+        || renderer.contains("git -C \"$workspace\" grep -Ilzi 'mermaid'")
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{MERMAID_RENDERER}` must obtain actual block candidates from the Mermaid parser and return on zero candidates before a bounded Docker probe."
+        ));
     }
     check_mermaid_msys_structure(&renderer)?;
     let config = read(root, MERMAID_CONFIG)?;
@@ -2119,7 +2820,10 @@ fn check_mermaid_gate_files(root: &Path) -> Result<(), String> {
 fn check(root: &Path) -> Result<(), String> {
     check_gitignore(root)?;
     check_ci_profile_does_not_retry(root)?;
+    check_root_audit_contract(root)?;
     check_root_test_display_contract(root)?;
+    check_serial_rust_gates(root)?;
+    check_mermaid_local_gate(root)?;
     check_codeowners(root)?;
     check_pr_template(root)?;
     check_issue_templates(root)?;
@@ -2127,6 +2831,115 @@ fn check(root: &Path) -> Result<(), String> {
     check_keldbot_workflow(root)?;
     check_mermaid_gate_files(root)?;
     Ok(())
+}
+
+/// GH-508 spec criterion 3a: the baseline at the merge base must be an exact
+/// line prefix of the current baseline. `None` means the file is absent there.
+fn check_allocations_prefix(
+    base: Option<&str>,
+    current: Option<&str>,
+    merge_base: &str,
+) -> Result<(), String> {
+    let Some(base) = base else {
+        return Ok(());
+    };
+    let Some(current) = current else {
+        return Err(format!(
+            "CI-HYGIENE: {CHANNEL_ALLOCATIONS} was removed, but it exists at merge base \
+             {merge_base}. Restore it: kipc channel ids are append-only \
+             (docs/specs/gh508-kipc-channel-table.md §4.4)."
+        ));
+    };
+    let mut current_lines = current.lines();
+    for (index, expected) in base.lines().enumerate() {
+        if current_lines.next() != Some(expected) {
+            return Err(format!(
+                "CI-HYGIENE: {CHANNEL_ALLOCATIONS} line {} `{expected}` at merge base \
+                 {merge_base} was changed, reordered or removed. Restore every existing \
+                 line and append new allocations at the end; ids are never renumbered or \
+                 reused (docs/specs/gh508-kipc-channel-table.md §4.4).",
+                index + 1
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn git_output(root: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| {
+            format!("CI-HYGIENE: cannot run git for {CHANNEL_ALLOCATIONS}: {error}. Install git and rerun just hygiene.")
+        })
+}
+
+/// Resolves the merge base of `base_ref` and `HEAD`, failing closed when the
+/// base is unavailable instead of passing without a comparison.
+fn allocations_merge_base(root: &Path, base_ref: &str) -> Result<String, String> {
+    merge_base(&|args| git_output(root, args), base_ref).map_err(|error| match error {
+        BaseError::Git(detail) => detail,
+        BaseError::Unresolved(detail) => format!(
+            "CI-HYGIENE: cannot resolve the {CHANNEL_ALLOCATIONS} comparison base `{base_ref}` \
+             ({detail}). Run `git fetch origin main`, or set {BASE_ENV} to an available commit, \
+             then rerun just hygiene; the append-only check never passes without a base."
+        ),
+    })
+}
+
+/// The baseline file at `merge_base`, or `None` when that commit lacks it.
+fn allocations_at(root: &Path, merge_base: &str) -> Result<Option<String>, String> {
+    let listed = git_output(
+        root,
+        &[
+            "ls-tree",
+            "--name-only",
+            merge_base,
+            "--",
+            CHANNEL_ALLOCATIONS,
+        ],
+    )?;
+    if !listed.status.success() {
+        return Err(format!(
+            "CI-HYGIENE: cannot list {CHANNEL_ALLOCATIONS} at merge base {merge_base}: {}",
+            String::from_utf8_lossy(&listed.stderr).trim()
+        ));
+    }
+    if String::from_utf8_lossy(&listed.stdout).trim().is_empty() {
+        return Ok(None);
+    }
+    let shown = git_output(
+        root,
+        &["show", &format!("{merge_base}:{CHANNEL_ALLOCATIONS}")],
+    )?;
+    if !shown.status.success() {
+        return Err(format!(
+            "CI-HYGIENE: cannot read {CHANNEL_ALLOCATIONS} at merge base {merge_base}: {}",
+            String::from_utf8_lossy(&shown.stderr).trim()
+        ));
+    }
+    String::from_utf8(shown.stdout).map(Some).map_err(|_| {
+        format!("CI-HYGIENE: {CHANNEL_ALLOCATIONS} at merge base {merge_base} is not UTF-8.")
+    })
+}
+
+/// GH-508 criterion 3a: the committed channel allocation baseline only grows.
+fn check_channel_allocations_append_only(root: &Path, base_ref: &str) -> Result<(), String> {
+    let merge_base = allocations_merge_base(root, base_ref)?;
+    let base = allocations_at(root, &merge_base)?;
+    let current = match fs::read_to_string(root.join(CHANNEL_ALLOCATIONS)) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "CI-HYGIENE: cannot read {CHANNEL_ALLOCATIONS}: {error}."
+            ));
+        }
+    };
+    check_allocations_prefix(base.as_deref(), current.as_deref(), &merge_base)
 }
 
 fn run_cli() -> Result<(), String> {
@@ -2158,7 +2971,7 @@ fn run_cli() -> Result<(), String> {
                     "CI-HYGIENE: workflow semantic check failed ({status}); restore the reported security contract before rerunning."
                 ));
             }
-            Ok(())
+            check_channel_allocations_append_only(&root, &base_ref())
         }
         _ => Err(format!(
             "CI-HYGIENE: unknown command `{command}`. Use `check` to verify KEL-39 files."
@@ -2174,2371 +2987,5 @@ fn main() {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-
-    struct TempDir {
-        path: PathBuf,
-    }
-
-    impl TempDir {
-        fn new() -> Self {
-            let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-            let path = env::temp_dir().join(format!("keld-ci-hygiene-{}-{id}", std::process::id()));
-            fs::create_dir_all(&path).expect("create isolated fixture root");
-            Self { path }
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-
-        fn write(&self, relative: &str, contents: &str) {
-            let path = self.path.join(relative);
-            fs::create_dir_all(path.parent().expect("fixture path has parent"))
-                .expect("create fixture parent");
-            fs::write(path, contents).expect("write fixture");
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
-
-    const PINNED_CHECKOUT: &str =
-        "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0\n";
-
-    fn windows_media_step() -> String {
-        let commands = WINDOWS_MEDIA_ACCEPTANCE_COMMANDS
-            .iter()
-            .map(|command| format!("          {command}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!(
-            "      - name: Windows media guard acceptance (KEL-132)\n        if: matrix.os == 'windows-latest' && contains(needs.changes.outputs.packages, 'keld-wv')\n        shell: pwsh\n        run: |\n{commands}"
-        )
-    }
-
-    // Fixture for Rust-owned contracts; parsed security cases use the real workflow in Bun.
-    fn valid_workflow() -> String {
-        let windows_media_step = windows_media_step();
-        [
-            "name: CI",
-            "jobs:",
-            "  changes:",
-            "    name: change router",
-            "    steps:",
-            "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
-            "        with:",
-            "          fetch-depth: 0",
-            "          persist-credentials: false",
-            "      - name: Router contract tests",
-            "        run: tools/ci_changes_test.sh",
-            "      - name: Classify changed-path ownership",
-            "        run: tools/ci_changes.sh github",
-            "      - name: Product status contract",
-            "        run: |",
-            "          mkdir -p target/product-status",
-            "          rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test",
-            "          target/product-status/product-status-test",
-            "          rustc --edition=2024 -D warnings tools/product_status.rs -o target/product-status/product-status",
-            "          target/product-status/product-status check .",
-            "  check:",
-            "    steps:",
-            "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
-            "        with:",
-            "          bun-version: '1.4.2'",
-            "      - name: Check keld-ipc fuzz workspace",
-            "        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'",
-            "        run: |",
-            "          cargo check --manifest-path crates/keld-ipc/fuzz/Cargo.toml",
-            "      - name: clippy (warnings deny)",
-            "        shell: bash",
-            "        run: cargo clippy -p fixture --all-targets -- -D warnings",
-            "      - name: test",
-            "        shell: bash",
-            "        run: cargo nextest run -p fixture --profile ci --no-tests=pass",
-            "      - name: Product status Windows path contracts",
-            "        if: matrix.os == 'windows-latest'",
-            "        shell: bash",
-            "        run: |",
-            "          mkdir -p target/product-status",
-            "          rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test",
-            "          target/product-status/product-status-test",
-            windows_media_step.as_str(),
-            "  bun-test:",
-            "    if: needs.changes.outputs.ts == 'true'",
-            "    steps:",
-            "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0",
-            "        with:",
-            "          bun-version: \"1.4.2\"",
-            "      - name: bun test",
-            "        shell: bash",
-            "        env:",
-            "          KELD_CI_TS_PACKAGES: ${{ needs.changes.outputs.ts_packages }}",
-            "        run: cd fixture && bun test",
-            "  linux-gui-smoke:",
-            "    steps:",
-            "      - name: Build Linux media guard probe",
-            "        run: |",
-            "          cargo build -p keld-wv --example linux_media_guard",
-            "          cc -shared -fPIC -Wall -Wextra -Werror -Wpedantic $(pkg-config --cflags webkit2gtk-4.1) crates/keld-wv/tests/fixtures/linux_media_interpose.c -o \"$RUNNER_TEMP/linux_media_interpose.so\" -ldl $(pkg-config --libs webkit2gtk-4.1)",
-            "      - name: Xvfb GUI smoke test — title, controls, and clean close",
-            "        run: xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' crates/keld-wv/tests/linux_gui_smoke.sh \"$RUNNER_TEMP/linux_media_interpose.so\" target/debug/examples/linux_media_guard ./target/release/keld-host",
-            "  msrv:",
-            "    runs-on: macos-latest",
-            "    steps:",
-            "      - run: cargo +1.97 check -p fixture --all-targets",
-            "  secrets:",
-            "    steps:",
-            "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
-            "        with:",
-            "          persist-credentials: false",
-            "      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05",
-            "        with:",
-            "          toolchain: 1.97.1",
-            "      - run: echo 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb | sha256sum -c -",
-            "      - run: gitleaks detect --source . --exit-code 1",
-            "  hygiene:",
-            "    if: needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'",
-            "    steps:",
-            "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
-            "        with:",
-            "          persist-credentials: false",
-            "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0",
-            "        with:",
-            "          bun-version: \"1.4.2\"",
-            "      - name: Atomic problem-solving protocol contract",
-            "        run: |",
-            "          mkdir -p target/atomic-protocol",
-            "          rustc --edition=2024 -D warnings --test tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol-test",
-            "          target/atomic-protocol/atomic-protocol-test",
-            "          rustc --edition=2024 -D warnings tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol",
-            "          target/atomic-protocol/atomic-protocol check .",
-            "      - name: Agent instruction context budget",
-            "        run: |",
-            "          mkdir -p target/agent-context",
-            "          rustc --edition=2024 -D warnings --test tools/agent_context.rs -o target/agent-context/agent-context-test",
-            "          target/agent-context/agent-context-test",
-            "          rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context",
-            "          target/agent-context/agent-context check .",
-            "          python3 -B tools/test_session_closeout.py",
-            "          python3 -B tools/test_session_closeout_hook.py",
-            "      - run: rustc --edition=2024 --test tools/ci_hygiene.rs",
-            "      - run: rustc --edition=2024 --test tools/product_status.rs",
-            "      - run: product-status check .",
-            "      - run: rustc --edition=2024 --test tools/llms_docs.rs",
-            "      - run: rustc --edition=2024 tools/llms_docs.rs",
-            "      - run: llms-docs check .",
-            "      - run: rustc --edition=2024 --test tools/mermaid_docs.rs",
-            "      - run: mermaid-docs check .",
-            "      - run: tools/mermaid_render_check.sh # sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf",
-            "  required:",
-            "    name: CI required",
-            "    if: ${{ always() }}",
-            "    needs:",
-            "      - changes",
-            "      - fmt",
-            "      - check",
-            "      - bun-test",
-            "      - linux-gui-smoke",
-            "      - msrv",
-            "      - deny",
-            "      - secrets",
-            "      - hygiene",
-            "      - codeql",
-            "      - dependency-review",
-            "    steps:",
-            "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
-            "        with:",
-            "          persist-credentials: false",
-            "      - name: Verify required CI results",
-            "        env:",
-            "          KELD_RESULT_CHANGES: ${{ needs.changes.result }}",
-            "          KELD_RESULT_FMT: ${{ needs.fmt.result }}",
-            "          KELD_RESULT_CHECK: ${{ needs.check.result }}",
-            "          KELD_RESULT_BUN: ${{ needs['bun-test'].result }}",
-            "          KELD_RESULT_GUI: ${{ needs['linux-gui-smoke'].result }}",
-            "          KELD_RESULT_MSRV: ${{ needs.msrv.result }}",
-            "          KELD_RESULT_DENY: ${{ needs.deny.result }}",
-            "          KELD_RESULT_SECRETS: ${{ needs.secrets.result }}",
-            "          KELD_RESULT_HYGIENE: ${{ needs.hygiene.result }}",
-            "          KELD_ROUTE_RUST: ${{ needs.changes.outputs.rust }}",
-            "          KELD_ROUTE_TS: ${{ needs.changes.outputs.ts }}",
-            "          KELD_ROUTE_GUI: ${{ needs.changes.outputs.gui }}",
-            "          KELD_ROUTE_MSRV: ${{ needs.changes.outputs.msrv }}",
-            "          KELD_ROUTE_DENY: ${{ needs.changes.outputs.deny }}",
-            "          KELD_ROUTE_HYGIENE: ${{ needs.changes.outputs.hygiene }}",
-            "          KELD_ROUTE_DOCS: ${{ needs.changes.outputs.docs }}",
-            "          KELD_RESULT_CODEQL: ${{ needs.codeql.result }}",
-            "          KELD_RESULT_DEPENDENCY_REVIEW: ${{ needs['dependency-review'].result }}",
-            "        run: |",
-            "          tools/ci_required.sh test",
-            "          tools/ci_required.sh check \\",
-            "            \"$KELD_RESULT_CHANGES\" \"$KELD_RESULT_FMT\" \"$KELD_RESULT_CHECK\" \\",
-            "            \"$KELD_RESULT_BUN\" \"$KELD_RESULT_GUI\" \"$KELD_RESULT_MSRV\" \\",
-            "            \"$KELD_RESULT_DENY\" \"$KELD_RESULT_SECRETS\" \"$KELD_RESULT_HYGIENE\" \\",
-            "            \"$KELD_ROUTE_RUST\" \"$KELD_ROUTE_TS\" \"$KELD_ROUTE_GUI\" \\",
-            "            \"$KELD_ROUTE_MSRV\" \"$KELD_ROUTE_DENY\" \\",
-            "            \"$KELD_ROUTE_HYGIENE\" \"$KELD_ROUTE_DOCS\" \\",
-            "            \"$KELD_RESULT_CODEQL\" \"$KELD_RESULT_DEPENDENCY_REVIEW\"",
-            "",
-        ]
-        .join("\n")
-    }
-
-    fn valid_keldbot_workflow() -> String {
-        [
-            "name: KeldBot",
-            "on:",
-            "  pull_request_target:",
-            "    types: [opened, edited, synchronize]",
-            "permissions: {}",
-            "jobs:",
-            "  gatekeeper:",
-            "    runs-on: ubuntu-latest",
-            "    steps:",
-            "      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0",
-            "        with:",
-            "          script: |",
-            "            const REQUIRED = [\"Summary\", \"Spec refs\", \"Review gates\", \"Tests\", \"Platforms\", \"Perf impact\"];",
-            "  title-lint:",
-            "    runs-on: ubuntu-latest",
-            "    steps:",
-            "      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0",
-            "        with:",
-            "          script: |",
-            "            core.info('title');",
-            "",
-        ]
-        .join("\n")
-    }
-
-    fn valid_codeowners() -> &'static str {
-        "/Cargo.toml @alice\n\
-         /crates/keld-guard/ @alice\n\
-         /crates/keld-ipc/ @alice\n\
-         /.github/ @alice\n\
-         /AGENTS.md @alice\n\
-         /.agents/ @alice\n\
-         /.codex/ @alice\n\
-         /docs/agents/ @alice\n\
-         /docs/engineering/keld-error-codes.md @alice\n\
-         /justfile @alice\n\
-         /tools/ @alice\n"
-    }
-
-    fn valid_pr() -> &'static str {
-        "## Summary\n## Spec refs\nNo boundary change\n## Review gates\n\
-         ## Tests\nRun cargo fmt, clippy, nextest, and mermaid-render-check.\n\
-         ## Platforms\n## Perf impact\nagent/kel-\n"
-    }
-
-    fn complete_fixture() -> TempDir {
-        let temp = TempDir::new();
-        temp.write(".gitignore", "/target\n/.claude\n");
-        temp.write(CODEOWNERS, valid_codeowners());
-        temp.write(PR_TEMPLATE, valid_pr());
-        temp.write(
-            ".github/ISSUE_TEMPLATE/bug.yml",
-            "name: Bug\nbody:\n  - type: markdown\n",
-        );
-        temp.write(WORKFLOW, &valid_workflow());
-        temp.write(KELDBOT_WORKFLOW, &valid_keldbot_workflow());
-        temp.write(CI_REQUIRED_EVALUATOR, "#!/usr/bin/env bash\nexit 0\n");
-        temp.write(ATOMIC_PROTOCOL_CHECKER, "fn main() {}\n");
-        temp.write(AGENT_CONTEXT_CHECKER, "fn main() {}\n");
-        temp.write(
-            JUSTFILE,
-            concat!(
-                "test:\n",
-                "    #!/usr/bin/env bash\n",
-                "    set -euo pipefail\n",
-                "    if [[ \"$(uname -s)\" == \"Linux\" ]]; then\n",
-                "        xvfb-run -a cargo nextest run --workspace --profile ci\n",
-                "    else\n",
-                "        cargo nextest run --workspace --profile ci\n",
-                "    fi\n"
-            ),
-        );
-        temp.write(MERMAID_CHECKER, "fn main() {}\n");
-        temp.write(NEXTEST_CONFIG, "[profile.ci]\n");
-        temp.write(MERMAID_RENDERER, include_str!("mermaid_render_check.sh"));
-        temp.write(
-            MERMAID_CONFIG,
-            "{\"securityLevel\": \"strict\", \"maxTextSize\": 50000, \"maxEdges\": 500, \"deterministicIds\": true}\n",
-        );
-        temp
-    }
-
-    #[test]
-    fn complete_fixture_passes() {
-        let temp = complete_fixture();
-        check(temp.path()).expect("complete KEL-39 fixture must pass");
-    }
-
-    #[test]
-    fn root_test_recipe_requires_linux_xvfb_without_weakening_other_platforms() {
-        for (needle, replacement) in [
-            ("xvfb-run -a ", ""),
-            ("if [[ \"$(uname -s)\" == \"Linux\" ]]; then", "if false; then"),
-            ("cargo nextest run --workspace --profile ci", "true"),
-        ] {
-            let temp = complete_fixture();
-            temp.write(
-                JUSTFILE,
-                &read(temp.path(), JUSTFILE)
-                    .expect("root test fixture")
-                    .replacen(needle, replacement, 1),
-            );
-            let error = check(temp.path()).expect_err("display contract must remain executable");
-            assert!(error.contains("xvfb-run"), "{needle}: {error}");
-        }
-    }
-
-    #[test]
-    fn linux_media_guard_commands_are_mandatory_in_the_gui_lane() {
-        for (needle, replacement) in [
-            (
-                "          cargo build -p keld-wv --example linux_media_guard\n",
-                "          removed-media-build\n",
-            ),
-            (
-                "crates/keld-wv/tests/fixtures/linux_media_interpose.c",
-                "removed-media-interposer.c",
-            ),
-            ("-Wall -Wextra -Werror -Wpedantic", "-Wall -Wextra"),
-            (
-                "xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' crates/keld-wv/tests/linux_gui_smoke.sh \"$RUNNER_TEMP/linux_media_interpose.so\" target/debug/examples/linux_media_guard ./target/release/keld-host",
-                "removed-media-run",
-            ),
-        ] {
-            let temp = complete_fixture();
-            let workflow = valid_workflow().replacen(needle, replacement, 1);
-            temp.write(WORKFLOW, &workflow);
-            let error = check(temp.path()).expect_err("missing media command must fail");
-            assert!(error.contains("KEL-132"), "{needle}: {error}");
-        }
-    }
-
-    #[test]
-    fn linux_media_guard_rejects_inert_or_conditional_commands() {
-        for (needle, replacement) in [
-            (
-                "          cargo build -p keld-wv --example linux_media_guard\n",
-                "          echo cargo build -p keld-wv --example linux_media_guard\n",
-            ),
-            (
-                "      - name: Build Linux media guard probe\n        run: |\n",
-                "      - name: Build Linux media guard probe\n        if: false\n        run: |\n",
-            ),
-            (
-                "        run: xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' crates/keld-wv/tests/linux_gui_smoke.sh \"$RUNNER_TEMP/linux_media_interpose.so\" target/debug/examples/linux_media_guard ./target/release/keld-host\n",
-                "        run: |\n          exit\n          xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' crates/keld-wv/tests/linux_gui_smoke.sh \"$RUNNER_TEMP/linux_media_interpose.so\" target/debug/examples/linux_media_guard ./target/release/keld-host\n",
-            ),
-            (
-                "        run: xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' crates/keld-wv/tests/linux_gui_smoke.sh \"$RUNNER_TEMP/linux_media_interpose.so\" target/debug/examples/linux_media_guard ./target/release/keld-host\n",
-                "        run: |\n          if [ 1 -eq 0 ]; then\n            xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' crates/keld-wv/tests/linux_gui_smoke.sh \"$RUNNER_TEMP/linux_media_interpose.so\" target/debug/examples/linux_media_guard ./target/release/keld-host\n          fi\n",
-            ),
-        ] {
-            let temp = complete_fixture();
-            let workflow = valid_workflow().replacen(needle, replacement, 1);
-            temp.write(WORKFLOW, &workflow);
-            let error = check(temp.path()).expect_err("inert media command must fail");
-            assert!(error.contains("KEL-132"), "{needle}: {error}");
-        }
-    }
-
-    #[test]
-    fn required_result_job_is_mandatory_and_always_created() {
-        let temp = complete_fixture();
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen("  required:\n", "  removed-required:\n", 1),
-        );
-        let error = check(temp.path()).expect_err("missing required result must fail");
-        assert!(error.contains("required"), "{error}");
-
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen("    if: ${{ always() }}", "    if: ${{ success() }}", 1),
-        );
-        let error = check(temp.path()).expect_err("non-always required result must fail");
-        assert!(error.contains("always"), "{error}");
-    }
-
-    #[test]
-    fn atomic_protocol_step_is_mandatory_and_failure_preserving() {
-        let temp = complete_fixture();
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "      - name: Atomic problem-solving protocol contract\n",
-                "      - name: Removed atomic step\n",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("missing atomic step must fail");
-        assert!(error.contains("Atomic problem-solving"), "{error}");
-
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "          target/atomic-protocol/atomic-protocol check .",
-                "          echo target/atomic-protocol/atomic-protocol check .",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("echoed atomic check must fail");
-        assert!(error.contains("without wrappers"), "{error}");
-
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "      - name: Atomic problem-solving protocol contract\n        run:",
-                "      - name: Atomic problem-solving protocol contract\n        if: ${{ false }}\n        run:",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("skipped atomic step must fail");
-        assert!(error.contains("may contain only"), "{error}");
-
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "    if: needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'",
-                "    if: needs.changes.outputs.hygiene == 'true'",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("docs-only atomic skip must fail");
-        assert!(error.contains("both hygiene and docs"), "{error}");
-
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "  hygiene:\n    if: needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'",
-                "  hygiene:\n    if: needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'\n    continue-on-error: true",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("hygiene failure suppression must fail");
-        assert!(error.contains("continue-on-error"), "{error}");
-
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "  hygiene:\n    if:",
-                "  hygiene:\n    \"continue-on-error\": true\n    if:",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("quoted failure suppression must fail");
-        assert!(error.contains("continue-on-error"), "{error}");
-
-        for (needle, replacement, label) in [
-            (
-                "  hygiene:\n    if:",
-                "  hygiene:\n    defaults:\n      run:\n        shell: bash {0} || true\n    if:",
-                "job inherited shell",
-            ),
-            (
-                "jobs:\n",
-                "defaults:\n  run:\n    shell: bash {0} || true\njobs:\n",
-                "workflow inherited shell",
-            ),
-        ] {
-            temp.write(WORKFLOW, &valid_workflow().replacen(needle, replacement, 1));
-            let error = check(temp.path()).expect_err(label);
-            assert!(error.contains("defaults"), "{error}");
-        }
-
-        let real_step = concat!(
-            "      - name: Atomic problem-solving protocol contract\n",
-            "        run: |\n",
-            "          mkdir -p target/atomic-protocol\n",
-            "          rustc --edition=2024 -D warnings --test tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol-test\n",
-            "          target/atomic-protocol/atomic-protocol-test\n",
-            "          rustc --edition=2024 -D warnings tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol\n",
-            "          target/atomic-protocol/atomic-protocol check .\n",
-        );
-        let decoy_step = concat!(
-            "      - name: Disabled decoy\n",
-            "        if: ${{ false }}\n",
-            "        run: |\n",
-            "          - name: Atomic problem-solving protocol contract\n",
-            "            run: |\n",
-            "              mkdir -p target/atomic-protocol\n",
-            "              rustc --edition=2024 -D warnings --test tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol-test\n",
-            "              target/atomic-protocol/atomic-protocol-test\n",
-            "              rustc --edition=2024 -D warnings tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol\n",
-            "              target/atomic-protocol/atomic-protocol check .\n",
-        );
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(real_step, decoy_step, 1),
-        );
-        let error = check(temp.path()).expect_err("nested decoy step must fail");
-        assert!(error.contains("exactly one"), "{error}");
-    }
-
-    #[test]
-    fn agent_context_step_is_mandatory_and_failure_preserving() {
-        let temp = complete_fixture();
-        let context_step = concat!(
-            "      - name: Agent instruction context budget\n",
-            "        run: |\n",
-            "          mkdir -p target/agent-context\n",
-            "          rustc --edition=2024 -D warnings --test tools/agent_context.rs -o target/agent-context/agent-context-test\n",
-            "          target/agent-context/agent-context-test\n",
-            "          rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context\n",
-            "          target/agent-context/agent-context check .\n",
-            "          python3 -B tools/test_session_closeout.py\n",
-            "          python3 -B tools/test_session_closeout_hook.py\n",
-        );
-        temp.write(WORKFLOW, &valid_workflow().replacen(context_step, "", 1));
-        let error = check(temp.path()).expect_err("missing context gate must fail");
-        assert!(
-            error.contains("Agent instruction context budget"),
-            "{error}"
-        );
-
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "          target/agent-context/agent-context check .",
-                "          echo target/agent-context/agent-context check .",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("echoed context gate must fail");
-        assert!(error.contains("without wrappers"), "{error}");
-    }
-
-    #[test]
-    fn hosted_closeout_suites_cannot_be_omitted_or_echoed() {
-        for command in [
-            "python3 -B tools/test_session_closeout.py",
-            "python3 -B tools/test_session_closeout_hook.py",
-        ] {
-            for replacement in [
-                String::new(),
-                format!("echo {command}"),
-                format!("{command} || true"),
-            ] {
-                let temp = complete_fixture();
-                temp.write(
-                    WORKFLOW,
-                    &valid_workflow().replacen(command, &replacement, 1),
-                );
-                let error =
-                    check(temp.path()).expect_err("missing or swallowed closeout tests must fail");
-                assert!(error.contains("without wrappers"), "{error}");
-            }
-        }
-    }
-
-    #[test]
-    fn required_result_must_observe_unconditional_gitleaks() {
-        let temp = complete_fixture();
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen("      - secrets\n", "", 1),
-        );
-        let error = check(temp.path()).expect_err("missing gitleaks dependency must fail");
-        assert!(error.contains("secrets"), "{error}");
-
-        temp.write(
-            WORKFLOW,
-            &valid_workflow()
-                .replacen("      - secrets\n", "", 1)
-                .replacen(
-                    "      - name: Verify required CI results\n        env:\n",
-                    "      - name: Verify required CI results\n        env:\n          SPOOF: '- secrets'\n",
-                    1,
-                ),
-        );
-        let error = check(temp.path()).expect_err("needs text in env must not count");
-        assert!(error.contains("secrets"), "{error}");
-    }
-
-    #[test]
-    fn required_result_must_receive_router_applicability() {
-        let temp = complete_fixture();
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "          KELD_ROUTE_RUST: ${{ needs.changes.outputs.rust }}\n",
-                "",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("missing router output must fail");
-        assert!(error.contains("KELD_ROUTE_RUST"), "{error}");
-
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen("\"$KELD_ROUTE_TS\"", "false", 1),
-        );
-        let error = check(temp.path()).expect_err("unused router output must fail");
-        assert!(error.contains("18-argument"), "{error}");
-    }
-
-    #[test]
-    fn required_result_must_observe_security_jobs() {
-        for job in ["codeql", "dependency-review"] {
-            let workflow = valid_workflow().replacen(&format!("      - {job}\n"), "", 1);
-            let error = check_required_job(&workflow).expect_err("missing security job must fail");
-            assert!(error.contains(job), "{error}");
-        }
-    }
-
-    #[test]
-    fn required_result_must_receive_security_results_without_spoofing() {
-        for (key, expression) in [
-            ("KELD_RESULT_CODEQL", "${{ needs.codeql.result }}"),
-            (
-                "KELD_RESULT_DEPENDENCY_REVIEW",
-                "${{ needs['dependency-review'].result }}",
-            ),
-        ] {
-            let workflow = valid_workflow().replacen(expression, "success", 1);
-            let error =
-                check_required_job(&workflow).expect_err("spoofed security result must fail");
-            assert!(error.contains(key), "{error}");
-            let workflow = valid_workflow().replacen(&format!("\"${key}\""), "success", 1);
-            let error =
-                check_required_job(&workflow).expect_err("unused security result must fail");
-            assert!(error.contains("18-argument"), "{error}");
-        }
-    }
-
-    #[test]
-    fn required_evaluator_text_must_be_executed() {
-        let temp = complete_fixture();
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "          tools/ci_required.sh check \\",
-                "          echo tools/ci_required.sh check \\",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("echoed evaluator text must fail");
-        assert!(error.contains("run block"), "{error}");
-    }
-
-    #[test]
-    fn required_evaluator_rejects_false_green_shell_shapes() {
-        let temp = complete_fixture();
-
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "          KELD_RESULT_SECRETS: ${{ needs.secrets.result }}",
-                "          KELD_RESULT_SECRETS: success",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("literal gitleaks success must fail");
-        assert!(error.contains("KELD_RESULT_SECRETS"), "{error}");
-
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "            \"$KELD_ROUTE_HYGIENE\" \"$KELD_ROUTE_DOCS\"",
-                "            \"$KELD_ROUTE_HYGIENE\" \"$KELD_ROUTE_DOCS\" || true",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("exit-status suppression must fail");
-        assert!(error.contains("run block"), "{error}");
-
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "      - name: Verify required CI results\n        env:",
-                "      - name: Verify required CI results\n        continue-on-error: true\n        env:",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("continue-on-error must fail");
-        assert!(error.contains("continue-on-error"), "{error}");
-
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "  required:\n    name: CI required",
-                "  required:\n    name: CI required\n    continue-on-error: true",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("job continue-on-error must fail");
-        assert!(error.contains("continue-on-error"), "{error}");
-
-        for (property, label) in [
-            ("if: ${{ false }}", "skipped evaluator"),
-            ("shell: bash {0} || true", "failure-suppressing shell"),
-            ("\"if\": ${{ false }}", "quoted skipped evaluator"),
-            (
-                "\"shell\": bash {0} || true",
-                "quoted failure-suppressing shell",
-            ),
-        ] {
-            temp.write(
-                WORKFLOW,
-                &valid_workflow().replacen(
-                    "      - name: Verify required CI results\n        env:",
-                    &format!(
-                        "      - name: Verify required CI results\n        {property}\n        env:"
-                    ),
-                    1,
-                ),
-            );
-            let error = check(temp.path()).expect_err(label);
-            assert!(error.contains("only direct"), "{error}");
-        }
-
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "          tools/ci_required.sh check \\",
-                "          if false; then\n          tools/ci_required.sh check \\",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("unreachable check must fail");
-        assert!(error.contains("run block"), "{error}");
-
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "          tools/ci_required.sh check \\",
-                "          KELD_RESULT_SECRETS=success\n          tools/ci_required.sh check \\",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("result reassignment must fail");
-        assert!(error.contains("run block"), "{error}");
-    }
-
-    #[test]
-    fn keldbot_required_jobs_revalidate_synchronized_heads() {
-        let temp = complete_fixture();
-        temp.write(
-            KELDBOT_WORKFLOW,
-            &valid_keldbot_workflow().replacen(
-                "  gatekeeper:\n",
-                "  gatekeeper:\n    if: github.event.action != 'synchronize'\n",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("skipped gatekeeper must fail");
-        assert!(error.contains("synchronize"), "{error}");
-
-        temp.write(
-            KELDBOT_WORKFLOW,
-            &valid_keldbot_workflow().replace(", synchronize", ""),
-        );
-        let error = check(temp.path()).expect_err("missing synchronize trigger must fail");
-        assert!(error.contains("synchronize"), "{error}");
-    }
-
-    #[test]
-    fn keldbot_pull_request_target_never_checks_out_or_runs_pr_code() {
-        let temp = complete_fixture();
-        temp.write(
-            KELDBOT_WORKFLOW,
-            &valid_keldbot_workflow().replacen(
-                "    steps:\n",
-                "    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("secret-bearing checkout must fail");
-        assert!(error.contains("checkout"), "{error}");
-    }
-
-    #[test]
-    fn ci_profile_that_retries_is_rejected() {
-        let temp = complete_fixture();
-        temp.write(NEXTEST_CONFIG, "[profile.ci]\nretries = 1\n");
-        let error = check(temp.path())
-            .expect_err("the mandated verification profile must not retry (KEL-112)");
-        assert!(error.contains("retries"), "{error}");
-        assert!(error.contains(NEXTEST_CONFIG), "{error}");
-    }
-
-    #[test]
-    fn the_inherited_default_profile_is_the_gate_too() {
-        // `--profile ci` inherits `default`, and nextest's own documentation
-        // puts `retries` there — so this is the likeliest accidental
-        // regression, not an exotic one. Measured on cargo-nextest 0.9.140:
-        // `[profile.default] retries = 2` with an empty `[profile.ci]` runs a
-        // failing test 3 times under `--profile ci`.
-        let temp = complete_fixture();
-        temp.write(
-            NEXTEST_CONFIG,
-            "[profile.default]\nretries = 2\n\n[profile.ci]\n",
-        );
-        let error = check(temp.path())
-            .expect_err("`ci` inherits `default`, so retries there bind the mandated gate");
-        assert!(error.contains("retries"), "{error}");
-    }
-
-    #[test]
-    fn an_override_that_retries_binds_the_gate() {
-        // An override's `retries` applies to every test its filter matches.
-        let temp = complete_fixture();
-        temp.write(
-            NEXTEST_CONFIG,
-            "[profile.ci]\n\n[[profile.ci.overrides]]\nfilter = \"all()\"\nretries = 2\n",
-        );
-        let error = check(temp.path())
-            .expect_err("an override under the mandated profile still retries it");
-        assert!(error.contains("retries"), "{error}");
-    }
-
-    #[test]
-    fn the_retries_sub_table_binds_the_gate() {
-        // nextest's documented retries-with-backoff form is a sub-table, not a
-        // key. Measured: `[profile.ci.retries]` with `count = 2` runs a failing
-        // test 3 times under `--profile ci`. A guard matching literal section
-        // names missed it entirely, because the section *is* the declaration.
-        for header in ["[profile.ci.retries]", "[profile.default.retries]"] {
-            let temp = complete_fixture();
-            temp.write(
-                NEXTEST_CONFIG,
-                &format!("[profile.ci]\n\n{header}\ncount = 2\nbackoff = \"fixed\"\n"),
-            );
-            let error =
-                check(temp.path()).expect_err("a retries sub-table retries the mandated gate");
-            assert!(error.contains(header), "{error}");
-        }
-    }
-
-    #[test]
-    fn a_trailing_comment_does_not_hide_the_section() {
-        // `[profile.ci] # keep this empty` is ordinary TOML and still the `ci`
-        // section. Comparing the whole trimmed line against a literal header
-        // silently skipped it while nextest retried.
-        let temp = complete_fixture();
-        temp.write(
-            NEXTEST_CONFIG,
-            "[profile.ci] # keep this empty\nretries = 2\n",
-        );
-        let error =
-            check(temp.path()).expect_err("a commented header is still the mandated profile");
-        assert!(error.contains("[profile.ci]"), "{error}");
-    }
-
-    #[test]
-    fn an_inherited_override_that_retries_binds_the_gate() {
-        // The fourth binding section. Its absence from the tests was why the
-        // doc comment could claim all four were verified while one was not.
-        let temp = complete_fixture();
-        temp.write(
-            NEXTEST_CONFIG,
-            "[profile.ci]\n\n[[profile.default.overrides]]\nfilter = \"all()\"\nretries = 2\n",
-        );
-        let error = check(temp.path())
-            .expect_err("an override on the inherited profile still retries the gate");
-        assert!(error.contains("[[profile.default.overrides]]"), "{error}");
-    }
-
-    #[test]
-    fn the_error_names_the_section_it_found() {
-        // A message hard-coding `[profile.ci]` sends the reader to the wrong
-        // line when the key is under the profile `ci` inherits.
-        let temp = complete_fixture();
-        temp.write(
-            NEXTEST_CONFIG,
-            "[profile.default]\nretries = 2\n\n[profile.ci]\n",
-        );
-        let error = check(temp.path()).expect_err("inherited retries bind the gate");
-        assert!(error.contains("[profile.default]"), "{error}");
-        assert!(
-            !error.contains("under `[profile.ci]`"),
-            "must not name a section it did not find: {error}"
-        );
-    }
-
-    #[test]
-    fn an_unfollowable_parent_fails_closed() {
-        // nextest inheritance is transitive. Measured: `[profile.ci] inherits =
-        // "a"`, `[profile.a] inherits = "b"`, `[profile.b] retries = 2` runs a
-        // failing test 3 times under `--profile ci`. This guard does not follow
-        // chains, so it must refuse rather than report silence as no-retries.
-        let temp = complete_fixture();
-        temp.write(
-            NEXTEST_CONFIG,
-            "[profile.shared]\nretries = 2\n\n[profile.ci]\ninherits = \"shared\"\n",
-        );
-        let error =
-            check(temp.path()).expect_err("a parent this check cannot follow must fail closed");
-        assert!(error.contains("shared"), "{error}");
-        assert!(error.contains("cannot follow"), "{error}");
-    }
-
-    #[test]
-    fn inheriting_the_implicit_default_parent_is_allowed() {
-        // `default` is the implicit parent and is already classified, so naming
-        // it explicitly must not be a false positive.
-        let temp = complete_fixture();
-        temp.write(NEXTEST_CONFIG, "[profile.ci]\ninherits = \"default\"\n");
-        check(temp.path()).expect("inheriting the implicit parent is a no-op");
-    }
-
-    #[test]
-    fn a_profile_that_does_not_bind_the_gate_may_retry() {
-        // The no-false-positive side: measured, `[profile.local]` runs a single
-        // attempt under `--profile ci`, so rejecting it would block a
-        // legitimate local convenience for no gain.
-        let temp = complete_fixture();
-        temp.write(
-            NEXTEST_CONFIG,
-            "[profile.ci]\n\n[profile.local]\nretries = 3\n",
-        );
-        check(temp.path()).expect("a profile the gate does not inherit is not this contract");
-    }
-
-    #[test]
-    fn ci_profile_without_retries_passes() {
-        let temp = complete_fixture();
-        temp.write(NEXTEST_CONFIG, "[profile.ci]\nfail-fast = false\n");
-        check(temp.path()).expect("a ci profile with no retries is the contract");
-    }
-
-    #[test]
-    fn retries_under_a_different_profile_is_not_this_contract() {
-        // Guards over-matching: only the profile AGENTS.md mandates is bound.
-        let temp = complete_fixture();
-        temp.write(
-            NEXTEST_CONFIG,
-            "[profile.local]\nretries = 3\n\n[profile.ci]\n",
-        );
-        check(temp.path()).expect("only `[profile.ci]` is the verification gate");
-    }
-
-    #[test]
-    fn commented_out_retries_is_not_a_retry() {
-        let temp = complete_fixture();
-        temp.write(
-            NEXTEST_CONFIG,
-            "[profile.ci]\n# retries = 1 (removed, KEL-112)\n",
-        );
-        check(temp.path()).expect("a comment is documentation, not configuration");
-    }
-
-    #[test]
-    fn router_test_in_another_job_does_not_satisfy_changes_contract() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow()
-            .replacen("        run: tools/ci_changes_test.sh\n", "", 1)
-            .replace(
-                "  secrets:\n",
-                "  unrelated:\n    steps:\n      - run: tools/ci_changes_test.sh\n  secrets:\n",
-            );
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("router test must run in changes job");
-        assert!(error.contains("changes` job"), "{error}");
-        assert!(error.contains("tools/ci_changes_test.sh"), "{error}");
-    }
-
-    #[test]
-    fn router_command_in_another_job_does_not_satisfy_changes_contract() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow()
-            .replacen("        run: tools/ci_changes.sh github\n", "", 1)
-            .replace(
-                "  secrets:\n",
-                "  unrelated:\n    steps:\n      - run: tools/ci_changes.sh github\n  secrets:\n",
-            );
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("router command must run in changes job");
-        assert!(error.contains("changes` job"), "{error}");
-        assert!(error.contains("tools/ci_changes.sh github"), "{error}");
-    }
-
-    #[test]
-    fn full_history_checkout_in_another_job_does_not_satisfy_changes_contract() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow()
-            .replacen("          fetch-depth: 0\n", "", 1)
-            .replacen(
-                "  secrets:\n    steps:\n",
-                &format!("  secrets:\n    steps:\n{PINNED_CHECKOUT}        with:\n          persist-credentials: false\n          fetch-depth: 0\n"),
-                1,
-            );
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("changes job must fetch its own history");
-        assert!(error.contains("changes` job"), "{error}");
-        assert!(error.contains("fetch-depth: 0"), "{error}");
-    }
-
-    #[test]
-    fn quoted_fetch_depth_in_changes_job_is_accepted() {
-        for value in ["'0'", "\"0\""] {
-            let temp = complete_fixture();
-            temp.write(
-                WORKFLOW,
-                &valid_workflow().replacen("fetch-depth: 0", &format!("fetch-depth: {value}"), 1),
-            );
-            check(temp.path()).expect("quoted fetch depth is the same YAML scalar");
-        }
-    }
-
-    #[test]
-    fn shell_guarded_router_test_does_not_satisfy_changes_contract() {
-        let temp = complete_fixture();
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "run: tools/ci_changes_test.sh",
-                "run: false && tools/ci_changes_test.sh",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("disabled shell command must fail");
-        assert!(error.contains("unconditional"), "{error}");
-        assert!(error.contains("tools/ci_changes_test.sh"), "{error}");
-    }
-
-    #[test]
-    fn github_if_guarded_router_command_does_not_satisfy_changes_contract() {
-        let temp = complete_fixture();
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "      - name: Classify changed-path ownership\n        run:",
-                "      - name: Classify changed-path ownership\n        if: ${{ false }}\n        run:",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("disabled GitHub step must fail");
-        assert!(error.contains("unconditional"), "{error}");
-        assert!(error.contains("tools/ci_changes.sh github"), "{error}");
-    }
-
-    #[test]
-    fn package_loop_requires_bash_on_windows_matrix() {
-        let temp = complete_fixture();
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen("        shell: bash\n", "", 1),
-        );
-        let error = check(temp.path()).expect_err("package loop needs Bash on Windows");
-        assert!(error.contains("clippy (warnings deny)"), "{error}");
-        assert!(error.contains("shell: bash"), "{error}");
-    }
-
-    #[test]
-    fn selected_zero_test_package_must_not_fail_nextest() {
-        let temp = complete_fixture();
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(" --no-tests=pass", "", 1),
-        );
-        let error = check(temp.path()).expect_err("zero-test package policy must remain explicit");
-        assert!(error.contains("--no-tests=pass"), "{error}");
-    }
-
-    #[test]
-    fn check_job_if_must_not_use_matrix() {
-        let temp = complete_fixture();
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "  check:\n    steps:",
-                "  check:\n    if: needs.changes.outputs.rust == 'true' && matrix.os != 'ubuntu-latest'\n    steps:",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("job-level matrix.os must fail hygiene");
-        assert!(error.contains("matrix"), "{error}");
-        assert!(error.contains("check"), "{error}");
-    }
-
-    #[test]
-    fn missing_fuzz_workspace_step_fails() {
-        let temp = complete_fixture();
-        let step = "      - name: Check keld-ipc fuzz workspace\n        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'\n        run: |\n          cargo check --manifest-path crates/keld-ipc/fuzz/Cargo.toml\n";
-        temp.write(WORKFLOW, &valid_workflow().replace(step, ""));
-        let error = check(temp.path()).expect_err("missing fuzz workspace check must fail");
-        assert!(error.contains("Check keld-ipc fuzz workspace"), "{error}");
-    }
-
-    #[test]
-    fn fuzz_workspace_step_must_be_ubuntu_and_rust_routed() {
-        let temp = complete_fixture();
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replace(
-                "matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'",
-                "matrix.os == 'ubuntu-latest'",
-            ),
-        );
-        let error = check(temp.path()).expect_err("fuzz workspace step needs both routing gates");
-        assert!(error.contains("exact condition"), "{error}");
-    }
-
-    #[test]
-    fn fuzz_workspace_step_must_run_the_exact_stable_check() {
-        let temp = complete_fixture();
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replace(
-                "cargo check --manifest-path crates/keld-ipc/fuzz/Cargo.toml",
-                "cargo check",
-            ),
-        );
-        let error = check(temp.path()).expect_err("fuzz workspace step needs its direct command");
-        assert!(
-            error.contains("stable fuzz-workspace cargo check"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn msrv_must_not_apt_get_on_ubuntu() {
-        let temp = complete_fixture();
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "    runs-on: macos-latest\n",
-                "    runs-on: ubuntu-latest\n    steps:\n      - run: sudo apt-get update\n",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("MSRV apt-get must fail hygiene");
-        assert!(error.contains("msrv"), "{error}");
-        assert!(
-            error.contains("macos-latest") || error.contains("apt-get"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn deleting_the_bun_lane_fails() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow();
-        let start = workflow
-            .find("  bun-test:")
-            .expect("fixture has the Bun lane");
-        let end = workflow.find("  msrv:").expect("fixture has the MSRV lane");
-        let mut without_lane = workflow.clone();
-        without_lane.replace_range(start..end, "");
-        temp.write(WORKFLOW, &without_lane);
-        let error = check(temp.path()).expect_err("removing the only bun test lane must fail");
-        assert!(error.contains("bun-test"), "{error}");
-    }
-
-    #[test]
-    fn bun_ci_accepts_requested_142_and_rejects_other_versions() {
-        let requested = valid_workflow();
-        assert!(requested.contains("bun-version: \"1.4.2\""));
-        check_bun_test_job(&requested).expect("the requested stable CI pin must pass");
-        for version in ["1.4.0", "latest", "1.4.2-canary.1", "1.4.20"] {
-            let changed = requested.replace("\"1.4.2\"", &format!("\"{version}\""));
-            assert!(
-                check_bun_test_job(&changed).is_err(),
-                "unexpected runtime {version} must not satisfy the CI pin"
-            );
-        }
-    }
-
-    #[test]
-    fn bun_step_pins_accept_named_actions_and_ignore_job_strategy() {
-        let workflow = valid_workflow()
-            .replace("  check:\n    steps:", "  check:\n    strategy:\n      fail-fast: false\n      matrix:\n        os: [ubuntu-latest, macos-latest]\n    steps:")
-            .replace("      - uses: oven-sh/setup-bun@", "      - name: install Bun\n        uses: oven-sh/setup-bun@");
-        let temp = complete_fixture();
-        temp.write(WORKFLOW, &workflow);
-        check(temp.path()).expect("only direct steps own action inputs");
-    }
-
-    #[test]
-    fn bun_pin_is_bound_to_the_action_input_not_job_text() {
-        let correct = "          bun-version: \"1.4.2\"\n";
-        for replacement in [
-            "          bun-version: latest\n",
-            "          # missing bun-version\n",
-            "        env:\n          bun-version: \"1.4.2\"\n",
-        ] {
-            let workflow = valid_workflow().replace(correct, replacement).replace(
-                "      - name: bun test\n",
-                "      - run: |\n          echo 'bun-version: \"1.4.2\"'\n      - name: bun test\n",
-            );
-            let temp = complete_fixture();
-            temp.write(WORKFLOW, &workflow);
-            let error = check(temp.path()).expect_err("unrelated text cannot pin an action");
-            assert!(error.contains("bun-test"), "{error}");
-            assert!(error.contains("1.4.2"), "{error}");
-        }
-    }
-
-    #[test]
-    fn every_bun_setup_in_each_bun_consumer_requires_its_own_pin() {
-        for job in ["check", "bun-test", "hygiene"] {
-            let workflow = valid_workflow();
-            let block = workflow_job_block(&workflow, job).expect("fixture job");
-            for extra in [
-                "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n        with:\n          bun-version: latest\n",
-                "      - name: another Bun setup\n        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n",
-                "      - name: folded Bun action\n        'uses': >-\n          oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n        with:\n          bun-version: latest\n",
-                "      - uses: \"oven-sh/setup-b\\u0075n@0c5077e51419868618aeaa5fe8019c62421857d6\"\n        with:\n          bun-version: latest\n",
-                "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n        with:\n          bun-version: '1.4.2'\n          \"bun-\\u0076ersion\": latest\n",
-                "      - ? uses\n        : oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n        with:\n          bun-version: latest\n",
-            ] {
-                let temp = complete_fixture();
-                temp.write(
-                    WORKFLOW,
-                    &workflow.replace(&block, &format!("{block}{extra}")),
-                );
-                let error = check(temp.path()).expect_err("every actual setup must be pinned");
-                assert!(error.contains(job), "{error}");
-                assert!(error.contains("1.4.2"), "{error}");
-            }
-        }
-    }
-
-    #[test]
-    fn every_bun_consumer_requires_a_setup_action() {
-        for job in ["check", "bun-test", "hygiene"] {
-            let workflow = valid_workflow();
-            let block = workflow_job_block(&workflow, job).expect("fixture job");
-            let changed = block.replace("oven-sh/setup-bun@", "some-other/action@");
-            let temp = complete_fixture();
-            temp.write(WORKFLOW, &workflow.replace(&block, &changed));
-            let error = check(temp.path()).expect_err("a version on another action is not Bun");
-            assert!(error.contains(job), "{error}");
-        }
-    }
-
-    #[test]
-    fn floating_bun_version_in_bun_lane_fails() {
-        let temp = complete_fixture();
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen("bun-version: \"1.4.2\"", "bun-version: latest", 1),
-        );
-        let error = check(temp.path()).expect_err("an unpinned Bun runtime must fail");
-        assert!(error.contains("bun-test"), "{error}");
-        assert!(error.contains("1.4.2"), "{error}");
-    }
-
-    #[test]
-    fn bun_lane_gated_on_another_router_output_fails() {
-        let temp = complete_fixture();
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "    if: needs.changes.outputs.ts == 'true'\n",
-                "    if: needs.changes.outputs.rust == 'true'\n",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("the Bun lane must follow its own router output");
-        assert!(error.contains("bun-test"), "{error}");
-        assert!(error.contains("outputs.ts"), "{error}");
-    }
-
-    #[test]
-    fn bun_lane_must_not_apt_get() {
-        let temp = complete_fixture();
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "      - name: bun test\n",
-                "      - run: sudo apt-get update\n      - name: bun test\n",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("a second live apt lane must fail");
-        assert!(error.contains("bun-test"), "{error}");
-        assert!(error.contains("apt-get"), "{error}");
-    }
-
-    #[test]
-    fn ignoring_github_dir_fails() {
-        let temp = complete_fixture();
-        temp.write(".gitignore", "/target\n/.github/\n");
-        let error = check(temp.path()).expect_err("ignored .github must fail");
-        assert!(error.contains("CI-HYGIENE"), "{error}");
-        assert!(error.contains("/.github/"), "{error}");
-        assert!(error.contains("Remove that ignore"), "{error}");
-    }
-
-    #[test]
-    fn ignoring_github_star_pattern_fails() {
-        let temp = complete_fixture();
-        temp.write(".gitignore", "/target\n/.github/*\n");
-        let error = check(temp.path()).expect_err("/.github/* must count as ignoring .github");
-        assert!(error.contains("CI-HYGIENE"), "{error}");
-        assert!(error.contains("Remove that ignore"), "{error}");
-    }
-
-    #[test]
-    fn github_dir_ignore_patterns() {
-        for pattern in [
-            "/.github/",
-            "/.github",
-            ".github/",
-            ".github",
-            "/.github/**",
-            "/.github/*",
-            ".github/**",
-            ".github/*",
-        ] {
-            assert!(
-                github_dir_is_ignored(&format!("/target\n{pattern}\n")),
-                "{pattern} must be treated as ignoring .github"
-            );
-        }
-        assert!(!github_dir_is_ignored("/target\n/.claude\n"));
-        assert!(!github_dir_is_ignored("# /.github/*\n/target\n"));
-        assert!(!github_dir_is_ignored("/.github/workflows/ci.yml\n"));
-    }
-
-    #[test]
-    fn comment_mentioning_github_ignore_is_not_an_ignore_rule() {
-        let temp = complete_fixture();
-        temp.write(
-            ".gitignore",
-            "# formerly /.github/ — CI is tracked (KEL-39)\n/target\n",
-        );
-        check(temp.path()).expect("comment must not count as an ignore rule");
-    }
-
-    #[test]
-    fn echoed_mermaid_gate_does_not_satisfy_workflow_contract() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow().replace(
-            "- run: tools/mermaid_render_check.sh",
-            "- run: echo tools/mermaid_render_check.sh",
-        );
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("echoed gate must not satisfy hygiene");
-        assert!(error.contains("executable Mermaid gate"), "{error}");
-        assert!(error.contains("mermaid_render_check.sh"), "{error}");
-    }
-
-    #[test]
-    fn inline_comment_mermaid_gate_does_not_satisfy_workflow_contract() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow().replace(
-            "- run: tools/mermaid_render_check.sh",
-            "- run: true # tools/mermaid_render_check.sh",
-        );
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("commented gate must not satisfy hygiene");
-        assert!(error.contains("executable Mermaid gate"), "{error}");
-    }
-
-    #[test]
-    fn missing_guard_codeowners_path_fails() {
-        let temp = complete_fixture();
-        temp.write(
-            CODEOWNERS,
-            "/Cargo.toml @alice\n/crates/keld-ipc/ @alice\n/.github/ @alice\n",
-        );
-        let error = check(temp.path()).expect_err("missing guard path must fail");
-        assert!(error.contains("keld-guard"), "{error}");
-        assert!(error.contains("@user"), "{error}");
-    }
-
-    #[test]
-    fn commented_codeowners_path_does_not_count() {
-        let temp = complete_fixture();
-        temp.write(
-            CODEOWNERS,
-            "# /crates/keld-guard/ @alice\n\
-             /Cargo.toml @alice\n\
-             /crates/keld-ipc/ @alice\n\
-             /.github/ @alice\n",
-        );
-        let error = check(temp.path()).expect_err("commented owner line must fail");
-        assert!(error.contains("keld-guard"), "{error}");
-    }
-
-    #[test]
-    fn codeowners_path_without_owner_fails() {
-        let temp = complete_fixture();
-        temp.write(
-            CODEOWNERS,
-            "/Cargo.toml @alice\n\
-             /crates/keld-guard/\n\
-             /crates/keld-ipc/ @alice\n\
-             /.github/ @alice\n",
-        );
-        let error = check(temp.path()).expect_err("path with no @owner must fail");
-        assert!(error.contains("keld-guard"), "{error}");
-    }
-
-    #[test]
-    fn missing_pr_gate_fails() {
-        let temp = complete_fixture();
-        temp.write(PR_TEMPLATE, "## Summary\n\nNo gates here.\n");
-        let error = check(temp.path()).expect_err("incomplete PR template must fail");
-        assert!(
-            error.contains("Spec refs")
-                || error.contains("Review gates")
-                || error.contains("cargo fmt"),
-            "{error}"
-        );
-        assert!(
-            error.contains("verification-gate") || error.contains("required PR headings"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn missing_toolchain_pin_fails() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow().replace("toolchain: 1.97.1", "");
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("workflow without toolchain pin must fail");
-        assert!(error.contains("toolchain: 1.97.1"), "{error}");
-    }
-
-    #[test]
-    fn missing_llms_docs_check_fails() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow()
-            .replace("--test tools/llms_docs.rs", "")
-            .replace("tools/llms_docs.rs", "")
-            .replace("llms-docs check .", "");
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("workflow without llms-docs check must fail");
-        assert!(
-            error.contains("tools/llms_docs.rs") || error.contains("llms-docs check"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn missing_product_status_check_fails() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow()
-            .replace("--test tools/product_status.rs", "")
-            .replace("product-status check .", "");
-        temp.write(WORKFLOW, &workflow);
-        let error =
-            check(temp.path()).expect_err("workflow without product-status check must fail");
-        assert!(
-            error.contains("tools/product_status.rs") || error.contains("product-status check"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn conditional_product_status_step_fails() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow().replace(
-            "      - name: Product status contract\n        run: |",
-            "      - name: Product status contract\n        if: ${{ false }}\n        run: |",
-        );
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("conditional product status must fail");
-        assert!(error.contains("Product status contract"), "{error}");
-    }
-
-    #[test]
-    fn echoed_product_status_command_fails() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow().replace(
-            "          target/product-status/product-status check .",
-            "          echo 'target/product-status/product-status check .'",
-        );
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("echoed product status must fail");
-        assert!(error.contains("Product status contract"), "{error}");
-    }
-
-    #[test]
-    fn missing_product_status_windows_step_fails() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow().replace(
-            "      - name: Product status Windows path contracts\n        if: matrix.os == 'windows-latest'\n        shell: bash\n        run: |\n          mkdir -p target/product-status\n          rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test\n          target/product-status/product-status-test\n",
-            "",
-        );
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("missing Windows status step must fail");
-        assert!(error.contains("Windows path contracts"), "{error}");
-    }
-
-    #[test]
-    fn product_status_windows_step_requires_bash() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow().replace(
-            "        if: matrix.os == 'windows-latest'\n        shell: bash\n        run: |",
-            "        if: matrix.os == 'windows-latest'\n        run: |",
-        );
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("the POSIX command block requires Bash");
-        assert!(error.contains("shell: bash"), "{error}");
-    }
-
-    #[test]
-    fn duplicate_product_status_windows_step_fails() {
-        let temp = complete_fixture();
-        let step = "      - name: Product status Windows path contracts\n        if: matrix.os == 'windows-latest'\n        shell: bash\n        run: |\n          mkdir -p target/product-status\n          rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test\n          target/product-status/product-status-test\n";
-        let workflow = valid_workflow().replace(step, &format!("{step}{step}"));
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("duplicate Windows status steps must fail");
-        assert!(error.contains("exactly one"), "{error}");
-    }
-
-    #[test]
-    fn broadened_product_status_windows_condition_fails() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow().replace(
-            "if: matrix.os == 'windows-latest'",
-            "if: matrix.os == 'windows-latest' || true",
-        );
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("broadened Windows condition must fail");
-        assert!(error.contains("exact condition"), "{error}");
-    }
-
-    #[test]
-    fn windows_media_acceptance_step_is_unique_and_direct() {
-        let temp = complete_fixture();
-        let windows_media_step = windows_media_step();
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(&windows_media_step, "", 1),
-        );
-        let error = check(temp.path()).expect_err("missing Windows media step must fail");
-        assert!(error.contains("KEL-132"), "{error}");
-
-        let duplicated = format!("{windows_media_step}\n{windows_media_step}");
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(&windows_media_step, &duplicated, 1),
-        );
-        let error = check(temp.path()).expect_err("duplicate Windows media step must fail");
-        assert!(error.contains("exactly one"), "{error}");
-
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(
-                "        shell: pwsh\n        run: |\n          cargo clippy -p keld-wv",
-                "        continue-on-error: true\n        shell: pwsh\n        run: |\n          cargo clippy -p keld-wv",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("failure suppression must fail");
-        assert!(
-            error.contains("KEL-132") || error.contains("continue-on-error"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn windows_media_acceptance_condition_and_shell_are_exact() {
-        for (needle, replacement) in [
-            (
-                "matrix.os == 'windows-latest' && contains(needs.changes.outputs.packages, 'keld-wv')",
-                "matrix.os == 'windows-latest'",
-            ),
-            ("        shell: pwsh", "        shell: bash"),
-        ] {
-            let temp = complete_fixture();
-            temp.write(WORKFLOW, &valid_workflow().replacen(needle, replacement, 1));
-            let error = check(temp.path()).expect_err("weakened Windows media routing must fail");
-            assert!(error.contains("KEL-132"), "{needle}: {error}");
-        }
-    }
-
-    #[test]
-    fn windows_media_acceptance_commands_cannot_be_removed_or_made_inert() {
-        for (needle, replacement) in [
-            ("--features media-acceptance", "--features default"),
-            (
-                "& $powerShellHost -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File crates/keld-wv/tests/windows_media_guard.ps1",
-                "Write-Output crates/keld-wv/tests/windows_media_guard.ps1",
-            ),
-            (
-                "& $powerShellHost -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File crates/keld-wv/tests/windows_media_guard.ps1",
-                "& crates/keld-wv/tests/windows_media_guard.ps1",
-            ),
-            (
-                "if ($LASTEXITCODE -ne 0) { throw 'media-acceptance Clippy failed' }",
-                "Write-Output 'ignored Clippy status'",
-            ),
-            ("$fixture.Count -ne 1", "$fixture.Count -lt 0"),
-            (
-                "Test-Path -LiteralPath $resultPath -PathType Leaf",
-                "Test-Path -LiteralPath $resultPath -PathType Container",
-            ),
-            (
-                "Test-Path -LiteralPath $evidenceRoot",
-                "Test-Path -LiteralPath $resultPath",
-            ),
-            (
-                "@($result.rows).Count -ne 10",
-                "@($result.rows).Count -lt 0",
-            ),
-            ("$result.rows -isnot [array]", "$false"),
-            (
-                "$result.source_executable -cne $fixturePath",
-                "$result.source_executable -cne $result.source_executable",
-            ),
-            (
-                "$result.executable_sha256 -cne $fixtureHash",
-                "$result.executable_sha256 -cne $result.executable_sha256",
-            ),
-            (
-                "$result.watchdog_probe.exit_code -ne 124",
-                "$result.watchdog_probe.exit_code -ne $result.watchdog_probe.exit_code",
-            ),
-            (
-                "$result.watchdog_probe.exit_code -isnot [int]",
-                "$false",
-            ),
-            (
-                "$result.outer_deadline_probe.outer_timed_out -ne $true",
-                "$result.outer_deadline_probe.outer_timed_out -eq $true",
-            ),
-            (
-                "$result.outer_deadline_probe.exit_code -gt [int]::MaxValue",
-                "$false",
-            ),
-            (
-                "Get-FileHash -Algorithm SHA256 -LiteralPath $stdoutPath",
-                "Get-FileHash -Algorithm SHA256 -LiteralPath $evidenceExecutable",
-            ),
-            (
-                "$watchdogStderr.Contains('KELD_MEDIA_TIMEOUT: fixture exceeded 0.1 seconds')",
-                "$watchdogStderr.Contains('anything')",
-            ),
-            (
-                "microphone/removed-guard/app-grants",
-                "camera/removed-guard/app-grants",
-            ),
-            (
-                "$_.profile_removed -ne $true",
-                "$_.profile_removed -eq $true",
-            ),
-            ("Sort-Object -Unique -CaseSensitive", "Sort-Object -Unique"),
-            ("Compare-Object -CaseSensitive", "Compare-Object"),
-            (
-                "$result.schema -cne 'keld.windows-media-fixture/v1'",
-                "$result.schema -ne 'keld.windows-media-fixture/v1'",
-            ),
-            (
-                "$result.capture_device -cne 'WebView2 synthetic development device'",
-                "$result.capture_device -cne $result.capture_device",
-            ),
-            (
-                "$result.system -cne [Environment]::OSVersion.VersionString",
-                "$result.system -cne $result.system",
-            ),
-            (
-                "$result.device -cne [Environment]::MachineName",
-                "$result.device -cne $result.device",
-            ),
-            (
-                "$_.receipt -cnotlike 'KELD_MEDIA_RESULT * case_ok=true'",
-                "$_.receipt -notlike 'KELD_MEDIA_RESULT * case_ok=true'",
-            ),
-            (
-                "$row.stderr_sha256 -cnotmatch $hashPattern",
-                "$row.stderr_sha256 -cmatch $hashPattern",
-            ),
-            ("$row.$field -isnot [int]", "$false"),
-            ("$row.profile_removed -isnot [bool]", "$false"),
-            (
-                "\"$($logReceipts[0])\" -cne $row.receipt",
-                "\"$($logReceipts[0])\" -cne \"$($logReceipts[0])\"",
-            ),
-            (
-                "Test-Path -LiteralPath $row.profile_path",
-                "Test-Path -LiteralPath $resultPath",
-            ),
-            (
-                "$profileReceipts.Count -ne 1",
-                "$profileReceipts.Count -lt 0",
-            ),
-            (
-                "(?<nonce>[1-9][0-9]*)",
-                "(?<nonce>[0-9]+)",
-            ),
-            (
-                "(?<adapter_tid>0|[1-9][0-9]*)",
-                "(?<adapter_tid>[0-9]+)",
-            ),
-            (
-                "$originPort -gt 65535",
-                "$originPort -gt [uint32]::MaxValue",
-            ),
-            (
-                "$fixtureTempRoot.StartsWith($sharedProfileRoot, [StringComparison]::OrdinalIgnoreCase)",
-                "$false",
-            ),
-            (
-                "$row.receipt -cmatch $receiptPattern",
-                "$row.receipt -cnotmatch $receiptPattern",
-            ),
-            (
-                "[int]$receiptFields.permission_kind -ne $row.permission_kind",
-                "[int]$receiptFields.permission_kind -ne [int]$receiptFields.permission_kind",
-            ),
-            (
-                "$seenNonces.ContainsKey($receiptFields.nonce)",
-                "$false",
-            ),
-            (
-                "$row.permission_kind -ne $expectedPermissionKind",
-                "$row.permission_kind -ne $row.permission_kind",
-            ),
-            (
-                "$row.outcome -cnotmatch $expectedOutcome",
-                "$row.outcome -cnotmatch $row.outcome",
-            ),
-        ] {
-            let temp = complete_fixture();
-            temp.write(WORKFLOW, &valid_workflow().replacen(needle, replacement, 1));
-            let error = check(temp.path()).expect_err("inert Windows media command must fail");
-            assert!(error.contains("KEL-132"), "{needle}: {error}");
-        }
-    }
-
-    #[test]
-    fn missing_mermaid_render_workflow_fails() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow()
-            .replace("tools/mermaid_render_check.sh", "")
-            .replace(MERMAID_IMAGE_DIGEST, "");
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("workflow without pinned render must fail");
-        assert!(
-            error.contains("mermaid_render_check.sh") || error.contains(MERMAID_IMAGE_DIGEST),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn commented_mermaid_render_workflow_does_not_pass() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow().replace(
-            "- run: tools/mermaid_render_check.sh",
-            "# - run: tools/mermaid_render_check.sh",
-        );
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("commented render step must fail");
-        assert!(error.contains("mermaid_render_check.sh"), "{error}");
-    }
-
-    #[test]
-    fn weakened_mermaid_renderer_isolation_fails() {
-        let temp = complete_fixture();
-        temp.write(
-            MERMAID_RENDERER,
-            &read(temp.path(), MERMAID_RENDERER)
-                .expect("renderer fixture")
-                .replace("--network none", ""),
-        );
-        let error = check(temp.path()).expect_err("network-enabled renderer must fail");
-        assert!(error.contains("--network none"), "{error}");
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn mermaid_renderer_rejects_target_symlink_before_creating_output() {
-        use std::os::unix::fs::{PermissionsExt as _, symlink};
-        use std::process::Command;
-
-        let temp = TempDir::new();
-        let checkout = temp.path().join("checkout with spaces");
-        let external = temp.path().join("external");
-        fs::create_dir(&checkout).expect("checkout directory");
-        fs::create_dir(&external).expect("external directory");
-        symlink(&external, checkout.join("target")).expect("escaping target symlink");
-        assert!(
-            Command::new("git")
-                .args(["init", "--quiet"])
-                .arg(&checkout)
-                .status()
-                .expect("initialize fixture")
-                .success()
-        );
-        fs::write(
-            checkout.join("diagram.md"),
-            "```mermaid\nflowchart LR\n A-->B\n```\n",
-        )
-        .expect("tracked diagram");
-        assert!(
-            Command::new("git")
-                .args(["add", "diagram.md"])
-                .current_dir(&checkout)
-                .status()
-                .expect("track diagram")
-                .success()
-        );
-        fs::create_dir(checkout.join("tools")).expect("fixture tools");
-        fs::write(checkout.join(MERMAID_CONFIG), "{}").expect("config fixture");
-        temp.write("renderer.sh", include_str!("mermaid_render_check.sh"));
-        temp.write("bin/docker", "#!/usr/bin/env bash\ncase \"$1\" in\ninfo|image) exit 0 ;;\ncontext) printf 'unix:///unused-kel188.sock\\n' ;;\n*) exit 42 ;;\nesac\n");
-        let docker = temp.path().join("bin/docker");
-        fs::set_permissions(&docker, fs::Permissions::from_mode(0o700)).expect("driver executable");
-        let mut paths = vec![temp.path().join("bin")];
-        paths.extend(env::split_paths(&env::var_os("PATH").expect("tool PATH")));
-        let output = Command::new("bash")
-            .arg(temp.path().join("renderer.sh"))
-            .current_dir(&checkout)
-            .env("PATH", env::join_paths(paths).expect("fixture PATH"))
-            .output()
-            .expect("execute real renderer script");
-        assert!(!output.status.success());
-        assert!(
-            fs::read_dir(&external)
-                .expect("external observation")
-                .next()
-                .is_none(),
-            "renderer created output outside its checkout"
-        );
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("non-symlink directory"),
-            "wrong failure boundary: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn mermaid_native_dacl_does_not_depend_on_path_whoami() {
-        use std::process::Command;
-
-        let temp = TempDir::new();
-        let parent = temp.path().join("target");
-        let output_dir = parent.join("keld-mermaid-render.fixture");
-        fs::create_dir_all(output_dir.join("child")).expect("retained directory fixture");
-        fs::write(output_dir.join("child/diagnostic.txt"), "diagnostic")
-            .expect("retained file fixture");
-        // Exercise the owning script with real Windows ACL APIs. A colliding GNU-shaped
-        // executable must not supply identity to the native restoration process.
-        let renderer = include_str!("mermaid_render_check.sh");
-        let start = renderer.find("running_under_msys() {").expect("MSYS owner");
-        let end = renderer
-            .find("\ndocker info >/dev/null")
-            .expect("helper boundary");
-        let script = format!(
-            "set -euo pipefail\n{}\nrender_parent=$(cd \"$1\" && pwd -P)\nwhoami.exe() {{ echo 'GNU whoami rejects Windows arguments' >&2; return 64; }}\nrestore_docker_output_dir \"$render_parent/keld-mermaid-render.fixture\"\n",
-            &renderer[start..end]
-        );
-        let output = Command::new("bash")
-            .args(["-c", &script, "kel152-native-test"])
-            .arg(&parent)
-            .output()
-            .expect("execute native restoration");
-        assert!(
-            output.status.success(),
-            "native restoration failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let oracle = r#"
-$ErrorActionPreference = 'Stop'
-$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-$root = Get-Item -LiteralPath $env:KELD_TEST_OUTPUT
-$items = @($root) + @(Get-ChildItem -LiteralPath $root.FullName -Recurse -Force)
-if ($items.Count -ne 3) { throw 'incomplete native census' }
-foreach ($item in $items) {
-    $acl = Get-Acl -LiteralPath $item.FullName
-    $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
-    if (-not $acl.AreAccessRulesProtected -or $rules.Count -ne 1) { throw 'DACL not protected single-owner' }
-    $rule = $rules[0]
-    $inheritance = if ($item.PSIsContainer) { 3 } else { 0 }
-    if ($rule.IdentityReference -ne $sid -or $rule.IsInherited -or
-        $rule.AccessControlType -ne 'Allow' -or $rule.FileSystemRights -ne 'FullControl' -or
-        [int]$rule.InheritanceFlags -ne $inheritance -or [int]$rule.PropagationFlags -ne 0) {
-        throw 'native ACE differs from owner-only contract'
-    }
-}
-'native DACL census: 3/3'
-"#;
-        let output = Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", oracle])
-            .env("KELD_TEST_OUTPUT", &output_dir)
-            .output()
-            .expect("read native DACL inventory");
-        assert!(
-            output.status.success(),
-            "native DACL oracle failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(String::from_utf8_lossy(&output.stdout).contains("native DACL census: 3/3"));
-    }
-
-    #[cfg(unix)]
-    fn write_msys_renderer_fixture(
-        temp: &TempDir,
-        docker: &str,
-        chmod: Option<&str>,
-        remove: Option<&str>,
-        native_dacl: Option<&str>,
-    ) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt as _;
-        use std::process::Command;
-
-        let checkout = temp.path().join("checkout");
-        fs::create_dir(&checkout).expect("checkout directory");
-        assert!(
-            Command::new("git")
-                .args(["init", "--quiet"])
-                .arg(&checkout)
-                .status()
-                .expect("initialize fixture")
-                .success()
-        );
-        fs::write(
-            checkout.join("diagram.md"),
-            "```mermaid\nflowchart LR\n A-->B\n```\n",
-        )
-        .expect("tracked diagram");
-        assert!(
-            Command::new("git")
-                .args(["add", "diagram.md"])
-                .current_dir(&checkout)
-                .status()
-                .expect("track diagram")
-                .success()
-        );
-        fs::create_dir(checkout.join("tools")).expect("fixture tools");
-        fs::write(checkout.join(MERMAID_CONFIG), "{}\n").expect("renderer config");
-        temp.write("renderer.sh", include_str!("mermaid_render_check.sh"));
-        temp.write("bin/docker", docker);
-        temp.write(
-            "bin/uname",
-            "#!/usr/bin/env bash\nprintf 'MSYS_NT-10.0\\n'\n",
-        );
-        temp.write(
-            "bin/cygpath",
-            "#!/usr/bin/env bash\n[[ \"$1\" == '-am' || \"$1\" == '-aw' ]] || exit 64\nprintf '%s\\n' \"$2\"\n",
-        );
-        temp.write(
-            "bin/whoami.exe",
-            "#!/usr/bin/env bash\necho 'GNU whoami rejects Windows arguments' >&2\nexit 64\n",
-        );
-        temp.write(
-            "bin/powershell.exe",
-            native_dacl.unwrap_or("#!/usr/bin/env bash\nexit 0\n"),
-        );
-        temp.write(
-            "bin/chmod",
-            chmod.unwrap_or(
-                "#!/usr/bin/env bash\nmode=$1\nshift\n[[ \"${1:-}\" == -- ]] && shift\nexec /bin/chmod \"$mode\" \"$@\"\n",
-            ),
-        );
-        if let Some(remove) = remove {
-            temp.write("bin/rm", remove);
-        }
-        for shim in [
-            "docker",
-            "uname",
-            "cygpath",
-            "whoami.exe",
-            "powershell.exe",
-            "chmod",
-        ] {
-            let path = temp.path().join("bin").join(shim);
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).expect("shim executable");
-        }
-        for shim in ["rm"] {
-            let path = temp.path().join("bin").join(shim);
-            if path.exists() {
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
-                    .expect("shim executable");
-            }
-        }
-        checkout
-    }
-
-    #[cfg(unix)]
-    fn run_msys_renderer_fixture(temp: &TempDir, checkout: &Path) -> std::process::Output {
-        use std::process::Command;
-
-        let mut paths = vec![temp.path().join("bin")];
-        paths.extend(env::split_paths(&env::var_os("PATH").expect("tool PATH")));
-        Command::new("bash")
-            .arg(temp.path().join("renderer.sh"))
-            .current_dir(checkout)
-            .env_remove("MSYSTEM")
-            .env("PATH", env::join_paths(paths).expect("fixture PATH"))
-            .output()
-            .expect("execute real renderer script")
-    }
-
-    #[cfg(unix)]
-    fn retained_render_dirs(checkout: &Path) -> Vec<PathBuf> {
-        fs::read_dir(checkout.join("target"))
-            .expect("checkout-local output directory")
-            .map(|entry| entry.expect("retained output entry").path())
-            .collect()
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn mermaid_renderer_retains_msys_failure_output_with_owner_only_mode() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let temp = TempDir::new();
-        let checkout = write_msys_renderer_fixture(
-            &temp,
-            "#!/usr/bin/env bash\ncase \"$1\" in\ninfo|image|rm) exit 0 ;;\ncontext) printf 'unix:///unused-kel152.sock\\n' ;;\nrun) exit 42 ;;\n*) exit 99 ;;\nesac\n",
-            None,
-            None,
-            None,
-        );
-        let output = run_msys_renderer_fixture(&temp, &checkout);
-        assert_eq!(output.status.code(), Some(1));
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("failed-render output retained"),
-            "missing retained-output receipt: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("with owner-only host access"),
-            "native restoration must not depend on PATH whoami: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let retained = retained_render_dirs(&checkout);
-        assert_eq!(retained.len(), 1, "retained output: {retained:?}");
-        assert!(
-            retained[0]
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("keld-mermaid-render.")),
-            "wrong retained output path: {:?}",
-            retained[0]
-        );
-        assert_eq!(
-            fs::metadata(&retained[0])
-                .expect("retained output metadata")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn mermaid_renderer_does_not_claim_owner_only_when_restoration_fails() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let temp = TempDir::new();
-        let checkout = write_msys_renderer_fixture(
-            &temp,
-            "#!/usr/bin/env bash\ncase \"$1\" in\ninfo|image|rm) exit 0 ;;\ncontext) printf 'unix:///unused-kel152.sock\\n' ;;\nrun) exit 42 ;;\n*) exit 99 ;;\nesac\n",
-            Some(
-                "#!/usr/bin/env bash\nmode=$1\nshift\n[[ \"${1:-}\" == -- ]] && shift\nif [[ \"$mode\" == 0700 ]]; then exit 44; fi\nexec /bin/chmod \"$mode\" \"$@\"\n",
-            ),
-            None,
-            None,
-        );
-        let output = run_msys_renderer_fixture(&temp, &checkout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(output.status.code(), Some(1));
-        assert!(stderr.contains("owner-only restoration failed"), "{stderr}");
-        assert!(!stderr.contains("with owner-only host access"), "{stderr}");
-        let retained = retained_render_dirs(&checkout);
-        assert_eq!(retained.len(), 1, "retained output: {retained:?}");
-        assert_eq!(
-            fs::metadata(&retained[0])
-                .expect("retained output metadata")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o777
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn mermaid_renderer_does_not_claim_owner_only_when_native_dacl_restoration_fails() {
-        let temp = TempDir::new();
-        let checkout = write_msys_renderer_fixture(
-            &temp,
-            "#!/usr/bin/env bash\ncase \"$1\" in\ninfo|image|rm) exit 0 ;;\ncontext) printf 'unix:///unused-kel152.sock\\n' ;;\nrun) exit 42 ;;\n*) exit 99 ;;\nesac\n",
-            None,
-            None,
-            Some("#!/usr/bin/env bash\nexit 45\n"),
-        );
-        let output = run_msys_renderer_fixture(&temp, &checkout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(output.status.code(), Some(1));
-        assert!(stderr.contains("owner-only restoration failed"), "{stderr}");
-        assert!(!stderr.contains("with owner-only host access"), "{stderr}");
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn mermaid_renderer_restores_output_when_success_cleanup_cannot_remove_it() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let temp = TempDir::new();
-        let checkout = write_msys_renderer_fixture(
-            &temp,
-            "#!/usr/bin/env bash\ncase \"$1\" in\ninfo|image) exit 0 ;;\ncontext) printf 'unix:///unused-kel152.sock\\n' ;;\nrm) exit 0 ;;\nrun)\n  out=''\n  shift\n  while [[ $# -gt 0 ]]; do\n    if [[ \"$1\" == --volume ]]; then\n      case \"$2\" in *:/out) out=\"${2%:/out}\" ;; esac\n      shift 2\n    else\n      shift\n    fi\n  done\n  [[ -n \"$out\" ]] || exit 64\n  printf '<svg><title>fixture</title><desc>fixture</desc></svg>' >\"$out/fixture.svg\"\n  ;;\n*) exit 99 ;;\nesac\n",
-            None,
-            Some("#!/usr/bin/env bash\nexit 66\n"),
-            None,
-        );
-        let output = run_msys_renderer_fixture(&temp, &checkout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(output.status.code(), Some(1));
-        assert!(
-            stderr.contains("successful-render output could not be removed; retained"),
-            "{stderr}"
-        );
-        let retained = retained_render_dirs(&checkout);
-        assert_eq!(retained.len(), 1, "retained output: {retained:?}");
-        assert_eq!(
-            fs::metadata(&retained[0])
-                .expect("retained output metadata")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
-        );
-    }
-
-    #[test]
-    fn mermaid_output_outside_the_shared_checkout_fails() {
-        let temp = complete_fixture();
-        temp.write(
-            MERMAID_RENDERER,
-            &read(temp.path(), MERMAID_RENDERER)
-                .expect("renderer fixture")
-                .replace(
-                    "$render_parent/keld-mermaid-render.",
-                    "/tmp/keld-mermaid-render.",
-                ),
-        );
-        let error = check(temp.path()).expect_err("output must share the checkout mount boundary");
-        assert!(error.contains("render_dir"), "{error}");
-    }
-    #[test]
-    fn missing_mermaid_msys_path_exclusion_fails() {
-        let temp = complete_fixture();
-        temp.write(
-            MERMAID_RENDERER,
-            &read(temp.path(), MERMAID_RENDERER)
-                .expect("renderer fixture")
-                .replace("MSYS2_ARG_CONV_EXCL='*'", ""),
-        );
-        let error = check(temp.path()).expect_err("MSYS path rewriting must stay disabled");
-        assert!(error.contains("MSYS2_ARG_CONV_EXCL"), "{error}");
-    }
-
-    #[test]
-    fn missing_mermaid_msys_shell_detection_fails() {
-        let temp = complete_fixture();
-        temp.write(
-            MERMAID_RENDERER,
-            &read(temp.path(), MERMAID_RENDERER)
-                .expect("renderer fixture")
-                .replace("running_under_msys", ""),
-        );
-        let error = check(temp.path()).expect_err("Git Bash detection must remain explicit");
-        assert!(error.contains("running_under_msys"), "{error}");
-    }
-
-    #[test]
-    fn missing_mermaid_msys_output_permission_fix_fails() {
-        let temp = complete_fixture();
-        temp.write(
-            MERMAID_RENDERER,
-            &read(temp.path(), MERMAID_RENDERER)
-                .expect("renderer fixture")
-                .replace("prepare_docker_output_dir \"$render_dir\"", ""),
-        );
-        let error = check(temp.path()).expect_err("MSYS output bind must remain writable");
-        assert!(error.contains("prepare_docker_output_dir"), "{error}");
-    }
-
-    #[test]
-    fn missing_mermaid_msys_permission_restoration_fails() {
-        let temp = complete_fixture();
-        temp.write(
-            MERMAID_RENDERER,
-            &read(temp.path(), MERMAID_RENDERER)
-                .expect("renderer fixture")
-                .replace("if restore_docker_output_dir \"$render_dir\"; then", ""),
-        );
-        let error =
-            check(temp.path()).expect_err("retained output must return to owner-only access");
-        assert!(error.contains("restore_docker_output_dir"), "{error}");
-    }
-
-    #[test]
-    fn mermaid_permission_restoration_must_stay_bounded_and_preserve_status() {
-        for (old, replacement) in [
-            ("if ! running_under_msys; then", "if false; then"),
-            ("\"$render_parent\"/keld-mermaid-render.*) ;;", "*) ;;"),
-            ("restore_windows_owner_only_dacl \"$path\"", "true"),
-            ("MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'", "true"),
-            ("$acl.SetAccessRuleProtection($true, $false)", "true"),
-            (
-                "chmod 0700 -- \"$path\" || {",
-                "chmod 0777 -- \"$path\" || {",
-            ),
-            ("local cleanup_status=$?", "local cleanup_status=0"),
-            ("trap - EXIT", "true"),
-            ("exit \"$cleanup_status\"", "exit 0"),
-        ] {
-            let temp = complete_fixture();
-            temp.write(
-                MERMAID_RENDERER,
-                &read(temp.path(), MERMAID_RENDERER)
-                    .expect("renderer fixture")
-                    .replace(old, replacement),
-            );
-            let error = check(temp.path())
-                .expect_err("retained-output restoration must remain bounded and failure-safe");
-            assert!(error.contains("CI-HYGIENE"), "{old}: {error}");
-        }
-    }
-
-    #[test]
-    fn inert_or_reordered_mermaid_msys_shell_text_fails() {
-        for (old, replacement) in [
-            ("running_under_msys() {", "echo 'running_under_msys() {'"),
-            (
-                "prepare_docker_output_dir \"$render_dir\"",
-                "echo 'prepare_docker_output_dir \"$render_dir\"'",
-            ),
-            (
-                "export MSYS2_ARG_CONV_EXCL='*'",
-                "echo \"export MSYS2_ARG_CONV_EXCL='*'\"",
-            ),
-            (
-                "prepare_docker_output_dir \"$render_dir\"\ndocker_render_dir=$(docker_host_path \"$render_dir\")",
-                "docker_render_dir=$(docker_host_path \"$render_dir\")\nprepare_docker_output_dir \"$render_dir\"",
-            ),
-        ] {
-            let temp = complete_fixture();
-            temp.write(
-                MERMAID_RENDERER,
-                &read(temp.path(), MERMAID_RENDERER)
-                    .expect("renderer fixture")
-                    .replace(old, replacement),
-            );
-            check(temp.path()).expect_err("inert or reordered MSYS shell text must fail");
-        }
-    }
-
-    #[test]
-    fn commented_mermaid_isolation_flag_does_not_pass() {
-        let temp = complete_fixture();
-        temp.write(
-            MERMAID_RENDERER,
-            &read(temp.path(), MERMAID_RENDERER)
-                .expect("renderer fixture")
-                .replace("--network none", "# --network none"),
-        );
-        let error = check(temp.path()).expect_err("commented network isolation must fail");
-        assert!(error.contains("--network none"), "{error}");
-    }
-
-    #[test]
-    fn weakened_mermaid_resource_config_fails() {
-        let temp = complete_fixture();
-        temp.write(
-            MERMAID_CONFIG,
-            &read(temp.path(), MERMAID_CONFIG)
-                .expect("config fixture")
-                .replace("\"maxEdges\"", "\"removedMaxEdges\""),
-        );
-        let error = check(temp.path()).expect_err("config without edge limit must fail");
-        assert!(error.contains("maxEdges"), "{error}");
-    }
-
-    #[test]
-    fn missing_tools_codeowner_fails() {
-        let temp = complete_fixture();
-        temp.write(
-            CODEOWNERS,
-            &valid_codeowners().replace("/tools/ @alice\n", ""),
-        );
-        let error = check(temp.path()).expect_err("gate tools without owner must fail");
-        assert!(error.contains("tools"), "{error}");
-    }
-
-    #[test]
-    fn workflow_mentioning_hygiene_file_without_test_flag_fails() {
-        let temp = complete_fixture();
-        let workflow =
-            valid_workflow().replace("--test tools/ci_hygiene.rs", "tools/ci_hygiene.rs");
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("compile-only hygiene step must fail");
-        assert!(error.contains("--test tools/ci_hygiene.rs"), "{error}");
-    }
-
-    #[test]
-    fn comment_at_sign_does_not_false_report_unpinned() {
-        assert!(is_pinned_sha(
-            "actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # pin @v4.4.0"
-        ));
-        let workflow = format!("jobs:\n  x:\n    steps:\n{PINNED_CHECKOUT}");
-        let with_comment_at = workflow.replace("# v4.4.0", "# pin @v4.4.0");
-        assert!(
-            action_uses_unpinned(&with_comment_at).is_empty(),
-            "{:?}",
-            action_uses_unpinned(&with_comment_at)
-        );
-    }
-
-    #[test]
-    fn quoted_uses_spec_sha_is_pinned() {
-        assert!(is_pinned_sha(
-            r#""actions/checkout@11d5960a326750d5838078e36cf38b85af677262""#
-        ));
-        let workflow = "jobs:\n  x:\n    steps:\n      - uses: \"actions/checkout@11d5960a326750d5838078e36cf38b85af677262\"\n";
-        assert!(
-            action_uses_unpinned(workflow).is_empty(),
-            "{:?}",
-            action_uses_unpinned(workflow)
-        );
-    }
-
-    #[test]
-    fn missing_gitleaks_job_fails() {
-        let temp = complete_fixture();
-        temp.write(
-            WORKFLOW,
-            "name: CI\njobs:\n  hygiene:\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n        run: rustc tools/ci_hygiene.rs\n",
-        );
-        let error = check(temp.path()).expect_err("workflow without gitleaks must fail");
-        assert!(error.contains("gitleaks detect"), "{error}");
-    }
-
-    #[test]
-    fn empty_issue_template_dir_fails() {
-        let temp = complete_fixture();
-        temp.write(
-            ".github/ISSUE_TEMPLATE/config.yml",
-            "blank_issues_enabled: true\n",
-        );
-        let bug = temp.path().join(".github/ISSUE_TEMPLATE/bug.yml");
-        fs::remove_file(bug).expect("remove bug template");
-        let error = check(temp.path()).expect_err("config-only issue templates must fail");
-        assert!(error.contains("ISSUE_TEMPLATE"), "{error}");
-    }
-
-    #[test]
-    fn deleting_codeowners_file_fails() {
-        let temp = complete_fixture();
-        fs::remove_file(temp.path().join(CODEOWNERS)).expect("remove CODEOWNERS");
-        let error = check(temp.path()).expect_err("missing CODEOWNERS must fail");
-        assert!(error.contains("CODEOWNERS"), "{error}");
-        assert!(error.contains("Restore"), "{error}");
-    }
-}
+#[path = "ci_hygiene_tests.rs"]
+mod tests;

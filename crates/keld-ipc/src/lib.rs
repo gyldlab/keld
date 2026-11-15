@@ -6,15 +6,18 @@
 //! Design constraints (do not violate without a spec change):
 //! - Hot paths are allocation-free state machines; no async runtime here.
 //! - Frames are little-endian, fixed 16-byte header, versioned at handshake.
-//! - Channel names never travel per-call; they resolve to `ChannelId` handles.
+//! - Channel names never travel per-call; they resolve to `ChannelId` handles
+//!   allocated by the one [`channel_table`].
 
 use std::io::ErrorKind;
 use std::time::Duration;
 
 pub mod admission;
+pub mod attempt;
 #[cfg(any(unix, windows))]
 pub mod bootstrap;
 pub mod call_error;
+pub mod channel_table;
 pub mod codec;
 pub mod echo;
 pub mod frame;
@@ -24,10 +27,23 @@ pub mod link;
 pub mod receive;
 pub mod session;
 pub mod token;
+pub mod window;
 #[cfg(windows)]
 mod windows_named_pipe;
 
 pub use admission::{BootstrapRejection, BootstrapRejectionObserver};
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub use attempt::fuzz_attempt_records;
+#[cfg(windows)]
+pub use attempt::{
+    ATTEMPT_HEALTH_WINDOW, AttemptFailureClass, AttemptHealthWindowFailure, AttemptReadPosition,
+    AttemptRecordError, AttemptRecordKind, AttemptTranscript, WindowsAttemptClaimCanceller,
+    WindowsAttemptClaimantChannel, WindowsAttemptClient, WindowsAttemptCloseWait,
+    WindowsAttemptEndpoint, WindowsAttemptEndpointError, WindowsAttemptEndpointSecurity,
+    WindowsAttemptExchangeError, WindowsAttemptLocatorError, WindowsAttemptLocatorInput,
+    WindowsAttemptOwnerChannel, WindowsAttemptRollBack, windows_attempt_connect_back_endpoint,
+};
 #[cfg(any(unix, windows))]
 pub use bootstrap::{
     BootstrapAdmission, BootstrapAdmissionFor, BootstrapCancellation, BootstrapListener,
@@ -35,13 +51,19 @@ pub use bootstrap::{
 };
 #[cfg(windows)]
 pub use bootstrap::{
+    WindowsLifecycleBinding, WindowsLifecycleBindingKnowledge, WindowsLifecycleExpectation,
+    WindowsLifecyclePeerPin, WindowsLifecyclePurpose, WindowsLifecycleRendezvousClient,
+    WindowsLifecycleRendezvousListener, WindowsLifecycleRendezvousPeer,
     WindowsNamedPipeBootstrapAdmission, WindowsNamedPipeBootstrapCancellation,
     WindowsNamedPipeBootstrapListener, WindowsNamedPipeBootstrapStream,
+    connect_windows_lifecycle_rendezvous_until,
 };
 pub use call_error::{CallError, write_call_error};
 pub use echo::{ECHO_CHANNEL, EchoRequest, EchoResponse};
 pub use frame::{ChannelId, CorrelationId, FrameHeader, FrameKind, HeaderError};
-pub use lifecycle::{LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse};
+pub use lifecycle::{
+    LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse, SubscribeRefusal,
+};
 pub use link::AppLinkDeadlines;
 pub use receive::{AbsoluteDeadline, ReceivePolicy, ValidatedFrameHeader};
 pub use session::{
@@ -49,6 +71,11 @@ pub use session::{
     serve_echo_session, serve_echo_session_until_stopped,
 };
 pub use token::{SESSION_TOKEN_LEN, SessionToken, format_app_link, parse_app_link};
+#[cfg(windows)]
+pub use windows_named_pipe::{
+    WindowsPeerTokenFacts, WindowsPipeSecurityFact, WindowsTokenElevationType,
+    query_windows_peer_token_facts,
+};
 
 /// Deadline for one blocking app-link read or write (arch/02 §7).
 ///

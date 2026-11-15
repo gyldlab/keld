@@ -48,7 +48,7 @@ fn test_token() -> SessionToken {
     SessionToken::from_bytes(TEST_TOKEN_BYTES)
 }
 
-const MARKER_CHANNEL: ChannelId = ChannelId(50);
+const MARKER_CHANNEL: ChannelId = ChannelId::for_test(50);
 
 #[derive(Debug, Serialize, Deserialize)]
 struct MarkerRequest {
@@ -75,7 +75,7 @@ fn serve_marker_session<S: Read + Write>(
             FrameKind::Call if header.channel == MARKER_CHANNEL => {
                 let req: MarkerRequest = decode(&payload)?;
                 let outcome =
-                    dispatch_privileged(manifest, principal, "test.marker", &req.path, || {
+                    dispatch_privileged(manifest, principal, "test.marker", &req.path, |_| {
                         fs::write(&req.path, b"kel-69-marker")
                     });
                 match outcome {

@@ -10,12 +10,97 @@
 
 use crate::{HEADER_LEN, MAGIC, PROTOCOL_VERSION};
 
-/// Identifies a numeric channel.
+/// Identifies a kipc channel: the frame header's `channel` field.
 ///
-/// The destination protocol resolves schema names during handshake; v0 hardcodes the
-/// echo channel and does not exchange a channel table.
+/// Unforgeable outside `keld-ipc` (#634; `docs/specs/gh508-kipc-channel-table.md`
+/// §11). The field is private, so code outside this crate gets an id only from a
+/// [`crate::channel_table`] entry ([`ChannelEntry::id`], or a constant derived
+/// from one, such as [`crate::ECHO_CHANNEL`]) or from a header this crate
+/// decoded. An id compares only with another id, never with an integer. The one
+/// public integer is a table entry's [`ChannelEntry::wire_id`], for a carrier
+/// that cannot depend on this crate. A test that needs an unallocated id enables
+/// the non-default `test-channel-ids` feature from `[dev-dependencies]`.
+///
+/// None of these spellings builds outside `keld-ipc`:
+///
+/// ```compile_fail
+/// let fs_id: u16 = 2;
+/// let _ = keld_ipc::ChannelId(fs_id);
+/// ```
+///
+/// ```compile_fail
+/// let _ = keld_ipc::ChannelId { 0: 2 };
+/// ```
+///
+/// ```compile_fail
+/// use keld_ipc::ChannelId as Ch;
+/// const FS_ID: u16 = 2;
+/// const FS: Ch = Ch((FS_ID));
+/// ```
+///
+/// ```compile_fail
+/// macro_rules! channel { ($id:expr) => { keld_ipc::ChannelId($id) } }
+/// static FS: keld_ipc::ChannelId = channel!(2);
+/// ```
+///
+/// Nor does comparing an integer with an id:
+///
+/// ```compile_fail
+/// fn routes_fs(header: &keld_ipc::FrameHeader) -> bool {
+///     header.channel.0 == 2
+/// }
+/// ```
+///
+/// ```compile_fail
+/// fn routes_fs(header: &keld_ipc::FrameHeader) -> bool {
+///     header.channel == 2
+/// }
+/// ```
+///
+/// ```compile_fail
+/// fn routes_fs(header: &keld_ipc::FrameHeader) -> bool {
+///     u16::from(header.channel) == 2
+/// }
+/// ```
+///
+/// The same shapes build from a table entry, and a decoded id compares with it:
+///
+/// ```
+/// use keld_ipc::ChannelId as Ch;
+/// use keld_ipc::{CorrelationId, FrameHeader, FrameKind, channel_table};
+/// const FS: Ch = channel_table::FS.id();
+/// macro_rules! fs { () => { channel_table::FS.id() } }
+/// static FS_TOO: Ch = fs!();
+/// fn routes_fs(header: &FrameHeader) -> bool {
+///     header.channel == FS && header.channel == FS_TOO
+/// }
+/// let call = |channel| FrameHeader {
+///     kind: FrameKind::Call, flags: 0, channel, corr: CorrelationId(1), len: 0,
+/// };
+/// let fs = FrameHeader::decode(&call(FS).encode()).expect("fs CALL header");
+/// let echo = FrameHeader::decode(&call(channel_table::ECHO.id()).encode()).expect("echo CALL");
+/// assert!(routes_fs(&fs) && !routes_fs(&echo));
+/// assert_eq!(channel_table::FS.wire_id(), 2);
+/// ```
+///
+/// [`ChannelEntry::id`]: crate::channel_table::ChannelEntry::id
+/// [`ChannelEntry::wire_id`]: crate::channel_table::ChannelEntry::wire_id
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ChannelId(pub u16);
+pub struct ChannelId(pub(crate) u16);
+
+impl ChannelId {
+    /// Builds an id from any wire value, allocated or not. Tests only.
+    ///
+    /// Present only with the non-default `test-channel-ids` feature, which a
+    /// crate enables from `[dev-dependencies]`. No workspace manifest enables it
+    /// for a production build (`crates/keld-cli/tests/channel_table_scan.rs`),
+    /// so production code that called it would not build.
+    #[cfg(feature = "test-channel-ids")]
+    #[must_use]
+    pub const fn for_test(raw: u16) -> Self {
+        Self(raw)
+    }
+}
 
 /// Correlates a `Reply`/`Err` with its originating `Call`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -9,8 +9,10 @@ CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 
 - Duplicate `## KELD-…` headings fail the test.
 - A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` /
-  `keld-runtime` / `keld-native` / `keld-compat` / `keld-core` `src`, `keld-cli` templates, or workspace
-  `tools/` that has no heading here fails the test.
+  `keld-runtime` / `keld-native` / `keld-compat` / `keld-core` / `keld-update` /
+  `keld-pack` / `keld-host` / `keld-updater-helper` `src`, `keld-cli` templates, the
+  `@keld/kipc` TypeScript transport `src`, the `@keld/api` public API `src`, or
+  workspace `tools/` that has no heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
 
@@ -24,6 +26,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 3. Emit the same code from `Display` / `KeldErrorObject`, with the `fix` in the
    message.
 4. Run `cargo nextest run -p keld-cli -- error_registry`.
+
+## KELD-API-001
+
+- crate: @keld/api
+- message: Application channel call failed or the declared channel configuration is invalid
+- fix: Check the declared application channel, handler registration, request/reply codecs and kipc frame-size bounds; diagnose handler failures in the application code.
 
 ## KELD-IPC-001
 
@@ -47,13 +55,14 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-ipc
 - message: Frame payload exceeds MAX_FRAME_LEN
-- fix: Shrink the payload or move large transfers to the bulk plane (shm / keld://).
+- fix: Shrink the payload to at most MAX_FRAME_LEN (16 MiB). The shared-memory and `keld://` bulk planes are future designs, not available transports in the current implementation.
 
 ## KELD-IPC-005
 
 - crate: keld-ipc
-- message: Unexpected kipc frame or session state
-- fix: Check frame kind and channel match the session contract.
+- message: Unexpected kipc frame or session state; a valid guarded call may instead be refused because its host-owned admission capacity is exhausted.
+- fix: For terminal protocol rejection, check frame kind and channel match the session contract. For a correlated capacity refusal, wait for admitted work to finish before issuing new work; that call was not admitted and the link remains usable.
+- status: Capacity refusal uses the IPC-owned `CallError::admission_capacity` constant only after the complete bounded frame is consumed under its original first-byte deadline. It is nonterminal and resource-free. Duplicate/invalid correlations, closed or poisoned admission, malformed headers, truncated bodies and deadline failures retain their terminal behavior.
 
 ## KELD-IPC-006
 
@@ -66,6 +75,132 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-ipc
 - message: HELLO session token rejected
 - fix: Mint the token with the host (`keld dev`) into KELD_APP_LINK as `<endpoint>#<64 hex chars>` and send those exact 32 bytes as the HELLO payload. A wrong HELLO semantic shape is `KELD-IPC-005`; `KELD-IPC-007` is reserved for invalid bootstrap token text or an exactly shaped foreign token.
+
+## KELD-IPC-008
+
+- crate: keld-ipc
+- message: keld-attempt endpoint name refused before any open
+- fix: Pass exactly one local `\\.\pipe\keld-attempt-<64 lowercase hex>` name; UNC, `\\?\`, other `keld-*` namespaces, uppercase hex and other lengths are refused.
+
+## KELD-IPC-009
+
+- crate: keld-ipc
+- message: keld-attempt endpoint name already exists
+- fix: Refuse this attempt before any protected write; never reuse, wait for or connect to a name that another process created.
+
+## KELD-IPC-010
+
+- crate: keld-ipc
+- message: keld-attempt endpoint security readback mismatch
+- fix: Refuse the endpoint without sending anything: only the owner's exact form (owner, protected DACL, Medium no-write-up label, remote clients rejected, non-inheritable handle) is admitted.
+
+## KELD-IPC-011
+
+- crate: keld-ipc
+- message: SID is not a valid binary Windows SID
+- fix: Pass the exact TokenUser SID bytes from query_windows_peer_token_facts.
+
+## KELD-IPC-012
+
+- crate: keld-ipc
+- message: Windows call failed for a keld-attempt endpoint
+- fix: Check that the endpoint exists, and that the creating token can assign the form's owner (a Medium token cannot assign BUILTIN Administrators).
+
+## KELD-IPC-013
+
+- crate: keld-ipc
+- message: keld-attempt server runs in another session than the client
+- fix: Refuse the endpoint without sending anything: only an owner in the client's own session is admitted.
+
+## KELD-IPC-014
+
+- crate: keld-ipc
+- message: keld-attempt locator input refused
+- fix: Pass the provenance-derived installation ID and the attempt and health-channel IDs that keld-update minted: each nonzero and no two equal.
+
+## KELD-IPC-015
+
+- crate: keld-ipc
+- message: keld-attempt record refused (magic not admitted at its position, truncated, trailing bytes, or a class or result byte outside its closed set or position)
+- fix: End the exchange without reading further: before KELD-AR1 refuse the claimant, which then refuses its own start with WriterActive; after it, the owner cannot commit health and rolls back, and a candidate that cannot read a valid KELD-AK1 never arms its recovery gate.
+
+## KELD-IPC-016
+
+- crate: keld-ipc
+- message: keld-attempt record does not bind this attempt (foreign installation, process ID, locator, transcript or boot acknowledgement mismatch)
+- fix: The peer is not bound to this attempt. End the exchange: before KELD-AR1 refuse the claimant; after it, the owner rolls back.
+
+## KELD-IPC-017
+
+- crate: keld-ipc
+- message: keld-attempt record I/O failed (end of file, read or write failure, or expired deadline)
+- fix: End the exchange; never retry or wait past the deadline: before KELD-AR1 refuse the claimant; after it, the owner cannot commit health and rolls back, and a candidate that cannot read a valid KELD-AK1 never arms its recovery gate.
+
+## KELD-IPC-018
+
+- crate: keld-ipc
+- message: no keld-attempt claimant was accepted before the claim deadline; the endpoint is closed
+- fix: Roll the attempt back: health cannot commit, and refused claimants never extend this deadline.
+
+## KELD-IPC-019
+
+- crate: keld-ipc
+- message: keld-attempt exchange step refused out of order; nothing was sent or read
+- fix: Follow the KEL-53 health sequence: the claim, KELD-AB1, KELD-AY1 (or KELD-AF1), the owner's health window, then one KELD-AK1; after a failure the owner only rolls back and the candidate never arms.
+
+## KELD-IPC-020
+
+- crate: keld-ipc
+- message: keld-attempt health not proven (the candidate reported KELD-AF1, or the owner's health window saw a byte, end of file, an exited or unreadable launched process, or a window already over when first awaited)
+- fix: The owner cannot commit health: roll the attempt back, writing KELD-AK1 rolled back once while the connection is still open, then end the candidate family.
+
+## KELD-IPC-021
+
+- crate: keld-ipc
+- message: keld-attempt health rolled back by the owner (KELD-AK1 result 2)
+- fix: Never arm the recovery gate: end the host on any later application-generation exit.
+
+## KELD-IPC-022
+
+- crate: @keld/kipc
+- message: link closed before the host replied; no reply was received and the call's host effect is unknown
+- fix: Treat the call as not answered. The role's link is gone: check the host log for the close cause, and do not retry on this link, because it cannot reconnect.
+
+## KELD-IPC-023
+
+- crate: keld-ipc
+- message: role generation retired before this call completed
+- fix: The role instance is being replaced or stopped, and the call's host effect is unknown: its handler may have run. Do not replay it, here or from the successor generation, without an idempotency contract for that call.
+
+## KELD-IPC-024
+
+- crate: keld-ipc
+- message: session ended by an accepted Quit before this call completed
+- fix: The application is quitting. Do not issue new work; finish only the shutdown path.
+
+## KELD-IPC-025
+
+- crate: @keld/kipc
+- message: transport Worker dead or unresponsive; the role's link is lost
+- fix: The role has no link and cannot reconnect. Report the crash. The host restarts the role per its policy; check the role log for the Worker's last error.
+
+## KELD-IPC-026
+
+- crate: @keld/kipc
+- message: parked ring or reply slot full; the link was closed rather than drop a frame
+- fix: Raise ringBytes, ringRecords or replyBytes at WorkerLink.open, or reduce the host event rate toward this role. Retained events were delivered in order.
+
+## KELD-IPC-027
+
+- crate: @keld/kipc
+- message: too many unanswered calls; the link was closed rather than track another abandoned id
+- fix: The host is not answering this role's calls. Check the host log for the stalled handler; raise call deadlines only if the host is slow rather than stuck. The role's link is gone and cannot reconnect.
+
+## KELD-IPC-028
+
+- crate: keld-ipc
+- message: the keld-attempt claim wait was cancelled by its owner before a claimant was accepted (the launched candidate's handle signaled, or the owner ended the wait); the endpoint is closed
+- fix: Roll the attempt back: health cannot commit, and end the candidate family if any of it still runs.
 
 ## KELD-WV-001
 
@@ -83,7 +218,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-wv
 - message: Webview creation failed
-- fix: On macOS ensure WKWebView is available (10.13+); on Windows ensure the WebView2 runtime is installed.
+- fix: On macOS ensure WKWebView is available (10.13+); on Windows inspect the WebView2 HRESULT, profile permissions and controller state.
 
 ## KELD-WV-004
 
@@ -126,6 +261,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-wv
 - message: Linux GPU safe-mode preparation failed
 - fix: Launch through Keld's process entry before creating a webview; Keld exact-self re-execs with the mitigation, so do not mutate or export the process environment manually.
+
+## KELD-WV-011
+
+- crate: keld-wv
+- message: Renderer bridge request rejected, or ended without a reply; until GH-1095 lands this code is also returned after application dispatch
+- fix: Never resend the call automatically. Until GH-1095 lands, treat it as possibly run whatever the detail says. Invoke only the declared Keld renderer API with a valid payload, one call at a time, and never supply stale document state, undeclared channels, oversized payloads, or page-selected authority. Do not reload the document to recover.
 
 ## KELD-CLI-010
 
@@ -253,6 +394,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Owner-private staged host could not be launched
 - fix: Verify `keld` and `keld-host` came from the same installation and the named staged path is executable. If cleanup also failed, remove only the named launch directory after confirming no staged process remains.
 
+## KELD-CLI-051
+
+- crate: keld-core
+- message: A process argument is not valid Unicode
+- fix: Pass every argument, including the program path, as valid Unicode text; rename or re-quote the offending path or name.
+
 ## KELD-MCP001
 
 - crate: keld-cli
@@ -328,8 +475,8 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-GUARD005
 
 - crate: keld-guard
-- message: Permissions manifest is not UTF-8, is ambiguous, or is not valid JSONC
-- fix: Write UTF-8, remove duplicate object keys, or fix the JSON (comments are allowed; trailing commas are not).
+- message: Permissions manifest is not UTF-8, is ambiguous, is not valid JSONC, or contains a malformed auth issuer grant
+- fix: Write UTF-8, remove duplicate object keys, fix the JSON, or remove `**` and control characters from `app.auth.begin`/`app.auth.token` issuer literals (comments are allowed; trailing commas are not).
 
 ## KELD-GUARD006
 
@@ -396,6 +543,54 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-guard
 - message: Permissions manifest exceeds the 64 KiB input limit
 - fix: Reduce keld.permissions.jsonc to 64 KiB or less and retry.
+
+## KELD-GUARD018
+
+- crate: keld-guard
+- message: A Windows token open, query, privilege lookup, duplication or impersonation call failed or returned malformed data
+- fix: Retry from a fresh launch of the installed host; Keld never substitutes another token, changes a token's owner or DACL, or enables a privilege to get past this.
+
+## KELD-GUARD019
+
+- crate: keld-guard
+- message: The updater helper runs in another session than the initiating token
+- fix: Approve the elevation prompt in the initiating user's interactive session; a process in another session cannot launch the candidate there.
+
+## KELD-GUARD020
+
+- crate: keld-guard
+- message: The updater helper token does not hold SeImpersonatePrivilege enabled
+- fix: Approve the full elevated administrator prompt; Keld never enables a privilege as a fallback.
+
+## KELD-GUARD021
+
+- crate: keld-guard
+- message: The calling thread is already impersonating when token-based impersonation starts
+- fix: Revert the existing impersonation first; Keld refuses nested impersonation.
+
+## KELD-GUARD022
+
+- crate: keld-guard
+- message: The logon-session query returned a status other than success or STATUS_NO_SUCH_LOGON_SESSION, or unusable data
+- fix: Retry the update or recovery as an administrator; Keld accepts only success or STATUS_NO_SUCH_LOGON_SESSION from this query and halts on every other status.
+
+## KELD-GUARD023
+
+- crate: keld-guard
+- message: The initiating logon session still exists with its recorded logon time
+- fix: Sign out the initiating user or restart Windows, close every process that holds a token of that session, then run recovery again.
+
+## KELD-GUARD024
+
+- crate: keld-guard
+- message: The initiating logon session does not exist or has no positive logon time to record
+- fix: Start the update again from a live interactive sign-in.
+
+## KELD-GUARD025
+
+- crate: keld-guard
+- message: The initiating token is elevated or not at Medium integrity
+- fix: Start the update from the installed host as the signed-in user without elevation; Keld never substitutes another token.
 
 ## KELD-DOCS001
 
@@ -535,11 +730,77 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Linux strict-profile construction, namespace, mount, seccomp, Landlock, FD isolation, readiness, or target exec failed
 - fix: Do not start an uncontained replacement. For an unsupported architecture or unavailable unprivileged user namespaces, move the workload to a supported x86_64 host with unprivileged user namespaces. Otherwise install or repair the reviewed Bubblewrap and Keld launcher artifacts and the exact runtime-file, mount, seccomp, enabled-Landlock, readiness-channel, or target configuration, then refresh the hostile proof. A kernel without Landlock is recorded rather than treated as this error; `legacy` remains an explicit policy choice that forfeits the zero-authority claim and is never selected automatically.
 
+## KELD-RUNTIME-017
+
+- crate: keld-runtime
+- message: A Windows connect-back claimant was not the exact launched and retained candidate process
+- fix: No operator action for one refusal: the attempt owner disconnects that client and re-arms the endpoint, and a process that keeps connecting can at most cause a health timeout and the ordinary rollback. If the launched candidate itself is refused, report the refusal detail; do not weaken the process-object comparison.
+
+## KELD-RUNTIME-018
+
+- crate: keld-runtime
+- message: Restricting a Windows process's DLL search to System32 failed
+- fix: The process exits before loading any library or doing protected work; it never continues on the standard search path, which includes the current directory and PATH. Report the Windows error; the updater helper cannot run on a system that refuses `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`.
+
+## KELD-RUNTIME-019
+
+- crate: keld-runtime
+- message: An elevated `runas` launch of the Windows updater helper was refused or failed, and no helper process handle is retained
+- fix: Follow the variant's guidance. For a path or argument refusal, derive the helper path again from the selected tree's admitted provenance and pass the host's own bootstrap endpoint name unchanged; never search for or substitute a helper. If the user declined the UAC prompt, nothing was launched and no protected state changed; offer the elevated action again only on a new user request. For a COM or shell failure, report the detail. When the shell returned no process handle, or the handle could not report its process ID, an elevated helper may already be running unbound: close the bootstrap endpoint so that the helper's server check refuses and it exits without a protected write, then report the detail.
+
+## KELD-RUNTIME-020
+
+- crate: keld-runtime
+- message: The PerUserDirect candidate's same-token suspended launch, or an operation on its suspended child, failed
+- fix: Start no candidate in its place: end the attempt Job and roll the attempt back, and never resume a child whose creation, Job membership or launch record was not proved. Correct the reported program path, working directory, environment or creation failure before the next attempt.
+
 ## KELD-NATIVE-001
 
 - crate: keld-native
-- message: A host fs.read/fs.write call was allowed by the guard but the OS call itself failed
-- fix: Check the path exists and is accessible (permissions, disk, or a bad path passed by the app).
+- message: A retained filesystem operation failed before a confirmed content effect
+- fix: Repair the path, access, or storage failure and issue a fresh request.
+
+## KELD-NATIVE-002
+
+- crate: keld-native
+- message: Retained traversal escaped, raced, or selected a forbidden final alias
+- fix: Move the target beneath the granted root or use a direct approved scope.
+
+## KELD-NATIVE-003
+
+- crate: keld-native
+- message: The selected filesystem object is non-regular, crosses a mount or volume boundary, or uses an unsupported reparse form
+- fix: Use a local regular file under one retained filesystem root.
+
+## KELD-NATIVE-004
+
+- crate: keld-native
+- message: A filesystem path, content, processed-component, or link-expansion limit was exceeded
+- fix: Shorten the path/traversal or transfer at most 8 MiB in one request.
+
+## KELD-NATIVE-005
+
+- crate: keld-native
+- message: The five-second cooperative filesystem budget expired before a write-content effect, or a read expired
+- fix: Diagnose the filesystem and issue a fresh request only when it is safe.
+
+## KELD-NATIVE-006
+
+- crate: keld-native
+- message: The filesystem operation observed cancellation before a write-content effect, or a read was cancelled
+- fix: Wait for a fresh session generation before issuing another request.
+
+## KELD-NATIVE-007
+
+- crate: keld-native
+- message: A write failed, expired, or was cancelled after create/truncate/write crossed the content-effect boundary
+- fix: Inspect or explicitly rewrite the target using the reported acknowledged/requested byte counts; never auto-retry.
+
+## KELD-NATIVE-008
+
+- crate: keld-native
+- message: Filesystem broker preparation failed or a call presented a different verified manifest snapshot
+- fix: Repair the absolute serviceable scopes or use the same verified snapshot, then start a fresh session.
 
 ## KELD-COMPAT-001
 
@@ -595,6 +856,24 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Two evidence records named the same denominator cell
 - fix: Keep one record per (operation_id, oracle_id).
 
+## KELD-COMPAT-010
+
+- crate: @keld/electron
+- message: BrowserWindow options would escalate renderer authority, or a native window reply did not meet the compatibility contract
+- fix: Keep contextIsolation and webSecurity enabled, Node integration and insecure content disabled, then correct the named native response before retrying.
+
+## KELD-COMPAT-011
+
+- crate: @keld/electron
+- message: An Electron window or its WebContents has already been destroyed
+- fix: Stop using the destroyed window; create a new BrowserWindow after Host Ready.
+
+## KELD-COMPAT-012
+
+- crate: @keld/electron
+- message: `app.quit()` is not yet a cancelable Electron quit sequence with live or not-yet-censused native windows; a direct Host Quit would bypass unsaved-document close veto
+- fix: Close each native window through its cancelable `close` policy before requesting Quit. Full `before-quit`/`will-quit` and OS-initiated quit integration belongs to GH451; do not claim application compatibility until independently reviewed.
+
 ## KELD-CORE-030
 
 - crate: keld-core
@@ -648,3 +927,404 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-core
 - message: The no-flag authenticated app session failed
 - fix: Fix the named dev lease, guardian, app-link, Bun, window, or ordered-cleanup failure and relaunch the staged host.
+
+## KELD-CORE-038
+
+- crate: keld-core
+- message: The window reference is stale, forged, or unavailable for this operation
+- fix: Drop the reference in the 'closed' listener and use a live host-minted window reference admitted by this host.
+
+## KELD-CORE-039
+
+- crate: keld-core
+- message: A host window identity counter is exhausted
+- fix: End this app session and start a new one; never wrap or reuse window identities.
+
+## KELD-CORE-040
+
+- crate: keld-core
+- message: The host window registry is not ready
+- fix: Wait for the admitted facade readiness barrier on a live app session before creating or addressing windows.
+
+## KELD-CORE-041
+
+- crate: keld-core
+- message: Native window or webview construction failed at the reported stage
+- fix: Inspect the host's native error log, correct the reported construction failure, and start a new creation request.
+
+## KELD-CORE-042
+
+- crate: keld-core
+- message: This platform has no admitted native window command implementation
+- fix: Use a host with the qualified window backend; do not emulate native success or widen permissions.
+
+## KELD-CORE-043
+
+- crate: keld-core
+- message: The window belongs to another or retired role instance
+- fix: Subscribe through the current authenticated primary link and use only its replayed host-owned references.
+
+## KELD-CORE-044
+
+- crate: keld-core
+- message: The application Ready milestone came from the wrong boot kind or was delivered more than once
+- fix: Deliver only the selected boot kind's first Ready milestone; treat duplicate or foreign Ready as a terminal contract failure.
+
+## KELD-CORE-045
+
+- crate: keld-core
+- message: The calling link has not subscribed to host window facts
+- fix: Complete the admitted window subscription on this same live primary link before sending window calls.
+
+## KELD-CORE-046
+
+- crate: keld-core
+- message: One native window has reached its Host-owned limit of 64 outstanding Destroy correlations awaiting physical release
+- fix: Wait for that window's native Released event and its deferred replies, or retire the calling role; do not retry Destroy in a loop while release is outstanding.
+
+## KELD-CORE-047
+
+- crate: keld-core
+- message: This Host session has reached its cumulative distinct-window admission capacity, including destroyed window identities
+- fix: Start a fresh Host session to mint further window identities. Do not retry Create within this session, recycle a retired identity, or bypass the native admission limit. The candidate numeric capacity remains unapproved pending GH1149.
+
+## KELD-UPDATE-001
+
+- crate: keld-update
+- message: Direct-update provenance is missing or not OS-protected
+- fix: Reinstall with a supported direct installer and restore its protected commit record before checking for updates.
+
+## KELD-UPDATE-002
+
+- crate: keld-update
+- message: A package manager or store owns this installation
+- fix: Use the mechanism named by protected provenance; Keld must not mutate the installation directly.
+
+## KELD-UPDATE-003
+
+- crate: keld-update
+- message: Protected direct-install provenance does not match the running host or baseline contract
+- fix: Stop before feed access and repair or reinstall the direct package.
+
+## KELD-UPDATE-004
+
+- crate: keld-update
+- message: Detached update-manifest authentication failed
+- fix: Do not parse or activate the feed; publish the literal manifest bytes signed by the compiled-in release key.
+
+## KELD-UPDATE-005
+
+- crate: keld-update
+- message: Authenticated update-manifest JSON is ambiguous or invalid for schema v0
+- fix: Publish one closed, duplicate-free v0 manifest with canonical sizes, digests, and strict semantic versions.
+
+## KELD-UPDATE-006
+
+- crate: keld-update
+- message: The signed manifest names another app, channel, or target
+- fix: Fetch the feed for the protected direct installation's exact app, channel, and compiled target.
+
+## KELD-UPDATE-007
+
+- crate: keld-update
+- message: The protected semantic-version floor is missing or invalid
+- fix: Restore the protected updater state from the installer or known-good record before polling.
+
+## KELD-UPDATE-008
+
+- crate: keld-update
+- message: Compressed or decompressed full-artifact bytes do not equal the signed exact count
+- fix: Discard the candidate and fetch the signed full artifact again.
+
+## KELD-UPDATE-009
+
+- crate: keld-update
+- message: Downloaded or decompressed full-artifact BLAKE3 does not match the signed digest
+- fix: Discard the candidate and fetch the signed full artifact again.
+
+## KELD-UPDATE-010
+
+- crate: keld-update
+- message: Full-artifact stream I/O or zstd decoding failed
+- fix: Preserve the current installation, repair the stream or staging sink, and retry.
+
+## KELD-UPDATE-011
+
+- crate: keld-update
+- message: Verified package bytes do not match the canonical Windows v0 archive profile or exact no-migration policy
+- fix: Discard the candidate and publish a canonical package containing the exact required update policy, signed by the release key.
+
+## KELD-UPDATE-012
+
+- crate: keld-update
+- message: Protected Windows root admission or unpublished package extraction failed
+- fix: Preserve any named incomplete stage for diagnosis, keep the current installation, and repair the protected staging root or artifact before retrying. Directory presence does not prove a runnable version.
+
+## KELD-UPDATE-013
+
+- crate: keld-update
+- message: Exact baseline authentication or native bootstrap refused
+- fix: Preserve incomplete state and repair the trusted installer configuration or protected scaffold. Do not reseed an existing installation.
+
+## KELD-UPDATE-014
+
+- crate: keld-update
+- message: Local installer record is malformed, noncanonical or unsupported
+- fix: Preserve the record for diagnosis and repair or reinstall through the trusted installer. Record presence never proves protected state.
+
+## KELD-UPDATE-015
+
+- crate: keld-update
+- message: An immutable Windows version could not be confirmed at its final publication boundary
+- fix: Preserve the named stage and any transaction journal. If the destination may exist, do not select it from directory presence; inspect protected state and use journal-bound recovery before retrying.
+
+## KELD-UPDATE-016
+
+- crate: keld-update
+- message: The common journaled activation transaction refused or could not confirm a step
+- fix: Follow the reported effect. Without a journal, correct the refused input before a new attempt. Outside `MachineUacDirect`, with a journal, preserve it and the versions and continue only through journal-bound recovery under the writer lease. Resolved leftovers need no action. An unjournaled published version halts later writers until the explicit unjournaled-version repair retires it under the writer lease; an unknown or damaged entry that the repair refuses needs manual recovery. When a conflicting handle, normally the updater's exclusive writer lease, holds the activation lock, or an accepted connect-back candidate's boot read finds that the pending attempt is not the one whose owner accepted it, nothing was written: start nothing, and select again after that handle is released. When a `MachineUacDirect` startup reports that machine recovery is required, the ordinary process wrote nothing and preserved any activation journal, the pointers and the versions: start nothing, and follow the reported guidance, which names the recovery-only role of the elevated `keld-updater-helper.exe`; while this release does not provide that role, no supported resolution exists other than administrator action.
+
+## KELD-UPDATE-017
+
+- crate: keld-update
+- message: The executable's build-time expected app identity is not a valid expectation
+- fix: Rebuild `keld-host.exe` or `keld-updater-helper.exe` so keld-pack embeds a supported channel and the release's valid Ed25519 public key; the installed image refuses to run until then.
+
+## KELD-UPDATE-018
+
+- crate: keld-update
+- message: The running executable is not bound to the installation it locates
+- fix: Launch keld-host.exe from its installation's selected version tree, and start keld-updater-helper.exe only from its installation's protected version tree, as keld-host.exe or an administrator starts it; repair or reinstall through the trusted installer if the layout is damaged.
+
+## KELD-UPDATE-019
+
+- crate: keld-update
+- message: The verified executable image does not carry exactly one readable, canonical expected-identity container
+- fix: Reinstall the signed package if its executable image is damaged. For a new image, the packaging integration must embed one valid expected-identity container before signing; `keld build` is reserved (`KELD-CLI-045`) and cannot perform this repair today. The installed image refuses to run until it carries a valid container.
+
+## KELD-UPDATE-020
+
+- crate: keld-update
+- message: The verified signer of an installed executable is not the publisher or the app that the installation's protected provenance records
+- fix: Reinstall the package from the publisher its installer recorded, signed for the app it recorded; an executable signed by another publisher or for another app never runs against this installation.
+
+## KELD-UPDATE-021
+
+- crate: keld-update
+- message: The updater helper refused to anchor itself to its installation, or its image was not derived for a launch
+- fix: Only a MachineUacDirect installation runs keld-updater-helper.exe, and only its journaled image or the image of the version its role requires; start nothing in its place, and repair or reinstall through the trusted installer if the installation is damaged.
+
+## KELD-PACK-001
+
+- crate: keld-pack
+- message: Windows v0 package production requires a Windows host
+- fix: Build this package on Windows for native namespace admission. No output was written.
+
+## KELD-PACK-002
+
+- crate: keld-pack
+- message: Package metadata or its Windows namespace is invalid
+- fix: Supply a complete regular-file/directory tree with canonical Windows names and leave the update policy file to the producer. No output was written.
+
+## KELD-PACK-003
+
+- crate: keld-pack
+- message: A package source does not match its declared byte count
+- fix: Discard partial output and rebuild from sources with correct lengths.
+
+## KELD-PACK-004
+
+- crate: keld-pack
+- message: Package source, sink, or compression processing failed
+- fix: Discard partial output, repair the source or sink, and rebuild the package.
+
+## KELD-PACK-005
+
+- crate: keld-pack
+- message: Expected-app-identity payload bytes or fields are not canonical
+- fix: Correct the app id (1-255 bytes), channel (1-16) or target (1-64) in the packaging configuration, with no control characters, and rebuild the image (`keld-host.exe` or `keld-updater-helper.exe`); never hand-edit the embedded bytes.
+
+## KELD-PACK-006
+
+- crate: keld-pack
+- message: The executable image is not an admissible Windows x64 PE32+ executable
+- fix: Use the unmodified prebuilt `keld-host.exe` or `keld-updater-helper.exe` of this Keld release; reinstall the signed package if an installed image is damaged.
+
+## KELD-PACK-007
+
+- crate: keld-pack
+- message: The executable image carries no `.keldeai` expected-identity container
+- fix: The packaging integration must use `keld-pack` to embed the expected identity into the unsigned prebuilt `keld-host.exe` or `keld-updater-helper.exe` before signing. `keld build` is reserved (`KELD-CLI-045`) and is not an available packaging command.
+
+## KELD-PACK-008
+
+- crate: keld-pack
+- message: The executable image already carries a `.keldeai` expected-identity container, or more than one
+- fix: Embed exactly once into the unmodified prebuilt `keld-host.exe` or `keld-updater-helper.exe`; never re-run embedding on its output.
+
+## KELD-PACK-009
+
+- crate: keld-pack
+- message: The executable image is signed or has bytes after its last section
+- fix: Embed into the unsigned prebuilt `keld-host.exe` or `keld-updater-helper.exe` before signing; never embed into a signed image or after appending data.
+
+## KELD-PACK-010
+
+- crate: keld-pack
+- message: The executable image has no header room for the expected-identity container
+- fix: Use a Keld-released prebuilt `keld-host.exe` or `keld-updater-helper.exe`; an image without header room is a Keld build defect to report.
+
+## KELD-PACK-011
+
+- crate: keld-pack
+- message: The expected-identity container is not canonical
+- fix: The image's identity container is damaged or was produced by another tool. Reinstall a trusted signed package or correct the packaging integration's `keld-pack` embedding step before signing a new image; `keld build` is reserved (`KELD-CLI-045`) and is not implemented.
+
+## KELD-PACK-012
+
+- crate: keld-pack
+- message: Reading the identity container of the verified executable (`keld-host.exe` or `keld-updater-helper.exe`) failed
+- fix: Make sure its volume is readable and relaunch, and reinstall the signed package if the failure persists.
+
+## KELD-HELPER-001
+
+- crate: keld-updater-helper
+- message: keld-updater-helper.exe was not started on Windows with exactly one accepted argument
+- fix: It runs only on Windows and takes exactly one argument: keld-host.exe passes the activation rendezvous `\\.\pipe\keld-attempt-<64 lowercase hex>`, and keld-host.exe or an administrator passes `--recovery-role`. The argument conveys no authority, and the helper refuses before any open or write.
+
+## KELD-HELPER-002
+
+- crate: keld-updater-helper
+- message: The updater helper could not verify its own image through the KEL-135 Authenticode verifier, so it could not anchor itself
+- fix: Run only the signed keld-updater-helper.exe from its installation's protected version tree; repair or reinstall through the trusted installer if it is damaged.
+
+## KELD-HELPER-003
+
+- crate: keld-updater-helper
+- message: The updater helper's activation role is not available in this release; it refused after anchoring itself, before the writer lease and any write
+- fix: Nothing changed; keep running the current version. Activation through the updater helper ships with a later release.
+
+## KELD-HELPER-004
+
+- crate: keld-updater-helper
+- message: The updater helper's recovery-only role is disabled in this release (RecoveryDisabled); it refused after anchoring itself, before the writer lease and any write
+- fix: No supported resolution exists other than administrator action; any activation journal, the pointers and the versions are preserved, and no ordinary process repairs them.
+
+## KELD-AUTH-002
+
+- crate: keld-native
+- module: auth
+- message: The provider names no key in the closed v0 provider-profile table; AC14(a) is the only pre-Allow auth refusal.
+- fix: Correct the quoted/escaped unknown provider key to one of the closed valid profile keys named by the auth diagnostic.
+- status: Implemented T3 macOS provider-resolution source; route qualification remains bound to its recorded predicates, not established by this registry entry. Other OS-broker paths remain targets.
+
+
+## KELD-AUTH-003
+
+- crate: keld-native
+- module: auth
+- message: Exact-literal redirect mode is selected with a dynamic port before any socket attempt.
+- fix: Configure the one registered fixed redirect port; bind-0 is not a fallback. If a socket was attempted and bind failed, use KELD-AUTH-004 instead.
+- status: Implemented T3 macOS redirect-plan validation source; qualification is limited to recorded predicates, not every profile/mode. Other OS-broker paths remain targets.
+
+
+## KELD-AUTH-010
+
+- crate: keld-native
+- module: auth
+- message: The child-supplied login_hint exceeds its byte bound or contains a control character.
+- fix: Correct only the named length or character-class constraint; never include the offending login_hint value in the diagnostic.
+- status: Implemented T3 macOS post-Allow login-hint validation source; qualification is limited to recorded ordering and privacy predicates. Other OS-broker paths remain targets.
+
+
+## KELD-AUTH-011
+
+- crate: keld-native
+- module: auth
+- message: Loopback/scheme callback parsing or correlation failed, including malformed or ambiguous input and unknown/mismatched state. An IdP rejection of the authorization-code/verifier exchange is KELD-AUTH-013.
+- fix: Discard the callback and restart the flow; never echo the received state.
+- status: T3 macOS implements host-side callback parsing and state correlation. This entry does not establish other scheme/broker behavior or IdP PKCE validation.
+
+
+## KELD-AUTH-012
+
+- crate: keld-native
+- module: auth
+- message: The IdP returned an OAuth callback error such as access_denied, invalid_scope or interaction_required.
+- fix: Treat the sanitized provider error code as the IdP decision, not Keld policy. Bound provider text to 256 bytes with truncation marked, strip controls and quote it in a delimited position after Keld’s code; never parse it to select a Keld code path.
+- status: Implemented T3 macOS correlated provider-callback error and D18(a) sanitation source; qualification is predicate-specific. Other OS-broker paths remain targets.
+
+
+## KELD-AUTH-013
+
+- crate: keld-native
+- module: auth
+- message: Authorization-code-to-token exchange failed, or the IdP refused the scope set requested by auth.token.
+- fix: Name transport failure versus IdP rejection and start only a new user-initiated operation; no automatic retry occurs. Sanitize any provider text under D18(a): bounded 256-byte quoted text, controls stripped and truncation marked, after Keld’s own code.
+- status: Implemented T3 macOS transport and token-reply source; this registry entry proves neither complete exchange behavior nor T3 flow acceptance. Other OS-broker paths remain targets.
+
+
+## KELD-AUTH-016
+
+- crate: keld-native
+- module: auth
+- message: Authentication failed during local entropy, encoding, processing-bound, clock or internal-state processing; no existing AUTH001–015 condition applies.
+- fix: Start a new user-initiated auth.begin. If the failure persists, report the static Keld diagnostic. Keep message/fix resource-free and constant; do not include credentials, account ids, issuer/request values, provider text or raw OS errors.
+- status: T3 local-source contract; runtime evidence is predicate-specific and exact-source-bound. Never use for unresolved/stale account or AC13(d).
+
+
+## KELD-AUTH-017
+
+- crate: keld-native
+- module: auth
+- message: macOS reported a missing or invalid presentation context through the AS completion callback after the authentication attempt started.
+- fix: Ensure the Keld window remains available and start a new user-initiated sign-in. Do not retry automatically, switch to loopback, or expose raw OS error text.
+- status: T4 terminal callback classification; source and route-specific macOS acceptance remain bound to the current PR evidence.
+
+## KELD-AUTH-004
+
+- crate: keld-native
+- module: auth
+- message: Rung-3 loopback listener bind or system-browser launch failed.
+- fix: For a bind failure, free the configured port or correct its registration; for a browser-launch failure, configure a working default browser. Name which operation failed.
+- status: Implemented T3 macOS loopback-bind and system-browser-launch failure source; qualification is limited to recorded predicates. Other OS-broker paths remain targets.
+
+## KELD-AUTH-006
+
+- crate: keld-native
+- module: auth
+- message: Entra device-compliance Conditional Access requires a broker that this macOS host does not integrate.
+- fix: Use a broker-capable managed-device application with Intune Company Portal / Enterprise SSO. ASWebAuthenticationSession or external-browser fallback cannot satisfy this supplied policy class.
+- status: Implemented T4 private supplied-class refusal after Guard Allow. Public v0 requests remain unclassified; this entry makes no runtime classifier, managed-device or broker-compliance outcome claim.
+
+## KELD-AUTH-007
+
+- crate: keld-native
+- module: auth
+- message: The user cancelled the broker or external-user-agent dialog (canceledLogin class); the failure is non-terminal.
+- fix: Retry only when initiated by the user. A defect-neutral default-browser hint is permitted; do not assert an Apple defect or retry automatically.
+- status: Implemented T3 macOS owning-flow cancellation source; qualification is limited to recorded predicates and does not establish external-dialog cancellation. Other OS-broker paths remain targets.
+
+## KELD-AUTH-008
+
+- crate: keld-native
+- module: auth
+- message: The authorization step did not complete within the host bound.
+- fix: Start a new user-initiated auth.begin; never retry automatically.
+- status: Implemented T3 macOS authorization/launch deadline source; qualification is limited to recorded absolute-bound predicates. Other OS-broker paths remain targets.
+
+## KELD-AUTH-009
+
+- crate: keld-native
+- module: auth
+- message: Terminal invalid_grant refresh failure evicts the session and ends its liveness.
+- fix: Sign in again through auth.begin; the host holds no durable credential.
+- status: Implemented T3 macOS exact terminal-refresh classification and current-session eviction source; qualification is predicate-specific, not proof of every IdP outcome. Other OS-broker paths remain targets.
+
+## KELD-AUTH-015
+
+- crate: keld-native
+- module: auth
+- message: The resolved provider profile has no clientId, or its present asRedirect is invalid for the selected client/profile; both are refused only after Guard Allow.
+- fix: Add the missing clientId or correct the invalid asRedirect registration under the named profile in the keld.config.ts auth section, then rebuild the boot descriptor. Name only the profile/configuration location, without account or session detail.
+- status: Implemented T3 missing-client and T4 invalid-present-AS-binding refusal sources on macOS. Qualification is limited to recorded admission, denial-equality and registration predicates. Other OS-broker paths remain targets.

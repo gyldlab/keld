@@ -14,3 +14,6 @@ Extends root `AGENTS.md`; this file owns the thin shipping-binary boundary.
 - Product claims require the shipping no-flag executable and native window,
   direct child and descendant process handles, ordered cleanup, stage deletion,
   and relaunch. A helper artifact or aggregate process count is not evidence.
+- Host acceptance refactors MUST retain `no_flag_linux`, `no_flag_macos` and
+  `no_flag_windows` binary identities and root helper selectors used by child launches.
+  Apply [.agents/test-layout.md](../../.agents/test-layout.md) for migration proof.

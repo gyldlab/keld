@@ -155,8 +155,8 @@ If T4–T6 eventually pass, a contributor's session should remain simple:
 4. Implement and run Keld's real tests and gates.
 5. Propose only a concise conclusion that has just been proved and is worth preserving.
 6. Mark contradictions stale or superseded instead of hiding them with a later write.
-7. Keep ownership and work-in-progress state in Linear and universal gotchas in tracked
-   docs. Memory replaces neither.
+7. Keep ownership and work-in-progress state on the tracker issue (Linear, or GitHub under
+   #517) and universal gotchas in tracked docs. Memory replaces neither.
 
 Authorization must filter project, owner, visibility, current team membership, and
 allowed-agent membership before similarity ranking. If another project appears, the

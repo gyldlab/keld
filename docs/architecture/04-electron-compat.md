@@ -87,9 +87,10 @@ export default defineConfig({
 `keld_core::LifecycleSession` over `LIFECYCLE_CHANNEL` — not
 `Promise.resolve()` stubs. `process.versions.electron` is `"0.0.1"` (Keld's
 crate version, not an Electron release) and `process.type` is `"browser"`
-in this main-process package. `@keld/api` does not exist yet; the shim
-speaks kipc directly. Bundler-side alias (`keld build`) is deferred because
-`keld build` is not live.
+in this main-process package. The Electron `app` facade delegates to
+`@keld/api`'s singleton lifecycle link, which uses `@keld/kipc`'s
+Worker-owned transport; the shim does not open a second link. Bundler-side
+alias (`keld build`) is deferred because `keld build` is not live.
 
 Match (scoreboard ✔): with no `window-all-closed` listener, a host
 `LastWindowClosed` event quits the app — Electron's documented default
@@ -102,8 +103,20 @@ Divergence (scoreboard ▲, not a §5 quirks-flag toggle): Electron
 is process-lifetime and not thenable. Keld's `app.quit()` returns
 `Promise<void>` so callers can observe `KELD-IPC-*` when the Quit Call fails
 on the transport. Restoring `void` would paper over kipc; the Promise is
-the public contract for this slice. Recorded on
+the public contract for this slice. Like Electron's, it returns at once and
+never parks the caller (PANEL-P2, #419; GH-528 T3). The role's link closes
+when the host's `LifecycleResponse::Quit` REPLY settles. Recorded on
 [`docs/engineering/compat-scoreboard.md`](../engineering/compat-scoreboard.md).
+
+Divergence (scoreboard ▲, GH-528 T3): the role's link runs in the GH-527
+transport Worker, and a realm opens one link. So `app.whenReady()` rejects with
+the typed error that failed or ended that link, and keeps rejecting with the
+same error. A failed connect is never retried, because a retry could only
+surface `KELD-IPC-005`. The error keeps the real cause:
+- a connect failure keeps its own code (`KELD-IPC-001`, `-005`, `-006`, `-007`);
+- a link that was up ends with the failure that ended it (`KELD-IPC-003`,
+  `-005`, `-006`);
+- a plain close is `KELD-IPC-022`.
 
 Dev module alias: Bun 1.3.14 does **not** remap runtime `import "electron"`
 from `bunfig.toml` `[alias]` (it still loads the npm `electron` package
@@ -111,8 +124,13 @@ from the install cache). The runtime resolver is `tsconfig.json`
 `compilerOptions.paths` (`electron` → `@keld/electron`'s `src/index.ts`).
 `bunfig.toml` is still written with the same mapping so it matches
 architecture §2's named file; treating that file as the resolver is a
-defect. Other Tier 1 surfaces (`BrowserWindow`, `ipcMain`,
-preload/`contextBridge`, …) are later slices. `keld migrate` is not live.
+defect. This slice adds an exported `BrowserWindow` subset backed by the
+macOS Host-owned native window registry for creation/adoption, selected
+geometry and state, close/destroy, and recovery events. Linux currently
+refuses facade-window subscription. A Windows product build refuses a
+schema-2 facade boot, and Windows answers no window `Create` yet; this is
+not a cross-platform native window backend. Broader Electron behavior and surfaces (`ipcMain`,
+preload/`contextBridge`, …) remain later slices. `keld migrate` is not live.
 
 ### 3.1 `utilityProcess` and `MessageChannelMain` stay facades
 

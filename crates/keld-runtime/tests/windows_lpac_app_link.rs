@@ -29,7 +29,7 @@ use keld_ipc::link::handshake_client;
 use keld_ipc::token::parse_app_link;
 use keld_ipc::{BootstrapRejection, BootstrapRejectionObserver};
 use keld_runtime::windows_lpac::{
-    WindowsLpacChild, WindowsLpacPathAccess, WindowsLpacProfile, WindowsLpacStdio,
+    WindowsLpacPathAccess, WindowsLpacProfile, WindowsLpacStdio, WindowsSuspendedChild,
 };
 use sha2::{Digest as _, Sha256};
 use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, LocalFree};
@@ -270,7 +270,7 @@ fn run_profile_program(
 }
 
 // These guards join/reap on assertion failures as well as the successful path.
-struct ReapedChild(WindowsLpacChild);
+struct ReapedChild(WindowsSuspendedChild);
 
 impl Drop for ReapedChild {
     fn drop(&mut self) {

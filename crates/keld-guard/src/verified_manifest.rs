@@ -52,7 +52,8 @@ impl VerifiedManifest {
 /// [`ManifestError::TooLarge`] when it exceeds the shared 64 KiB ceiling,
 /// [`ManifestError::IntegrityMismatch`] when its exact bytes do not match
 /// `expected_sha256`, [`ManifestError::InvalidUtf8`] for non-UTF-8 bytes, or
-/// [`ManifestError::Parse`] for malformed JSONC.
+/// [`ManifestError::Parse`] for malformed JSONC, or
+/// [`ManifestError::InvalidAuthScope`] for a malformed auth issuer grant.
 pub fn load_verified_manifest(
     file: File,
     display_path: PathBuf,
@@ -111,5 +112,23 @@ mod tests {
             "{error:?}"
         );
         assert!(error.to_string().contains("Check the path"), "{error}");
+    }
+
+    #[test]
+    fn digest_verified_policy_still_rejects_auth_control_sentinel() {
+        let bytes = br#"{"app":{"auth":{"token":["\u0000unresolved"]}}}"#;
+        let digest: [u8; 32] = Sha256::digest(bytes).into();
+        let path = PathBuf::from("/diagnostic/keld.permissions.jsonc");
+        let error = load_verified_reader(io::Cursor::new(bytes), path.clone(), digest)
+            .expect_err("matching digest must not bypass auth grant validation");
+        assert!(
+            matches!(
+                error,
+                ManifestError::InvalidAuthScope { path: Some(ref actual), ref capability }
+                    if actual == &path && capability == "auth.token"
+            ),
+            "{error:?}"
+        );
+        assert_eq!(error.code(), "KELD-GUARD005");
     }
 }

@@ -111,11 +111,6 @@ impl LineLog {
         self.acc.lines().position(|line| line.contains(needle))
     }
 
-    /// Exact line index. `contains("KEL72_READY")` also matches `KEL72_READY_SECOND`.
-    fn first_exact_line(&self, line: &str) -> Option<usize> {
-        self.acc.lines().position(|l| l == line)
-    }
-
     /// Host-visible WAITING / READY order *before* `signal_ready`.
     ///
     /// Drains `rx` first so a READY line that arrived with WAITING cannot
@@ -394,36 +389,37 @@ fn electron_main_retains_decimal_diagnostic_compatibility() {
     assert!(child.wait().expect("wait diagnostic Bun").success());
 }
 
-/// Isolation / connect-retry / unhandledRejection probe (`app_ready.ts`).
+/// Sticky connect-failure / unhandledRejection probe (`app_ready.ts`).
 ///
-/// The fixture stubs `LifecycleLink.connect` (no host handshake — that is
-/// `lifecycle.ts`). Spawn still mints a unique unused app-link the same way
-/// the READY test does (temp `0o700` dir + socket, or a named-pipe app-link
-/// on Windows) so
-/// two parallel runs do not share `/tmp/keld-kel72-unused.sock`.
+/// The name predates GH-528 T3 and is kept for the frozen KEL-237 receipts
+/// that map it (KEL-237 re-records them as v1). Since T3 the oracle is the
+/// opposite of a retry: the fixture runs the real `LifecycleLink.connect`
+/// (only counted, not replaced) against an endpoint with no listener beside
+/// the unique app-link minted here, and the typed `KELD-IPC-001` failure is
+/// sticky. One link per realm (GH-527 §4.2) means a retry could only surface
+/// `KELD-IPC-005`. Listener isolation moved to `ready_listener_only.ts`
+/// (`packages/@keld/electron/src/app.test.ts`).
 ///
-/// Oracle lines the fixture already prints on success:
-/// `KEL72_READY_SECOND`, `KEL72_CONNECT_CALLS=2`, `KEL72_UNHANDLED_COUNT=0`,
-/// exit 0.
+/// Oracle lines the fixture prints on success: `KEL72_FAILURE_STICKY`,
+/// `KEL72_CONNECT_CALLS=1`, `KEL72_UNHANDLED_COUNT=0`, exit 0.
 ///
 /// Negative control (a defect must fail this test):
-/// - cached `linkPromise` after a failed connect → fixture stderr
-///   `KEL72_CONNECT_NOT_RETRIED` and exit 1
-/// - `emit` without per-listener try/catch → `KEL72_SECOND_LISTENER_SKIPPED`
-///   and exit 1
+/// - dropping the cached `linkPromise` after a failed connect → a second
+///   connect that fails with `KELD-IPC-005`: fixture stderr
+///   `KEL72_FAILURE_NOT_STICKY` and exit 1
 /// - missing `ignoreIfUnawaited` on `whenReady` → `KEL72_UNHANDLED_COUNT`
 ///   ≠ 0 and exit 1
 #[test]
 fn app_ready_isolates_listeners_retries_connect_without_unhandled_rejection() {
     let bound = bind_app_link();
-    // `bound` keeps the unique endpoint alive. The fixture never dials it
-    // (`connect` is replaced); accepting would hang.
+    // `bound` keeps the unique endpoint alive. The fixture never dials it: it
+    // connects to an absent endpoint beside it.
 
     let mut child = spawn_fixture("app_ready.ts", Some(&bound.link));
     let stdout = child.stdout.take().expect("stdout");
     let mut log = spawn_line_log(stdout);
 
-    log.wait_contains("KEL72_READY_SECOND");
+    log.wait_contains("KEL72_FAILURE_STICKY");
     log.wait_contains("KEL72_CONNECT_CALLS=");
     log.wait_contains("KEL72_UNHANDLED_COUNT=");
 
@@ -435,20 +431,9 @@ fn app_ready_isolates_listeners_retries_connect_without_unhandled_rejection() {
         status.code(),
         log.acc
     );
-    let second_at = log
-        .first_exact_line("KEL72_READY_SECOND")
-        .expect("KEL72_READY_SECOND recorded");
-    let ready_at = log
-        .first_exact_line("KEL72_READY")
-        .expect("KEL72_READY recorded");
     assert!(
-        second_at < ready_at,
-        "throwing ready listener skipped the later listener (second@{second_at} ready@{ready_at}): {}",
-        log.acc
-    );
-    assert!(
-        log.has_exact_line("KEL72_CONNECT_CALLS=2"),
-        "failed connect must be retried (want KEL72_CONNECT_CALLS=2): {}",
+        log.has_exact_line("KEL72_CONNECT_CALLS=1"),
+        "a failed connect must stay the answer, never retried (want KEL72_CONNECT_CALLS=1): {}",
         log.acc
     );
     assert!(

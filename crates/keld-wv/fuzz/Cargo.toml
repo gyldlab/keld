@@ -1,0 +1,31 @@
+# KEL-142 raw-byte fuzz harness for the private keld.wv-link/v1 decoder.
+#
+# This is a separate cargo-fuzz workspace so the stable product workspace does
+# not depend on the libFuzzer runtime. Any discovered failure must be minimized
+# into crates/keld-wv/tests/wv_link.rs before the corpus is retained.
+[package]
+name = "keld-wv-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# Compile the exact production decoder source directly so this pure raw-byte
+# harness does not pull platform WebView backends (and their OS-only graph)
+# into the standalone fuzz workspace.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "wv_link"
+path = "fuzz_targets/wv_link.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

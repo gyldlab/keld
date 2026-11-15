@@ -1,0 +1,1487 @@
+//! Per-user production writer admission over real Windows handles.
+
+#![allow(unsafe_code)] // Test-only adoption of the exact remote handle returned by DuplicateHandle.
+
+use std::fs::OpenOptions;
+use std::io::Cursor;
+use std::io::{BufRead as _, BufReader, Write as _};
+use std::ops::{Deref, DerefMut};
+use std::os::windows::io::FromRawHandle as _;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use super::support::{self, GOLDEN};
+use crate::records::{ActivationJournal, ActivationPhase};
+use crate::tests::{digest_hex, manifest_json, release_json, sign};
+use crate::windows_baseline::{
+    WindowsBaselineTrust, load_windows_activation_write_snapshot, load_windows_baseline,
+    load_windows_recovery_inspection,
+};
+use crate::windows_extraction::{StageProtection, open_source, populate_stage};
+use crate::windows_fs::{
+    create_directory_relative_with_profile, create_file_relative_exclusive_with_profile,
+    create_file_relative_with_profile, qualified_volume_root,
+};
+use keld_ipc::{
+    WindowsLifecycleBinding, WindowsLifecycleExpectation, WindowsLifecyclePurpose,
+    WindowsLifecycleRendezvousListener, WindowsNamedPipeBootstrapStream,
+    connect_windows_lifecycle_rendezvous_until,
+};
+
+mod owner_mode_admission;
+mod recovery_inspection;
+mod stage_publication;
+
+const LIFECYCLE_HELPER_ENV: &str = "KELD_WINDOWS_LEASE_KEEPER_HELPER";
+const LIFECYCLE_HELPER_TEST: &str =
+    "windows_baseline::tests::writer::windows_lifecycle_process_helper";
+const RECOVERY_COMPOSITION_HELPER_ENV: &str = "KELD_WINDOWS_RECOVERY_COMPOSITION_HELPER";
+const RECOVERY_COMPOSITION_HELPER_TEST: &str =
+    "windows_baseline::tests::writer::windows_recovery_composition_process_helper";
+const VERSION_PUBLICATION_HELPER_ENV: &str = "KELD_VERSION_PUBLICATION_CRASH_CUT";
+const VERSION_PUBLICATION_HELPER_TEST: &str =
+    "windows_baseline::tests::writer::windows_version_publication_crash_helper";
+const VERSION_PUBLICATION_VOLUME_ENV: &str = "KELD_VERSION_PUBLICATION_VOLUME";
+
+#[test]
+#[ignore = "private immutable-version publication crash-cut subprocess entry point"]
+fn windows_version_publication_crash_helper() {
+    support::assert_user_principal_token();
+    let root =
+        PathBuf::from(std::env::var_os("KELD_VERSION_PUBLICATION_ROOT").expect("fixture root"));
+    let cut = std::env::var(VERSION_PUBLICATION_HELPER_ENV).expect("publication cut");
+    assert!(matches!(
+        cut.as_str(),
+        "complete-marker" | "version-directory"
+    ));
+    let install = root.join("KeldPerUserFixture");
+    let mut trust = support::trust_for(&install);
+    trust.installation.install_mode = crate::DirectInstallMode::PerUserDirect;
+    trust.volume_guid = std::env::var(VERSION_PUBLICATION_VOLUME_ENV).expect("fixture volume GUID");
+    let verifier = crate::UpdateVerifier::new(
+        trust.installation.clone(),
+        crate::tests::signing_key().verifying_key().to_bytes(),
+    )
+    .expect("trusted per-user verifier");
+    let baseline = load_windows_baseline(&trust).expect("load exact baseline");
+    let observation = baseline.observation().clone();
+    drop(baseline);
+    let candidate = higher_release(&verifier, &observation);
+    let snapshot = load_windows_activation_write_snapshot(&trust, &verifier)
+        .expect("acquire the writer lease in the child process");
+    let mut extraction = snapshot
+        .open_extraction_root()
+        .expect("retain the transaction owner in the child process");
+    let stage = extraction
+        .extract(&candidate, &root.join("candidate.tar"))
+        .expect("extract exact candidate before the requested crash cut");
+    let _ = stage.complete_with_observer(|boundary, stage_name| {
+        let requested = matches!(
+            (cut.as_str(), boundary),
+            (
+                "complete-marker",
+                crate::windows_extraction::VersionPublicationBoundary::CompleteMarkerPublished
+            )
+        );
+        if requested {
+            println!("KELD_VERSION_PUBLICATION_CUT={cut} stage={stage_name}");
+            std::io::stdout()
+                .flush()
+                .expect("flush exact crash-boundary witness");
+            std::process::exit(91);
+        }
+        Ok(())
+    });
+    panic!("the requested immutable-version publication cut was not reached");
+}
+
+fn run_version_publication_crash_child(root: &Path, volume: &str, cut: &str) -> String {
+    let mut child = ChildReaper::new(
+        Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--exact",
+                VERSION_PUBLICATION_HELPER_TEST,
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("KELD_VERSION_PUBLICATION_ROOT", root)
+            .env(VERSION_PUBLICATION_VOLUME_ENV, volume)
+            .env(VERSION_PUBLICATION_HELPER_ENV, cut)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn version publication crash-cut child"),
+    );
+    let stdout = child.stdout.take().expect("child stdout");
+    let (line_tx, line_rx) = mpsc::sync_channel(1);
+    let reader = thread::spawn(move || {
+        let mut lines = BufReader::new(stdout).lines();
+        let marker = lines.find_map(|line| match line {
+            Ok(line) if line.starts_with("KELD_VERSION_PUBLICATION_CUT=") => Some(Ok(line)),
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        });
+        let _ = line_tx.send(marker);
+        for line in lines {
+            if line.is_err() {
+                break;
+            }
+        }
+    });
+    let marker = line_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("child reaches the named publication boundary")
+        .expect("read child stdout")
+        .expect("child writes boundary marker");
+    let status = child.wait().expect("reap crash-cut child");
+    reader.join().expect("join crash-cut stdout reader");
+    assert_eq!(
+        status.code(),
+        Some(91),
+        "child must exit at the requested cut"
+    );
+    assert!(marker.contains(&format!("KELD_VERSION_PUBLICATION_CUT={cut}")));
+    marker
+}
+
+#[test]
+fn qf1_witness_composes_with_recovery_inspection_under_the_reacquired_lease() {
+    for substitution in [
+        QfBindingSubstitution::None,
+        QfBindingSubstitution::Attempt,
+        QfBindingSubstitution::Channel,
+    ] {
+        run_qf1_recovery_composition_case(substitution);
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Windows crash cut proves coordinator/keeper loss, family exit, writer reacquisition and fail-closed byte preservation"
+)]
+fn lost_coordinator_and_keeper_leave_pending_journal_refusing_ordinary_writer() {
+    let fixture = tempfile::tempdir().expect("all-owners-lost fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    let verifier = crate::UpdateVerifier::new(
+        trust.installation.clone(),
+        crate::tests::signing_key().verifying_key().to_bytes(),
+    )
+    .expect("trusted test verifier");
+    let (attempt_id, channel_id) =
+        seed_pending_activation_journal(&trust, ActivationPhase::PublishPending);
+    let installation_id = trust
+        .lifecycle_installation_id()
+        .expect("canonical trusted install binding");
+    let binding = WindowsLifecycleBinding::new(
+        installation_id,
+        attempt_id,
+        channel_id,
+        WindowsLifecyclePurpose::CoordinatorToKeeper,
+    )
+    .expect("all-owners-lost test binding");
+    let endpoint =
+        WindowsNamedPipeBootstrapStream::endpoint_for_lifecycle_install(&installation_id);
+    let journal_path = trust.installation.update_root.join("activation-journal");
+    let journal_before = std::fs::read(&journal_path).expect("journal before owner loss");
+    let pointer_names = ["version-floor", "current", "last-known-good"];
+    let pointers_before = pointer_names.map(|name| {
+        std::fs::read(trust.installation.update_root.join(name)).expect("pointer bytes")
+    });
+
+    let mut coordinator = ChildReaper::new(spawn_recovery_composition_process(
+        "coordinator",
+        &trust,
+        binding,
+        &endpoint,
+        None,
+    ));
+    let mut coordinator_lines =
+        BufReader::new(coordinator.stdout.take().expect("coordinator stdout")).lines();
+    let ready = next_prefixed_line(&mut coordinator_lines, "QF1_COORDINATOR_READY");
+    let member_pid = ready
+        .strip_prefix("QF1_COORDINATOR_READY member=")
+        .expect("coordinator exposes exact Job-member PID for the test oracle")
+        .parse::<u32>()
+        .expect("valid member PID");
+    let mut coordinator_session = 0_u32;
+    // SAFETY: coordinator PID comes from the live Child; the output is writable.
+    assert_ne!(
+        unsafe {
+            windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(
+                coordinator.id(),
+                &raw mut coordinator_session,
+            )
+        },
+        0
+    );
+    let member_peer =
+        keld_runtime::windows_job::WindowsProcessPeer::open(member_pid, coordinator_session)
+            .expect("pin exact attempt member before coordinator and keeper loss");
+    assert!(
+        !member_peer.has_exited().expect("query live attempt member"),
+        "candidate family is live before both owners are killed"
+    );
+    let mut keeper = ChildReaper::new(spawn_recovery_composition_process(
+        "keeper",
+        &trust,
+        binding,
+        &endpoint,
+        Some((coordinator.id(), coordinator_session)),
+    ));
+    let mut keeper_lines = BufReader::new(keeper.stdout.take().expect("keeper stdout")).lines();
+    assert_eq!(
+        next_prefixed_line(&mut keeper_lines, "QF1_KEEPER_READY"),
+        "QF1_KEEPER_READY"
+    );
+    assert!(
+        OpenOptions::new()
+            .read(true)
+            .open(trust.installation.update_root.join("activation.lock"))
+            .is_err(),
+        "keeper retains share-zero exclusion before its own death"
+    );
+
+    coordinator.kill().expect("kill coordinator before QF1");
+    assert!(
+        !coordinator.wait().expect("wait coordinator loss").success(),
+        "the coordinator must be lost before the keeper"
+    );
+    keeper.kill().expect("kill keeper before successor/QF1");
+    assert!(
+        !keeper.wait().expect("wait keeper loss").success(),
+        "no successor retirement receipt may exist after keeper loss"
+    );
+    assert!(
+        member_peer
+            .wait_until_exited(Duration::from_secs(10))
+            .expect("wait on exact member after Job close"),
+        "loss of the final Job handle reaps the KILL_ON_JOB_CLOSE family"
+    );
+    assert!(
+        OpenOptions::new()
+            .read(true)
+            .open(trust.installation.update_root.join("activation.lock"))
+            .is_ok(),
+        "both owner processes are gone, so no live lease handle remains"
+    );
+    let refusal = load_windows_activation_write_snapshot(&trust, &verifier)
+        .expect_err("pending journal must refuse without authenticated QF1 witness");
+    assert!(
+        matches!(
+            refusal,
+            crate::UpdateError::Baseline {
+                step: "activation recovery",
+                ..
+            }
+        ),
+        "refusal occurs after taking the free lease, not because another owner remains: {refusal:?}"
+    );
+    assert_eq!(
+        std::fs::read(&journal_path).expect("journal after owner loss"),
+        journal_before,
+        "all-owners-lost recovery preserves the pending journal"
+    );
+    for (name, before) in pointer_names.into_iter().zip(&pointers_before) {
+        assert_eq!(
+            std::fs::read(trust.installation.update_root.join(name))
+                .expect("pointer after owner loss"),
+            *before,
+            "all-owners-lost recovery preserves {name}"
+        );
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QfBindingSubstitution {
+    None,
+    Attempt,
+    Channel,
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one native fixture proves QF1 and protected recovery-context equality across coordinator, keeper and successor"
+)]
+fn run_qf1_recovery_composition_case(substitution: QfBindingSubstitution) {
+    let fixture = tempfile::tempdir().expect("QF1/recovery composition fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    let verifier = crate::UpdateVerifier::new(
+        trust.installation.clone(),
+        crate::tests::signing_key().verifying_key().to_bytes(),
+    )
+    .expect("trusted test verifier");
+    // The journal names the fixture owner's image, which the successor presents below.
+    let (attempt_id, channel_id) = seed_pending_activation_journal_with(
+        &trust,
+        ActivationPhase::PublishPending,
+        support::COORDINATOR_IMAGE_BLAKE3,
+    );
+    let installation_id = trust
+        .lifecycle_installation_id()
+        .expect("canonical trusted install binding");
+    let bound_attempt = if substitution == QfBindingSubstitution::Attempt {
+        [0xe1; 32]
+    } else {
+        attempt_id
+    };
+    let bound_channel = if substitution == QfBindingSubstitution::Channel {
+        [0xe2; 32]
+    } else {
+        channel_id
+    };
+    let binding = WindowsLifecycleBinding::new(
+        installation_id,
+        bound_attempt,
+        bound_channel,
+        WindowsLifecyclePurpose::CoordinatorToKeeper,
+    )
+    .expect("exact coordinator-to-keeper test binding");
+    let locator = installation_id;
+    let endpoint = WindowsNamedPipeBootstrapStream::endpoint_for_lifecycle_install(&locator);
+    let expected_image = std::env::current_exe()
+        .expect("test executable")
+        .canonicalize()
+        .expect("canonical test image");
+    let journal_path = trust.installation.update_root.join("activation-journal");
+    let journal_before = std::fs::read(&journal_path).expect("protected journal bytes");
+    let pointer_names = ["version-floor", "current", "last-known-good"];
+    let pointers_before = pointer_names.map(|name| {
+        std::fs::read(trust.installation.update_root.join(name)).expect("pointer bytes")
+    });
+
+    let mut coordinator = ChildReaper::new(spawn_recovery_composition_process(
+        "coordinator",
+        &trust,
+        binding,
+        &endpoint,
+        None,
+    ));
+    let mut coordinator_lines =
+        BufReader::new(coordinator.stdout.take().expect("coordinator stdout")).lines();
+    let coordinator_ready = next_prefixed_line(&mut coordinator_lines, "QF1_COORDINATOR_READY");
+    let member_pid = coordinator_ready
+        .strip_prefix("QF1_COORDINATOR_READY member=")
+        .expect("coordinator publishes the exact Job member PID")
+        .parse::<u32>()
+        .expect("valid member PID");
+    let mut coordinator_session = 0_u32;
+    // SAFETY: the coordinator PID comes from this live Child, and the output is writable.
+    assert_ne!(
+        unsafe {
+            windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(
+                coordinator.id(),
+                &raw mut coordinator_session,
+            )
+        },
+        0
+    );
+    let member_peer =
+        keld_runtime::windows_job::WindowsProcessPeer::open(member_pid, coordinator_session)
+            .expect("pin candidate-family member while both owners live");
+    assert!(
+        !member_peer.has_exited().expect("query live member"),
+        "attempt member must still be alive before owner-loss controls"
+    );
+    let mut keeper = ChildReaper::new(spawn_recovery_composition_process(
+        "keeper",
+        &trust,
+        binding,
+        &endpoint,
+        Some((coordinator.id(), coordinator_session)),
+    ));
+    let mut keeper_lines = BufReader::new(keeper.stdout.take().expect("keeper stdout")).lines();
+    assert_eq!(
+        next_prefixed_line(&mut keeper_lines, "QF1_KEEPER_READY"),
+        "QF1_KEEPER_READY"
+    );
+    assert!(
+        OpenOptions::new()
+            .read(true)
+            .open(trust.installation.update_root.join("activation.lock"))
+            .is_err(),
+        "keeper retains share-zero writer exclusion before coordinator death"
+    );
+
+    coordinator
+        .kill()
+        .expect("kill exact coordinator process after keeper adoption");
+    assert!(
+        !coordinator
+            .wait()
+            .expect("wait coordinator death")
+            .success(),
+        "coordinator helper must die before keeper retirement"
+    );
+    writeln!(keeper.stdin.as_mut().expect("keeper stdin"), "RETIRE")
+        .expect("authorize keeper retirement phase");
+    assert_eq!(
+        next_prefixed_line(&mut keeper_lines, "QF1_KEEPER_LISTENER_READY"),
+        "QF1_KEEPER_LISTENER_READY"
+    );
+
+    let mut keeper_session = 0_u32;
+    // SAFETY: keeper is live and its PID is returned by the exact Child owner.
+    assert_ne!(
+        unsafe {
+            windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(
+                keeper.id(),
+                &raw mut keeper_session,
+            )
+        },
+        0
+    );
+    let connection = connect_windows_lifecycle_rendezvous_until(
+        &endpoint,
+        WindowsLifecycleExpectation::from_keeper(installation_id)
+            .expect("cold successor independently expects install identity"),
+        Instant::now() + Duration::from_secs(10),
+        |pid, session| {
+            if pid != keeper.id() || session != keeper_session {
+                return None;
+            }
+            let peer = keld_runtime::windows_job::WindowsProcessPeer::open(pid, session).ok()?;
+            if peer.image_path().canonicalize().ok()? != expected_image
+                || peer.token_facts().session_id != session
+            {
+                return None;
+            }
+            Some(peer)
+        },
+    )
+    .expect("authenticate keeper and receive the exact-attempt QF1 channel");
+    let retirement = keld_runtime::windows_job::WindowsLifecycleRetirementWitness::receive(
+        connection,
+        Instant::now() + Duration::from_secs(10),
+    )
+    .expect("QF1 is required before returning the retirement witness");
+    assert_eq!(
+        next_prefixed_line(&mut keeper_lines, "QF1_KEEPER_RETIRED"),
+        "QF1_KEEPER_RETIRED"
+    );
+    assert_eq!(retirement.active_processes().expect("exact Job census"), 0);
+    let retired_binding = retirement.binding();
+    assert_eq!(retired_binding.installation_id(), &installation_id);
+    assert_eq!(
+        retired_binding.purpose(),
+        WindowsLifecyclePurpose::KeeperToSuccessor
+    );
+
+    let inspection = load_windows_recovery_inspection(&trust, &verifier)
+        .expect("successor reacquires exclusive lease and reads protected recovery context");
+    assert_eq!(
+        inspection.lifecycle_installation_id(),
+        retired_binding.installation_id()
+    );
+    assert_eq!(
+        retired_binding.attempt_id() == inspection.attempt_id(),
+        substitution != QfBindingSubstitution::Attempt,
+        "wrong-attempt QF1 must not match the protected journal"
+    );
+    assert_eq!(
+        retired_binding.lifecycle_channel_id() == inspection.lifecycle_channel_id(),
+        substitution != QfBindingSubstitution::Channel,
+        "wrong-channel QF1 must not match the protected journal"
+    );
+    assert_eq!(inspection.attempt_id(), &attempt_id);
+    assert_eq!(inspection.lifecycle_channel_id(), &channel_id);
+    assert!(
+        OpenOptions::new()
+            .read(true)
+            .open(trust.installation.update_root.join("activation.lock"))
+            .is_err(),
+        "the inspection owns the reacquired share-zero lease while witness IDs are compared"
+    );
+    assert_eq!(
+        std::fs::read(&journal_path).expect("journal during comparison"),
+        journal_before,
+        "QF1 composition and inspection are read-only"
+    );
+    for (name, before) in pointer_names.into_iter().zip(&pointers_before) {
+        assert_eq!(
+            std::fs::read(trust.installation.update_root.join(name))
+                .expect("pointer during comparison"),
+            *before,
+            "QF1 composition cannot modify {name}"
+        );
+    }
+    assert!(
+        load_windows_activation_write_snapshot(&trust, &verifier).is_err(),
+        "matching or mismatched QF1 cannot bypass the ordinary pending-journal refusal"
+    );
+    // The host composes the authenticated zero witness into the exact updater binding.
+    let witnessed = crate::ProcessFamilyRetirement::from_exact_zero_observation(
+        *retired_binding.installation_id(),
+        *retired_binding.attempt_id(),
+        *retired_binding.lifecycle_channel_id(),
+    );
+    let coordinator_image = support::coordinator_image(fixture.path());
+    let recovered = inspection.recover_with_image_file(&witnessed, &coordinator_image);
+    writeln!(keeper.stdin.as_mut().expect("keeper stdin"), "EXIT")
+        .expect("release keeper helper after QF1 evidence capture");
+    drop(keeper.stdin.take());
+    assert_eq!(
+        next_prefixed_line(&mut keeper_lines, "QF1_KEEPER_EXIT"),
+        "QF1_KEEPER_EXIT"
+    );
+    assert!(keeper.wait().expect("wait keeper").success());
+    if substitution != QfBindingSubstitution::None {
+        assert!(
+            matches!(
+                recovered,
+                Err(crate::UpdateError::Activation {
+                    step: "process-family retirement binding",
+                    effect: crate::ActivationEffect::JournalBoundRecoveryRequired,
+                    ..
+                })
+            ),
+            "a QF1 witness for another attempt or channel authorizes no write: {recovered:?}"
+        );
+        assert_eq!(
+            std::fs::read(&journal_path).expect("journal after composition"),
+            journal_before
+        );
+        for (name, before) in pointer_names.into_iter().zip(&pointers_before) {
+            assert_eq!(
+                std::fs::read(trust.installation.update_root.join(name))
+                    .expect("pointer after composition"),
+                *before
+            );
+        }
+        return;
+    }
+    let crate::WindowsRecoveryOutcome::Reminted(minted) =
+        recovered.expect("the exact QF1 witness authorizes journal-bound recovery")
+    else {
+        panic!("a publish-pending journal re-mints its channels without writing");
+    };
+    let crate::WindowsJournaledAttempt::AwaitingHealth(attempt) = minted
+        .journal(support::ATTEMPT_OWNER, support::INITIATING_LOGON)
+        .expect("the resumed owner journals its re-mint record")
+    else {
+        panic!("a publish-pending journal resumes to a live awaiting-health attempt");
+    };
+    assert_eq!(attempt.attempt_id(), &attempt_id);
+    assert_ne!(
+        attempt.lifecycle_channel_id(),
+        &channel_id,
+        "the resumed owner re-mints its lifecycle channel"
+    );
+    assert_eq!(attempt.candidate().version, "2.0.0");
+    assert!(
+        matches!(
+            attempt.roll_back(crate::ActivationFailureClass::ProcessCrash, &witnessed),
+            Err(crate::UpdateError::Activation {
+                step: "process-family retirement binding",
+                effect: crate::ActivationEffect::JournalBoundRecoveryRequired,
+                ..
+            })
+        ),
+        "the lost owner's QF1 witness cannot retire the resumed owner's family"
+    );
+    // The resumed owner launched nothing; recovery binds its own re-minted channel.
+    let inspection = load_windows_recovery_inspection(&trust, &verifier)
+        .expect("reacquire the lease for the resumed attempt");
+    let resumed = crate::ProcessFamilyRetirement::from_exact_zero_observation(
+        *inspection.lifecycle_installation_id(),
+        *inspection.attempt_id(),
+        *inspection.lifecycle_channel_id(),
+    );
+    let crate::WindowsRecoveryOutcome::Resolved(resolution) = inspection
+        .recover_with_image_file(&resumed, &coordinator_image)
+        .expect("the resumed attempt's own binding authorizes its rollback")
+    else {
+        panic!("an awaiting-health attempt that lost its owner rolls back");
+    };
+    assert_eq!(
+        resolution.outcome(),
+        crate::WindowsActivationOutcome::RolledBack
+    );
+    assert_eq!(resolution.current(), &trust.installation.baseline);
+    assert!(!journal_path.exists(), "resolution removes the journal");
+    assert!(
+        !trust
+            .installation
+            .update_root
+            .join("versions")
+            .join("2.0.0")
+            .exists(),
+        "the failed candidate is retired before journal removal"
+    );
+    let reopened = load_windows_activation_write_snapshot(&trust, &verifier)
+        .expect("the resolved installation admits the ordinary writer");
+    assert_eq!(
+        reopened.version_floor(),
+        "2.0.0",
+        "rollback keeps the floor"
+    );
+    assert_eq!(reopened.current(), &trust.installation.baseline);
+}
+
+#[test]
+fn reduced_activation_lease_transfer_preserves_share_zero_after_coordinator_drop() {
+    let fixture = tempfile::tempdir().expect("per-user keeper lease fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    let verifier = crate::UpdateVerifier::new(
+        trust.installation.clone(),
+        crate::tests::signing_key().verifying_key().to_bytes(),
+    )
+    .expect("trusted test verifier");
+    let writer = load_windows_activation_write_snapshot(&trust, &verifier)
+        .expect("acquire exact per-user writer lease");
+
+    let mut attempt =
+        keld_runtime::windows_job::WindowsProcessJob::create().expect("create unnamed attempt Job");
+    let mut member = spawn_lifecycle_process_helper("member");
+    attempt
+        .assign_child(&member)
+        .expect("assign exact attempt member");
+
+    let mut keeper = spawn_lifecycle_process_helper("keeper");
+    let keeper_stdout = keeper.stdout.take().expect("keeper stdout");
+    let mut keeper_lines = BufReader::new(keeper_stdout).lines();
+    let mut keeper_session = 0_u32;
+    // SAFETY: keeper is live and its PID comes from Child.
+    assert_ne!(
+        unsafe {
+            windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(
+                keeper.id(),
+                &raw mut keeper_session,
+            )
+        },
+        0
+    );
+    let keeper_peer =
+        keld_runtime::windows_job::WindowsProcessPeer::open(keeper.id(), keeper_session)
+            .expect("pin exact keeper process");
+    let local_retention = writer
+        .duplicate_lifecycle_lease_retention()
+        .expect("create reduced handle to exact share-zero lease");
+    let remote_lease = attempt
+        .transfer_activation_lease_handle_to(&keeper_peer, &local_retention)
+        .expect("transfer reduced share-zero retention to exact keeper process");
+    drop(local_retention);
+
+    drop(writer);
+    assert!(
+        load_windows_baseline(&trust).is_err(),
+        "remote keeper handle must retain installation-wide writer exclusion"
+    );
+
+    writeln!(
+        keeper.stdin.as_mut().expect("keeper stdin"),
+        "LEASE {remote_lease}"
+    )
+    .expect("deliver remote lease handle to one-shot keeper");
+    let readiness = keeper_lines
+        .find_map(|line| match line {
+            Ok(line) if line.starts_with("LEASE_KEEPER_READY") => Some(Ok(line)),
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .unwrap_or_else(|| {
+            let status = keeper.wait().expect("wait failed lease keeper");
+            let stderr = keeper
+                .stderr
+                .take()
+                .map(std::io::read_to_string)
+                .transpose()
+                .expect("read keeper error");
+            panic!("lease keeper exited before readiness: status={status}; stderr={stderr:?}");
+        })
+        .expect("read keeper readiness");
+    assert_eq!(readiness, "LEASE_KEEPER_READY");
+    assert!(
+        load_windows_baseline(&trust).is_err(),
+        "keeper retains the exclusive open after the original writer drops"
+    );
+    writeln!(keeper.stdin.as_mut().expect("keeper stdin"), "EXIT")
+        .expect("release keeper lease handle");
+    drop(keeper.stdin.take());
+    assert_eq!(
+        next_prefixed_line(&mut keeper_lines, "LEASE_KEEPER_EXIT"),
+        "LEASE_KEEPER_EXIT"
+    );
+    assert!(keeper.wait().expect("wait keeper").success());
+    assert!(
+        load_windows_baseline(&trust).is_ok(),
+        "closing the final remote duplicate releases the writer exclusion"
+    );
+    attempt
+        .terminate_and_wait(&member, std::time::Duration::from_secs(10))
+        .expect("retire attempt Job after lease retention closes");
+    let _ = member
+        .wait()
+        .expect("wait attempt member reaped by Job close");
+}
+
+#[test]
+#[ignore = "private Windows keeper/member subprocess entry point"]
+fn windows_lifecycle_process_helper() {
+    match std::env::var(LIFECYCLE_HELPER_ENV).as_deref() {
+        Ok("member") => std::thread::park(),
+        Ok("keeper") => run_lease_keeper_helper(),
+        other => panic!("unexpected lifecycle helper role {other:?}"),
+    }
+}
+
+#[test]
+#[ignore = "private QF1/recovery composition subprocess entry point"]
+fn windows_recovery_composition_process_helper() {
+    match std::env::var(RECOVERY_COMPOSITION_HELPER_ENV).as_deref() {
+        Ok("coordinator") => run_recovery_composition_coordinator(),
+        Ok("keeper") => run_recovery_composition_keeper(),
+        other => panic!("unexpected recovery composition helper role {other:?}"),
+    }
+}
+
+struct ChildReaper {
+    child: Child,
+    reap_on_drop: bool,
+}
+
+#[test]
+fn unassigned_lifecycle_member_is_reaped_when_job_assignment_fails() {
+    let child = spawn_lifecycle_process_helper("member");
+    let mut session = 0_u32;
+    // SAFETY: child is live and the session output is writable.
+    assert_ne!(
+        unsafe {
+            windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(
+                child.id(),
+                &raw mut session,
+            )
+        },
+        0
+    );
+    let observer = keld_runtime::windows_job::WindowsProcessPeer::open(child.id(), session)
+        .expect("pin exact unassigned member process");
+    drop(ChildReaper::new(child));
+    assert!(
+        observer.has_exited().expect("query exact member process"),
+        "the assignment guard must terminate and reap a child that never joined the Job"
+    );
+}
+
+impl ChildReaper {
+    fn new(child: Child) -> Self {
+        Self {
+            child,
+            reap_on_drop: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.reap_on_drop = false;
+    }
+}
+
+impl Deref for ChildReaper {
+    type Target = Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.child
+    }
+}
+
+impl DerefMut for ChildReaper {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.child
+    }
+}
+
+impl Drop for ChildReaper {
+    fn drop(&mut self) {
+        if self.reap_on_drop && !matches!(self.child.try_wait(), Ok(Some(_))) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+fn spawn_recovery_composition_process(
+    role: &str,
+    trust: &WindowsBaselineTrust,
+    binding: WindowsLifecycleBinding,
+    endpoint: &str,
+    server: Option<(u32, u32)>,
+) -> Child {
+    let fixture_root = trust
+        .installation
+        .install_root
+        .parent()
+        .expect("install root parent")
+        .to_owned();
+    let image = std::env::current_exe()
+        .expect("test executable")
+        .canonicalize()
+        .expect("canonical test image");
+    let mut command = Command::new(std::env::current_exe().expect("test executable"));
+    command
+        .args([
+            "--exact",
+            RECOVERY_COMPOSITION_HELPER_TEST,
+            "--ignored",
+            "--nocapture",
+        ])
+        .env(RECOVERY_COMPOSITION_HELPER_ENV, role)
+        .env("KELD_QF1_FIXTURE_ROOT", fixture_root)
+        .env("KELD_QF1_VOLUME_GUID", &trust.volume_guid)
+        .env("KELD_QF1_ENDPOINT", endpoint)
+        .env(
+            "KELD_QF1_INSTALLATION_ID",
+            crate::error::hex_digest(binding.installation_id()),
+        )
+        .env(
+            "KELD_QF1_ATTEMPT_ID",
+            crate::error::hex_digest(binding.attempt_id()),
+        )
+        .env(
+            "KELD_QF1_CHANNEL_ID",
+            crate::error::hex_digest(binding.lifecycle_channel_id()),
+        )
+        .env("KELD_QF1_SERVER_IMAGE", image.as_os_str())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some((pid, session)) = server {
+        command
+            .env("KELD_QF1_SERVER_PID", pid.to_string())
+            .env("KELD_QF1_SERVER_SESSION", session.to_string());
+    }
+    command
+        .spawn()
+        .unwrap_or_else(|error| panic!("spawn QF1 {role} process fixture: {error}"))
+}
+
+fn run_recovery_composition_coordinator() {
+    let fixture_root =
+        std::path::PathBuf::from(std::env::var_os("KELD_QF1_FIXTURE_ROOT").expect("fixture root"));
+    let install_root = fixture_root.join("KeldPerUserFixture");
+    let mut trust = support::trust_for(&install_root);
+    trust.installation.install_mode = crate::DirectInstallMode::PerUserDirect;
+    trust.volume_guid = std::env::var("KELD_QF1_VOLUME_GUID").expect("fixture volume GUID");
+    let verifier = crate::UpdateVerifier::new(
+        trust.installation.clone(),
+        crate::tests::signing_key().verifying_key().to_bytes(),
+    )
+    .expect("trusted per-user verifier");
+    let inspection = load_windows_recovery_inspection(&trust, &verifier)
+        .expect("coordinator admits protected pending journal and share-zero lease");
+    let installation_id = parse_lifecycle_id("KELD_QF1_INSTALLATION_ID");
+    let expected_attempt = parse_lifecycle_id("KELD_QF1_ATTEMPT_ID");
+    let expected_channel = parse_lifecycle_id("KELD_QF1_CHANNEL_ID");
+    assert_eq!(inspection.lifecycle_installation_id(), &installation_id);
+    assert_ne!(expected_channel, [0; 32]);
+    assert_ne!(expected_attempt, [0; 32]);
+    let binding = WindowsLifecycleBinding::new(
+        installation_id,
+        expected_attempt,
+        expected_channel,
+        WindowsLifecyclePurpose::CoordinatorToKeeper,
+    )
+    .expect("exact coordinator-to-keeper binding");
+    let retention = inspection
+        .duplicate_lifecycle_lease_retention()
+        .expect("retain this inspection's exact share-zero lease");
+    let mut attempt = keld_runtime::windows_job::WindowsProcessJob::create()
+        .expect("create exact unnamed attempt Job");
+    let mut member = ChildReaper::new(spawn_lifecycle_process_helper("member"));
+    attempt
+        .assign_child(&*member)
+        .expect("assign exact attempt-family member");
+    member.disarm();
+    let locator = *inspection.lifecycle_installation_id();
+    let listener = WindowsLifecycleRendezvousListener::bind(locator, binding)
+        .expect("bind one-shot coordinator-to-keeper endpoint");
+    let mut coordinator_session = 0_u32;
+    // SAFETY: the current coordinator PID is live and the output is writable.
+    assert_ne!(
+        unsafe {
+            windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(
+                std::process::id(),
+                &raw mut coordinator_session,
+            )
+        },
+        0
+    );
+    println!("QF1_COORDINATOR_READY member={}", member.id());
+    std::io::stdout()
+        .flush()
+        .expect("flush coordinator readiness");
+    let expected_image = std::env::current_exe()
+        .expect("test executable")
+        .canonicalize()
+        .expect("canonical keeper image");
+    let accepted = listener
+        .accept_until(
+            Instant::now() + Duration::from_secs(10),
+            |pid, session, facts| {
+                if session != coordinator_session || facts.session_id != session {
+                    return None;
+                }
+                let peer =
+                    keld_runtime::windows_job::WindowsProcessPeer::open(pid, session).ok()?;
+                if peer.image_path().canonicalize().ok()? != expected_image
+                    || peer.token_facts() != facts
+                {
+                    return None;
+                }
+                Some(peer)
+            },
+        )
+        .expect("authenticate exact keeper and finish fresh transcript")
+        .expect("keeper connects before handoff deadline");
+    attempt
+        .transfer_lifecycle_attempt_handoff(
+            accepted,
+            &retention,
+            Instant::now() + Duration::from_secs(10),
+        )
+        .expect("transfer exact Job/lease and receive keeper-adoption receipt");
+    drop(retention);
+    drop(inspection);
+    drop(attempt);
+    drop(member);
+    println!("QF1_COORDINATOR_HANDED_OFF");
+    std::io::stdout()
+        .flush()
+        .expect("flush coordinator handoff");
+    std::thread::park();
+}
+
+fn run_recovery_composition_keeper() {
+    let (binding, mut handoff) = receive_recovery_composition_handoff();
+    println!("QF1_KEEPER_READY");
+    std::io::stdout().flush().expect("flush keeper readiness");
+    assert_eq!(
+        BufReader::new(std::io::stdin())
+            .lines()
+            .next()
+            .expect("retirement command")
+            .expect("read retirement command"),
+        "RETIRE"
+    );
+    retire_recovery_composition_handoff(binding, &mut handoff);
+    assert_eq!(
+        BufReader::new(std::io::stdin())
+            .lines()
+            .next()
+            .expect("keeper exit command")
+            .expect("read keeper exit"),
+        "EXIT"
+    );
+    drop(handoff);
+    println!("QF1_KEEPER_EXIT");
+    std::io::stdout().flush().expect("flush keeper exit");
+}
+
+fn receive_recovery_composition_handoff() -> (
+    WindowsLifecycleBinding,
+    keld_runtime::windows_job::WindowsLifecycleKeeperHandoff,
+) {
+    let endpoint = std::env::var("KELD_QF1_ENDPOINT").expect("lifecycle endpoint");
+    let server_pid = std::env::var("KELD_QF1_SERVER_PID")
+        .expect("coordinator PID")
+        .parse::<u32>()
+        .expect("valid coordinator PID");
+    let server_session = std::env::var("KELD_QF1_SERVER_SESSION")
+        .expect("coordinator session")
+        .parse::<u32>()
+        .expect("valid coordinator session");
+    let expected_image = std::path::PathBuf::from(
+        std::env::var_os("KELD_QF1_SERVER_IMAGE").expect("coordinator image"),
+    )
+    .canonicalize()
+    .expect("canonical coordinator image");
+    let binding = WindowsLifecycleBinding::new(
+        parse_lifecycle_id("KELD_QF1_INSTALLATION_ID"),
+        parse_lifecycle_id("KELD_QF1_ATTEMPT_ID"),
+        parse_lifecycle_id("KELD_QF1_CHANNEL_ID"),
+        WindowsLifecyclePurpose::CoordinatorToKeeper,
+    )
+    .expect("exact keeper binding");
+    let connection = connect_windows_lifecycle_rendezvous_until(
+        &endpoint,
+        WindowsLifecycleExpectation::exact(binding),
+        Instant::now() + Duration::from_secs(10),
+        |pid, session| {
+            if pid != server_pid || session != server_session {
+                return None;
+            }
+            let peer = keld_runtime::windows_job::WindowsProcessPeer::open(pid, session).ok()?;
+            if peer.image_path().canonicalize().ok()? != expected_image
+                || peer.token_facts().session_id != session
+            {
+                return None;
+            }
+            Some(peer)
+        },
+    )
+    .expect("authenticate exact coordinator and complete rendezvous receipts");
+    let handoff = keld_runtime::windows_job::WindowsLifecycleKeeperHandoff::receive_attempt_bundle(
+        connection,
+        Instant::now() + Duration::from_secs(10),
+    )
+    .expect("adopt exact attempt Job and reduced writer lease");
+    assert_eq!(handoff.active_processes().expect("keeper Job query"), 1);
+    (binding, handoff)
+}
+
+fn retire_recovery_composition_handoff(
+    binding: WindowsLifecycleBinding,
+    handoff: &mut keld_runtime::windows_job::WindowsLifecycleKeeperHandoff,
+) {
+    let successor_binding = binding.with_purpose(WindowsLifecyclePurpose::KeeperToSuccessor);
+    let listener =
+        WindowsLifecycleRendezvousListener::bind(*binding.installation_id(), successor_binding)
+            .expect("bind keeper-to-successor one-shot channel");
+    println!("QF1_KEEPER_LISTENER_READY");
+    std::io::stdout()
+        .flush()
+        .expect("flush successor listener readiness");
+    let mut keeper_session = 0_u32;
+    // SAFETY: current keeper PID is live and the output is writable.
+    assert_ne!(
+        unsafe {
+            windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(
+                std::process::id(),
+                &raw mut keeper_session,
+            )
+        },
+        0
+    );
+    let expected_image = std::env::current_exe()
+        .expect("test executable")
+        .canonicalize()
+        .expect("canonical successor image");
+    let successor = listener
+        .accept_until(
+            Instant::now() + Duration::from_secs(10),
+            |pid, session, facts| {
+                if session != keeper_session || facts.session_id != session {
+                    return None;
+                }
+                let peer =
+                    keld_runtime::windows_job::WindowsProcessPeer::open(pid, session).ok()?;
+                if peer.image_path().canonicalize().ok()? != expected_image
+                    || peer.token_facts() != facts
+                {
+                    return None;
+                }
+                Some(peer)
+            },
+        )
+        .expect("authenticate exact successor and receive acknowledgement")
+        .expect("successor connects before deadline");
+    handoff
+        .retire_to_successor(
+            successor,
+            Duration::from_secs(10),
+            Instant::now() + Duration::from_secs(10),
+        )
+        .expect("release lease only after successor zero ACK, then send QF1");
+    println!("QF1_KEEPER_RETIRED");
+    std::io::stdout().flush().expect("flush keeper retirement");
+}
+
+fn parse_lifecycle_id(name: &str) -> [u8; 32] {
+    let encoded = std::env::var(name).unwrap_or_else(|_| panic!("missing {name}"));
+    assert_eq!(
+        encoded.len(),
+        64,
+        "{name} must be a 32-byte lowercase hex digest"
+    );
+    let mut decoded = [0_u8; 32];
+    for (index, pair) in encoded.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+        let pair = std::str::from_utf8(pair).expect("hex pair is UTF-8");
+        decoded[index] = u8::from_str_radix(pair, 16).expect("hex pair is valid");
+    }
+    decoded
+}
+
+fn run_lease_keeper_helper() {
+    let mut lines = BufReader::new(std::io::stdin()).lines();
+    let record = lines
+        .next()
+        .expect("remote lease record")
+        .expect("read remote lease record");
+    let mut fields = record.split_ascii_whitespace();
+    assert_eq!(fields.next(), Some("LEASE"));
+    let remote_lease = fields
+        .next()
+        .expect("remote lease handle value")
+        .parse::<usize>()
+        .expect("valid remote lease handle");
+    assert_eq!(fields.next(), None, "lease record must be exact");
+    // SAFETY: this remote handle value was just created in this exact helper's
+    // process by the coordinator's DuplicateHandle call.
+    let handle = unsafe {
+        std::os::windows::io::OwnedHandle::from_raw_handle(
+            (remote_lease as *mut std::ffi::c_void).cast(),
+        )
+    };
+    let mut lease = std::fs::File::from(handle);
+    assert!(
+        lease.write_all(b"forbidden").is_err(),
+        "keeper lease handle cannot write the activation lock"
+    );
+    println!("LEASE_KEEPER_READY");
+    std::io::stdout().flush().expect("flush keeper readiness");
+    assert_eq!(
+        lines
+            .next()
+            .expect("keeper exit command")
+            .expect("read exit"),
+        "EXIT"
+    );
+    println!("LEASE_KEEPER_EXIT");
+    std::io::stdout().flush().expect("flush keeper exit");
+}
+
+fn spawn_lifecycle_process_helper(role: &str) -> Child {
+    let mut command = Command::new(std::env::current_exe().expect("current test executable"));
+    command
+        .args(["--exact", LIFECYCLE_HELPER_TEST, "--ignored", "--nocapture"])
+        .env(LIFECYCLE_HELPER_ENV, role)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+        .spawn()
+        .unwrap_or_else(|error| panic!("spawn {role} process fixture: {error}"))
+}
+
+fn next_prefixed_line(
+    lines: &mut impl Iterator<Item = std::io::Result<String>>,
+    prefix: &str,
+) -> String {
+    lines
+        .find_map(|line| match line {
+            Ok(line) if line.starts_with(prefix) => Some(Ok(line)),
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .unwrap_or_else(|| panic!("line starting with {prefix:?} missing"))
+        .unwrap_or_else(|error| panic!("read line starting with {prefix:?}: {error}"))
+}
+
+fn higher_release(
+    verifier: &crate::UpdateVerifier,
+    observation: &crate::ProvenanceObservation,
+) -> crate::VerifiedFull {
+    higher_release_version(verifier, observation, "2.0.0")
+}
+
+pub(super) fn higher_release_version(
+    verifier: &crate::UpdateVerifier,
+    observation: &crate::ProvenanceObservation,
+    version: &str,
+) -> crate::VerifiedFull {
+    higher_release_version_with(verifier, observation, version, GOLDEN)
+}
+
+/// [`higher_release_version`] for canonical package content `content`.
+pub(super) fn higher_release_version_with(
+    verifier: &crate::UpdateVerifier,
+    observation: &crate::ProvenanceObservation,
+    version: &str,
+    content: &[u8],
+) -> crate::VerifiedFull {
+    let admitted = verifier.admit(observation).expect("admit real provenance");
+    let compressed = zstd::stream::encode_all(Cursor::new(content), 0)
+        .expect("compress authenticated full package");
+    let release = release_json(
+        version,
+        &compressed.len().to_string(),
+        &digest_hex(&compressed),
+        &content.len().to_string(),
+        &digest_hex(content),
+        "",
+    );
+    let manifest = manifest_json(&release);
+    let crate::ManifestDecision::Update(selected) = admitted
+        .verify_manifest(&manifest, &sign(&manifest))
+        .expect("verify higher release manifest")
+    else {
+        panic!("higher release must be selected");
+    };
+    selected
+        .verify_full(&mut Cursor::new(compressed), &mut Vec::new())
+        .expect("verify complete higher package")
+}
+
+/// Seeds a consistent pending `phase` over a committed baseline: a complete candidate
+/// version, the floor and `current` that phase implies, and its canonical journal, each
+/// created with the protection profile of the installation's own mode.
+pub(super) fn seed_pending_activation_journal(
+    trust: &WindowsBaselineTrust,
+    phase: ActivationPhase,
+) -> ([u8; 32], [u8; 32]) {
+    seed_pending_activation_journal_with(trust, phase, [0x55; 32])
+}
+
+/// [`seed_pending_activation_journal`] whose journal names `helper_image_blake3`.
+pub(super) fn seed_pending_activation_journal_with(
+    trust: &WindowsBaselineTrust,
+    phase: ActivationPhase,
+    helper_image_blake3: [u8; 32],
+) -> ([u8; 32], [u8; 32]) {
+    let profile = trust.installation.install_mode.protection_profile();
+    let baseline = trust.installation.baseline.clone();
+    let mut candidate = baseline.clone();
+    candidate.version = "2.0.0".to_owned();
+    candidate.content_blake3 = *blake3::hash(GOLDEN).as_bytes();
+
+    let versions = support::directory(&trust.installation.update_root.join("versions"));
+    let candidate_directory =
+        create_directory_relative_with_profile(&versions, &candidate.version, profile)
+            .expect("create staged journal candidate tree");
+    let candidate_tree =
+        create_directory_relative_with_profile(&candidate_directory, "tree", profile)
+            .expect("create protected candidate content tree");
+    copy_fixture_tree(
+        &trust
+            .installation
+            .update_root
+            .join("versions")
+            .join(&trust.installation.baseline.version)
+            .join("tree"),
+        &candidate_tree,
+        profile,
+    );
+    drop(candidate_tree);
+    let mut content =
+        create_file_relative_with_profile(&candidate_directory, "content.tar", profile)
+            .expect("create staged candidate content");
+    content
+        .write_all(GOLDEN)
+        .expect("write staged candidate bytes");
+    content.sync_all().expect("flush staged candidate bytes");
+    drop(content);
+    let complete = crate::records::encode_complete(
+        &candidate,
+        u64::try_from(GOLDEN.len()).expect("fixture size fits u64"),
+    )
+    .expect("encode candidate completion record");
+    let mut marker = create_file_relative_with_profile(&candidate_directory, ".complete", profile)
+        .expect("create candidate completion marker");
+    marker
+        .write_all(&complete)
+        .expect("write completion marker");
+    marker.sync_all().expect("flush completion marker");
+    drop(marker);
+    drop(candidate_directory);
+
+    let current = if phase == ActivationPhase::PublishPending {
+        baseline.clone()
+    } else {
+        candidate.clone()
+    };
+    let floor = if phase == ActivationPhase::PublishPending {
+        baseline.version.clone()
+    } else {
+        candidate.version.clone()
+    };
+    let update_root = &trust.installation.update_root;
+    std::fs::write(
+        update_root.join("version-floor"),
+        crate::records::encode_floor(&floor).expect("recovery floor"),
+    )
+    .expect("seed recovery floor");
+    std::fs::write(
+        update_root.join("current"),
+        crate::records::encode_pointer(crate::records::PointerKind::Current, &current)
+            .expect("current pointer"),
+    )
+    .expect("seed recovery current pointer");
+
+    let attempt_id = [0x88; 32];
+    let lifecycle_channel_id = [0x77; 32];
+    let mut journal = ActivationJournal {
+        attempt_id,
+        candidate,
+        rollback_target: baseline.clone(),
+        prior_floor: baseline.version.clone(),
+        prior_last_known_good: baseline,
+        prior_previous_known_good: None,
+        helper_image_blake3,
+        health_channel_id: [0x66; 32],
+        lifecycle_channel_id,
+        ownership: Some(crate::records::AttemptOwnership {
+            initiating_logon: support::INITIATING_LOGON,
+            attempt_owner: support::ATTEMPT_OWNER,
+        }),
+        phase,
+    };
+    if let ActivationPhase::HealthAccepted { .. } = journal.phase {
+        // An accepted phase records the digest of this journal's own receipt fields.
+        journal.phase = ActivationPhase::HealthAccepted {
+            health_receipt_digest: crate::records::activation_health_receipt_digest(
+                &journal.attempt_id,
+                &journal.health_channel_id,
+                &journal.candidate,
+            )
+            .expect("canonical receipt digest"),
+        };
+    }
+    let journal_bytes =
+        crate::records::encode_activation_journal(&journal).expect("encode exact pending journal");
+    let update = support::directory(&trust.installation.update_root);
+    write_profiled_record(&update, "activation-journal", &journal_bytes, profile);
+    (attempt_id, lifecycle_channel_id)
+}
+
+fn copy_fixture_tree(
+    source: &std::path::Path,
+    destination: &std::fs::File,
+    profile: keld_guard::WindowsInstallProtectionProfile,
+) {
+    for entry in std::fs::read_dir(source).expect("read trusted baseline fixture tree") {
+        let entry = entry.expect("read baseline fixture entry");
+        let source_path = entry.path();
+        let kind = entry.file_type().expect("read baseline fixture entry kind");
+        if kind.is_dir() {
+            let name = entry
+                .file_name()
+                .into_string()
+                .expect("UTF-8 baseline fixture directory name");
+            let child = create_directory_relative_with_profile(destination, &name, profile)
+                .expect("create protected copied fixture directory");
+            copy_fixture_tree(&source_path, &child, profile);
+        } else {
+            assert!(
+                kind.is_file(),
+                "baseline fixture contains a non-file object"
+            );
+            let name = entry
+                .file_name()
+                .into_string()
+                .expect("UTF-8 baseline fixture file name");
+            let bytes = std::fs::read(source_path).expect("read baseline fixture file");
+            let mut copy = create_file_relative_with_profile(destination, &name, profile)
+                .expect("create protected copied fixture file");
+            copy.write_all(&bytes).expect("write copied fixture file");
+            copy.sync_all().expect("flush copied fixture file");
+        }
+    }
+}
+
+pub(super) fn seed_per_user_baseline(root: &std::path::Path) -> WindowsBaselineTrust {
+    seed_per_user_baseline_with(root, GOLDEN)
+}
+
+/// [`seed_per_user_baseline`] for canonical package content `content`.
+pub(super) fn seed_per_user_baseline_with(
+    root: &std::path::Path,
+    content: &[u8],
+) -> WindowsBaselineTrust {
+    let install_path = root.join("KeldPerUserFixture");
+    let mut trust = support::trust_for_with(&install_path, content);
+    trust.installation.install_mode = crate::DirectInstallMode::PerUserDirect;
+    let parent = support::directory(root);
+    let profile = keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate;
+    let install = create_directory_relative_with_profile(&parent, "KeldPerUserFixture", profile)
+        .expect("exact owner-private install root");
+    let update = create_directory_relative_with_profile(&install, "updates", profile)
+        .expect("exact owner-private update root");
+    let versions = create_directory_relative_with_profile(&update, "versions", profile)
+        .expect("exact owner-private versions root");
+    trust.volume_guid = qualified_volume_root(&parent).expect("fixture volume GUID");
+
+    let archive = root.join("baseline.tar");
+    std::fs::write(&archive, content).expect("canonical baseline source");
+    let verified = support::baseline_with(&trust, content);
+    let mut source = open_source(&archive).expect("admit baseline source handle");
+    let validated = verified
+        .validate_windows_archive(&mut source)
+        .expect("validate signed baseline package");
+    let stage = create_directory_relative_with_profile(&versions, "1.0.0", profile)
+        .expect("create baseline version");
+    let (directories, files) = populate_stage(
+        stage,
+        "1.0.0",
+        &validated,
+        &mut source,
+        StageProtection::OwnerPrivate,
+        &mut |_, _| Ok::<(), std::io::Error>(()),
+    )
+    .expect("populate the exact baseline tree");
+    let complete = crate::records::encode_complete(verified.identity(), verified.content_size())
+        .expect("canonical completion record");
+    let mut marker = create_file_relative_with_profile(
+        &directories[0]
+            .try_clone()
+            .expect("version handle")
+            .into_std_file(),
+        ".complete",
+        profile,
+    )
+    .expect("create owner-private completion marker");
+    marker
+        .write_all(&complete)
+        .expect("write completion marker");
+    marker.sync_all().expect("flush completion marker");
+    drop(marker);
+    drop(files);
+    drop(directories);
+
+    write_profiled_record(
+        &update,
+        "version-floor",
+        &crate::records::encode_floor(&verified.identity().version).expect("baseline floor"),
+        profile,
+    );
+    write_profiled_record(
+        &update,
+        "current",
+        &crate::records::encode_pointer(crate::records::PointerKind::Current, verified.identity())
+            .expect("current pointer"),
+        profile,
+    );
+    write_profiled_record(
+        &update,
+        "last-known-good",
+        &crate::records::encode_pointer(
+            crate::records::PointerKind::LastKnownGood,
+            verified.identity(),
+        )
+        .expect("last-known-good pointer"),
+        profile,
+    );
+    let provenance = crate::records::encode_provenance(
+        &crate::InstallProvenance {
+            identity: trust.installation.clone(),
+            owner: crate::InstallOwner::Direct,
+        },
+        &trust.publisher_scope,
+        &trust.volume_guid,
+    )
+    .expect("mode-bound per-user provenance");
+    write_profiled_record(&install, "install-provenance", &provenance, profile);
+    let lock = create_file_relative_exclusive_with_profile(&update, "activation.lock", profile)
+        .expect("persistent exclusive lease object");
+    lock.sync_all().expect("flush persistent lease object");
+    drop(lock);
+    trust
+}
+
+fn write_profiled_record(
+    parent: &std::fs::File,
+    name: &str,
+    bytes: &[u8],
+    profile: keld_guard::WindowsInstallProtectionProfile,
+) {
+    let mut record = create_file_relative_with_profile(parent, name, profile)
+        .unwrap_or_else(|error| panic!("create protected {name}: {error}"));
+    record
+        .write_all(bytes)
+        .unwrap_or_else(|error| panic!("write protected {name}: {error}"));
+    record
+        .sync_all()
+        .unwrap_or_else(|error| panic!("flush protected {name}: {error}"));
+}

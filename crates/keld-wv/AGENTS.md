@@ -1,39 +1,37 @@
 # keld-wv — adds root AGENTS.md
 
-Spec: `docs/architecture/05-webview-and-native.md`. Platform truth: `docs/research/library/host-platforms/06-webview-reality.md`. v0 trait: `src/engine.rs` (not the full spec 05 sketch).
+Spec: `docs/architecture/05-webview-and-native.md`; platform truth: `docs/research/library/host-platforms/06-webview-reality.md`; v0 trait: `src/engine.rs`.
 
-- `unsafe` MAY appear in platform backends only. Those modules MUST `deny(unsafe_op_in_unsafe_fn)` and MUST cite a platform contract in `// SAFETY:`.
-- All engine/window mutations MUST run on the UI thread (today: tao's main-thread event loop; later: keld-core command queue). Agents MUST NOT touch platform handles from I/O or pool threads.
-- `WebEngine` trait changes MUST go through design review. Backends MUST stay within the trait API. Agents MUST NOT add a trait method until a live backend implements it in the same PR (root YAGNI).
-- Platform quirks MUST comment OS + version + source link; uncited workarounds MUST be reverted.
-- Linux: agents MUST probe the GPU stack and apply safe-mode before init — MUST NOT instruct env-var exports. Emit `degraded-rendering`. `webkitgtk::detect_gpu_safe_mode` is the pure query; `prepare_gpu_safe_mode_process` applies the mitigation by exact-self re-exec and MUST run only from a process-entry dispatcher before non-repeatable state. `WebKitGtkEngine::new` MUST fail closed before GTK/WebKit when preparation is missing. Mitigates NVIDIA proprietary driver + Wayland on `WebKitGTK` ≤ 2.54 by giving the replacement process `WEBKIT_DISABLE_DMABUF_RENDERER=1`. Upstream: [tauri-apps/tauri#9394](https://github.com/tauri-apps/tauri/issues/9394), [#14924](https://github.com/tauri-apps/tauri/issues/14924). `gpu_safe_mode()` exposes the result for `keld doctor`.
+- Backend `unsafe` MUST deny `unsafe_op_in_unsafe_fn`; each block needs `// SAFETY:`. Windows FFI: folders/files/volumes/windows/ACL/WebView2/process (`OpenProcess` SYNCHRONIZE, `WaitForSingleObject`, one `RegisterWaitForSingleObject`/`UnregisterWaitEx` exit wake whose pool callback only posts via tao `EventLoopProxy`). macOS `wkwebview/{macos_profile,macos_bridge}.rs` only (KEL-142 bridge): WK store/config, CFRunLoop, boot sysctl, self-PID proc info, Keld metadata and parent ACL reads (`acl_get_fd_np`, `acl_get_entry`, `acl_get_tag_type`, `acl_free`), rejecting `ACL_EXTENDED_ALLOW` and read errors. Debug `profile-test-hooks` may read host camera/mic status and observe public sheets with owned blocks on UI thread. No module-wide allow. Core SecCode FFI: `keld-core/AGENTS.md`.
+- Engine/window mutations MUST stay on tao UI thread (later core queue); platform handles MUST NOT be touched on I/O/pool threads.
+- `WebEngine` trait changes require design review; backends MUST use its API. No new method until a live backend implements it in the same PR (root YAGNI).
+- Platform quirks MUST cite OS, version, source; revert uncited workarounds.
+- Linux MUST probe and apply GPU safe-mode before GTK/WebKit; never ask users to export env vars. `detect_gpu_safe_mode` is pure; `prepare_gpu_safe_mode_process` exact-self-reexecs before non-repeatable state with explicit argv/envp for NVIDIA proprietary + Wayland on WebKitGTK ≤2.54 (`WEBKIT_DISABLE_DMABUF_RENDERER=1`). Engine init fails closed if skipped. Emit `degraded-rendering`; `gpu_safe_mode().is_degraded()` reports applied state. Upstream: [#9394](https://github.com/tauri-apps/tauri/issues/9394), [#14924](https://github.com/tauri-apps/tauri/issues/14924).
 - Cross-engine diffs MUST go to the baseline matrix; polyfill pack + doctor smooth. Agents MUST NOT silently paper over them.
-- Tests MUST follow repository `.agents/testing.md`.
-- Camera/microphone capture MUST go through `keld-guard` (`web.camera` /
+- Tests MUST follow `.agents/testing.md`.
+- Camera/microphone capture MUST go through `keld-guard` (`web.camera`/
   `web.microphone`) as the requesting `Principal::Webview` when the host
   has minted that webview's id. Agents MUST NOT evaluate capture as
   `Principal::AppProcess` — that applies `/app` media grants to every
-  webview, including a remote/other window. If the requesting webview
-  principal has not been minted yet, deny (`KELD-GUARD007`); do not fall
-  back to AppProcess. v0 `evaluate` still denies webview principals
+  webview, including remote/other windows. If that webview principal is
+  not minted yet, deny (`KELD-GUARD007`); never fall back to AppProcess. v0 `evaluate` still denies webview principals
   (`KELD-GUARD006`) until window-level grants exist — that is fail-closed,
   not a reason to present AppProcess. Per backend:
   - macOS 12+ (wry interim): agents MUST NOT omit wry `with_permission_handler`;
-    wry auto-grants new media requests when absent. Pinned wry cfg-removes its
-    delegate on older debug hosts; oldest-OS proof is open ([source](https://github.com/tauri-apps/wry/blob/14be44842747a62c4110bd982f61f6c1acd705c3/build.rs)).
+    wry auto-grants new media requests when absent. Older debug hosts lose
+    that delegate; oldest-OS proof is open (`src/media.rs`).
   - Linux (wry interim): WebKitGTK 2.52.6 and wry 0.56.1 default-deny an
     unhandled new request, but that fallback is not proof Keld evaluated the
-    right principal/manifest ([source](https://webkitgtk.org/reference/webkit2gtk/stable/class.UserMediaPermissionRequest.html)); explicit callback provenance remains mandatory.
+    right principal/manifest ([source](https://webkitgtk.org/reference/webkit2gtk/stable/class.UserMediaPermissionRequest.html)); explicit callback provenance stays mandatory.
   - Windows (direct COM, KEL-65): agents MUST register guarded
     `add_PermissionRequested` and deny-all `add_NewWindowRequested` before
     minting `GuardInstalled`; first navigation MUST require that proof. WebView2
     defaults to media prompts and unguarded popups. Agents MUST NOT bypass
     either handler or the first-navigation proof (KEL-168).
-  Agents MUST NOT pass `AppProcess` to inherit `/app` media grants.
 - Architecture 01 §5 **first paint** is the KEL-64 external double-rAF image
   beacon on a pre-spawn monotonic clock — not wry `PageLoadEvent::Finished`,
-  not `WindowBuilder::build`, and not titled HWND / `window-visible` (KEL-62,
+  not `WindowBuilder::build`, nor titled HWND / `window-visible` (KEL-62,
   KEL-64). `PageLoadEvent::Finished` is navigation completion only; the macOS
   `startup` trace records it as `nav_finished` for construction diagnostics.
-  Dump that trace with `KELD_STARTUP_TRACE=1`. The `startup` module is
-  macOS-only; do not compile it on Linux/Windows (CodeRabbit #10).
+  Dump it with `KELD_STARTUP_TRACE=1`. `startup` is macOS-only; never
+  compile it on Linux/Windows (CodeRabbit #10).

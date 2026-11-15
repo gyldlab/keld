@@ -121,13 +121,22 @@ Governing sources:
    marker-only diagnostic, or "T1b pending" error. Its first landing is atomic
    with the T1b no-flag host consumer on one KEL-96 head, while T1a and T1b keep
    separate acceptance identities and artifacts.
-6. The fixture producer must stage the exact UTF-8 bytes `{}\n` as
+6. The historical fixture producer and the current Windows/Linux development
+   producer stage the exact UTF-8 bytes `{}\n` as
    `keld.permissions.jsonc` and set `content_sha256` to
    `sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356`.
    The artifact-consistency test
    independently recomputes that value. The T1a host validates the fixed file's
    presence/readability/regular-file containment but neither hashes nor parses
    its policy bytes. KEL-102/T2 owns the single runtime read/hash/parse.
+   Approved macOS successor: [KEL-140](kel140-macos-public-filesystem.md) §4.5
+   selects only the fixed project-root `keld.permissions.jsonc` through retained
+   no-follow root/leaf handles and invoking-owner checks. A genuinely absent
+   project file preserves these exact historical bytes/digest. A present file is
+   bounded-captured once; the same owned buffer is staged and hashed. Unsafe,
+   unreadable or over-budget present input never becomes fallback. The CLI does
+   not parse or authorize; KEL-102 retains sole runtime policy validation before
+   app resources. Historical T1a artifacts and other-platform behavior are unchanged.
 7. T1a creates no window, listener, Bun child, guard snapshot, privileged
    broker, release signature, or KEL-102 policy parse. KEL-102 consumes only the
    T1a descriptor contract from the landed atomic head.
@@ -218,6 +227,26 @@ Normative task and test text below must carry the same decisions.
 checked-in Git text to LF with one final LF. The digest header is outside that
 block, so an independent reviewer can recompute it without a circular hash.
 
+**D4 applicability clarification (outside the frozen decision block):** the earlier
+exact-content-approved KEL-254 contract is the Windows direct-install successor for
+binding the current host and exact sidecar bytes/location/root relationship. The
+multi-mode expansion is approved by exact-content approval recorded in Linear comment
+`e0b276f9-5ecc-42a9-ac8f-8a5e05f44245`; that approval leaves its implementation and
+native qualification gates open. Neither contract changes T1a's owner-private dev
+layout or adds a caller-selected release mode. The KEL-96
+consumer (KEL-254 T3 Part B) implements Windows installed boot over KEL-53's
+executable-located active selection and the existing KEL-135 verified signer/app
+identity; its native boot evidence covers `PerUserDirect` only, and each machine-mode
+cell stays unqualified until KEL-53's native install-mode proof and the consumer's own
+native boot evidence exist for it. Per-user direct and
+machine-wide direct installs have separate access/authority acceptance cells;
+machine-seamless activation additionally remains behind KEL-270's lifecycle and
+authority proof gate. Managed/package-manager installs remain owned by their deployment
+mechanism. KEL-254 amendment A3 makes the executable path a locator only and keeps two
+Windows boot states: dev lease, or authenticated installed provenance, otherwise refuse.
+This note is applicability only: it does not change or reapprove any frozen
+KEL-96 decision row.
+
 ### 4.2 Boot format and ownership
 
 The v1 sidecar is generated from reviewed project configuration by tooling;
@@ -306,6 +335,14 @@ the v1 descriptor digest to
 and proves that relation in an artifact generation test. T1a's host path checks
 only that the fixed file is a readable, regular, contained file; it does not
 read, hash, or parse policy bytes.
+
+The approved macOS [KEL-140 successor clause](kel140-macos-public-filesystem.md#45-exact-macos-policy-source-amendment--reuse)
+uses an explicit fixed project policy when present, with retained-object ownership
+and one bounded buffer for staging and digest. Absent project policy retains the
+historical fixed bytes above. Present unsafe input fails; missing staged policy
+still fails startup. The existing host-selected stage and single read/hash/parse
+are unchanged. This successor changes only the macOS development producer; it
+does not relabel historical T1a/T1b acceptance or authenticate a release.
 
 Existing `KEL-102/T1` retains its landed meaning: the atomic KEL-96/T1a+T1b head
 exists **and** its generated fixture includes that explicit permissions file.
@@ -478,14 +515,22 @@ new inherited-handle protocol. The CLI spawns the host with stdin as an owned
 pipe, retains only its writer, and sets `KELD_DEV_LEASE=stdin-v1` to classify
 that existing stream as liveness-only. The host owns only the reader and marks
 it non-inheritable before spawning Bun; Bun receives null stdin. Standalone
-no-flag T1b has no `KELD_DEV_LEASE` and does not monitor terminal stdin.
+no-flag T1b has no `KELD_DEV_LEASE` and does not monitor terminal stdin. On Windows,
+once KEL-254 T3 lands, a launch without a valid dev lease is admitted only as an
+authenticated installed package or refused (KEL-254 AC2); a lease-less staged layout is
+no longer a dev-stage boot there. macOS and Linux standalone boot is unchanged until
+their own authenticated installed-root successor and a separate reviewed amendment
+converge them on the same rule; this is a temporary applicability difference, not a
+trust-model exception.
 
 CLI exit/crash closes the only writer and yields EOF. `CliLeaseLost` is a
 distinct shutdown cause: it quiesces new work and joins the common
 revoke/link-close/terminate/reap/event-loop-exit tail, but sends no impossible
 Quit reply because no lifecycle Call exists. A forged environment value can at
-most make the caller's own host monitor stdin and shut down; it carries no app
-root, path, digest, principal, permission, or application-resource ownership.
+most make the caller's own host monitor stdin and shut down, or, on Windows, route
+the launch to the `DevStage` validator, whose owner-private stage checks still decide
+admission (KEL-254 AC2); it carries no app root, path, digest, principal, permission,
+or application-resource ownership.
 Tests inspect both process handle tables: the host never owns a writer copy and
 Bun owns neither end; otherwise EOF cannot satisfy the acceptance.
 The Windows fixture uses raw `SystemExtendedHandleInformation` for CLI, host,

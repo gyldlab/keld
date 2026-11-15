@@ -51,13 +51,22 @@ non-trivial work, never standalone factual questions. Hook enforcement requires 
 support, registration trusted through its UI and exercised activation. Without activation,
 claim no enforcement; report unsupported/untrusted clients.
 
+## Tracker issue
+
+The KELD Linear issue, or under #517 the GitHub issue whose body names itself tracker of
+record (no live Linear issue covers the work and Linear cannot take one), linked from the
+nearest live Linear issue; never re-derive it. Linear scope, claim, status, comment and
+handoff duties, here and in routed playbooks, target the tracker issue. Claims post and
+order only there, by creation time (edits never reorder); a claim for the same work
+elsewhere never wins and is a conflict. GitHub mechanics: `.agents/coordination.md`.
+
 ## The loop (one issue, one agent, one concern)
 
 1. **Pick up and refresh.** Fetch the Linear issue (team KELD, current milestone first),
    including its description, comments, status and relations. Reconcile it with the
-   checked-out code and specs; read its spec, the governing `docs/architecture/*`
-   sections and target crate `AGENTS.md`; query only relevant-area entries from
-   `docs/agents/learnings.md` (query/slice only). Set only
+   checked-out code and specs; read its spec index and needed parts, the governing
+   `docs/architecture/*` sections and target crate `AGENTS.md`; query only
+   relevant-area entries from `docs/agents/learnings.md`. Set only
    the agent's own issue to `In Progress` and post scope, expected paths, non-goals,
    dependencies and the first falsifiable acceptance check. An agent MAY pick up only a
    `Todo` and unassigned issue, unless a human or the orchestration explicitly assigns
@@ -84,12 +93,12 @@ claim no enforcement; report unsupported/untrusted clients.
    owner, boundary and inputs/outputs, failure mode, observable contract, independence
    from the other atoms, and first falsifier. This is the working model before a design
    or fix is selected, not a rationale added after implementation.
-2. **Spec gate.** Larger than a bug fix and no spec? Write one from
-   `docs/agents/spec-template.md` and stop for human approval. Never implement from an
+2. **Spec gate.** Larger than a bug fix and no spec? Write one per
+   `.agents/specs.md` and stop for human approval. Never implement from an
    unapproved spec. Bug fixes skip the spec but not the regression test.
-3. **Isolate.** Work in a git worktree sibling directory (`../keld-<issue>`), branch
-   `agent/kel-<n>-<slug>` from `origin/main` (`.agents/review.md`). One
-   issue per worktree. Never two agents in one tree.
+3. **Isolate.** `just work-start kel-<n> <slug> --session <id>` creates a task;
+   coordination owns `.keld-work/worktrees/` placement. Use `agent/kel-<n>-<slug>`
+   from `origin/main`. One issue per tree, one writer.
 4. **Implement and coordinate.** Tests with the change (conformance entries *first* for
    compat work). Before a material design/scope decision and before integration,
    refresh Linear to pick up other-agent changes. Post a Linear progress comment after
@@ -107,13 +116,12 @@ claim no enforcement; report unsupported/untrusted clients.
    does not authorize competing architecture decisions. Apply the attempt, evidence,
    status, handoff, and current-documentation receipt rules owned by `.agents/coordination.md`
    to every applicable OS or external-semantic criterion.
-5. **Verify**. `just ci` is the exact full local gate; format, warning-denied clippy, and
-   the full workspace test suite are its mandatory core Rust subset. Also run the spec's
-   test plan. Diagram changes additionally run
-   `just mermaid-test`, `just mermaid-check`, and `just mermaid-render-check` plus the
-   visual/report gate from `.agents/testing.md`; included-source changes run both
-   `just llms-test` and `just llms-check` after regeneration. Paste both real outputs,
-   and every other gate result, in the PR; never "should work".
+5. **Verify**. `just ci` is the exact routine local gate; format, warning-denied clippy,
+   and the full workspace test suite remain mandatory. Its shared router selects Mermaid
+   only for diagram/renderer inputs; `just ci-full` forces full-corpus Mermaid rendering.
+   Also run the spec's test plan. Diagram changes include the visual/render report from
+   `.agents/testing.md`; included-source changes run `just llms-test` and `just llms-check`
+   after regeneration. Paste actual outputs in the PR; never "should work".
    Apply `.agents/coordination.md` for real OS/device versus CI-only evidence; `just ci`
    does not replace a named product-acceptance observable.
 6. **Self-review.** Re-read the full diff with fresh eyes (or an adversarial review
@@ -139,10 +147,7 @@ claim no enforcement; report unsupported/untrusted clients.
    § Branch and commit contract). After CodeRabbit fixes, resolve the addressed GitHub
    review threads on that PR (and on an earlier PR when a follow-up merged the fix) per
    `.agents/review.md` § Current-head review. Description per the intake form
-   [`.github/PULL_REQUEST_TEMPLATE.md`](../../.github/PULL_REQUEST_TEMPLATE.md):
-   Summary · Spec refs · Review gates · Tests · Platforms · Perf impact. Omit empty
-   optional sections. Strip every template HTML comment from the submitted PR
-   body. Append a deduped relevant-area learning only when the root threshold applies.
+   [`.github/PULL_REQUEST_TEMPLATE.md`](../../.github/PULL_REQUEST_TEMPLATE.md). Append a deduped relevant-area learning only when the root threshold applies.
    Post actual gate output, unverified conditions, commit/PR links and follow-up issue
    IDs. Before finishing, leave the Linear branch/OS handoff owned by coordination.
    Apply `.agents/coordination.md` § Standing autonomous merge delegation after the
@@ -162,7 +167,7 @@ acceptance cannot move between agents.
 - Device: <host the work actually runs on>
 - Model/effort: e.g. opus-5 | gpt-5.6-sol@max
 - Repo: <actual repository>
-- Worktree: ../keld-<issue>
+- Worktree: .keld-work/worktrees/kel-<n>-<slug>
 - Branch: agent/kel-<n>-<slug>
 - Expected paths: <globs this work will write>
 - Single-writer files/keys needed: none | <human-designated shared files/keys>
@@ -195,20 +200,19 @@ after the claim — one record of availability, not two.
 
 ## Parallelism rules
 
-- Concurrency budget: 3–7 agents. Decompose so concurrent issues touch disjoint crates;
-  cross-crate work is sequenced by claims and the issue graph, not raced.
-- Shared/foundational files — workspace `Cargo.toml`, `rust-toolchain.toml`, kipc wire
-  protocol, manifest schema, CI workflows, root `AGENTS.md` — are single-writer:
-  repository-owner designated under a winning claim with independent gate evidence.
-  Everything else: first PR to green wins; later PRs rebase.
-- Assign `real OS/device` work only to an agent that has the required system. Agents on
-  another OS MAY complete disjoint CI-only work, but MUST hand off the named OS acceptance
-  in Linear instead of duplicating or approximating it.
-- Subagents for search/read (fan out freely); exactly one builder runs
-  `cargo test`/`cargo build` per worktree (no concurrent builds in one tree).
-- Long-running autonomy: fresh context per issue; re-read ground-truth files each
-  iteration; if blocked >2 attempts on the same failure, stop and report — do not
-  thrash the tree.
+- Budget: 3–7 agents, disjoint crates; sequence cross-crate work by claims/issue graph.
+  Read access does not authorize integrating uncommitted work.
+- Shared `Cargo.toml`, `rust-toolchain.toml`, kipc wire protocol, manifest schema,
+  CI workflows and root `AGENTS.md`: one repository-owner-designated writer under a
+  winning claim and independent gate evidence. Else, first PR to green wins; later
+  PRs rebase and recheck consumers added by concurrent changes.
+- Give `real OS/device` work only to agents with that system. Others MAY do disjoint
+  CI-only work but MUST hand off the OS criterion in Linear, never approximate it.
+- Fan out read-only research freely. Exactly one `cargo test`/`cargo build` builder per
+  worktree. Separate trees share machine resources: measure contention before adding
+  host-wide build coordination; never omit a required gate to reduce contention.
+- Fresh context per issue; re-read ground truth each iteration. After >2 failed
+  attempts on the same failure, stop and report; do not thrash the tree.
 
 ## Review: CI is the arbiter, independent evidence reviews architecture
 
@@ -217,14 +221,11 @@ after the claim — one record of availability, not two.
   freshness · Mermaid structural checks + pinned render when diagrams change · secret
   scan · no `todo!()`/`unimplemented!()` on the diff. The always-created CI router owns
   the job-level applicability decision; unknown/shared/build-graph inputs run every
-  potentially affected gate. Workflow/router edits still create those jobs but must not
-  duplicate live Ubuntu `apt-get update` onto clippy/MSRV (GUI smoke owns WebKitGTK apt).
+  potentially affected gate.
   Visual inspection and the render report remain review artifacts in addition to CI.
-- **Review gates:** the five in root `AGENTS.md` (unsafe, public API, permissions,
-  dependencies, wire protocol) block until named independent security/architecture
-  evidence covers the exact final diff. `.github/CODEOWNERS` requests relevant reviewers
-  but is not a human-only approval gate. Secret scan is the checksum-pinned `gitleaks` CLI job in
-  `.github/workflows/ci.yml` (not the org-licensed GitHub Action).
+- **Review gates:** the five in root `AGENTS.md` block until named independent
+  security/architecture evidence covers the exact final diff. `.github/CODEOWNERS` requests relevant reviewers
+  but is not a human-only approval gate.
 - **Architectural review covers** intent, boundaries, spec conformance and API shape;
   lints own style. A PR too large for independent review gets split, not skimmed.
 - Fork PRs never run with secrets. Perf-budget regressions >5% need a written waiver.

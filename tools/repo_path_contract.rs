@@ -2,7 +2,11 @@
 
 use std::path::{Component, Path};
 
+/// Exact checkout-root namespace reserved for local agent resources.
+pub(crate) const LOCAL_WORKSPACE_DIR: &str = ".keld-work";
+
 const FORBIDDEN_PREFIXES: &[&str] = &[
+    LOCAL_WORKSPACE_DIR,
     ".git",
     "docs/research",
     "competitors",

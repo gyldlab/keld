@@ -67,6 +67,10 @@ claims MUST be verified against local reproduction or a primary source; otherwis
 label them anecdotal or unverified. Separate evidence, contradiction, inference, and
 uncertainty.
 
+For whole-source intake, record text/asset coverage separately. Route each learning
+to an owner or reasoned no-change/unknown. Reconcile cache state and metric scope
+before using vendor ratios.
+
 ## Diagrams in private research
 
 - A Mermaid diagram under `docs/research/`, or one that synthesizes external evidence,

@@ -1,6 +1,6 @@
 [package]
 name = "keld-update"
-description = "Release channel types for Keld update feeds"
+description = "Signed v0 manifest and full-package verification for Keld updates"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,33 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+fuzzing = []
+
 [dependencies]
+base64 = { workspace = true }
+blake3 = { workspace = true }
+ed25519-dalek = { workspace = true }
+keld-guard = { workspace = true }
+keld-pack = { workspace = true }
+semver = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+zstd = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+cap-std = { workspace = true }
+cap-fs-ext = { workspace = true }
+getrandom = { workspace = true }
+windows-sys = { workspace = true, features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_System_IO", "Win32_System_SystemServices"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+# QF1 integration tests must exercise the canonical lifecycle rendezvous with the real updater snapshot.
+keld-ipc = { workspace = true }
+keld-runtime = { workspace = true }
+tempfile = { workspace = true }
+windows-permissions = { workspace = true }
+windows-sys = { workspace = true, features = ["Win32_System_Memory", "Win32_System_Ioctl"] }
 
 [lints]
 workspace = true

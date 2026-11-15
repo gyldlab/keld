@@ -233,15 +233,20 @@ def check(receipt_path):
         if row["status"] in {"tracked", "implemented"}:
             blocked(row)
             issue = row.get("issue")
-            require(isinstance(issue, str) and re.fullmatch(r"KEL-[1-9][0-9]*", issue),
-                    "tracked finding requires KEL issue")
+            require(isinstance(issue, str) and re.fullmatch(r"(?:KEL|GH)-[1-9][0-9]*", issue),
+                    "tracked finding requires KEL issue or, for a GitHub tracker issue, GH issue")
             url = row.get("remote_receipt")
             require(isinstance(url, str), "tracked finding requires remote receipt URL")
             parsed = urlsplit(url)
-            require(parsed.scheme == "https" and parsed.hostname == "linear.app" and
-                    parsed.username is None and parsed.password is None and
-                    re.search(r"/issue/" + re.escape(issue) + r"(?:/|$)", parsed.path),
-                    "remote receipt must link the matching Linear issue")
+            plain = parsed.scheme == "https" and parsed.username is None and parsed.password is None
+            if issue.startswith("KEL-"):
+                require(plain and parsed.hostname == "linear.app" and
+                        re.search(r"/issue/" + re.escape(issue) + r"(?:/|$)", parsed.path),
+                        "remote receipt must link the matching Linear issue")
+            else:
+                require(plain and parsed.hostname == "github.com" and parsed.port is None and
+                        re.fullmatch(r"/gyldlab/keld/issues/" + issue[3:] + r"/?", parsed.path),
+                        "remote receipt must link the matching GitHub issue")
         elif row["status"] == "blocked":
             blocked(row)
             unresolved = True

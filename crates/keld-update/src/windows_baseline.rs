@@ -1,0 +1,757 @@
+//! One-shot machine baseline initialization and read-only provenance ownership.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{self, Read};
+
+use cap_fs_ext::{DirExt as _, FollowSymlinks, MetadataExt as _, OpenOptionsFollowExt as _};
+use cap_std::fs::{Dir, File, OpenOptions, OpenOptionsExt as _};
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, READ_CONTROL, WRITE_DAC,
+};
+
+use crate::windows_extraction::{ensure_directory, ensure_regular, open_ancestors};
+use crate::windows_fs::{
+    qualified_volume_root, require_volume_root_handle, validate_volume_locator,
+};
+use crate::{AdmittedInstallation, ArtifactIdentity};
+use crate::{
+    DirectInstallMode, DirectInstallationIdentity, InstallOwner, ProvenanceObservation, UpdateError,
+};
+
+mod record_publication;
+pub(crate) use record_publication::{RecordTarget, publish_new_record};
+use record_publication::{prepare_record, publish_prepared_record};
+
+mod activate;
+mod claimant;
+mod helper;
+mod initialize;
+mod load;
+mod locate;
+
+#[cfg(test)]
+pub(crate) use activate::CRASH_CUT_HOOK;
+pub use activate::{
+    ActivationHealthReceipt, ProcessFamilyRetirement, WindowsActivationAttempt,
+    WindowsActivationOutcome, WindowsActivationResolution, WindowsHealthAcceptedAttempt,
+    WindowsJournaledAttempt, WindowsMintedAttempt, WindowsRecoveryOutcome,
+};
+pub use claimant::{WindowsCandidateBoot, WindowsCandidateClaimant, locate_candidate_claimant};
+pub use helper::{
+    UpdaterHelperAnchor, UpdaterHelperImage, UpdaterHelperRole, anchor_updater_helper,
+};
+pub use initialize::{
+    initialize_windows_baseline, initialize_windows_machine_uac_baseline,
+    initialize_windows_per_user_baseline,
+};
+pub use load::{
+    load_windows_activation_write_snapshot, load_windows_baseline,
+    load_windows_recovery_inspection, repair_windows_unjournaled_versions,
+    select_windows_active_package,
+};
+pub use locate::select_active_package_for_executable;
+
+/// Trusted deployment/host inputs, independent of the record being authenticated.
+///
+/// These values must come from trusted packaging/host configuration. An installer
+/// must never accept lower-trust command-line, environment or feed assertions here.
+#[derive(Debug, Clone)]
+pub struct WindowsBaselineTrust {
+    /// Complete identity expected by the host and authenticated baseline verifier.
+    pub installation: DirectInstallationIdentity,
+    /// Trusted package/update owner observed by the deployment adapter before any feed access.
+    ///
+    /// Derive this only from trusted installer or package-manager state, never from a
+    /// feed, command line, environment variable or inferred install path. Managed owners
+    /// fail before Keld reads or mutates a direct-update installation tree.
+    pub owner: InstallOwner,
+    /// Installer-asserted publisher digest, not independent Authenticode evidence.
+    pub publisher_scope: [u8; 32],
+    /// Expected canonical volume-GUID root, such as `\\?\Volume{GUID}\`.
+    pub volume_guid: String,
+}
+
+impl WindowsBaselineTrust {
+    pub(crate) fn require_direct_owner(&self) -> Result<(), UpdateError> {
+        match &self.owner {
+            InstallOwner::Direct => Ok(()),
+            InstallOwner::Managed { mechanism } => Err(UpdateError::ManagedInstall {
+                mechanism: mechanism.clone(),
+            }),
+        }
+    }
+
+    /// Requires this record to name exactly the publisher scope and app id that the single
+    /// `keld-guard` Authenticode owner verified for the running image (KEL-254 AC11; KEL-53
+    /// "Helper launch and self-anchor"): signature success never runs an executable
+    /// against another publisher's or another app's installation. The one owner of this
+    /// rule for both `keld-host.exe` and `keld-updater-helper.exe`.
+    fn require_verified_signer(
+        &self,
+        publisher_scope: &[u8; 32],
+        app_id: &str,
+    ) -> Result<(), UpdateError> {
+        if *publisher_scope != self.publisher_scope {
+            return Err(UpdateError::RecordedSignerMismatch {
+                detail: "the installation's protected provenance records a different publisher than the verified signer".to_owned(),
+            });
+        }
+        if app_id != self.installation.app_id {
+            return Err(UpdateError::RecordedSignerMismatch {
+                detail: format!(
+                    "the installation's protected provenance records app id `{}`, not the verified `{app_id}`",
+                    self.installation.app_id
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    /// Derives the lifecycle installation ID expected from this trusted install choice.
+    ///
+    /// The ID is a domain-separated digest of canonical v2 protected provenance, including
+    /// install mode, app/channel/target, both roots, signing key, baseline, profile, principal
+    /// model, owner, publisher scope and volume. The host supplies this value to lifecycle
+    /// authentication; recovery inspection independently re-derives it from protected state.
+    /// It is stable for the same provenance and changes on relocation or provenance change.
+    ///
+    /// # Errors
+    /// Refuses managed ownership or invalid/noncanonical trusted provenance inputs.
+    pub fn lifecycle_installation_id(&self) -> Result<[u8; 32], UpdateError> {
+        self.require_direct_owner()?;
+        crate::records::lifecycle_installation_id(
+            &crate::InstallProvenance {
+                identity: self.installation.clone(),
+                owner: self.owner.clone(),
+            },
+            &self.publisher_scope,
+            &self.volume_guid,
+        )
+    }
+}
+
+/// Protected installed identity/floor with retained read handles and namespace pins.
+///
+/// This is not active-package selection, mutation authority or strict-role admission.
+#[derive(Debug)]
+pub struct LoadedWindowsBaseline {
+    observation: ProvenanceObservation,
+    floor: String,
+    publisher_scope: [u8; 32],
+    roots: Roots,
+    _activation_lease: File,
+    _records: Vec<File>,
+    _baseline_version: Dir,
+    _baseline_tree: Dir,
+}
+
+impl LoadedWindowsBaseline {
+    /// Protected identity and floor for ordinary update admission.
+    #[must_use]
+    pub const fn observation(&self) -> &ProvenanceObservation {
+        &self.observation
+    }
+
+    /// Trusted expected installation, checked against the protected record.
+    #[must_use]
+    pub fn identity(&self) -> &DirectInstallationIdentity {
+        &self.roots.trust.installation
+    }
+
+    /// Installer-asserted publisher digest; boot must independently verify its signer.
+    #[must_use]
+    pub const fn publisher_scope(&self) -> &[u8; 32] {
+        &self.publisher_scope
+    }
+
+    /// Exact protected semantic-version floor, without activation selection.
+    #[must_use]
+    pub fn version_floor(&self) -> &str {
+        &self.floor
+    }
+
+    /// Consumes this real loader owner to retain a SYSTEM-only staging authority.
+    ///
+    /// The returned root derives its identity, floor and versions handle from these
+    /// protected observations. It can produce only owner-private incomplete stages,
+    /// and retains this owner's metadata and ancestry handles for its lifetime.
+    ///
+    /// # Errors
+    /// Refuses a non-SYSTEM caller or changed machine versions protection. It never
+    /// creates scaffolding, changes the floor or publishes an artifact.
+    pub fn into_windows_extraction_root(self) -> Result<crate::WindowsExtractionRoot, UpdateError> {
+        crate::windows_extraction::WindowsExtractionRoot::from_loaded(self)
+    }
+
+    pub(crate) fn retained_versions(&self) -> io::Result<Dir> {
+        self.roots.versions.try_clone()
+    }
+}
+
+/// The exact immutable package tree KEL-53 selects for an ordinary startup.
+///
+/// It names one committed artifact from a journal-free, coherent snapshot of the protected
+/// records: `current`, which equals last-known-good or previous-known-good. The one
+/// exception is the accepted connect-back candidate's boot read
+/// ([`WindowsCandidateClaimant::read_candidate_boot`]), which selects the candidate of the
+/// `AwaitingHealth` attempt that accepted it, from its own tree. The selected
+/// version and tree, and every protected ancestor through the install and update roots,
+/// stay open for the owner's lifetime, so neither the version nor a path above it can be
+/// renamed or retired while the application runs from it. It holds no mutable-record
+/// handle and no activation lease, grants no updater authority, and does not authenticate
+/// the host executable or boot files; those remain with their own owners (KEL-254,
+/// KEL-96). [`select_active_package_for_executable`] requires the record to name the
+/// verified signer's publisher scope and app id before it selects.
+#[derive(Debug)]
+pub struct ActivePackageSelection {
+    identity: DirectInstallationIdentity,
+    publisher_scope: [u8; 32],
+    artifact: ArtifactIdentity,
+    tree_root: std::path::PathBuf,
+    _roots: Roots,
+    _version: Dir,
+    tree: Dir,
+}
+
+impl ActivePackageSelection {
+    /// The installation identity recorded in protected provenance.
+    #[must_use]
+    pub const fn install_identity(&self) -> &DirectInstallationIdentity {
+        &self.identity
+    }
+
+    /// The installer-recorded publisher digest; boot must independently verify its signer.
+    #[must_use]
+    pub const fn publisher_scope(&self) -> &[u8; 32] {
+        &self.publisher_scope
+    }
+
+    /// The selected committed artifact.
+    #[must_use]
+    pub const fn artifact(&self) -> &ArtifactIdentity {
+        &self.artifact
+    }
+
+    /// The canonical immutable tree: `<update-root>/versions/<version>/tree`.
+    #[must_use]
+    pub fn tree_root(&self) -> &std::path::Path {
+        &self.tree_root
+    }
+}
+
+/// Successful baseline initialization after production reload and exact seed checks.
+#[derive(Debug)]
+pub struct WindowsBaselineReceipt {
+    loaded: LoadedWindowsBaseline,
+    _version: VersionPins,
+}
+
+/// Coherent protected activation snapshot held under the exclusive installation lease.
+///
+/// It exposes only validated state and an extraction root. Journal, floor and pointer
+/// writes happen only through [`crate::WindowsMintedAttempt::journal`] for the attempt
+/// that [`crate::WindowsExtractionRoot::begin_activation`] minted for a stage completed
+/// under this same lease. The production loader
+/// currently admits only `PerUserDirect`; machine-UAC and machine-seamless authority
+/// remain separate gates.
+#[derive(Debug)]
+pub struct WindowsActivationWriteSnapshot {
+    roots: Roots,
+    lease: File,
+    admitted: AdmittedInstallation,
+    version_floor: String,
+    current: ArtifactIdentity,
+    last_known_good: ArtifactIdentity,
+    previous_known_good: Option<ArtifactIdentity>,
+    version_pins: BTreeMap<String, VersionPins>,
+}
+
+/// Read-only protected recovery observations held under the exclusive installation lease.
+///
+/// This owner can inspect one canonical activation journal and its protected pointer/floor
+/// context. It exposes no active-package selection or extraction root. Its only mutation
+/// paths are [`Self::recover`], which requires an exact process-family retirement binding
+/// for the inspected journal before the common transaction may write, and
+/// [`Self::resume_unlaunched`], which admits only a never-launched `PublishPending` attempt.
+#[derive(Debug)]
+pub struct WindowsRecoveryInspection {
+    roots: Roots,
+    lease: File,
+    admitted: AdmittedInstallation,
+    lifecycle_installation_id: [u8; 32],
+    journal: crate::records::ActivationJournal,
+    version_floor: String,
+    current: ArtifactIdentity,
+    last_known_good: ArtifactIdentity,
+    previous_known_good: Option<ArtifactIdentity>,
+    version_pins: BTreeMap<String, VersionPins>,
+    /// Completed stage of a publish-pending candidate that is not yet renamed.
+    candidate_stage: Option<String>,
+}
+
+impl WindowsActivationWriteSnapshot {
+    /// Creates a non-writable, non-inheritable reference to this exact
+    /// share-zero activation lease for the bounded lifecycle keeper.
+    ///
+    /// The returned handle retains only `FILE_READ_ATTRIBUTES | SYNCHRONIZE`;
+    /// it cannot mutate the lock file or updater records. The transaction owner
+    /// retains all write authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the lease handle is inheritable or Windows cannot
+    /// create/read back the reduced-rights duplicate.
+    #[cfg(windows)]
+    pub fn duplicate_lifecycle_lease_retention(
+        &self,
+    ) -> Result<std::os::windows::io::OwnedHandle, UpdateError> {
+        duplicate_lifecycle_lease_retention(&self.lease)
+    }
+
+    /// Exact anti-downgrade floor observed under the exclusive lease.
+    #[must_use]
+    pub fn version_floor(&self) -> &str {
+        &self.version_floor
+    }
+
+    /// Current selected artifact observed under the exclusive lease.
+    #[must_use]
+    pub const fn current(&self) -> &ArtifactIdentity {
+        &self.current
+    }
+
+    /// Health-confirmed last-known-good artifact observed under the exclusive lease.
+    #[must_use]
+    pub const fn last_known_good(&self) -> &ArtifactIdentity {
+        &self.last_known_good
+    }
+
+    /// Older health-confirmed rollback artifact, if present.
+    #[must_use]
+    pub const fn previous_known_good(&self) -> Option<&ArtifactIdentity> {
+        self.previous_known_good.as_ref()
+    }
+
+    /// Opens the unpublished staging root while retaining this exact writer lease.
+    ///
+    /// # Errors
+    /// Refuses a profile/root mismatch or a direct mode without production admission.
+    pub fn open_extraction_root(self) -> Result<crate::WindowsExtractionRoot, UpdateError> {
+        crate::windows_extraction::WindowsExtractionRoot::from_activation_write_snapshot(self)
+    }
+
+    pub(crate) const fn identity(&self) -> &DirectInstallationIdentity {
+        &self.admitted.identity
+    }
+
+    pub(crate) fn floor(&self) -> &semver::Version {
+        &self.admitted.floor
+    }
+
+    pub(crate) fn retained_versions(&self) -> io::Result<Dir> {
+        self.roots.versions.try_clone()
+    }
+
+    pub(crate) const fn profile(&self) -> keld_guard::WindowsInstallProtectionProfile {
+        self.roots.profile()
+    }
+}
+
+impl WindowsRecoveryInspection {
+    /// Lifecycle installation ID independently re-derived from admitted protected provenance.
+    #[must_use]
+    pub const fn lifecycle_installation_id(&self) -> &[u8; 32] {
+        &self.lifecycle_installation_id
+    }
+
+    /// Trusted installation identity checked against protected provenance.
+    #[must_use]
+    pub const fn identity(&self) -> &DirectInstallationIdentity {
+        &self.admitted.identity
+    }
+
+    /// Attempt ID read from the protected activation journal under the writer lease.
+    #[must_use]
+    pub const fn attempt_id(&self) -> &[u8; 32] {
+        &self.journal.attempt_id
+    }
+
+    /// Lifecycle channel ID read from the protected activation journal under the writer lease.
+    #[must_use]
+    pub const fn lifecycle_channel_id(&self) -> &[u8; 32] {
+        &self.journal.lifecycle_channel_id
+    }
+
+    /// Protected semantic-version floor observed with the journal.
+    #[must_use]
+    pub fn version_floor(&self) -> &str {
+        &self.version_floor
+    }
+
+    /// Current pointer observed with the journal.
+    #[must_use]
+    pub const fn current(&self) -> &ArtifactIdentity {
+        &self.current
+    }
+
+    /// Last-known-good pointer observed with the journal.
+    #[must_use]
+    pub const fn last_known_good(&self) -> &ArtifactIdentity {
+        &self.last_known_good
+    }
+
+    /// Previous-known-good pointer observed with the journal, if present.
+    #[must_use]
+    pub const fn previous_known_good(&self) -> Option<&ArtifactIdentity> {
+        self.previous_known_good.as_ref()
+    }
+
+    /// Duplicates this exact inspection's share-zero lease with only keeper-retention rights.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if Windows cannot duplicate and attenuate the retained lease handle.
+    #[cfg(windows)]
+    pub fn duplicate_lifecycle_lease_retention(
+        &self,
+    ) -> Result<std::os::windows::io::OwnedHandle, UpdateError> {
+        duplicate_lifecycle_lease_retention(&self.lease)
+    }
+}
+
+#[cfg(windows)]
+fn duplicate_lifecycle_lease_retention(
+    lease: &File,
+) -> Result<std::os::windows::io::OwnedHandle, UpdateError> {
+    let lease = lease
+        .try_clone()
+        .map_err(|cause| error("activation lease keeper clone", cause))?
+        .into_std();
+    crate::windows_fs::duplicate_activation_lease_for_keeper(&lease)
+        .map_err(|cause| error("activation lease keeper retention", cause))
+}
+
+impl WindowsBaselineReceipt {
+    /// Read-only protected provenance retained by this initialization receipt.
+    #[must_use]
+    pub const fn loaded(&self) -> &LoadedWindowsBaseline {
+        &self.loaded
+    }
+}
+
+#[derive(Debug)]
+struct Roots {
+    trust: WindowsBaselineTrust,
+    ancestors: Vec<Dir>,
+    update: Dir,
+    versions: Dir,
+}
+
+impl Roots {
+    fn install(&self) -> io::Result<&Dir> {
+        self.ancestors
+            .last()
+            .ok_or_else(|| io::Error::other("install root absent"))
+    }
+
+    const fn profile(&self) -> keld_guard::WindowsInstallProtectionProfile {
+        self.trust.installation.install_mode.protection_profile()
+    }
+}
+
+#[derive(Debug)]
+struct VersionPins {
+    _directories: Vec<Dir>,
+    files: Vec<File>,
+}
+
+fn error(step: &'static str, detail: impl std::fmt::Display) -> UpdateError {
+    UpdateError::Baseline {
+        step,
+        detail: detail.to_string(),
+    }
+}
+
+fn open_roots(trust: &WindowsBaselineTrust, private: bool) -> io::Result<Roots> {
+    let identity = &trust.installation;
+    if identity.target != "windows-x64" {
+        return Err(io::Error::other("baseline requires windows-x64"));
+    }
+    if private
+        && !matches!(
+            identity.install_mode,
+            DirectInstallMode::PerUserDirect
+                | DirectInstallMode::MachineSeamlessDirect
+                | DirectInstallMode::MachineUacDirect
+        )
+    {
+        return Err(io::Error::other(
+            "baseline initializer does not admit this installation mode",
+        ));
+    }
+    crate::records::path_text(&identity.install_root).map_err(io::Error::other)?;
+    crate::records::path_text(&identity.update_root).map_err(io::Error::other)?;
+    validate_volume_locator(&trust.volume_guid)?;
+    if identity.update_root.parent() != Some(identity.install_root.as_path()) {
+        return Err(io::Error::other(
+            "update root must be one direct child of install root",
+        ));
+    }
+    let update_name = identity
+        .update_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::other("update component absent"))?;
+    if update_name.eq_ignore_ascii_case("install-provenance") {
+        return Err(io::Error::other(
+            "update component conflicts with provenance",
+        ));
+    }
+    let ancestors = open_ancestors(&identity.install_root)?;
+    let last = ancestors
+        .len()
+        .checked_sub(1)
+        .ok_or_else(|| io::Error::other("install root absent"))?;
+    let volume = ancestors[0].dir_metadata()?.dev();
+    for (index, directory) in ancestors.iter().enumerate() {
+        if directory.dir_metadata()?.dev() != volume {
+            return Err(io::Error::other("ancestor crosses the expected volume"));
+        }
+        let file = directory.try_clone()?.into_std_file();
+        if index == 0 {
+            require_volume_root_handle(&file)?;
+            keld_guard::validate_windows_machine_volume_anchor(&file)?;
+        } else if index == last {
+            keld_guard::validate_windows_install_directory(
+                &file,
+                identity.install_mode.protection_profile(),
+            )?;
+        } else {
+            match identity.install_mode {
+                DirectInstallMode::PerUserDirect => ensure_directory(&directory.dir_metadata()?)?,
+                DirectInstallMode::MachineUacDirect => {
+                    keld_guard::validate_windows_machine_ancestor_directory(&file)?;
+                }
+                DirectInstallMode::MachineSeamlessDirect => {
+                    keld_guard::validate_windows_machine_directory(&file)?;
+                }
+            }
+        }
+        let actual = qualified_volume_root(&file)?;
+        if !actual.eq_ignore_ascii_case(&trust.volume_guid) {
+            return Err(io::Error::other(
+                "actual volume differs from trusted expected volume",
+            ));
+        }
+    }
+    let update = ancestors[last].open_dir_nofollow(update_name)?;
+    let versions = update.open_dir_nofollow("versions")?;
+    for directory in [&update, &versions] {
+        ensure_directory(&directory.dir_metadata()?)?;
+        if directory.dir_metadata()?.dev() != volume {
+            return Err(io::Error::other(
+                "baseline scaffold crosses the expected volume",
+            ));
+        }
+        let file = directory.try_clone()?.into_std_file();
+        keld_guard::validate_windows_install_directory(
+            &file,
+            identity.install_mode.protection_profile(),
+        )?;
+    }
+    Ok(Roots {
+        trust: trust.clone(),
+        ancestors,
+        update,
+        versions,
+    })
+}
+
+pub(crate) fn exact_entries(directory: &Dir, expected: &[&str]) -> io::Result<()> {
+    let mut names = BTreeSet::new();
+    for entry in directory.entries()? {
+        let name = entry?
+            .file_name()
+            .into_string()
+            .map_err(|_| io::Error::other("non-UTF-8 directory entry"))?;
+        names.insert(name);
+    }
+    let wanted: BTreeSet<String> = expected.iter().map(|name| (*name).to_owned()).collect();
+    if names != wanted {
+        return Err(io::Error::other(format!(
+            "unexpected state: wanted {wanted:?}, found {names:?}"
+        )));
+    }
+    Ok(())
+}
+
+/// Opens a leaf for reading without following a reparse point and sharing only read
+/// access, so it cannot be written, renamed or deleted while the handle is held; the
+/// caller admits the handle (a protected record against its profile).
+fn open_pinned_leaf(parent: &Dir, leaf: &str) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .follow(FollowSymlinks::No);
+    parent.open_with(leaf, &options)
+}
+
+fn open_machine_file(
+    parent: &Dir,
+    leaf: &str,
+    profile: keld_guard::WindowsInstallProtectionProfile,
+) -> io::Result<File> {
+    let file = open_pinned_leaf(parent, leaf)?;
+    admit_machine_file(
+        parent,
+        &cap_std::io_lifetimes::AsFilelike::as_filelike_view::<std::fs::File>(&file),
+        profile,
+    )?;
+    Ok(file)
+}
+
+/// Admits an open protected record without duplicating its handle: a non-reparse
+/// regular file with one link, on its parent's volume, carrying the installation's
+/// exact protection profile.
+fn admit_machine_file(
+    parent: &Dir,
+    file: &std::fs::File,
+    profile: keld_guard::WindowsInstallProtectionProfile,
+) -> io::Result<()> {
+    let metadata = cap_std::fs::Metadata::from_file(file)?;
+    ensure_regular(&metadata)?;
+    if metadata.dev() != parent.dir_metadata()?.dev() {
+        return Err(io::Error::other("record crosses parent volume"));
+    }
+    keld_guard::validate_windows_install_file(file, profile)
+}
+
+/// Opens the persistent installation-wide activation lease without creating it.
+///
+/// Snapshot readers share only with other readers; the writer shares with nobody.
+/// The handle itself, never the lock-file contents or its existence, represents the
+/// live lease. The trusted initializer seeds the regular file before provenance commit.
+fn open_activation_lease(
+    update: &Dir,
+    profile: keld_guard::WindowsInstallProtectionProfile,
+    exclusive: bool,
+) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No);
+    if exclusive {
+        options
+            .write(true)
+            .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE)
+            .share_mode(0);
+    } else {
+        options.share_mode(FILE_SHARE_READ);
+    }
+    let file = update.open_with("activation.lock", &options)?;
+    ensure_regular(&file.metadata()?)?;
+    if file.metadata()?.len() != 0 {
+        return Err(io::Error::other("activation lease file is not empty"));
+    }
+    if file.metadata()?.dev() != update.dir_metadata()?.dev() {
+        return Err(io::Error::other("activation lease crosses parent volume"));
+    }
+    keld_guard::validate_windows_install_file(&file.try_clone()?.into_std(), profile)?;
+    Ok(file)
+}
+
+fn read_record(
+    parent: &Dir,
+    leaf: &str,
+    profile: keld_guard::WindowsInstallProtectionProfile,
+) -> Result<(File, Vec<u8>), UpdateError> {
+    let file = open_machine_file(parent, leaf, profile)
+        .map_err(|cause| error("protected record open", cause))?;
+    read_open_record(file)
+}
+
+/// BLAKE3 of every byte of an executable image, read with positioned reads through
+/// `image` and never by path: the one image digest that an attempt owner journals as
+/// `helper_image_blake3`, and that the updater helper's self-anchor and the connect-back
+/// claimant's candidate-boot read compare with that journaled value (KEL-53 §4). The
+/// caller's handle shares no write access, so the image's length is fixed while it is
+/// held; a read that ends short of that length refuses.
+fn image_blake3(image: &std::fs::File) -> io::Result<[u8; 32]> {
+    use std::os::windows::fs::FileExt as _;
+
+    let length = image.metadata()?.len();
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; 16 * 1024];
+    let mut offset = 0_u64;
+    loop {
+        let read = image.seek_read(&mut buffer, offset)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        offset = offset
+            .checked_add(read as u64)
+            .ok_or_else(|| io::Error::other("image length overflows"))?;
+    }
+    if offset != length {
+        return Err(io::Error::other(format!(
+            "read {offset} bytes of a {length}-byte image"
+        )));
+    }
+    Ok(*hasher.finalize().as_bytes())
+}
+
+/// Reads an open protected record of at most 64 KiB, returning the handle so the caller
+/// can keep it pinned.
+fn read_open_record(mut file: File) -> Result<(File, Vec<u8>), UpdateError> {
+    let length = file
+        .metadata()
+        .map_err(|cause| error("protected record size", cause))?
+        .len();
+    if length > crate::records::MAX_LOCAL_RECORD_BYTES as u64 {
+        return Err(error("protected record size", "record exceeds 64 KiB"));
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|cause| error("protected record read", cause))?;
+    Ok((file, bytes))
+}
+
+pub(crate) fn random_leaf_name(prefix: &str) -> io::Result<String> {
+    let mut random = [0_u8; 32];
+    getrandom::fill(&mut random).map_err(io::Error::other)?;
+    Ok(format!("{prefix}-{}", crate::error::hex_digest(&random)))
+}
+
+/// Whether `name` is exactly `<prefix>-<64 lowercase hex>`, as minted by [`random_leaf_name`].
+pub(crate) fn is_generated_leaf(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .is_some_and(|suffix| suffix.len() == 64 && crate::error::is_lowercase_hex(suffix))
+}
+
+fn seal_child(parent: &Dir, leaf: &str, directory: bool) -> io::Result<()> {
+    let mut options = OpenOptions::new();
+    options
+        .access_mode(READ_CONTROL | WRITE_DAC)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .follow(FollowSymlinks::No);
+    if directory {
+        options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    }
+    let object = parent.open_with(leaf, &options)?;
+    if directory {
+        ensure_directory(&object.metadata()?)?;
+    } else {
+        ensure_regular(&object.metadata()?)?;
+    }
+    let mut object = object.into_std();
+    if directory {
+        keld_guard::seal_windows_machine_directory(&mut object)
+    } else {
+        keld_guard::seal_windows_machine_file(&mut object)
+    }
+}
+
+#[cfg(test)]
+mod tests;

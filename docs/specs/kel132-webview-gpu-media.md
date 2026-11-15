@@ -1,6 +1,6 @@
 # Spec: GPU preparation and behavioral media installation
 Status: approved
-Linear: KEL-132 · Owner: GYLDLAB · Updated: 2026-09-11
+Linear: KEL-132 · Owner: GYLDLAB · Updated: 2026-09-24
 Approval: Linear comment `f68e4b33-baba-43f3-8938-c07637ab7fe4` · decision SHA-256 `1e8b5b9915d9d60884fabc87dba6184b4fd3c530b451345f13af431fa5b107f9`
 
 ## 1. Goal & non-goals
@@ -93,7 +93,9 @@ now consumes by its exact landed SHA below.
     Allow cannot bypass the next session's denying policy. A fresh development
     session does not inherit a previous session's grant. Test the persistent and
     ephemeral cases independently; fresh-store denial proves neither persistent
-    revocation nor same-app identity persistence.
+    revocation nor same-app identity persistence. The macOS row consumes the adopted
+    KEL-135 §7.3 public-grant restart contract; it does not require or claim a native
+    browser grant persisted to disk. Windows and Linux retain KEL-135 §7.1.
 11. **MAC-FLOOR:** the supported oldest macOS/build combination either invokes the
     guarded delegate or rejects construction before content loads. Record both
     debug and release behavior; a newer macOS pass cannot prove the oldest row.
@@ -237,6 +239,14 @@ Those additional KEL-135 rows are adopted in the owning PR #214 contract amendme
 landed at `739c4e8676e92ce4e28075987726153659b8b5a9`, with decision receipt
 `ac75562f-ee34-46e2-9694-a26224b0f701`; T3 requires the exact passed platform
 artifacts rather than the contract merge or decision alone.
+For macOS, the user explicitly adopted KEL-135 §7.3 on 2026-09-24 in the T3
+continuation after independent GPT-6 Astra review. Retain the stable
+`KEL-135/T3:macos-media-saved-grant` row name, but require
+`macos_media_contract=public-grant-restart-v1`, the adopted correction's approval
+provenance and landed source revision, and its exact passed controls. This mapping
+also consumes §7.3's strengthened `macos-dev-ephemeral` predicate. Earlier partial
+Permissions API query/capture evidence cannot satisfy either row. The approval
+and this local mapping update are not passed execution artifacts.
 Reject wrong-task, unlanded, missing-provenance, or awaiting/failed-row substitutions.
 No generic parent Done or earlier T0 artifact satisfies a platform implementation edge.
 
@@ -288,7 +298,7 @@ not satisfy a predecessor.
 | macOS installation and MAC-FLOOR | T2; named real macOS operator; actual decision-handler enum; separate camera/mic rows using physical or reviewed OS-level virtual devices | Omit delegate; test oldest supported debug/release; return Prompt; make Allow produce no stream; reject private SPI/TestRunner |
 | TEARDOWN | Each backend destroy/stale-id/recreate test | Reuse old id or navigation before successful installation |
 | SNAPSHOT, REVOKE | KEL-102/T4 tests specified in its §7 | Correct reported digest with default evaluator input; retain callback after binding removal |
-| SAVED-GRANT | KEL-135 platform owner; two-session same-profile and fresh-dev-profile tests | Seed persisted Allow then bypass new denying policy |
+| SAVED-GRANT | KEL-135 platform owner; two-session same-profile and fresh-dev-profile tests; macOS uses adopted §7.3 and its version marker | Windows/Linux: seed persisted Allow then bypass new denying policy. macOS: seed public site authority, restart the same profile under denial, and require an Allow-response control to invalidate that denial evidence. |
 | ARTIFACT | T0 and T3 operator independently re-fetch the Linear JSON, require exact ledger/dependency set equality, and verify schema/task/node/spec approval/landed-head/review/row status | delete one passed, awaiting or dependency row; wrong task, nonancestor head, missing approval/review, or awaiting completion row is rejected |
 
 Use loopback port zero, nonce-bound exchanges, observable request/monitor fences and

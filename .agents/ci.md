@@ -11,13 +11,21 @@ are source of truth; this file owns the design invariants.
 - Job-level `if` may use `needs`, `github`, `vars`, and `inputs`, never `matrix` (GitHub
   evaluates the job condition before matrix expansion).
 - Every lane names its observable contract and changed inputs. `gitleaks` is unconditional
-  because every byte is input. `CI required` always runs, consumes every routed lane plus
-  gitleaks, and rejects missing, cancelled, failed, or selected-as-skipped evidence.
+  because every byte is input; it is the checksum-pinned CLI job, not the org-licensed
+  Action. `CI required` always runs, consumes every routed lane plus gitleaks, and
+  rejects missing, cancelled, failed, or selected-as-skipped evidence.
+- Mermaid is separate from broad documentation routing: changed/added/deleted/malformed
+  diagram blocks and parser/renderer/config/pin/router/workflow inputs select it; prose-only
+  changes do not. Local and hosted routing share the same applicability owner. Unknown
+  comparisons fail safe to full rendering. `just ci-full` retains explicit full-corpus
+  assurance. Zero-candidate rendering performs no Docker probe; `CI required` rejects a
+  selected Mermaid job that is skipped, missing, cancelled, or failed.
 - Build closures come from current metadata where available. Unknown/shared/workspace
   graph/comparison-base inputs fail safe by enabling every possibly affected lane,
   including Ubuntu WebKitGTK apt.
-- Workflow/router edits exercise every conditional lane. Linux GUI smoke owns live
-  WebKitGTK apt; Ubuntu clippy and MSRV MUST NOT duplicate `apt-get update`.
+- Workflow/router edits exercise every conditional lane. Each Ubuntu leg building
+  GTK-linked crates, fallbacks included, installs WebKitGTK behind a 15-minute step
+  timeout and tests the full selection. MSRV stays on macOS without apt.
 - Router metadata/parse failure fails the router job before outputs. It MUST NOT emit an
   empty/skipped-green selection.
 - Contract tests cover relevant, unrelated, unknown, empty, PR, and push diffs. Verify

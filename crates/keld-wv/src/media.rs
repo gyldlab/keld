@@ -155,7 +155,10 @@ pub fn media_permission_allowed(
     let Some(capability) = kind.capability() else {
         return false;
     };
-    media_permission_decision(manifest, principal, capability) == Decision::Allow
+    matches!(
+        media_permission_decision(manifest, principal, capability),
+        Decision::Allow(_)
+    )
 }
 
 /// Maps `WebView2` permission kinds onto Keld capabilities. Unknown kinds fail
@@ -218,7 +221,7 @@ fn wry_media_decision(
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn wry_response(decision: Option<&Decision>) -> wry::PermissionResponse {
-    if matches!(decision, Some(Decision::Allow)) {
+    if matches!(decision, Some(Decision::Allow(_))) {
         wry::PermissionResponse::Allow
     } else {
         wry::PermissionResponse::Deny
@@ -267,6 +270,22 @@ impl<'a> GuardedWryBuilder<wry::WebViewBuilder<'a>> {
     }
 }
 
+#[cfg(target_os = "macos")]
+impl GuardedWryBuilder<wry::WebViewBuilder<'_>> {
+    /// Applies the engine-owned `WKWebView` configuration without exposing an
+    /// unguarded builder or replacing Keld's permission callback.
+    pub(crate) fn with_webview_configuration(
+        self,
+        configuration: objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>,
+    ) -> Self {
+        use wry::WebViewBuilderExtMacos;
+
+        Self {
+            inner: self.inner.with_webview_configuration(configuration),
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 impl<'a> GuardedWryBuilder<wry::WebViewBuilder<'a>> {
     /// Applies initial content and performs the only Linux build operation
@@ -309,12 +328,18 @@ impl<'a> GuardedWryBuilder<wry::WebViewBuilder<'a>> {
 pub(crate) fn guarded_default_media_builder(
     id: WebviewId,
     on_page_load: impl Fn(wry::PageLoadEvent, String) + 'static,
+    profile_test_seed_allow: bool,
 ) -> GuardedWryBuilder<wry::WebViewBuilder<'static>> {
     let builder = wry::WebViewBuilder::new();
     #[cfg(debug_assertions)]
     let builder = builder.with_devtools(true);
     let builder = builder.with_on_page_load_handler(on_page_load);
-    with_guarded_media_permissions(builder, PermissionsManifest::default(), id)
+    with_guarded_media_permissions(
+        builder,
+        PermissionsManifest::default(),
+        id,
+        profile_test_seed_allow,
+    )
 }
 
 /// Installs a default-deny media-capture handler backed by `keld-guard`.
@@ -338,6 +363,7 @@ pub(crate) fn with_guarded_media_permissions<I>(
     installer: I,
     manifest: PermissionsManifest,
     id: WebviewId,
+    profile_test_seed_allow: bool,
 ) -> I::Guarded
 where
     I: WryPermissionInstaller,
@@ -346,7 +372,45 @@ where
     let callback = Box::new(move |kind| {
         let media_kind = wry_media_kind(kind);
         let decision = wry_media_decision(&manifest, principal, media_kind);
-        let response = wry_response(decision.as_ref());
+        let guarded_response = wry_response(decision.as_ref());
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions, target_os = "macos"))]
+        let profile_test_seed_prompt = std::env::var_os("KELD_PROFILE_TEST_MEDIA_SEED_PROMPT")
+            .is_some_and(|value| value == "1");
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions, target_os = "macos"))]
+        let response = if profile_test_seed_allow
+            && matches!(
+                media_kind,
+                MediaPermission::Camera | MediaPermission::Microphone
+            ) {
+            if profile_test_seed_prompt {
+                wry::PermissionResponse::Default
+            } else {
+                wry::PermissionResponse::Allow
+            }
+        } else {
+            guarded_response
+        };
+        #[cfg(not(all(feature = "profile-test-hooks", debug_assertions, target_os = "macos")))]
+        let response = {
+            let _ = profile_test_seed_allow;
+            guarded_response
+        };
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        if std::env::var_os("KELD_PROFILE_ACCEPTANCE_REPORT").is_some() {
+            let kind = match media_kind {
+                MediaPermission::Camera => "camera",
+                MediaPermission::Microphone => "microphone",
+                MediaPermission::Other => "other",
+            };
+            let response = match response {
+                wry::PermissionResponse::Allow => "allow",
+                wry::PermissionResponse::Deny => "deny",
+                wry::PermissionResponse::Default => "prompt",
+            };
+            eprintln!(
+                "KELD_KEL135_MEDIA_CALLBACK kind={kind} response={response} principal={principal:?} guard_decision={decision:?} policy={manifest:?}"
+            );
+        }
         trace_linux_policy_decision(
             principal,
             media_kind,
@@ -374,7 +438,7 @@ fn trace_linux_policy_decision(
         return;
     };
     let decision = match decision {
-        Some(Decision::Allow) => "allow",
+        Some(Decision::Allow(_)) => "allow",
         Some(Decision::Deny(reason)) => reason.code(),
         None => return,
     };
@@ -417,7 +481,7 @@ mod tests {
     fn webview2_installs_popup_denial_before_guard_witness() {
         // Source ordering is a regression tripwire, not live COM-installation proof.
         // KEL-168's Windows popup probe supplies that independent OS observable.
-        let backend = include_str!("webview2/mod.rs");
+        let backend = include_str!("webview2/guarded_navigation.rs");
         let installer = backend
             .split_once("fn install_guarded_media_permissions(")
             .expect("Windows guard installer exists")
@@ -428,6 +492,22 @@ mod tests {
         assert!(
             installer.contains("webview.add_NewWindowRequested("),
             "KEL-65 direct COM must deny popups before GuardInstalled: otherwise a new WebView2 escapes the guard and lifecycle registry"
+        );
+        // The parent engine must reconcile saved permissions and register both
+        // live guards before first navigation can consume the witness.
+        let engine = include_str!("webview2/mod.rs");
+        let saved = engine
+            .find("reconcile_saved_media_permissions(&view.webview)?")
+            .expect("saved media permission reconciliation exists");
+        let guard = engine
+            .find("let guard = install_guarded_media_permissions(")
+            .expect("engine installs the live permission guard");
+        let initial = engine
+            .find("navigate_initial(&guard, &spec.initial)?")
+            .expect("first navigation consumes the installed guard");
+        assert!(
+            saved < guard && guard < initial,
+            "saved permission denial and live popup/media guards must precede initial navigation"
         );
     }
 
@@ -514,14 +594,16 @@ mod tests {
     #[test]
     fn remote_webview_does_not_inherit_app_process_media_grant() {
         let manifest = camera_grant();
-        assert_eq!(
-            evaluate(
-                &manifest,
-                Principal::AppProcess,
-                WEB_CAMERA,
-                WEB_MEDIA_ORIGIN
+        assert!(
+            matches!(
+                evaluate(
+                    &manifest,
+                    Principal::AppProcess,
+                    WEB_CAMERA,
+                    WEB_MEDIA_ORIGIN
+                ),
+                Decision::Allow(_)
             ),
-            Decision::Allow,
             "control: /app web.camera still allows AppProcess — the media path must not use that"
         );
         let other = other_webview();
@@ -538,7 +620,7 @@ mod tests {
                     "other webview must not start capture on an AppProcess camera grant"
                 );
             }
-            Decision::Allow => {
+            Decision::Allow(_) => {
                 panic!("other webview must not inherit AppProcess camera grant, got Allow")
             }
         }
@@ -570,7 +652,7 @@ mod tests {
                         "{presented:?} must not start capture"
                     );
                 }
-                Decision::Allow => {
+                Decision::Allow(_) => {
                     panic!("expected KELD-GUARD007, got Allow for {presented:?}")
                 }
             }
@@ -685,11 +767,11 @@ mod wry_tests {
     use std::sync::{Arc, Mutex};
 
     use super::{
-        MediaPermission, WebviewId, WryPermissionCallback, WryPermissionInstaller,
-        media_permission_response, webview_media_principal, with_guarded_media_permissions,
-        wry_media_kind, wry_response,
+        MediaPermission, WEB_CAMERA, WEB_MEDIA_ORIGIN, WebviewId, WryPermissionCallback,
+        WryPermissionInstaller, media_permission_response, webview_media_principal,
+        with_guarded_media_permissions, wry_media_kind, wry_response,
     };
-    use keld_guard::parse_manifest;
+    use keld_guard::{Principal, evaluate, parse_manifest};
 
     struct FakeInstaller {
         installed: Arc<Mutex<Option<WryPermissionCallback>>>,
@@ -764,10 +846,14 @@ mod wry_tests {
 
     #[test]
     fn wry_response_mapper_preserves_allow_and_fails_closed() {
-        assert_eq!(
-            wry_response(Some(&keld_guard::Decision::Allow)),
-            wry::PermissionResponse::Allow
+        let manifest = parse_manifest(r#"{"app":{"web":{"camera":["*"]}}}"#).expect("camera grant");
+        let allow = evaluate(
+            &manifest,
+            Principal::AppProcess,
+            WEB_CAMERA,
+            WEB_MEDIA_ORIGIN,
         );
+        assert_eq!(wry_response(Some(&allow)), wry::PermissionResponse::Allow);
         assert_eq!(wry_response(None), wry::PermissionResponse::Deny);
     }
 
@@ -780,6 +866,7 @@ mod wry_tests {
             },
             parse_manifest("{}").expect("empty manifest"),
             WebviewId(7),
+            false,
         );
         let callback = installed
             .lock()

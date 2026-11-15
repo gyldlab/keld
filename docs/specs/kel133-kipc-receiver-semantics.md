@@ -179,16 +179,18 @@ T1 may refine names, but it must preserve this ownership shape:
 /// `allow_ping` admits the live v0 liveness probe where it is a positive
 /// vector, and `also_channel` exists only for the one multiplexed primary
 /// session (rows 3+5 below). Construction outside `keld-ipc` goes through
-/// named constructors (`#[non_exhaustive]`).
+/// named constructors (`#[non_exhaustive]`). The fields are private (#633):
+/// consumers read them through same-named `const` accessors (`policy.kinds()`)
+/// and cannot widen a policy they hold.
 pub struct ReceivePolicy {
-    pub direction: Direction,
-    pub phase: SessionPhase,
-    pub channel: ChannelId,
-    pub payload: PayloadMode,
-    pub expected_corr: ExpectedCorrelation,
-    pub kinds: AllowedKinds,
-    pub allow_ping: bool,
-    pub also_channel: Option<ChannelId>,
+    direction: Direction,
+    phase: SessionPhase,
+    channel: ChannelId,
+    payload: PayloadMode,
+    expected_corr: ExpectedCorrelation,
+    kinds: AllowedKinds,
+    allow_ping: bool,
+    also_channel: Option<ChannelId>,
 }
 
 /// Header whose reserved fields are valid for the selected policy.
@@ -229,9 +231,34 @@ work; `FLAG_RAW` is invalid for every row below.
 | host lifecycle receiver | `CALL` | `0` | `LIFECYCLE_CHANNEL=3` | nonzero | exact `LifecycleRequest` | `005`; close; zero lifecycle effect |
 | app lifecycle event receiver | `EVENT` | `0` | `3` | `0` | exact `LifecycleEvent` | `005`; close |
 | app lifecycle reply waiter | `REPLY` or `ERR` | `0` | `3` | exact outstanding id | exact response or `CallError` | `005`; close; waiter fails |
-| privileged FS receiver (future T3 consumer) | `CALL` | `0` | host-declared FS channel | nonzero | exact request, no trailing bytes | `005`; close; zero guard/broker effect |
+| privileged receiver | `CALL` | `0` | host-selected guarded table entry (`fs`, or KEL-89 `auth`) | nonzero | exact per-channel request, no trailing bytes | `005`; close; zero guard/broker effect |
 | host primary app receiver (the live multiplexed link: rows 3 and 5 on one stream) | `CALL` | `0` | `ECHO_CHANNEL=1` or `LIFECYCLE_CHANNEL=3` | nonzero | per-channel codec | `005`; close; zero handler effect |
 | v0 `PING` liveness probe (rows 3, 5, 6 and the primary session only; never pre-auth, waiters, or the privileged receiver) | `PING` | `0` | any (echoed) | any (echoed) | exactly empty | `005` for flags or payload; close |
+
+A primary receiver may also select a host-owned slice of guarded table entries
+through the same privileged row. The shared validator keeps each structured
+header's rules; the host's admission callback sees only the matched entry and
+nonzero correlation after semantic validation and before payload allocation.
+The singular FS reader retains its existing one-outstanding behavior. Other
+selected channels use their own bounded owner state; an outstanding FS call
+cannot silently occupy an auth slot, and auth pending-call capacity is distinct
+from the broker's account/scope single-flight key. No selection mints authority:
+exact channel payload decoding and the sole guard-before-handler dispatch follow.
+
+Guarded admission distinguishes a terminal session violation from temporary capacity
+exhaustion. Duplicate correlations and closed/poisoned owners remain terminal IPC005
+before payload allocation. A valid fresh CALL at capacity is not admitted: the shared
+reader consumes its complete MAX_FRAME_LEN-bounded body under the same first-byte
+absolute frame deadline, without decoding or handler/guard entry; Core then sends the
+IPC-owned resource-free `CallError::admission_capacity` as a correlated IPC005 ERR and
+continues the link. Truncation or frame expiry stays terminal and yields no refusal
+result. This is not an AUTH016 producer or a new authorization rule. Core auth retains
+its 32 physical/caller reservations; a logical reply does not release a physical leader
+before Native Drained. The published error contract does not require callers to mirror
+that private counter or infer physical drain from a reply.
+
+The accepted-Quit drain uses the same selected entries and existing deadlines,
+with no new admission or handler entry after quiescence.
 
 `PING` is admissible only where the table declares it (it is a positive pre-KEL-133
 vector on the echo, lifecycle, and primary sessions; criterion 11 forbids changing
@@ -279,6 +306,7 @@ same absolute instant.
 | structured payload codec/trailing bytes | `KELD-IPC-003` | close, or correlated `ERR` only where an approved live session explicitly permits request errors | never invoke handler |
 | payload envelope over maximum | `KELD-IPC-004` | close | close; pre-auth may reaccept |
 | invalid kind/flags/channel/correlation/declared length | `KELD-IPC-005` | close | never invoke handler; pre-auth may reaccept |
+| valid fresh guarded CALL at host-owned admission capacity | `KELD-IPC-005` capacity constant | correlated `ERR`, after complete bounded body | link remains live; no admission, decode, Guard or broker effect; original first-byte frame deadline unchanged |
 | absolute transport/frame/call expiry | `KELD-IPC-006` | close/local timeout | partial frame is terminal for the link; generation expiry is terminal for admission |
 | exact-shape foreign HELLO token | `KELD-IPC-007` (redacted) | close/local I/O failure | pre-auth may reaccept while generation deadline remains |
 | valid privileged request denied by guard | registered `KELD-GUARD-*` `CallError` | correlated `ERR` | session remains live; zero broker side effect |

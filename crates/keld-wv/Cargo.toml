@@ -8,9 +8,19 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[[example]]
+name = "linux_media_guard"
+test = true
+
 [features]
 # Explicit development fixture; absent from the shipping default build.
 media-acceptance = []
+# Internal deterministic fault fixtures for downstream KEL-135 test binaries.
+# Release packages never enable this feature.
+profile-test-hooks = ["dep:block2", "objc2-foundation/NSNotification", "objc2-foundation/NSOperation", "objc2-foundation/block2"]
+# A separate test-only root override for signed KEL-135 acceptance hosts.
+# Release builds that enable it are rejected by the crate root.
+profile-test-root = ["profile-test-hooks"]
 
 [dependencies]
 # Media-capture default-deny (KEL-59): evaluate `web.camera` / `web.microphone`
@@ -29,6 +39,17 @@ workspace = true
 
 [target.'cfg(target_os="macos")'.dependencies]
 tao = "0.35.3"
+# KEL-135/T3 reuses Wry's `WKWebView` construction while the host owns one
+# selected WKWebsiteDataStore and reads back its identifier/persistence before
+# the first view. These are the exact objc2 versions already pinned by Wry.
+objc2 = { workspace = true, features = ["exception", "disable-encoding-assertions"] }
+objc2-foundation = { workspace = true, features = ["std", "objc2-core-foundation", "NSArray", "NSString", "NSPathUtilities", "NSProcessInfo", "NSUUID"] }
+objc2-app-kit = { workspace = true, features = ["NSView", "NSWindow", "NSScreen"] }
+block2 = { workspace = true, optional = true }
+objc2-core-foundation = { workspace = true, features = ["CFRunLoop", "CFDate"] }
+objc2-web-kit = { workspace = true, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKContentWorld", "WKFrameInfo", "WKScriptMessage", "WKScriptMessageHandler", "WKUserContentController", "WKUserScript", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore"] }
+nix = { workspace = true, features = ["user"] }
+getrandom = { workspace = true }
 # `devtools` keeps `open_devtools`/`close_devtools` compiled in release builds
 # so `WebEngine::devtools` is not debug-only (wry gates them behind
 # `cfg(any(debug_assertions, feature = "devtools"))`).
@@ -43,13 +64,15 @@ tao = "0.35.3"
 #   wry 0.56 `build` takes `HasWindowHandle`, so tao 0.35.3 still fits.
 # Breaking: macOS/iOS `transparent`/`fullscreen` features removed (always on);
 #   `protocol` feature removed (always on). Keld used neither flag.
-# License: Apache-2.0 OR MIT (unchanged). MSRV 1.77 < Keld 1.97.
+# License: Apache-2.0 OR MIT (unchanged). MSRV 1.77 < Keld 1.99.
 # Pin 0.56.1 not 0.56.0: macOS 11 debug_assertion skip for the media-capture
 #   delegate method (wry #1781).
 wry = { version = "0.56.1", features = ["devtools"] }
 
 [target.'cfg(target_os="windows")'.dependencies]
 tao = "0.35.3"
+getrandom = { workspace = true }
+windows-permissions = { workspace = true }
 # --- Dependency review (KEL-65 / AGENTS.md gate) ---
 # Name: webview2-com 0.38 (was probe-only; now the whole Windows backend)
 # Purpose: direct WebView2 COM — environment/controller creation, the
@@ -64,10 +87,11 @@ tao = "0.35.3"
 #   what this crate exists to provide. Same version wry pinned, so the
 #   macOS-side lockfile entry is unchanged.
 webview2-com = "0.38"
-# HWND/RECT/HRESULT constants (Win32_Foundation), CoInitializeEx/CoTaskMemFree
-# (Win32_System_Com). Same crate+version webview2-com pins — an explicit path
+# HWND/RECT/HRESULT constants (Win32_Foundation), atomic protected-DACL profile
+# directory creation (Win32_Security/FileSystem), and CoInitializeEx/
+# CoTaskMemFree (Win32_System_Com). Same crate+version webview2-com pins — an explicit path
 # to a crate already in the graph rather than a second copy.
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os="linux")'.dependencies]
 tao = "0.35.3"

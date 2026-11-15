@@ -205,32 +205,45 @@ fn real_linux_second_account_refuses_foreign_owned_project() {
         Command::new("id").args(["-u", &account_name]),
         "read foreign fixture uid",
     );
-    assert!(uid_output.status.success(), "{uid_output:?}");
+    assert!(
+        uid_output.status.success(),
+        "id -u failed with exit code {:?}",
+        uid_output.status.code()
+    );
     let foreign_uid = String::from_utf8(uid_output.stdout)
         .expect("foreign uid UTF-8")
         .trim()
         .parse::<u32>()
         .expect("foreign numeric uid");
-    assert_ne!(foreign_uid, invoking_principal.0);
+    assert!(
+        foreign_uid.ne(&invoking_principal.0),
+        "foreign fixture account must have a distinct uid"
+    );
 
     for path in [&project, &config, &source, &renderer] {
-        checked_command(
+        let chown = command_output(
             Command::new("sudo").args([
                 "chown",
                 &foreign_uid.to_string(),
                 &path.display().to_string(),
             ]),
             "assign foreign fixture ownership",
-        )
-        .expect("foreign path owner");
-        assert_eq!(
-            fs::metadata(path).expect("foreign path metadata").uid(),
-            foreign_uid
+        );
+        assert!(
+            chown.status.success(),
+            "foreign path ownership failed with exit code {:?}",
+            chown.status.code()
+        );
+        let owner_uid = fs::metadata(path).expect("foreign path metadata").uid();
+        assert!(
+            owner_uid.eq(&foreign_uid),
+            "fixture path ownership must match the foreign account"
         );
     }
-    assert_eq!(
-        fs::metadata(&victim).expect("victim metadata").uid(),
-        invoking_principal.0
+    let victim_uid = fs::metadata(&victim).expect("victim metadata").uid();
+    assert!(
+        victim_uid.eq(&invoking_principal.0),
+        "victim ownership must remain with the invoking account"
     );
 
     let binary = Path::new(env!("CARGO_BIN_EXE_keld"));
@@ -247,9 +260,8 @@ fn real_linux_second_account_refuses_foreign_owned_project() {
         "foreign entry executed as the invoking user"
     );
     println!(
-        "KELD_LINUX_PROJECT_OWNER invoking_uid={} foreign_uid={foreign_uid} \
-         doctor=refused dev=refused mcp=refused stage=refused marker=absent",
-        invoking_principal.0
+        "KELD_LINUX_PROJECT_OWNER invoking_owner=preserved foreign_owner=verified \
+         doctor=refused dev=refused mcp=refused stage=refused marker=absent"
     );
 
     account

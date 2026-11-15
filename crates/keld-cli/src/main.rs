@@ -20,7 +20,12 @@ use keld_core::run_hello_window;
 use keld_ipc::EchoRequest;
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    // Native argv may be non-Unicode on every OS. Refuse it before dispatch
+    // rather than letting args() panic or using a lossy command spelling.
+    let args = keld_core::unicode_args(env::args_os()).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        process::exit(2);
+    });
     let verb = args.get(1).map(String::as_str);
 
     let result = match verb {

@@ -55,6 +55,23 @@ Rules that keep a partial corpus from becoming a “100% compatible” claim:
    A `/blob/main/<40-hex>` URL is still a live branch, not a pin; the object
    id must be the `blob`/`tree`/`raw` (or GitHub raw CDN) ref itself.
    `score` re-checks the URI; `/tmp/` is not a substring ban on https URLs.
+7. A report names a board's authority profile only through
+   `Scoreboard::authority_profile()`, rendered with `AuthorityProfile::as_str`,
+   which is the one variant-to-string map. The v1 vocabulary is `strict_bun`,
+   `sandboxed_addon_worker`, `legacy_sandbox_off`, `user_approved_tool_child` and
+   `unverified`, and the record `schema` stays `keld.compat.evidence/v1`.
+   `unverified` is a run without verified containment (the KEL-78 `unverified`
+   state). It is reported as `unverified` and is never strict or legacy evidence.
+   No report may promote it, relabel it, or merge it with another profile. The
+   accessor is `None` when contributing records disagree on profile. That board
+   already withholds the percentage and `complete` (rules 2 and 3), and a report
+   must not name any one record's profile for it. The claim (rule 4) names no
+   profile. Labelling rules per run are in
+   `docs/specs/gh532-first-proof-evidence-rules.md` rule 6. The KEL-237
+   lifecycle report now derives its authority line from all platform boards'
+   `Scoreboard::authority_profile()` values, rendered with
+   `AuthorityProfile::as_str`. If they have no one shared profile, the report
+   refuses to render; it never substitutes a literal harness label.
 
 Until a product denominator is committed, this page stays a narrative API
 board (✔/▲/✘). Installer size/RSS stays on
@@ -97,5 +114,6 @@ constraints, not per-app toggles. `keld migrate` is not live.
 
 | API | Electron oracle | Keld | Mark | Why |
 |---|---|---|---|---|
-| `app.quit` | [`app.quit(): void`](https://www.electronjs.org/docs/latest/api/app#appquit) | `Promise<void>` | ▲ | The Quit Call travels over kipc and can fail (`KELD-IPC-*`). Callers must be able to await or `.then` the result. Do not change the public signature to `void` to paper over that. Conformance: `crates/keld-compat/tests/electron_lifecycle.rs`, `packages/@keld/electron/src/app.ts`. |
-| `app` `ready` / `window-all-closed` listeners | Electron [`app`](https://www.electronjs.org/docs/latest/api/app) is a Node [EventEmitter](https://nodejs.org/docs/latest/api/events.html#emitteremiteventname-args): a throw in one listener propagates from `emit` and later listeners do not run | Per-listener `try/catch` in `emit` | ▲ | Host `Event` frames arrive on the kipc read loop. An uncaught throw would skip remaining listeners and abort the reader. Isolation is the contract for this slice; do not revert it to match EventEmitter. Conformance: `packages/@keld/electron/fixtures/app_ready.ts`, `crates/keld-compat/tests/electron_lifecycle.rs` (`app_ready_isolates_listeners_retries_connect_without_unhandled_rejection`). |
+| `app.quit` | [`app.quit(): void`](https://www.electronjs.org/docs/latest/api/app#appquit) | `Promise<void>`, never parking the caller | ▲ | The Quit Call travels over kipc and can fail (`KELD-IPC-*`). Callers must be able to await or `.then` the result. Do not change the public signature to `void` to paper over that. Since GH-528 T3 it returns at once as Electron's does (PANEL-P2, #419): code after `app.quit()` runs before the host's REPLY. The REPLY must be `LifecycleResponse::Quit` (otherwise `KELD-IPC-003`), and the role's link then closes. Conformance: `crates/keld-compat/tests/electron_lifecycle.rs`, `packages/@keld/electron/src/app.ts`, `packages/@keld/electron/src/link.test.ts` (`app.quit never parks`). |
+| `app` `ready` / `window-all-closed` listeners | Electron [`app`](https://www.electronjs.org/docs/latest/api/app) is a Node [EventEmitter](https://nodejs.org/docs/latest/api/events.html#emitteremiteventname-args): a throw in one listener propagates from `emit` and later listeners do not run | Per-listener `try/catch` in `emit` | ▲ | Host `Event` frames arrive on the kipc read loop. An uncaught throw would skip remaining listeners and abort the reader. Isolation is the contract for this slice; do not revert it to match EventEmitter. Conformance: `packages/@keld/electron/fixtures/ready_listener_only.ts` (`packages/@keld/electron/src/app.test.ts`; moved there from `app_ready.ts` in GH-528 T3). |
+| `app.whenReady` when the role's link fails | Electron's [`app.whenReady()`](https://www.electronjs.org/docs/latest/api/app#appwhenready) resolves once Electron is initialized and has no link to fail | Rejects with the typed error that failed or ended the link, and keeps rejecting with that same error | ▲ | Since GH-528 T3 a role opens one link per realm (GH-527 §4.2). So a failed connect, or a link that died before `Ready`, is sticky: every later `whenReady` (and `quit`) rejects with the same error, and connect is never retried. A retry could only surface `KELD-IPC-005`. The error carries the real cause: a connect failure keeps its own code (`KELD-IPC-001` no listener, `KELD-IPC-005` a malformed HELLO, `KELD-IPC-006` a silent host, `KELD-IPC-007` a token mismatch). A link that was up ends with the failure that ended it (`KELD-IPC-003` an undecodable lifecycle event, `KELD-IPC-005` a frame the session refused, `KELD-IPC-006` a stalled frame), and a plain close is `KELD-IPC-022`. Conformance: `packages/@keld/electron/fixtures/app_ready.ts` over the real connect, with `crates/keld-compat/tests/electron_lifecycle.rs` (`app_ready_isolates_listeners_retries_connect_without_unhandled_rejection`, a name kept for the frozen KEL-237 receipts); `packages/@keld/electron/src/link.test.ts` (one case per code). |

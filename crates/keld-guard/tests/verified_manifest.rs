@@ -19,7 +19,7 @@ static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 fn digest(hex: &str) -> [u8; 32] {
     assert_eq!(hex.len(), 64, "test digest must be SHA-256 hex");
     let mut bytes = [0_u8; 32];
-    for (index, pair) in hex.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in hex.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         bytes[index] =
             u8::from_str_radix(std::str::from_utf8(pair).expect("digest pair is UTF-8"), 16)
                 .expect("digest pair is hexadecimal");
@@ -97,15 +97,15 @@ fn one_shot_handle_is_the_only_hash_and_parse_source() {
     let verified = load_verified_manifest(file, display_path.clone(), expected)
         .expect("one-shot handle must supply both hash and parse bytes");
     assert_eq!(verified.verified_sha256(), expected);
-    assert_eq!(
+    assert!(matches!(
         evaluate(
             verified.manifest(),
             Principal::AppProcess,
             "fs.read",
             "/only-a/file.txt"
         ),
-        Decision::Allow
-    );
+        Decision::Allow(_)
+    ));
     let path_loaded = load_manifest(&display_path).expect("load display-path control");
     assert!(
         matches!(

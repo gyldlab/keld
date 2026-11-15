@@ -1,0 +1,34 @@
+{
+  "schema": "keld.public-audit-upstream-receipts/v1",
+  "retrieved_date": "2026-09-19",
+  "purpose": "Freeze the upstream facts used by the 2026-09-19 public audit; source URLs remain convenience links.",
+  "receipts": [
+    {
+      "id": "rustsec-2024-0429",
+      "source_url": "https://rustsec.org/advisories/RUSTSEC-2024-0429.html",
+      "source_last_modified": "2025-10-28",
+      "claim": "RustSec marks glib versions from 0.15.0 up to but excluding 0.20.0 as affected; 0.20.0 and later are patched.",
+      "bounded_quote": "Patched >=0.20.0; Unaffected <0.15.0"
+    },
+    {
+      "id": "microsoft-webview2-udf",
+      "source_url": "https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/user-data-folder",
+      "retrieved_date": "2026-09-19",
+      "claim": "Microsoft documents the WebView2 user-data folder as browser-data storage and states that controls using the same UDF share one WebView2 session, including across host apps in the same logon session.",
+      "bounded_quote": "A WebView2 control shares its WebView2 session with any other WebView2 control that uses the same UDF."
+    },    {
+      "id": "microsoft-couninitialize",
+      "source_url": "https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-couninitialize",
+      "source_last_updated": "2021-06-29",
+      "claim": "Microsoft requires one CoUninitialize for each successful CoInitialize or CoInitializeEx call on a thread, including calls that return S_FALSE.",
+      "bounded_quote": "A thread must call CoUninitialize once for each successful call it has made to the CoInitialize or CoInitializeEx function"
+    },
+    {
+      "id": "microsoft-com-initialization",
+      "source_url": "https://learn.microsoft.com/en-us/windows/win32/learnwin32/initializing-the-com-library",
+      "source_last_updated": "2024-07-09",
+      "claim": "Microsoft's COM initialization guidance requires balancing each successful CoInitializeEx with CoUninitialize before the thread exits.",
+      "bounded_quote": "For every successful call to CoInitializeEx, you must call CoUninitialize before the thread exits."
+    }
+  ]
+}

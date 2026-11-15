@@ -20,13 +20,13 @@ For the complete verification gate, also install:
 
 | Tool | Purpose |
 |---|---|
-| Python 3.9+ | Standard-library session verification; `python` on Windows, `python3` elsewhere |
-| `just` | Runs the checked-in gate recipes (`cargo install just --locked`) |
+| Python 3.9+ | Standard-library session verification; Windows workspace mutation requires final CPython 3.9.20+, 3.10.15+, 3.11.10+, 3.12.4+ or 3.13+ within Python 3; `python` on Windows, `python3` elsewhere |
+| `just` | Runs the checked-in gate recipes; 1.55.0 or later (`cargo install just --locked`) |
 | `cargo-nextest` | Workspace test runner (`cargo install cargo-nextest --locked`) |
 | `cargo-deny` | Supply-chain checks (`cargo install cargo-deny --locked`) |
-| Docker-compatible engine | Runs the digest-pinned Mermaid renderer for `just ci` |
+| Docker-compatible engine | Runs the digest-pinned Mermaid renderer when changed Mermaid inputs select it in `just ci`, or for `just ci-full` |
 
-Use the pinned Rust toolchain and **Bun 1.4.2 for the full workspace gate**, matching
+Use the pinned Rust toolchain and **Bun 1.4.4 for the full workspace gate**, matching
 CI and the exact Linux strict-fixture assertion. Record the selected version/revision;
 a demo observed with Bun 1.4.2 is separate evidence. The
 [quick-start prerequisites](README.md#prerequisites) also explain Linux trusted-checkout
@@ -52,46 +52,33 @@ or strict/release-profile qualification. For Ubuntu, see the
 the [Ubuntu refresh](https://github.com/gyldlab/keld/issues/175#issuecomment-5588845871)
 covers separate Ctrl-C/relaunch rows, and the
 [initial Ubuntu run](https://github.com/gyldlab/keld/issues/167#issuecomment-5575535917)
-records a historical stock native-Close failure. X11 product runs, other distributions,
-and release packaging remain unverified. This source-built demo is not an installer or a
-migrated Electron application.
+records a historical stock native-Close failure. Separate bounded shipping-product runs
+exercise X11 through the Ubuntu host's live Mutter Xwayland server, but the canonical
+product-status ledger still leaves X11/native Xorg qualification open. Fedora 43 has
+bounded userland/build plus Fedora-owned X11-control evidence and Arch has
+build-portability evidence only; a bare-metal non-Debian desktop and release packaging
+remain unverified.
+This source-built demo is not an installer or a migrated Electron application.
 
 ---
 
 ## 3. The verification gate
 
-### 3.1 Mandatory core Rust subset
+### 3.1 The exact local gate
 
-These three are mandatory, but they are only the core Rust subset of the exact full
-local gate, `just ci`:
-
-```bash
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo nextest run --workspace --profile ci
-```
-
-Run `cargo fmt --all` (no `--check`) to fix formatting, then run `just ci` before every
-push and report **real output** in the PR — never "should work". If a path
-only exists on another OS, say so plainly rather than claiming coverage you do not have.
+[`justfile`](../../justfile) owns the sole gate inventory for `just ci`; consult its
+recipes rather than copying a second list here. Run `just ci` before every push and
+report its real output in the PR. If a path only exists on another OS, say so plainly
+rather than claiming coverage you do not have.
 
 ### 3.2 Report fresh results, not an onboarding snapshot
 
 Run `just ci` against the exact checkout being handed off and quote its real exit status
-and summary, including the core Rust subset. Test totals, durations, commit ids and dirty-tree shape change
-too often to embed here. A platform-gated module compiling on this machine is not proof
-that its window, sandbox, installer or updater behavior ran on the target OS.
-
-The additional gates that `just ci` adds beyond the three include:
-
-```console
-$ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-    Generated target/doc/keld_cli/index.html and 11 other files
-                                            # exit 0
-
-$ cargo deny check
-advisories ... (yanked crates may still fail independently), bans ok, licenses ok, sources ok
-```
+and summary. Mermaid rendering is selected from diagram/renderer inputs; use
+`just ci-full` when deliberately validating the entire Mermaid corpus. Test totals,
+durations, commit ids and dirty-tree shape change too often to embed here. A
+platform-gated module compiling on this machine is not proof that its window, sandbox,
+installer or updater behavior ran on the target OS.
 
 **`cargo deny check` licenses pass on this branch** with a *per-crate* MPL exception
 for `option-ext@0.2.0` (KEL-54). Do not add MPL-2.0 to the global `allow` list.
@@ -115,24 +102,141 @@ not a drive-by lockfile bump.
 `bans` and `sources` pass. `deny.toml`'s `[graph] targets` includes Darwin triples, so
 CI's Ubuntu `deny` job evaluates the same macOS dependency set.
 
-### 3.3 `just` targets, and the raw commands if you skip `just`
+### 3.3 Discovering and running `just` commands
 
-| `just` target | Equivalent command |
-|---|---|
-| `just hello` | `cargo run -p keld-host -- --hello` |
-| `just fmt` | `cargo fmt --all` |
-| `just fmt-check` | `cargo fmt --all --check` |
-| `just clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
-| `just test` | `cargo nextest run --workspace --profile ci` |
-| `just doc` | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` |
-| `just deny` | `cargo deny check` |
-| `just mermaid-test` / `just mermaid-check` / `just mermaid-render-check` | validator tests / tracked structural policy / isolated digest-pinned SVG render |
-| `just llms-test` / `just llms-check` | generated-corpus contract tests / freshness check |
-| `just ci` | Full local gate; the `justfile` `ci` recipe is the sole source of its inventory and order. |
+[`just`](https://github.com/casey/just) is KELD's canonical command runner, executing
+recipes defined in the root [`justfile`](../../justfile). It requires minimum version
+**1.55.0** (`cargo install just --locked`).
 
-`just ci` is the local mirror of CI, minus the three-OS matrix and the manual Mermaid
-visual-inspection/report step. If it is green and you only touched
+#### 3.3.1 Minimal first-run discovery workflow
+
+Newcomers can inspect and discover available recipes safely without executing unintended
+actions:
+
+```bash
+just --version       # verify minimum version (1.55.0+)
+just --list          # discover all public recipes with descriptions
+just --show ci       # inspect the CI entrypoint without executing it
+just fmt-check       # fast, non-mutating formatting check
+```
+
+The `ci` recipe delegates to `tools/ci_local.py`. `just --show ci` displays
+that entrypoint, not the full gate dependency list. To inspect the actual
+gates and their dependencies, read `ci-inventory`, `ci-policy`, and the
+referenced recipes in the root [`justfile`](../../justfile).
+
+When optional tools are missing, specific fallbacks apply to individual components
+(e.g., `cargo test --workspace` can run a partial workspace test suite when
+`cargo-nextest` is unavailable; headless Linux needs `xvfb-run -a cargo test --workspace`
+for GTK/WebKit host tests),
+but raw Cargo commands cannot replace the complete pinned `just ci` gate (which runs
+independent policy gates, TypeScript compilation, formatting, clippy, docs, and dependency
+verification). Similarly, Mermaid diagram rendering in `just ci-full` and
+`just mermaid-render-check` strictly requires a Docker-compatible engine; raw Cargo commands
+cannot render SVG diagrams. State unavailable tools and skipped gates honestly rather
+than claiming a full gate pass.
+
+#### 3.3.2 Task-oriented command guide
+
+Recipes are grouped by developer task and lifecycle stage:
+
+- **Diagnostic backend vs. product demo:**
+  - `just hello`: opens the diagnostic backend window (Phase 1 slice) to verify native
+    host webview initialization.
+  - *Note:* `just hello` is **not** the application demo. To experience the real app session,
+    follow [Run the current demo](README.md#run-the-current-demo) using
+    `keld create → doctor → dev`.
+- **Fast edit loop (rapid local feedback):**
+  - `just fmt-check`: verifies Rust and JS/TS formatting and generated freshness without touching files (fast check).
+  - `just fmt`: normalizes Rust, then generates, formats JS/TS and restamps transport (**modifies source files**).
+  - `just clippy`: runs workspace lints with warnings treated as errors (`-D warnings`).
+  - Scoped tests: `cargo nextest run -p <crate> -- <filter>` runs focused tests without
+    the full suite overhead.
+- **Pre-PR verification gates:**
+  - `just ci`: standard local pre-PR gate. Runs independent policy gates in parallel,
+    followed by TypeScript compilation, formatting checks, clippy, workspace tests,
+    documentation builds, and supply-chain checks. On Windows, execute within Git Bash
+    for shell-based recipe compatibility.
+  - `just ci-full`: full assurance mode. Runs `just ci` with full-corpus Mermaid validation
+    and digest-pinned container rendering (requires a Docker-compatible engine).
+- **Docs, architecture, and generated sources:**
+  - `just llms` (**tracked file-mutating** generator) · `just llms-check` · `just llms-test`:
+    maintains the agent-readable `llms.txt` and `llms-full.txt` corpus.
+  - `just product-status` (**tracked file-mutating** generator) · `just product-status-check` ·
+    `just product-status-test`: renders the Markdown view from the canonical TSV ledger.
+  - `just doc-placeholders-check` · `just doc-placeholders-test`: enforces that no template
+    placeholders reach checked-in prose.
+  - `just spec-structure` · `just spec-structure-test`: enforces the spec standard in
+    [`.agents/specs.md`](../../.agents/specs.md): size caps, layout, stable IDs, links and
+    the landed-file ratchet.
+  - `just mermaid-check` · `just mermaid-test` · `just mermaid-render-check`: validates
+    Mermaid diagrams and renders SVG assets via container.
+- **Managed worktrees & session helpers:**
+  - `just work-start <tracker-id> <slug> [--session <id>]`: allocates an isolated task
+    worktree under `.keld-work/worktrees/<task-name>` (e.g.,
+    `just work-start kel-245 workspace --session manual-session-1`).
+  - `just work-status [--sizes]`: inspects active worktrees, task allocations, and session
+    evidence without modifying state (`--sizes` reports disk usage).
+  - `just work-run <task-name> --session <id> -- <command>`: executes a command inside the
+    designated task worktree (e.g.,
+    `just work-run kel-245-workspace --session manual-session-1 -- just ci`).
+  - `just work-finish <task-name> --session <id> --receipt <receipt-path>`: checks and
+    concludes an active task record with a closeout receipt.
+  - `just work-clean <task-name> --session <id> [--apply --receipt <receipt-path>]`:
+    dry-run inspection of scratch by default. With `--apply` and a matching receipt, deletes
+    **only admitted, released-session scratch** under `.keld-work/tmp/` (primary session scratch)
+    and, when present, the legacy path `.keld-work/sessions/<session>/scratch`. It **preserves**
+    the Git worktree, branch, caches, and evidence; it does *not* retire or remove the Git worktree.
+- **Optional maintainer-only / network workflows:**
+  - `just research-sync` · `just hooks-install`: maintainer research synchronization and
+    checkout hook installation. These recipes are **strictly optional** and not required
+    for public external contributions.
+
+#### 3.3.3 Command properties & safety reference
+
+| Recipe | Primary fallback | Filesystem impact | Cost | Notes |
+|---|---|---|---|---|
+| `just hello` | `cargo run -p keld-host --bin keld-host -- --hello` | Writes `target/` artifacts | Moderate | Diagnostic window only; not the app-session demo |
+| `just fmt-check` | `just js-fmt-check`, then `cargo fmt --all --check`, `tools/fmt_included.sh test` and `--check` | None (read-only) | Fast | Fails on unformatted code |
+| `just fmt` | `cargo fmt --all`, `tools/fmt_included.sh`, then `just js-fmt` | **Modifies source files** | Fast | Normalizes Rust before generation, native JS/TS formatting and final restamping |
+| `just clippy` | `cargo clippy --workspace --all-targets -- -D warnings` | Writes `target/` artifacts | Moderate | Warnings treated as errors |
+| `just test` | `cargo nextest run --workspace --profile ci` (Linux: `xvfb-run -a`; partial fallback: `cargo test --workspace`, on headless Linux `xvfb-run -a cargo test --workspace`) | Writes `target/` artifacts | Heavy | Nextest enforces zero retries; Linux host suite requires virtual display (`xvfb-run -a`); raw `cargo test` is partial fallback |
+| `just doc` | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | Writes `target/doc/` | Moderate | Builds rustdoc without dependencies |
+| `just deny` | `cargo deny check` and helper bans check | None | Fast | Workspace check plus `crates/keld-updater-helper/deny.toml check bans`; requires `cargo-deny` |
+| `just ci` | None (runs full declared gate inventory) | Writes `target/` artifacts | Heavy | Sole gate inventory defined in `justfile`; use Git Bash on Windows |
+| `just ci-full` | `just ci` + container Mermaid render | Writes `target/` + assets | Heavy | Requires Docker-compatible engine |
+| `just llms` | `rustc ... tools/llms_docs.rs` | **Modifies tracked files** | Fast | Regenerates `llms.txt` and `llms-full.txt` from sources |
+| `just product-status` | `rustc ... tools/product_status.rs` | **Modifies tracked files** | Fast | Regenerates Markdown view from canonical TSV ledger |
+| `just work-clean` | `tools/workspace.py clean "$@"` | **Deletes scratch only with `--apply`** | Fast | Dry run by default; `--apply` removes session scratch, preserving worktree/branch |
+
+`just ci` is the local mirror of routed CI, minus the three-OS matrix and the manual Mermaid
+visual-inspection/report step. Its independent policy gates run in parallel. TypeScript
+then runs, followed by the Rust gates one at a time, so load-sensitive tests do not share
+the parallel policy load. Use `just ci-full` for an explicit whole-corpus Mermaid check. If it is green and you only touched
 cross-platform code, CI usually agrees.
+
+#### 3.3.4 Raw command reference
+
+If you develop without `just`, use an executable raw alternative only where one is
+listed. **No maintained raw equivalent** means the full recipe is not available as a
+supported standalone command; use `just` rather than treating a partial command as
+a passing gate. Multi-step recipes (such as `just deny`) and Linux display
+wrappers require every listed step. The `just ci` row below is a canonical
+policy statement, **not** an executable raw substitute:
+
+| `just` target | Raw alternative or availability |
+|---|---|
+| `just hello` | `cargo run -p keld-host --bin keld-host -- --hello` |
+| `just fmt` | `cargo fmt --all`, `tools/fmt_included.sh`, then `just js-fmt` |
+| `just fmt-check` | `just js-fmt-check`, then `cargo fmt --all --check`, `tools/fmt_included.sh test` and `tools/fmt_included.sh --check` |
+| `just clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
+| `just test` | `cargo nextest run --workspace --profile ci` (Linux requires virtual display: `xvfb-run -a cargo nextest run --workspace --profile ci`) |
+| `just doc` | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` |
+| `just deny` | `cargo deny check && cargo deny --manifest-path crates/keld-updater-helper/Cargo.toml --all-features --config crates/keld-updater-helper/deny.toml check bans` |
+| `just mermaid-test` / `just mermaid-check` / `just mermaid-render-check` | **No maintained raw equivalent** — use the `just` recipes; rendering also requires a Docker-compatible engine. |
+| `just llms-test` / `just llms-check` | **No maintained raw equivalent** — use the `just` recipes for generated-corpus tests and freshness. |
+| `just ci` | Full local gate; the `justfile` `ci` recipe and the gate groups it names are the sole source of its inventory and order. |
+| `just ci-full` | **No maintained raw equivalent** — use `just ci-full` for the full-corpus Mermaid check and pinned rendering. |
 
 ---
 
@@ -142,7 +246,7 @@ cross-platform code, CI usually agrees.
 cargo nextest run --workspace --profile ci     # the gate; no retries, a flake fails here
 cargo nextest run -p keld-ipc                  # one crate
 cargo nextest run -p keld-ipc -- frame         # one crate, substring filter
-cargo test --workspace                         # fallback if nextest is unavailable
+cargo test --workspace                         # partial fallback; on headless Linux use xvfb-run -a cargo test --workspace
 ```
 
 The `ci` profile declares no retries, so a test that fails once fails the gate. That is
@@ -192,19 +296,20 @@ job count and trigger details. Its stable responsibilities are:
 
 | Job | Runner(s) | What it does |
 |---|---|---|
-| `rustfmt` | ubuntu | `cargo fmt --all --check` |
+| `rustfmt` | ubuntu | `cargo fmt --all --check`, then `tools/fmt_included.sh test` and `--check` for `include!`d and macro-body `#[path]` files `cargo fmt` never visits |
 | `clippy + test` | ubuntu **and** macos **and** windows, `fail-fast: false` | `cargo clippy --workspace --all-targets -- -D warnings`, then `cargo nextest run --workspace --profile ci`; plus `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS: -D warnings` on ubuntu only |
 | `MSRV` | ubuntu | reads `rust_version` out of `cargo metadata` and runs `cargo check --workspace --all-targets` on that exact toolchain — so the job can never drift from `Cargo.toml` |
-| `cargo-deny` | ubuntu | licenses / advisories / bans / sources per `deny.toml` |
+| `cargo-deny` | ubuntu | licenses / advisories / bans / sources per `deny.toml`, from the checksum-pinned cargo-deny 0.20.2 release binary (no Docker image) |
 | `gitleaks` | ubuntu | checksum-pinned OSS CLI 8.30.1 (`gitleaks detect`), not the org-licensed GitHub Action |
-| `CODEOWNERS + docs contracts` | ubuntu | compile+run `tools/ci_hygiene.rs`, validate generated llms docs, run Mermaid validator tests/check, then render tracked diagrams in the digest-pinned isolated container |
+| `CODEOWNERS + docs contracts` / `Mermaid` | ubuntu | hygiene validates workflow and renderer contracts; generated llms/audit checks use the docs route; the separate Mermaid job tests/renders all diagrams only when the Mermaid router selects it |
 
 `fail-fast: false` on the matrix is deliberate: one platform failing must not hide the
 other two, because `keld-wv` and `keld-native` diverge per platform by design. Actions
-are SHA-pinned (`dtolnay/rust-toolchain`, `Swatinem/rust-cache`, `taiki-e/install-action`,
-`EmbarkStudios/cargo-deny-action`). The toolchain action requires `with: toolchain: 1.97.1`;
-it does not auto-read `rust-toolchain.toml` (that file is for local rustup). CI does not
-use an unpinned `cargo` on a random runner image.
+are SHA-pinned (`dtolnay/rust-toolchain`, `Swatinem/rust-cache`, `taiki-e/install-action`);
+the gitleaks and cargo-deny CLIs are release downloads pinned by SHA-256. The toolchain
+action requires `with: toolchain: 1.99.1`; it does not auto-read `rust-toolchain.toml`
+(that file is for local rustup). CI does not use an unpinned `cargo` on a random runner
+image.
 
 ---
 
@@ -339,12 +444,12 @@ is the process of record. Condensed:
    Then grep the codebase; a surprising amount already exists.
 2. **Spec gate** — bigger than a bug fix and no approved spec? Write one from
    [`docs/agents/spec-template.md`](../agents/spec-template.md) into
-   `docs/specs/<kebab-name>.md` and stop for human approval. Implementation starts only
+   `docs/specs/<id>-<slug>.md` under [`.agents/specs.md`](../../.agents/specs.md) and stop for human approval. Implementation starts only
    at `Status: approved`. Existing specs in `docs/specs/` are examples of the required
    shape, not implicit approval for a new implementation. Bug fixes skip the spec but
    not the regression test.
 3. **Isolate** — one concern per branch; work in a git worktree sibling
-   (`../keld-<issue>`) on `agent/kel-<n>-<slug>` from `origin/main`
+   (`../keld-<issue>`) on `agent/kel-<n>-<slug>` (or `agent/gh-<n>-<slug>` for a GitHub tracker issue) from `origin/main`
    (`.agents/review.md` § Branch and commit contract). Never two people building in one
    tree at once.
 4. **Write the test first**, then implement. Vertical slices, no placeholders.
@@ -397,7 +502,7 @@ reach for them:
 | What has already bitten someone? | [`docs/agents/learnings.md`](../agents/learnings.md) |
 | What is the system supposed to be? | [`docs/architecture/01..07-*.md`](../architecture/) |
 | Why did we choose this? | [`docs/engineering/decisions.md`](../engineering/decisions.md) (engineering narrative, not RFC 2119). [`AGENTS.md`](../../AGENTS.md) still binds. Canonical categorized `docs/research/library/` is exploratory evidence, not required reading. |
-| What is Current versus Target? | Generated [`product-status.md`](../engineering/product-status.md); Linear owns live scheduling |
+| What is Current versus Target? | Generated [`product-status.md`](../engineering/product-status.md); the tracker issue (Linear, or GitHub under #517) owns live scheduling |
 | Which of these actually binds me? | [`06-documentation-map.md`](./06-documentation-map.md) |
 
 There is no `.claude/project-calibration.json` and no `project-conventions` skill in this
@@ -442,6 +547,10 @@ already present.
 `cargo install just`, or use the raw command table in §3.3 — nothing in the repo depends
 on `just` being installed.
 
+**``unknown setting `minimum-version` `` or `justfile requires just 1.55.0 or later`.**
+Upgrade with `cargo install just --locked`. The `justfile` declares `set minimum-version`,
+which just added in 1.55.0; the `ci` gate groups use `[parallel]` (just 1.42.0+).
+
 **`keld dev` says `KELD-CLI-032: environment checks failed`.**
 Read the check list it prints; it fails before spawning anything. The usual cause is
 running outside a scaffolded project, or in a directory that has `keld.config.ts` but not
@@ -466,6 +575,84 @@ the PR rather than fixing it silently in an unrelated diff.
 
 
 ## Optional maintainer checkout setup
+
+### Local agent workspace
+
+Keld keeps new task worktrees and command scratch below the primary checkout's
+gitignored `.keld-work/`. Git remains the worktree authority and the tracker issue (Linear, or
+GitHub under #517) the issue/claim authority. Commands resolve the same primary directory when invoked inside a linked
+checkout; this is cooperative file management, not an OS sandbox.
+
+From a reviewed checkout, after claiming the issue:
+
+```text
+just work-start kel-245 workspace --session manual-session-1
+just work-status
+just work-run kel-245-workspace --session manual-session-1 -- just ci
+just work-status --sizes
+just work-finish kel-245-workspace --session manual-session-1 --receipt /absolute/closeout.json
+just work-clean kel-245-workspace --session manual-session-1
+just work-clean kel-245-workspace --session manual-session-1 --apply --receipt /absolute/cleanup-closeout.json
+just work-check
+just work-test
+```
+
+Use the native client's session ID when available. Manual callers may omit `--session`
+on start to generate one; retain the returned ID for subsequent runs. Start defaults to
+local `origin/main`, resolves a commit before writes, and accepts an explicit `--base`.
+Fetch explicitly when the local remote-tracking ref needs updating. Existing task paths,
+branches and another session's ownership are never overwritten. Repeating the same
+start returns that session's valid task. These records do not replace the tracker claim.
+
+The returned task path is `.keld-work/worktrees/kel-245-workspace`. Run evidence lives in
+`.keld-work/sessions/manual-session-1/evidence/run-ID/`. Scratch uses a private
+`.keld-work/tmp/<short-token>/` directory; the session retains its run and filesystem
+identity in `scratch-owners/`. This keeps long session names out of Unix socket paths.
+On Windows, task/session metadata is admitted before allocation only when its generated
+absolute directory/file paths fit the conservative 247/259 UTF-16-unit support cell,
+including atomic replacement names. A refusal identifies the path: use a shorter real
+primary checkout, preserving the session identity and evidence. This applies even on
+hosts configured for longer paths; arbitrary child paths have their own limits.
+Workspace mutation also requires the patched final CPython versions listed above so
+`mkdtemp` creates private scratch even below a shared parent. Unsupported runtimes
+refuse before writes; use a supported final CPython and retain existing session data.
+Very long primary checkout paths can still exceed native socket limits; use a shorter
+real primary path for those suites. Each run streams output and retains at most 4 MiB per stdout/stderr
+tail by default; `--log-limit-mib` accepts 1–64 per stream before the `--` separator.
+`result.json` records exit status and omitted bytes, never an environment or raw argv
+dump. Truncated output is not complete evidence. Internal capture/spawn failures return
+nonzero; an inherited pipe that stays open after child exit is recorded as incomplete.
+
+Only the child process receives the scoped `TMPDIR`, `TEMP` and `TMP`. Per-checkout
+Cargo `target/` and package `node_modules/` keep their established locations. Reference
+checkouts remain at primary `docs/research/` and `competitors/`: linked-checkout sync/push
+is refused; update from the primary only after reconciling active reference consumers.
+With active tasks, set `KELD_WORK_SESSION` to their owning session ID in the invoking
+shell. Admission requires all active tasks to belong to that account/session and no
+task command to be running; another active session blocks the update. Public helper
+recipes hold a shared reference guard through completion, excluding new task commands.
+This coordinates these tools; it is not an OS lock on external reference editors.
+No command automatically clones references on task creation.
+
+This initial slice provides start/status/run/check/test plus release and scratch-only
+cleanup. Full worktree retirement, import commands and new-session native hook paths
+are still implementation work in KEL-245;
+existing closeout hooks and legacy evidence locations remain valid. Status lists
+unmanaged legacy worktrees; it neither adopts nor deletes them. A failed/interrupted
+allocation may leave a tree or operation lock for explicit inspection, never automatic
+takeover. Keep evidence and source while completing the remaining cleanup integration.
+
+`work-finish` requires an owned task, a clean checkout with no content missing from
+local `origin/main`, and a complete closeout receipt for the same checkout/session. It
+only releases the local task record. `work-clean` previews the exact released session's
+recorded scratch directories and legacy session scratch by default; `--apply` requires a prepared current-turn receipt,
+revalidates it then removes scratch only and validates the receipt after the mutation. It
+retains evidence, the Git worktree and branch, all caches, all legacy folders and any
+unsupported/link/reparse/mount/nested-Git target. Pre-mutation admission failures perform
+no deletion. A post-mutation receipt failure is recorded as failed cleanup with exact
+removed paths and requires handoff; it is never reported as success. Full worktree
+retirement, evidence archival and legacy import remain explicit
+later KEL-245 work, not hidden behavior in this command.
 
 External contributors do not need this setup. Maintainers with access to the separate
 research repository can run `just research-sync` after reviewing the checked-out
@@ -519,6 +706,11 @@ Claude uses exact argument execution; Cursor uses its native command string. Cur
 receives a session-start pointer and refreshes a small `current.json` before each prompt
 under the Git common directory's session namespace. It contains IDs and receipt
 instructions, never prompts or transcripts, and does not activate a task by itself.
+Codex and Claude prompt hooks additionally emit the verified primary
+`.keld-work/sessions/<session-id>/` pointer without creating it. The hash-bound hook
+registration includes the workspace resolver, so a changed resolver refuses until the
+tracked Codex configuration is regenerated and reviewed. Historical closeout baselines
+and receipts remain under the Git common directory in this slice.
 The adapter rejects ambiguous/foreign workspace roots. The validator remains read-only.
 The adapter requests repair only when the native `loop_count` is zero and configures
 `loop_limit: 1`. Interactive CLI 2026.09.08-6caf4ff on Windows/Linux reset the count on

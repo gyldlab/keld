@@ -9,15 +9,15 @@ in agent-facing files. Architecture specs remain prose.
 
 ## Ground truth
 
-- Specs: `docs/architecture/01..07-*.md`; research: nested `docs/research/` checkout.
+- Specs: `docs/architecture/01..07-*.md`; audits: `docs/audits/README.md`; research: nested `docs/research/` checkout.
 - [`llms.txt`](llms.txt) is the compact generated index; [`llms-full.txt`](llms-full.txt)
   is its ordered corpus. Included-source changes MUST pass `just llms-check`.
 - Code/spec mismatch is a bug in one. Fix both in the same PR or state the blocker;
   MUST NOT drift silently.
-- Features require an approved `docs/agents/spec-template.md` spec plus Linear (KELD).
+- Features require an approved `docs/agents/spec-template.md` spec plus a tracker issue.
   `docs/agents/workflow.md` owns execution; routed review/coordination playbooks own
   their operational rules.
-- The nearest crate `AGENTS.md` adds path invariants and MUST be read before editing it.
+- Read nearest crate `AGENTS.md` before editing there.
 
 ## Instruction loading and routing (MUST)
 
@@ -132,27 +132,29 @@ Repository Current/Target/Evidence status is owned by the tracked
 Workspace membership is owned by `Cargo.toml`; package roles and public contracts remain
 path-local.
 
-Crate `AGENTS.md` exists only for real extra invariants (`wv`, `ipc`, `guard`,
-`compat`, `runtime`, `core`, `host`, `cli`). MUST NOT add hollow agent files.
+Crate invariants in `AGENTS.md`: `wv`, `ipc`, `guard`, `compat`, `runtime`,
+`core`, `host`, `cli`, `update`, `native`. MUST NOT add hollow agent files.
 
 ## Verification floor
 
-- `just ci` is the sole exact local gate inventory. New behavior MUST have tests.
-- Before done, agents MUST run and report actual output for format, workspace clippy
-  with warnings denied, and the full workspace test gate. Conditional gates come from
-  `.agents/index.md`; MUST NOT report an unrun OS/path as passed.
+- Routine `just ci` routes Mermaid when relevant; `just ci-full` forces all diagrams.
+  New behavior MUST have tests.
+- Before done, agents MUST run and report actual format, warning-denied workspace clippy,
+  and workspace test output. Conditional gates use `.agents/index.md`; MUST NOT claim
+  unrun OS/path passed.
 - Tests, failures, CI, docs/rendering, and dependency changes MUST load their routed
   playbook before selecting a fix or proof.
 
 ## Rust, TypeScript, and naming
 
 - Rust lints are workspace-owned. A new `allow` needs inline justification.
-- Production `unsafe` is limited to the exact sanctioned paths and operations owned by
-  the nearest crate `AGENTS.md`; that owner is the single allowlist, not a crate-wide
-  permission. Each denies `unsafe_op_in_unsafe_fn` and
-  carries local `// SAFETY:` proofs. A new production path requires an issue-scoped
-  root/nested owner update plus independent `unsafe` gate evidence on the exact
-  final diff; tests follow their nearest owner.
+- Production `unsafe`: exact paths/operations sanctioned by the nearest crate
+  `AGENTS.md` only; sole allowlist, no crate-wide grant. KEL-89:
+  [Native T3/T4](crates/keld-native/AGENTS.md).
+  Each denies `unsafe_op_in_unsafe_fn` and carries local `// SAFETY:` proofs.
+  New production paths require issue-scoped root/nested owner updates plus
+  independent `unsafe` gate evidence on the exact final diff; tests follow their
+  nearest owner.
 - Libraries MUST NOT add `unwrap`/`expect`/`panic!`. Typed errors are hand-written
   `Display` + `KELD-*` fix guidance; test and `keld-cli` top-level invariants may expect.
 - Hot kipc/event-loop/guard paths use callbacks/state machines: no async runtime or

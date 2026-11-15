@@ -1,9 +1,9 @@
 # Keld Architecture — A Guide for New Engineers
 
 This is the readable version of the normative specs in [`docs/architecture/`](../architecture/).
-It exists because those seven documents describe the system Keld is *going to be*, and the
-code in `crates/` is roughly 2,200 lines of the system Keld *is* — mostly two crates. Both
-facts matter, and reading the specs alone will give you a badly calibrated mental model.
+It exists because those seven documents describe the system Keld is *going to be*, while
+the current Rust crates and TypeScript packages implement selected slices. Both facts
+matter, and reading the specs alone will give you a badly calibrated mental model.
 
 **The specs are normative; this document is not.** Where they disagree, the spec wins and the
 mismatch is a bug (root [`AGENTS.md`](../../AGENTS.md): "Code/spec mismatch = bug in one; fix
@@ -137,8 +137,12 @@ the earlier one wins. What each means when you are actually writing code:
 4. **Hot paths are state machines.** Platform event loops with readiness-driven callbacks; no
    Tokio in the message path. Async Rust is allowed only in cold tooling (CLI, packager,
    updater). In practice: if you find yourself writing `async fn` in `keld-ipc`, stop.
-5. **No Rust toolchain for app developers.** Prebuilt signed host + npm distribution. Rust is
-   the plugin path, never the entry fee.
+5. **No Rust toolchain for app developers.** Prebuilt host + npm distribution; the host in
+   a shipped app is signed. Rust is the plugin path, never the entry fee. Target
+   behaviour on Windows (KEL-19 T3, blocked on an authenticated Keld release channel):
+   the packaging-input host is distributed unsigned, and `keld build` verifies its
+   digest from that channel and embeds the app identity before the app publisher
+   applies the only signature (`docs/specs/kel254-expected-identity-container.md`).
 6. **Per-platform engine policy, not ideology.** System webviews where they are good
    (Windows, macOS), pinned engine where they are not (Linux, opt-in). See §6.
 7. **Measured, budgeted, regression-gated.** Perf budgets are in
@@ -188,9 +192,9 @@ every fallible operation in `keld-wv` returns `Result` rather than asserting.
 ### 4a. The designed flow
 
 This is the target architecture from [`01` §1](../architecture/01-overview.md) and
-[`02` §2](../architecture/02-ipc.md), traced as a sequence rather than a box diagram. **Nothing
-in this diagram past the "app-link" transport is wired up today** — see §4b for what actually
-runs.
+[`02` §2](../architecture/02-ipc.md), traced as a sequence rather than a box diagram.
+The shared app-link and guarded filesystem calls exist; the specific `dialog.open` request
+and its UI dispatch shown here remain planned. See §4b for what currently runs.
 
 ```mermaid
 sequenceDiagram
@@ -202,7 +206,7 @@ sequenceDiagram
     }
     autonumber
     participant Main as main.ts<br/>(Bun child, unprivileged)
-    participant API as @keld/api<br/>(TS, specified only)
+    participant API as @keld/api<br/>(TS link live, dialog planned)
     participant AppLink as app-link<br/>UDS / named pipe
     participant Rdr as host IPC reader thread
     participant Core as keld-core<br/>(dispatch)
@@ -294,7 +298,7 @@ sequenceDiagram
 
 The honest reading of that diagram:
 
-- **The Bun child is a kipc peer for echo (KEL-30) and `@keld/electron` lifecycle (KEL-72).** `@keld/api` does not exist yet; the hello template embeds its wire-tested kipc client into the self-contained `src/main.ts` entry, and `@keld/electron` speaks `LIFECYCLE_CHANNEL` directly.
+- **The Bun child is a kipc peer for echo (KEL-30) and the Electron-compatible lifecycle (KEL-72).** The hello template embeds its wire-tested kipc client into the self-contained `src/main.ts` entry. Separately, `@keld/electron` delegates lifecycle to `@keld/api`'s singleton link, backed by `@keld/kipc`'s Worker transport for `LIFECYCLE_CHANNEL`; the shim does not open another socket.
 - **The macOS, Windows, and Linux windows/IPC sessions are concurrent and host-owned.** The stock
   entry makes one echo call and remains alive with its authenticated stream while the native window
   is live. The product acceptance observer proves a second call on that same stream; a fresh stream
@@ -460,8 +464,11 @@ restricted token + job object, Linux landlock + seccomp) — possible *because* 
 lives in the host, so clamping the child breaks nothing; always-on webview hardening (CSP
 injection, per-principal `keld://` fetch isolation, `channels: []` for remote content, navigation
 allowlists, devtools off in release); and supply-chain measures (24 h `min-release-age` on
-template deps, ed25519-signed host binaries and updates, `keld.lock` pinning host/Bun/polyfill
-versions).
+template deps, ed25519-signed update manifests whose BLAKE3 digests authenticate each full
+artifact (KEL-53), shipped Windows host binaries that carry the app publisher's Authenticode
+signature (target behaviour on Windows, KEL-19 T3, blocked on an authenticated Keld release
+channel: Keld's packaging-input host is distributed unsigned and digest-verified, per
+Architecture 01 principle 5), `keld.lock` pinning host/Bun/polyfill versions).
 
 [`03` §6](../architecture/03-security.md) is titled "the honesty ledger" and is worth reading in
 full — it states plainly what Keld does *not* promise: the sandbox protects the user from
@@ -481,7 +488,7 @@ engines honestly:
 
 | Platform | Engine | Grade | Consequence for Keld |
 |---|---|---|---|
-| Windows | WebView2 (Chromium, evergreen) | A− | System webview is clearly right; CEF adds little. Caveats: still multi-process, string-typed message bridge (binary needs the scheme or shm lane) |
+| Windows | WebView2 (Chromium, evergreen) | A− | System webview is clearly right; CEF adds little. Caveats: still multi-process; content-side web messages are JSON-convertible values, not a generic binary lane (binary still needs the scheme or an independently qualified bulk lane) |
 | macOS | WKWebView (WebKit, OS-locked) | B | System default + a published minimum OS baseline (start 12+), polyfill pack for the tail. Out-of-process WebContent gives crash isolation for free. No CDP — DevTools is the Safari inspector |
 | Linux | WebKitGTK | D+ | The documented disaster zone: NVIDIA DMABUF crashes, blank windows, crash-on-resize, WebGL silently falling back to software while masking the renderer string, and distro version freezes |
 
@@ -615,6 +622,6 @@ delegation and must be listed under `## Review gates` in the PR (root `AGENTS.md
 "none" when none apply. `.agents/coordination.md` owns the final merge predicate.
 
 **Phasing** is tracked in the generated
-[product-status ledger](../engineering/product-status.md); Linear owns live scheduling,
-dependencies, and claims. Phase classification never substitutes for a named product or
+[product-status ledger](../engineering/product-status.md); the tracker issue (Linear, or
+GitHub under #517) owns live scheduling, dependencies, and claims. Phase classification never substitutes for a named product or
 real-OS acceptance result.

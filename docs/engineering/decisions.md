@@ -122,12 +122,22 @@ disk — the first production capability to use it. Cross-platform by constructi
 (`std::fs::read`/`std::fs::write` are the same call on all three OSes), so this satisfies
 architecture 05 §3's "all three OS implementations" without per-platform code.
 `..` traversal denial falls out of `keld-guard::evaluate` for free (already rejects any
-`..` segment) — proved with a real OS oracle (`dotdot_segment_is_denied_even_inside_a_granted_scope`),
+`..` segment) — proved with a real OS oracle (`dotdot_segment_is_denied_even_inside_a_granted_scope`,
+removed by b4634076. Since #673, CI runs the real-OS proof on macOS, Linux and Windows:
+`crates/keld-native/tests/retained_fs.rs`
+`parent_component_inside_a_granted_scope_never_reaches_the_outside` asserts `KELD-GUARD002`
+from the dispatch boundary and an untouched sentinel outside the scope, a 15-form table
+covers every climbing spelling and permanent fixtures cover links that climb out. The `evaluate`-level
+`keld-guard` `tests/acl.rs` case `slash traversal` and the ignored macOS device acceptance
+(`path-parent-component`, zero traversal/open/content I/O counters) remain),
 not re-implemented here. Verified end-to-end over a real kipc session
 (`crates/keld-native/tests/fs_session.rs`): allow writes-then-reads-back identical bytes
-on disk; deny (empty manifest, out-of-scope path, `..`, or a non-`AppProcess` principal)
-leaves the file completely unwritten, each checked with a real `std::path::Path::exists()`
-stat, not a stub return. Negative control verified manually twice: bypassing
+on disk, and a deny under an empty manifest leaves the file unwritten, checked with a
+real `std::path::Path::exists()` stat, not a stub return. (Correction, #673 review: that
+file never sent an out-of-scope, `..` or non-`AppProcess` request over kipc. Those
+denials are proved below the wire instead: out-of-scope in `keld-guard` `tests/acl.rs`,
+non-`AppProcess` in `keld-guard`'s unit tests, and `..` at the broker in
+`crates/keld-native/tests/retained_fs.rs`.) Negative control verified manually twice: bypassing
 `dispatch_privileged` inside `fs_write` made three fs-specific tests fail; separately,
 temporarily adding a `node:fs` import to the hello template made the new
 `template_never_imports_node_fs` static check fail (`crates/keld-cli/src/template.rs`) —
@@ -245,10 +255,11 @@ prioritize (scheme-streaming as bulk IPC, principal identity per navigation, eng
 policy switching, `webContents`-grade control). The host is prebuilt, so wry's
 “works in any downstream cargo build” constraint does not apply.
 
-**MPL is not wry's license.** wry 0.56.1 is Apache-2.0 OR MIT; tao 0.35.3 is
-Apache-2.0. The MPL-2.0 crate in the graph is **`option-ext` 0.2.0**, reached
+**MPL is not wry's license.** wry 0.56.1 is Apache-2.0 OR MIT (crates.io `LICENSE.spdx`;
+GitHub's license API reports Apache-2.0 only); tao 0.35.3 is Apache-2.0. The MPL-2.0
+crate in the graph is **`option-ext` 0.2.0**, reached
 `keld-wv → wry → dirs → dirs-sys → option-ext` (`deny.toml`,
-[`third-party-licenses.md`](./third-party-licenses.md), learnings 2026-08-13). Do not
+[`third-party-licenses.md`](./third-party-licenses.md)). Do not
 describe wry as MPL.
 
 **Update (2026-08-17, KEL-28 follow-up): the `build_gtk` container was itself
@@ -260,7 +271,7 @@ already fills that slot with its own vertical `gtk::Box`
 (`WindowExtUnix::default_vbox`). GTK logged "Attempting to add a widget...
 but as a GtkBin subclass a GtkApplicationWindow can only contain one widget
 at a time" and the webview never actually attached to the window — confirmed
-live under Xvfb (log capture, `docs/agents/learnings.md`). Every real wry
+live under Xvfb (log capture, KEL-28 follow-up). Every real wry
 example (`examples/simple.rs`, `examples/multiwindow.rs`, ...) passes
 `window.default_vbox().unwrap()` to `build_gtk`; the `gtk_window()` form only
 appears in wry's simplified top-of-crate-doc snippet, which is for the
@@ -283,7 +294,7 @@ job, builds `keld-host`, launches `--hello`, and polls `xdotool search`
 blind sleep. A local dry-run in WSL surfaced a real bug in the *test script
 itself*: a `trap '... || true' EXIT` clobbers `$?`, so a genuinely failing
 smoke test would have reported success to CI — fixed by capturing the exit
-code before cleanup and re-exiting with it explicitly (`docs/agents/learnings.md`).
+code before cleanup and re-exiting with it explicitly (local WSL dry-run).
 
 **Next.** Keep macOS and Linux on wry+tao. Rewrite a backend to objc2/webkit6-gtk4
 when that backend needs a wry-missing hook (as happened for Windows, KEL-65), or
@@ -338,15 +349,46 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace --profile ci
 ```
 
-Toolchain pin: `rust-toolchain.toml` (`1.97.1`, rustfmt + clippy). Nextest CI
+Toolchain pin: `rust-toolchain.toml` (`1.99.1`, rustfmt + clippy). Nextest CI
 profile: `.config/nextest.toml`, deliberately empty — the mandated gate MUST NOT
 retry, because a retry reports a flaky test green and hides its first failure
 (KEL-112). Workspace clippy is already pedantic; do not re-enable it per crate
-(learnings 2026-07-08).
+([`Cargo.toml`](../../Cargo.toml) `[workspace.lints]`).
 
-**Chose — local mirror of CI (`justfile`).** The `ci` recipe in the justfile is the
-single source of truth for the exact local gate inventory and order; prose MUST NOT copy
-that executable list. `just ci` runs the current inventory. Gitleaks stays GitHub-only
+**Chose — local mirror of CI (`justfile`).** The `ci` entry names its executable
+`ci-inventory` in the justfile; that recipe and its groups own the local gate inventory
+and order. Prose does not copy the list. The executor reads Just's JSON inventory and
+uses the shared `tools/ci_changes.sh` router to select gates. Independent policy work
+runs together; selected TypeScript and Rust gates run serially afterward. TypeScript's
+composition test exceeded its fixed five-second deadline under the policy batch's
+load and passed in 0.687 seconds alone, so it has its own serial phase. Direct
+recipe invocations retain their prerequisites. `ci-full` additionally forces Mermaid.
+
+`tools/ci_inputs.py` owns the reviewed consumer scopes in `tools/ci-inputs.json`
+(schema `keld.ci-inputs/v2`, GH-1275). Each consumer names its input edges and the
+reader-source patterns that implement it. Routing is stateless: a change that touches a
+reader source runs every consumer behind it, and a Rust reader change selects all lanes;
+a `crates/*` path that the comparison base did not track, or that the change removes,
+selects all lanes; unknown, deleted, untracked or unavailable comparison inputs select
+all. A reader that gains a new cross-tree read registers its input edge in the same
+change; the router prints that review prompt whenever a reader changes. Nothing is
+recorded between changes. Rejected alternative: schema v1 recorded a SHA-256 of every
+reader set and of `crates/*` membership and failed `--check` until a `just
+ci-inputs-rebind` commit renewed it. On a protected base the digest was therefore
+always fresh at merge time and never widened a later change, while October 2026 saw 346
+commits touch the file, 318 of them digest-only, plus repeated merge conflicts on the
+digest lines and every such diff forced all lanes. The v1 cross-change widening test is
+replaced by the explicit stateless contract test. It avoids guessing dependencies from
+filename extensions or source-text mentions. Rust's cross-tree readers and Bun's reads
+of IPC constants and CLI templates are included. Live workspace, audit-history,
+product-status and advisory checks still run with an empty Git diff; their expensive
+self-tests have separate input scopes. For example, an unrelated README edit omits
+workspace self-tests, Bun and Rust gates, while an IPC constant edit selects Bun and
+Rust gates. The agent verification floor still requires actual format, warning-denied
+workspace clippy and workspace tests before completion, even when a routing control
+omits them for an unrelated input.
+
+Gitleaks stays GitHub-only
 (checksum-pinned OSS CLI in `.github/workflows/ci.yml`).
 
 **Chose — no Husky / no committed git-hook manager.** Tracked config has no
@@ -551,7 +593,7 @@ hygiene check fails if `/.github/` is ignored (`tools/ci_hygiene.rs`).
 |---|---|
 | `.github/workflows/ci.yml` | rustfmt; clippy + nextest + rustdoc on ubuntu/macOS/windows (`fail-fast: false`); MSRV from `cargo metadata`; cargo-deny; gitleaks; CODEOWNERS/template hygiene |
 | Action pins | Full 40-char SHAs; tag in the trailing comment (`tools/ci_hygiene.rs` rejects unpinned `uses:`) |
-| Gitleaks | OSS CLI 8.30.1 tarball + `sha256sum -c` (`551f6fc8…`). **Not** `gitleaks/gitleaks-action` (that Action needs `GITLEAKS_LICENSE` on org repos; learnings 2026-08-13) |
+| Gitleaks | OSS CLI 8.30.1 tarball + `sha256sum -c` (`551f6fc8…`). **Not** `gitleaks/gitleaks-action` (that Action needs `GITLEAKS_LICENSE` on org repos, per the gitleaks-action README) |
 | `.github/CODEOWNERS` | `Cargo.toml` / `Cargo.lock` / `rust-toolchain.toml` / `.github/` / `keld-guard` / `keld-ipc`. Owners are named users until `@gyldlab/keld-maintainers` exists (file header: unknown teams make CODEOWNERS a no-op) |
 | `.github/PULL_REQUEST_TEMPLATE.md` | Summary, spec refs, the five review gates, gate commands, platforms, perf |
 | `.github/ISSUE_TEMPLATE/` | bug.yml, feature.yml, config.yml (Linear link for implementation work) |

@@ -802,7 +802,7 @@ fn created_template_quits_after_last_window_closed_on_the_same_link() {
             Err(mpsc::RecvTimeoutError::Timeout)
         ));
 
-        let ping_channel = ChannelId(91);
+        let ping_channel = ChannelId::for_test(91);
         let ping_corr = CorrelationId(0x185);
         write_frame(
             &mut stream,
@@ -818,7 +818,7 @@ fn created_template_quits_after_last_window_closed_on_the_same_link() {
         assert_eq!(ping_header.flags, 0);
         assert_eq!(ping_header.channel, ping_channel);
         assert_eq!(ping_header.corr, ping_corr);
-        assert!(ping_payload.is_empty());
+        assert_eq!(ping_payload, [] as [u8; 0]);
 
         let closed =
             keld_ipc::codec::encode(&LifecycleEvent::LastWindowClosed).expect("encode close");
@@ -966,6 +966,46 @@ fn created_template_reaps_after_early_lifecycle_link_close() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "early close must fail: {stderr}");
     assert!(stderr.contains("KELD-IPC-001"), "{stderr}");
+}
+
+/// #528 T3: a created app cannot reach the `WorkerLink` test hooks. Its staged
+/// transport defines `KELD_KIPC_RELEASE`, so importing it registers no hook
+/// seam. *Control:* the in-repo canonical transport, which leaves the constant
+/// undefined, does register it.
+#[test]
+fn created_transport_registers_no_test_hook_seam() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    create_project(dir.path(), "app").expect("create");
+    let probe = |transport: &Path| -> String {
+        let script = dir.path().join("seam-probe.ts");
+        std::fs::write(
+            &script,
+            format!(
+                "await import({});\nconsole.log(Symbol.for(\"keld.kipc.worker-link-test-seam/v1\") in globalThis);\n",
+                serde_json::to_string(&transport.display().to_string()).expect("probe path")
+            ),
+        )
+        .expect("write seam probe");
+        let output = Command::new("bun")
+            .arg(&script)
+            .output()
+            .expect("bun must be on PATH (same contract as bun_echo)");
+        assert!(output.status.success(), "{}", output_diagnostics(&output));
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    assert_eq!(
+        probe(&dir.path().join("app/src/kipc-transport.ts")),
+        "false",
+        "a created app's transport must not register the test-hook seam"
+    );
+    assert_eq!(
+        probe(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../packages/@keld/kipc/src/transport.ts")
+        ),
+        "true",
+        "control: the canonical transport keeps the seam for in-repo tests"
+    );
 }
 
 #[test]

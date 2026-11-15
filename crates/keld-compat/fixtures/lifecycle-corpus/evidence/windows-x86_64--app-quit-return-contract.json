@@ -1,0 +1,24 @@
+{
+  "schema": "keld.compat.evidence/v1",
+  "artifact": {
+    "sha256": "sha256:badc0aaf3619168927cf464e2dd0006a599b5614a35b84960c59984b18e0e8b2",
+    "platform": "windows",
+    "arch": "x86_64"
+  },
+  "revisions": {
+    "keld": "38db257ba2d1f377bd2e24f7bc871faca895c6d5",
+    "bun": "1.4.2+744846f84",
+    "engine": "headless-lifecycle-conformance@38db257ba2d1f377bd2e24f7bc871faca895c6d5"
+  },
+  "authority_profile": "legacy_sandbox_off",
+  "operation": {
+    "id": "app.quit.return-contract",
+    "kind": "primary_workflow",
+    "oracle": {
+      "id": "electron-v44.3.0.app.quit-void",
+      "revision": "electron-v44.3.0@07e460719c75b2ec5ee4893f7d2192ef31c7b8c2"
+    }
+  },
+  "result": "fail",
+  "evidence_uri": "sha256:eab36c9eb94a6d0c9974190b8ca70843473d0e5c175c0b68b4079609a4154ec3"
+}

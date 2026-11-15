@@ -8,8 +8,9 @@ enforcement, no per-window separation. Keld's job: Tauri's rigor with zero-confi
 ## 1. Principals and trust
 
 The three core principal classes are host, app-process role, and webview. Optional
-native-addon workers, reviewed native plugins and the signed update relaunch helper have
-their own policy; they do not inherit identity or grants from a core class.
+native-addon workers, reviewed native plugins, the signed update relaunch helper and the
+Machine-UAC updater helper have their own policy; they do not inherit identity or grants
+from a core class.
 
 | Principal | Trust | Authority |
 |---|---|---|
@@ -19,6 +20,7 @@ their own policy; they do not inherit identity or grants from a core class.
 | native-addon worker (optional compat process) | untrusted native code | OS-sandboxed bounded profile; broker only, never host authority |
 | native plugin (optional Rust, in-host) | trusted TCB code | manifest constrains registered channels; in-process code is not syscall-confined |
 | update relaunch helper (optional signed process) | trusted narrow mechanism | verified staged artifact + exact install target only |
+| Machine-UAC updater helper (`keld-updater-helper.exe`; `MachineUacDirect` only; target, not implemented) | trusted narrow elevated mechanism, started per attempt through explicit UAC | one installation's package/update roots through the common KEL-53 transaction, initiating-user candidate launch, and the recovery-only role; no app runtime, feed parser or persistent broker (KEL-53 criterion 17) |
 
 Every dispatched kipc frame is associated with sender identity that the host minted;
 peers never self-identify. The destination supervisor binds a principal to the accepted
@@ -37,10 +39,21 @@ are not evaluated. Echo dispatch does not call the guard — it is an
 unprivileged demo channel (KEL-30), deliberately not routed through this.
 `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) is the sanctioned
 guard-before-handler entry point for a privileged `Call`: it runs
-`evaluate` and only invokes the handler closure on `Allow`, verified
+`evaluate`, receives the first matching manifest index as an opaque
+`ScopePermit`, and lends that permit to the handler closure only on `Allow`.
+The callback result cannot borrow the permit; native code cannot mint a permit
+or choose a grant index. This is verified
 end-to-end over a real kipc session (real socket, real `HELLO` handshake,
-real filesystem side effect gated on the decision). Host `fs.read` /
-`fs.write` (KEL-71) is the first production capability on that path.
+real filesystem side effect gated on the decision). The KEL-130 library path
+prepares a non-cloneable `FsBroker` from one digest-verified manifest, retains
+each absolute filesystem scope anchor, and resolves bounded per-call traversal
+relative to the guard-selected retained grant. It rejects unserviceable scopes,
+snapshot mismatches, final exact-scope aliases, escapes, mount/volume crossings,
+non-regular objects, and fixed path/content/component/link limits before exposing
+bytes. The guarded app-link filesystem route is implemented (KEL-102/T3), with macOS
+project-policy verification and absent-policy broker-deny fallback; incomplete non-macOS
+policy producers, renderer forwarding, and full hostile/deadline/quiescence qualification
+remain bounded and open.
 Host-lifecycle `Quit` / `Ready` / `LastWindowClosed` (KEL-72,
 `LIFECYCLE_CHANNEL`) are session control on an already-minted app-link, not
 OS-authority handlers, and stay ungated like echo.
@@ -75,7 +88,7 @@ manifest decoder.
     "shell":   { "open": ["https://docs.myapp.com/**"], "spawn": [{ "cmd": "$RESOURCES/bin/ffmpeg", "args": "reviewed" }] },
     "system":  ["clipboard.read", "clipboard.write", "notifications", "tray", "global-shortcuts"],
     "secrets": ["keychain:myapp/**"],
-    // approved spec, not live: docs/specs/keld-auth.md. Each entry is a declared
+    // T3 macOS implementation: docs/specs/keld-auth.md. Each entry is a declared
     // issuer literal from that spec's closed v0 provider-profile table — the one
     // v0 row is `entra-common`. A literal that names no tabled profile matches
     // nothing the host ever asks for and therefore always denies.
@@ -140,16 +153,31 @@ manifest decoder.
   URL scopes additionally become origin-aware (case folding, default ports,
   percent-encoding, userinfo, IDN); until then a scope beyond the authority rule
   is a byte comparison, so spell destinations exactly as the host will send them.
-  **v0:** `$VARS` match as literals; `..` is rejected; symlink canonicalization is
-  not in this slice. The authority rule above **is** live in `keld-guard`
-  (KEL-208); no URL-valued capability is wired to it yet.
+  **v0:** the capability-agnostic matcher still treats `$VARS` as literals and
+  rejects `..`, so permission-explain tooling preserves that literal contract.
+  Privileged `fs.read` / `fs.write` dispatch additionally requires one absolute
+  forward-slash spelling with no empty, `.` or `..` component; malformed request
+  syntax is `KELD-GUARD002` before the retained broker can query a resource.
+  `FsBroker::prepare` separately rejects variable-bearing or
+  platform-inapplicable filesystem scopes as `KELD-NATIVE-008`. Symlink
+  canonicalization is not performed by the string matcher: KEL-130's retained
+  component walker owns link resolution after Allow. The authority rule above
+  **is** live in `keld-guard` (KEL-208); no URL-valued capability is wired to it yet.
+  On Windows, generic filesystem components reject Win32-forbidden punctuation and
+  controls, reserved device names, and trailing dot/space while permitting valid
+  tilde-bearing filesystem paths. That generic grammar applies to filesystem grants
+  and requests, IPC suffix validation, and native component traversal. The first
+  package cell uses the stricter guard-owned package grammar in architecture 06 §4a,
+  which rejects tilde; `validate_windows_package_paths` additionally requires
+  Windows NormalizationC components and ordinal case-insensitive whole-path
+  uniqueness. Neither lexical rule resolves filesystem aliases.
 - **Channel grants** connect to the schema layer: a channel's declared capability set
   (from `.k.ts` contracts) must be ⊆ the caller's grants.
 - **Role grants (destination):** a generated role capability record must be a subset of
   the app ceiling by default. Any additional role-specific authority is a separately
   versioned, reviewable manifest change; it cannot arise from an Electron
   `utilityProcess` option or child request. This schema is not live.
-- **Auth grants (destination; approved spec, not live):** `app.auth.begin` and
+- **Auth grants (T3 macOS implementation; other OS-broker paths remain targets):** `app.auth.begin` and
   `app.auth.token` scopes are both issuer-URL exact string literals, compared by byte
   equality — after `evaluate`'s own `..`-segment rejection, which runs on the resource
   before any scope is matched, so a byte-equal pair containing a `..` segment still
@@ -169,8 +197,11 @@ manifest decoder.
   denial's full `Display` (`02-ipc.md` §2), because the requested resource is the thing
   being protected — on denials, and on the host-internal invariant path where the guard
   Allows but no session resolved, so the two cannot be told apart.
-  Owner: `docs/specs/keld-auth.md` (KEL-89). No auth channel, handler, or load-time
-  entry rejection exists in the workspace yet.
+  Owner: `docs/specs/keld-auth.md` (KEL-89). Shared manifest loading rejects the
+  malformed `auth.begin`/`auth.token` issuer entries above. Direct public serde
+  deserialization is not that load path; AC13(d) separately owns its defense.
+  The T3 macOS implementation supplies the auth channel, Core admission and
+  Native runtime handler. Other OS-broker paths remain targets.
 - **CSP injection** by default on every webview (`default` = self + keld:// + declared
   net hosts; `static-only` = no script eval, no net). Opt-out is a named, linted grant.
 
@@ -179,14 +210,17 @@ manifest decoder.
 - **Destination:** `keld dev` runs with a **dev-permissive profile + recorder**: every
   would-be denial is allowed but recorded with a stack.
   **v0:** no dev-permissive profile and no denial recorder exist in the workspace;
-  `evaluate` remains default-deny for the live call sites (media + host `fs`), and
+  `evaluate` remains default-deny for the live call sites (media, host `fs` and T3 macOS auth), and
   echo / lifecycle stay ungated as in §1.
 - `keld doctor --permissions` (and `keld build`) is **planned**: diffs recorded
   usage against the manifest and prints exact JSON patches ("your app called
   fs.read('~/Library/…'): add `$APPDATA/**` or change the call"). v0 `keld doctor`
   rejects unknown flags (`KELD-CLI-044`, exit 2); `--permissions` is not live.
 - `keld migrate` seeds the manifest from static analysis of Electron API usage
-  (dialog → fs read of chosen paths, autoUpdater → net to feed URL, etc.).
+  (dialog → fs read of chosen paths, etc.). It never seeds a network grant for updater
+  feeds: `autoUpdater` use maps to the host-owned updater (§5), because application
+  permissions cannot grant update authority and application roles cannot write updater
+  metadata (architecture 06). F09-T5 (#581) owns any future trigger capability.
 - CI mode (`keld build --frozen-permissions`) fails on any manifest drift — the
   lockfile discipline, applied to authority.
 
@@ -235,16 +269,73 @@ manifest decoder.
    injection,
    `keld://` isolation, navigation allow-lists, remote-content `channels: []`,
    and `web.devtools` are not in this slice.
-4. **Supply chain**: CLI adopts a 24 h `min-release-age` for template deps (Deno 2.9
-   lesson); host binaries + updates are ed25519-signed with a TUF-style rotating root;
-   `keld.lock` pins host/Bun/polyfill-pack versions.
+4. **Supply-chain destination**: the planned CLI uses a 24 h `min-release-age` for
+   template dependencies, while `keld.lock` pins host/Bun/polyfill-pack versions. The
+   v0 update contract selects one compiled-in ed25519 key; a TUF-style rotating root
+   remains later target behavior and requires a wire/trust review.
 
-## 5. Update security
+## 5. Update security (Windows baseline and staging implemented; activation in progress)
 
-Update manifests signed (ed25519, key in `keld.build.ts` → CI secret); patches carry
-full-file BLAKE3 post-conditions (a bad/malicious diff cannot produce an unverified
-binary); rollback keeps N-1 with the same verification; channel pinning
-(stable/beta/canary) in the manifest. Threat model documented in `keld-update` crate docs.
+Current code verifies signed manifests/full artifacts and the Windows canonical
+archive, and extracts to observed owner-private incomplete stages. KEL-266 adds an
+actual SYSTEM-only protected machine-baseline installer/loader and SYSTEM staging
+cell. For `PerUserDirect`, KEL-270 T4b adds the common journaled library transaction
+(current/LKG publication, commit/rollback and crash recovery). Host consumption of the
+active selection has landed: without a dev lease, the Windows host boots only the
+authenticated installed package that KEL-53's executable-located selection admits
+(KEL-254 T3 Part B). Host candidate launch and health observation, installer
+integration and machine-mode activation remain absent. The `PerUserDirect` and
+`MachineUacDirect` baseline initializers have landed as library entrypoints; installer
+integration and mode-aware activation remain implementation work. Architecture 06 and
+KEL-53 own
+the exact support cells. The following is the reviewed full-lifecycle contract; no
+mode is shipped from provenance or state-model code alone.
+V0 update manifests are signed with
+ed25519 and verified by the host's compiled-in public key (Architecture 06 defines
+"compiled-in"; on Windows direct installs it is the signed `ExpectedAppIdentity`
+payload). Every release has a bounded
+full package whose transport and canonical
+content have separate BLAKE3 checks; optional later deltas must reconstruct that same
+full-content digest. Protected installer provenance, rather than path heuristics,
+decides whether the direct updater owns the installation channel and records the explicit
+install mode plus its mode-specific OS protection profile. Windows direct installs
+target three cells: per-user is the default and updates under the same user's authority
+without UAC; machine-wide explicit UAC obtains an elevated activation lease after
+verification and staging; machine-wide seamless activation is opt-in and remains disabled
+until its lifecycle proof and a separately approved architecture/spec amendment select
+and qualify a narrow authority. KEL-270 does not select that mechanism. These modes use
+the same verification, anti-downgrade, journal, exclusive activation, candidate health,
+commit/rollback and crash-recovery state machine; only write-lease acquisition varies.
+The Program Files UAC profile admits the trusted elevated writer (Administrators/SYSTEM)
+and ordinary-user/Keld-role read/execute. Managed installs remain owned by their
+deployment mechanism and must not gain a competing Keld writer. The per-user mode does
+not claim protection from arbitrary native malware running as the installing user;
+hostile Keld roles remain denied write access. Legacy same-user role mode refuses direct
+update. The host keeps the
+semantic-version trust floor separate from `current`, an exact attempt journal and
+`last-known-good`; candidate health cannot advance LKG unless its private receipt
+matches the journaled attempt and artifact. The Machine-UAC authority adapter is a fixed,
+dedicated, minimal signed `keld-updater-helper.exe` invoked through explicit UAC, never
+an elevated application host. It authenticates its bootstrap from the admitted host,
+obtains the write lease and revalidates the user's cache input before any protected
+write; KEL-53 criterion 17 and its single-writer transition own the exact order.
+Any optional post-exit locked-file helper is a separate, narrower
+component, not used in `MachineUacDirect`, that consumes only an already-protected journal,
+its host-process wait handle and inherited protected
+update-root/lock handles; it inherits no endpoint and has no
+feed or package parser. The machine-seamless privileged trigger remains unselected until
+its authentication and lifecycle contract passes. In the admitted profile,
+application roles and webviews cannot write this state. Administrators and arbitrary
+same-user native malware on an already compromised host account remain outside this
+boundary. On Windows machine-wide modes, ordinary-user read access to `activation.lock`
+allows a local native process to hold a conflicting share-mode handle and block a later
+exclusive writer open. The updater must treat that sharing conflict as busy/refusal
+before protected mutation; this is an availability-only residual, not a path to write
+protected state. Keld does not promise machine-wide update availability against hostile
+local native users. This behavior follows the documented
+[CreateFile sharing rules](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-createfilew).
+Architecture 06
+§4a owns exact ordering, recovery and package-cell admission.
 
 ## 6. What we deliberately do NOT promise (honesty ledger)
 

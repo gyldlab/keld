@@ -1,0 +1,31 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Keld Auth Smoke</title>
+<style>html,body{background:#111;color:#eee;font-family:system-ui}main{padding:2rem;max-width:35rem}</style></head>
+<body><main><h1>Authentication checks</h1><p>Checking the host connection and expected refusal paths. This check does not sign you in.</p><p id="status">Host window ready.</p></main>
+<script>
+const diagnostic = {
+  phase: "page-diagnostic",
+  cryptoType: typeof globalThis.crypto,
+  randomUUIDType: typeof globalThis.crypto?.randomUUID,
+  getRandomValuesType: typeof globalThis.crypto?.getRandomValues,
+  secureContextType: typeof globalThis.isSecureContext,
+  isSecureContext: globalThis.isSecureContext === true
+};
+function reportDiagnostic(extra = {}) {
+  fetch("http://127.0.0.1:__PORT__/observe", { method: "POST", body: JSON.stringify({ ...diagnostic, ...extra }) }).catch(() => {});
+}
+reportDiagnostic(); // Before the continuity identity, no authority or page-ready claim.
+try {
+  const nonce = () => Array.from(crypto.getRandomValues(new Uint32Array(4)),
+    value => value.toString(16).padStart(8, "0")).join("");
+  const documentNonce = nonce();
+  fetch("http://127.0.0.1:__PORT__/observe", { method: "POST", body: JSON.stringify({
+    phase: "page-ready", documentNonce, marker: "KEL89_AUTH_SMOKE_WINDOW"
+  }) }).catch(() => { document.getElementById("status").textContent = "The check observer is unavailable."; });
+} catch (error) {
+  const allowedNames = ["TypeError", "ReferenceError", "SecurityError", "NotSupportedError", "QuotaExceededError", "InvalidStateError"];
+  const name = error && typeof error === "object" ? error.name : undefined;
+  reportDiagnostic({ errorName: allowedNames.includes(name) ? name : "OtherError" });
+  // Preserve failure/page-ready absence without copying raw error/cause/URL.
+  throw new Error("KEL89_AUTH_SMOKE_PAGE_IDENTITY_FAILED");
+}
+</script></body></html>

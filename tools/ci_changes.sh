@@ -11,6 +11,8 @@ readonly FALSE=false
 
 rust="$FALSE"
 docs="$FALSE"
+mermaid="$FALSE"
+markdown_changed="$FALSE"
 hygiene="$FALSE"
 gui="$FALSE"
 msrv="$FALSE"
@@ -21,35 +23,128 @@ packages=""
 nongtk_packages=""
 ubuntu_packages=""
 ts_packages=""
+codeql_rust="$FALSE"
+codeql_javascript_typescript="$FALSE"
+codeql_actions="$FALSE"
+workspace="$FALSE"
+# The check job's OS matrix, as JSON for fromJSON. Every Rust selection uses all
+# three OSes except one reached only through documentation reads (#624).
+readonly ALL_CHECK_OS='["ubuntu-latest","macos-latest","windows-latest"]'
+readonly DOCUMENTATION_CHECK_OS='["windows-latest"]'
+check_os="$ALL_CHECK_OS"
+rust_documentation_only="$FALSE"
+# `cargo test --doc` for the selected packages that have a library target
+# (#632); nextest does not run doctests.
+doctest="$FALSE"
+doctest_packages=""
 all_workspace_packages="$FALSE"
 workspace_metadata_cache=""
 host_dependency_dirs_cache=""
+consumer_contract=""
+local_force_all="$FALSE"
 declare -a changed_package_roots=()
+# Packages selected only because a reviewed documentation read changed. They
+# are tested themselves, without Cargo reverse-dependent expansion (#624).
+declare -a documentation_reader_roots=()
 declare -a changed_ts_package_dirs=()
 
 usage() {
-    echo "usage: $0 {classify|github|host-dirs}" >&2
+    echo "usage: $0 {classify|github|local|host-dirs}" >&2
     echo "  classify   read NUL-delimited changed paths from stdin" >&2
     echo "  github     derive the comparison from GitHub Actions environment" >&2
+    echo "  local      derive the comparison from origin/main to the working tree" >&2
     echo "  host-dirs  print the current keld-host local dependency closure" >&2
     exit 2
 }
 
 mark_all() {
+    local_force_all="$TRUE"
     rust="$TRUE"
     docs="$TRUE"
+    mermaid="$TRUE"
     hygiene="$TRUE"
     gui="$TRUE"
     msrv="$TRUE"
     deny="$TRUE"
     ts="$TRUE"
     all_workspace_packages="$TRUE"
+    workspace="$TRUE"
+    select_every_codeql_language
 }
 
-# Unknown/shared inputs must not skip Linux GTK clippy. Workflow/router edits
-# still enable every *job* (including GUI smoke, which installs WebKitGTK) but
-# MUST NOT also install GTK on Ubuntu clippy and MSRV: those extra apt-get
-# update calls contend with the smoke job and hang on Azure Ubuntu mirrors.
+# A push to main always analyses every language: skipping one there leaves the
+# default branch without the baseline that pull-request alerts compare against.
+# Unknown, all and workflow/router inputs use the same complete selection.
+select_every_codeql_language() {
+    codeql_rust="$TRUE"
+    codeql_javascript_typescript="$TRUE"
+    codeql_actions="$TRUE"
+}
+
+# An extensionless file can be a JavaScript entry point through its shebang.
+# Only a readable regular file without a `#!` first line is proven not to be
+# one; a deleted or unreadable path stays a possible input.
+codeql_extensionless_may_be_javascript() {
+    local root first=""
+    root="$(git rev-parse --show-toplevel)"
+    if [[ ! -f "$root/$1" || -L "$root/$1" || ! -r "$root/$1" ]]; then
+        return 0
+    fi
+    IFS= read -r -n 2 first <"$root/$1" || true
+    [[ "$first" == "#!" ]]
+}
+
+# Match the 13 GitHub-rendered Markdown extensions admitted by
+# tools/spec_structure.rs::is_markdown_path, case-insensitively. The spec
+# census covers tracked Markdown outside docs/specs too, so each extension
+# must select the hosted hygiene job that runs "Spec structure contracts".
+is_spec_markdown_path() {
+    local name="${1##*/}"
+    [[ "$name" == *.* ]] || return 1
+    local extension
+    extension="$(printf '%s' "${name##*.}" | tr '[:upper:]' '[:lower:]')"
+    case "$extension" in
+        litcoffee | livemd | markdown | md | mdown | mdwn | mdx | mkd | mkdn | mkdown | ronn | scd | workbook)
+            return 0
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# CodeQL analyses source by language, independent of Cargo package ownership:
+# a documentation read that selects a Rust test package changes no analysed
+# source. The patterns follow the extractors' file types in CodeQL's supported
+# languages list and the JavaScript extractor's HTML/JS types; Rust also takes
+# its build inputs. Every other path selects no analysis unless it falls back
+# to all lanes; push always selects every language.
+classify_codeql_path() {
+    case "$1" in
+        *.rs | Cargo.toml | */Cargo.toml | Cargo.lock | */Cargo.lock | rust-toolchain.toml | .cargo/*)
+            codeql_rust="$TRUE"
+            ;;
+    esac
+    case "$1" in
+        packages/* | *.ts | *.tsx | *.mts | *.cts | *.js | *.jsx | *.mjs | *.cjs | *.es | *.es6 | \
+            *.xsjs | *.xsjslib | *.htm | *.html | *.xhtm | *.xhtml | *.vue | *.hbs | *.ejs | *.njk | \
+            *.erb | *.jsp | *.dot | *.json | *.yaml | *.yml | *.raml | *.xml)
+            codeql_javascript_typescript="$TRUE"
+            ;;
+        *)
+            if [[ "${1##*/}" != *.* ]] && codeql_extensionless_may_be_javascript "$1"; then
+                codeql_javascript_typescript="$TRUE"
+            fi
+            ;;
+    esac
+    case "$1" in
+        .github/workflows/* | .github/actions/* | action.yml | action.yaml | */action.yml | */action.yaml)
+            codeql_actions="$TRUE"
+            ;;
+    esac
+}
+
+# Unknown/shared inputs must not skip Linux GTK clippy. Every all-workspace
+# selection, including workflow/router edits through mark_all, also installs
+# WebKitGTK on Ubuntu when its packages link it (finalize_rust_packages, #630).
 mark_unknown() {
     mark_all
     webkitgtk="$TRUE"
@@ -58,6 +153,7 @@ mark_unknown() {
 emit() {
     printf 'rust=%s\n' "$rust"
     printf 'docs=%s\n' "$docs"
+    printf 'mermaid=%s\n' "$mermaid"
     printf 'hygiene=%s\n' "$hygiene"
     printf 'gui=%s\n' "$gui"
     printf 'msrv=%s\n' "$msrv"
@@ -68,6 +164,57 @@ emit() {
     printf 'nongtk_packages=%s\n' "$nongtk_packages"
     printf 'ubuntu_packages=%s\n' "$ubuntu_packages"
     printf 'ts_packages=%s\n' "$ts_packages"
+    printf 'codeql_rust=%s\n' "$codeql_rust"
+    printf 'codeql_javascript_typescript=%s\n' "$codeql_javascript_typescript"
+    printf 'codeql_actions=%s\n' "$codeql_actions"
+    printf 'workspace=%s\n' "$workspace"
+    printf 'check_os=%s\n' "$check_os"
+    printf 'rust_documentation_only=%s\n' "$rust_documentation_only"
+    printf 'doctest=%s\n' "$doctest"
+    printf 'doctest_packages=%s\n' "$doctest_packages"
+    if [[ -n "$consumer_contract" ]]; then
+        if [[ "$local_force_all" == "$TRUE" ]]; then
+            printf '%s\n' "$consumer_contract" | grep '^local_' | sed 's/=false$/=true/'
+        else
+            printf '%s\n' "$consumer_contract" | grep '^local_'
+        fi
+        local gate
+        for gate in mermaid-ci mermaid-test mermaid-check mermaid-render-check; do
+            printf 'local_%s=%s\n' "$gate" "$mermaid"
+        done
+    fi
+}
+
+# The same reviewed reader/input contract supplements both local and hosted
+# selections. A reader source changed in the diff widens its consumers for that
+# change; malformed contracts fail before any selection is published. No
+# source-text inference is involved.
+apply_consumer_contract() {
+    local source_root python_command
+    source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+    case "$(uname -s)" in
+        MINGW* | MSYS*) python_command=python ;;
+        *) python_command=python3 ;;
+    esac
+    # github/local nest this assignment inside another command substitution,
+    # where Bash clears errexit. An explicit exit owns this failure boundary.
+    consumer_contract="$("$python_command" -B "$source_root/tools/ci_inputs.py" "$(git rev-parse --show-toplevel)" "$@")" || exit 1
+    # Native Windows Python writes CRLF; all shell consumers use LF records.
+    consumer_contract="${consumer_contract//$'\r'/}"
+    if grep -Fxq 'input_all=true' <<<"$consumer_contract"; then
+        mark_unknown
+    elif grep -Fxq 'input_router=true' <<<"$consumer_contract"; then
+        mark_all
+    fi
+    if grep -Fxq 'input_ts=true' <<<"$consumer_contract"; then
+        ts="$TRUE"
+    fi
+    if grep -Fxq 'input_mermaid=true' <<<"$consumer_contract"; then
+        mermaid="$TRUE"
+    fi
+    if grep -Fxq 'input_hygiene=true' <<<"$consumer_contract"; then
+        hygiene="$TRUE"
+    fi
 }
 
 load_workspace_metadata() {
@@ -209,6 +356,22 @@ package_requires_webkitgtk() {
 add_changed_package_root() {
     local package_name="$1"
     changed_package_roots+=("$package_name")
+}
+
+# An external consumer edge (the CLI registry reader or a declared
+# input_package_* reader) adds its package. When tools/ci_inputs.py reports
+# that every changed path behind that edge is a reviewed documentation read,
+# the package is tested without its Cargo reverse dependents: documentation
+# bytes change no reverse dependent's compiled API or test input. Any other
+# matching path keeps today's reverse-dependent expansion.
+add_consumer_package_root() {
+    local package_name="$1"
+    local edge="$2"
+    if grep -Fxq "documentation_only_${edge}=true" <<<"$consumer_contract"; then
+        documentation_reader_roots+=("$package_name")
+    else
+        add_changed_package_root "$package_name"
+    fi
 }
 
 add_changed_ts_package_dir() {
@@ -393,10 +556,17 @@ finalize_rust_packages() {
     local expanded=""
     if [[ "$all_workspace_packages" == "$TRUE" ]]; then
         expanded="$(all_workspace_package_names)"
-    elif [[ ${#changed_package_roots[@]} -gt 0 ]]; then
-        for package_name in "${changed_package_roots[@]}"; do
-            expanded+="$(reverse_dependency_closure "$package_name")"$'\n'
-        done
+    elif [[ ${#changed_package_roots[@]} -gt 0 || ${#documentation_reader_roots[@]} -gt 0 ]]; then
+        if [[ ${#changed_package_roots[@]} -gt 0 ]]; then
+            for package_name in "${changed_package_roots[@]}"; do
+                expanded+="$(reverse_dependency_closure "$package_name")"$'\n'
+            done
+        fi
+        if [[ ${#documentation_reader_roots[@]} -gt 0 ]]; then
+            for package_name in "${documentation_reader_roots[@]}"; do
+                expanded+="$package_name"$'\n'
+            done
+        fi
     else
         # A Rust lane without an attributable workspace package must never
         # become an empty success. Use the complete workspace as the safe
@@ -416,13 +586,40 @@ finalize_rust_packages() {
     done
     nongtk_packages="$(printf '%s' "$nongtk" | sed '/^$/d' | sort -u | paste -sd ' ' -)"
 
-    # An attributable selected `--all-targets` closure that reaches keld-wv
-    # installs GTK and runs its original package set on Ubuntu. The workflow
-    # consumes this derived selection directly instead of recomputing policy.
-    # The all-workspace workflow/router fallback keeps its documented GTK-free
-    # subset because GUI smoke is the sole live apt owner for that input class.
-    if [[ "$selected_requires_webkitgtk" == "$TRUE" && "$all_workspace_packages" != "$TRUE" ]]; then
+    # Documentation bytes reach these packages' unchanged tests only as text,
+    # and .gitattributes checks text out as LF on every OS, so one OS proves
+    # them: no reader of a declared document is skipped or handles it under
+    # cfg(windows) or cfg(target_os). Windows is that OS because it links no
+    # WebKitGTK, so the leg has no network apt step (keld-cli and keld-update
+    # reach keld-wv; on Ubuntu that step took 30-642 s and once hung 44 min).
+    # Any changed package keeps all three OSes (#624).
+    local ubuntu_leg="$TRUE"
+    if [[ "$all_workspace_packages" != "$TRUE" && ${#changed_package_roots[@]} -eq 0 && \
+        ${#documentation_reader_roots[@]} -gt 0 ]]; then
+        check_os="$DOCUMENTATION_CHECK_OS"
+        rust_documentation_only="$TRUE"
+        ubuntu_leg="$FALSE"
+    fi
+
+    # Any selected `--all-targets` closure that reaches keld-wv installs GTK and
+    # runs its whole package set on Ubuntu, including the all-workspace
+    # fallback: a GTK-free subset there left keld-core, keld-wv, keld-host,
+    # keld-cli, keld-compat, keld-runtime and keld-update without Linux clippy
+    # or tests whenever a PR touched tools/ (#630). The apt step is bounded by
+    # its 15-minute timeout. The workflow consumes this derived selection
+    # directly instead of recomputing policy.
+    if [[ "$selected_requires_webkitgtk" == "$TRUE" && "$ubuntu_leg" == "$TRUE" ]]; then
         webkitgtk="$TRUE"
+    fi
+    if [[ "$ubuntu_leg" != "$TRUE" ]]; then
+        # No Ubuntu leg runs, so it has no package set; the Windows leg runs
+        # the full selection, which must still be non-empty.
+        ubuntu_packages=""
+        if [[ -z "$packages" ]]; then
+            echo "ci router: documentation-only Rust checks selected no package; refusing to emit a skipped-green success" >&2
+            exit 1
+        fi
+        return
     fi
     if [[ "$webkitgtk" == "$TRUE" ]]; then
         ubuntu_packages="$packages"
@@ -433,6 +630,44 @@ finalize_rust_packages() {
     if [[ -z "$ubuntu_packages" ]]; then
         echo "ci router: Rust checks selected no Ubuntu packages; refusing to emit a skipped-green success" >&2
         exit 1
+    fi
+}
+
+# Workspace packages with a library target, the only targets that carry
+# doctests; `cargo test --doc` refuses a bin-only package.
+library_package_names() {
+    load_workspace_metadata
+    printf '%s\n' "$workspace_metadata_cache" |
+        jq -r '
+            .packages[]
+            | select(any(.targets[]?; any(.kind[]?; . == "lib" or . == "rlib" or . == "dylib" or . == "proc-macro")))
+            | .name
+        ' | tr -d '\r'
+}
+
+# The doctest lane uses the same selection as clippy/test, restricted to
+# packages that can have doctests. A Rust selection of only bin-only packages
+# has no doctest to run and leaves the lane unselected.
+finalize_doctest_packages() {
+    if [[ "$rust" != "$TRUE" ]]; then
+        return
+    fi
+    local libraries package_name selected=""
+    # github/local run this inside a command substitution, where Bash clears
+    # errexit: a failed metadata or jq read must stop the router before it
+    # publishes any output, never become an empty doctest selection.
+    if ! libraries="$(library_package_names)"; then
+        echo "ci router: cannot list library packages from cargo metadata; refusing to emit a doctest selection" >&2
+        exit 1
+    fi
+    for package_name in $packages; do
+        if grep -Fxq -- "$package_name" <<<"$libraries"; then
+            selected+="$package_name"$'\n'
+        fi
+    done
+    doctest_packages="$(printf '%s' "$selected" | sed '/^$/d' | sort -u | paste -sd ' ' -)"
+    if [[ -n "$doctest_packages" ]]; then
+        doctest="$TRUE"
     fi
 }
 
@@ -451,7 +686,39 @@ finalize_ts_packages() {
 # broken workspace metadata read must report.
 finalize_selection() {
     resolve_ts_package_consumers
+    if grep -Fxq 'input_registry=true' <<<"$consumer_contract"; then
+        local registry_owner
+        if [[ "$rust" == "$TRUE" && ${#changed_package_roots[@]} -eq 0 ]]; then
+            # Shared Rust/build-graph inputs already require the whole workspace.
+            # Adding one external reader must not narrow that fallback to CLI.
+            all_workspace_packages="$TRUE"
+        elif registry_owner="$(package_for_path crates/keld-cli/tests/error_registry.rs)"; then
+            rust="$TRUE"
+            add_consumer_package_root "$registry_owner" registry
+        else
+            mark_unknown
+        fi
+    fi
+    # Runtime file/include edges are not Cargo dependency edges. Add their
+    # declared consuming packages before expanding Cargo reverse dependents.
+    local consumer_key consumer_selected consumer_package
+    while IFS='=' read -r consumer_key consumer_selected; do
+        if [[ "$consumer_key" == input_package_* && "$consumer_selected" == "$TRUE" ]]; then
+            consumer_package="${consumer_key#input_package_}"
+            if ! all_workspace_package_names | grep -Fxq -- "$consumer_package"; then
+                mark_unknown
+                break
+            fi
+            rust="$TRUE"
+            add_consumer_package_root "$consumer_package" "package_${consumer_package}"
+        fi
+    done <<<"$consumer_contract"
+    if grep -Fxq 'input_rust=true' <<<"$consumer_contract" && [[ "$rust" != "$TRUE" ]]; then
+        rust="$TRUE"
+        all_workspace_packages="$TRUE"
+    fi
     finalize_rust_packages
+    finalize_doctest_packages
     finalize_ts_packages
 }
 
@@ -460,6 +727,9 @@ host_path_is_affected() {
     local host_dir
 
     # Documentation alone cannot alter the `keld-host --hello` executable.
+    if is_spec_markdown_path "$changed_file"; then
+        return 1
+    fi
     # Any other file below an actual host dependency is deliberately treated as
     # relevant: an unrecognised build input must run the smoke, not skip it.
     case "$changed_file" in
@@ -477,6 +747,64 @@ host_path_is_affected() {
 
 classify_path() {
     local changed_file="$1"
+
+    classify_codeql_path "$changed_file"
+
+    # Crate-local reports/fixtures can be include_bytes!/include_str! inputs.
+    # Documentation routing below is additive, never an exemption from its owner.
+    case "$changed_file" in
+        crates/*.md | crates/*.txt | crates/*.adoc | crates/*.mdx | crates/*.rst)
+            local document_owner
+            if document_owner="$(package_for_path "$changed_file")"; then
+                rust="$TRUE"
+                add_changed_package_root "$document_owner"
+            else
+                mark_unknown
+                return
+            fi
+            ;;
+        crates/*)
+            if is_spec_markdown_path "$changed_file"; then
+                local document_owner
+                if document_owner="$(package_for_path "$changed_file")"; then
+                    rust="$TRUE"
+                    add_changed_package_root "$document_owner"
+                else
+                    mark_unknown
+                    return
+                fi
+            fi
+            ;;
+    esac
+
+    if is_spec_markdown_path "$changed_file"; then
+        markdown_changed="$TRUE"
+        docs="$TRUE"
+        # The range Mermaid scanner handles ordinary lowercase .md. Other
+        # recognized GitHub Markdown spellings must not silently skip it.
+        case "$changed_file" in
+            *.md) ;;
+            *) mermaid="$TRUE" ;;
+        esac
+    fi
+
+    # GH-508: the kipc channel allocation baseline is append-only against its
+    # merge base, and `ci-hygiene check` is that rule's only hosted owner. The
+    # table it records is routed with it. Additive: owners below still apply.
+    case "$changed_file" in
+        crates/keld-ipc/channel_allocations.txt | crates/keld-ipc/src/channel_table.rs)
+            hygiene="$TRUE"
+            ;;
+    esac
+
+    # KEL-270 F56: tools/ci_workflow_security.ts pins the reviewed SHA-256 of the
+    # Windows media oracle, and the hosted bun "Contract tests" step that checks
+    # that pin runs only when hygiene is true. Additive: owners below still apply.
+    case "$changed_file" in
+        crates/keld-wv/tests/windows_media_guard.ps1)
+            hygiene="$TRUE"
+            ;;
+    esac
 
     case "$changed_file" in
         # Agent instruction and assembly changes must run both generated-doc
@@ -497,14 +825,31 @@ classify_path() {
         # repository's automation or required-check surface. Any edit here must
         # exercise every conditional lane, otherwise a workflow can introduce a
         # false-green check while skipping the contracts that would expose it.
-        .github/workflows/* | tools/ci_changes.sh | tools/ci_changes_test.sh | tools/ci_required.sh)
+        .github/workflows/* | tools/ci_changes.sh | tools/ci_changes_test.sh | tools/ci_required.sh | \
+        tools/ci_inputs.py | tools/ci_local.py | tools/test_ci_local.py | tools/ci-inputs.json)
             mark_all
+            ;;
+
+        # gitleaks loads its configuration and fingerprint ignores from the
+        # repository root, and the gitleaks job runs on every event. No other
+        # lane reads these files, so they select nothing else (#624).
+        .gitleaks.toml | .gitleaksignore)
+            ;;
+
+        # The workspace contract job's whole input: test_workspace.py imports
+        # workspace.py, which imports session_closeout.py. These also drive the
+        # hygiene lane and local agent tooling, so they keep the unknown
+        # fallback; naming the job here keeps it selected if that is narrowed.
+        tools/workspace.py | tools/test_workspace.py | tools/session_closeout.py)
+            mark_unknown
+            workspace="$TRUE"
             ;;
 
         # Workspace and toolchain inputs can alter every Rust build, keld-host's
         # dependency closure, or dependency-policy resolution.
         Cargo.toml | Cargo.lock | rust-toolchain.toml | rustfmt.toml)
             rust="$TRUE"
+            all_workspace_packages="$TRUE"
             gui="$TRUE"
             msrv="$TRUE"
             deny="$TRUE"
@@ -521,6 +866,9 @@ classify_path() {
             rust="$TRUE"
             case "$changed_file" in
                 crates/*/tests/fixtures/*) resolve_crate_fixture_consumers "$changed_file" ;;
+                # The elevated updater helper's own ban list is also a cargo-deny
+                # input (KEL-53 §4 "Helper launch and self-anchor").
+                crates/keld-updater-helper/deny.toml) deny="$TRUE" ;;
             esac
             local package_name
             if ! package_name="$(package_for_path "$changed_file")"; then
@@ -560,17 +908,28 @@ classify_path() {
             ;;
 
         # These tools own the generated-doc and Mermaid contracts.
-        docs/* | llms.txt | llms-full.txt | README.md | CONTRIBUTING.md | \
-        tools/llms_docs.rs | tools/mermaid_docs.rs | tools/mermaid_render_check.sh | tools/mermaid-render-config.json)
+        docs/research | docs/* | llms.txt | llms-full.txt | README.md | CONTRIBUTING.md | \
+        tools/llms_docs.rs | tools/mermaid_docs.rs | tools/markdown_paths.rs | tools/mermaid_render_check.sh | tools/mermaid-render-config.json)
             docs="$TRUE"
+            case "$changed_file" in
+                docs/research | tools/mermaid_docs.rs | tools/markdown_paths.rs | tools/mermaid_render_check.sh | tools/mermaid-render-config.json)
+                    mermaid="$TRUE"
+                    ;;
+            esac
             ;;
 
         # These inputs own the repository-hygiene contract, but do not affect a
         # product build or graphical window.
         .github/CODEOWNERS | .github/PULL_REQUEST_TEMPLATE.md | .github/ISSUE_TEMPLATE/* | \
         .gitignore | justfile | .codex/* | .agents/instruction-budget.tsv | \
-        tools/ci_hygiene.rs | tools/atomic_protocol.rs | tools/agent_context.rs | tools/markdown_contract.rs)
+        tools/ci_hygiene.rs | tools/atomic_protocol.rs | tools/agent_context.rs | tools/markdown_contract.rs | \
+        tools/justfile_contract.rs | tools/git_base_contract.rs | tools/spec_structure.rs | tools/spec_structure_tests.rs)
             hygiene="$TRUE"
+            # The shared justfile parser decides which recipes count as the Mermaid gate.
+            if [[ "$changed_file" == justfile || "$changed_file" == tools/ci_hygiene.rs || \
+                "$changed_file" == tools/justfile_contract.rs ]]; then
+                mermaid="$TRUE"
+            fi
             ;;
 
         # A known non-executable top-level document stays in its docs lane.
@@ -587,13 +946,84 @@ classify_path() {
     esac
 }
 
+route_mermaid_diff() {
+    local mode="$1"
+    local root
+    local source_root
+    local binary
+    local selection
+    root="$(git rev-parse --show-toplevel)"
+    source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+    binary="$root/target/ci-router/mermaid-docs"
+    mkdir -p "$(dirname "$binary")"
+    if ! rustc --edition=2024 -D warnings "$source_root/tools/mermaid_docs.rs" -o "$binary"; then
+        echo "ci router: Mermaid diff classifier did not compile; selecting full Mermaid validation/rendering" >&2
+        mermaid="$TRUE"
+        return
+    fi
+    case "$mode" in
+        range)
+            selection="$("$binary" changes "$root" "$2" "$3")" || selection="unknown"
+            ;;
+        worktree)
+            selection="$("$binary" worktree "$root" "$2")" || selection="unknown"
+            ;;
+        *)
+            selection="unknown"
+            ;;
+    esac
+    case "$selection" in
+        true) mermaid="$TRUE" ;;
+        false) mermaid="$FALSE" ;;
+        *)
+            echo "ci router: Mermaid applicability is unknown; selecting full Mermaid validation/rendering" >&2
+            mermaid="$TRUE"
+            ;;
+    esac
+}
+
 classify_stream() {
+    local mode="${1:-paths}"
+    local base="${2:-}"
+    local head="${3:-}"
     host_dependency_dirs_cache="$(host_dependency_dirs)"
     local changed_file
+    local -a changed_files=()
     while IFS= read -r -d '' changed_file; do
+        changed_files+=("$changed_file")
         classify_path "$changed_file"
     done
+    local -a contract_options=()
+    if [[ "$mode" == paths ]]; then
+        contract_options+=(--paths-only)
+    else
+        # Membership (a crate path the base did not track) is read from the base
+        # tree; nothing about reader bytes is recorded between changes (GH-1275).
+        contract_options+=(--base "$base")
+    fi
+    if [[ ${#changed_files[@]} -gt 0 ]]; then
+        apply_consumer_contract ${contract_options[@]+"${contract_options[@]}"} < <(printf '%s\0' "${changed_files[@]}")
+    else
+        apply_consumer_contract ${contract_options[@]+"${contract_options[@]}"} </dev/null
+    fi
     finalize_selection
+    if [[ "$mode" == worktree && "$markdown_changed" != "$TRUE" ]]; then
+        local root research_root research_top
+        root="$(git rev-parse --show-toplevel)"
+        research_root="$root/docs/research"
+        if [[ -d "$research_root" && ! -L "$research_root" ]] && \
+            research_top="$(git -C "$research_root" rev-parse --show-toplevel 2>/dev/null || true)" && \
+            [[ -n "$research_top" && "$research_top" == "$(cd "$research_root" && pwd -P)" ]]; then
+            markdown_changed="$TRUE"
+        fi
+    fi
+    if [[ "$mermaid" != "$TRUE" && "$markdown_changed" == "$TRUE" ]]; then
+        case "$mode" in
+            range) route_mermaid_diff range "$base" "$head" ;;
+            worktree) route_mermaid_diff worktree "$base" "$head" ;;
+            *) mermaid="$TRUE" ;; # Path-only classification has no content oracle.
+        esac
+    fi
     emit
 }
 
@@ -618,9 +1048,12 @@ classify_github_event() {
         push)
             base_sha="${KELD_CI_BEFORE_SHA:-}"
             head_sha="${GITHUB_SHA:-}"
+            # Only pull requests skip unaffected CodeQL languages (#624).
+            select_every_codeql_language
             ;;
         *)
             mark_unknown
+            apply_consumer_contract --unknown </dev/null
             finalize_selection
             publish "$(emit)"
             return
@@ -633,13 +1066,32 @@ classify_github_event() {
         ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null || \
         ! git cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
         mark_unknown
+        apply_consumer_contract --unknown </dev/null
         finalize_selection
         publish "$(emit)"
         return
     fi
 
     local result
-    result="$(git diff --no-renames --name-only -z "$base_sha" "$head_sha" | classify_stream)"
+    result="$(git diff --no-renames --name-only -z "$base_sha" "$head_sha" | classify_stream range "$base_sha" "$head_sha")"
+    publish "$result"
+}
+
+classify_local_worktree() {
+    local base="${KELD_CI_BASE_REF:-origin/main}"
+    local head
+    head="$(git rev-parse HEAD 2>/dev/null || true)"
+    if [[ -z "$head" ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null || \
+        ! git merge-base --is-ancestor "$base" "$head" >/dev/null 2>&1; then
+        mark_unknown
+        apply_consumer_contract --unknown </dev/null
+        finalize_selection
+        publish "$(emit)"
+        return
+    fi
+    local result
+    # Do not let a successful untracked census hide a failed tracked diff.
+    result="$( { git diff --no-renames --name-only -z "$base" -- && git ls-files --others --exclude-standard -z; } | classify_stream worktree "$base" "$head")"
     publish "$result"
 }
 
@@ -649,6 +1101,9 @@ case "${1:-}" in
         ;;
     github)
         classify_github_event
+        ;;
+    local)
+        classify_local_worktree
         ;;
     host-dirs)
         host_dependency_dirs

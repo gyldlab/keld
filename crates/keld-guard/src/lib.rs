@@ -29,6 +29,58 @@ mod jsonc;
 mod probe;
 mod unique_json;
 pub mod verified_manifest;
+#[cfg(windows)]
+mod windows_authenticode;
+#[cfg(windows)]
+mod windows_machine;
+#[cfg(windows)]
+mod windows_owner_private;
+
+/// Manifest capability names that other crates reference by constant.
+///
+/// `keld-guard` owns the capability vocabulary (architecture 03 §2). Crates that
+/// name a capability, such as the `keld-ipc` channel table and the `keld-native`
+/// filesystem broker, reference these constants instead of repeating the string
+/// (GH-508 spec criterion 15). Only names another crate references are exported;
+/// this is not a capability registry.
+pub mod capability {
+    /// Scoped filesystem read (`app.fs.read` grants).
+    pub const FS_READ: &str = "fs.read";
+    /// Scoped filesystem write (`app.fs.write` grants).
+    pub const FS_WRITE: &str = "fs.write";
+    /// Exact declared issuer for interactive authentication (`app.auth.begin`).
+    pub const AUTH_BEGIN: &str = "auth.begin";
+    /// Exact declared issuer for token acquisition (`app.auth.token`).
+    pub const AUTH_TOKEN: &str = "auth.token";
+}
+
+#[cfg(windows)]
+pub use windows_authenticode::{
+    VerifiedWindowsImage, WindowsAuthenticodeError, WindowsAuthenticodeIdentity,
+    WindowsAuthenticodeImage,
+};
+
+#[cfg(windows)]
+pub use windows_machine::{
+    WindowsInitiatingImpersonationToken, WindowsInitiatingPrimaryToken, WindowsInitiatingToken,
+    WindowsLogonSessionError, WindowsLogonSessionId, WindowsLogonTime, WindowsTokenError,
+    require_windows_initiating_token_profile, require_windows_logon_session_ended,
+    require_windows_machine_uac_owner_token, require_windows_non_system_token,
+    require_windows_own_impersonate_privilege, require_windows_own_token_session,
+    require_windows_system_token, seal_windows_machine_directory, seal_windows_machine_file,
+    validate_windows_admin_machine_directory, validate_windows_admin_machine_file,
+    validate_windows_install_directory, validate_windows_install_file,
+    validate_windows_machine_ancestor_directory, validate_windows_machine_directory,
+    validate_windows_machine_file, validate_windows_machine_volume_anchor,
+    windows_acl_entries_equal, windows_initiating_logon_time, windows_install_directory_security,
+    windows_install_file_security,
+};
+
+#[cfg(windows)]
+pub use windows_owner_private::{
+    validate_windows_owner_private_directory, validate_windows_owner_private_file,
+    windows_owner_private_directory_security, windows_owner_private_file_security,
+};
 
 use std::fmt;
 use std::fs::File;
@@ -49,6 +101,32 @@ pub use admit::{
     expected_layer_for,
 };
 pub use probe::{ProbeReport, run_synthetic_probes};
+
+/// Canonical Windows installation-state protection profiles owned by `keld-guard`.
+///
+/// The profile label is persisted by the updater, but only the matching OS-backed
+/// validator proves the actual descriptor. It is not proof by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WindowsInstallProtectionProfile {
+    /// User-owned installation protected from restricted Keld roles.
+    PerUserOwnerPrivate,
+    /// Program Files installation writable by elevated Administrators and SYSTEM.
+    MachineUac,
+    /// SYSTEM-owned machine installation with ordinary users read/execute only.
+    MachineSystem,
+}
+
+impl WindowsInstallProtectionProfile {
+    /// Stable local-record profile identifier.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PerUserOwnerPrivate => "windows-per-user-role-rx-v1",
+            Self::MachineUac => "windows-administrators-system-users-rx-v1",
+            Self::MachineSystem => "windows-system-users-rx-v1",
+        }
+    }
+}
 
 /// An unforgeable identity minted by the host for each peer.
 ///
@@ -85,13 +163,139 @@ impl Principal {
 }
 
 /// The outcome of a guard check.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Decision {
-    /// Operation may proceed.
-    Allow,
+    /// Operation may proceed under the first matching manifest grant.
+    Allow(ScopePermit),
     /// Operation is denied; the reason is safe to surface to developers.
     Deny(DenyReason),
 }
+
+/// Opaque proof naming the manifest grant selected by [`evaluate`].
+///
+/// Only the guard can mint a permit. Privileged dispatch lends it to one callback;
+/// callers may inspect the index while that callback runs but cannot manufacture a
+/// different match for a native broker.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ScopePermit {
+    grant_index: usize,
+}
+
+impl ScopePermit {
+    /// Zero-based index of the first matching grant in manifest order.
+    #[must_use]
+    pub const fn grant_index(&self) -> usize {
+        self.grant_index
+    }
+}
+
+/// Filesystem scope shape retained by the native broker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathScopeKind {
+    /// One exact final leaf beneath a retained parent directory.
+    Exact,
+    /// A retained directory and all objects reachable beneath it.
+    Subtree,
+}
+
+/// One validated filesystem scope in manifest order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PathScope<'manifest> {
+    grant_index: usize,
+    pattern: &'manifest str,
+    kind: PathScopeKind,
+}
+
+impl<'manifest> PathScope<'manifest> {
+    /// Zero-based index in the capability's manifest array.
+    #[must_use]
+    pub const fn grant_index(&self) -> usize {
+        self.grant_index
+    }
+
+    /// Exact manifest spelling, including a terminal `/**` for subtrees.
+    #[must_use]
+    pub const fn pattern(&self) -> &'manifest str {
+        self.pattern
+    }
+
+    /// Whether this scope grants one leaf or a subtree root.
+    #[must_use]
+    pub const fn kind(&self) -> PathScopeKind {
+        self.kind
+    }
+}
+
+/// Validated filesystem scopes for one capability.
+#[derive(Debug)]
+pub struct PathScopes<'manifest> {
+    scopes: std::vec::IntoIter<PathScope<'manifest>>,
+}
+
+impl<'manifest> Iterator for PathScopes<'manifest> {
+    type Item = PathScope<'manifest>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.scopes.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.scopes.size_hint()
+    }
+}
+
+impl ExactSizeIterator for PathScopes<'_> {}
+
+/// Why a filesystem scope set cannot be retained safely.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopeSetError {
+    /// A capability declared more entries than the broker's fixed bound.
+    TooMany {
+        /// Number of declared entries.
+        actual: usize,
+        /// Maximum admitted entries.
+        maximum: usize,
+    },
+    /// The same literal scope appears more than once.
+    Duplicate {
+        /// First matching manifest index.
+        first_index: usize,
+        /// Later duplicate manifest index.
+        duplicate_index: usize,
+    },
+    /// A scope is not an absolute, normalized, serviceable filesystem path.
+    InvalidPath {
+        /// Manifest index of the invalid scope.
+        grant_index: usize,
+        /// Developer-facing reason.
+        detail: String,
+    },
+}
+
+impl fmt::Display for ScopeSetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooMany { actual, maximum } => {
+                write!(f, "{actual} scopes exceed the {maximum}-scope limit")
+            }
+            Self::Duplicate {
+                first_index,
+                duplicate_index,
+            } => write!(
+                f,
+                "scope {duplicate_index} duplicates earlier scope {first_index}"
+            ),
+            Self::InvalidPath {
+                grant_index,
+                detail,
+            } => write!(f, "scope {grant_index} is invalid: {detail}"),
+        }
+    }
+}
+
+impl std::error::Error for ScopeSetError {}
+
+const MAX_PATH_SCOPES: usize = 64;
 
 /// Why an operation was denied.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,6 +469,13 @@ pub enum ManifestError {
         /// `serde_json` error text.
         detail: String,
     },
+    /// An auth grant contains a doubled wildcard or a C0/DEL/C1 control.
+    InvalidAuthScope {
+        /// Path when loading from disk; `None` for [`parse_manifest`].
+        path: Option<PathBuf>,
+        /// The auth capability whose grant list is malformed.
+        capability: String,
+    },
     /// The input exceeded the bounded permissions-manifest size.
     TooLarge {
         /// Path when loading from disk; `None` for [`parse_manifest`].
@@ -296,7 +507,9 @@ impl ManifestError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::NotFound { .. } | Self::Read { .. } => "KELD-GUARD004",
-            Self::Parse { .. } | Self::InvalidUtf8 { .. } => "KELD-GUARD005",
+            Self::Parse { .. } | Self::InvalidUtf8 { .. } | Self::InvalidAuthScope { .. } => {
+                "KELD-GUARD005"
+            }
             Self::IntegrityMismatch { .. } => "KELD-GUARD016",
             Self::TooLarge { .. } => "KELD-GUARD017",
         }
@@ -333,6 +546,23 @@ impl fmt::Display for ManifestError {
                      (comments are allowed; trailing commas are not)."
                 ),
             },
+            Self::InvalidAuthScope { path, capability } => {
+                let pointer = json_pointer_for(capability);
+                write!(f, "KELD-GUARD005: permissions manifest")?;
+                if let Some(path) = path {
+                    write!(
+                        f,
+                        " at \"{}\"",
+                        path.as_os_str().to_string_lossy().escape_debug()
+                    )?;
+                }
+                write!(
+                    f,
+                    " contains an invalid auth issuer literal at {pointer:?}. \
+                     Remove ** and control characters from this grant list; \
+                     use exact declared issuer literals at {pointer:?}."
+                )
+            }
             Self::TooLarge { path, max_bytes } => {
                 let max_kib = max_bytes / 1024;
                 match path {
@@ -417,7 +647,8 @@ pub fn json_pointer_for(capability: &str) -> String {
 ///
 /// Returns [`ManifestError::TooLarge`] when `text` exceeds 64 KiB, or
 /// [`ManifestError::Parse`] when the comment-stripped text is ambiguous,
-/// malformed, or not a JSON object.
+/// malformed, or not a JSON object. Returns [`ManifestError::InvalidAuthScope`]
+/// for auth issuer grants containing `**` or C0/DEL/C1 controls.
 pub fn parse_manifest(text: &str) -> Result<PermissionsManifest, ManifestError> {
     ensure_manifest_size(text.len(), None)?;
     parse_manifest_at(text, None)
@@ -430,7 +661,8 @@ pub fn parse_manifest(text: &str) -> Result<PermissionsManifest, ManifestError> 
 /// Returns [`ManifestError::NotFound`] when the file is missing,
 /// [`ManifestError::Read`] on other I/O/encoding errors,
 /// [`ManifestError::TooLarge`] above 64 KiB, or [`ManifestError::Parse`] when
-/// the contents are ambiguous or malformed JSONC.
+/// the contents are ambiguous or malformed JSONC, or
+/// [`ManifestError::InvalidAuthScope`] for malformed auth issuer grants.
 pub fn load_manifest(path: &Path) -> Result<PermissionsManifest, ManifestError> {
     let file = File::open(path).map_err(|e| {
         if e.kind() == io::ErrorKind::NotFound {
@@ -452,10 +684,18 @@ pub fn load_manifest(path: &Path) -> Result<PermissionsManifest, ManifestError> 
     parse_manifest_at(&text, Some(path))
 }
 
-pub(crate) fn read_manifest_bytes<R: Read>(
-    reader: R,
-    path: &Path,
-) -> Result<Vec<u8>, ManifestError> {
+/// Captures permissions-manifest bytes from an already selected reader.
+///
+/// The caller owns source selection, identity and containment checks. `path`
+/// is used only in diagnostics and is never opened. This function applies the
+/// shared manifest byte ceiling and returns one owned buffer; it does not
+/// decode, parse or authorize its contents.
+///
+/// # Errors
+///
+/// Returns [`ManifestError::Read`] when reading fails or
+/// [`ManifestError::TooLarge`] when the shared 64 KiB ceiling is exceeded.
+pub fn read_manifest_bytes<R: Read>(reader: R, path: &Path) -> Result<Vec<u8>, ManifestError> {
     let mut bytes = Vec::with_capacity(MAX_MANIFEST_BYTES + 1);
     reader
         .take((MAX_MANIFEST_BYTES + 1) as u64)
@@ -490,10 +730,28 @@ fn parse_manifest_at(
         path: path.map(Path::to_path_buf),
         detail: e.to_string(),
     })?;
-    serde_json::from_value(value).map_err(|e| ManifestError::Parse {
-        path: path.map(Path::to_path_buf),
-        detail: e.to_string(),
-    })
+    let manifest: PermissionsManifest =
+        serde_json::from_value(value).map_err(|e| ManifestError::Parse {
+            path: path.map(Path::to_path_buf),
+            detail: e.to_string(),
+        })?;
+    for capability in [capability::AUTH_BEGIN, capability::AUTH_TOKEN] {
+        let Some(scopes) = grant_node(&manifest, capability).and_then(Value::as_array) else {
+            continue;
+        };
+        if scopes.iter().filter_map(Value::as_str).any(|scope| {
+            scope.contains("**")
+                || scope
+                    .chars()
+                    .any(|character| matches!(character, '\u{0}'..='\u{1f}' | '\u{7f}'..='\u{9f}'))
+        }) {
+            return Err(ManifestError::InvalidAuthScope {
+                path: path.map(Path::to_path_buf),
+                capability: capability.to_owned(),
+            });
+        }
+    }
+    Ok(manifest)
 }
 
 /// Default-deny check of `operation` (capability id, e.g. `fs.read`) against `path`.
@@ -541,16 +799,388 @@ pub fn evaluate(
     if arr.is_empty() || arr.iter().any(|value| !value.is_string()) {
         return deny_not_granted(operation, path);
     }
-    if path_has_dotdot(path)
-        || !arr.iter().any(|value| {
-            value
-                .as_str()
-                .is_some_and(|scope| path_in_scope(path, scope))
-        })
-    {
+    if path_has_dotdot(path) {
         return deny_out_of_scope(operation, path, arr);
     }
-    Decision::Allow
+    let Some(grant_index) = arr.iter().position(|value| {
+        value
+            .as_str()
+            .is_some_and(|scope| path_in_scope(path, scope))
+    }) else {
+        return deny_out_of_scope(operation, path, arr);
+    };
+    Decision::Allow(ScopePermit { grant_index })
+}
+
+/// Returns the validated filesystem scopes for `fs.read` or `fs.write`.
+///
+/// Missing capabilities produce an empty iterator. Duplicate, excessive,
+/// malformed, relative, variable-bearing, or unsupported namespace scopes fail
+/// before the native broker opens any resource.
+///
+/// # Errors
+///
+/// Returns [`ScopeSetError`] when the capability is not a filesystem operation
+/// or its declared scope set is not serviceable by the retained broker.
+pub fn path_scopes<'manifest>(
+    manifest: &'manifest PermissionsManifest,
+    operation: &str,
+) -> Result<PathScopes<'manifest>, ScopeSetError> {
+    if !is_filesystem_capability(operation) {
+        return Err(ScopeSetError::InvalidPath {
+            grant_index: 0,
+            detail: format!("`{operation}` is not a filesystem capability"),
+        });
+    }
+    let Some(node) = grant_node(manifest, operation) else {
+        return Ok(PathScopes {
+            scopes: Vec::new().into_iter(),
+        });
+    };
+    let Some(values) = node.as_array() else {
+        return Err(ScopeSetError::InvalidPath {
+            grant_index: 0,
+            detail: "capability must be an array of path strings".to_owned(),
+        });
+    };
+    if values.len() > MAX_PATH_SCOPES {
+        return Err(ScopeSetError::TooMany {
+            actual: values.len(),
+            maximum: MAX_PATH_SCOPES,
+        });
+    }
+
+    let mut scopes = Vec::with_capacity(values.len());
+    for (grant_index, value) in values.iter().enumerate() {
+        let Some(pattern) = value.as_str() else {
+            return Err(ScopeSetError::InvalidPath {
+                grant_index,
+                detail: "scope must be a string".to_owned(),
+            });
+        };
+        if let Some(first_index) = scopes
+            .iter()
+            .find(|scope: &&PathScope<'_>| scope.pattern == pattern)
+            .map(|scope| scope.grant_index)
+        {
+            return Err(ScopeSetError::Duplicate {
+                first_index,
+                duplicate_index: grant_index,
+            });
+        }
+        if pattern.contains('$') {
+            return Err(ScopeSetError::InvalidPath {
+                grant_index,
+                detail: "unexpanded `$VAR` scopes are not serviceable".to_owned(),
+            });
+        }
+        let (path, kind) = if let Some(root) = pattern.strip_suffix("/**") {
+            let root = if root.is_empty() { "/" } else { root };
+            (root, PathScopeKind::Subtree)
+        } else {
+            (pattern, PathScopeKind::Exact)
+        };
+        #[cfg(windows)]
+        let service_path = if kind == PathScopeKind::Subtree
+            && path.len() == 2
+            && path.as_bytes()[0].is_ascii_uppercase()
+            && path.as_bytes()[1] == b':'
+        {
+            format!("{path}/")
+        } else {
+            path.to_owned()
+        };
+        #[cfg(not(windows))]
+        let service_path = path;
+        #[cfg(windows)]
+        let validation = validate_fs_path(&service_path);
+        #[cfg(not(windows))]
+        let validation = validate_fs_path(service_path);
+        validation.map_err(|detail| ScopeSetError::InvalidPath {
+            grant_index,
+            detail,
+        })?;
+        if kind == PathScopeKind::Exact && is_fs_root(path) {
+            return Err(ScopeSetError::InvalidPath {
+                grant_index,
+                detail: "an exact scope must name a final file component".to_owned(),
+            });
+        }
+        scopes.push(PathScope {
+            grant_index,
+            pattern,
+            kind,
+        });
+    }
+    Ok(PathScopes {
+        scopes: scopes.into_iter(),
+    })
+}
+
+/// Validates one normal filesystem component using the guard-owned grammar.
+///
+/// Native traversal uses this for components introduced by link expansion so
+/// the broker cannot diverge from scope/request spelling rules.
+/// On Windows, this includes Win32-forbidden punctuation/control characters,
+/// reserved device names, and trailing dot/space. Tilde remains serviceable for
+/// filesystem paths; the package-only prohibition belongs to
+/// [`validate_windows_package_component`].
+///
+/// # Errors
+///
+/// Returns a developer-facing reason when the component is empty, special, or
+/// reserved on the current platform.
+pub fn validate_fs_component(component: &str) -> Result<(), String> {
+    validate_portable_component(component)?;
+    #[cfg(windows)]
+    validate_windows_component(component)?;
+    Ok(())
+}
+
+/// Validates one path component for the first Windows package cell.
+///
+/// This applies Windows package spelling rules on every host, so archive
+/// validation is deterministic even when run on Linux or macOS. Ordinary
+/// filesystem paths use [`validate_fs_component`] and retain valid tilde names.
+/// This check is lexical and does not resolve short-name aliases.
+///
+/// # Errors
+///
+/// Returns a developer-facing reason when the component is not portable, is
+/// not a serviceable Win32 name, or contains the package-forbidden tilde.
+pub fn validate_windows_package_component(component: &str) -> Result<(), String> {
+    validate_portable_component(component)?;
+    validate_windows_component(component)?;
+    if component.contains('~') {
+        return Err("Windows package components cannot contain tilde".to_owned());
+    }
+    Ok(())
+}
+
+/// Validates the namespace of a Windows v0 package archive.
+///
+/// Every slash-separated component must pass [`validate_windows_package_component`]
+/// and already be in Windows `NormalizationC` form. Complete relative paths must
+/// also be unique under Windows ordinal case-insensitive comparison.
+///
+/// This function is available only on Windows because these decisions are made
+/// by the Windows NLS APIs, not by a portable approximation.
+///
+/// # Errors
+///
+/// Returns a refusal for an invalid path, non-NFC component, case-insensitive
+/// path collision, or Windows API/allocation failure.
+#[cfg(windows)]
+#[allow(unsafe_code)] // SAFETY: FFI is limited to checked Win32 NLS calls on owned buffers below.
+pub fn validate_windows_package_paths(paths: &[&str]) -> Result<(), String> {
+    use std::cmp::Ordering;
+    use windows_sys::Win32::Globalization::{
+        CSTR_EQUAL, CSTR_GREATER_THAN, CSTR_LESS_THAN, CompareStringOrdinal,
+    };
+
+    fn utf16(text: &str) -> Result<Vec<u16>, String> {
+        let count = text.encode_utf16().count();
+        let mut encoded = Vec::new();
+        encoded
+            .try_reserve_exact(count)
+            .map_err(|_| "cannot allocate Windows package path buffer".to_owned())?;
+        encoded.extend(text.encode_utf16());
+        Ok(encoded)
+    }
+
+    fn ensure_nfc(component: &str) -> Result<(), String> {
+        use windows_sys::Win32::Globalization::{NormalizationC, NormalizeString};
+
+        let source = utf16(component)?;
+        let source_len = i32::try_from(source.len())
+            .map_err(|_| "Windows package component is too long".to_owned())?;
+        // SAFETY: source is a live, initialized UTF-16 buffer and source_len is
+        // its checked code-unit length. A null destination with zero capacity is
+        // the documented size query; no pointer is retained by Win32.
+        let required = unsafe {
+            NormalizeString(
+                NormalizationC,
+                source.as_ptr(),
+                source_len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if required <= 0 {
+            return Err("Windows NormalizationC check failed".to_owned());
+        }
+        let required_units = usize::try_from(required)
+            .map_err(|_| "Windows normalization size is out of range".to_owned())?;
+        let mut normalized = Vec::new();
+        normalized
+            .try_reserve_exact(required_units)
+            .map_err(|_| "cannot allocate Windows normalization buffer".to_owned())?;
+        normalized.resize(required_units, 0);
+        // SAFETY: normalized is initialized and has exactly the checked capacity
+        // requested by NormalizeString; both buffers remain live for this call.
+        let written = unsafe {
+            NormalizeString(
+                NormalizationC,
+                source.as_ptr(),
+                source_len,
+                normalized.as_mut_ptr(),
+                required,
+            )
+        };
+        if written <= 0 || written > required {
+            return Err("Windows NormalizationC check failed".to_owned());
+        }
+        let written_units = usize::try_from(written)
+            .map_err(|_| "Windows normalized size is out of range".to_owned())?;
+        if normalized[..written_units] != source {
+            return Err("Windows package component is not in NormalizationC form".to_owned());
+        }
+        Ok(())
+    }
+
+    fn ordinal_order(left: &[u16], right: &[u16]) -> Result<Ordering, ()> {
+        let left_len = i32::try_from(left.len()).map_err(|_| ())?;
+        let right_len = i32::try_from(right.len()).map_err(|_| ())?;
+        // SAFETY: both pointers refer to live UTF-16 buffers for the checked
+        // lengths, and TRUE requests the specified ordinal case-insensitive form.
+        match unsafe { CompareStringOrdinal(left.as_ptr(), left_len, right.as_ptr(), right_len, 1) }
+        {
+            CSTR_LESS_THAN => Ok(Ordering::Less),
+            CSTR_EQUAL => Ok(Ordering::Equal),
+            CSTR_GREATER_THAN => Ok(Ordering::Greater),
+            _ => Err(()),
+        }
+    }
+
+    let mut encoded_paths = Vec::new();
+    encoded_paths
+        .try_reserve_exact(paths.len())
+        .map_err(|_| "cannot allocate Windows package path set".to_owned())?;
+    for path in paths {
+        if path.is_empty() || path.len() > 100 || path.starts_with('/') || path.ends_with('/') {
+            return Err("Windows package path is empty, absolute, or exceeds 100 bytes".to_owned());
+        }
+        for component in path.split('/') {
+            validate_windows_package_component(component)?;
+            ensure_nfc(component)?;
+        }
+        encoded_paths.push(utf16(path)?);
+    }
+
+    let mut comparison_failed = false;
+    encoded_paths.sort_by(|left, right| {
+        if let Ok(order) = ordinal_order(left, right) {
+            order
+        } else {
+            comparison_failed = true;
+            Ordering::Equal
+        }
+    });
+    if comparison_failed {
+        return Err("Windows ordinal package path comparison failed".to_owned());
+    }
+    for pair in encoded_paths.windows(2) {
+        if ordinal_order(&pair[0], &pair[1]) == Ok(Ordering::Equal) {
+            return Err("Windows package paths collide ordinally".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn validate_portable_component(component: &str) -> Result<(), String> {
+    if component.is_empty() || matches!(component, "." | "..") {
+        return Err("empty, `.` and `..` components are not normal names".to_owned());
+    }
+    if component.contains(['\0', '/', '\\']) {
+        return Err("components cannot contain NUL or a path separator".to_owned());
+    }
+    Ok(())
+}
+
+fn is_filesystem_capability(operation: &str) -> bool {
+    matches!(operation, capability::FS_READ | capability::FS_WRITE)
+}
+
+fn is_fs_root(path: &str) -> bool {
+    #[cfg(windows)]
+    {
+        path.len() == 3 && path.as_bytes()[1..] == *b":/"
+    }
+    #[cfg(not(windows))]
+    {
+        path == "/"
+    }
+}
+
+fn validate_fs_path(path: &str) -> Result<(), String> {
+    if path.is_empty() {
+        return Err("path is empty".to_owned());
+    }
+    if path.contains(['\0', '\\']) {
+        return Err("path contains NUL or a non-portable backslash separator".to_owned());
+    }
+    #[cfg(windows)]
+    let remainder = {
+        let bytes = path.as_bytes();
+        if bytes.len() < 3 || !bytes[0].is_ascii_uppercase() || bytes[1] != b':' || bytes[2] != b'/'
+        {
+            return Err("path must begin with an uppercase drive and `:/`".to_owned());
+        }
+        &path[3..]
+    };
+    #[cfg(not(windows))]
+    let remainder = path
+        .strip_prefix('/')
+        .ok_or_else(|| "path must be absolute".to_owned())?;
+
+    if remainder.is_empty() {
+        return Ok(());
+    }
+    for component in remainder.split('/') {
+        validate_fs_component(component)?;
+    }
+    Ok(())
+}
+
+fn validate_windows_component(component: &str) -> Result<(), String> {
+    if component.contains(':') {
+        return Err("alternate data streams are not serviceable".to_owned());
+    }
+    if component.contains(['<', '>', '"', '|', '?', '*'])
+        || component
+            .chars()
+            .any(|character| ('\u{1}'..='\u{1f}').contains(&character))
+    {
+        return Err("Windows components contain forbidden characters".to_owned());
+    }
+    if component.ends_with(['.', ' ']) {
+        return Err("Windows components cannot end with dot or space".to_owned());
+    }
+    let basename = component.split('.').next().unwrap_or(component);
+    if is_windows_reserved_basename(basename) {
+        return Err("Windows reserved device basename is not serviceable".to_owned());
+    }
+    Ok(())
+}
+
+fn is_windows_reserved_basename(basename: &str) -> bool {
+    ["CON", "PRN", "AUX", "NUL"]
+        .iter()
+        .any(|reserved| basename.eq_ignore_ascii_case(reserved))
+        || ["COM", "LPT"].iter().any(|prefix| {
+            strip_ascii_prefix(basename, prefix).is_some_and(|suffix| {
+                matches!(
+                    suffix,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            })
+        })
+}
+
+fn strip_ascii_prefix<'text>(text: &'text str, prefix: &str) -> Option<&'text str> {
+    let head = text.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| &text[prefix.len()..])
 }
 
 fn grant_node<'a>(manifest: &'a PermissionsManifest, capability: &str) -> Option<&'a Value> {
@@ -699,6 +1329,55 @@ mod tests {
             MAX_MANIFEST_BYTES + 1,
             "the reader must not consume the rest of an oversized source"
         );
+        assert_eq!(error.code(), "KELD-GUARD017");
+        assert!(error.to_string().contains("Reduce the manifest"), "{error}");
+    }
+
+    #[test]
+    fn manifest_byte_capture_keeps_exact_bytes_without_parsing_or_opening_path() {
+        let source = [0xff, 0x00, b'{', b'/', b'*', b'\n'];
+        let captured = read_manifest_bytes(
+            source.as_slice(),
+            Path::new("missing-diagnostics-only/keld.permissions.jsonc"),
+        )
+        .expect("byte capture must not parse or open its diagnostics path");
+        assert_eq!(captured, source);
+    }
+
+    #[test]
+    fn manifest_byte_capture_accepts_empty_and_exact_ceiling() {
+        let path = Path::new("keld.permissions.jsonc");
+        assert_eq!(
+            read_manifest_bytes(&[][..], path).expect("empty capture is valid before parsing"),
+            Vec::<u8>::new()
+        );
+        let source = vec![0xff; MAX_MANIFEST_BYTES];
+        assert_eq!(
+            read_manifest_bytes(source.as_slice(), path).expect("exact byte ceiling"),
+            source
+        );
+    }
+
+    #[test]
+    fn manifest_byte_capture_retains_reader_failure_detail_and_fix() {
+        struct FailingReader;
+
+        impl Read for FailingReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::other("retained source read failed"))
+            }
+        }
+
+        let path = Path::new("selected/keld.permissions.jsonc");
+        let error = read_manifest_bytes(FailingReader, path).expect_err("failed source reader");
+        assert_eq!(error.code(), "KELD-GUARD004");
+        assert!(error.to_string().contains("retained source read failed"));
+        assert!(
+            error
+                .to_string()
+                .contains("Check the path exists and is readable.")
+        );
+        assert!(matches!(error, ManifestError::Read { path: actual, .. } if actual == path));
     }
 
     #[test]
@@ -791,6 +1470,80 @@ mod tests {
     }
 
     #[test]
+    fn windows_package_component_rejects_forbidden_punctuation() {
+        for forbidden in ['<', '>', '"', '|', '?', '*', ':'] {
+            let component = format!("prefix{forbidden}suffix");
+            assert!(
+                validate_windows_package_component(&component).is_err(),
+                "Windows package component containing {forbidden:?} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_package_component_rejects_c0_controls() {
+        for code_point in 1..=0x1f {
+            let control = char::from_u32(code_point).expect("valid control code point");
+            let component = format!("prefix{control}suffix");
+            assert!(
+                validate_windows_package_component(&component).is_err(),
+                "Windows package component containing U+{code_point:04X} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_package_component_rejects_tilde() {
+        for component in ["~leading", "middle~name", "trailing~"] {
+            assert!(
+                validate_windows_package_component(component).is_err(),
+                "Windows package component {component:?} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_package_component_keeps_valid_neighboring_characters() {
+        for component in ["plain-name", "middle space", "valid\u{007f}name"] {
+            assert!(
+                validate_windows_package_component(component).is_ok(),
+                "Windows package component {component:?} is outside the forbidden set"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_package_paths_require_nfc_components() {
+        assert!(validate_windows_package_paths(&["assets/caf\u{00e9}.txt"]).is_ok());
+        assert!(validate_windows_package_paths(&["assets/cafe\u{0301}.txt"]).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_package_paths_reject_ordinal_case_aliases() {
+        assert!(validate_windows_package_paths(&["Readme.txt", "README.txt"]).is_err());
+        assert!(validate_windows_package_paths(&["Readme.txt", "Readme2.txt"]).is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_package_paths_enforce_ustar_name_boundary() {
+        let exact = "a".repeat(100);
+        let over = "a".repeat(101);
+        assert!(validate_windows_package_paths(&[&exact]).is_ok());
+        assert!(validate_windows_package_paths(&[&over]).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_filesystem_scope_allows_tilde_component() {
+        let manifest = parse_manifest(r#"{"app":{"fs":{"read":["C:/appdata/notes~1.txt"]}}}"#)
+            .expect("manifest");
+        assert!(path_scopes(&manifest, "fs.read").is_ok());
+    }
+
+    #[test]
     fn webview_principals_distinguish_generations() {
         let before = Principal::Webview {
             id: 7,
@@ -816,6 +1569,184 @@ mod tests {
         assert!(msg.contains(&path.display().to_string()), "{msg}");
     }
 
+    fn auth_grant_manifest_text(operation: &str, entry: &str) -> String {
+        serde_json::json!({
+            "app": {"auth": {operation: ["https://issuer.example/valid", entry]}}
+        })
+        .to_string()
+    }
+
+    /// `AC9b` rejects the doubled wildcard anywhere in either auth grant list.
+    #[test]
+    fn auth_grants_reject_double_star_entries_at_parse() {
+        for operation in ["begin", "token"] {
+            for entry in [
+                "**",
+                "**https://issuer.example",
+                "https://**",
+                "https://issuer.example/**",
+                "https://issuer.example/ten**ant",
+                "https://issuer.example?realm=**",
+            ] {
+                let text = auth_grant_manifest_text(operation, entry);
+                assert!(
+                    parse_manifest(&text).is_err(),
+                    "app.auth.{operation} accepted malformed issuer literal {entry:?}"
+                );
+            }
+        }
+    }
+
+    /// D13's complete C0/DEL/C1 set is independent of a future validator.
+    #[test]
+    fn auth_grants_reject_all_c0_del_and_c1_controls_at_parse() {
+        for operation in ["begin", "token"] {
+            for scalar in (0_u32..=0x1f).chain(0x7f..=0x9f) {
+                let control = char::from_u32(scalar).expect("specified control scalar");
+                for entry in [
+                    format!("{control}https://issuer.example"),
+                    format!("https://issuer.example/{control}tenant"),
+                    format!("https://issuer.example{control}"),
+                ] {
+                    let text = auth_grant_manifest_text(operation, &entry);
+                    let decoded: Value = serde_json::from_str(&text).expect("valid fixture JSON");
+                    assert_eq!(
+                        decoded["app"]["auth"][operation][1].as_str(),
+                        Some(entry.as_str()),
+                        "the fixture must preserve the actual control scalar"
+                    );
+                    assert!(
+                        parse_manifest(&text).is_err(),
+                        "app.auth.{operation} accepted U+{scalar:04X} in {entry:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The public file loader must use the same malformed-auth rejection.
+    #[test]
+    fn auth_grants_reject_malformed_entries_at_load() {
+        for operation in ["begin", "token"] {
+            for (row, entry) in [
+                "**",
+                "https://issuer.example/ten**ant",
+                "\u{0}unresolved",
+                "https://issuer.example/\u{1f}",
+                "https://issuer.example/\u{7f}",
+                "https://issuer.example/\u{80}",
+                "https://issuer.example/\u{9f}",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let root = std::env::temp_dir().join(format!(
+                    "keld-guard-auth-load-{}-{operation}-{row}",
+                    std::process::id()
+                ));
+                std::fs::create_dir(&root).expect("isolated auth manifest directory");
+                let path = root.join("keld.permissions.jsonc");
+                std::fs::write(&path, auth_grant_manifest_text(operation, entry))
+                    .expect("write auth manifest fixture");
+                let result = load_manifest(&path);
+                std::fs::remove_file(&path).expect("remove auth manifest fixture");
+                std::fs::remove_dir(&root).expect("remove auth manifest directory");
+                let error = result.expect_err("malformed auth grant must fail file loading");
+                assert!(
+                    !matches!(
+                        error,
+                        ManifestError::NotFound { .. }
+                            | ManifestError::Read { .. }
+                            | ManifestError::TooLarge { .. }
+                    ),
+                    "the fixture must reach manifest validation: {error}"
+                );
+                let ManifestError::InvalidAuthScope {
+                    path: error_path,
+                    capability,
+                } = &error
+                else {
+                    panic!("malformed auth grant has the wrong typed error: {error}");
+                };
+                assert_eq!(error_path.as_deref(), Some(path.as_path()));
+                assert_eq!(capability, &format!("auth.{operation}"));
+                assert_eq!(error.code(), "KELD-GUARD005");
+                let message = error.to_string();
+                assert!(
+                    message.contains(&format!("/app/auth/{operation}")),
+                    "{message}"
+                );
+                assert!(
+                    message.contains("exact declared issuer literals"),
+                    "{message}"
+                );
+                assert!(!message.chars().any(char::is_control), "{message:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn auth_literal_grants_keep_exact_matching_and_neighbor_capabilities() {
+        let issuer = "https://login.microsoftonline.com/common";
+        let manifest = parse_manifest(
+            r#"{"app":{
+                "auth":{"begin":["https://login.microsoftonline.com/common"],
+                        "token":["https://login.microsoftonline.com/common"]},
+                "fs":{"read":["$APPDATA/**"]},
+                "net":{"connect":["https://api.example.com/**"]},
+                "matcher":{"read":["**","literal\u0000tail"]}
+            }}"#,
+        )
+        .expect("literal auth grants and other capabilities remain valid");
+        for operation in ["auth.begin", "auth.token"] {
+            assert!(matches!(
+                eval_app(&manifest, operation, issuer),
+                Decision::Allow(_)
+            ));
+            for neighbor in [
+                "https://login.microsoftonline.com/common/",
+                "HTTPS://login.microsoftonline.com/common",
+                "https://login.microsoftonline.com/other",
+            ] {
+                assert!(
+                    matches!(eval_app(&manifest, operation, neighbor), Decision::Deny(_)),
+                    "{operation} must retain exact issuer matching: {neighbor}"
+                );
+            }
+        }
+        for (operation, resource) in [
+            ("fs.read", "$APPDATA/cache/file"),
+            ("net.connect", "https://api.example.com/v1"),
+            ("matcher.read", "literal\u{0}tail"),
+        ] {
+            assert!(
+                matches!(eval_app(&manifest, operation, resource), Decision::Allow(_)),
+                "the auth-only load rule must preserve {operation} behavior"
+            );
+        }
+    }
+
+    #[test]
+    fn auth_sentinel_validation_is_load_only_not_a_serde_type_invariant() {
+        let text = r#"{"app":{"auth":{"token":["\u0000unresolved"]}}}"#;
+        let error =
+            parse_manifest(text).expect_err("the public load path must reject the sentinel");
+        assert!(matches!(
+            error,
+            ManifestError::InvalidAuthScope { path: None, ref capability }
+                if capability == "auth.token"
+        ));
+        let direct: PermissionsManifest = serde_json::from_str(text)
+            .expect("the approved public serde bypass remains expressible");
+        assert!(
+            matches!(
+                eval_app(&direct, "auth.token", "\u{0}unresolved"),
+                Decision::Allow(_)
+            ),
+            "AC13(d) must independently defend Allow without a resolved session"
+        );
+    }
+
     #[test]
     fn empty_manifest_denies() {
         let manifest = parse_manifest("{}").expect("empty object");
@@ -826,7 +1757,7 @@ mod tests {
                 assert_eq!(reason.code(), "KELD-GUARD001");
                 assert!(reason.fix().contains("/app/fs/read"), "{}", reason.fix());
             }
-            Decision::Allow => panic!("empty manifest must default-deny"),
+            Decision::Allow(_) => panic!("empty manifest must default-deny"),
         }
     }
 
@@ -1004,9 +1935,11 @@ mod tests {
             // `file:///etc` names the empty authority *and* a path under it.
             "file:///etc/shadow",
         ] {
-            assert_eq!(
-                eval_app(&manifest, "net.connect", requested),
-                Decision::Allow,
+            assert!(
+                matches!(
+                    eval_app(&manifest, "net.connect", requested),
+                    Decision::Allow(_)
+                ),
                 "a grant that names its authority still owns its subtree: {requested}"
             );
         }
@@ -1027,16 +1960,18 @@ mod tests {
     /// it. A single character before the colon is therefore a drive letter.
     #[test]
     fn a_windows_drive_glob_is_a_path_not_a_scheme() {
-        let manifest =
-            parse_manifest(r#"{"app":{"fs":{"read":["C:/**","d:/data/**"]}}}"#).expect("manifest");
+        let manifest = parse_manifest(r#"{"app":{"matcher":{"read":["C:/**","d:/data/**"]}}}"#)
+            .expect("manifest");
         for requested in ["C:/Users/app/x", "C://Users/app/x", "d:/data//cache/x"] {
-            assert_eq!(
-                eval_app(&manifest, "fs.read", requested),
-                Decision::Allow,
+            assert!(
+                matches!(
+                    eval_app(&manifest, "matcher.read", requested),
+                    Decision::Allow(_)
+                ),
                 "a drive-letter grant keeps plain path semantics: {requested}"
             );
         }
-        let outside = eval_app(&manifest, "fs.read", "E:/other/x");
+        let outside = eval_app(&manifest, "matcher.read", "E:/other/x");
         assert!(
             matches!(outside, Decision::Deny(DenyReason::OutOfScope { .. })),
             "an ungranted drive is still out of scope: {outside:?}"
@@ -1059,9 +1994,11 @@ mod tests {
     fn a_one_letter_scheme_glob_is_a_path_glob_and_that_is_the_documented_residual() {
         let manifest =
             parse_manifest(r#"{"app":{"net":{"connect":["a:/**"]}}}"#).expect("manifest");
-        assert_eq!(
-            eval_app(&manifest, "net.connect", "a://evil.example.com"),
-            Decision::Allow,
+        assert!(
+            matches!(
+                eval_app(&manifest, "net.connect", "a://evil.example.com"),
+                Decision::Allow(_)
+            ),
             "a one-letter scheme is indistinguishable from a drive root, so it \n             stays a path glob — architecture 03 §2 records it as the residual"
         );
         // The moment the scheme is longer than one character the ambiguity is
@@ -1085,7 +2022,7 @@ mod tests {
     #[test]
     fn a_path_containing_a_scheme_separator_keeps_its_path_grant() {
         let manifest = parse_manifest(
-            r#"{"app":{"fs":{"read":["$APPDATA/**","/var/cache/**","C:/Users/me/AppData/**","cache/**"]}}}"#,
+            r#"{"app":{"matcher":{"read":["$APPDATA/**","/var/cache/**","C:/Users/me/AppData/**","cache/**"]}}}"#,
         )
         .expect("manifest");
         for requested in [
@@ -1095,15 +2032,17 @@ mod tests {
             "C:/Users/me/AppData/cache/https://example.com/index.html",
             "cache/https://example.com/index.html",
         ] {
-            assert_eq!(
-                eval_app(&manifest, "fs.read", requested),
-                Decision::Allow,
+            assert!(
+                matches!(
+                    eval_app(&manifest, "matcher.read", requested),
+                    Decision::Allow(_)
+                ),
                 "an embedded `://` must not turn a path into a URI: {requested}"
             );
         }
         // The same manifest still denies a genuine scheme-qualified destination,
         // so the cases above are not passing because everything is allowed.
-        let outside = eval_app(&manifest, "fs.read", "https://example.com/index.html");
+        let outside = eval_app(&manifest, "matcher.read", "https://example.com/index.html");
         assert!(
             matches!(outside, Decision::Deny(DenyReason::OutOfScope { .. })),
             "a real URI is still outside the path grants: {outside:?}"
@@ -1120,31 +2059,37 @@ mod tests {
     fn a_colon_outside_scheme_position_still_names_a_destination() {
         for (manifest_text, requested) in [
             (
-                r#"{"app":{"fs":{"read":["$APPDATA/cache/https:/**"]}}}"#,
+                r#"{"app":{"matcher":{"read":["$APPDATA/cache/https:/**"]}}}"#,
                 "$APPDATA/cache/https://example.com/index.html",
             ),
             (
-                r#"{"app":{"fs":{"read":["/srv/backup:/**"]}}}"#,
+                r#"{"app":{"matcher":{"read":["/srv/backup:/**"]}}}"#,
                 "/srv/backup:/x",
             ),
-            (r#"{"app":{"fs":{"read":["/C:/**"]}}}"#, "/C:/Users/x"),
+            (r#"{"app":{"matcher":{"read":["/C:/**"]}}}"#, "/C:/Users/x"),
             (
-                r#"{"app":{"fs":{"read":["\\\\?\\C:/**"]}}}"#,
+                r#"{"app":{"matcher":{"read":["\\\\?\\C:/**"]}}}"#,
                 "\\\\?\\C:/Users/x",
             ),
-            (r#"{"app":{"fs":{"read":["//?/C:/**"]}}}"#, "//?/C:/Users/x"),
+            (
+                r#"{"app":{"matcher":{"read":["//?/C:/**"]}}}"#,
+                "//?/C:/Users/x",
+            ),
         ] {
             let manifest = parse_manifest(manifest_text).expect("manifest");
-            assert_eq!(
-                eval_app(&manifest, "fs.read", requested),
-                Decision::Allow,
+            assert!(
+                matches!(
+                    eval_app(&manifest, "matcher.read", requested),
+                    Decision::Allow(_)
+                ),
                 "{manifest_text} names a destination and must still cover {requested}"
             );
         }
         // A grant whose colon *is* in scheme position stays refused, so the
         // cases above are not passing because the rule was switched off.
-        let scheme = parse_manifest(r#"{"app":{"fs":{"read":["https:/**"]}}}"#).expect("manifest");
-        let denied = eval_app(&scheme, "fs.read", "https:/evil.example.com");
+        let scheme =
+            parse_manifest(r#"{"app":{"matcher":{"read":["https:/**"]}}}"#).expect("manifest");
+        let denied = eval_app(&scheme, "matcher.read", "https:/evil.example.com");
         assert!(
             matches!(denied, Decision::Deny(DenyReason::OutOfScope { .. })),
             "a scheme-position colon is still refused: {denied:?}"
@@ -1154,17 +2099,22 @@ mod tests {
     #[test]
     fn allow_fails_if_deny_inverted() {
         let manifest =
-            parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("manifest");
-        assert_eq!(
-            eval_app(&manifest, "fs.read", "$APPDATA/notes.txt"),
-            Decision::Allow,
+            parse_manifest(r#"{"app":{"matcher":{"read":["$APPDATA/**"]}}}"#).expect("manifest");
+        assert!(
+            matches!(
+                eval_app(&manifest, "matcher.read", "$APPDATA/notes.txt"),
+                Decision::Allow(_)
+            ),
             "in-scope path must allow — inverted deny/allow would fail this"
         );
-        assert_eq!(eval_app(&manifest, "fs.read", "$APPDATA"), Decision::Allow);
-        assert_ne!(
-            eval_app(&manifest, "fs.read", "$DOCUMENTS/notes.txt"),
-            Decision::Allow
-        );
+        assert!(matches!(
+            eval_app(&manifest, "matcher.read", "$APPDATA"),
+            Decision::Allow(_)
+        ));
+        assert!(!matches!(
+            eval_app(&manifest, "matcher.read", "$DOCUMENTS/notes.txt"),
+            Decision::Allow(_)
+        ));
     }
 
     #[test]
@@ -1174,7 +2124,7 @@ mod tests {
 {
   /* block comment */
   "app": {
-    "fs": { "read": ["https://example.com/**"] }
+    "matcher": { "read": ["https://example.com/**"] }
   }
 }
 "#;
@@ -1183,9 +2133,11 @@ mod tests {
             "raw JSONC must not parse as JSON — otherwise this test cannot catch a missing stripper"
         );
         let manifest = parse_manifest(text).expect("jsonc with comments");
-        assert_eq!(
-            eval_app(&manifest, "fs.read", "https://example.com/x"),
-            Decision::Allow,
+        assert!(
+            matches!(
+                eval_app(&manifest, "matcher.read", "https://example.com/x"),
+                Decision::Allow(_)
+            ),
             "https:// inside a string must survive comment stripping"
         );
     }
@@ -1277,9 +2229,11 @@ mod tests {
 
         let camera_only =
             parse_manifest(r#"{"app":{"web":{"camera":["*"]}}}"#).expect("camera grant");
-        assert_eq!(
-            eval_app(&camera_only, "web.camera", "*"),
-            Decision::Allow,
+        assert!(
+            matches!(
+                eval_app(&camera_only, "web.camera", "*"),
+                Decision::Allow(_)
+            ),
             "in-scope web.camera must allow — inverted deny/allow would fail this"
         );
         assert!(
@@ -1301,17 +2255,19 @@ mod tests {
     #[test]
     fn webview_does_not_inherit_app_grants() {
         let manifest =
-            parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("manifest");
-        assert_eq!(
-            eval_app(&manifest, "fs.read", "$APPDATA/notes.txt"),
-            Decision::Allow,
+            parse_manifest(r#"{"app":{"fs":{"read":["/appdata/**"]}}}"#).expect("manifest");
+        assert!(
+            matches!(
+                eval_app(&manifest, "fs.read", "/appdata/notes.txt"),
+                Decision::Allow(_)
+            ),
             "control: AppProcess must still allow the in-scope path"
         );
         let webview = Principal::Webview {
             id: 7,
             generation: 1,
         };
-        match evaluate(&manifest, webview, "fs.read", "$APPDATA/notes.txt") {
+        match evaluate(&manifest, webview, "fs.read", "/appdata/notes.txt") {
             Decision::Deny(reason @ DenyReason::NotAppProcess { principal }) => {
                 assert_eq!(principal, webview);
                 assert_eq!(principal.label(), "webview");
@@ -1330,9 +2286,9 @@ mod tests {
     #[test]
     fn plugin_does_not_inherit_app_grants() {
         let manifest =
-            parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("manifest");
+            parse_manifest(r#"{"app":{"fs":{"read":["/appdata/**"]}}}"#).expect("manifest");
         let plugin = Principal::Plugin { id: 3 };
-        match evaluate(&manifest, plugin, "fs.read", "$APPDATA/notes.txt") {
+        match evaluate(&manifest, plugin, "fs.read", "/appdata/notes.txt") {
             Decision::Deny(DenyReason::NotAppProcess { principal }) => {
                 assert_eq!(principal, plugin);
                 assert_eq!(principal.label(), "plugin");
@@ -1363,5 +2319,82 @@ mod tests {
             Decision::Deny(DenyReason::NotGranted { .. }) => {}
             other => panic!("AppProcess + empty manifest must stay NotGranted, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn filesystem_scope_iteration_preserves_order_and_shape() {
+        #[cfg(not(windows))]
+        let text = r#"{"app":{"fs":{"read":["/tmp/exact","/tmp/tree/**"]}}}"#;
+        #[cfg(windows)]
+        let text = r#"{"app":{"fs":{"read":["C:/tmp/exact","C:/tmp/tree/**"]}}}"#;
+        let manifest = parse_manifest(text).expect("manifest");
+        let scopes = path_scopes(&manifest, "fs.read")
+            .expect("valid scopes")
+            .collect::<Vec<_>>();
+        assert_eq!(scopes.len(), 2);
+        assert_eq!(scopes[0].grant_index(), 0);
+        assert_eq!(scopes[0].kind(), PathScopeKind::Exact);
+        assert_eq!(scopes[1].grant_index(), 1);
+        assert_eq!(scopes[1].kind(), PathScopeKind::Subtree);
+    }
+
+    #[test]
+    fn filesystem_scope_iteration_rejects_duplicate_relative_and_unexpanded_scopes() {
+        #[cfg(not(windows))]
+        let duplicate = r#"{"app":{"fs":{"read":["/tmp/x/**","/tmp/x/**"]}}}"#;
+        #[cfg(windows)]
+        let duplicate = r#"{"app":{"fs":{"read":["C:/tmp/x/**","C:/tmp/x/**"]}}}"#;
+        let manifest = parse_manifest(duplicate).expect("manifest");
+        assert!(matches!(
+            path_scopes(&manifest, "fs.read"),
+            Err(ScopeSetError::Duplicate {
+                first_index: 0,
+                duplicate_index: 1
+            })
+        ));
+        for invalid in ["relative/**", "$APPDATA/**"] {
+            let manifest =
+                parse_manifest(&format!(r#"{{"app":{{"fs":{{"read":["{invalid}"]}}}}}}"#))
+                    .expect("manifest");
+            assert!(matches!(
+                path_scopes(&manifest, "fs.read"),
+                Err(ScopeSetError::InvalidPath { grant_index: 0, .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn filesystem_scope_iteration_enforces_sixty_four_entry_limit() {
+        let scopes = (0..65)
+            .map(|index| {
+                #[cfg(not(windows))]
+                {
+                    format!("/tmp/keld-{index}/**")
+                }
+                #[cfg(windows)]
+                {
+                    format!("C:/tmp/keld-{index}/**")
+                }
+            })
+            .collect::<Vec<_>>();
+        let text = serde_json::json!({"app":{"fs":{"read":scopes}}}).to_string();
+        let manifest = parse_manifest(&text).expect("manifest");
+        assert!(matches!(
+            path_scopes(&manifest, "fs.read"),
+            Err(ScopeSetError::TooMany {
+                actual: 65,
+                maximum: 64
+            })
+        ));
+    }
+
+    #[test]
+    fn generic_evaluate_preserves_literal_variable_matching_for_tooling() {
+        let manifest =
+            parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("manifest");
+        assert!(matches!(
+            eval_app(&manifest, "fs.read", "$APPDATA/file"),
+            Decision::Allow(_)
+        ));
     }
 }

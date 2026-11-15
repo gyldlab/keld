@@ -38,14 +38,15 @@ the required sibling executables.
 Every verb is matched by hand in
 [`crates/keld-cli/src/main.rs`](../../crates/keld-cli/src/main.rs) — there is no
 `clap`, no flag parser, and no subcommand framework. Arguments are read positionally
-from `std::env::args()`.
+from `std::env::args_os()` and decoded by `keld_core::unicode_args` on every OS: a
+non-Unicode argument is **`KELD-CLI-051`**, exit **2**, before any verb is selected.
 
 | Invocation | Implemented in | Effect |
 |---|---|---|
 | `keld --version` / `keld -V` | `main.rs` | prints `keld <CARGO_PKG_VERSION>` |
 | `keld` (no args) | `main.rs::print_usage` | usage on **stderr**, exit 0 |
 | `keld create <name>` | [`create.rs`](../../crates/keld-cli/src/create.rs) | scaffolds the hello template into `./<name>` |
-| `keld dev` | [`dev.rs`](../../crates/keld-cli/src/dev.rs) | checks env; on macOS, Windows, and the current Ubuntu/Debian x86_64 Linux profile stages and launches the no-flag host with a private liveness lease; Linux also stages the strict-role launcher. Native GNOME Wayland is proved; X11 product and non-Debian rows remain unverified |
+| `keld dev` | [`dev.rs`](../../crates/keld-cli/src/dev.rs) | checks env; on macOS, Windows, and the current Ubuntu/Debian x86_64 Linux profile stages and launches the no-flag host with a private liveness lease; Linux also stages the strict-role launcher. Ubuntu GNOME Wayland is the qualified product path. Bounded shipping-product evidence exercises X11 through Mutter Xwayland, but the canonical product-status ledger still leaves X11/native Xorg qualification open. Fedora 43 has bounded userland/build plus Fedora-owned X11-control evidence and Arch has build-portability evidence only; bare-metal non-Debian product qualification remains open |
 | `keld doctor` | [`doctor.rs`](../../crates/keld-cli/src/doctor.rs) | prints `[ok]`/`[FAIL]` per check |
 | `keld doctor --json` | [`doctor.rs`](../../crates/keld-cli/src/doctor.rs) | emits the findings array used by agents and MCP |
 | `keld mcp serve` | [`mcp/`](../../crates/keld-cli/src/mcp/) | serves doctor/docs/permissions tools over stdio |
@@ -90,7 +91,7 @@ prints **`KELD-CLI-046`** first, then the same block, and exits **2**.
 
 ### 1.5 `keld create <name>`
 
-Writes the seven embedded template files into `./<name>`. Nothing is downloaded and
+Writes the eight embedded template files into `./<name>`. Nothing is downloaded and
 nothing is installed; the files are compiled into the binary with `include_str!`
 ([`template.rs`](../../crates/keld-cli/src/template.rs)).
 
@@ -104,6 +105,7 @@ my-app/.gitignore
 my-app/index.html
 my-app/keld.config.ts
 my-app/package.json
+my-app/src/echo.generated.ts
 my-app/src/kipc-transport.ts
 my-app/src/kipc.ts
 my-app/src/main.ts
@@ -215,7 +217,7 @@ Three behaviors that will surprise you if you only read the ROADMAP:
   absolute paths (`KELD-CLI-035`), and passes the file contents as
   `NavTarget::Html`. Linked local assets are not this slice. `keld hello` and
   `keld-host --hello` still render compiled `keld_wv::HELLO_HTML`.
-- **On macOS, Windows, and proved Ubuntu GNOME Wayland the host, not the CLI, owns close and Quit.** The live
+- **On macOS, Windows, and the qualified Ubuntu GNOME Wayland path the host, not the CLI, owns close and Quit.** Separate bounded X11-through-Xwayland product runs exercise the same ownership path without promoting X11/native Xorg to canonical qualification. The live
   WKWebView/WebView2/WebKitGTK paths use event-loop wake commands; `LastWindowClosed`
   stays on the same link, and the correlated Quit reply precedes link close
   and supervisor reap. Linux additionally confines each Bun generation and its
@@ -224,11 +226,15 @@ Three behaviors that will surprise you if you only read the ROADMAP:
   same cross-platform call on every OS, and Linux (`WebKitGTK` via wry,
   `build_gtk` for Wayland+X11 both, GTK3 + `libwebkit2gtk-4.1-dev`) now
   dispatches to a real backend instead of an `unavailable()` stub. Compiled,
-  clippy-clean, and test-green on real Ubuntu; `Xvfb` + `xdotool` confirms a
-  real, correctly titled X11 window opens (a plain WSL sandbox has no display
-  at all — `gtk::init()` fails outright there). Not yet watched on a real
-  desktop with eyes on the screen. `WvError::UnsupportedPlatform` remains the
-  fallback for any other target.
+  clippy-clean, and test-green on real Ubuntu. Native GNOME Wayland is the
+  qualified product path. Separate bounded shipping-product evidence exercises X11
+  through the host's live Mutter Xwayland server without qualifying X11/native Xorg;
+  a Fedora-owned X11/Xvfb+Fluxbox control verifies title/PID binding,
+  resize, minimize/restore, native close, exit 0, and reap for a Fedora-built
+  host. That Fedora control is not a bare-metal Fedora login, and native Xorg
+  remains unqualified. A plain WSL sandbox with no display still fails at
+  `gtk::init()`. `WvError::UnsupportedPlatform` remains the fallback for
+  any other target.
 
 ### 1.7 `keld doctor`
 
@@ -287,7 +293,7 @@ tool. Any other flag — including the planned `--permissions`, `--web-compat`, 
 
 Calls `keld_core::run_hello_window()`, which opens a 960×640 window titled "Keld"
 rendering `HELLO_HTML`, and blocks until you close it. Equivalent to
-`just hello` / `cargo run -p keld-host -- --hello`, which goes through the host binary
+`just hello` / `cargo run -p keld-host --bin keld-host -- --hello`, which goes through the host binary
 instead of the CLI. Extra arguments are `KELD-CLI-044` (exit 2) so a typo cannot
 open the tao event loop. `keld-host --hello` accepts optional `--title <name>` /
 `--title=<name>` and rejects anything else the same way.
@@ -353,7 +359,7 @@ exits **2**. The server opens no network listener.
 
 | Today (verified) | Specified target |
 |---|---|
-| `0` success, `1` general failure, `2` for `keld mcp` misuse, unknown `create`/`dev`/`doctor`/`hello` flags (`KELD-CLI-044`), reserved verbs (`KELD-CLI-045`), and unknown verbs (`KELD-CLI-046`) | `0` ok · `1` failure · `2` misuse · `3` environment ([`docs/architecture/07-agent-experience.md`](../architecture/07-agent-experience.md) §7) |
+| `0` success, `1` general failure, `2` for `keld mcp` misuse, unknown `create`/`dev`/`doctor`/`hello` flags (`KELD-CLI-044`), reserved verbs (`KELD-CLI-045`), unknown verbs (`KELD-CLI-046`), and non-Unicode arguments (`KELD-CLI-051`) | `0` ok · `1` failure · `2` misuse · `3` environment ([`docs/architecture/07-agent-experience.md`](../architecture/07-agent-experience.md) §7) |
 | `keld doctor --json` emits a findings array | `--json` on anything with parseable output (same section) |
 
 The full target exit-code and machine-readable-output contract is not implemented yet.
@@ -372,6 +378,7 @@ Codes are `KELD-<AREA>-<NNN>`, and by convention every message states the fix
 | `KELD-CLI-044` | `flags.rs` | unknown `create` / `dev` / `doctor` / `hello` flag (exit 2); `--template` / `--watch` / `--permissions` are not live |
 | `KELD-CLI-045` | `verb.rs` | reserved verb `build` / `migrate` / `gen` / `ext` is not implemented (exit 2) |
 | `KELD-CLI-046` | `verb.rs` | unknown command (exit 2) |
+| `KELD-CLI-051` | `keld_core::unicode_args` ([`argv.rs`](../../crates/keld-core/src/argv.rs)) | a process argument, including the program path, is not valid Unicode; refused by position without echoing its bytes (exit 2) |
 | `KELD-IPC-001..007` | [`keld-ipc/src/lib.rs`](../../crates/keld-ipc/src/lib.rs) | I/O · bad frame header · codec · payload too large · protocol error · I/O deadline · HELLO session token |
 | `KELD-WV-001..008,010` | [`keld-wv/src/error.rs`](../../crates/keld-wv/src/error.rs) | unsupported platform · window · webview · event loop · navigate · script · unknown webview id · WebView2 runtime · Linux GPU preparation |
 | `KELD-MCP010..014` | `keld mcp` `keld_permissions_explain` | manifest missing · parse · unknown principal · unreadable · `channel` not evaluated in v0 |
@@ -394,7 +401,7 @@ dispatch remains the behavioral owner of reserved-command failures such as
 
 ## 3. Public Rust crate APIs
 
-Workspace version `0.0.1`, edition 2024, MSRV 1.97; pinned toolchain 1.97.1. Every public item is
+Workspace version `0.0.1`, edition 2024, MSRV 1.99.1; pinned toolchain 1.99.1. Every public item is
 documented (`missing_docs` is a workspace lint) and `cargo doc --workspace --no-deps`
 builds clean, so `cargo doc --open` is a legitimate way to browse this.
 
@@ -424,7 +431,8 @@ magic:u16 | ver:u8 | kind:u8 | flags:u16 | channel:u16 | corr:u32 | len:u32
   `StreamOpen=5`, `StreamChunk=6`, `StreamClose=7`, `Cancel=8`, `Grant=9`, `Ping=10`,
   plus `from_u8`. All eleven round-trip through the header; only `Hello`, `Call`,
   `Reply`, and `Ping` are *handled* by any session code today.
-- `ChannelId(pub u16)`, `CorrelationId(pub u32)` — newtypes, both `Copy`.
+- `ChannelId`, `CorrelationId(pub u32)` — newtypes, both `Copy`. `ChannelId`'s field is
+  private to `keld-ipc` (#634): other crates take ids from `channel_table` entries.
 - `FLAG_RAW: u16 = 1 << 0` — payload is raw bytes rather than codec-encoded.
 - `HeaderError::{BadMagic, BadVersion, BadKind}`.
 
@@ -442,7 +450,7 @@ Transport and session:
 | `echo_call` | `session` | `<S: Read + Write + AppLinkDeadlines>(&mut S, &EchoRequest, &SessionToken) -> Result<EchoResponse, IpcError>` |
 
 The echo vertical slice ([`echo.rs`](../../crates/keld-ipc/src/echo.rs)):
-`ECHO_CHANNEL: ChannelId = ChannelId(1)`, `EchoRequest { message: String, count: u32 }`,
+`ECHO_CHANNEL: ChannelId = channel_table::ECHO.id()` (wire id 1), `EchoRequest { message: String, count: u32 }`,
 `EchoResponse { message: String, count: u32 }`, and `handle_echo(&[u8]) -> Result<Vec<u8>, IpcError>`.
 
 `IpcError`: `Io`, `Header`, `Codec`, `PayloadTooLarge`, `Protocol { detail }`, `HelloAuth { detail }`, `Timeout` — codes
@@ -509,7 +517,7 @@ Backends:
 |---|---|---|
 | `wkwebview` (`#[cfg(target_os = "macos")]`) | macOS | **Live.** `WkWebViewEngine::new()` / `run_until_closed()` / `run_hello(title, html)`. Built on tao 0.35 + wry 0.56 as interim scaffolding, to be replaced by direct objc2 bindings. On macOS 12+, new camera/mic requests go through `with_permission_handler` → `keld-guard` (`web.camera` / `web.microphone`, default-deny). Pinned wry cfg-removes that delegate callback below 12 on debug hosts, so the oldest-supported-OS boundary and real proof remain open. |
 | [`webview2`](../../crates/keld-wv/src/webview2/mod.rs) | Windows | **Live (KEL-27, direct COM since KEL-65).** `WebView2Engine::new()` / `run_until_closed()` / `run_hello`; drives `webview2-com` directly (environment, controller, navigation) with tao for window + event loop — wry is not linked on Windows. Runtime probe fails closed as `KELD-WV-008`. Camera/mic go through `add_PermissionRequested` → `keld-guard`, registered before the first navigation (compile-enforced). |
-| [`webkitgtk`](../../crates/keld-wv/src/webkitgtk/mod.rs) | Linux | **Live (KEL-28), wry interim** — GTK3 + `libwebkit2gtk-4.1-dev`, same "wry now, direct webkit6/gtk4 later" policy as macOS/Windows started with; `build_gtk` (not plain `build`) so Wayland works, not just X11. Process entry calls `prepare_gpu_safe_mode_process()` to exact-self re-exec with NVIDIA+Wayland safe-mode before any GTK/WebKit call; fallible `WebKitGtkEngine::new()` rejects an unprepared risky stack as `KELD-WV-010`. Pure `detect_gpu_safe_mode()` distinguishes normal, risky/unprepared, and risky/prepared without side effects for `keld doctor`; `is_degraded()` is true only for the prepared state. Compiled/tested on real Ubuntu; `Xvfb` + `xdotool` confirms the X11 backend, and KEL-96 adds native GNOME Wayland rendered-navigation/no-flag evidence. A real X11 product run remains open. New camera/mic requests go through a guard-installed wry builder → `keld-guard`; Linux's unhandled default deny is not accepted as policy provenance, so the KEL-132 real probe binds callback/API denial to the manifest, principal, process and no-prompt census. Saved-preference restart/revocation remains KEL-135-owned. |
+| [`webkitgtk`](../../crates/keld-wv/src/webkitgtk/mod.rs) | Linux | **Live (KEL-28), wry interim** — GTK3 + `libwebkit2gtk-4.1-dev`, same "wry now, direct webkit6/gtk4 later" policy as macOS/Windows started with; `build_gtk` (not plain `build`) so Wayland works, not just X11. Process entry calls `prepare_gpu_safe_mode_process()` to exact-self re-exec with NVIDIA+Wayland safe-mode before any GTK/WebKit call; fallible `WebKitGtkEngine::new()` rejects an unprepared risky stack as `KELD-WV-010`. Pure `detect_gpu_safe_mode()` distinguishes normal, risky/unprepared, and risky/prepared without side effects for `keld doctor`; `is_degraded()` is true only for the prepared state. Compiled/tested on real Ubuntu; native GNOME Wayland is the qualified product path. Separate bounded shipping-product runs exercise X11 through live Mutter Xwayland without promoting X11/native Xorg to canonical qualification, while a Fedora-built host has a Fedora-owned X11/Xvfb+Fluxbox lifecycle/control receipt. KEL-96 adds native GNOME Wayland rendered-navigation/no-flag evidence. Bare-metal non-Debian product qualification also remains open. New camera/mic requests go through a guard-installed wry builder → `keld-guard`; Linux's unhandled default deny is not accepted as policy provenance, so the KEL-132 real probe binds callback/API denial to the manifest, principal, process and no-prompt census. Saved-preference restart/revocation remains KEL-135-owned. |
 
 Hello-window entry points, re-exported at crate root: `HELLO_HTML` (the dark-background
 "Hello from Keld" document — engine-neutral on purpose, one const backs both live
@@ -580,9 +588,9 @@ the behavior that exists today so target contracts are not mistaken for shipped 
 
 | Crate | Everything it exposes |
 |---|---|
-| `keld_guard` | `Principal::{AppProcess, Webview{id,generation}, Plugin{id}}`, `Decision::{Allow, Deny(DenyReason)}`, `DenyReason::{NotGranted, OutOfScope, ChannelForbidden, NotAppProcess, MediaPrincipalRequired}`, `parse_manifest` / `load_manifest` / `evaluate`, plus `verified_manifest::{VerifiedManifest, load_verified_manifest}` for the shipping no-flag startup snapshot. MCP `keld_permissions_explain`, each applicable new-request webview media callback, and `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) call the evaluator; saved-preference profile lifecycle remains KEL-135-owned and reachable privileged host routing remains KEL-102/T3. |
+| `keld_guard` | `Principal::{AppProcess, Webview{id,generation}, Plugin{id}}`, `Decision::{Allow(ScopePermit), Deny(DenyReason)}`, validated `path_scopes`, `DenyReason::{NotGranted, OutOfScope, ChannelForbidden, NotAppProcess, MediaPrincipalRequired}`, `parse_manifest` / `load_manifest` / `evaluate`, plus `verified_manifest::{VerifiedManifest, load_verified_manifest}` for the shipping no-flag startup snapshot. `dispatch_privileged` applies its private allocation-free FS request check after the principal decision and lends the opaque first-match permit only to its callback; direct `evaluate` keeps literal matcher semantics for permission-explain tooling. Saved-preference profile lifecycle remains KEL-135-owned and reachable privileged host routing remains KEL-102/T3. |
 | `keld_runtime` | `primary::{PrimaryRoleSupervisor, PrimaryRoleConfig, BoundPrimaryGeneration, PrimaryRecoveryGate}` over the one shared generation/restart owner. The gated start surface pauses the first crash successor until the host arms recovery after initial Ready; dropping/denying the gate prevents provisioning. |
-| `keld_native` | `MODULES: &[&str]` — the 15 planned module names (`window`, `menu`, `tray`, `dialog`, …) |
+| `keld_native` | `MODULES: &[&str]` plus the non-cloneable `fs::FsBroker::{prepare,read,write}`, retained `serve_fs_session`, fixed filesystem bounds, typed `FsPrepareError`/`FsError`/`WriteInterruption`, and byte-compatible `FsRequest`/`FsResponse`; this library path is tested but not registered by the shipping host until KEL-102/T3. |
 | `keld_update` | `Channel::{Stable, Beta, Canary}` |
 | `keld_pack` | `Format::{App, Dmg, Nsis, Msi, Deb, Rpm, AppImage}` |
 | `keld_compat` | `Tier::{One, Two, Three}` |
@@ -605,7 +613,7 @@ and no hand edits to generated code.
 
 ## 5. The template app contract — what an app developer actually writes
 
-`keld create <name>` produces exactly seven files. This is, today, the whole "app
+`keld create <name>` produces exactly eight files. This is, today, the whole "app
 developer API".
 
 ```
@@ -617,6 +625,7 @@ my-app/
 └─ src/
    ├─ main.ts             echo adapter + app body (imports `./kipc-transport.ts`)
    ├─ kipc-transport.ts   embedded copy of `packages/@keld/kipc/src/transport.ts`
+   ├─ echo.generated.ts   Rust-derived echo request/response payload declarations
    └─ kipc.ts             compatibility re-export from main.ts; no second client copy
 ```
 
@@ -626,10 +635,11 @@ The hello echo adapter lives in
 [`templates/hello/src/kipc.ts`](../../crates/keld-cli/templates/hello/src/kipc.ts),
 with golden-vector tests in `templates/hello/src/kipc.test.ts` and the app body in
 `templates/hello/src/main-body.ts`. `template.rs` embeds the transport as
-`src/kipc-transport.ts` and concatenates the echo adapter and body into
-`src/main.ts`; generated `src/kipc.ts` only re-exports that module for source
-compatibility. This preserves one tested wire implementation without an npm
-dependency in the stock scaffold.
+`src/kipc-transport.ts`, emits the freshness-checked `src/echo.generated.ts`, and
+concatenates the echo adapter and body into `src/main.ts`; generated `src/kipc.ts` only
+re-exports that module for source compatibility. The generated payload file is a
+source-time type dependency and is not copied into the runtime stage. This preserves one
+tested wire implementation without an npm dependency in the stock scaffold.
 
 ### 5.1 `src/main.ts` — the main process
 
@@ -649,10 +659,15 @@ if (import.meta.main) {
 
   const session = await AppLinkSession.connect(link);
   try {
+    // Listen before the first call, so an early host EVENT is not missed.
+    const windowsClosed = lastWindowClosed(session);
     const response = await session.echo({ message: "keld", count: 1 });
     console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
     console.log("{{name}}: main process ready (IPC echo ok)");
-    await new Promise(() => {});
+    await windowsClosed;
+    // Resolves only on the host's `LifecycleResponse::Quit`, then the link closes.
+    await session.quit();
+    process.exit(0);
   } finally {
     session.close();
   }
@@ -669,14 +684,17 @@ Read it as a contract statement in four parts:
    template.
 2. **The app process is Bun-specific**, not Node-compatible: the shared transport uses
    `Bun.connect` and the entry uses top-level `await`.
-3. **There is still no schema-driven TypeScript SDK** (`@keld/api`, `keld gen`, KEL-13
-   remain unbuilt), but as of KEL-30 the template no longer shells out to a second
-   process to fake one. KEL-136 owns one TypeScript transport
+3. **There is still no general schema-driven TypeScript SDK** (`@keld/api`, live
+   `keld gen`, and the KEL-13 destination remain unbuilt), but KEL-98's bounded echo
+   bootstrap generates `EchoRequest` / `EchoResponse` declarations from the current Rust
+   structs. As of KEL-30 the template no longer shells out to a second process to fake a
+   client. KEL-136 owns one TypeScript transport
    (`packages/@keld/kipc/src/transport.ts`) that `keld create` embeds as
    `src/kipc-transport.ts`; the echo adapter speaks postcard `EchoRequest`/`EchoResponse`
-   on that transport. The generated `src/kipc.ts` is only a compatibility re-export of
-   `src/main.ts`; it does not duplicate the implementation. Expect `@keld/api` codegen
-   later; until then this is real, tested transport, not a stub.
+   on that transport and consumes their generated declarations through type-only imports.
+   The generated `src/kipc.ts` is only a compatibility re-export of `src/main.ts`; it does
+   not duplicate the implementation. Expect general `@keld/api` codegen later; until then
+   this is real, tested transport, not a stub.
 4. **`{{name}}` is substituted at scaffold time**, so a project called `my-app` prints
    `my-app: main process ready (IPC echo ok)`.
 

@@ -1,0 +1,32 @@
+[package]
+name = "keld-updater-helper"
+description = "The elevated Keld updater helper executable"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# KEL-53 §5: a binary-only crate that builds only keld-updater-helper.exe. Nothing
+# depends on it. Its normal edges are Windows-only, so the non-Windows binary refuses
+# without compiling them.
+[[bin]]
+name = "keld-updater-helper"
+path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies]
+keld-guard = { workspace = true }
+keld-ipc = { workspace = true }
+# KEL-53 §5 normal edge (Job, launch and process identity): the System32-only DLL
+# search and the recovery-role selector; clippy.toml's disallowed-methods name its
+# process-starting entry points through it.
+keld-runtime = { workspace = true }
+keld-update = { workspace = true }
+
+# tests/release_image.rs plants DLLs beside a copy of the release helper.
+[target.'cfg(windows)'.dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

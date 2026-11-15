@@ -1,0 +1,916 @@
+"""Real Git/process contracts for the local-only agent workspace."""
+import json
+import os
+from pathlib import Path
+import hashlib
+import socket
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+import workspace
+
+TOOL = Path(__file__).with_name("workspace.py").resolve()
+REPO = TOOL.parent.parent
+
+
+class WorkspaceTests(unittest.TestCase):
+    def setUp(self):
+        parent = REPO / "target" / "workspace-tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        temporary = tempfile.TemporaryDirectory(prefix="case-", dir=parent)
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name) / "primary with spaces"
+        self.root.mkdir()
+        self.git("init", "-b", "main")
+        self.git("config", "maintenance.auto", "false")  # no detached repack racing cleanup (#670)
+        self.git("config", "user.name", "Workspace tests")
+        self.git("config", "user.email", "workspace@example.invalid")
+        (self.root / ".gitignore").write_text("/.keld-work/\n/target/\n", encoding="utf-8")
+        self.git("add", ".gitignore")
+        self.git("commit", "-m", "baseline")
+        self.base = self.git("rev-parse", "HEAD").stdout.strip()
+        self.git("update-ref", "refs/remotes/origin/main", self.base)
+
+    def git(self, *args, cwd=None, check=True):
+        return subprocess.run(["git", "-C", str(cwd or self.root), *args],
+                              capture_output=True, text=True, encoding="utf-8", check=check)
+
+    def cli(self, *args, cwd=None, ok=True, env=None):
+        result = subprocess.run([sys.executable, "-B", str(TOOL), *args],
+                                cwd=cwd or self.root, capture_output=True,
+                                text=True, encoding="utf-8", env=env, timeout=20)
+        if ok:
+            self.assertEqual(result.returncode, 0, result.stderr)
+        else:
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+        return result
+
+    def start(self):
+        return json.loads(self.cli("start", "kel-245", "probe", "--session", "test-session").stdout)
+
+    def proof(self, path):
+        return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+    def closeout(self, task, proof=None):
+        """Create a real minimal receipt; the production validator is the oracle."""
+        proof = proof or self.root.parent / "release-proof.txt"
+        if not proof.exists():
+            proof.write_text("reviewed release in isolated fixture\n", encoding="utf-8")
+        directory = self.root / ".git" / "keld-closeout" / "test-session"
+        directory.mkdir(parents=True, exist_ok=True)
+        baseline = directory / "baseline.json"
+        baseline.write_text(json.dumps({
+            "schema": "keld.session-baseline/v1", "session_id": "test-session", "repo": task["path"],
+            "objectives": [{"id": "release", "summary": "Release isolated task"}],
+            "findings": [], "resources": [], "checks": ["release proof"], "untracked": []}), encoding="utf-8")
+        receipt = directory / "release.json"
+        head = self.git("rev-parse", "HEAD", cwd=task["path"]).stdout.strip()
+        receipt.write_text(json.dumps({
+            "schema": "keld.session-closeout/v1", "session_id": "test-session", "turn_id": "release",
+            "repo": task["path"], "head": head, "baseline": self.proof(baseline),
+            "objectives": [{"id": "release", "summary": "Release isolated task", "status": "complete", "evidence": [self.proof(proof)]}],
+            "findings": [], "findings_review": [self.proof(proof)], "resources": [],
+            "checks": [{"name": "release proof", "status": "passed", "source_head": head, "evidence": [self.proof(proof)]}],
+            "outcome": "complete"}), encoding="utf-8")
+        return receipt
+
+    def cleanup_receipt(self, task, scratch, original=None):
+        original = original or self.closeout(task)
+        receipt = json.loads(original.read_text(encoding="utf-8"))
+        receipt.update(turn_id="cleanup", resources=[{
+            "id": "scratch", "path": str(scratch), "status": "removed",
+            "reason": "Released session scratch removed by the isolated cleanup fixture"}])
+        current = original.with_name("cleanup.json")
+        current.write_text(json.dumps(receipt), encoding="utf-8")
+        return current
+
+    def test_root_does_not_allocate_and_is_identical_from_linked_tree(self):
+        expected = self.root / ".keld-work"
+        self.assertEqual(Path(self.cli("root").stdout.strip()), expected)
+        self.assertFalse(expected.exists())
+        task = self.start()
+        self.assertEqual(Path(self.cli("root", cwd=task["path"]).stdout.strip()), expected)
+        self.assertEqual(self.git("status", "--porcelain").stdout, "")
+
+    def test_start_is_idempotent_but_different_session_cannot_take_over(self):
+        first = self.start()
+        self.assertEqual(first, self.start())
+        self.cli("start", "kel-245", "probe", "--session", "other", ok=False)
+        self.assertEqual(first, self.start())
+
+    def test_github_tracker_issue_allocates_and_round_trips(self):
+        task = json.loads(self.cli("start", "gh-520", "probe", "--session", "test-session").stdout)
+        self.assertEqual((task["task"], task["issue"], task["branch"]), ("gh-520-probe", "GH-520", "agent/gh-520-probe"))
+        self.assertEqual(Path(task["path"]).name, "gh-520-probe")
+        self.assertEqual(task, json.loads(self.cli("start", "gh-520", "probe", "--session", "test-session").stdout))
+        self.cli("start", "gh-520", "probe", "--session", "other", ok=False)
+        self.assertIn("gh-520-probe", self.cli("status").stdout)
+
+    def test_task_names_accept_only_kel_or_gh_positive_ids(self):
+        for name in ["kel-245-probe", "gh-520-tracker-of-record"]:
+            self.assertEqual(workspace.task_name(name), name)
+        for name in ["GH-1-ok", "gh-0-ok", "gh-01-ok", "jira-1-ok", "gh-1", "kel-gh-1-ok", "gh--1-ok"]:
+            with self.subTest(name=name), self.assertRaises(workspace.WorkspaceError):
+                workspace.task_name(name)
+
+    def test_default_base_is_origin_main_not_invoking_branch(self):
+        self.git("commit", "--allow-empty", "-m", "local only")
+        task = self.start()
+        self.assertEqual(task["base"], self.base)
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=task["path"]).stdout.strip(), self.base)
+
+    def test_missing_and_invalid_base_refuse_before_allocation(self):
+        self.git("update-ref", "-d", "refs/remotes/origin/main")
+        self.cli("start", "kel-245", "probe", "--session", "test", ok=False)
+        self.assertFalse((self.root / ".keld-work").exists())
+        self.cli("start", "kel-245", "probe", "--session", "test", "--base", "--help", ok=False)
+        self.assertFalse((self.root / ".keld-work").exists())
+        task = json.loads(self.cli("start", "kel-245", "probe", "--session", "test", "--base", self.base).stdout)
+        self.assertEqual(task["base"], self.base)
+
+    def test_bad_names_refuse_before_writes(self):
+        for issue, slug, session in [("kel-0", "ok", "s"), ("kel-1", "../out", "s"),
+                                     ("kel-1", "Upper", "s"), ("kel-1", "ok", "../s"),
+                                     ("kel-1", "ok", "CON"), ("kel-1", "a" * 70, "s"),
+                                     ("gh-0", "ok", "s"), ("GH-1", "ok", "s"), ("gh-01", "ok", "s"),
+                                     ("jira-1", "ok", "s"), ("gh", "ok", "s"), ("kel-gh-1", "ok", "s")]:
+            with self.subTest(issue=issue, slug=slug, session=session):
+                self.cli("start", issue, slug, "--session", session, ok=False)
+        self.assertFalse((self.root / ".keld-work").exists())
+
+    @unittest.skipUnless(os.name == "nt", "native Windows managed path admission")
+    def test_windows_long_session_start_refuses_before_allocation(self):
+        result = self.cli("start", "kel-245", "long", "--session", "s" * 128, ok=False)
+        self.assertIn("Windows managed path", result.stderr)
+        self.assertIn("shorter real primary checkout", result.stderr)
+        self.assertFalse((self.root / ".keld-work").exists())
+        self.assertEqual(self.git("show-ref", "--verify", "--quiet", "refs/heads/agent/kel-245-long",
+                                  check=False).returncode, 1)
+
+    @unittest.skipUnless(os.name == "nt", "native Windows managed path admission")
+    def test_windows_long_existing_session_refuses_before_lock_scratch_or_child(self):
+        task = self.start()
+        session = "s" * 128
+        managed = self.root / ".keld-work"
+        metadata = managed / "worktrees" / (task["task"] + ".json")
+        record = json.loads(metadata.read_text(encoding="utf-8"))
+        record["sessions"] = [session]
+        metadata.write_text(json.dumps(record), encoding="utf-8")
+        # A valid historical record must not let the command allocate an orphan.
+        before = {str(path): path.read_bytes() if path.is_file() else None for path in managed.rglob("*")}
+        marker = self.root / "child-started"
+        child = [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).touch()", str(marker)]
+        for args in [("run", task["task"], "--session", session, "--", *child),
+                     ("finish", task["task"], "--session", session, "--receipt", str(self.root / "absent.json")),
+                     ("clean", task["task"], "--session", session),
+                     ("reference-run", "--", *child)]:
+            with self.subTest(operation=args[0]):
+                result = self.cli(*args, ok=False, env=dict(os.environ, KELD_WORK_SESSION=session))
+                self.assertEqual(before, {str(path): path.read_bytes() if path.is_file() else None
+                                          for path in managed.rglob("*")})
+                self.assertFalse(marker.exists())
+                self.assertIn("Windows managed path", result.stderr)
+                self.assertIn("shorter real primary checkout", result.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "native Windows managed path admission")
+    def test_windows_long_allocator_refuses_before_ownership_orphan(self):
+        ctx = workspace.context(self.root)
+        with self.assertRaisesRegex(workspace.WorkspaceError, "Windows managed path"):
+            workspace.allocate_scratch(ctx, "s" * 128, "run-" + "0" * 32)
+        self.assertFalse(ctx.root.exists())
+
+    @unittest.skipUnless(os.name == "nt", "native Windows managed path boundary")
+    def test_windows_admitted_boundary_roundtrips_child_and_metadata(self):
+        # The public support cell reserves the longest generated cleanup record
+        # replacement, including its separator and terminating-NUL allowance.
+        maximum = self.root / ".keld-work" / "sessions" / "s" / "evidence" / ("clean-" + "0" * 32) / "record-00000000.tmp"
+        session = "s" * (260 - len(str(maximum).encode("utf-16-le")) // 2)
+        self.assertTrue(1 <= len(session) <= 128)
+        task = json.loads(self.cli("start", "kel-245", "boundary", "--session", session).stdout)
+        result = self.cli("run", task["task"], "--session", session, "--", sys.executable, "-c",
+                          "import os,sys; print(os.environ['TMPDIR']); print('boundary stderr', file=sys.stderr)")
+        scratch = Path(result.stdout.strip())
+        owner = self.root / ".keld-work" / "sessions" / session / "scratch-owners" / (scratch.name + ".json")
+        value = json.loads(owner.read_text(encoding="utf-8"))
+        self.assertEqual((value["device"], value["inode"]), (scratch.stat().st_dev, scratch.stat().st_ino))
+        self.assertEqual(value["session"], session)
+        evidence = next((owner.parent.parent / "evidence").iterdir())
+        value = json.loads((evidence / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual((value["state"], value["exit_code"], value["runner_exit_code"]), ("complete", 0, 0))
+        self.assertEqual((evidence / "stdout.log").read_text(encoding="utf-8").strip(), str(scratch).replace("\\", "/"))
+        self.assertEqual((evidence / "stderr.log").read_text(encoding="utf-8").strip(), "boundary stderr")
+        rejected = self.cli("start", "kel-245", "over", "--session", session + "s", ok=False)
+        self.assertIn("Windows managed path", rejected.stderr)
+        self.assertFalse((self.root / ".keld-work" / "worktrees" / "kel-245-over.json").exists())
+
+    @unittest.skipUnless(os.name == "nt", "native Windows UTF-16 path accounting")
+    def test_windows_admission_counts_supplementary_unicode_as_two_units(self):
+        primary = self.root / ("unicode-" + "\U0001f4bb" * 8)
+        primary.mkdir()
+        ctx = workspace.Context(primary, primary, primary / ".git")
+        maximum = ctx.root / "sessions" / "s" / "evidence" / ("clean-" + "0" * 32) / "record-00000000.tmp"
+        session = "s" * (260 - len(str(maximum).encode("utf-16-le")) // 2)
+        self.assertTrue(1 <= len(session) < 128)
+        scratch = workspace.allocate_scratch(ctx, session, "run-" + "0" * 32)
+        self.assertEqual(workspace.session_scratch(ctx, session), [scratch])
+        before = {str(path) for path in ctx.root.rglob("*")}
+        with self.assertRaisesRegex(workspace.WorkspaceError, "260 > 259 UTF-16 units"):
+            workspace.allocate_scratch(ctx, session + "s", "run-" + "1" * 32)
+        self.assertEqual(before, {str(path) for path in ctx.root.rglob("*")})
+
+    @unittest.skipUnless(os.name == "nt", "Windows managed directory allowance")
+    def test_windows_admission_reserves_directory_creation_allowance(self):
+        task = "kel-245-" + "a" * 56
+        suffix = Path(".keld-work") / "worktrees" / task
+        prefix = self.root / ("p" * (247 - len(str(self.root / suffix).encode("utf-16-le")) // 2 - 1))
+        ctx = workspace.Context(prefix, prefix, prefix / ".git")
+        self.assertEqual(len(str(ctx.root / "worktrees" / task).encode("utf-16-le")) // 2, 247)
+        workspace.admit_workspace_paths(ctx, task=task)
+        longer = prefix.with_name(prefix.name + "p")
+        ctx = workspace.Context(longer, longer, longer / ".git")
+        with self.assertRaisesRegex(workspace.WorkspaceError, "directory limit \\(248 > 247 UTF-16 units\\)"):
+            workspace.admit_workspace_paths(ctx, task=task)
+        self.assertFalse(prefix.exists())
+        self.assertFalse(longer.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows CPython security-release admission")
+    def test_windows_runtime_admission_matches_published_security_floors(self):
+        # Published os.mkdir(0o700) backports are the oracle, independent of
+        # the production branch selection. Native ACL proof is a separate test.
+        cases = [((3, 8, 99), False), ((3, 9, 19), False), ((3, 9, 20), True),
+                 ((3, 10, 14), False), ((3, 10, 15), True),
+                 ((3, 11, 9), False), ((3, 11, 10), True),
+                 ((3, 12, 3), False), ((3, 12, 4), True),
+                 ((3, 13, 0), True), ((3, 14, 1), True), ((4, 0, 0), False)]
+        ctx = workspace.Context(self.root, self.root, self.root / ".git")
+        for release, allowed in cases:
+            with self.subTest(release=release), mock.patch.object(workspace.sys, "version_info", (*release, "final", 0)):
+                if allowed:
+                    workspace.admit_workspace_paths(ctx, "test-session")
+                else:
+                    with self.assertRaisesRegex(workspace.WorkspaceError, "Windows managed workspace requires.*CPython"):
+                        workspace.admit_workspace_paths(ctx, "test-session")
+        for implementation, level in [("PyPy", "final"), ("unknown", "final"),
+                                      ("CPython", "alpha"), ("CPython", "candidate")]:
+            with self.subTest(implementation=implementation, level=level), \
+                    mock.patch.object(workspace.platform, "python_implementation", return_value=implementation), \
+                    mock.patch.object(workspace.sys, "version_info", (3, 14, 1, level, 0)):
+                with self.assertRaisesRegex(workspace.WorkspaceError, "Windows managed workspace requires.*CPython"):
+                    workspace.admit_workspace_paths(ctx, "test-session")
+        self.assertFalse(ctx.root.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows runtime refusal before writes")
+    def test_windows_unsupported_runtime_refuses_before_writes_or_child(self):
+        task = self.start()
+        ctx = workspace.context(self.root)
+        marker = self.root / "unqualified-child"
+        before = {str(path): path.read_bytes() if path.is_file() else None for path in ctx.root.rglob("*")}
+        child = [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).touch()", str(marker)]
+        operations = [lambda: workspace.start(ctx, "kel-245", "old", "test-session", "origin/main"),
+                      lambda: workspace.allocate_scratch(ctx, "test-session", "run-" + "0" * 32),
+                      lambda: workspace.run(ctx, task["task"], "test-session", child, 1),
+                      lambda: workspace.finish(ctx, task["task"], "test-session", self.root / "absent.json"),
+                      lambda: workspace.clean(ctx, task["task"], "test-session", False)]
+        with mock.patch.object(workspace.sys, "version_info", (3, 12, 3, "final", 0)):
+            for operation in operations:
+                with self.assertRaisesRegex(workspace.WorkspaceError, "Windows managed workspace requires.*CPython"):
+                    operation()
+        self.assertFalse(marker.exists())
+        self.assertEqual(before, {str(path): path.read_bytes() if path.is_file() else None for path in ctx.root.rglob("*")})
+
+    @unittest.skipUnless(os.name == "nt", "native Windows creation-time scratch ACL")
+    def test_windows_scratch_acl_is_private_before_child_starts(self):
+        def principals(path):
+            script = "$acl = Get-Acl -LiteralPath $env:KELD_ACL_FIXTURE; @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value }) | ConvertTo-Json -Compress"
+            result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                                    env=dict(os.environ, KELD_ACL_FIXTURE=str(path)), capture_output=True,
+                                    text=True, encoding="utf-8", check=True)
+            return set(json.loads(result.stdout))
+        # Change only this test-owned primary. The private fixture ancestor stays
+        # intact; the test proves DACL inheritance, not another user's reachability.
+        subprocess.run(["icacls", str(self.root), "/grant", "*S-1-1-0:(OI)(CI)(M)"],
+                       capture_output=True, check=True)
+        self.assertIn("S-1-1-0", principals(self.root))
+        task = self.start()
+        marker = self.root / "private-child"
+        allocate = workspace.allocate_scratch
+        inspected = []
+        def inspect_before_return(*args):
+            scratch = allocate(*args)
+            self.assertEqual(principals(scratch), {"S-1-5-18", "S-1-5-32-544", "S-1-3-4"})
+            self.assertFalse(marker.exists())
+            inspected.append(scratch)
+            return scratch
+        with mock.patch.object(workspace, "allocate_scratch", side_effect=inspect_before_return):
+            code = workspace.run(workspace.context(self.root), task["task"], "test-session",
+                                 [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('private child'); print('private child')", str(marker)], 1)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(inspected), 1)
+        self.assertEqual(marker.read_text(), "private child")
+
+    def test_existing_unmanaged_target_is_never_adopted_or_overwritten(self):
+        target = self.root / ".keld-work" / "worktrees" / "kel-245-probe"
+        target.mkdir(parents=True)
+        (target / "keep").write_text("keep", encoding="utf-8")
+        self.cli("start", "kel-245", "probe", "--session", "test", ok=False)
+        self.assertEqual((target / "keep").read_text(), "keep")
+
+    def test_bare_repository_and_symlink_root_refuse(self):
+        bare = self.root.parent / "bare"
+        self.git("init", "--bare", str(bare))
+        self.git("config", "maintenance.auto", "false", cwd=bare)
+        self.cli("root", cwd=bare, ok=False)
+        outside = self.root.parent / "outside"
+        outside.mkdir()
+        try:
+            (self.root / ".keld-work").symlink_to(outside, target_is_directory=True)
+        except OSError as error:
+            self.skipTest("OS did not permit test symlink: " + str(error))
+        self.cli("start", "kel-245", "probe", "--session", "test", ok=False)
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_force_added_workspace_file_is_rejected(self):
+        managed = self.root / ".keld-work"
+        managed.mkdir()
+        (managed / "bad.txt").write_text("private", encoding="utf-8")
+        self.git("add", "-f", ".keld-work/bad.txt")
+        self.cli("check", ok=False)
+
+    def test_linked_tree_cannot_have_its_own_workspace(self):
+        task = self.start()
+        (Path(task["path"]) / ".keld-work").mkdir()
+        self.cli("check", cwd=task["path"], ok=False)
+        self.cli("run", task["task"], "--session", "test-session", "--",
+                 sys.executable, "-c", "print('must not run')", ok=False)
+        self.assertFalse((self.root / ".keld-work" / "sessions").exists())
+
+    def test_primary_run_rejects_force_added_target_workspace_content(self):
+        task = self.start()
+        local = Path(task["path"]) / ".keld-work"
+        local.mkdir()
+        (local / "private.txt").write_text("preserve", encoding="utf-8")
+        self.git("add", "-f", ".keld-work/private.txt", cwd=task["path"])
+        # Even if the local path disappears, its tracked index entry remains invalid.
+        (local / "private.txt").unlink()
+        local.rmdir()
+        self.cli("run", task["task"], "--session", "test-session", "--",
+                 sys.executable, "-c", "print('must not run')", ok=False)
+        self.assertFalse((self.root / ".keld-work" / "sessions").exists())
+
+    def test_status_does_not_create_storage_and_sizes_are_explicit(self):
+        info = json.loads(self.cli("status").stdout)
+        self.assertEqual(info["tasks"], [])
+        self.assertFalse((self.root / ".keld-work").exists())
+        task = self.start()
+        ordinary = json.loads(self.cli("status").stdout)
+        self.assertNotIn("bytes", ordinary["tasks"][0])
+        sized = json.loads(self.cli("status", "--sizes").stdout)
+        self.assertGreater(sized["tasks"][0]["bytes"], 0)
+        self.assertEqual(ordinary["tasks"][0]["task"], task["task"])
+
+    def test_run_preserves_argv_temp_and_child_failure(self):
+        task = self.start()
+        script = "import os,sys,json; print(json.dumps(dict(cwd=os.getcwd(), temp=os.environ['TMPDIR'], args=sys.argv[1:]))); sys.exit(7)"
+        sentinel = "quoted space; $() & Unicode-λ"
+        result = self.cli("run", task["task"], "--session", "test-session", "--",
+                          sys.executable, "-c", script, sentinel, ok=False)
+        self.assertEqual(result.returncode, 7, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["args"], [sentinel])
+        self.assertEqual(Path(payload["cwd"]), Path(task["path"]))
+        self.assertTrue(Path(payload["temp"]).is_relative_to(self.root / ".keld-work" / "tmp"))
+        records = list((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").glob("*/result.json"))
+        self.assertEqual(len(records), 1)
+        evidence = json.loads(records[0].read_text())
+        self.assertEqual(evidence["exit_code"], 7)
+        self.assertEqual(evidence["log_limit_bytes"], 4 * 1024 * 1024)
+        self.assertNotIn("args", evidence)
+        self.assertNotIn("environment", evidence)
+        self.assertFalse(any((self.root / ".keld-work" / "worktrees").glob("*.lock")))
+
+    @unittest.skipUnless(hasattr(socket, "AF_UNIX") and os.name != "nt", "native Unix pathname socket")
+    def test_long_session_does_not_consume_native_socket_namespace(self):
+        session = "native-socket-" + "s" * 100
+        task = json.loads(self.cli("start", "kel-245", "socket", "--session", session).stdout)
+        # Strip only the deliberately deep test-checkout prefix. The actual managed
+        # namespace, session and fixture suffix still go through a real OS bind.
+        # Full absolute-path acceptance is additionally run on each native machine.
+        script = """
+import json, os, pathlib, socket, stat, sys
+root = pathlib.Path(sys.argv[1])
+tmp = pathlib.Path(os.environ['TMPDIR'])
+assert os.environ['TEMP'] == os.environ['TMP'] == str(tmp)
+os.chdir(root)
+fixture = tmp / 'k7-12345-1234567890123456789-0'
+fixture.mkdir()
+endpoint = str((fixture / 'e.sock').relative_to(root))
+with socket.socket(socket.AF_UNIX) as listener:
+    listener.bind(endpoint)
+    listener.listen()
+    with socket.socket(socket.AF_UNIX) as client:
+        client.connect(endpoint)
+        with listener.accept()[0] as peer:
+            client.sendall(b'KEL245')
+            assert peer.recv(6) == b'KEL245'
+assert stat.S_IMODE(tmp.stat().st_mode) == 0o700
+print(json.dumps({'socket': endpoint, 'temp': str(tmp)}))
+"""
+        result = self.cli("run", task["task"], "--session", session, "--",
+                          sys.executable, "-c", script, str(self.root))
+        self.assertIn("e.sock", json.loads(result.stdout)["socket"])
+
+    def test_run_log_cap_is_real_and_records_omitted_bytes(self):
+        task = self.start()
+        volume = 1024 * 1024 + 37
+        result = self.cli("run", task["task"], "--session", "test-session", "--log-limit-mib", "1", "--",
+                          sys.executable, "-c", f"import sys; sys.stdout.buffer.write(b'x'*{volume})")
+        self.assertEqual(len(result.stdout), volume)
+        directory = next((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").iterdir())
+        metadata = json.loads((directory / "result.json").read_text())
+        self.assertEqual((directory / "stdout.log").stat().st_size, 1024 * 1024)
+        self.assertEqual(metadata["stdout"]["total_bytes"], volume)
+        self.assertEqual(metadata["stdout"]["omitted_bytes"], 37)
+        self.assertTrue(metadata["stdout"]["truncated"])
+
+    def test_invalid_limits_and_session_cannot_run_child(self):
+        task = self.start()
+        for value in ["0", "65", "unlimited", "1.5"]:
+            self.cli("run", task["task"], "--session", "test-session", "--log-limit-mib", value,
+                     "--", sys.executable, "-c", "raise SystemExit(0)", ok=False)
+        self.cli("run", task["task"], "--session", "other", "--", sys.executable, "-c", "pass", ok=False)
+        self.assertFalse((self.root / ".keld-work" / "sessions").exists())
+
+    def test_maximum_log_limit_is_accepted(self):
+        task = self.start()
+        self.cli("run", task["task"], "--session", "test-session", "--log-limit-mib", "64", "--",
+                 sys.executable, "-c", "print('maximum')")
+        record = next((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").glob("*/result.json"))
+        self.assertEqual(json.loads(record.read_text())["log_limit_bytes"], 64 * 1024 * 1024)
+
+    def test_live_second_writer_is_refused_then_next_run_succeeds(self):
+        task = self.start()
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            listener.settimeout(10)
+            script = f"import socket; s=socket.create_connection(('127.0.0.1',{listener.getsockname()[1]})); s.sendall(b'R'); s.recv(1); s.close()"
+            process = subprocess.Popen([sys.executable, "-B", str(TOOL), "run", task["task"],
+                                        "--session", "test-session", "--", sys.executable, "-c", script],
+                                       cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                connection, _ = listener.accept()
+                with connection:
+                    connection.settimeout(10)
+                    self.assertEqual(connection.recv(1), b"R")
+                    refused = self.cli("run", task["task"], "--session", "test-session", "--",
+                                       sys.executable, "-c", "print('must not run')", ok=False)
+                    self.assertIn("operation lock exists", refused.stderr)
+                    self.assertNotIn("must not run", refused.stdout)
+                    self.cli("reference-run", "--", sys.executable, "-c", "print('must not run')",
+                             env=dict(os.environ, KELD_WORK_SESSION="test-session"), ok=False)
+                    connection.sendall(b"X")
+                _, errors = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 0, errors)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=10)
+        self.cli("run", task["task"], "--session", "test-session", "--", sys.executable, "-c", "pass")
+
+    def test_reference_guard_blocks_task_admission_until_completion(self):
+        task = self.start()
+        own = dict(os.environ, KELD_WORK_SESSION="test-session")
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            listener.settimeout(10)
+            script = f"import socket,sys; s=socket.create_connection(('127.0.0.1',{listener.getsockname()[1]})); s.sendall(b'R'); s.recv(1); s.close(); sys.exit(7)"
+            process = subprocess.Popen([sys.executable, "-B", str(TOOL), "reference-run", "--",
+                                        sys.executable, "-c", script], cwd=self.root, env=own,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                connection, _ = listener.accept()
+                with connection:
+                    connection.settimeout(10)
+                    self.assertEqual(connection.recv(1), b"R")
+                    self.cli("start", "kel-245", "other", "--session", "other", ok=False)
+                    self.cli("run", task["task"], "--session", "test-session", "--",
+                             sys.executable, "-c", "print('must not run')", ok=False)
+                    self.cli("reference-run", "--", sys.executable, "-c", "pass", env=own, ok=False)
+                    connection.sendall(b"X")
+                _, errors = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 7, errors)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=10)
+        self.assertFalse((self.root / ".keld-work" / "reference.lock").exists())
+        self.cli("run", task["task"], "--session", "test-session", "--", sys.executable, "-c", "pass")
+
+    def test_inherited_pipe_is_reported_incomplete_without_hanging(self):
+        task = self.start()
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            listener.settimeout(10)
+            descendant = f"import socket; s=socket.create_connection(('127.0.0.1',{listener.getsockname()[1]})); s.sendall(b'R'); s.recv(1); s.close()"
+            script = "import subprocess,sys; subprocess.Popen([sys.executable,'-c'," + repr(descendant) + "])"
+            process = subprocess.Popen([sys.executable, "-B", str(TOOL), "run", task["task"],
+                                        "--session", "test-session", "--", sys.executable, "-c", script],
+                                       cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                connection, _ = listener.accept()
+                with connection:
+                    connection.settimeout(10)
+                    self.assertEqual(connection.recv(1), b"R")
+                    # The descendant still owns the pipe. Runner completion must not depend on its exit.
+                    _, errors = process.communicate(timeout=10)
+                    self.assertEqual(process.returncode, 125, errors)
+                    connection.sendall(b"X")
+                    self.assertEqual(connection.recv(1), b"")
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=10)
+        record = next((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").glob("*/result.json"))
+        evidence = json.loads(record.read_text())
+        self.assertEqual(evidence["state"], "capture-incomplete")
+        self.assertEqual(evidence["exit_code"], 0)
+        self.cli("run", task["task"], "--session", "test-session", "--", sys.executable, "-c", "pass")
+
+    def test_foreign_metadata_and_operation_lock_refuse(self):
+        task = self.start()
+        lock = self.root / ".keld-work" / "worktrees" / (task["task"] + ".lock")
+        lock.write_text("another owner", encoding="utf-8")
+        self.cli("run", task["task"], "--session", "test-session", "--", sys.executable, "-c", "pass", ok=False)
+        self.assertEqual(lock.read_text(), "another owner")
+
+    def test_foreign_record_cannot_redirect_a_run(self):
+        task = self.start()
+        record = self.root / ".keld-work" / "worktrees" / (task["task"] + ".json")
+        content = json.loads(record.read_text())
+        content["path"] = "../outside"
+        record.write_text(json.dumps(content), encoding="utf-8")
+        self.cli("run", task["task"], "--session", "test-session", "--", sys.executable, "-c", "pass", ok=False)
+        self.assertFalse((self.root / ".keld-work" / "sessions").exists())
+
+    def test_reference_commands_cannot_duplicate_a_linked_checkout(self):
+        self.assertEqual(Path(self.cli("reference-root").stdout.strip()), self.root)
+        task = self.start()
+        self.cli("reference-root", cwd=task["path"], ok=False)
+        self.cli("reference-root", ok=False)
+        self.assertFalse((Path(task["path"]) / "competitors").exists())
+        self.assertFalse((Path(task["path"]) / "docs" / "research").exists())
+
+    def test_primary_reference_operation_accepts_only_reconciled_owning_session(self):
+        task = self.start()
+        own = dict(os.environ, KELD_WORK_SESSION="test-session")
+        self.assertEqual(Path(self.cli("reference-root", env=own).stdout.strip()), self.root)
+        self.cli("reference-root", env=dict(own, KELD_WORK_SESSION="other"), ok=False)
+        lock = self.root / ".keld-work" / "worktrees" / (task["task"] + ".lock")
+        lock.write_text("active operation", encoding="utf-8")
+        self.cli("reference-root", env=own, ok=False)
+        lock.unlink()
+        self.cli("start", "kel-245", "other", "--session", "another-session")
+        self.cli("reference-root", env=own, ok=False)
+
+    def test_spawn_failure_is_recorded_and_lock_is_released(self):
+        task = self.start()
+        result = self.cli("run", task["task"], "--session", "test-session", "--", "nonexistent-keld-workspace-executable", ok=False)
+        record = next((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").glob("*/result.json"))
+        evidence = json.loads(record.read_text())
+        self.assertEqual(evidence["state"], "spawn-failed")
+        self.assertEqual(evidence["runner_exit_code"], result.returncode)
+        self.assertFalse(any((self.root / ".keld-work" / "worktrees").glob("*.lock")))
+
+    def test_run_uses_one_workspace_from_linked_cwd(self):
+        task = self.start()
+        self.cli("run", task["task"], "--session", "test-session", "--",
+                 sys.executable, "-c", "print('linked')", cwd=task["path"])
+        self.assertFalse((Path(task["path"]) / ".keld-work").exists())
+        self.assertEqual(len(list((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").iterdir())), 1)
+
+    def test_finish_requires_real_closeout_and_clean_preview_is_read_only(self):
+        task = self.start()
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(self.root / "missing.json"), ok=False)
+        receipt = self.closeout(task)
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(receipt))
+        scratch = self.root / ".keld-work" / "sessions" / "test-session" / "scratch" / "old-run"
+        scratch.mkdir(parents=True)
+        (scratch / "remove.txt").write_text("scratch", encoding="utf-8")
+        evidence = self.root / ".keld-work" / "sessions" / "test-session" / "evidence" / "keep"
+        evidence.mkdir(parents=True)
+        (evidence / "proof.txt").write_text("evidence", encoding="utf-8")
+        before = {str(item): item.read_bytes() for item in self.root.rglob("*") if item.is_file()}
+        preview = json.loads(self.cli("clean", task["task"], "--session", "test-session").stdout)
+        self.assertFalse(preview["applied"])
+        self.assertEqual(preview["targets"], [str(scratch.parent)])
+        self.assertEqual(before, {str(item): item.read_bytes() for item in self.root.rglob("*") if item.is_file()})
+        self.cli("clean", task["task"], "--session", "test-session", "--apply", ok=False)
+        self.cli("clean", task["task"], "--session", "test-session", "--apply",
+                 "--receipt", str(self.cleanup_receipt(task, scratch.parent)))
+        self.assertFalse(scratch.parent.exists())
+        self.assertTrue((evidence / "proof.txt").exists())
+        self.assertTrue(Path(task["path"]).exists())
+
+    def run_scratch(self, task, session="test-session"):
+        result = self.cli("run", task["task"], "--session", session, "--",
+                          sys.executable, "-c", "import os; print(os.environ['TMPDIR'])")
+        return Path(result.stdout.strip())
+
+    def test_short_scratch_cleanup_preserves_other_sessions_unknown_dirs_and_evidence(self):
+        task = self.start()
+        scratch = self.run_scratch(task)
+        other = json.loads(self.cli("start", "kel-245", "other", "--session", "other-session").stdout)
+        other_scratch = self.run_scratch(other, "other-session")
+        unknown = self.root / ".keld-work" / "tmp" / "unknown"
+        unknown.mkdir()
+        for path in [scratch, other_scratch, unknown]:
+            (path / "keep.txt").write_text("owned", encoding="utf-8")
+        owners = self.root / ".keld-work" / "sessions" / "test-session" / "scratch-owners"
+        owner_record = owners / (scratch.name + ".json")
+        owner_bytes = owner_record.read_bytes()
+        self.assertNotEqual(scratch, other_scratch)
+        release = self.closeout(task)
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(release))
+        preview = json.loads(self.cli("clean", task["task"], "--session", "test-session").stdout)
+        self.assertEqual(preview["targets"], [str(scratch)])
+        cleanup = self.cleanup_receipt(task, scratch)
+        value = json.loads(cleanup.read_text())
+        value["resources"].append({"id": "primary", "path": str(self.root), "status": "retained",
+                                   "reason": "Retain the primary directory, not every disposable descendant"})
+        cleanup.write_text(json.dumps(value), encoding="utf-8")
+        self.cli("clean", task["task"], "--session", "test-session", "--apply", "--receipt", str(cleanup))
+        self.assertFalse(scratch.exists())
+        self.assertTrue((other_scratch / "keep.txt").is_file())
+        self.assertTrue((unknown / "keep.txt").is_file())
+        self.assertEqual(owner_record.read_bytes(), owner_bytes)
+        self.assertEqual(json.loads(self.cli("clean", task["task"], "--session", "test-session").stdout)["targets"], [])
+
+    def test_short_scratch_replacement_and_forged_owner_are_refused(self):
+        task = self.start()
+        scratch = self.run_scratch(task)
+        moved = scratch.with_name("preserved")
+        scratch.rename(moved)
+        scratch.mkdir()
+        sentinel = scratch / "keep.txt"
+        sentinel.write_text("replacement", encoding="utf-8")
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(self.closeout(task)))
+        refused = self.cli("clean", task["task"], "--session", "test-session", ok=False)
+        self.assertIn("Scratch identity changed", refused.stderr)
+        self.assertEqual(sentinel.read_text(), "replacement")
+        sentinel.unlink()
+        scratch.rmdir()
+        moved.rename(scratch)
+        record = self.root / ".keld-work" / "sessions" / "test-session" / "scratch-owners" / (scratch.name + ".json")
+        value = json.loads(record.read_text())
+        for key, bad in [("session", "other-session"), ("token", "../outside")]:
+            record.write_text(json.dumps(dict(value, **{key: bad})), encoding="utf-8")
+            refused = self.cli("clean", task["task"], "--session", "test-session", ok=False)
+            self.assertIn("Invalid scratch ownership", refused.stderr)
+            self.assertTrue(scratch.exists())
+        record.write_text(json.dumps(value), encoding="utf-8")
+
+    def test_clean_preserves_evidence_of_every_released_task_in_session(self):
+        self.assert_released_artifact_preserved("hash")
+
+    def test_clean_preserves_receipt_of_another_released_task(self):
+        self.assert_released_artifact_preserved("receipt")
+
+    def test_clean_preserves_retained_file_of_another_released_task(self):
+        self.assert_released_artifact_preserved("file")
+
+    def test_clean_preserves_retained_directory_of_another_released_task(self):
+        self.assert_released_artifact_preserved("directory")
+
+    def retain_artifact_in_scratch(self, receipt, scratch, kind):
+        """Create a receipt-owned input; native deletion and the validator are the oracles."""
+        value = json.loads(receipt.read_text())
+        artifact = scratch / ("retained-" + kind)
+        if kind == "receipt":
+            receipt = artifact
+        elif kind == "hash":
+            artifact.write_text("retain hashed evidence", encoding="utf-8")
+            value["findings_review"].append(self.proof(artifact))
+        else:
+            if kind == "directory":
+                artifact.mkdir()
+            else:
+                artifact.write_text("retain declared resource", encoding="utf-8")
+            value["resources"].append({"id": "artifact", "path": str(artifact), "status": "retained",
+                                       "reason": "Keep this resource after cleanup"})
+        receipt.write_text(json.dumps(value), encoding="utf-8")
+        return receipt, artifact
+
+    def assert_released_artifact_preserved(self, kind):
+        first = self.start()
+        second = json.loads(self.cli("start", "kel-245", "second", "--session", "test-session").stdout)
+        scratch = self.run_scratch(second)
+        sentinel = scratch / "disposable.txt"
+        sentinel.write_text("no partial deletion", encoding="utf-8")
+        first_receipt = self.closeout(first)
+        value = json.loads(first_receipt.read_text())
+        baseline = Path(value["baseline"]["path"])
+        first_baseline = baseline.with_name("first-baseline.json")
+        first_baseline.write_bytes(baseline.read_bytes())
+        value["baseline"] = self.proof(first_baseline)
+        saved_first = first_receipt.with_name("first-release.json")
+        saved_first.write_text(json.dumps(value), encoding="utf-8")
+        second_receipt, artifact = self.retain_artifact_in_scratch(self.closeout(second), scratch, kind)
+        self.cli("finish", first["task"], "--session", "test-session", "--receipt", str(saved_first))
+        self.cli("finish", second["task"], "--session", "test-session", "--receipt", str(second_receipt))
+        self.assertEqual(workspace.session_closeout.check(second_receipt), "complete")
+        refused = self.cli("clean", first["task"], "--session", "test-session", "--apply",
+                           "--receipt", str(self.cleanup_receipt(first, scratch, saved_first)), ok=False)
+        self.assertIn("Scratch is referenced", refused.stderr)
+        self.assertTrue(artifact.exists())
+        self.assertEqual(sentinel.read_text(), "no partial deletion")
+        self.assertEqual(workspace.session_closeout.check(saved_first), "complete")
+        self.assertEqual(workspace.session_closeout.check(second_receipt), "complete")
+
+    def test_clean_preserves_prepared_cleanup_receipt(self):
+        self.assert_prepared_artifact_preserved("receipt")
+
+    def test_clean_preserves_prepared_cleanup_evidence(self):
+        self.assert_prepared_artifact_preserved("hash")
+
+    def test_clean_preserves_prepared_cleanup_retained_file(self):
+        self.assert_prepared_artifact_preserved("file")
+
+    def test_clean_preserves_prepared_cleanup_retained_directory(self):
+        self.assert_prepared_artifact_preserved("directory")
+
+    def assert_prepared_artifact_preserved(self, kind):
+        task = self.start()
+        scratch = self.run_scratch(task)
+        sentinel = scratch / "disposable.txt"
+        sentinel.write_text("no partial deletion", encoding="utf-8")
+        release = self.closeout(task)
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(release))
+        cleanup, artifact = self.retain_artifact_in_scratch(self.cleanup_receipt(task, scratch, release), scratch, kind)
+        receipt_bytes = cleanup.read_bytes()
+        refused = self.cli("clean", task["task"], "--session", "test-session", "--apply",
+                           "--receipt", str(cleanup), ok=False)
+        self.assertIn("Scratch is referenced", refused.stderr)
+        self.assertTrue(artifact.exists())
+        self.assertEqual(cleanup.read_bytes(), receipt_bytes)
+        self.assertEqual(sentinel.read_text(), "no partial deletion")
+        self.assertEqual(workspace.session_closeout.check(release), "complete")
+
+    def test_short_scratch_referenced_evidence_is_not_deleted(self):
+        task = self.start()
+        scratch = self.run_scratch(task)
+        proof = scratch / "proof.txt"
+        proof.write_text("retained", encoding="utf-8")
+        receipt = self.closeout(task, proof)
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(receipt))
+        refused = self.cli("clean", task["task"], "--session", "test-session", ok=False)
+        self.assertIn("Scratch is referenced", refused.stderr)
+        self.assertEqual(proof.read_text(), "retained")
+
+    def test_reference_run_reuses_short_scratch_and_records_session(self):
+        task = self.start()
+        result = self.cli("reference-run", "--", sys.executable, "-c",
+                          "import os; print(os.environ['TMPDIR'])",
+                          env=dict(os.environ, KELD_WORK_SESSION="test-session"))
+        scratch = Path(result.stdout.strip())
+        self.assertEqual(scratch.parent, self.root / ".keld-work" / "tmp")
+        self.assertEqual(workspace.session_scratch(workspace.context(self.root), "test-session"), [scratch])
+        second = self.run_scratch(task)
+        self.assertNotEqual(scratch, second)
+
+    def test_finish_and_clean_refuse_dirty_or_hostile_targets(self):
+        task = self.start()
+        (Path(task["path"]) / "untracked.txt").write_text("preserve", encoding="utf-8")
+        receipt = self.closeout(task)
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(receipt), ok=False)
+        (Path(task["path"]) / "untracked.txt").unlink()
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(receipt))
+        scratch = self.root / ".keld-work" / "sessions" / "test-session" / "scratch"
+        outside = self.root.parent / "outside-sentinel"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("keep", encoding="utf-8")
+        scratch.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            scratch.symlink_to(outside, target_is_directory=True)
+        except OSError as error:
+            self.skipTest("OS did not permit test symlink: " + str(error))
+        self.cli("clean", task["task"], "--session", "test-session", "--apply", "--receipt", str(self.cleanup_receipt(task, scratch)), ok=False)
+        self.assertEqual((outside / "keep.txt").read_text(), "keep")
+
+    def test_clean_refuses_scratch_referenced_by_its_closeout(self):
+        task = self.start()
+        scratch = self.root / ".keld-work" / "sessions" / "test-session" / "scratch"
+        scratch.mkdir(parents=True)
+        proof = scratch / "referenced-proof.txt"
+        proof.write_text("must survive", encoding="utf-8")
+        closeout = self.closeout(task, proof)
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(closeout))
+        self.cli("clean", task["task"], "--session", "test-session", "--apply", "--receipt", str(self.cleanup_receipt(task, scratch, closeout)), ok=False)
+        self.assertEqual(proof.read_text(), "must survive")
+
+    def test_finish_uses_content_equivalence_after_squash_merge(self):
+        task = self.start()
+        (self.root / "landed.txt").write_text("same landed content", encoding="utf-8")
+        self.git("add", "landed.txt")
+        self.git("commit", "-m", "squashed landing")
+        landed = self.git("rev-parse", "HEAD").stdout.strip()
+        self.git("update-ref", "refs/remotes/origin/main", landed)
+        (Path(task["path"]) / "landed.txt").write_text("same landed content", encoding="utf-8")
+        self.git("add", "landed.txt", cwd=task["path"])
+        self.git("commit", "-m", "original feature commit", cwd=task["path"])
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(self.closeout(task)))
+
+    def test_clean_refuses_session_shared_by_an_active_task(self):
+        task = self.start()
+        self.cli("start", "kel-246", "other", "--session", "test-session")
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(self.closeout(task)))
+        marker = self.root / ".keld-work" / "sessions" / "test-session" / "scratch" / "active-marker.txt"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("must survive", encoding="utf-8")
+        self.cli("clean", task["task"], "--session", "test-session", "--apply", ok=False)
+        self.assertEqual(marker.read_text(), "must survive")
+
+    def test_cleanup_refuses_mount_at_the_scratch_root(self):
+        root = self.root / ".keld-work" / "sessions" / "test-session" / "scratch"
+        root.mkdir(parents=True)
+        with mock.patch.object(workspace.os.path, "ismount", return_value=True):
+            with self.assertRaisesRegex(workspace.WorkspaceError, "mount"):
+                workspace.safe_disposable_tree(root)
+
+    def test_partial_cleanup_records_removed_entries_and_failure(self):
+        task = self.start()
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(self.closeout(task)))
+        scratch = self.root / ".keld-work" / "sessions" / "test-session" / "scratch"
+        scratch.mkdir(parents=True)
+        (scratch / "a.txt").write_text("a", encoding="utf-8")
+        (scratch / "b.txt").write_text("b", encoding="utf-8")
+        context = workspace.context(self.root)
+        original = workspace.remove_disposable_tree
+        def fail_after_first(nodes, recorded):
+            original([next(node for node in nodes if not node[3])], recorded)
+            raise workspace.WorkspaceError("injected removal fault")
+        with mock.patch.object(workspace, "remove_disposable_tree", fail_after_first):
+            with self.assertRaisesRegex(workspace.WorkspaceError, "injected removal fault"):
+                workspace.clean(context, task["task"], "test-session", True, self.cleanup_receipt(task, scratch))
+        result = next((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").glob("clean-*/result.json"))
+        value = json.loads(result.read_text())
+        self.assertEqual(value["state"], "failed")
+        self.assertEqual(len(value["removed"]), 1)
+        self.assertIn(value["removed"][0], {str(scratch / "a.txt"), str(scratch / "b.txt")})
+
+    def test_retained_legacy_scratch_is_refused_before_deletion(self):
+        task = self.start()
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(self.closeout(task)))
+        scratch = self.root / ".keld-work" / "sessions" / "test-session" / "scratch"
+        scratch.mkdir(parents=True)
+        (scratch / "remove.txt").write_text("scratch", encoding="utf-8")
+        receipt = self.cleanup_receipt(task, scratch)
+        value = json.loads(receipt.read_text())
+        value["resources"][0]["status"] = "retained"
+        receipt.write_text(json.dumps(value), encoding="utf-8")
+        refused = self.cli("clean", task["task"], "--session", "test-session", "--apply", "--receipt", str(receipt), ok=False)
+        self.assertIn("Scratch is referenced", refused.stderr)
+        self.assertEqual((scratch / "remove.txt").read_text(), "scratch")
+        self.assertEqual(list((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").glob("clean-*")), [])
+
+    def test_invalid_post_cleanup_receipt_is_recorded_as_failure(self):
+        task = self.start()
+        scratch = self.run_scratch(task)
+        release = self.closeout(task)
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(release))
+        receipt = self.cleanup_receipt(task, scratch, release)
+        proof = self.root.parent / "current-only-proof.txt"
+        proof.write_text("available before cleanup", encoding="utf-8")
+        value = json.loads(receipt.read_text())
+        value["findings_review"].append(self.proof(proof))
+        receipt.write_text(json.dumps(value), encoding="utf-8")
+        original = workspace.remove_disposable_tree
+        def lose_proof_after_removal(nodes, recorded):
+            original(nodes, recorded)
+            # An external loss after admission must still fail final validation and be journaled.
+            proof.unlink()
+        with mock.patch.object(workspace, "remove_disposable_tree", lose_proof_after_removal):
+            with self.assertRaisesRegex(workspace.session_closeout.Invalid, "evidence file missing"):
+                workspace.clean(workspace.context(self.root), task["task"], "test-session", True, receipt)
+        self.assertFalse(scratch.exists())
+        self.assertFalse(proof.exists())
+        self.assertEqual(workspace.session_closeout.check(release), "complete")
+        result = next((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").glob("clean-*/result.json"))
+        self.assertEqual(json.loads(result.read_text())["state"], "failed")
+
+    def test_empty_apply_still_validates_and_records_its_receipt(self):
+        task = self.start()
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(self.closeout(task)))
+        scratch = self.root / ".keld-work" / "sessions" / "test-session" / "scratch"
+        receipt = self.cleanup_receipt(task, scratch)
+        self.cli("clean", task["task"], "--session", "test-session", "--apply", "--receipt", str(receipt))
+        result = next((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").glob("clean-*/result.json"))
+        self.assertEqual(json.loads(result.read_text())["state"], "complete")
+
+
+if __name__ == "__main__":
+    unittest.main()

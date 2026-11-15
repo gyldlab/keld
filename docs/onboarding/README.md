@@ -11,7 +11,7 @@ wrapper or packaged application release to install yet.
 - Git and Rust installed through rustup. The checked-in
   [rust-toolchain.toml](../../rust-toolchain.toml) selects the compiler and components;
   Cargo uses the committed lockfile in the commands below.
-- Bun on `PATH`. **Use CI-pinned Bun 1.4.2 for `just ci` and the full workspace test
+- Bun on `PATH`. **Use CI-pinned Bun 1.4.4 for `just ci` and the full workspace test
   gate.** The [Linux strict fixture](../../crates/keld-runtime/tests/linux_strict_boundary.rs)
   asserts that exact version. Record `bun --version` and `bun --revision` before a
   run. Some earlier demo observations used Bun 1.4.2; the newer
@@ -26,9 +26,15 @@ wrapper or packaged application release to install yet.
   |---|---|
   | macOS | Apple command-line developer tools (`xcode-select --install` if absent); WKWebView is supplied by macOS |
   | Windows | Rust's MSVC build tools and the WebView2 runtime; use an interactive PowerShell session for the source-build/Ctrl-C path; stock native Close/cleanup/relaunch is qualified only for the [Windows 11 x64 capture](https://github.com/gyldlab/keld/issues/174#issuecomment-5644140405) |
-  | Ubuntu/Debian x86_64, Wayland | GTK3/WebKitGTK 4.1 development libraries, `pkg-config`, a C compiler, and trusted checkout/strict-launch prerequisites below; native Close/cleanup/relaunch qualified on Ubuntu 26.04.1 / GNOME Wayland; X11 product runs and other distributions remain unverified |
+  | Ubuntu/Debian x86_64 | GTK3/WebKitGTK 4.1 development libraries, `pkg-config`, a C compiler, and trusted checkout/strict-launch prerequisites below; native Close/cleanup/relaunch is qualified on Ubuntu 26.04.1 / GNOME Wayland. Bounded shipping-product evidence also exercises X11 through the same host's Mutter Xwayland server, but X11/native Xorg qualification remains open in the canonical product-status ledger |
+  | Fedora 43 x86_64 — bounded userland/control evidence | `gtk3-devel`, `webkit2gtk4.1-devel`, `pkgconf-pkg-config`, a C/C++ build toolchain, and `bubblewrap`; a pinned Fedora 43 userland produced a locked release host and a Fedora-owned X11/Xvfb+Fluxbox resize/minimize/restore/close control. The [public receipt bundle](https://github.com/gyldlab/keld-benches/tree/f997303d0da6dd727110b305a4408294f3eccee8/linux/keld/fedora43-acceptance) binds the package/toolchain/runtime evidence. This is **not** a bare-metal Fedora desktop qualification |
+  | Arch Linux x86_64 — build portability only | `gtk3`, `webkit2gtk-4.1`, `libsoup3`, `pkgconf`, and `bubblewrap`; a pinned Arch userland produced a locked release host with no unresolved dynamic links. The [public portability receipt](https://github.com/gyldlab/keld-benches/tree/53253d9fcd0eed8d91b015d1fcbfbc752dbc7552/linux/keld/arch-build-portability) binds the package/toolchain/dynamic-link evidence. No Arch desktop runtime acceptance is claimed |
 
 The Ubuntu build packages are recorded in the [CI workflow](../../.github/workflows/ci.yml).
+These non-Debian rows are deliberately narrower than release support: they establish
+package mapping/build portability (plus the Fedora-owned X11 control), not a physical
+Fedora/Arch login, compositor, kernel, containment-policy, or end-to-end `keld dev`
+qualification.
 A desktop session and the required Linux containment primitives are separate from
 compilation. If `dev` reports an unavailable security primitive, preserve its diagnostic
 and report the unsupported environment instead of disabling the check.
@@ -77,8 +83,10 @@ Linux also needs the sibling `keld-role-launcher` binary built by `keld-host`.
 Building only `keld-cli` is insufficient in a fresh checkout. If using a custom Cargo
 target directory, substitute that directory for `target` in the following paths.
 
-On macOS or Ubuntu/Debian x86_64 Wayland, with the prerequisites above, in the
-repository root:
+On macOS or the qualified Ubuntu 26.04.1 x86_64 GNOME Wayland session with the
+prerequisites above, in the repository root. X11 applications through Mutter Xwayland
+have separate bounded shipping-product evidence, but that does not qualify native Xorg
+or widen the canonical Linux product-status row:
 
 ```bash
 ./target/debug/keld create hello-keld
@@ -184,14 +192,25 @@ the same output directory. A successful `doctor` alone is not a desktop acceptan
 Start with [CONTRIBUTING.md](../../CONTRIBUTING.md). Install the verification tools
 listed in the [development guide](05-development-guide.md#1-prerequisites), including
 Python and a running Docker-compatible engine. The exact gate inventory belongs to the
-[justfile](../../justfile). Put the CI-pinned Bun 1.4.2 binary on this shell's `PATH`
+[justfile](../../justfile). Put the CI-pinned Bun 1.4.4 binary on this shell's `PATH`
 without replacing another project's global runtime, then verify the selected version:
 
 ```bash
-bun --version   # must report 1.4.2 for the full gate
+bun --version   # must report 1.4.4 for the full gate
 bun --revision
 just ci
 ```
+
+`just js-fmt` formats JavaScript/TypeScript (including nonignored untracked files),
+using root `bunfig.toml` and Bun's native ignore rules, and refreshes generated bindings
+and transport stamps through their generator. `just js-fmt-check` checks without
+writing; it is included in `just ci` and the hosted hygiene check. `just fmt` also
+normalizes Rust first, then runs JS/TS generation, native formatting and restamping.
+
+New `keld create` applications include `bun run format` and `bun run format:check`
+for their JavaScript/TypeScript, with no formatter package to install. Use native
+`bun fmt` directly for other supported file kinds. Native lint remains tracked on
+[issue 1091](https://github.com/gyldlab/keld/issues/1091) until Bun ships it in stable.
 
 On Windows, run the shell-based full gate from Git Bash or another environment with
 the required GNU tools. Keep the interactive PowerShell session for the separate

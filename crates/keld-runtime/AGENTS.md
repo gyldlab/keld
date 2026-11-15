@@ -1,25 +1,8 @@
 # keld-runtime invariants
 
-Extends root `AGENTS.md`; owns process boundaries.
-
-- Production `unsafe` is limited to `windows_job.rs`, `windows_lpac.rs`,
-  `linux_strict.rs` pre-exec FD isolation, and
-  `lib.rs::peek_pipe_available_handle`'s read-only `PeekNamedPipe` byte query.
-  Each MUST use narrow bindings, deny `unsafe_op_in_unsafe_fn`, and carry
-  local `// SAFETY:` proofs. New paths require review + root/nested updates;
-  tests MAY use unsafe only for independent OS observation and cleanup.
-- Linux strict MUST use unprivileged Bubblewrap, fail closed on setup,
-  and expose only stdio/seccomp FDs. Pre-exec MAY duplicate them,
-  apply `close_range(..., CLOSE_RANGE_CLOEXEC)`, and return an OS error;
-  no allocation/general Rust after fork. Real tests MUST separately prove
-  namespace/mount/Landlock denial, caps, no-new-privs, seccomp, FDs, descendants,
-  host death, negative controls, and relaunch.
-- The host Job is supervisor cleanup, never authority containment. It MUST be
-  unnamed, non-inheritable, non-breakaway, installed before children, and proved
-  by host-only death of a real descendant tree.
-- LPAC is KEL-78's Windows authority boundary. Strict spawn MUST use zero
-  capabilities, All Application Packages opt-out, reviewed ACLs, exact env, and
-  private duplicates in the handle list. Caller-owned flags MUST NOT change;
-  resume follows token/raw-handle evidence.
-- Windows changes MUST run on real Windows with hostile probes/negative control.
-  Job, LPAC, protocol, and limit verdicts stay separate.
+- Unsafe paths: `windows_job.rs` + only production children `windows_job/{updater_helper,process_peer,claimant_identity,process_id_snapshot,host_death_census}.rs`, `windows_lpac.rs`, Linux strict pre-exec, `lib.rs::peek_pipe_available_handle`; SAFETY + unsafe-op denial. KEL-270 whitelist (those 6 files): DuplicateHandle,GetHandleInformation,SetHandleInformation,GetCurrentProcess,CreateJobObjectW,OpenProcess,OpenProcessToken,GetProcessId,GetProcessTimes,QueryFullProcessImageNameW,GetStdHandle,GetFileType,ReadFile,PeekNamedPipe,CreateWaitableTimerW,SetWaitableTimer,WaitForSingleObject,TerminateProcess,TerminateJobObject,CreateIoCompletionPort,GetQueuedCompletionStatus,AssignProcessToJobObject,IsProcessInJob,SetInformationJobObject,QueryInformationJobObject,CompareObjectHandles,SetDefaultDllDirectories,CoInitializeEx,ShellExecuteExW,CoUninitialize. Scope: unnamed attempt Job create; exact Job transfer/query/termination; child assign+membership; completion association/notices+census; process identity/liveness; claimant==retained launch object; bounded pipe/timer waits; System32-only DLL search; own-thread STA runas of canonical helper .exe, 1 arg, hProcess kept; S6b3: host-death handle kept (ManuallyDrop); exit census: own-Job PID list, per-member open(QUERY_LIMITED|TERMINATE|SYNCHRONIZE)+IsProcessInJob(H,A), terminate+wait non-family only; KILL_ON_JOB_CLOSE strip, 0 read-back: exact attempt Job (release_family), own Job after census (release_for_exit).
+- macOS Guardian unsafe paths (production only; SAFETY + unsafe-op denial): `macos_guardian/spawn_admission.rs` fixed-stack pre-exec close/getpid/write/poll/read/_exit + reporter poll; `macos_guardian/process_group.rs` zeroed read-only proc_pidinfo(PROC_PIDTBSDINFO). No Bun before authenticated host-retention ACK; fail closed; never signal an unproven PID/group; SIGSTOP pre-exec and detached descendants are uncontained. [Proofs](../../docs/architecture/06-runtime-and-tooling.md#10-platform-scoped-runtime-unsafe-contracts).
+- Linux strict: unprivileged Bubblewrap; fail closed, stdio/seccomp FDs only. Pre-exec MAY dup + mark CLOEXEC; no Rust/alloc after fork. Native acceptance: `.agents/testing.md`.
+- Windows Job: unnamed/noninherit/nonbreakaway before children; launcher retains outer Job. Keeper QUERY/TERMINATE exact attempt only; no host/Bun/assign changes; the only limit change is the S6b3 strip. EOF: bounded wait then terminate. Delete stage after host exit + `ActiveProcesses == 0`; Jobs only clean up.
+- LPAC: zero capabilities, All Packages opt-out, reviewed ACL, exact env/handle list; preserve caller flags; resume after token/raw-handle proof. Same-token candidate: suspended, no attrs/inherit, Job-assigned pre-resume.
+- Windows tests: hostile probes; keep Job/LPAC/protocol/limit results separate.

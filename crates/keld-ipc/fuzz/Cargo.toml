@@ -20,11 +20,24 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-keld-ipc = { path = ".." }
+# `fuzzing` exposes the crate-private keld-attempt codec's raw-byte hook.
+keld-ipc = { path = "..", features = ["fuzzing"] }
 
 [[bin]]
 name = "raw_receive"
 path = "fuzz_targets/raw_receive.rs"
+test = false
+doc = false
+bench = false
+
+# KEL-53 §6 S4b: the keld-attempt claim and health record codec (raw bytes at
+# every read position). Every crash- or invariant-finding input a campaign
+# retains is minimized into a named test in
+# crates/keld-ipc/src/attempt/records/tests.rs (none so far); the committed
+# coverage corpus only seeds future campaigns.
+[[bin]]
+name = "attempt_records"
+path = "fuzz_targets/attempt_records.rs"
 test = false
 doc = false
 bench = false

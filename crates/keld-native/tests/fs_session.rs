@@ -3,14 +3,17 @@
 #![allow(clippy::expect_used)] // extra test crate: expect is the assertion oracle
 
 use std::fs;
+use std::sync::atomic::AtomicBool;
 use std::thread;
 
-use keld_guard::{PermissionsManifest, Principal, parse_manifest};
+use keld_guard::Principal;
+use keld_guard::verified_manifest::{VerifiedManifest, load_verified_manifest};
 use keld_ipc::codec::decode;
 use keld_ipc::frame::{CorrelationId, FrameKind};
 use keld_ipc::link::{handshake_client, read_frame, write_frame};
 use keld_ipc::{CallError, IpcError, SessionToken};
-use keld_native::fs::{FS_CHANNEL, FsRequest, FsResponse, serve_fs_session};
+use keld_native::fs::{FS_CHANNEL, FsBroker, FsRequest, FsResponse, serve_fs_session};
+use sha2::{Digest, Sha256};
 
 #[cfg(unix)]
 type Stream = std::os::unix::net::UnixStream;
@@ -55,12 +58,22 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
     dir
 }
 
-fn manifest_for(dir: &std::path::Path) -> PermissionsManifest {
-    parse_manifest(&format!(
-        r#"{{"app":{{"fs":{{"read":["{scope}/**"],"write":["{scope}/**"]}}}}}}"#,
-        scope = scope_path(dir)
-    ))
-    .expect("manifest")
+fn verified_manifest(dir: &std::path::Path, text: &str) -> VerifiedManifest {
+    let path = dir.join("keld.permissions.jsonc");
+    fs::write(&path, text).expect("write manifest");
+    let digest: [u8; 32] = Sha256::digest(text.as_bytes()).into();
+    load_verified_manifest(fs::File::open(&path).expect("open manifest"), path, digest)
+        .expect("verified manifest")
+}
+
+fn manifest_for(dir: &std::path::Path) -> VerifiedManifest {
+    verified_manifest(
+        dir,
+        &format!(
+            r#"{{"app":{{"fs":{{"read":["{scope}/**"],"write":["{scope}/**"]}}}}}}"#,
+            scope = scope_path(dir)
+        ),
+    )
 }
 
 fn call_fs(
@@ -94,22 +107,28 @@ fn call_fs(
 /// zero-effect oracle, independent of the guard and of the reply path.
 #[test]
 fn hostile_authenticated_calls_close_with_005_and_write_nothing() {
-    let cases: [(&str, u16, u16, u32); 4] = [
-        ("corr zero", 0, FS_CHANNEL.0, 0),
-        ("flag raw", keld_ipc::frame::FLAG_RAW, FS_CHANNEL.0, 5),
-        ("unknown flag", 1 << 2, FS_CHANNEL.0, 5),
-        ("echo channel", 0, 1, 5),
+    let cases: [(&str, u16, keld_ipc::ChannelId, u32); 4] = [
+        ("corr zero", 0, FS_CHANNEL, 0),
+        ("flag raw", keld_ipc::frame::FLAG_RAW, FS_CHANNEL, 5),
+        ("unknown flag", 1 << 2, FS_CHANNEL, 5),
+        ("echo channel", 0, keld_ipc::ECHO_CHANNEL, 5),
     ];
     for (case, flags, channel, corr) in cases {
-        let dir = temp_dir(&format!(
-            "hostile-{}",
-            corr + u32::from(flags) + u32::from(channel)
-        ));
+        let dir = temp_dir(&format!("hostile-{}", case.replace(' ', "-")));
         let file = scope_path(&dir.join("must-not-exist.txt"));
         let manifest = manifest_for(&dir);
         let (mut client, mut server) = connected_pair();
         let handle = thread::spawn(move || {
-            serve_fs_session(&mut server, &test_token(), &manifest, Principal::AppProcess)
+            let broker = FsBroker::prepare(&manifest).expect("prepare broker");
+            let cancelled = AtomicBool::new(false);
+            serve_fs_session(
+                &mut server,
+                &test_token(),
+                &broker,
+                &manifest,
+                Principal::AppProcess,
+                &cancelled,
+            )
         });
 
         handshake_client(&mut client, &test_token()).expect("authenticate");
@@ -122,10 +141,14 @@ fn hostile_authenticated_calls_close_with_005_and_write_nothing() {
             &mut client,
             FrameKind::Call,
             flags,
-            keld_ipc::ChannelId(channel),
+            channel,
             CorrelationId(corr),
             &payload,
         );
+        // The receiver rejects an invalid header before consuming its payload.
+        // A fast peer close can interrupt the client write with any of these
+        // platform-specific disconnects. The server's typed 005 outcome and
+        // absent file below remain mandatory independent rejection evidence.
         if let Err(error) = write {
             assert!(
                 matches!(
@@ -135,6 +158,7 @@ fn hostile_authenticated_calls_close_with_005_and_write_nothing() {
                             source.kind(),
                             std::io::ErrorKind::BrokenPipe
                                 | std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::NotConnected
                         )
                 ),
                 "{case}: hostile header write failed unexpectedly: {error}"
@@ -165,7 +189,16 @@ fn allow_write_then_read_over_a_real_kipc_session() {
 
     let (mut client, mut server) = connected_pair();
     let handle = thread::spawn(move || {
-        serve_fs_session(&mut server, &test_token(), &manifest, Principal::AppProcess)
+        let broker = FsBroker::prepare(&manifest).expect("prepare broker");
+        let cancelled = AtomicBool::new(false);
+        serve_fs_session(
+            &mut server,
+            &test_token(),
+            &broker,
+            &manifest,
+            Principal::AppProcess,
+            &cancelled,
+        )
     });
 
     let write_result = call_fs(
@@ -204,7 +237,16 @@ fn allowed_read_of_a_missing_file_carries_the_broker_code_on_the_wire() {
 
     let (mut client, mut server) = connected_pair();
     let handle = thread::spawn(move || {
-        serve_fs_session(&mut server, &test_token(), &manifest, Principal::AppProcess)
+        let broker = FsBroker::prepare(&manifest).expect("prepare broker");
+        let cancelled = AtomicBool::new(false);
+        serve_fs_session(
+            &mut server,
+            &test_token(),
+            &broker,
+            &manifest,
+            Principal::AppProcess,
+            &cancelled,
+        )
     });
 
     let result = call_fs(&mut client, &FsRequest::Read { path: missing }).expect("call");
@@ -230,11 +272,20 @@ fn deny_over_the_wire_leaves_no_file_and_carries_the_typed_reason() {
     let dir = temp_dir("deny");
     let file = scope_path(&dir.join("notes.txt"));
     // Empty manifest: no fs.write grant at all.
-    let manifest = parse_manifest("{}").expect("empty manifest");
+    let manifest = verified_manifest(&dir, "{}");
 
     let (mut client, mut server) = connected_pair();
     let handle = thread::spawn(move || {
-        serve_fs_session(&mut server, &test_token(), &manifest, Principal::AppProcess)
+        let broker = FsBroker::prepare(&manifest).expect("prepare empty broker");
+        let cancelled = AtomicBool::new(false);
+        serve_fs_session(
+            &mut server,
+            &test_token(),
+            &broker,
+            &manifest,
+            Principal::AppProcess,
+            &cancelled,
+        )
     });
 
     let result = call_fs(
@@ -265,4 +316,171 @@ fn deny_over_the_wire_leaves_no_file_and_carries_the_typed_reason() {
         "denied write must never touch disk"
     );
     let _ = fs::remove_dir_all(&dir);
+}
+
+fn vector_hex(value: &str) -> Vec<u8> {
+    if value == "-" {
+        return Vec::new();
+    }
+    assert_eq!(value.len() % 2, 0, "even hex width");
+    (0..value.len())
+        .step_by(2)
+        .map(|offset| u8::from_str_radix(&value[offset..offset + 2], 16).expect("fixture hex"))
+        .collect()
+}
+
+fn assert_native_fs_semantic_vector(
+    name: &str,
+    direction: &str,
+    variant: &str,
+    path: &str,
+    content: &[u8],
+    wire: &[u8],
+) -> Result<(), &'static str> {
+    match (direction, variant) {
+        ("request", "Read") => {
+            let value = FsRequest::Read {
+                path: path.to_owned(),
+            };
+            assert_eq!(
+                keld_ipc::codec::encode(&value).expect("encode Read"),
+                wire,
+                "{name}"
+            );
+            let FsRequest::Read { path: decoded } = decode(wire).expect("decode Read") else {
+                return Err("request variant changed");
+            };
+            assert_eq!(decoded, path, "{name}");
+        }
+        ("request", "Write") => {
+            let value = FsRequest::Write {
+                path: path.to_owned(),
+                bytes: content.to_vec(),
+            };
+            assert_eq!(
+                keld_ipc::codec::encode(&value).expect("encode Write"),
+                wire,
+                "{name}"
+            );
+            let FsRequest::Write {
+                path: decoded,
+                bytes,
+            } = decode(wire).expect("decode Write")
+            else {
+                return Err("request variant changed");
+            };
+            assert_eq!(decoded, path, "{name}");
+            assert_eq!(bytes, content, "{name}");
+        }
+        ("response", "Read") => {
+            let value = FsResponse::Read {
+                bytes: content.to_vec(),
+            };
+            assert_eq!(
+                keld_ipc::codec::encode(&value).expect("encode Read result"),
+                wire,
+                "{name}"
+            );
+            let FsResponse::Read { bytes } = decode(wire).expect("decode Read result") else {
+                return Err("response variant changed");
+            };
+            assert_eq!(bytes, content, "{name}");
+        }
+        ("response", "Write") => {
+            assert_eq!(
+                keld_ipc::codec::encode(&FsResponse::Write).expect("encode Write result"),
+                wire,
+                "{name}"
+            );
+            assert!(
+                matches!(
+                    decode::<FsResponse>(wire).expect("decode Write result"),
+                    FsResponse::Write
+                ),
+                "{name}"
+            );
+        }
+        _ => return Err("unsupported semantic vector"),
+    }
+    Ok(())
+}
+
+/// KEL-140 AC2: immutable semantic bytes are shared with generated TypeScript.
+/// Variant or field reordering must fail this oracle rather than updating it.
+#[test]
+fn native_fs_payloads_match_shared_semantic_vectors_and_decode_strictly() {
+    let fixture = include_str!("fixtures/fs-payload-v0.tsv");
+    let mut names = Vec::new();
+    for row in fixture
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+    {
+        let fields: Vec<_> = row.split('\t').collect();
+        assert_eq!(fields.len(), 6, "{row}");
+        let [name, direction, variant, path, content, wire] = fields.as_slice() else {
+            panic!("six-column fixture");
+        };
+        names.push(*name);
+        let content = vector_hex(content);
+        let wire = vector_hex(wire);
+        assert_native_fs_semantic_vector(name, direction, variant, path, &content, &wire)
+            .expect(name);
+        for end in 0..wire.len() {
+            let rejected = if *direction == "request" {
+                decode::<FsRequest>(&wire[..end]).expect_err("truncated request")
+            } else {
+                decode::<FsResponse>(&wire[..end]).expect_err("truncated response")
+            };
+            assert!(
+                matches!(rejected, IpcError::Codec(_)),
+                "{name}, prefix {end}: {rejected}"
+            );
+        }
+        let mut trailing = wire;
+        trailing.push(0);
+        let rejected = if *direction == "request" {
+            decode::<FsRequest>(&trailing).expect_err("trailing request")
+        } else {
+            decode::<FsResponse>(&trailing).expect_err("trailing response")
+        };
+        assert!(matches!(rejected, IpcError::Codec(_)), "{name}: {rejected}");
+    }
+    assert_eq!(
+        names,
+        [
+            "read-path",
+            "read-unicode",
+            "write-empty",
+            "write-binary",
+            "write-unicode",
+            "write-long",
+            "read-empty-result",
+            "read-binary-result",
+            "read-unicode-result",
+            "read-long-result",
+            "write-result"
+        ]
+    );
+}
+
+#[test]
+fn native_fs_payload_codec_rejects_unknown_variants_and_malformed_lengths_or_utf8() {
+    for wire in [&[2][..], &[0x80][..], &[0xff, 0xff, 0xff, 0xff, 0x10][..]] {
+        assert!(
+            matches!(decode::<FsRequest>(wire), Err(IpcError::Codec(_))),
+            "request {wire:?}"
+        );
+        assert!(
+            matches!(decode::<FsResponse>(wire), Err(IpcError::Codec(_))),
+            "response {wire:?}"
+        );
+    }
+    assert!(
+        matches!(decode::<FsRequest>(&[0, 1, 0xff]), Err(IpcError::Codec(_))),
+        "invalid UTF-8 path"
+    );
+    assert!(
+        matches!(decode::<FsResponse>(&[0, 5, 0]), Err(IpcError::Codec(_))),
+        "claimed vector exceeds payload"
+    );
 }
