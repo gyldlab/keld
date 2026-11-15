@@ -1,7 +1,7 @@
 // Qualified Windows acceptance for the Rust production compiler binder.
 // Set KELD_COMPILER_TEST_REQUIRED=1 in the native acceptance run. That makes
 // missing tool paths/digests a hard failure instead of a skipped test.
-import { expect, test } from "bun:test";
+import { test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 
@@ -28,10 +28,12 @@ acceptanceTest(
     const missing = requiredVariables.filter(
       (name) => !process.env[name] || process.env[name]!.length === 0,
     );
-    expect(
-      missing,
-      "qualified acceptance must provide every pinned tool path and digest",
-    ).toEqual([]);
+    if (missing.length > 0) {
+      throw new Error(
+        "qualified acceptance must provide every pinned tool path and digest: " +
+          missing.join(", "),
+      );
+    }
 
     const result = spawnSync(
       process.env.CARGO ?? "cargo",
