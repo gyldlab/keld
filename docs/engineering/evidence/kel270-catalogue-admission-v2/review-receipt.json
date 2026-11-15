@@ -22,15 +22,15 @@
     "docs/engineering/evidence/kel270-catalogue-admission-v2/identity-validation.json": "70bd03deb5d287a97d8ec6044351f811a6fad42df467ff72545a3dc39c917e52",
     "docs/engineering/evidence/kel270-catalogue-admission-v2/identity-vectors.json": "400e007fc279f1895910aeeaaf5b3c78788656cc5982b6f49eeeee6fae3caf51",
     "docs/engineering/evidence/kel270-catalogue-admission-v2/metadata-golden.json": "e9c0eb71df1a8c6f62373a8977c20405afc54f83752a7da4b7f3e6e582a7abea",
-    "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py": "8d55714a03bf68d401c593d0c7471d47622462585152fe02308416418839b461",
+    "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py": "2c1c54977fd6bb7d03e491a2a721f14d34d4630fcaafd4bd79c7a256a19d4510",
     "docs/specs/kel270-catalogue-admission-v2/identity.md": "5634bd627985407710fd13e72fa8bde8345c26c88bf2890d3c1ea9b672561ece",
-    "docs/specs/kel270-catalogue-admission-v2/implementation.md": "05c0a2db3ddec8931f63c19d24b89e37f36047a8f745a97f89495e5a608851a6",
+    "docs/specs/kel270-catalogue-admission-v2/implementation.md": "01aa9b7df3c79273acb6ff82e26ea167a8479924798e7e784cb2b8e292b7534e",
     "docs/specs/kel270-catalogue-admission-v2/index.md": "2263de25d66c7262eff86f3a621a5630f419482def1dd5840ccbb2608d543520",
     "docs/specs/kel270-catalogue-admission-v2/integration.md": "10ea8844e3baa1a9799f2a7b4d76f2d394da6d23564bc9769aa038ab285b3a0d",
-    "docs/specs/kel270-catalogue-admission-v2/metadata.md": "aed578a676d0f821abd85892b2af2507640a231fce5887bf117da773653ce5bf",
-    "docs/specs/kel270-catalogue-admission-v2/qualification.md": "2e4dde16f80fb07afc648aff3fbedd742ba98b16023722711e7f54b3fe37c344",
+    "docs/specs/kel270-catalogue-admission-v2/metadata.md": "0cd13b1da317b7ee4049c23dd3d8f5f13b3f9a5dbdde658a97c52c955cdef80d",
+    "docs/specs/kel270-catalogue-admission-v2/qualification.md": "b2f35b1b9fff4eda907f65d717ebbe0171f0b6f23666001c162d37fe1a68846b",
     "docs/specs/kel270-catalogue-admission-v2/recovery.md": "2dea655af708f1b07d9fa71e37352493342bfae4da3c353523c321354a63dff0",
-    "docs/specs/kel270-catalogue-admission-v2/requirements.md": "972cb72982881b9bf526f7602c9841ce51b136fe59f27d9fa25d8c4e80d6187a",
+    "docs/specs/kel270-catalogue-admission-v2/requirements.md": "685c99908fe667c29e4cf96e750961946b23d20488ca9be9043285da60c3aad1",
     "docs/specs/kel270-catalogue-admission-v2/windows.md": "4bf869fb42468b7bdaa07c75367177f192df65495fd068119f7819b3b52748dc",
     "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_evidence_capacity.py": "470176962fd16c4918628c07e7571aa6140339826cda10ad129b27c0e8939779",
     "docs/engineering/evidence/kel270-catalogue-admission-v2/evidence-capacity-validation.json": "10ea1da408a256c7982dddab279009deccab0b0e1e23c84a3b8cfa67ab6eb83e"
@@ -49,7 +49,10 @@
     "Add expired-prepared successor retirement and current-root-versus-bootstrap continuity checks.",
     "Increase the transition evidence cap to 24 distinct objects / 1310720 bytes with 20 required positive references.",
     "Add synthetic nine-case evidence-capacity verification; all original 19 groups and 110 product cases remain unexecuted.",
-    "Reopen B-81 independent current-head review and recalculate all current publication file hashes without modifying historical R3 evidence."
+    "Reopen B-81 independent current-head review and recalculate all current publication file hashes without modifying historical R3 evidence.",
+    "Specify ordinary orphan next-generation retirement and safe operator refusal when state is unknown or protected.",
+    "Make T-82 a prerequisite of T-1/T-20, document verifier cryptography requirement, explicit UTF-8 outputs and exact pinned identity citation.",
+    "Retain the repository's canonical index section numbering; reject conflicting automated suggestions using the spec template."
   ],
   "independence": "Three isolated reviewers received the exact source and one named lens without author rationale. Each surviving R2 finding received independent refutation. R3 rechecks cover the corrections and added pending-operation contract.",
   "reports": {
@@ -1569,12 +1572,12 @@
   },
   "reviewed_snapshot_scope": "R3 reviewed_file_sha256 and reviewed_manifest_sha256 remain immutable historical evidence. They do NOT certify later normative edits.",
   "current_publication": {
-    "source_commit_before_receipt": "29bdd6824b306dd3ac88f28bddf176ef8b11e9bf",
+    "source_commit_before_receipt": "e166e490d299f2622a8bdd5287944f8fbba9a1e9",
     "hash_algorithm": "SHA-256 of exact tracked bytes",
     "file_count": 16,
     "self_reference_excluded": true,
-    "old_review_threads": "3 resolved at specification level; no production/native passes inferred",
-    "new_review_threads": "certificate rotation corrected; capacity corrected; current-head independent design review and evidence closeout pending",
+    "old_review_threads": "3 resolved at specification level; no native qualification",
+    "new_review_threads": "3 Amisha re-review findings addressed in source, 6 CodeRabbit comments adjudicated; independent final-head disposition pending",
     "human_signoff": "NOT_GRANTED",
     "native_product_tests": "NOT_RUN"
   }
