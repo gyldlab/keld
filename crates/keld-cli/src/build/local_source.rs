@@ -741,6 +741,24 @@ impl ObservedCompilerSources<'_> {
     pub(super) fn kipc_root(&self) -> PathBuf {
         self.owner.source_root.join("packages/@keld/kipc")
     }
+    /// Retained exact compiler main source, not a new ambient lookup.
+    pub(super) fn closed_app(&self) -> Result<&PinnedFile, BuildError> {
+        let path = self
+            .owner
+            .source_root
+            .join("crates/keld-cli/tools/closed-app.ts");
+        self.owner
+            .source_pins
+            .iter()
+            .find(|pin| pin.path == path)
+            .ok_or_else(|| {
+                failure(
+                    "observed compiler closure",
+                    "required retained compiler main source absent",
+                )
+            })
+    }
+
     pub(super) fn entry(&self) -> &PinnedFile {
         self.entry
     }
