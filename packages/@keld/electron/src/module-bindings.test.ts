@@ -12,7 +12,7 @@
  * (PR #1365, spec D5) and has no case here.
  *
  * The remaining cases hold the spec's other criteria
- * (`docs/specs/gh565-link-time-electron-bindings.md` §3): default-export parity, zero
+ * (`docs/specs/gh565-link-time-electron-bindings/contract.md` §3): default-export parity, zero
  * Host traffic while every member is touched (`fixtures/bindings_no_link.ts`), and the
  * typed `KELD-COMPAT-013` refusal of every member with Electron's documented return kind.
  * `ORACLE` below is this file's own copy of the spec §4.3 table, transcribed from the
@@ -58,8 +58,16 @@ const DRAWIO_IMPORT = [
  * PR that lands second restores the full twelve-name case.
  */
 const LINKED_HERE = DRAWIO_IMPORT.filter((name) => name !== "ipcMain");
+const IS_MACOS = process.platform === "darwin";
+const IS_LINUX = process.platform === "linux";
+const IS_WINDOWS = process.platform === "win32";
 
-type MemberKind = "method" | "promise" | "property" | "writableProperty";
+type MemberKind =
+  | "method"
+  | "promise"
+  | "property"
+  | "writableProperty"
+  | "undefined";
 
 interface BindingOracle {
   /** Corpus operation prefix (`<prefix>.binding.named-import`). */
@@ -90,7 +98,7 @@ const ORACLE: readonly BindingOracle[] = [
       buildFromTemplate: ["method", "GH-480"],
       setApplicationMenu: ["method", "GH-480"],
       getApplicationMenu: ["method", "GH-556"],
-      sendActionToFirstResponder: ["method", "GH-476"],
+      sendActionToFirstResponder: [IS_MACOS ? "method" : "undefined", "GH-476"],
     },
   },
   {
@@ -106,8 +114,12 @@ const ORACLE: readonly BindingOracle[] = [
       openExternal: ["promise", "GH-479"],
       trashItem: ["promise", "GH-479"],
       beep: ["method", "GH-479"],
-      writeShortcutLink: ["method", "GH-482"],
-      readShortcutLink: ["method", "GH-482"],
+      ...(IS_WINDOWS
+        ? {
+            writeShortcutLink: ["method", "GH-482"] as const,
+            readShortcutLink: ["method", "GH-482"] as const,
+          }
+        : {}),
     },
   },
   {
@@ -154,10 +166,18 @@ const ORACLE: readonly BindingOracle[] = [
       getAllDisplays: ["method", "GH-481"],
       getDisplayNearestPoint: ["method", "GH-558"],
       getDisplayMatching: ["method", "GH-558"],
-      screenToDipPoint: ["method", "GH-558"],
-      dipToScreenPoint: ["method", "GH-558"],
-      screenToDipRect: ["method", "GH-558"],
-      dipToScreenRect: ["method", "GH-558"],
+      ...(!IS_MACOS
+        ? {
+            screenToDipPoint: ["method", "GH-558"] as const,
+            dipToScreenPoint: ["method", "GH-558"] as const,
+          }
+        : {}),
+      ...(IS_WINDOWS
+        ? {
+            screenToDipRect: ["method", "GH-558"] as const,
+            dipToScreenRect: ["method", "GH-558"] as const,
+          }
+        : {}),
       on: ["method", "GH-558"],
       once: ["method", "GH-558"],
       off: ["method", "GH-558"],
@@ -194,7 +214,7 @@ const ORACLE: readonly BindingOracle[] = [
       write: ["promise", "GH-559"],
       has: ["promise", "GH-476"],
       clear: ["method", "GH-476"],
-      selection: ["property", "GH-476"],
+      ...(IS_LINUX ? { selection: ["property", "GH-476"] as const } : {}),
     },
   },
   {
@@ -206,7 +226,9 @@ const ORACLE: readonly BindingOracle[] = [
     target: "own",
     members: {
       createEmpty: ["method", "GH-476"],
-      createThumbnailFromPath: ["promise", "GH-476"],
+      ...(!IS_LINUX
+        ? { createThumbnailFromPath: ["promise", "GH-476"] as const }
+        : {}),
       createFromPath: ["method", "GH-476"],
       createFromBitmap: ["method", "GH-476"],
       createFromBuffer: ["method", "GH-476"],
@@ -230,7 +252,9 @@ const ORACLE: readonly BindingOracle[] = [
       shouldUseInvertedColorScheme: ["property", "GH-558"],
       inForcedColorsMode: ["property", "GH-558"],
       prefersReducedTransparency: ["property", "GH-558"],
-      shouldDifferentiateWithoutColor: ["property", "GH-558"],
+      ...(IS_MACOS
+        ? { shouldDifferentiateWithoutColor: ["property", "GH-558"] as const }
+        : {}),
       on: ["method", "GH-558"],
       once: ["method", "GH-558"],
       off: ["method", "GH-558"],
@@ -311,7 +335,7 @@ function receiver(oracle: BindingOracle): object {
   const binding = member(electron, oracle.name);
   return oracle.target === "prototype"
     ? (Reflect.construct(binding as new (items: object) => object, [
-        {},
+        { "text/plain": "x" },
       ]) as object)
     : (binding as object);
 }
@@ -424,7 +448,7 @@ describe("module evaluation and refusals open no app link", () => {
       for (const [kind] of Object.values(oracle.members)) {
         touched += 1;
         if (kind === "promise") rejected += 1;
-        else threw += 1;
+        else if (kind !== "undefined") threw += 1;
       }
       if (oracle.construct) {
         touched += 1;
@@ -486,6 +510,13 @@ describe("every linked member refuses with KELD-COMPAT-013 (spec §4.3)", () => 
             expectRefusal(caught, { kind: "property", member: path, ticket });
           });
           break;
+        case "undefined":
+          test(`${path} stays an own undefined member on this platform`, () => {
+            const self = receiver(oracle);
+            expect(Object.prototype.hasOwnProperty.call(self, name)).toBe(true);
+            expect(Reflect.get(self, name)).toBeUndefined();
+          });
+          break;
         case "writableProperty":
           test(`reading and assigning ${path} both throw the typed refusal naming ${ticket}`, () => {
             const self = receiver(oracle);
@@ -534,6 +565,43 @@ describe("census: each binding exposes exactly the pinned page's members (spec �
   }
 });
 
+describe("native platform absences", () => {
+  test("members absent in upstream Electron have no own key and read as undefined", () => {
+    const omitted: Record<string, Record<string, readonly string[]>> = {
+      darwin: {
+        clipboard: ["selection"],
+        shell: ["writeShortcutLink", "readShortcutLink"],
+        screen: [
+          "screenToDipPoint",
+          "dipToScreenPoint",
+          "screenToDipRect",
+          "dipToScreenRect",
+        ],
+      },
+      linux: {
+        shell: ["writeShortcutLink", "readShortcutLink"],
+        screen: ["screenToDipRect", "dipToScreenRect"],
+        nativeImage: ["createThumbnailFromPath"],
+        nativeTheme: ["shouldDifferentiateWithoutColor"],
+      },
+      win32: {
+        clipboard: ["selection"],
+        nativeTheme: ["shouldDifferentiateWithoutColor"],
+      },
+    };
+    const absent = omitted[process.platform];
+    expect(absent).toBeDefined();
+    for (const [bindingName, members] of Object.entries(absent ?? {})) {
+      const binding = member(electron, bindingName) as object;
+      for (const name of members) {
+        expect(Object.prototype.hasOwnProperty.call(binding, name)).toBe(false);
+        expect(() => Reflect.get(binding, name)).not.toThrow();
+        expect(Reflect.get(binding, name)).toBeUndefined();
+      }
+    }
+  });
+});
+
 describe("constructors", () => {
   test("new Menu() throws the typed refusal naming GH-556", () => {
     const caught = thrownBy(() => new electron.Menu());
@@ -544,9 +612,7 @@ describe("constructors", () => {
     });
   });
 
-  test("new ClipboardItem({}) and a MIME-keyed record construct instances whose payload members refuse naming GH-559", async () => {
-    const empty = new electron.ClipboardItem({});
-    expect(empty).toBeInstanceOf(electron.ClipboardItem);
+  test("nonempty MIME-keyed ClipboardItem constructs; payload members still refuse naming GH-559", async () => {
     const item = new electron.ClipboardItem({
       "text/plain": "hello",
       "text/html": "<b>hello</b>",
@@ -565,13 +631,35 @@ describe("constructors", () => {
     });
   });
 
-  test("new ClipboardItem() without a MIME-keyed record is a TypeError, as Electron's argument check", () => {
-    const Loose = electron.ClipboardItem as unknown as new (
-      ...args: unknown[]
-    ) => unknown;
+  test("ClipboardItem rejects missing, array, empty, inherited-only and symbol-only records", () => {
+    const Loose = electron.ClipboardItem as unknown as new (...args: unknown[]) => unknown;
+    const inherited = Object.create({ "text/plain": "inherited" });
+    const symbolOnly = { [Symbol("text/plain")]: "x" };
+    const nonenumerable = Object.defineProperty({}, "text/plain", { value: "x" });
+    for (const invalid of [
+      undefined, null, "text/plain", 7, [], ["text/plain"], {},
+      inherited, symbolOnly, nonenumerable,
+    ]) {
+      expect(() => new Loose(invalid)).toThrow(TypeError);
+    }
     expect(() => new Loose()).toThrow(TypeError);
-    expect(() => new Loose(null)).toThrow(TypeError);
-    expect(() => new Loose("text/plain")).toThrow(TypeError);
+  });
+
+  test("ClipboardItem snapshots enumerable payload getters once and propagates their errors", () => {
+    const Loose = electron.ClipboardItem as unknown as new (...args: unknown[]) => unknown;
+    let calls = 0;
+    const good = Object.defineProperty({}, "text/plain", {
+      enumerable: true,
+      get() { calls += 1; return "hello"; },
+    });
+    expect(new Loose(good)).toBeInstanceOf(electron.ClipboardItem);
+    expect(calls).toBe(1);
+    const sentinel = new Error("payload getter failed");
+    const bad = Object.defineProperty({}, "text/plain", {
+      enumerable: true,
+      get() { throw sentinel; },
+    });
+    expect(() => new Loose(bad)).toThrow(sentinel);
   });
 });
 

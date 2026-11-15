@@ -1,6 +1,6 @@
 /**
  * The link-time bindings GH-565 adds and the member table behind them
- * (`docs/specs/gh565-link-time-electron-bindings.md` §4.3).
+ * (`docs/specs/gh565-link-time-electron-bindings/contract.md` §4.3).
  *
  * Each binding exists so draw.io's `import { Menu, shell, dialog, session, screen,
  * ClipboardItem, clipboard, nativeImage, nativeTheme, ipcMain, app, BrowserWindow } from
@@ -26,6 +26,11 @@ import {
   writableProperty,
 } from "./unsupported";
 
+/** Capture the native platform once while the module evaluates. */
+const IS_MACOS = process.platform === "darwin";
+const IS_LINUX = process.platform === "linux";
+const IS_WINDOWS = process.platform === "win32";
+
 /** Pinned `shell.md`: five members for the GH-479 broker; the Windows shortcut pair is a GH-482 scoreboard row. */
 export const shell = unsupportedSurface("shell", {
   showItemInFolder: method("GH-479"),
@@ -33,8 +38,12 @@ export const shell = unsupportedSurface("shell", {
   openExternal: promise("GH-479"),
   trashItem: promise("GH-479"),
   beep: method("GH-479"),
-  writeShortcutLink: method("GH-482"),
-  readShortcutLink: method("GH-482"),
+  ...(IS_WINDOWS
+    ? {
+        writeShortcutLink: method("GH-482"),
+        readShortcutLink: method("GH-482"),
+      }
+    : {}),
 });
 
 /** Pinned `clipboard.md` (W3C promise shape): draw.io's three members are GH-559's; the rest are unspecified on #476. */
@@ -45,20 +54,30 @@ export const clipboard = unsupportedSurface("clipboard", {
   write: promise("GH-559"),
   has: promise("GH-476"),
   clear: method("GH-476"),
-  selection: property("GH-476"),
+  ...(IS_LINUX ? { selection: property("GH-476") } : {}),
 });
 
 /**
  * Pinned `clipboard-item.md`: `new ClipboardItem(items)` takes a record keyed by MIME type
  * and constructs locally (GH-565 AC8); its payload members belong to GH-559.
  */
+/** The upstream constructor takes an enumerable snapshot, without making it public. */
+const clipboardItemPayloads = new WeakMap<ClipboardItem, Readonly<Record<string, unknown>>>();
+
 export class ClipboardItem {
   constructor(items: Readonly<Record<string, unknown>>) {
-    if (items === null || typeof items !== "object") {
+    if (
+      items === null ||
+      typeof items !== "object" ||
+      Array.isArray(items) ||
+      Object.keys(items).length === 0
+    ) {
       throw new TypeError(
-        "ClipboardItem items must be an object whose keys are MIME types (Electron 44.4.5 clipboard-item.md)",
+        "ClipboardItem items must be a nonempty MIME-keyed record (Electron 44.4.5 clipboard-item.md)",
       );
     }
+    // Spread reads each own enumerable payload exactly once. Getter errors propagate.
+    clipboardItemPayloads.set(this, { ...items });
   }
 
   get types(): never {
@@ -73,7 +92,7 @@ export class ClipboardItem {
 /** Pinned `native-image.md` module methods: `createFromDataURL` is GH-559's; the rest are unspecified on #476. */
 export const nativeImage = unsupportedSurface("nativeImage", {
   createEmpty: method("GH-476"),
-  createThumbnailFromPath: promise("GH-476"),
+  ...(!IS_LINUX ? { createThumbnailFromPath: promise("GH-476") } : {}),
   createFromPath: method("GH-476"),
   createFromBitmap: method("GH-476"),
   createFromBuffer: method("GH-476"),
@@ -91,7 +110,9 @@ export const nativeTheme = unsupportedSurface("nativeTheme", {
   shouldUseInvertedColorScheme: property("GH-558"),
   inForcedColorsMode: property("GH-558"),
   prefersReducedTransparency: property("GH-558"),
-  shouldDifferentiateWithoutColor: property("GH-558"),
+  ...(IS_MACOS
+    ? { shouldDifferentiateWithoutColor: property("GH-558") }
+    : {}),
   on: method("GH-558"),
   once: method("GH-558"),
   off: method("GH-558"),
@@ -107,10 +128,18 @@ export const screen = unsupportedSurface("screen", {
   getAllDisplays: method("GH-481"),
   getDisplayNearestPoint: method("GH-558"),
   getDisplayMatching: method("GH-558"),
-  screenToDipPoint: method("GH-558"),
-  dipToScreenPoint: method("GH-558"),
-  screenToDipRect: method("GH-558"),
-  dipToScreenRect: method("GH-558"),
+  ...(!IS_MACOS
+    ? {
+        screenToDipPoint: method("GH-558"),
+        dipToScreenPoint: method("GH-558"),
+      }
+    : {}),
+  ...(IS_WINDOWS
+    ? {
+        screenToDipRect: method("GH-558"),
+        dipToScreenRect: method("GH-558"),
+      }
+    : {}),
   on: method("GH-558"),
   once: method("GH-558"),
   off: method("GH-558"),
@@ -145,6 +174,16 @@ export class Menu {
   static sendActionToFirstResponder(..._action: unknown[]): never {
     return refuse("method", "Menu.sendActionToFirstResponder", "GH-476");
   }
+}
+
+// Upstream Menu's JavaScript defines this own static key even where its
+// macOS-only native implementation is absent. The value is then undefined.
+if (!IS_MACOS) {
+  Object.defineProperty(Menu, "sendActionToFirstResponder", {
+    value: undefined,
+    writable: true,
+    configurable: true,
+  });
 }
 
 /** Pinned `dialog.md`: the three async dialogs are GH-478's broker, the sync prompt GH-564's, the remainder GH-561's. */

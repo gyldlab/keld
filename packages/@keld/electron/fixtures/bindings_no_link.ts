@@ -5,7 +5,7 @@
  * (`@keld/api/src/app.ts` ensureLink), is replaced by a recorder *before* the facade
  * loads. The observer then imports the facade and touches every own member of the nine
  * link-time bindings (`ipcMain` is PR #1365's, spec D5): it calls each function with no
- * arguments, reads each accessor, constructs each class with `{}` and, where construction
+ * arguments, reads each accessor, constructs each class with a valid nonempty MIME record and, where construction
  * succeeds, touches the prototype members on that instance. The parent sets
  * `KELD_APP_LINK`, so a stray `ensureLink()` reaches the recorder instead of failing early
  * on the unset variable. It prints one `GH565_NO_LINK` line and exits 0, or exits 2 when a
@@ -90,7 +90,7 @@ for (const name of BINDINGS) {
     touched += 1;
     let instance: object | undefined;
     try {
-      instance = Reflect.construct(binding, [{}]) as object;
+      instance = Reflect.construct(binding, [{ "text/plain": "x" }]) as object;
     } catch {
       threw += 1;
     }
