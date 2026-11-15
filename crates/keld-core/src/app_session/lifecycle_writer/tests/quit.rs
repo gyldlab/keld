@@ -47,14 +47,54 @@ fn tail_owner(
 }
 
 #[test]
+fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_reply() {
+    const CHILD: &str = "KELD_QUIT_READY_SCENARIO_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        run_written_ready_quit_drain_scenario();
+        return;
+    }
+
+    // Run the lock-order scenario in a child test process. A broken
+    // transition-lock-retention implementation must fail inside that child;
+    // the parent can kill it at the hard deadline instead of hanging the
+    // repository's test process or leaking blocked actor threads.
+    let executable = std::env::current_exe().expect("current test executable");
+    let test_name = thread::current().name().expect("named test").to_owned();
+    let mut child = std::process::Command::new(executable)
+        .arg("--exact")
+        .arg(test_name)
+        .arg("--nocapture")
+        .env(CHILD, "1")
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .expect("isolated Quit scenario child starts");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(status) = child.try_wait().expect("child status") {
+            assert!(
+                status.success(),
+                "isolated Quit scenario failed with {status}"
+            );
+            return;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let status = child.wait().expect("timed-out child reaped");
+            panic!("Quit scenario exceeded 20-second bound; child killed ({status})");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[cfg_attr(
     windows,
     expect(
         clippy::too_many_lines,
-        reason = "Keep Ready return, accepted Quit, stopped-reader Drain and original owner joins in one ordered test."
+        reason = "Keep Ready return, accepted Quit, stopped-reader Drain and original owner joins in one ordered scenario."
     )
 )]
-fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_reply() {
+fn run_written_ready_quit_drain_scenario() {
     let Fixture {
         router,
         mut peer,
@@ -113,6 +153,8 @@ fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_rep
     // Receiving the hook is not evidence that the transition lock is free.
     // Verify the real unlock while Ready stays blocked, without a sleep or a
     // scheduling-sensitive immediate try_lock.
+    let writer = router.primary_writer_owner().expect("one primary writer");
+    let (quit_dequeued, quit_write) = writer.hold_next_dequeue_for_test();
     let (available, available_rx) = mpsc::sync_channel(1);
     let waiting_router = router.clone();
     let mutex_witness = thread::spawn(move || {
@@ -122,8 +164,15 @@ fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_rep
             .expect("transition release witness");
     });
     let transition_released_during_wait = available_rx.recv_timeout(Duration::from_secs(3));
-    let writer = router.primary_writer_owner().expect("one primary writer");
-    let (quit_dequeued, quit_write) = writer.hold_next_dequeue_for_test();
+    if !matches!(transition_released_during_wait, Ok(true)) {
+        // This test body runs in an isolated child test process. Release both
+        // barriers before exiting so a deliberate lock-retention mutant cannot
+        // strand the Ready writer, a dequeued Quit writer, or the parent suite.
+        let _ = ready_resume.send(());
+        let _ = quit_write.send(());
+        drop(peer);
+        std::process::exit(1);
+    }
     ready_resume.send(()).expect("allow canonical Ready commit");
     ready
         .join()
@@ -204,7 +253,6 @@ fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_rep
         "Quit must release transition/current locks before awaiting Ready: {transition_released_during_wait:?}"
     );
 }
-
 #[test]
 #[cfg_attr(
     windows,
