@@ -354,6 +354,22 @@ fn bun_config_argument(path: &Path) -> OsString {
     argument
 }
 
+fn compiler_arguments(
+    compiler: &super::compiler_toolchain::BoundCompilerEntry<'_>,
+) -> [OsString; 9] {
+    [
+        OsString::from("--no-install"),
+        OsString::from("--no-env-file"),
+        bun_config_argument(&compiler.configuration.path),
+        OsString::from("--tsconfig-override"),
+        compiler.tsconfig.path.as_os_str().to_owned(),
+        OsString::from("--preload"),
+        compiler.preload.path.as_os_str().to_owned(),
+        compiler.entry.path.as_os_str().to_owned(),
+        compiler.tools.parser.path.as_os_str().to_owned(),
+    ]
+}
+
 /// Caller owns an admitted source compiler closure and qualified Bun pin. This
 /// API never upgrades a local tool digest to release authority. The script and
 /// its entire trusted import closure need retained protected ancestry, not just
@@ -366,17 +382,7 @@ pub(super) fn compile(
     request: &mut File,
 ) -> Result<CompiledApp, BuildError> {
     modules.write_request(request)?;
-    let args = [
-        OsString::from("--no-install"),
-        OsString::from("--no-env-file"),
-        bun_config_argument(&compiler.configuration.path),
-        OsString::from("--tsconfig-override"),
-        compiler.tsconfig.path.as_os_str().to_owned(),
-        OsString::from("--preload"),
-        compiler.preload.path.as_os_str().to_owned(),
-        compiler.entry.path.as_os_str().to_owned(),
-        compiler.tools.parser.path.as_os_str().to_owned(),
-    ];
+    let args = compiler_arguments(compiler);
     let bytes = local_source::run_captured(
         &compiler.tools.bun,
         &args,
@@ -460,8 +466,9 @@ mod rust_binder_acceptance_tests {
     use super::*;
     use sha2::{Digest, Sha256};
     use std::fs::{self, OpenOptions};
+    use std::io::{Seek, SeekFrom};
     use std::path::{Path, PathBuf};
-    use std::process::Command;
+    use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     const RENDERER: &[u8] =
@@ -558,6 +565,47 @@ mod rust_binder_acceptance_tests {
         fs::write(root.join("index.html"), RENDERER).expect("write retained renderer");
     }
 
+    fn prove_hostile_config_is_effective(
+        compiler: &super::super::compiler_toolchain::BoundCompilerEntry<'_>,
+        stage: &Path,
+        environment: &[(OsString, OsString)],
+        request: &mut File,
+        hostile_config: &Path,
+    ) {
+        // Bun 1.4.4 on Windows does not consult HOME/.bunfig.toml when invoked
+        // with a direct script entry. Prove the poison is genuinely executable
+        // by selecting it as a deliberate test-only config mutation.
+        // Everything else is the same Rust-bound entry, preload, parser,
+        // request and environment used by production compile().
+        request
+            .seek(SeekFrom::Start(0))
+            .expect("rewind retained compiler request");
+        let mut args = compiler_arguments(compiler);
+        args[2] = bun_config_argument(hostile_config);
+        let output = Command::new(&compiler.tools.bun.path)
+            .args(args)
+            .current_dir(stage)
+            .env_clear()
+            .envs(environment.iter().cloned())
+            .stdin(Stdio::from(
+                request.try_clone().expect("clone retained request"),
+            ))
+            .output()
+            .expect("probe exact Rust-bound compiler with poisoned config");
+        assert!(
+            !output.status.success(),
+            "poisoned config unexpectedly succeeded"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "poisoned config emitted compiler output"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("AMBIENT_BUN_CONFIG_USED"),
+            "poisoned config did not emit its expected sentinel"
+        );
+    }
+
     fn run_bound_case(
         observation: &super::super::local_source::LocalSourceBuildObservation,
         tools: &super::super::compiler_toolchain::CapturedCompilerToolchain,
@@ -565,6 +613,7 @@ mod rust_binder_acceptance_tests {
         modules: &[(&str, &str)],
         home: &Path,
         node_path: Option<&Path>,
+        hostile_config_control: Option<&Path>,
     ) -> Result<CompiledApp, BuildError> {
         let app_root = root.join("app");
         // A fragment character forces the real Rust local_file_url() encoder
@@ -587,7 +636,17 @@ mod rust_binder_acceptance_tests {
             .open(stage.join("compiler-request.bin"))
             .map_err(refusal)?;
         let environment = compiler_environment(home, &stage, node_path);
-        compile(&captured, &compiler, &stage, &environment, &mut request)
+        let compiled = compile(&captured, &compiler, &stage, &environment, &mut request)?;
+        if let Some(hostile_config) = hostile_config_control {
+            prove_hostile_config_is_effective(
+                &compiler,
+                &stage,
+                &environment,
+                &mut request,
+                hostile_config,
+            );
+        }
+        Ok(compiled)
     }
 
     fn assert_no_signing_artifacts(stage: &Path) {
@@ -666,6 +725,7 @@ mod rust_binder_acceptance_tests {
             ],
             &stage,
             None,
+            None,
         )
         .expect("Rust-generated compiler entry emits the captured application");
         assert!(String::from_utf8_lossy(&compiled.main).contains("45272"));
@@ -677,8 +737,9 @@ mod rust_binder_acceptance_tests {
         assert_no_signing_artifacts(&stage);
         println!("KELD_COMPILER_BINDER_CASE: positive");
 
-        // 2/5: deliberately expose a hostile HOME poison. It must execute before
-        // compiler output, proving that the isolated positive does not hide it.
+        // 2/5: the real production binder must ignore a hostile HOME config.
+        // A test-only control replaces just its pinned --config argument,
+        // proving that the poison really executes if that boundary regresses.
         let home_negative = Scratch::new("hostile-home");
         let hostile_home = home_negative.0.join("ambient-home");
         fs::create_dir(&hostile_home).expect("create hostile HOME");
@@ -703,18 +764,17 @@ mod rust_binder_acceptance_tests {
         )
         .expect("write hostile Bun global configuration");
         let stage = home_negative.0.join("stage # encoded");
-        assert!(
-            run_bound_case(
-                &observation,
-                &tools,
-                &home_negative.0,
-                &[("main.js", "console.log('must not compile');")],
-                &hostile_home,
-                None,
-            )
-            .is_err(),
-            "unisolated HOME must load the hostile Bun configuration"
-        );
+        let isolated = run_bound_case(
+            &observation,
+            &tools,
+            &home_negative.0,
+            &[("main.js", "console.log('home-isolated');")],
+            &hostile_home,
+            None,
+            Some(&hostile_home.join(".bunfig.toml")),
+        )
+        .expect("production binder must isolate the malicious HOME configuration");
+        assert!(String::from_utf8_lossy(&isolated.main).contains("home-isolated"));
         assert_eq!(
             fs::read_to_string(&marker).expect("hostile preload sentinel"),
             "AMBIENT_BUN_CONFIG_USED"
@@ -747,6 +807,7 @@ mod rust_binder_acceptance_tests {
                 &[("main.js", "import 'ambient-test-only'; console.log('bad');")],
                 &stage,
                 Some(&node_modules),
+                None,
             )
             .is_err(),
             "ambient package import must be refused"
@@ -765,6 +826,7 @@ mod rust_binder_acceptance_tests {
                 &[("main.js", "import './outside.js'; console.log('bad');")],
                 &stage,
                 None,
+                None,
             )
             .is_err(),
             "missing captured member must be refused"
@@ -782,6 +844,7 @@ mod rust_binder_acceptance_tests {
                 &escape.0,
                 &[("main.js", "import 'node:fs'; console.log('bad');")],
                 &stage,
+                None,
                 None,
             )
             .is_err(),
