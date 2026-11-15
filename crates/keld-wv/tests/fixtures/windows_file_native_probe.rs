@@ -275,6 +275,7 @@ fn verify_native_same_uri_overlap(
         && child["data"]["header"]["state"] == "absent"
         && child["data"]["held_iframe"] == true
         && host_start["data"]["uri"] == receipt["uri"]
+        && host_start["data"]["header"]["state"] == "present"
         && host_resource["data"]["uri"] == receipt["uri"]
         && host_resource["data"]["resource_context"] == 1
         && host_resource["data"]["source_kind"] == 1
@@ -524,6 +525,13 @@ mod ac06_overlap_receipt_tests {
         assert!(
             check(&missing_host_start).is_err(),
             "missing Host navigation-starting URI accepted"
+        );
+
+        let mut absent_host_header = good.clone();
+        absent_host_header[3]["data"]["header"]["state"] = json!("absent");
+        assert!(
+            check(&absent_host_header).is_err(),
+            "Host navigation-starting with absent nonce header accepted"
         );
 
         let mut missing = good.clone();
