@@ -267,3 +267,151 @@ External source references below use that commit. Retrieval date: 2026-11-16.
   - **Single fault:** Replace current artifact-generation admission with acceptance of saved registration material.
   - **At-risk precondition:** The old artifact remains executable. Observe admission before independent writer or process cleanup checks.
   - **Expected RED:** The owner restores retired admission without fresh compatibility and management authorization.
+
+### AC-21: Application authentication precedes client authority
+
+- **Given:** A valid installed host and a same-account wrong-image process request attachment.
+- **When:** The platform owner verifies each connected peer or its retained owner-launched enrollment.
+- **Then:** Only the admitted host obtains a private client binding. Its permitted Use operation succeeds.
+  Peer credentials, endpoint names and bearer possession cannot replace the required application evidence.
+- **Negative control:**
+  - **Single fault:** Omit the applicable installed-image or retained-child binding check in one control run.
+  - **At-risk precondition:** The wrong-image peer passes all unrelated transport checks.
+    Observe application authentication before downstream grant checks.
+  - **Expected RED:** The platform owner gives the wrong-image peer an authenticated application binding.
+
+### AC-22: Detail retirement cannot remint an upstream operation
+
+- **Given:** A completed effect retains an upstream object that can still be retried.
+- **When:** Its detailed outcome is compacted or its session receives a deletion request.
+- **Then:** The state owner retains the required upstream binding or rejects the destructive deletion.
+  The same upstream request returns its original reference or Expired. It cannot create another effect attempt.
+  Unrelated new upstream work remains admissible within capacity.
+- **Negative control:**
+  - **Single fault:** Delete the identity binding when retiring outcome detail.
+  - **At-risk precondition:** The upstream object remains eligible. Current grants and capacity permit admission.
+    Observe state-owner reference issuance before downstream effect checks.
+  - **Expected RED:** Retrying the old upstream object receives a new dispatchable reference.
+
+### AC-23: New work cannot consume reserved completion capacity
+
+- **Given:** An admitted operation reserves its maximum receipt allowance near the logical storage limit.
+- **When:** Another operation requests admission, or the first operation commits its outcome.
+- **Then:** New admission refuses before consuming the reserved allowance. The admitted receipt can use that allowance.
+  Test exact-limit and maximum-plus-one accounting with actual encoded record lengths.
+  A separate physical disk failure preserves uncertainty and never acknowledges an uncommitted success.
+- **Negative control:**
+  - **Single fault:** Omit reserved receipt bytes from the admission capacity check.
+  - **At-risk precondition:** Current policy permits the new operation. Count limits and unrelated resource limits remain available.
+    The independent byte census includes all existing reservations.
+  - **Expected RED:** The state owner admits work beyond the logical budget including reserved completion bytes.
+
+### AC-24: Unproven cold-start continuity cannot admit old effects
+
+- **Given:** Owner state is lost and the failure class cannot establish database continuity.
+  An independent sink retains an effect absent from the recovered database.
+- **When:** Startup resumes the affected pre-existing execution.
+- **Then:** Effectful continuation remains held until authoritative reconciliation or qualified continuity permits it.
+  Inspection and unrelated authorized work remain available. A qualified live handoff retains its permitted behavior.
+- **Negative control:**
+  - **Single fault:** Treat database epoch equality as sufficient continuity evidence.
+  - **At-risk precondition:** Current artifact, grants and custody checks pass. No independent hold masks the continuity decision.
+  - **Expected RED:** The state owner admits automatic continuation from the unreconciled execution.
+
+### AC-25: Service decoding rejects invalid frames before dispatch
+
+- **Given:** An authenticated route carries valid service frames and single-fault invalid variants.
+- **When:** The owning decoder receives unknown variants, trailing bytes, truncated frames or excessive lengths.
+- **Then:** Invalid input produces the specified typed refusal without creating authority or changing state.
+  Exact golden vectors preserve valid request and response values across generated implementations.
+- **Negative control:**
+  - **Single fault:** Disable one applicable decoder bound or canonical-form check per control run.
+  - **At-risk precondition:** Authentication and unrelated frame fields are valid. Observe decode admission before effect authorization.
+  - **Expected RED:** The decoder admits the named malformed payload as a valid service request.
+
+### AC-26: Root replacement revalidates retained client enrollment
+
+- **Given:** A live client has a complete retained enrollment tuple. Another tuple is incomplete or names a retired artifact.
+- **When:** A replacement root reconstructs attachments after the previous root ends.
+- **Then:** The valid live client can rebind under current authorization and a fresh attachment generation.
+  Incomplete or retired enrollment refuses. Saved names, PIDs and tokens cannot supply missing evidence.
+  Client lifetime remains independent from backend Stop. Persisted Stop still prevents unauthorized new work.
+- **Negative control:**
+  - **Single fault:** Omit the retained enrollment's completeness check.
+  - **At-risk precondition:** The partial tuple otherwise passes current artifact and grant checks.
+    Observe client binding before downstream operation admission.
+  - **Expected RED:** The replacement mints a client binding from the partial tuple.
+
+### AC-27: A contradictory terminal receipt leaves a durable hold
+
+- **Given:** An operation has a committed terminal receipt. A second validly delivered receipt contradicts that outcome.
+- **When:** The state owner records the conflict and then restarts while qualified runtime continuity survives.
+- **Then:** The original outcome remains unchanged. The execution retains its conflict evidence and effectful-continuation hold.
+  Authorized inspection works. Only the specified reconciliation action can clear that conflict hold.
+  An unrelated execution can still admit permitted work.
+- **Negative control:**
+  - **Single fault:** Store the conflict hold only in process memory.
+  - **At-risk precondition:** Runtime continuity is qualified. No cold-start or unresolved-operation hold masks the conflict predicate.
+    Observe execution admission after the state owner restarts.
+  - **Expected RED:** The conflicted execution admits a new automatic effect without reconciliation.
+
+### AC-28: Cancellation before claim cannot require a dispatch token
+
+- **Given:** An authorized cancellation targets a Prepared operation. A competing claim has not released its effect.
+- **When:** Cancellation wins the state comparison, or claim wins first.
+- **Then:** The first ordering commits CancelledNoEffect without dispatch. The second preserves the possible-effect outcome.
+  The state owner returns a typed result in both orders. A permitted uncancelled operation still releases once.
+- **Negative control:**
+  - **Single fault:** Remove the Prepared-state comparison from the cancellation transition.
+  - **At-risk precondition:** Claim won and released a witnessed effect before the held cancellation resumes.
+  - **Expected RED:** Cancellation overwrites DispatchIntent with CancelledNoEffect despite the witnessed release.
+
+### AC-29: Receipt inspection survives normal job cleanup
+
+- **Given:** A completed background job has a committed outcome and its required retained result.
+- **When:** The existing job owner removes its normal finished-job records and memory entry.
+- **Then:** An authorized outcome query still returns the retained receipt and its declared result availability.
+  The query cannot claim that a deleted job row contains available output.
+  Oversized or retired output returns its specified bounded result without fabricating content.
+- **Negative control:**
+  - **Single fault:** Persist only the ephemeral job identifier as the retained result location.
+  - **At-risk precondition:** Normal job cleanup has completed. Receipt retention remains active.
+  - **Expected RED:** The receipt claims available output that the query cannot retrieve from its declared owner.
+
+### AC-30: Management retries retain their original revision and result
+
+- **Given:** An authenticated Start attempt is captured before an authorized Stop advances the control revision.
+- **When:** The delayed Start arrives, its reply is lost, or the same attempt retries after another state change.
+- **Then:** A stale attempt cannot restart the service. An unchanged retry returns its recorded disposition or Pending.
+  Changed input returns a typed conflict. A fresh authorized Start at the current revision can proceed.
+  A caller-supplied identity cannot mint a different authorized management attempt.
+- **Negative control:**
+  - **Single fault:** Replace the captured expected revision with the current revision when retrying Start.
+  - **At-risk precondition:** Stop committed. The original Start attempt otherwise has valid identity and applicable grants.
+    Observe management admission before downstream service startup.
+  - **Expected RED:** The late old Start obtains management admission after Stop without a fresh authorized request.
+
+### AC-31: Desktop attachment retirement preserves admitted execution authority
+
+- **Given:** An admitted background execution pauses before its next permitted effect.
+- **When:** Desktop Quit retires the client attachment, then the execution resumes.
+- **Then:** The execution can release its next effect under current service, writer and grant authority.
+  The retired attachment receives no delivery. A separate grant revocation before release still refuses that effect.
+  Background authority cannot arise from a caller-supplied execution identifier.
+- **Negative control:**
+  - **Single fault:** Require the retired desktop attachment generation to release the next background effect.
+  - **At-risk precondition:** The service remains active. No Stop, revocation or outcome hold applies.
+  - **Expected RED:** The authorized execution fails to progress solely because desktop Quit retired its attachment.
+
+### AC-32: Root authentication precedes sensitive outgoing messages
+
+- **Given:** A valid client connects to an admitted root or a substituted wrong-image root.
+- **When:** The client sends its first request, including after connection interruption or replacement.
+- **Then:** The untrusted root receives only the bounded public challenge and protocol version.
+  Credentials, user data and effectful payloads wait for the required authenticated response on that connection.
+  The valid root completes authentication and its permitted Use operation succeeds.
+- **Negative control:**
+  - **Single fault:** Send sensitive application content before the authenticated challenge response.
+  - **At-risk precondition:** The wrong-image root can receive the first outgoing request.
+    An independent message witness observes that root before the client rejects its response.
+  - **Expected RED:** The wrong-image root receives the sensitive payload despite the later authentication refusal.

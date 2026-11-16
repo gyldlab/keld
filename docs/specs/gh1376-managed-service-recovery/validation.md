@@ -22,6 +22,8 @@ Build an isolated platform slice under the approved runtime owner. B-2 does not 
 Replace upstream management for that mode without retaining a parallel manager.
 Run AC-1 through AC-4, AC-7 through AC-10 and AC-12 within that isolated fixture.
 Run AC-14, AC-16, AC-17, AC-19 and AC-20 at their owning boundaries.
+Run AC-21, AC-25, AC-26, AC-30 and AC-31 for authentication, decoding, enrollment and management ordering.
+Run AC-32 with a wrong-image root and an independent first-message witness.
 Do not expose managed activation or recovery to product callers in this task.
 T-4 owns exposure after the remaining safety criteria pass.
 
@@ -34,6 +36,8 @@ Then connect the outcome owner and canonical bridge to the admission contract.
 Run AC-5 and repeat AC-6 through the integrated boundary, including both cancellation/completion orderings.
 Run AC-11 and AC-13 with the core state owner. Keep T-3 isolated and non-product.
 Run AC-15 and AC-18 through actual recovery, subagent and background-wake paths.
+Run AC-22 through AC-24 and AC-27 through AC-29 with the actual core state owner.
+Repeat AC-30 and AC-31 through the integrated management and background-execution paths.
 Preserve all managed and external connection journeys from #1377.
 
 ### T-4: Qualify each claimed platform and full product journeys
@@ -43,7 +47,7 @@ Preserve all managed and external connection journeys from #1377.
 Run all acceptance criteria on each claimed operating system.
 Use independent resource and effect witnesses.
 B-2 and U-1 gate completion and product exposure, not entry into this qualification task.
-Expose managed activation and recovery only after AC-1 through AC-20 pass on that platform.
+Expose managed activation and recovery only after AC-1 through AC-32 pass on that platform.
 Qualify the exact integrated artifact. Earlier primitive or reference-policy results cannot clear these gates.
 Complete the retained #1377 journeys before claiming full integration readiness.
 Consume #1382's terminal handoff proof for replacement, early adoption, expiry and failed replacement.
@@ -80,6 +84,18 @@ Keep source versions, host identity, commands, logs and artifact digests with ea
 | AC-18 | Restore a pre-effect snapshot with surviving sink history. Bypass state-owner restore reconciliation. |
 | AC-19 | Query and Cancel without their grants. Mutate one action at a time, with authorized positive controls. |
 | AC-20 | Retry retired artifact admission with saved registration. Mutate that admission and verify fresh compatible rollback still works. |
+| AC-21 | Admit a valid host and reject a same-account wrong image. Mutate only the application-binding check. |
+| AC-22 | Compact detail and request session deletion while retaining retryable upstream work. Mutate binding retention. |
+| AC-23 | Saturate actual encoded bytes and reserved receipt bytes independently. Remove only reservation accounting. |
+| AC-24 | Lose all owner continuity with a surviving independent effect sink. Bypass only continuity admission. |
+| AC-25 | Decode exact golden vectors and single-fault malformed frames. Mutate one canonical-form or length check. |
+| AC-26 | Restart the root with complete, incomplete and retired-artifact enrollment tuples. Mutate only tuple completeness. |
+| AC-27 | Commit a contradictory receipt, then restart the state owner with qualified runtime continuity. Remove only durable conflict retention. |
+| AC-28 | Race Prepared cancellation against claim in both orders. Remove only cancellation's state/version comparison. |
+| AC-29 | Complete normal background-job cleanup, then query the retained outcome. Substitute an ephemeral Job-only output pointer. |
+| AC-30 | Hold Start across Stop and retry the captured attempt after reply loss. Replace its expected revision with the current revision. |
+| AC-31 | Hold the next background effect across desktop Quit. Incorrectly require the retired attachment. Separately revoke its grant. |
+| AC-32 | Connect a valid client to a wrong-image root. Inject sensitive first-message content before the authenticated response. |
 
 ### E-1: Existing native custody counterexamples
 
@@ -102,36 +118,63 @@ Keep source versions, host identity, commands, logs and artifact digests with ea
 - **Environment:** Python subprocesses and file-backed SQLite, native macOS arm64 and cloud Linux. Not KELD/OpenCode production code.
 - **Limits:** The fixed epoch, payload-only digest, shared transport and retained expired row do not qualify admission, hostile writers, pruning or power loss.
 
-INFERRED: The reference still lacks typed concurrent first creation and conditional recovery-state updates.
-The inspected schedules may expose uniqueness exceptions or overwrite success. They are unrun hypotheses, not deployed product findings.
-AC-9 and AC-13 require the actual implementation to distinguish these schedules. E-3 does not establish their acceptance.
+FACT: E-3 does not test typed concurrent first creation or conditional recovery-state updates.
+The separate E-4 experiment exercises those proposed SQL policies and records its own oracle correction.
+AC-9 and AC-13 still require the actual implementation to distinguish these schedules.
+Neither reference experiment establishes their production acceptance.
+
+### E-4: SQL admission policy and corrected recovery oracle
+
+- **Run:** [Exact v2 source and oracle correction](https://github.com/gyldlab/keld/issues/1376#issuecomment-6914234042), `python3 q3-probe-v2.py`.
+- **n:** Two positive policy schedules passed. Two intentionally faulty policies violated their intended invariants.
+  A separate no-op mutation failed the shared-helper unresolved-recovery assertion with exit 1.
+- **Environment:** Cloud Linux x86_64, Python 3.12.14, SQLite 3.53.1. Executed 2026-11-16.
+  First creation used two spawned processes and file-backed SQLite. Recovery used two connections and a fixed adverse order.
+- **Limits:** SQL policy model only. No actual KELD/OpenCode, provider, custody, disk-full, power-loss or migration qualification.
+
+FACT: The earlier model allowed a no-op recovery mutation to pass because its healthy control used different SQL.
+V2 routes both schedules through the same transition helper. The no-op now fails the healthy unresolved-work assertion.
+The earlier first-creation observation remains bounded evidence. The earlier recovery result did not establish a discriminating oracle.
+V2 source SHA256: `3a293e55e1e2107fddc3bbd82c3f61b9a368946036cdf597bb2d4fcd377da8b2`.
+No-op mutant SHA256: `2b522e3d11cb7f5d095b8acddf6b2c4e2010ffaa574ba55943bdd3ab5e24d622`.
+All fixture children exited. Temporary database and mutant state was removed.
 
 ## 9. Perf impact
 
 No measured performance claim and no runtime change in this PR.
 Implementation must measure activation, readiness, memory, process count and replacement latency.
 Record complete product totals separately from the canonical framework metric census.
-D-6/D-7 provide experimental bounds. Q-2/Q-3 retain exact bindings and quotas. No product cost improvement is established.
+D-8 through D-10 provide proposed limits and record their remaining qualification obligations.
+Q-2/Q-3 retain codec allocation, owner approval and storage-continuity dependencies. No product cost improvement is established.
 
 ## 10. Open questions, blockers & unknowns
 
 ### Q-1: Which installed activation mechanism owns lifetime on each platform?
 
-PROPOSED answer: D-5 selects concrete per-user activation candidates and retains complete external management as the alternative.
-Runtime and package owners must still approve exact registration, endpoint identity, custody and lifecycle bytes.
-This question remains open until those bindings are reviewable. No user is asked to invent the technical mechanism.
+PROPOSED answer: D-8 details registration, platform authentication, lifecycle ordering and Linux owner-launched host enrollment.
+The selected Linux candidate retains bounded kernel enrollment across root replacement and creates a fresh application link.
+Runtime and package owners must resolve complete native-trusted descendant custody, especially detached macOS descendants.
+Windows transport-to-process binding and Linux retained enrollment still need their specified native feasibility evidence.
+Full CLI authority handoff must preserve the #1377 denominator. Unauthenticated activation cannot authorize forwarded commands.
+This question remains open at those mechanism and owner-approval boundaries. B-2 separately owns integrated native qualification.
 
 ### Q-2: What exact contract carries admission and bounded failure?
 
-PROPOSED answer: D-6 selects identity, authority, atomic dispatch and bounded-failure semantics.
-Exact generated signatures, codecs, application authentication and native buffer/resource bounds remain unresolved.
-Runtime, guard and bridge owners must approve those bindings before implementation. This question blocks specification approval.
+PROPOSED answer: D-9 specifies action grants, private execution authority, typed interfaces and bounded release ordering.
+It separates attachment retirement from admitted background work and binds management retries to captured control revisions.
+The existing generator remains the owner. Shared channel and receiver allocation require its designated writer and exact codec vectors.
+Platform application identity consumes Q-1. Native resource measurements remain U-1, not a prerequisite for writing their fixture.
+Runtime, guard and bridge owners must approve the final bindings. This question still blocks specification approval.
 
 ### Q-3: What durable outcome contract prevents blind replay?
 
-PROPOSED answer: D-7 selects one authoritative core outcome policy, explicit uncertainty and crash-versus-power acknowledgement classes.
-State owners must still approve the schema, byte quota, completion reserve, pruning and restore contracts.
-This question blocks specification approval. Reference-policy results cannot substitute for actual core qualification.
+PROPOSED answer: D-10 specifies the existing core's schema, atomic transitions, conflict holds, retention and logical completion reserve.
+Runtime, package and state owners must bind durable desired state, control revision, management attempts and removal holds.
+Their exact storage location and restart protocol remain unresolved. The outcome schema does not implicitly supply those records.
+State owners must resolve the restore barrier outside overwritten state and its coordinated migration/rollback protocol.
+The KEL-53 compatibility decision must explicitly admit the proposed schema change before implementation.
+Every actual database writer and effect caller needs the specified owner binding. A new parallel journal is not permitted.
+This question blocks specification approval. B-3 separately requires actual core qualification before integration.
 
 ### B-1: Protected implementation approval remains absent
 

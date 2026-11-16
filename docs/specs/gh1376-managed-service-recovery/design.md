@@ -1,7 +1,7 @@
 # Managed service design decisions
 
 Part of: [index](index.md)
-Owns: Runtime ownership, admission, durable outcomes and edit boundaries.
+Owns: Runtime ownership, admission, durable outcomes and architectural alternatives.
 
 ## 4. Design
 
@@ -61,6 +61,7 @@ Bearer credentials alone do not authorize adoption or management.
 
 Types, manifest identifiers, wire fields and Rust signatures: none allocated by this draft.
 D-6 selects the semantic contract. Q-2 retains exact typed bindings before implementation.
+D-9 provides proposed typed bindings. Shared endpoint allocation and owner approval remain pending.
 The public API, permission and wire owners review that contract together.
 
 ### D-3: Admit recovery only after physical or effective exclusion
@@ -120,6 +121,9 @@ Do not create a second PTY controller or let an environment ticket confer native
 ### D-5: Select per-user activation candidates, not unproved custody
 
 PROPOSED: Use the following first qualification candidates under D-1. B-1 and B-2 remain open.
+D-8 supplies the proposed registration settings, authenticated client paths and lifecycle ordering.
+Linux uses owner-launched native session hosts and independent client scopes as its first authentication candidate.
+Retained enrollment requires the specified service-manager support. An unsupported configuration cannot substitute UID or bearer possession.
 
 | Platform | Selected candidate | Required qualification |
 | --- | --- | --- |
@@ -207,7 +211,8 @@ These values are unmeasured prototype limits, not shipping performance claims or
 Overload before admission returns NotAdmitted(Capacity). An admitted timeout returns Pending or Indeterminate, never false non-admission.
 Enforce ingress bounds before decoding where possible. Host accounting cannot retroactively prevent native engine allocation.
 Backpressure must preserve required terminal replay and fidelity. No silent truncation, unbounded spool or control starvation is permitted.
-Reopen limits or transport if full journeys cannot satisfy them. Q-2 retains exact native buffering and resource-lease contracts.
+Reopen limits or transport if full journeys cannot satisfy them.
+D-9 specifies initial attachment, handshake and resource limits. Native measurement remains a qualification gate under U-1.
 
 ### D-7: Select durable intent and explicit reconciliation in the existing core
 
@@ -231,7 +236,7 @@ Retain unresolved outcomes. Compact completed records only with durable replay-d
 Never advance a contiguous floor past unresolved holes. Expired or unknown references refuse dispatch.
 AdmitNew requires deliberate current authorization. Reconnect and retransmission cannot silently mint new effect attempts.
 Prototype retention is 30 days for detailed completed outcomes, 128 active domains and 1024 unresolved operations per data root.
-Q-3 must specify byte quotas and reserved completion capacity before approval. Count limits alone do not bound disk use.
+D-10 specifies a logical byte quota and reserved completion allowance. Physical WAL and filesystem capacity require separate qualification.
 At quota, refuse new effects while preserving outcome persistence, inspection, reconciliation and cleanup.
 
 Writer checks and writes share an admission transaction. Native-trusted direct writers require actual custody exclusion, not cooperative epoch promises.
@@ -241,12 +246,3 @@ An absent record in an old snapshot does not prove that an external effect never
 Schema changes require existing storage/update approval. Pending migrations cannot claim the current dataMigration:none policy.
 FACT: The approved updater slice exposes no migration hook: `docs/specs/kel53-full-package-activation.md:606`.
 Reopen D-7 if required effects bypass instrumentation, expired retries become executable, or full journeys cannot preserve explicit uncertainty.
-
-## 5. Boundaries
-
-This PR changes only this draft specification.
-Implementation candidates are the canonical runtime owner and the OpenCode managed-service adapter.
-The existing core recovery entry point and state owner require coordinated changes after approval.
-
-Must not touch runtime source, public contracts, guard policy, KEL-76 implementation, credentials or unrelated owner branches.
-Do not replace canonical architecture text before the proposed contract is approved.

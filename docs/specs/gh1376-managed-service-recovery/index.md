@@ -11,7 +11,8 @@
 PROPOSED: Give managed OpenCode one accountable service owner before replacing upstream lifecycle operations.
 The owner must prevent concurrent recovery and preserve uncertain effect outcomes.
 Keep the complete product denominator from #1377.
-D-5 through D-7 record selected technical proposals. Q-1 through Q-3 retain unresolved implementation bindings.
+D-5 through D-10 record selected proposals and their detailed contract candidates.
+Q-1 through Q-3 retain the exact mechanism and approval dependencies stated in validation.
 This draft does not authorize implementation. B-1, B-2 and B-3 remain open.
 
 Non-goals:
@@ -26,8 +27,11 @@ Non-goals:
 
 | Part | Owns | Load when |
 | --- | --- | --- |
-| [contract](contract.md) | Source references and AC-1 through AC-20. | Defining or checking required behavior and negative controls. |
-| [design](design.md) | D-1 through D-7 and edit boundaries. | Reviewing service ownership, admission or durable outcomes. |
+| [contract](contract.md) | Source references and AC-1 through AC-32. | Defining or checking required behavior and negative controls. |
+| [design](design.md) | D-1 through D-7 and architectural alternatives. | Reviewing the selected architecture and its alternatives. |
+| [platform](platform.md) | D-8 platform registration, authentication and custody candidates. | Reviewing installed root and client lifetime. |
+| [admission](admission.md) | D-9 proposed identities, interfaces, grants and release ordering. | Reviewing admission and bounded transport. |
+| [outcomes](outcomes.md) | D-10 state schema, transactions, retention, storage limits and edit boundaries. | Reviewing durable outcomes and recovery. |
 | [validation](validation.md) | Tasks, evidence, performance, open questions and blockers. | Scheduling implementation, reviewing proof or deciding exposure. |
 
 ## Current blockers
