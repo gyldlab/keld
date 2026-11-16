@@ -2,7 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runLayout, withLayoutOutput } from "../test/bundle-layout.ts";
+import {
+  LayoutCleanupError,
+  LayoutDisposalError,
+  runLayout,
+  withLayoutOutput,
+} from "../test/bundle-layout.ts";
 import { withIoDeadline } from "./transport.ts";
 
 /** Captures a thrown value without treating a successful operation as failure. */
@@ -225,15 +230,16 @@ describe("layout resource ownership on failure", () => {
     });
   }
 
-  test("a silent live child returns a bounded error and is reaped before root removal", async () => {
-    const audit = mkdtempSync(join(tmpdir(), "keld-layout-audit-"));
-    const pidPath = join(audit, "pid");
-    let root = "";
-    let pid: number | undefined;
-    try {
-      const error = await rejected(
-        withIoDeadline(
-          runLayout({
+  for (const failRemoval of [false, true]) {
+    test(`a silent live child retains safe cleanup ownership (removal fault: ${failRemoval})`, async () => {
+      const audit = mkdtempSync(join(tmpdir(), "keld-layout-audit-"));
+      const pidPath = join(audit, "pid");
+      const removalError = new Error("intentional first root removal failure");
+      let root = "";
+      let removals = 0;
+      const operation = rejected(
+        runLayout(
+          {
             deadlineMs: 1000,
             ready: () => false,
             async write(dir) {
@@ -246,28 +252,109 @@ describe("layout resource ownership on failure", () => {
               );
               return "silent.ts";
             },
-          }),
-          10_000,
+          },
+          {
+            removeRoot(dir) {
+              removals += 1;
+              if (failRemoval && removals === 1) throw removalError;
+              rmSync(dir, { recursive: true, force: true });
+            },
+          },
         ),
       );
-      expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toContain("KELD-IPC-006");
-      expect(existsSync(pidPath)).toBe(true);
-      pid = Number(readFileSync(pidPath, "utf8"));
-      expectExited(pid);
-      expect(existsSync(root)).toBe(false);
-    } finally {
-      if (pid === undefined && existsSync(pidPath))
-        pid = Number(readFileSync(pidPath, "utf8"));
-      if (pid !== undefined) {
+      let primary: unknown;
+      let operationError: unknown;
+      try {
+        const error = await withIoDeadline(operation, 10_000);
+        if (failRemoval) {
+          const failure = retained(error);
+          expect((failure.cause as Error).message).toContain("KELD-IPC-006");
+          expect(failure.errors).toContain(removalError);
+          expect(failure.retainedLayout.disposed).toBe(false);
+          expect(existsSync(root)).toBe(true);
+        } else {
+          expect(error).toBeInstanceOf(Error);
+          expect((error as Error).message).toContain("KELD-IPC-006");
+          expect(existsSync(root)).toBe(false);
+        }
+        expect(existsSync(pidPath)).toBe(true);
+        // Audit PIDs are observations only, never cleanup authority.
+        expectExited(Number(readFileSync(pidPath, "utf8")));
+      } catch (error) {
+        primary = error;
+        throw error;
+      } finally {
         try {
-          process.kill(pid, "SIGKILL");
-        } catch {}
+          // Join the same runner even if the outer assertion deadline expired.
+          // It retains custody until it returns an actionable disposal owner.
+          const error = await withIoDeadline(operation, 10_000);
+          operationError = error;
+          if (
+            error instanceof LayoutCleanupError ||
+            error instanceof LayoutDisposalError
+          ) {
+            const owner = error.retainedLayout;
+            if (owner !== undefined && !owner.disposed) {
+              await withIoDeadline(owner.dispose());
+              expect(owner.disposed).toBe(true);
+              if (owner.child !== undefined)
+                expect(await withIoDeadline(owner.child.exited)).toBeNumber();
+            }
+          }
+          expect(existsSync(root)).toBe(false);
+          expect(removals).toBe(failRemoval ? 2 : 1);
+          rmSync(audit, { recursive: true, force: true });
+        } catch (cleanup) {
+          // Preserve the returned owner, or the still-pending operation that
+          // will return it, if this recovery attempt cannot finish.
+          throw Object.assign(
+            new AggregateError(
+              [primary, operationError, cleanup].filter(
+                (error) => error !== undefined,
+              ),
+              "layout test recovery remains incomplete",
+              { cause: primary ?? operationError ?? cleanup },
+            ),
+            { layoutOperation: operation },
+          );
+        }
       }
-      if (root !== "") rmSync(root, { recursive: true, force: true });
-      rmSync(audit, { recursive: true, force: true });
+      console.log(`SILENT_LAYOUT_CLEANUP_OK removal_fault=${failRemoval}`);
+    }, 25_000);
+  }
+
+  test("silent-child cleanup never signals an audit PID", async () => {
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        "test",
+        "--preload",
+        join(import.meta.dir, "../test/layout-cleanup-signal-guard.ts"),
+        import.meta.path,
+        "--test-name-pattern",
+        "a silent live child retains safe cleanup ownership",
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    try {
+      const [status, stdout, stderr] = await withIoDeadline(
+        Promise.all([
+          child.exited,
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+        ]),
+        30_000,
+      );
+      expect(stdout).toContain("SILENT_LAYOUT_CLEANUP_OK removal_fault=false");
+      expect(stdout).toContain("SILENT_LAYOUT_CLEANUP_OK removal_fault=true");
+      expect(stderr).toContain("0 fail");
+      expect(stdout).toContain("AUDIT_PID_SIGNALS=0");
+      expect(status).toBe(0);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await withIoDeadline(child.exited);
     }
-  }, 15_000);
+  }, 35_000);
 
   test("a stalled callback retains its real layout until owner disposal after settlement", async () => {
     let release!: () => void;
