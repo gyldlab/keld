@@ -131,18 +131,26 @@ commissioning; those remain separate T-81/AC-66 gates.
 | Group | Positive | Single-fault refusal and independent oracle |
 |---|---|---|
 | R1 / AC-66 | Genuinely independent recovery signer accepted under pinned durable profile/issuer, including a renewed leaf with a different SPKI | Ordinary application signer, recovery signer on an ordinary candidate, or a dual-profile leaf with valid Authenticode and directive must fail the role-specific signer predicate; record zero trust mutations |
-| R2 / AC-67 | Expire `prepared`, durably abort, retire exact successor, record matching completion, clear pointer, and start fresh authorized attempt | Expired or mismatched directive, missing or mismatched completion, and each crash cut; verify pointer, journal, successor, provenance, epoch and current/LKG |
+| R2 / AC-67 | Expire `prepared` with zero, some or all exact preparation objects published. Durably abort, retire exact planned objects and start a fresh authorized attempt | Truncated or foreign canonical objects halt for KEL-53 operator disposition. Stale directive, missing completion or divergent journal refuses. Check pointer, old current/LKG, epoch and planned objects at each crash cut |
 | R3 / AC-68 | Old U1 signer unavailable. Valid signed recovery-only Host/directive, fresh consent, new root and U2 complete loss-only recovery | Missing independent recovery authority refuses before trust commit. A normal transition without U1 signature refuses under AC-61. Single-field repository-policy mutations refuse. Check current, provenance, and epoch before and after |
 
-For R2, cut before retirement-intent publication and after its journal digest readback.
+For R2, cut after prepared-journal and pointer readback, before the
+first preparation blob, during each blob write, before successor
+publication and before current replacement. For present canonical
+objects, distinguish fully authenticated and exclusively owned bytes
+from truncated, corrupt or foreign bytes. The former permits bounded
+retirement; the latter MUST halt without deletion or pointer removal.
+For R2, also cut before retirement-intent publication and after its journal digest readback.
 Cut after every exclusive blob deletion and after orphan-generation deletion.
 Also cut after durable completion-digest readback, after intent removal,
 and before pending-pointer removal. With the intent present, restart
 MUST finish only its listed cleanup. With the intent absent, restart
-MUST verify matching journal digests and remove only the pending pointer.
+MUST publish the first intent for both null journal digests, or verify
+equal non-null digests and all planned-object paths absent before
+pointer-only removal.
 Remove or mismatch the completion digest as separate single-fault controls.
-Both MUST refuse pointer removal and fresh admission. Absent unlisted
-or newly referenced objects MUST halt without deletion.
+Both MUST refuse pointer removal and fresh admission. Unexpected
+attempt-owned or newly referenced objects MUST halt without deletion.
 For R3, independently mutate recovery digest, recovery signer, catalogue keys, metadata/targets URLs, discovery digest, publisher digest, and root version.
 Keep Windows signature validity, source-state integrity, and unrelated checks valid in each negative control.
 The review addenda are new planned coverage, not retroactive passes for any of the 110 product cases.

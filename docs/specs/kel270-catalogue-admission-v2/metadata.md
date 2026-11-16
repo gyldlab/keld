@@ -211,7 +211,8 @@ readback-verified `aborted` phase are required. The protected journal
 MUST predate all preparation writes and bind the complete expected exclusive
 blob list. Verify each present planned object by digest, protection and
 retained owner. An absent planned object may not have been written.
-Refuse unlisted objects. Before any deletion, the recovery owner MUST
+Refuse unlisted attempt-owned preparation objects, not unrelated
+authenticated shared objects. Before any deletion, the recovery owner MUST
 durably publish and read back a D-23 intent at
 `retirements/<oldSequence+1>.json` with mode `recovery`, the exact
 `attemptId`, journal-bound expected successor digest and all planned
@@ -228,10 +229,12 @@ the aborted recovery journal. Then remove and reread the intent as absent.
 If restart finds the pointer, no intent and both journal digests null,
 cleanup has not started. Verify the complete protected prewrite plan,
 old state, attempt and every present exact unreferenced planned object.
-Refuse unlisted objects, changed bytes and foreign ownership.
+Refuse unlisted attempt-owned preparation objects, changed candidate
+bytes and foreign ownership. Leave unrelated shared blobs untouched.
 Publish and reread the D-23 intent before any deletion.
 If both journal digests are non-null, require equality and matching old
-state and attempt. Only D-68 pointer removal may proceed.
+state and attempt. Verify the expected successor and all journal-planned
+exclusive blobs absent before D-68 pointer-only removal.
 Mixed or mismatched journal digests MUST halt without deletion or pointer
 removal. Keep the aborted journal through verified pointer absence.
 A new attempt may use the immutable next-sequence filename only then.
