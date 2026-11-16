@@ -225,6 +225,40 @@ fn published_boards(corpus: &Corpus) -> Vec<PlatformBoard> {
         .collect()
 }
 
+/// A recomputed scoreboard cannot authorize verdicts that frozen report prose
+/// and cell rows do not represent, including a swap that preserves totals.
+#[test]
+fn report_rejects_changed_verdicts_even_with_recomputed_scores() {
+    let corpus = corpus();
+    for preserve_totals in [false, true] {
+        let mut boards = published_boards(&corpus);
+        for (entry, published) in boards.iter_mut().zip(PUBLISHED) {
+            let original = std::str::from_utf8(published.evidence[0]).expect("evidence UTF-8");
+            let changed = original.replacen("\"result\": \"pass\"", "\"result\": \"fail\"", 1);
+            assert_ne!(changed, original);
+            entry.records[0] = parse_evidence(changed.as_bytes()).expect("valid changed verdict");
+            if preserve_totals {
+                let original = std::str::from_utf8(published.evidence[2]).expect("evidence UTF-8");
+                let changed = original.replacen("\"result\": \"fail\"", "\"result\": \"pass\"", 1);
+                assert_ne!(changed, original);
+                entry.records[2] =
+                    parse_evidence(changed.as_bytes()).expect("valid swapped verdict");
+            }
+            entry.board = score(
+                corpus.denominator(),
+                &entry.records,
+                V0_FROZEN.records_as_of,
+            )
+            .expect("score changed records");
+            assert_eq!(entry.board.passed(), if preserve_totals { 2 } else { 1 });
+        }
+        assert!(
+            render_report_from(&corpus, &boards).is_none(),
+            "frozen report must reject changed verdicts (preserve_totals={preserve_totals})"
+        );
+    }
+}
+
 /// gh566 C7: the one profile every board shares, rendered through `as_str`. `None`
 /// when any board has no single profile or two boards disagree.
 fn authority_line(boards: &[Scoreboard]) -> Option<&'static str> {
@@ -260,7 +294,9 @@ fn render_report() -> String {
 
 /// Renders the report over exactly the published platforms, in canonical
 /// platform/architecture order. Refuse missing, extra or misordered rows and
-/// boards without one shared authority profile (gh566 C7).
+/// boards without one shared authority profile (gh566 C7). The fixed cell rows
+/// and explanatory prose require the published operation/verdict pairs; the
+/// authority profile remains independently derived from the supplied boards.
 fn render_report_from(corpus: &Corpus, boards: &[PlatformBoard]) -> Option<String> {
     if boards.len() != PUBLISHED.len()
         || !boards
@@ -274,7 +310,13 @@ fn render_report_from(corpus: &Corpus, boards: &[PlatformBoard]) -> Option<Strin
             .zip(PUBLISHED.iter())
             .all(|(board, published)| {
                 let receipt_uri = sha256_uri(published.receipt);
+                let frozen = parse_records(*published);
                 board.records.len() == corpus.cells().len()
+                    && board.records.len() == frozen.len()
+                    && board.records.iter().zip(&frozen).all(|(record, expected)| {
+                        record.operation() == expected.operation()
+                            && record.result() == expected.result()
+                    })
                     && board.records.iter().all(|record| {
                         record.artifact().platform == published.platform
                             && record.artifact().arch == published.arch
@@ -290,9 +332,14 @@ fn render_report_from(corpus: &Corpus, boards: &[PlatformBoard]) -> Option<Strin
     {
         return None;
     }
-    let pin = corpus.pin();
     let scores: Vec<Scoreboard> = boards.iter().map(|entry| entry.board.clone()).collect();
     let authority = authority_line(&scores)?;
+    Some(render_validated_report(corpus, boards, authority))
+}
+
+/// Formats only boards already admitted by the frozen report contract.
+fn render_validated_report(corpus: &Corpus, boards: &[PlatformBoard], authority: &str) -> String {
+    let pin = corpus.pin();
     let mut out = String::new();
 
     writeln!(out, "# Bounded Electron lifecycle evidence report").expect("String write");
@@ -408,7 +455,7 @@ fn render_report_from(corpus: &Corpus, boards: &[PlatformBoard]) -> Option<Strin
     )
     .expect("String write");
 
-    Some(out)
+    out
 }
 
 /// Verifies one CI receipt is tied to the claimed runner, source, runtime, and corpus.
@@ -597,9 +644,9 @@ fn lifecycle_evidence_negative_controls_change_score_and_break_receipt_binding()
 fn report_authority_line_comes_from_the_board() {
     let corpus = corpus();
     let boards = published_boards(&corpus);
-    let scores: Vec<Scoreboard> = boards.iter().map(|entry| entry.board.clone()).collect();
+    let profiles: Vec<Scoreboard> = boards.iter().map(|entry| entry.board.clone()).collect();
     assert_eq!(
-        authority_line(&scores),
+        authority_line(&profiles),
         Some(AuthorityProfile::LegacySandboxOff.as_str())
     );
 
@@ -635,11 +682,11 @@ fn report_authority_line_comes_from_the_board() {
     assert_eq!(line, Some("unverified"));
     assert_ne!(
         line,
-        authority_line(&scores),
+        authority_line(&profiles),
         "the line follows the records"
     );
 
-    let disagreeing = [scores[0].clone(), scored(&all_unverified)];
+    let disagreeing = [profiles[0].clone(), scored(&all_unverified)];
     assert_eq!(
         authority_line(&disagreeing),
         None,
