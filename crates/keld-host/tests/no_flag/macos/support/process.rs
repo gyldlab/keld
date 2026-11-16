@@ -308,17 +308,14 @@ fn shipping_cleanup_reaped_leader_uses_only_original_live_member() {
         .expect("original fixture group leader");
     let group = leader.id();
     cleanup.record_host_group(group, std::process::id());
+    let original = retain_parented_group_birth(group, std::process::id());
     let mut line = String::new();
     BufReader::new(leader.stdout.take().expect("member PID pipe"))
         .read_line(&mut line)
         .expect("member PID line");
     let member = line.trim().parse::<u32>().expect("member PID");
     assert_eq!(process_group(member), group);
-    cleanup.host_member = Some(retain_parented_group_member(
-        member,
-        group,
-        cleanup.host_birth.expect("original group birth"),
-    ));
+    cleanup.host_member = Some(retain_parented_group_member(member, group, original));
 
     kill_pid(group);
     leader.wait().expect("reap original group leader");
@@ -327,7 +324,7 @@ fn shipping_cleanup_reaped_leader_uses_only_original_live_member() {
         "member survives original leader reap"
     );
     assert_eq!(process_group(member), group);
-    let denied = signal_attested_group("-TERM", cleanup.host_birth.expect("original group birth"))
+    let denied = signal_attested_group("-TERM", original)
         .expect_err("reaped group leader cannot authorize the normal group signal");
     assert_eq!(denied.kind(), std::io::ErrorKind::PermissionDenied);
     drop(cleanup);
@@ -337,9 +334,8 @@ fn shipping_cleanup_reaped_leader_uses_only_original_live_member() {
 #[test]
 fn shipping_cleanup_forged_member_birth_refuses_group_signal() {
     let mut leader = Command::new("/bin/sh")
-        .args(["-c", "cat & child=$!; printf '%s\\n' \"$child\"; wait"])
+        .args(["-c", "sleep 60 & child=$!; printf '%s\\n' \"$child\"; wait"])
         .process_group(0)
-        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
         .expect("fixture leader");

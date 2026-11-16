@@ -576,6 +576,7 @@ fn run_case(
     let (app_ready, page_ready, result, journal) = await_phases(&observation, &project.root, case)?;
     let [host, guardian, bun, descendant] = observed_auth_family(&app_ready, cli_pid)?;
     cleanup.record_authenticated_groups(process_group(host), process_group(bun));
+    cleanup.record_authenticated_members(guardian, descendant);
     let host_image = process_image_path(host);
     let boot = project.verify_stock_stage(&host_image, host_source, case)?;
     let windows = window.as_mut().map_or_else(Vec::new, |window| {

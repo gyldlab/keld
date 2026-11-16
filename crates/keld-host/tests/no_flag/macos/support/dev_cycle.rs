@@ -100,30 +100,31 @@ impl ShippingLaunchCleanup {
         }
     }
 
-    pub(crate) fn record_authenticated_groups(
-        &mut self,
-        host_group: u32,
-        guardian: u32,
-        bun_group: u32,
-        descendant: u32,
-    ) {
+    pub(crate) fn record_authenticated_groups(&mut self, host_group: u32, bun_group: u32) {
         let cli_pid = self.cli.as_ref().expect("live shipping CLI owner").id();
         // A parsed PID alone is not an authenticated process birth. Verify
         // kernel lineage from the live CLI down to Bun before retaining it.
         self.record_host_group(host_group, cli_pid);
-        assert_eq!(parent_process(guardian), host_group);
-        self.host_member = Some(retain_parented_group_member(
-            guardian,
-            host_group,
-            self.host_birth.expect("verified host leader"),
-        ));
-        assert_eq!(parent_process(bun_group), guardian);
+        let guardian = parent_process(bun_group);
         assert_eq!(
             parent_process(guardian),
             host_group,
             "Bun Guardian must belong to this Host"
         );
         self.record_bun_group(bun_group, guardian);
+    }
+
+    /// Only callers with an independently observed descendant may retain
+    /// optional member evidence for a reaped-leader cleanup fallback.
+    pub(crate) fn record_authenticated_members(&mut self, guardian: u32, descendant: u32) {
+        let host_group = self.host_group.expect("authenticated host group");
+        let bun_group = self.bun_group.expect("authenticated Bun group");
+        self.host_member = Some(retain_parented_group_member(
+            guardian,
+            host_group,
+            self.host_birth.expect("verified host leader"),
+        ));
+        assert_eq!(parent_process(bun_group), guardian);
         self.bun_member = Some(retain_parented_group_member(
             descendant,
             bun_group,
@@ -239,7 +240,8 @@ impl ShippingDevCycle {
             owns_expected_tree,
             "shipping keld dev did not delegate CLI {cli_pid} -> host {host_pid} -> guardian {guardian_pid} -> Bun {bun_pid}"
         );
-        cleanup.record_authenticated_groups(host_pid, guardian_pid, bun_pid, descendant_pid);
+        cleanup.record_authenticated_groups(host_pid, bun_pid);
+        cleanup.record_authenticated_members(guardian_pid, descendant_pid);
         let mut cycle = Self {
             cli: Some(cleanup.release()),
             cli_pid,
