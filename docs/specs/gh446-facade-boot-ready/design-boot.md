@@ -110,9 +110,10 @@ Independence and the coupling they expose:
   because recovery is armed on the first successful `Ready` write (KEL-96 §4.4). This
   edge is explicit: D-3 and D-4 put every startup-fallible step before the trigger, so
   the arm point never precedes a startup failure.
-- **A3 ↔ F02-T2.** This is an edge, not shared state. This spec fixes where the
-  registry install sits and when its not-ready state ends. F02-T2 builds the registry
-  and its test (AC-16).
+- **A3 ↔ F02-T2.** This is an ownership edge, not shared state. The current Pin
+  already constructs `WindowSession`/`WindowRegistry` in `finish_start` for facade
+  boots. F02-T2 owns qualification of this existing pre-loop service and its rule-2
+  test (AC-16), and implements only gaps proved by those tests.
 - **A7 ↔ GH-531 D-6 and #449.** These are explicit cross-spec edges. D-6 owns host crash
   ownership of windows for every boot kind. The registry's `Create` adoption, which
   lands with #449, owns the no-second-window rule, keyed on registry state.
@@ -323,8 +324,11 @@ window-call path.
 
 - *Facade discipline only.* A role that bypasses the facade could create a window
   before `Ready`, so census 0 would not be a host fact.
-- *A registry-ready handshake before `Ready`.* The registry does not exist yet; a
-  handshake now would be a hollow seam.
+- *A separate registry-ready handshake before `Ready`.* The registry already
+  exists before the UI loop and has an internal `ready` state. `signal_ready` marks
+  it serviceable under the shutdown transition guard immediately before writing
+  `Ready`; a second wire handshake would duplicate that guarded transition and add
+  a protocol edge without improving admission.
 - *A second lifecycle event, "window module ready".* That is a wire change, and
   Electron has one `ready`.
 
@@ -334,8 +338,9 @@ window-call path.
   NC: marking the registry ready at construction serves it.
 - A failed install that writes `Ready` (AC-14). NC: signalling before the install result
   writes it.
-- GH-531 criterion 14's NC: a registry started after `Ready` refuses the first `Create`
-  with `KELD-CORE-040`.
+- GH-531 criterion 14's NC: delay the registry's readiness transition until
+  after `Ready` is written; the first `Create` after observing `Ready` is then
+  incorrectly refused with `KELD-CORE-040`.
 
 ### D-5: Host Ready, entry evaluation and usable facade readiness
 
