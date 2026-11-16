@@ -304,6 +304,13 @@ fn report_selected_guardian_exit(guardian_exit: Option<&GuardianExitWitness>) {
     }
 }
 
+fn release_public_quit(observer: &Observation) {
+    observer
+        .quit
+        .send(())
+        .expect("release public app Quit after observations");
+}
+
 fn run_launch_with_causal_receipt(
     fixture: &PublicFsProject,
     launch: usize,
@@ -372,7 +379,7 @@ fn run_launch_with_causal_receipt(
         if let Some(exit) = guardian_exit.as_mut() {
             exit.seal_before_quit_release();
         }
-        observer.quit.send(()).expect("release public app Quit after observations");
+        release_public_quit(&observer);
     }
     // Keep the existing launch/group custody and collect host output even when
     // a post-Quit kernel/descendant assertion fails under the production mutation.
