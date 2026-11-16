@@ -1,7 +1,9 @@
 # Spec: native application-role qualification
 
 Status: draft
-Linear: KEL-75 · Owner: GYLDLAB · Updated: 2026-11-16
+Tracker: KEL-75
+Owner: GYLDLAB
+Updated: 2026-11-16
 Pin: 1fff0fbc8f6d214b63d865181bb0d483c6fed670
 
 This pin records the pre-correction PR snapshot reviewed on 2026-11-16.
@@ -10,7 +12,11 @@ T9a must reconcile the governing contracts against its implementation baseline b
 
 ## 1. Goal & non-goals
 
-Keld must allow application logic to remain TypeScript/Bun, move selected logic to a managed native Rust role, or eventually use a Rust-only application primary without forking or recompiling the Keld host. The observable goal is runtime substitution behind the same host-owned identity, lifecycle, permission intent and renderer contract. This specification deliberately proves one second execution consumer before generalizing the framework.
+Keld must allow application logic to remain TypeScript/Bun, move selected logic to a managed native Rust role,
+or eventually use a Rust-only application primary without forking or recompiling the Keld host. The observable
+goal is runtime substitution behind the same host-owned identity, lifecycle, permission intent and renderer
+contract. This specification deliberately proves one second execution consumer before generalizing the
+framework.
 
 Non-goals:
 
@@ -36,7 +42,7 @@ Governing contracts:
 
 This draft intentionally does not change architecture 01's normative “JS owns the app” wording. Promotion to `approved` requires the synchronized architecture/config/public-contract delta that replaces that destination with runtime-neutral application roles while preserving Bun as the default and Electron-compatibility runtime.
 
-## 3. Acceptance criteria (binary, each becomes a test)
+## 3. Acceptance criteria
 
 ### AC-1
 
@@ -252,28 +258,64 @@ Must not touch merely to make the design look generic:
 
 ## 6. Tasks
 
-- [ ] T9a — promote this draft with synchronized architecture/config/current-vs-target wording; freeze the smallest host-owned native-role declaration without adding a public runtime-plugin API; resolve and register the AC-6 caller-visible ambiguity contract and SDK mapping before approval. **T9b–T9g remain planning-only and MUST NOT begin until T9a lands with this specification at `Status: approved`.**
-- [ ] T9b — after approved T9a, implement one supervised Rust service role on one already-qualified OS using the existing preparation/generation/app-link owner; no renderer API change.
-- [ ] T9c — same-contract hybrid fixture: TS implementation and Rust implementation separately satisfy value/error/permission/ordering/malformed-input vectors; renderer call site is unchanged.
-- [ ] T9d — KEL-78 containment qualification for that exact native artifact, including hostile file/network/process/code-load/hang/abort/resource tests and descendant cleanup.
-- [ ] T9e — Rust-only primary product fixture: no Bun process/artifact, real renderer call, guarded denial, recovery/ambiguous-effect case and clean Quit.
-- [ ] T9f — repeat T9b–T9e independently on each additional claimed OS/architecture/security profile; unsupported cells remain explicit.
-- [ ] T9g — only after measured consumer evidence, decide whether any additional runtime/language adapter is worth product support.
 
+### T-1: T9a
+
+- **Blocked by:** none
+
+promote this draft with synchronized architecture/config/current-vs-target wording; freeze the smallest host-owned native-role declaration without adding a public runtime-plugin API; resolve and register the AC-6 caller-visible ambiguity contract and SDK mapping before approval. **T9b–T9g remain planning-only and MUST NOT begin until T9a lands with this specification at `Status: approved`.**
+
+### T-2: T9b
+
+- **Blocked by:** T-1
+
+after approved T9a, implement one supervised Rust service role on one already-qualified OS using the existing preparation/generation/app-link owner; no renderer API change.
+
+### T-3: T9c
+
+- **Blocked by:** T-1
+
+same-contract hybrid fixture: TS implementation and Rust implementation separately satisfy value/error/permission/ordering/malformed-input vectors; renderer call site is unchanged.
+
+### T-4: T9d
+
+- **Blocked by:** T-1
+
+KEL-78 containment qualification for that exact native artifact, including hostile file/network/process/code-load/hang/abort/resource tests and descendant cleanup.
+
+### T-5: T9e
+
+- **Blocked by:** T-1
+
+Rust-only primary product fixture: no Bun process/artifact, real renderer call, guarded denial, recovery/ambiguous-effect case and clean Quit.
+
+### T-6: T9f
+
+- **Blocked by:** T-1
+
+repeat T9b–T9e independently on each additional claimed OS/architecture/security profile; unsupported cells remain explicit.
+
+### T-7: T9g
+
+- **Blocked by:** T-1
+
+only after measured consumer evidence, decide whether any additional runtime/language adapter is worth product support.
+
+The T-1 to T-7 headings map to the existing T9a to T9g plan without changing its scope.
 T9 is additive to existing KEL-75 T4–T7/T8 work; numbering does not retroactively change those passed artifacts.
 
-## 7. Test plan
+## 7. Test plan & evidence
 
-- AC1: existing Bun product/role/compat suites plus KEL-139 minimum-spine acceptance; no native prerequisite may be introduced.
-- AC2–3: focused runtime contract/integration test with a real child; mutations adding a second restart owner, trusting child identity or reusing a generation must fail.
-- AC4–5: KEL-98 literal golden vectors and same-renderer-call differential fixtures for TS/Rust; malformed vectors include boundary integers, bytes, absence/null if admitted, U+FEFF, malformed UTF-8 and version mismatch.
-- AC6: subprocess service fixture commits a visible side effect, dies before reply, and asserts no automatic replay/false rollback. A follow-up explicit idempotent application contract may prove safe retry separately.
-- AC7: permission integration fixture attempts indirect deputy escalation; removing caller/delegation binding must make the negative test fail.
-- AC8: subprocess hostile matrix for abort/hang/output flood/protocol violation/resource limit; unrelated role/window positive call remains live and descendant census is clean.
-- AC9: clean packaged-process/artifact census with Bun executable/runtime removed; invoke/quit still pass.
-- AC10: clean-machine TS workflow with Cargo/rustc/rustup unavailable; document any third-party native dependency exception.
-- AC11: doctor/build negative cases for unsupported tuples and strict-profile admission failure; no fallback path may pass the test.
-- AC12: KEL-90 matched result.v2 measurement after semantic/security equivalence. No benchmark is required merely to land correctness T9b.
+- AC-1: existing Bun product/role/compat suites plus KEL-139 minimum-spine acceptance; no native prerequisite may be introduced.
+- AC-2–3: focused runtime contract/integration test with a real child; mutations adding a second restart owner, trusting child identity or reusing a generation must fail.
+- AC-4–5: KEL-98 literal golden vectors and same-renderer-call differential fixtures for TS/Rust; malformed vectors include boundary integers, bytes, absence/null if admitted, U+FEFF, malformed UTF-8 and version mismatch.
+- AC-6: subprocess service fixture commits a visible side effect, dies before reply, and asserts no automatic replay/false rollback. A follow-up explicit idempotent application contract may prove safe retry separately.
+- AC-7: permission integration fixture attempts indirect deputy escalation; removing caller/delegation binding must make the negative test fail.
+- AC-8: subprocess hostile matrix for abort/hang/output flood/protocol violation/resource limit; unrelated role/window positive call remains live and descendant census is clean.
+- AC-9: clean packaged-process/artifact census with Bun executable/runtime removed; invoke/quit still pass.
+- AC-10: clean-machine TS workflow with Cargo/rustc/rustup unavailable; document any third-party native dependency exception.
+- AC-11: doctor/build negative cases for unsupported tuples and strict-profile admission failure; no fallback path may pass the test.
+- AC-12: KEL-90 matched result.v2 measurement after semantic/security equivalence. No benchmark is required merely to land correctness T9b.
 
 Anti-flake: use marker/IPC/process-handle conditions, temporary owner-private paths and bounded deadlines; never sleep-sync. Real OS/device claims execute on that OS and retain artifact/process evidence.
 
@@ -289,7 +331,7 @@ Anti-flake: use marker/IPC/process-handle conditions, temporary owner-private pa
 
 The design itself changes no budget. A native role can add a process, memory, wakeups, serialization and packaging bytes even if a workload runs faster. KEL-90 owns the matched full-process/end-to-end evidence before any performance-motivated substitution or shared-memory path becomes a retained product design.
 
-## 10. Open questions
+## 10. Open questions, blockers & unknowns
 
 - Exact public configuration spelling and SDK package/crate naming are intentionally unresolved until T9a reviews the smallest consumer-facing surface against KEL-139/KEL-142 and packaging constraints.
 - Which OS should host T9b first is an execution/evidence choice, not an architecture decision; select the currently available platform with the smallest qualified containment/delivery delta without inferring support elsewhere.
