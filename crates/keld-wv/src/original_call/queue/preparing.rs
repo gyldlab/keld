@@ -1,10 +1,12 @@
+#[cfg(windows)]
+use super::RendererRoleWitness;
 use super::{
     ActiveOriginalCall, ActiveOriginalRecord, NativeDocumentOwner, OriginalBinding,
     OriginalCallAdmission, OriginalCallQueue, OriginalControlFault, OriginalInvocationKind,
     OriginalQueueProgress, PendingOriginalCall, PendingOriginalEvent, PendingOriginalSend,
     PreparationDisposition, PreparationPhase, PreparingOriginalIdentity,
     PreparingOriginalInvocation, PreparingRecord, QueuedOriginalCall, Rc, RendererBridgeRequest,
-    RendererRoleWitness, SyncSender, WvError, bridge_error,
+    SyncSender, WvError, bridge_error,
 };
 
 impl<P> OriginalCallQueue<P> {
