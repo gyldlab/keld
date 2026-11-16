@@ -129,7 +129,11 @@ The names below are proposed.
 ### AC-9: Recovered generation, compatibility side
 - **Given:** The `electron-app-v1` cell `app.ready.recovered-generation` on macOS.
 - **When:** The corpus records the compatibility result.
-- **Then:** The cell remains `unknown` and uncited under GH-532 rule 6. Electron has no matching supervised main-process recovery contract. The existing `app.ready.api-first-late-listener` today-test in `app-surface.test.ts` covers only the no-replay behavior for a listener registered after the API observed Host Ready; it does not exercise supervised role recovery and is not evidence for changing this cell's status.
+- **Then:** The cell remains `unknown` and uncited under GH-532 rule 6. Electron has no
+  matching supervised main-process recovery contract. The existing
+  `app.ready.api-first-late-listener` today-test in `app-surface.test.ts` covers only
+  no-replay behavior for a listener registered after the API observed Host Ready. It
+  does not exercise supervised role recovery or change this cell's status.
 - **Negative control:** Replay cached Ready to a listener registered after the API observed Host Ready.
   - **Single fault:** Deliver a cached `ready` event to a listener registered after the API has observed Host Ready.
   - **At-risk precondition:** The API observed Host Ready before the late listener was registered.
@@ -238,9 +242,9 @@ The names below are proposed.
   - **At-risk precondition:** The host ID is deliberately different from the local allocation counter.
   - **Expected RED:** The returned identity is wrong or a new native window is allocated.
 - **Additional control — eligible-survivor adoption:** Delete the registry's successor `Create` adoption arm.
-  - **Single fault:** Skip the adoptable-window match and fall through to a new native allocation.
-  - **At-risk precondition:** The successor has an eligible survivor after accepted Subscribe/replay and invokes `Create` through the constructor.
-  - **Expected RED:** The host returns `Created` instead of `Adopted`, the native-allocation count increases, and the returned identity is not the survivor's.
+  - **Mutation:** Skip the adoptable-window match and fall through to native allocation (one fault).
+  - **Setup:** The successor has an eligible survivor after accepted Subscribe/replay and invokes `Create` through the constructor.
+  - **Failure:** The host returns `Created` instead of `Adopted`, native allocation count increases, and returned identity is not the survivor's.
 - **Other controls:** Drop an unclaimed survivor, disable adoption, or enforce a global one-window cap. Each mutation must fail its own assertion.
 
 ### AC-20: Failure custody survives the new boot mode

@@ -18,7 +18,13 @@ Owns: Test mapping, regression situations, platform acceptance and performance i
   ordering, bounded by frames, not time
 - **AC-8:** `schema_two_successor_reads_ready_once_and_host_creates_no_window`; macOS recovery integration Anti-flake: existing recovery support; fence after
   `READY`
-- **AC-9:** cell `app.ready.recovered-generation` remains `unknown` and uncited under GH-532 rule 6; no current today-test proves supervised main-process recovery. The separate `app.ready.api-first-late-listener` today-test in `app-surface.test.ts` protects only the no-replay behavior for a listener registered after Host Ready; its NC replays Ready to that late listener and expects `lateListener=0`. Eligible-survivor adoption is tested separately by AC-19 / GH-531 criterion 46. Anti-flake: gh566 admission; fresh role process, no timing
+- **AC-9:** cell `app.ready.recovered-generation` remains `unknown` and uncited under
+  GH-532 rule 6; no current today-test proves supervised main-process recovery. The
+  separate `app.ready.api-first-late-listener` today-test in `app-surface.test.ts`
+  protects only no-replay behavior for a listener registered after Host Ready; its NC
+  replays Ready to that late listener and expects `lateListener=0`. Eligible-survivor
+  adoption is tested separately by AC-19 / GH-531 criterion 46. Anti-flake: gh566
+  admission; fresh role process, no timing
 - **AC-10:** the named existing tests; `lifecycle_corpus_rust_oracles_execute` Anti-flake: unchanged
 - **AC-11:** `schema_two_descriptor_is_refused_before_any_application_resource`; Linux and Windows no-flag integration (CI) Anti-flake: resource census like
   `windows_pre_ready_crash_denies_successor_before_provisioning`
