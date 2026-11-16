@@ -3,7 +3,7 @@
 - Status: draft
 - Tracker: GH-1356
 - Owner: @0monish
-- Updated: 2026-11-13
+- Updated: 2026-11-16
 - Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
 
 ## 1. Goal & non-goals
@@ -96,6 +96,16 @@ FACT: [Zettlr proof owner #1354](https://github.com/gyldlab/keld/issues/1354) se
   - **At-risk precondition:** Run the direct getter before the application helper.
   - **Expected RED:** The direct error assertion fails even if the UI color looks identical.
 
+### AC-8: Preserve a transition before seed capture
+
+- **Given:** B-2 is closed. One supported registration exists before the initial seed arrives. The OS is light.
+- **When:** Change the OS to dark after registration but before Host mirror capture. Deliver the approved baseline and transition records.
+- **Then:** The subscriber receives exactly one dark-transition callback. Baseline application alone produces no callback.
+- **Negative control:**
+  - **Single fault:** Replace the baseline and transition records with only the latest dark snapshot.
+  - **At-risk precondition:** Hold capture until the registered subscriber's light-to-dark transition has committed.
+  - **Expected RED:** The callback census is zero instead of one.
+
 ## 4. Design
 
 The input is the OS appearance transition already observed by the single Host owner. The app's effective dark mode can differ when it overrides themeSource. Compare
@@ -109,7 +119,16 @@ Before invocation, require the table entry to be that exact registration. A repl
 Validate before allocation. Bound active entries with the facade's approved retention policy; exact budget and exhaustion diagnostic belong in
 approval.
 
-An authenticated Host seed establishes the baseline. A subsequent genuine OS change takes a snapshot of eligible IDs in registration order. Recheck membership before
+An authenticated Host seed establishes the baseline without a callback. Seed arrival does not define when registration became eligible.
+Preserve OS transitions after registration, including transitions before mirror capture. AC-8 is conditional on B-2.
+Do not infer a transition from the seed value alone. That inference cannot distinguish an unchanged dark system from light-to-dark.
+
+FACT: The [pinned mirror design] selects the latest snapshot when an OS change commits before Subscribe capture.
+It sends no earlier baseline in that ordering. The current proposal therefore cannot satisfy AC-8 using that snapshot alone.
+B-2 blocks delivery implementation until the mirror owners approve a bounded ordering contract.
+Do not add per-registration Host calls, another observer, or unbounded replay history to bypass B-2.
+
+After the approved baseline, a genuine OS change takes a snapshot of eligible IDs in registration order. Recheck membership before
 invoking each ID. New registrations during dispatch wait for the next transition. Removing the current or a later registration is safe. Preserve the existing facade
 error-reporting policy if a callback throws, so one callback cannot prevent delivery to unrelated registrations.
 
@@ -141,9 +160,9 @@ Implement the bounded registry and typed accent fallback, with subscribe/unsubsc
 
 ### T-3: Qualify raw OS appearance delivery
 
-- **Blocked by:** T-2
+- **Blocked by:** T-2, B-2
 
-Attach one projection to the approved #481/#558 apply path. Run forced-theme and reentrancy controls and the actual Zettlr constructor on macOS. Update the compatibility record with the captured divergence.
+Attach one projection to the approved #481/#558 apply path. Run AC-8 and its unchanged-system control before enabling delivery. Run forced-theme and reentrancy controls and the actual Zettlr constructor on macOS. Update the compatibility record with the captured divergence.
 
 
 ## 7. Test plan & evidence
@@ -155,6 +174,12 @@ Attach one projection to the approved #481/#558 apply path. Run forced-theme and
 | 5 | A removes B and registers C during dispatch. Force C to reuse B's numeric ID; C waits for the next transition. A numeric-membership-only mutant wrongly invokes C and must fail. Deliver an old queued callback after role replacement. |
 | 6 | Register a distinct name and null. Inject a verified OS transition and an unrelated native notification. Assert the supported control fires and census shows zero arbitrary platform observers. |
 | 7 | Run original getSystemColors with a transparent spy around the real getter. Record and rethrow its unchanged error; assert the typed diagnostic and exact helper fallback. Do not synthesize failure in the spy. A hardcoded-color mutant must fail the diagnostic assertion. |
+
+For AC-8, retain the observed registration, OS-transition, capture, baseline-apply and callback order.
+Also run registration without an OS change, change after capture, two opposite changes before seed, and unsubscribe before delivery.
+Require zero callbacks for unchanged seed and removed registrations. Require ordered callbacks for both retained transitions, despite identical initial/final values.
+Fence queued records on generation replacement. A successor cannot receive old registrations' events.
+Use the approved overflow and deadline controls from B-2. Do not report an accepted stream after silently losing a transition.
 
 Record macOS, app/profile, Electron executable, source revisions, registration counts, OS/effective values and callback sequence. No desktop observation has been run for this proposal.
 
@@ -182,6 +207,20 @@ No measurement. Count host observations per OS transition and messages per regis
 - **Impact:** An effective-theme-only mirror cannot implement the actual Zettlr callback.
 - **Check:** Observe an OS change while the app forces light and identify its authenticated underlying source.
 
+### B-2: Approve pre-seed transition custody
+
+- **Status:** open
+- **Owner:** The #481/#558 mirror owners and #1356 facade owner
+- **Impact:** T-3 and pre-seed delivery remain blocked. Latest-state replay does not establish transition history after registration.
+- **Check:** Pin an approved shared ordering contract and its finite bounds in both owning specs. T-3 then executes AC-8.
+
+The contract must identify the baseline, registration eligibility point, and ordered transition records on the existing authenticated stream.
+It must specify finite retained-record limits, overflow behavior, startup deadline, and generation retirement.
+Evaluate bounded ordered bootstrap replay against the registration and capture ordering in AC-8. Reject unenforceable eligibility assumptions.
+If that ordering cannot be supported, keep B-2 open. Do not claim AC-8 passes when its adverse ordering is unreachable.
+Changing registration eligibility or the no-Host-call rule requires explicit public-contract approval and revised acceptance controls. This document approves no protocol change.
+Record the selected contract in both owning specs before closing B-2. Test-only feasibility can proceed without enabling shipping delivery.
+
 ### Q-1: Approve the bounded subscription contract
 
 Approve the inert-null and metadata projection divergences, numeric retention budget, exhaustion behavior, and source of the system-level fact when themeSource is overridden. The actual OS event/order and native app behavior require their own receipts.
@@ -191,3 +230,5 @@ Approve the inert-null and metadata projection divergences, numeric retention bu
 [ebind]: https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/shell/browser/api/electron_api_system_preferences_mac.mm
 [zapp]: https://github.com/Zettlr/Zettlr/blob/04128af42b58f7fea3f39f7b1efd597f5021f48a/source/app/service-providers/appearance/index.ts#L77-L111
 [zcolor]: https://github.com/Zettlr/Zettlr/blob/04128af42b58f7fea3f39f7b1efd597f5021f48a/source/common/util/get-system-colors.ts#L23-L47
+
+[pinned mirror design]: https://github.com/gyldlab/keld/blob/5de312ec0c8517cbb57733baaebc63e5d9ccd343/docs/specs/gh481-host-pushed-display-theme.md#L363-L375
