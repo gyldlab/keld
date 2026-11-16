@@ -275,6 +275,9 @@ link, normal epoch, blob unreachability and durable intent evidence.
 Verify N+1 and the ordinary intent absent before recovery preparation.
 An ambiguous, foreign or invalid orphan MUST halt without creating
 the recovery journal or pointer. Never adopt it as recovery's successor.
+After this cleanup, repeat the protected owner census and derive the
+final exclusive blob inventory. Never seal a plan calculated before
+ordinary orphan retirement.
 Keep the repository lease while sealing the recovery plan and publishing
 its journal and pointer. No ordinary writer may publish N+1 between
 this retirement check and the D-68 pending pointer.
