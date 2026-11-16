@@ -930,7 +930,7 @@ route_mermaid_diff() {
             fi
         fi
     fi
-    if ! rustc --edition=2024 -D warnings "${rustc_linker[@]}" "$source_root/tools/mermaid_docs.rs" -o "$binary"; then
+    if ! rustc --edition=2024 -D warnings ${rustc_linker[@]+"${rustc_linker[@]}"} "$source_root/tools/mermaid_docs.rs" -o "$binary"; then
         echo "ci router: Mermaid diff classifier did not compile; selecting full Mermaid validation/rendering" >&2
         mermaid="$TRUE"
         return
