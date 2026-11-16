@@ -123,20 +123,137 @@ fn main() {
 fn named_developer_app_id(project: &Path, expected_name: &str) -> Result<String, String> {
     let config = std::fs::read_to_string(project.join("keld.config.ts"))
         .map_err(|e| format!("KELD-CLI-032: missing application configuration: {e}"))?;
-    let title = keld_core::title_from_config_ts(&config)
-        .ok_or("KELD-CLI-032: app name must be a quoted literal in config")?;
+    // Bind the signed entrypoint to the closed exported root identity.
+    // Line-scanning would accept spoofed `id:` or `name:` in comments before
+    // the actual exported object, even while signed image checks still pass.
+    let root = keld_core::literal_config_from_ts(&config)
+        .map_err(|e| format!("KELD-CLI-032: invalid literal application configuration: {e}"))?;
+    let Some(keld_core::LiteralConfigValue::Text(title)) = root.get("name") else {
+        return Err(String::from(
+            "KELD-CLI-032: app name must be a quoted literal in config",
+        ));
+    };
+    if title.is_empty() {
+        return Err(String::from(
+            "KELD-CLI-032: app name must be a nonempty quoted literal in config",
+        ));
+    }
     if !title.eq_ignore_ascii_case(expected_name) {
         return Err(String::from(
             "KELD-CLI-048: launcher filename and application title disagree",
         ));
     }
-    config
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("id:"))
-        .and_then(|literal| {
-            serde_json::from_str::<String>(literal.trim().trim_end_matches(',')).ok()
-        })
-        .ok_or_else(|| String::from("KELD-CLI-032: missing literal application identity"))
+    let Some(keld_core::LiteralConfigValue::Text(id)) = root.get("id") else {
+        return Err(String::from(
+            "KELD-CLI-032: missing literal application identity",
+        ));
+    };
+    keld_core::validate_canonical_app_id(id)
+        .map_err(|e| format!("KELD-CLI-032: invalid literal application identity: {e}"))?;
+    Ok(id.clone())
+}
+
+#[cfg(all(test, windows))]
+mod named_developer_identity_tests {
+    use super::named_developer_app_id;
+
+    fn parse_in_temporary_project(config: &str, executable_name: &str) -> Result<String, String> {
+        let project =
+            tempfile::tempdir().map_err(|error| format!("test fixture tempdir failed: {error}"))?;
+        std::fs::write(project.path().join("keld.config.ts"), config)
+            .map_err(|error| format!("test fixture config write failed: {error}"))?;
+        named_developer_app_id(project.path(), executable_name)
+    }
+
+    #[test]
+    fn signed_launcher_uses_exported_id_not_block_comment() {
+        let config = r#"/*
+id: "com.example.signed",
+*/
+export default {
+  id: "com.example.actual",
+  version: "1.0.0",
+  name: "Demo",
+  entry: "code/main.js",
+  renderer: "renderer/index.html",
+  keld96CompiledBundle: "v1",
+} as const;"#;
+        assert_eq!(
+            parse_in_temporary_project(config, "Demo").as_deref(),
+            Ok("com.example.actual"),
+            "the signer compares the exported id, not comment text"
+        );
+    }
+
+    #[test]
+    fn signed_launcher_ignores_commented_title_spoof() {
+        let config = r#"/*
+name: "Demo",
+*/
+export default {
+  id: "com.example.actual",
+  version: "1.0.0",
+  name: "Different",
+  entry: "code/main.js",
+  renderer: "renderer/index.html",
+  keld96CompiledBundle: "v1",
+} as const;"#;
+        let result = parse_in_temporary_project(config, "Demo");
+        assert!(
+            matches!(&result, Err(error) if error.starts_with("KELD-CLI-048:")),
+            "the signed file name must match the exported title: {result:?}"
+        );
+    }
+
+    #[test]
+    fn signed_launcher_refuses_duplicate_exported_ids() {
+        let config = r#"export default {
+  id: "com.example.signed",
+  id: "com.example.actual",
+  version: "1.0.0",
+  name: "Demo",
+  entry: "code/main.js",
+  renderer: "renderer/index.html",
+  keld96CompiledBundle: "v1",
+} as const;"#;
+        let result = parse_in_temporary_project(config, "Demo");
+        assert!(
+            matches!(&result, Err(error) if error.starts_with("KELD-CLI-032:")),
+            "duplicate decoded keys cannot produce an authoritative identity: {result:?}"
+        );
+    }
+
+    #[test]
+    fn signed_launcher_accepts_one_closed_export_with_comments() {
+        let config = r#"// comment may precede the export
+export default {
+  id: "com.example.signed",
+  version: "1.0.0",
+  name: "Demo",
+  entry: "code/main.js",
+  renderer: "renderer/index.html",
+  auth: {
+    "entra-common": { "clientId": "public-client", "fixedRedirect": "http://localhost:53161/callback" },
+  },
+  keld96CompiledBundle: "v1",
+} as const;"#;
+        assert_eq!(
+            keld_core::title_from_config_ts(config).as_deref(),
+            Some("Demo")
+        );
+        assert_eq!(
+            keld_core::entry_from_config_ts(config).as_deref(),
+            Some("code/main.js")
+        );
+        assert_eq!(
+            keld_core::renderer_from_config_ts(config).as_deref(),
+            Some("renderer/index.html")
+        );
+        assert_eq!(
+            parse_in_temporary_project(config, "Demo").as_deref(),
+            Ok("com.example.signed")
+        );
+    }
 }
 
 /// Only a locally signed, application-named developer bundle enters this path.

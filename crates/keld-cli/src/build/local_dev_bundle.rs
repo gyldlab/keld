@@ -202,6 +202,21 @@ fn render_config(
     config.push_str(boot::COMPILED_KEL96_MARKER_LINE);
     config.push('\n');
     config.push_str("} as const;\n");
+    // The signed launcher reads this exact generated file through Core's
+    // bounded closed-literal reader. Check the final bytes before emission:
+    // near-limit authoring or compiled auth can expand beyond that bound.
+    let root = keld_core::literal_config_from_ts(&config).map_err(|error| {
+        refuse(format!(
+            "generated developer config is not admissible by signed launcher: {error}"
+        ))
+    })?;
+    if !matches!(root.get("id"), Some(keld_core::LiteralConfigValue::Text(value)) if value == id)
+        || !matches!(root.get("name"), Some(keld_core::LiteralConfigValue::Text(value)) if value == name)
+    {
+        return Err(refuse(
+            "generated developer config changes the signed launcher identity",
+        ));
+    }
     if keld_core::entry_from_config_ts(&config).as_deref() != Some(entry)
         || keld_core::renderer_from_config_ts(&config).as_deref() != Some(renderer)
     {
@@ -358,6 +373,10 @@ mod tests {
         )
         .expect("literal generated config must parse");
         let config = String::from_utf8(bytes).unwrap();
+        assert!(
+            keld_core::literal_config_from_ts(&config).is_ok(),
+            "the generated config must also satisfy the signed launcher's closed root parser"
+        );
         assert_eq!(
             keld_core::entry_from_config_ts(&config).as_deref(),
             Some("code/main.js")
@@ -365,6 +384,40 @@ mod tests {
         assert_eq!(
             keld_core::renderer_from_config_ts(&config).as_deref(),
             Some("renderer/index.html")
+        );
+    }
+    #[test]
+    fn developer_bundle_refuses_config_larger_than_signed_launcher_reader() {
+        // The admitted authoring file fits 64 KiB, but the generated developer
+        // config adds fixed fields and a marker. It must not ship an output
+        // that the signed app-named launcher cannot read on first run.
+        let version = "v".repeat(65_370);
+        let authoring = format!(
+            "export default {{ id: 'com.example.keld', version: '{version}', name: 'Demo', entry: 'src/main.ts', renderer: 'index.html' }} as const;"
+        );
+        assert!(authoring.len() <= 64 * 1024, "authoring is within limit");
+        assert!(
+            keld_core::literal_config_from_ts(&authoring).is_ok(),
+            "authoring is a valid closed literal"
+        );
+        let captured = super::super::config::parse_app(&authoring)
+            .expect("source passes the actual Windows app authoring reader");
+        assert_eq!(captured.renderer.as_deref(), Some("index.html"));
+        assert_eq!(captured.entry, "src/main.ts");
+        let refusal = render_config(
+            "com.example.keld",
+            &version,
+            "Demo",
+            "code/main.js",
+            "renderer/index.html",
+            None,
+        )
+        .expect_err(
+            "an oversized emitted config must not ship as an unlaunchable developer folder",
+        );
+        assert!(
+            refusal.to_string().contains("64 KiB"),
+            "refusal must identify the exact signed launcher reader's limit: {refusal}"
         );
     }
     #[test]
