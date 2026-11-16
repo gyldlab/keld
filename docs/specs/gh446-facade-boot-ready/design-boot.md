@@ -338,9 +338,8 @@ window-call path.
   NC: marking the registry ready at construction serves it.
 - A failed install that writes `Ready` (AC-14). NC: signalling before the install result
   writes it.
-- GH-531 criterion 14's NC: delay the registry's readiness transition until
-  after `Ready` is written; the first `Create` after observing `Ready` is then
-  incorrectly refused with `KELD-CORE-040`.
+- GH-531 criterion 14's NC: keep the registry unready through the first post-Ready
+  `Create`; it is incorrectly refused with `KELD-CORE-040`.
 
 ### D-5: Host Ready, entry evaluation and usable facade readiness
 
