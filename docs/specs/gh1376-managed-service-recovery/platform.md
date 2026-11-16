@@ -49,6 +49,104 @@ PROPOSED: Extend the canonical runtime with an OS-activated root session. Keep t
 The desktop owns an attachment to that session. Desktop exit releases that attachment and its desktop resources.
 Do not add an adapter supervisor, service journal, package verifier or independent terminal owner.
 
+
+#### Pinned boot callers and writable bootstrap
+
+FACT: The caller census below uses OpenCode `4423f42836aaaf2933bc7b94b35aca4e5bcce7c3`.
+The table records source calls. It records no executed admission or platform pass.
+
+| Entry | Graph entry | Explicit background invocation |
+| --- | --- | --- |
+| Managed CLI service | `ServerProcess.run` passes a lifecycle to `ServerProcess.start`. | `installRestartContinuity` forks recovery. `Schedule.Service.run` also starts. |
+| Foreground server and stdio standalone | The same process entry omits that lifecycle. | The lifecycle recovery fork does not run. The scheduler still starts. |
+| Web-standard fetch | `ServerFetch.make` eagerly builds `createRoutes`. | `Effect.forkDetach` starts recovery before returning the handler. |
+| Embedded SDK | `EmbeddedHost.create` builds `createEmbeddedRoutes` through `runtime.contextEffect`. | Plugin registration precedes `runtime.runFork` of recovery. |
+| Promise and Effect SDK facades | Both call `EmbeddedHost.create`. | Both inherit the embedded recovery path. |
+| Promise and Effect SDK workerd wrappers | Delegate through those SDK facades. | Both inherit EmbeddedHost recovery. |
+| Server workerd profile | `ServerWorkerd.create` delegates to `ServerFetch.make`. | It inherits fetch recovery with a replacement database client. |
+
+FACT: Fetch and embedded host contain no explicit scheduler fork.
+This observation does not authorize adding their scheduler or removing the process scheduler.
+Sources:
+[process boot](https://github.com/anomalyco/opencode/blob/4423f42836aaaf2933bc7b94b35aca4e5bcce7c3/packages/server/src/process.ts#L101-L119),
+[CLI lifecycle](https://github.com/anomalyco/opencode/blob/4423f42836aaaf2933bc7b94b35aca4e5bcce7c3/packages/cli/src/server-process.ts#L101-L163),
+[standalone stdio](https://github.com/anomalyco/opencode/blob/4423f42836aaaf2933bc7b94b35aca4e5bcce7c3/packages/cli/src/services/standalone.ts#L17-L31).
+Sources:
+[fetch recovery](https://github.com/anomalyco/opencode/blob/4423f42836aaaf2933bc7b94b35aca4e5bcce7c3/packages/server/src/fetch.ts#L42-L50),
+[embedded recovery](https://github.com/anomalyco/opencode/blob/4423f42836aaaf2933bc7b94b35aca4e5bcce7c3/packages/sdk/src/internal/host.ts#L30-L62),
+[workerd delegation](https://github.com/anomalyco/opencode/blob/4423f42836aaaf2933bc7b94b35aca4e5bcce7c3/packages/server/src/workerd.ts#L56-L80).
+Sources:
+[Promise facade](https://github.com/anomalyco/opencode/blob/4423f42836aaaf2933bc7b94b35aca4e5bcce7c3/packages/sdk/src/promise.ts#L35-L56),
+[Effect facade](https://github.com/anomalyco/opencode/blob/4423f42836aaaf2933bc7b94b35aca4e5bcce7c3/packages/sdk/src/effect/opencode.ts#L39-L46).
+
+FACT: `createRoutes` and `createEmbeddedRoutes` share `makeRoutes`, which builds `Database.node`.
+The graph also merges `V1Migration.layer`.
+The database owner performs tuning pragmas and `DatabaseMigration.apply` while constructing its service.
+Its file bootstrap can create a file and change file permissions before exposing the service.
+The in-process `locks` map is not independent cross-process writer admission.
+Sources:
+[shared graph](https://github.com/anomalyco/opencode/blob/4423f42836aaaf2933bc7b94b35aca4e5bcce7c3/packages/server/src/routes.ts#L56-L125),
+[migration composition](https://github.com/anomalyco/opencode/blob/4423f42836aaaf2933bc7b94b35aca4e5bcce7c3/packages/server/src/routes.ts#L199),
+[database bootstrap](https://github.com/anomalyco/opencode/blob/4423f42836aaaf2933bc7b94b35aca4e5bcce7c3/packages/core/src/database/database.ts#L33-L110).
+
+PROPOSED: Gate the writable database bootstrap before any managed route or SDK graph starts.
+Reuse the database owner for schema admission. Keep the external restore hold outside the database being replaced.
+Use the admitted control bootstrap to read persisted Stop before starting the application graph.
+Keep plugin activation, recovery, scheduling and effectful routes closed until their respective admission checks pass.
+Gate each actual recovery invocation above. A guard before Ready alone cannot prevent those earlier calls.
+Recheck current execution authority at each effect owner under D-9. A successful boot check cannot authorize later releases.
+Do not infer the managed mode from a password, pathname, lifecycle callback or caller-controlled boolean.
+The runtime supplies the mode and private admission evidence through its authenticated owned context.
+Preserve ordinary upstream standalone and externally managed contracts outside the KELD managed entry.
+Any entry reaching KELD's managed data root must consume the same writer and restore admission.
+An absent managed binding refuses managed entry. It must not fall back to an unguarded SDK or fetch boot.
+
+PROPOSED: Start with an isolated actual-core fixture at the database and recovery owners.
+Keep installed registration and native peer admission unexposed during this slice.
+Observe database creation, migration state and an independent effect sink, not only the Ready event.
+While admission is held, each managed entry must produce no writable bootstrap or background effect.
+After admission, require permitted progress and observe all cleanup.
+Remove only the entry guard for the negative control. Its entry must then produce the forbidden observable.
+Keep unrelated admission checks permissive for that fault. Observe the removed guard's direct boundary before later checks can mask it.
+Exercise process service, process standalone, fetch and embedded SDK separately.
+Preserve non-managed behavior in a separate positive control.
+This first slice proves source composition only when executed. It cannot close native authentication or custody.
+
+#### Guard and wire owner bindings
+
+FACT: KELD `36177a7047b4e1165e82685e142a5d3ac498189e` has no managed-service variant in `Principal`.
+Its evaluator rejects non-`AppProcess` principals before matching grants.
+Its `ScopePermit` stores the selected grant index only.
+Sources: `crates/keld-guard/src/lib.rs:136@36177a7047b4e1165e82685e142a5d3ac498189e`,
+`crates/keld-guard/src/lib.rs:180@36177a7047b4e1165e82685e142a5d3ac498189e`,
+`crates/keld-guard/src/lib.rs:784@36177a7047b4e1165e82685e142a5d3ac498189e`.
+FACT: `VerifiedManifest` retains the digest of the exact parsed bytes.
+Privileged dispatch lends one Guard-minted permit to one handler callback.
+Sources: `crates/keld-guard/src/verified_manifest.rs:15@36177a7047b4e1165e82685e142a5d3ac498189e`,
+`crates/keld-ipc/src/guard_dispatch.rs:48@36177a7047b4e1165e82685e142a5d3ac498189e`.
+
+PROPOSED: Extend these owners for D-9's execution identity after their boundary review.
+Never relabel a service execution as `AppProcess`.
+Evaluate the same retained resource against both the original attenuation and the current verified policy.
+Use the original policy as a ceiling only.
+Lend only the current policy's permit to its matching current resource owner.
+Grant reordering cannot carry an old permit index into a new broker.
+Desktop attachment retirement does not retire independently admitted execution authority.
+Execution retirement, revocation, Stop and holds still close release.
+
+FACT: `ReceivePolicy` owns header semantics. Readers own envelope rejection before allocation.
+`read_validated_frame` and the common interruptible reader validate before allocating payload bytes.
+Sources: `crates/keld-ipc/src/receive.rs:3@36177a7047b4e1165e82685e142a5d3ac498189e`,
+`crates/keld-ipc/src/link.rs:240@36177a7047b4e1165e82685e142a5d3ac498189e`,
+`crates/keld-ipc/src/link.rs:714@36177a7047b4e1165e82685e142a5d3ac498189e`.
+PROPOSED: Bind service limits to those owning readers before payload allocation.
+Keep channel allocation in `channel_table.rs` and its append-only `channel_allocations.txt`.
+Generate TypeScript through `packages/@keld/kipc/scripts/echo-codegen.ts`. Allocate no ID in this specification.
+Use Guard-owned action capabilities. Do not convert service management into `HostInternal`.
+A codec limit after reader allocation cannot satisfy D-9's bounded receive contract.
+These source bindings do not prove reciprocal native authentication, transport custody or OS containment.
+Q-1 and B-2 remain open until their stated mechanisms and native observations are complete.
+
 #### Registration contract
 
 PROPOSED: The package owner supplies the registration identifier, executable, fixed arguments and artifact admission record.

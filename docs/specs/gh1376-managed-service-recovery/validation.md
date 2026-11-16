@@ -25,6 +25,7 @@ Run AC-14, AC-16, AC-17, AC-19 and AC-20 at their owning boundaries.
 Run AC-21, AC-25, AC-26, AC-30 and AC-31 for authentication, decoding, enrollment and management ordering.
 Run AC-32 with a wrong-image root and an independent first-message witness.
 Run AC-33 and AC-34 at the effect-owner release gate and capable-owner registry.
+Run AC-35 across bounded generation turnover and failed custody retirement.
 Do not expose managed activation or recovery to product callers in this task.
 T-4 owns exposure after the remaining safety criteria pass.
 
@@ -39,6 +40,7 @@ Run AC-11 and AC-13 with the core state owner. Keep T-3 isolated and non-product
 Run AC-15 and AC-18 through actual recovery, subagent and background-wake paths.
 Include fork/import dependencies, delayed child completion and initial schedule-check creation in AC-15.
 Run AC-22 through AC-24 and AC-27 through AC-29 with the actual core state owner.
+Run AC-36 with exhausted logical capacity and a writable physical store.
 Repeat AC-30 and AC-31 through the integrated management and background-execution paths.
 Preserve all managed and external connection journeys from #1377.
 
@@ -49,7 +51,7 @@ Preserve all managed and external connection journeys from #1377.
 Run all acceptance criteria on each claimed operating system.
 Use independent resource and effect witnesses.
 B-2 and U-1 gate completion and product exposure, not entry into this qualification task.
-Expose managed activation and recovery only after AC-1 through AC-34 pass on that platform.
+Expose managed activation and recovery only after AC-1 through AC-36 pass on that platform.
 Qualify the exact integrated artifact. Earlier primitive or reference-policy results cannot clear these gates.
 Complete the retained #1377 journeys before claiming full integration readiness.
 Consume #1382's terminal handoff proof for replacement, early adoption, expiry and failed replacement.
@@ -100,6 +102,8 @@ Keep source versions, host identity, commands, logs and artifact digests with ea
 | AC-32 | Connect a valid client to a wrong-image root. Inject sensitive first-message content before the authenticated response. |
 | AC-33 | Repeat actual-owner consume with the same committed claim. Mutate only Consumed-state handling. Count effect initiations. |
 | AC-34 | Race closure and owner enrollment in both orders. Inject an older open snapshot. Observe owner enablement before operation checks. |
+| AC-35 | Exhaust release records, then retire or retain the old owner. Mutate custody retirement before replacement enablement. |
+| AC-36 | Exhaust logical admission space after reserving closure. Omit only that allowance and inspect durable hold evidence after restart. |
 
 ### E-1: Existing native custody counterexamples
 
@@ -188,12 +192,13 @@ Runtime, guard and bridge owners must approve the final bindings. This question 
 ### Q-3: What durable outcome contract prevents blind replay?
 
 PROPOSED answer: D-10 specifies the existing core's schema, atomic transitions, conflict holds, retention and logical completion reserve.
-Runtime, package and state owners must bind durable desired state, control revision, management attempts and removal holds.
-Their exact storage location and restart protocol remain unresolved. The outcome schema does not implicitly supply those records.
-State owners must resolve the restore barrier outside overwritten state and its coordinated migration/rollback protocol.
+The selected control binding uses the existing Database.Service, its admitted disk file and immutable service_attempt records.
+The selected output binding extends SessionBlob with outcome-owned references and an ordered manifest.
+Controlled restore uses the existing state/update owner and one physical-root barrier outside the restored payload.
+Exact schema, retained-output authorization, all cleanup paths and restore publication still require the named owners' approval.
 The KEL-53 compatibility decision must explicitly admit the proposed schema change before implementation.
 Every actual database writer and effect caller needs the specified owner binding. A new parallel journal is not permitted.
-This question blocks specification approval. B-3 separately requires actual core qualification before integration.
+These selected bindings remain proposals. B-3 separately requires actual core qualification before integration.
 
 ### B-1: Protected implementation approval remains absent
 

@@ -21,7 +21,7 @@ Q-3 remains open for the cross-owner bindings below. B-1 and B-3 remain open.
 | Outcome | State owner, authenticated receipt to committed result | Recovery overwrites a success committed after its read. |
 | Continuation | Execution owner, unresolved effects to resume refusal | A fresh tool ID bypasses an execution hold. |
 | Conflict | State owner, conflicting terminal evidence to a durable execution hold | A core restart forgets a conflict while runtime continuity survives. |
-| Output | Core state owner, bounded inline output to retained retrieval | Normal Job cleanup invalidates a committed receipt's inline output. |
+| Output | SessionBlob/state owner, exact bytes to retained retrieval | Normal Job cleanup invalidates a committed receipt's retained output. |
 | Durability | Database/VFS owner, commit to acknowledgment | Success is acknowledged before the required commit finishes. |
 | Capacity | State owner, byte allowance to admission | New admissions consume an existing operation's completion allowance. |
 | Restore | State/update owners, snapshot to recovery admission | A missing old record authorizes automatic replay. |
@@ -60,7 +60,7 @@ These are proposed schema fields, not existing upstream fields or allocated wire
 | effect_operation | primary key(domain, sequence); execution_id BLOB(16); upstream_key BLOB(32); input_digest BLOB(32); state; version positive; claimant BLOB(16) nullable; grant_revision integer; dispatch_token BLOB(16) nullable unique; receipt BLOB nullable; attempt_of nullable reference; completed_at_ms nullable integer. |
 | effect_conflict | primary key(domain, sequence), referencing effect_operation; execution_id BLOB(16); version positive; resolved_version nonnegative; first_outcome BLOB; latest_digest BLOB(32); reconciliation BLOB nullable. |
 | effect_dependency | primary key(dependent_execution, source_execution, source_boundary); both executions BLOB(16); source_boundary BLOB(32); closed causal-kind enum; graph_revision nonnegative. |
-| effect_hold | execution_id BLOB(16) primary key; desired_closed boolean; closure_revision positive; dependency_revision and registry_revision nonnegative; closure evidence at most 8 KiB. |
+| effect_hold | execution_id BLOB(16) primary key; desired_closed boolean; closure_revision, dependency_revision and registry_revision nonnegative; closure_reserved_bytes nonnegative; closure evidence at most 8 KiB. |
 
 Use CHECK constraints for fixed blob lengths, state values and receipt length.
 Constrain resolved_version to at most version. A conflict is active when those versions differ.
@@ -88,6 +88,14 @@ The initial schedule check needs a durable core-owned creation admission before 
 Retry schedule creation through that same admission. Minting another schedule ID cannot establish that the initial check had no effect.
 Explicit independent work uses deliberate current admission. Automatic continuation cannot select that exception.
 Charge persisted dependencies and hold evidence to the existing logical budget. D-9 bounds their live mirrors and owner enrollment.
+Reserve one 16 KiB closure allowance for each admitted execution before any effect or causal dependency can require its closure.
+This allowance covers the complete effect_hold record, its evidence and bounded revisions. Enforce that complete-record limit before writing.
+Materialize effect_hold during execution admission with desired_closed=false, closure_revision=0 and empty closure evidence.
+Persist closure_reserved_bytes as 16 KiB minus the hold record's actual accounted bytes.
+Commit that row and the matching effect_meta charges atomically. Reopening the core reconstructs the allowance from this row.
+The first closure advances closure_revision from zero. False desired_closed cannot certify current runtime enrollment or permission.
+Dependency admission reserves the dependent execution's allowance before enabling that dependency.
+All operations in one execution share its allowance. Do not charge or release it once per operation.
 
 FACT: Forks clear parent_id and retain fork_session_id while copying selected history.
 Source: [projector.ts](https://github.com/anomalyco/opencode/blob/4423f42836aaaf2933bc7b94b35aca4e5bcce7c3/packages/core/src/session/projector.ts#L154-L205).
@@ -96,6 +104,8 @@ Source: [schedule.ts](https://github.com/anomalyco/opencode/blob/4423f42836aaaf2
 INFERRED: Child-only inheritance and existing schedule rows do not cover these causal entry points.
 Bind upstream_key to the existing message ID, call identity and effect ordinal through Q-2's canonical encoding.
 Create the mapping, Prepared row and receipt and conflict allowances atomically before effects become possible.
+PrepareNew also establishes or verifies the execution's closure allowance in that transaction.
+Never admit an operation that can require an unreserved hold record.
 effect_binding preserves identity across domains and detail compaction. Repeated issuance returns its original reference, including Expired.
 PrepareNew validates an actual eligible durable upstream object. Raw caller identifiers cannot create that object.
 Never delete bindings during ordinary detail compaction or domain retirement. Charge every retained binding to the byte budget.
@@ -119,6 +129,7 @@ type OutcomeState = "Prepared" | "DispatchIntent" | "Indeterminate"
 type TerminalState = Exclude<OutcomeState, "Prepared" | "DispatchIntent" | "Indeterminate">
 type StoredOutput = { readonly kind: "None" }
   | { readonly kind: "Inline"; readonly bytes: Uint8Array; readonly digest: Bytes32 }
+  | { readonly kind: "Retained"; readonly digest: Bytes32; readonly bytes: bigint; readonly chunks: number }
   | { readonly kind: "Unavailable"; readonly digest: Bytes32 | null;
       readonly reason: "RetentionUnqualified" | "SourceLost" }
 type OutcomeReceipt = {
@@ -146,6 +157,8 @@ The complete encoded VerifiedOutcome also fits 16 KiB. Pending and uncertain sta
 Inline output contains at most 8 KiB of exact bytes. Check both limits before committing the receipt.
 None means the operation produces no output. It cannot represent discarded or oversized output.
 Unavailable states the missing retention guarantee explicitly. A Job identifier or hash cannot substitute for retained bytes.
+Retained resolves an ordered manifest bound to this OperationRef through the existing SessionBlob owner.
+The receipt stores only the bounded descriptor. Output chunks do not enlarge the 16 KiB envelope.
 
 | Terminal state | Required receipt and classification |
 | --- | --- |
@@ -214,15 +227,15 @@ An expected-version mismatch reloads state. It never authorizes a new claim or a
 
 #### Bounded output retention
 
-PROPOSED: Copy complete eligible output into the inline receipt before committing that receipt.
-Its existing source owner retains the bytes until the core acknowledges that commit.
-Job.completeBackground can then retire its source without invalidating the stored inline result.
-This path reuses the existing outcome reservation and transaction. It creates no new output store.
-Never truncate output to fit the envelope. Oversized or lost output uses the explicit Unavailable variant.
+PROPOSED: Commit complete eligible small output as Inline. Commit larger qualified output through SessionBlob as Retained.
+Its existing source owner retains the bytes until the selected persistence path acknowledges every required byte and reference.
+Job.completeBackground can then retire its source without invalidating the retained result.
+Inline uses the existing outcome reservation. Retained uses the reviewed blob credits and ordered manifest below.
+Never truncate output to fit the envelope. Missing, unqualified or quota-refused retention uses the explicit Unavailable variant.
 Retain a known successful effect outcome even if output retention failed. Do not misreport the effect as unexecuted.
 An Unavailable output does not acknowledge durable retention of the result bytes.
 The existing output owner may still provide authorized live output, but that availability is not a durable receipt guarantee.
-Full required large-output retention remains a Q-3 binding gap. It cannot pass AC-29 or product qualification through an ephemeral pointer.
+The selected large-output binding still needs Q-3 approval and actual AC-29 evidence. An ephemeral pointer cannot qualify it.
 
 #### Outcome transitions and holds
 
@@ -289,12 +302,20 @@ Source: [SQLite transactions](https://www.sqlite.org/lang_transaction.html). Ret
 | 1024 unresolved operations | Count Prepared, DispatchIntent and Indeterminate. Refuse new effects at the limit. |
 | 16 KiB outcome envelope | Reserve the full envelope during PrepareNew, including up to 8 KiB inline output, evidence and metadata. |
 | 32 KiB conflict allowance | Reserve one bounded conflict record per operation before admission. Retain the allowance through terminal detail retirement. |
-| 64 MiB logical outcome budget | Charge actual record bytes, bindings, domains and all receipt/conflict reservations in the same transaction. |
+| 16 KiB closure allowance | Reserve one complete hold record per execution. PrepareNew verifies its retained reservation alongside receipt and conflict allowances. |
+| 64 MiB logical outcome budget | Charge actual records, bindings, domains and all receipt, conflict and closure reservations atomically. |
 | 30-day detailed retention | Use completed_at_ms and floor rules. Never expire unresolved outcomes or active conflicts. |
 | 256-row compaction batch | Commit a checked floor and its row deletions together. Yield between batches. |
 
 These are prototype limits, not measured shipping limits or total database-size guarantees.
-Completion can consume its existing allowance when new-admission capacity is exhausted.
+Completion and closure can consume their existing allowances when new-admission capacity is exhausted.
+Convert reserved closure bytes to stored bytes atomically. Updates reuse the same bounded hold record and remaining allowance.
+Adjust closure_reserved_bytes and effect_meta in the same transaction as the hold write.
+The stored hold bytes plus closure_reserved_bytes must remain 16 KiB until safe allowance retirement.
+Ordinary admissions cannot spend closure reserves. Closure does not require a fresh ordinary admission or unused ordinary capacity.
+Retain the allowance while any live execution, retained outcome, conflict or causal dependency can require that execution's closure.
+Release it only after execution retirement and removal of those closure obligations. Detail compaction alone cannot release it.
+Run AC-36 with saturated ordinary capacity and multiple affected executions, including dependents without their own operations.
 Count actual stored byte lengths. Do not charge compressed estimates.
 SQLite pages, indexes, WAL and filesystem overhead require separate physical-storage measurements and native fault injection.
 Logical reservation does not reserve physical WAL space against other applications.
@@ -323,6 +344,12 @@ This hold may require reconciliation after root crash or reboot. Full required c
 Controlled restore first closes admission and proves writer custody.
 An authenticated restore hold must survive replacement of the restored database.
 Bind that hold to the existing state/update owner. Do not create an adapter recovery journal.
+Use one owner-only .keld-control/ barrier in the retained physical service root, outside the selected database/snapshot payload.
+Every installation sharing that root checks the same barrier before writable bootstrap.
+Bind it to the restore attempt, phase, physical root, generation and retained pre-restore control revision.
+Persist the barrier after exclusion and before payload replacement. Retain quiesced prior state for reconciliation.
+Restore and validate the payload. Retire old replay domains and record Stopped beyond the retained control revision.
+Clear the barrier last, after the scoped reconciliation commits. An interrupted phase keeps admission closed.
 Rotate replay domains after restore. Hold pre-existing effectful continuations for reconciliation.
 An older snapshot's absent records prove nothing about external effects.
 Unannounced replacement by a native administrator is outside the stated storage threat model.
@@ -332,16 +359,34 @@ Binary rollback preserves the live database and refusal floors. Incompatible old
 
 UNKNOWN: Q-1 has no qualified boot/lineage witness after loss of all retained owner state.
 The selected safe behavior is a recovery hold. Native proof must establish any less restrictive behavior.
-UNKNOWN: The existing state/update owner has not bound a restore hold outside the database being replaced.
-The state/update owner must approve that exact record, ordering and crash-recovery procedure.
-UNKNOWN: Q-1/Q-3 lack the exact existing-owner storage location and recovery protocol for lifecycle control and management attempts.
-That binding must atomically retain desired_state, control_revision, stable attempt identity, immutable input digest, result and removal_hold.
+PROPOSED: Put service_control and service_attempt in the existing OpenCode Database.Service at its admitted configured disk file.
+The managed profile rejects memory and verifies WAL, synchronous=FULL and foreign keys before migrations.
+Keep ordinary standalone defaults unchanged. A durability profile cannot supply writer custody or authentication.
+service_control retains desired_state, control_revision and removal_hold. Its key binds the admitted physical service target.
+service_attempt retains an owner-issued identity, actor, target, mode, action, input digest and captured expected revision.
+Prepare reserves the attempt without changing desired state. Apply uses the existing immediate transaction adapter.
+Commit the revision comparison, state change and immutable attempt disposition in one transaction.
+An accepted retry returns its original disposition after later Stop. A stale Start cannot refresh its captured revision.
 Stop and removal require their durable ordering before acknowledgement, descriptor retirement and unregister.
 An uncertain commit queries the same attempt. A stale expected revision cannot rebase itself or repeat the action.
-This design binding blocks specification approval independently of later native qualification. The outcome tables do not implement a control journal.
-UNKNOWN: Full required outputs larger than the inline allowance have no approved durable retention binding in this proposal.
-The canonical output/state owners must supply a retention migration or an existing qualified owner with explicit lifetime and authorization.
-Until then, explicit Unavailable output is truthful state only. It does not qualify those product journeys.
+The existing package transaction still owns Update and Replace. Link its identity without duplicating its journal.
+Bound attempt count, encoded bytes and retention before exposing this control API. Retired references never mint a fresh attempt.
+
+PROPOSED: Extend SessionBlob's content-addressed BlobTable with outcome-owned references and an ordered per-operation chunk manifest.
+Source: [SessionBlob](https://github.com/anomalyco/opencode/blob/4423f42836aaaf2933bc7b94b35aca4e5bcce7c3/packages/core/src/session/blob.ts).
+Each manifest entry binds operation, ordinal, blob hash and exact byte length. The descriptor retains total bytes and whole-output digest.
+Retain those references independently of Job and session deletion. Every blob deletion and GC path must honor both owner classes.
+Do not widen ordinary media reads to accept outcome-only references. Outcome reads require the operation-bound current grant.
+Managed retention cannot depend on the experimental.media_blob presentation flag.
+Publish Retained only after all bytes, references and the manifest commit. Bound chunk sizes, readers and aggregate storage credits.
+Exact limits and the complete GC census require the existing output owner's review before Q-3 closes.
+Quota or missing bytes must return an explicit result. Silent truncation cannot qualify a required full-output journey.
+This extends the existing blob owner. It creates no separate spool or database.
+
+UNKNOWN: Protected restore publication, initial layout migration and native durability still require state/update-owner approval.
+The existing Windows activation journal does not already implement this restore transaction.
+The barrier cannot establish continuity after an unannounced whole-root administrator rollback.
+These selected control, output and restore bindings require exact owner review before specification approval.
 UNKNOWN: Durable schedule-creation admission and cross-execution dependency hooks need the existing core owners' exact binding review.
 Initial checks, fork/import continuation and delayed subagent completion cannot bypass that prerequisite.
 FACT: KEL-53 Slice A requires dataMigration:none and provides no migration hook.
@@ -361,6 +406,9 @@ Run AC-28 against the actual cancel and claim operations in both transaction ord
 Cancellation first must produce no token or sink effect. Claim first must preserve possible effects and permit an actual later outcome.
 Run AC-29 with inline output through real Job.completeBackground cleanup and core reopen before detail expiry.
 Verify exact bytes and digest under current authorization. Remove only the inline copy to fail that retrieval.
+Repeat with retained multi-chunk output after Job and session cleanup. Verify order, full bytes and the whole-output digest.
+Remove only outcome retention, then mutate GC separately. Observe candidate deletion before independent foreign keys can mask it.
+A blob retained solely by the outcome must remain unavailable through ordinary media reads.
 Exercise Unavailable output separately. It must not satisfy a full-output retention assertion.
 Query known outcomes during Stop, each hold and denied writer admission. Denied current query grants must expose no outcome details.
 Test every terminal-state/receipt-kind pair. Reject mismatches while preserving the valid outcomes in the matrix.

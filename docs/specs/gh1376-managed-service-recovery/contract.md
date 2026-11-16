@@ -452,3 +452,30 @@ External source references below use that commit. Retrieval date: 2026-11-16.
   - **At-risk precondition:** Closure has been acknowledged. The new owner otherwise passes identity, grants and capacity checks.
     Observe owner enablement before downstream operation checks can hide the stale snapshot.
   - **Expected RED:** The registry enables release capability without installing the current closure revision.
+
+### AC-35: Bounded release records permit safe long-lived progress
+
+- **Given:** Release records fill one effect-owner generation's capacity while the service remains active.
+  The healthy case has only settled work. A separate refusal case retains one Reserved record beside 1023 consumed records.
+- **When:** Runtime attempts bounded generation turnover, with successful custody retirement or a surviving old owner.
+- **Then:** Proven retirement permits a fresh generation and new authorized work without service reinstallation or old-intent replay.
+  Old tokens and reservations cannot release effects. A surviving or unaccounted owner keeps replacement Pending/Unresolved.
+  Turnover stays within its stated concurrent-generation and byte limits. Stop, observation and cleanup remain available.
+- **Negative control:**
+  - **Single fault:** Enable the replacement generation before custody proves retirement of the old release capability.
+  - **At-risk precondition:** Drain completed and release gates closed, but required custody-retirement evidence is missing.
+    Observe replacement enablement before independent consume checks can mask the missing custody condition.
+  - **Expected RED:** The replacement becomes effect-capable while old release capability remains unretired.
+
+### AC-36: Admission reserves durable closure capacity
+
+- **Given:** Multiple executions hold closure allowances, including a dependent execution without its own operation. Ordinary logical capacity is exhausted.
+- **When:** An outcome becomes uncertain and closure must hold the affected execution and its causal dependents.
+- **Then:** The owner persists bounded closure evidence from reserved capacity and recovers it after a core restart.
+  New work or dependencies lacking the required allowance refuse before effect-capable admission.
+  Authorized inspection, Stop and reconciliation retain their specified progress. Physical storage faults retain unresolved state.
+- **Negative control:**
+  - **Single fault:** Omit the closure allowance from the owning admission transaction's capacity accounting.
+  - **At-risk precondition:** Admitted work exhausts the remaining logical budget before closure. Physical storage remains writable.
+    Inspect durable closure evidence before independent runtime gates can mask its loss.
+  - **Expected RED:** Previously admitted work cannot persist the required hold within its logical budget.

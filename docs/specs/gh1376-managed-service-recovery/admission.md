@@ -80,7 +80,7 @@ The package configuration declares each alias once.
 Runtime resolves the alias to Q-1's retained target before Guard evaluation.
 The request cannot replace the target or mode after that check.
 Guard's existing manifest preparation rejects wildcard, duplicate and unknown-mode service scopes.
-ScopePermit selects the original manifest grant. A broker cannot select a different grant.
+ScopePermit selects the current verified manifest grant. A broker cannot select a different grant.
 Each action needs its own grant. Use also needs the underlying effect's existing grant.
 Query-outcome covers authorized inspection of operation outcomes and management attempts.
 A local grant never authorizes external, SSH or WSL management.
@@ -93,6 +93,9 @@ The context retains the original actor, target, policy reference and service gen
 Runtime proposes a fresh service-execution principal for this explicitly admitted lifetime, using its existing principal owner.
 Guard approves an immutable scope attenuation from the initiating actor's permitted service and effect grants.
 Each release intersects that attenuation with the application's current verified policy. It cannot inherit newly broadened grants automatically.
+Run the existing Guard matcher independently against both verified policies on the same retained resource.
+The initial decision enforces the attenuation ceiling. Lend only the current policy's ScopePermit to its matching current resource owner.
+Never reuse an old grant index after policy reordering. ScopePermit carries no manifest provenance that could make that safe.
 It is not a cached permission decision or an escaped ScopePermit.
 The effect owner evaluates current service and effect grants at each release.
 The existing core execution owner supplies background wake, scheduled continuation and recovery callers.
@@ -215,6 +218,8 @@ Cancel uses Q-3's cancellation operation. The state owner supplies its own write
 PROPOSED: The existing runtime/package owner issues ManagementAttemptRef before any state-changing control admission.
 Its existing retained attempt record binds actor, target, action, selected inputs and the captured expected control revision.
 Use the core desired-state record or package transaction owned by that action. Do not add an adapter journal.
+The selected Start/Stop binding is D-10's service_control and service_attempt in the existing Database.Service.
+Update and Replace retain their existing package transaction. A management attempt references that transaction without copying its journal.
 Prepare validates current authority and reserves bounded attempt storage. It cannot release effects or change desired state.
 Lost preparation replies may leave unused references. They cannot create accepted management work.
 
@@ -323,8 +328,36 @@ Owner loss leaves durable intent uncertain. Missing memory does not prove non-re
 Bound release records to 1024 per service, including consumed and retired records.
 Bound their complete storage, indices and retained dispositions to 1 MiB, charged against the existing 8 MiB buffer cap.
 At either limit, refuse new reservations and preserve independent Stop, revocation, inspection and cleanup.
-Do not evict consumed records to regain capacity. Generation turnover requires the ordinary custody and retirement checks.
+Do not evict consumed records to regain capacity. Use the bounded turnover below.
 These are experimental bounds. Full journeys must qualify them before shipping.
+
+#### Bounded release-record turnover
+
+PROPOSED: The existing runtime owner starts one turnover when the next reservation would exceed either release-record limit.
+Turnover uses reserved control capacity. It creates no supervisor, management grant or new Start request.
+Allow one pending turnover per service. Freeze new reservations while existing admitted work reaches its ordinary disposition.
+Use a five-second absolute drain deadline. Preserve revocation, Stop, inspection and existing cleanup throughout the attempt.
+
+Retirement requires no Reserved record, queued release, active effect or callback in each retiring owner generation.
+Unused reservations retire only through their existing authoritative refusal path.
+Then close every retiring release gate under the runtime registry order.
+Recheck the drain condition after closure. Apply the existing custody and retirement checks to each affected owner.
+Do not hold the registry lock while waiting for effects, storage or native cleanup.
+Missing acknowledgements, failed cleanup or deadline expiry leave turnover Pending/Unresolved and new reservations refused.
+Retain reached closed gates and all old records. Completion or approved reconciliation can resume the same pending attempt.
+After expiry, recheck only on those owner events. Do not extend the expired wait or start a polling loop.
+
+After retirement, atomically replace the registry's admitted owner generations with fresh identities before discarding their old release records.
+Fence old-generation messages, queued callbacks and local capabilities before enabling a replacement owner.
+Validate generation before reservation lookup. An old token cannot reconstruct a reservation in the new generation.
+Use the ordinary enrollment protocol to install current closure and dependency revisions at each replacement owner.
+Recheck current desired state, authority, custody and holds before reopening admission.
+A concurrent Stop leaves admission closed. Turnover cannot change desired state or increment a management revision.
+
+Turnover does not reset operation references, creation bindings, outcomes, conflicts, dependencies or holds in the core database.
+Turnover does not authorize recovery or replay of DispatchIntent or Indeterminate work.
+On success, newly admitted work can use the restored capacity within the same aggregate limits.
+Run AC-35 through the actual registry and effect owners, including more than 1024 completed effects.
 
 #### Execution closure and owner enrollment
 
@@ -346,7 +379,8 @@ No gate lock spans storage synchronization or external work. A database write ca
 Limit the live registry to 64 capable owners, 1024 held executions and 4096 causal edges per service.
 Charge their complete live storage to a separate 1 MiB allowance within the existing 8 MiB buffer cap.
 Refuse excess enrollment or dependency admission before release becomes possible. Never discard a live hold to regain capacity.
-Reserve closure-state capacity before admitting an execution. Unrelated allowed work and independent control progress remain available within capacity.
+Reserve live closure-state capacity before admitting an execution. D-10 separately reserves its durable closure evidence.
+Unrelated allowed work and independent control progress remain available within capacity.
 
 #### Codec and resource binding
 
