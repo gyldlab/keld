@@ -654,7 +654,8 @@ echo "ok: cargo metadata derives current keld-host closure"
 git config user.name ci-guardian-audit-test
 git config user.email ci-guardian-audit@example.invalid
 git add -u
-git commit -qm "Guardian audit range baseline"
+# The v2 snapshot is already committed; baseline creation may have no byte changes.
+git commit --allow-empty -qm "Guardian audit range baseline"
 guardian_base="$(git rev-parse HEAD)"
 printf '\n// Guardian audit existing-byte mutation\n' >> crates/keld-runtime/src/macos_guardian.rs
 git add crates/keld-runtime/src/macos_guardian.rs
