@@ -1,14 +1,14 @@
 # macOS Guardian architecture coverage — pinned partial ledger
 
-**Status: partial review evidence for #824; not a completed architecture audit, security certification, or merge authorization.** All implementation pull requests cited here remain draft and unmerged. This is a repository-tree comparison, not evidence that the draft stack is present on `main`.
+**Status: partial review evidence for #824; not a completed architecture audit, security certification, or merge authorization.** As verified on 2026-11-16, implementation PRs #941, #945, #947 and #948 are open, non-draft and unmerged. Existing merge holds still apply. This is a repository-tree comparison, not evidence that the pinned stack is present on `main`.
 
 ## Exact revisions and scope
 
 | Role | Commit |
 | --- | --- |
-| Current upstream `main` snapshot (fetched 2026-10-18) | `baf558f24b094c0dd5c0a77b5939f6e7013ba4aa` |
-| Reviewed macOS stacked tip, draft [#948](https://github.com/gyldlab/keld/pull/948) | `ea728589d0143df134c0f21fe5cf335240018d6a` |
-| Stack merge base with current `main` | `709d302dc8df9b3623fd29a0fca0a45d9a6087db` |
+| Pinned upstream `main` snapshot (fetched 2026-10-18) | `baf558f24b094c0dd5c0a77b5939f6e7013ba4aa` |
+| Reviewed macOS stacked tip, [#948](https://github.com/gyldlab/keld/pull/948) (draft at the 2026-10-18 snapshot) | `ea728589d0143df134c0f21fe5cf335240018d6a` |
+| Stack merge base with pinned `main` | `709d302dc8df9b3623fd29a0fca0a45d9a6087db` |
 
 The two branches are not the same tree. The inventory deliberately compares
 their Git blobs without implying a merge or completed merged-tree acceptance.
@@ -27,15 +27,15 @@ and review disposition. `summary.json` pins the scope and the counts.
 | Production (B) | 18 |
 | Tests (C) | 59 |
 | **Total in this bounded macOS scope** | **77** |
-| Verified *for a prior narrow security PR*, not full architecture | 6 |
-| Reopened: a later review found a defect in the pinned blob | 2 |
+| Verified *for a prior narrow security PR*, not full architecture | 5 |
+| Reopened: a later review found a defect in the pinned blob | 3 |
 | **Pending complete file-level architecture review** | **69** |
 | Added relative to pinned `main` | 75 |
 | Modified relative to pinned `main` | 2 |
 
 All 77 rows are pinned to Git tree objects; `added` means absent from the
 specified `main` tree only. The 69 pending rows must **not** be inferred as
-cohesive, safe, or no-change. Even the six scoped-verified rows still require
+cohesive, safe, or no-change. Even the five scoped-verified rows still require
 any broader #824 cohesion, cross-component and integration disposition not
 demonstrated by their narrow security fixes.
 
@@ -54,6 +54,16 @@ the exact pinned blob. Neither blob is reviewed evidence:
   [#945 review](https://github.com/gyldlab/keld/pull/945) of 2026-10-21 found a
   medium duplicated group-absence predicate. The single absence owner landed in
   `20997b55`..`90c46fa0`, with different blobs.
+
+**Correction (2026-11-16).** A third row is now `reopened`:
+`registered_guardian.rs` blob `e716d4832d474e12f7a154ece1a3883f5462d136`.
+Its pinned `fail_observation` calls `Child::kill()` after an `ECHILD`
+inspection error. An external reap can release that PID before the signal.
+[Review #949](https://github.com/gyldlab/keld/pull/949#discussion_r4584736075)
+traces this historical defect. Current #948 `31af86e2` inherits the ECHILD
+guard, but that fix does not change the pinned blob. This row is not verified.
+The totals are now five verified-scoped, three reopened and 69 pending.
+Historical Git pins and test receipts below are unchanged.
 
 The descriptions below record what each PR claimed at the pinned commits.
 
@@ -176,10 +186,10 @@ negative oracle as pending, without assuming an executing-child escape.
 
 ## Ownership and next review work
 
-The narrow fixes belong to their exact draft PRs above. The separate macOS
-auth-capacity draft [#941](https://github.com/gyldlab/keld/pull/941) is a
+The narrow fixes belong to their exact PRs above. The separate macOS
+auth-capacity PR [#941](https://github.com/gyldlab/keld/pull/941) is a
 sibling of the CLEAR chain; do not modify it or other-agent worktrees.
-The `main` tip is external to the #948 ancestry. No retarget, merge or
+The pinned `main` tip is external to the #948 ancestry. No retarget, merge or
 integration acceptance has been performed.
 
 The next coherent, independently reviewed source groups are the remaining

@@ -562,6 +562,14 @@ fn verify_completed_auth_quit(
     )
 }
 
+fn write_launch_status(project_root: &Path, status: &Value) -> SmokeResult<()> {
+    fs::write(
+        project_root.join("launch-status.json"),
+        serde_json::to_vec_pretty(status)?,
+    )?;
+    Ok(())
+}
+
 fn run_case(
     parent: &Path,
     repo: &Path,
@@ -575,11 +583,9 @@ fn run_case(
     let mut window = census.map(|path| NativeWindowObserver::arm_for_title(path, TITLE));
     let stdout = fs::File::create(project.root.join("cli.stdout"))?;
     let stderr = fs::File::create(project.root.join("cli.stderr"))?;
-    fs::write(
-        project.root.join("launch-status.json"),
-        serde_json::to_vec_pretty(&json!({
-            "status":"starting-cli", "case":case.name,
-        }))?,
+    write_launch_status(
+        &project.root,
+        &json!({"status":"starting-cli", "case":case.name}),
     )?;
     let cli_child = Command::new(cli)
         .arg("dev")
@@ -593,15 +599,14 @@ fn run_case(
         .spawn()?;
     let cli_pid = cli_child.id();
     let mut cleanup = ShippingLaunchCleanup::new(cli_child);
-    fs::write(
-        project.root.join("launch-status.json"),
-        serde_json::to_vec_pretty(&json!({
-            "status":"cli-spawned", "case":case.name, "cliPid":cli_pid,
-        }))?,
+    write_launch_status(
+        &project.root,
+        &json!({"status":"cli-spawned", "case":case.name, "cliPid":cli_pid}),
     )?;
     let (app_ready, page_ready, result, journal) = await_phases(&observation, &project.root, case)?;
     let [host, guardian, bun, descendant] = observed_auth_family(&app_ready, cli_pid)?;
     cleanup.record_authenticated_groups(process_group(host), process_group(bun));
+    cleanup.record_authenticated_members(guardian, descendant);
     let host_image = process_image_path(host);
     let boot = project.verify_stock_stage(&host_image, host_source, case)?;
     let windows = window.as_mut().map_or_else(Vec::new, |window| {
