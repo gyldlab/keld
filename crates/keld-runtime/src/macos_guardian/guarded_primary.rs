@@ -2,16 +2,18 @@
 use super::generation_host::{
     GenerationHostAdmission, is_initial_recovery_denied, is_post_shutdown_spawn_refused,
 };
-use super::process_group::{GroupIdentity, terminate_attested_group};
+use super::process_group::{
+    GroupIdentity, require_attested_group_absence, terminate_attested_group_until,
+};
 #[cfg(test)]
 use super::terminate_registered_group;
 use super::{
     Arc, BoundRoleGeneration, Child, ChildStdin, ChildStdout, Duration, ExitStatus,
-    GUARDIAN_SHUTDOWN_DEADLINE, Instant, JoinHandle, Mutex, Receiver, RecoveryState, RoleEvent,
-    RuntimeError, SUPERVISED_ORDERLY_SHUTDOWN, SUPERVISED_QUIT_ACCEPTED, Write, collapse_failures,
-    io, lifecycle_error, lock_recovery, mpsc, read_supervised_orderly_ack,
-    read_supervised_quit_ack, reject_host_registration, run_generation_host,
-    set_liveness_nonblocking, thread,
+    GENERATION_CONTROL_POLL, GUARDIAN_SHUTDOWN_DEADLINE, Instant, JoinHandle, Mutex, Receiver,
+    RecoveryState, RoleEvent, RuntimeError, SUPERVISED_ORDERLY_SHUTDOWN, SUPERVISED_QUIT_ACCEPTED,
+    Write, collapse_failures, io, lifecycle_error, lock_recovery, mpsc,
+    read_supervised_orderly_ack, read_supervised_quit_ack, reject_host_registration,
+    run_generation_host, set_liveness_nonblocking, thread,
 };
 
 /// One host-visible update from the guarded primary-generation owner.
@@ -58,6 +60,47 @@ pub(super) struct RegisteredPrimaryGeneration {
     pub(super) attempt: u32,
     pub(super) group_pid: u32,
     pub(super) group_identity: Option<GroupIdentity>,
+    pub(super) native_signal: NativeSignalAuthority,
+}
+
+/// Host-side signal authority carried WITH one retained generation.
+///
+/// One native group signal per generation. A retained birth is custody, not
+/// repeated signal authority: the numeric PGID may be recycled once the
+/// leader is gone, and after a delivered SIGKILL a second group-wide kill
+/// could only reach processes that joined later or a recycled group. So the
+/// first host-side attempt spends the authority whether it was delivered or
+/// failed. Later host paths keep custody (fail closed) and may only run the
+/// read-only dual-ESRCH absence probe, never `killpg`.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(super) enum NativeSignalAuthority {
+    /// No host-side signal has been attempted for this generation.
+    Armed,
+    /// The one signal was delivered; the group is not yet proven absent.
+    Delivered {
+        /// Absolute end of the attempt's reap budget.
+        reap_deadline: Instant,
+    },
+    /// The one attempt failed or was refused.
+    ProbeOnly {
+        /// Absolute end of the attempt's reap budget.
+        reap_deadline: Instant,
+    },
+}
+
+impl NativeSignalAuthority {
+    /// Absolute deadline for a later read-only absence probe. Probes share
+    /// the spent attempt's budget; once it has passed, a call still gets one
+    /// observation (at most one poll interval) so a group that has since
+    /// disappeared can be released, but never a fresh reap window.
+    fn probe_deadline(self) -> Option<Instant> {
+        match self {
+            Self::Armed => None,
+            Self::Delivered { reap_deadline } | Self::ProbeOnly { reap_deadline } => {
+                Some(reap_deadline.max(Instant::now() + GENERATION_CONTROL_POLL))
+            }
+        }
+    }
 }
 
 impl RegisteredPrimaryGeneration {
@@ -66,28 +109,102 @@ impl RegisteredPrimaryGeneration {
             attempt,
             group_pid: group_identity.pid,
             group_identity: Some(group_identity),
+            native_signal: NativeSignalAuthority::Armed,
+        }
+    }
+
+    /// Makes the generation's single birth-attested signal attempt while
+    /// armed, and spends the authority whatever its outcome. When the
+    /// authority is already spent this sends nothing and returns `Ok`, so
+    /// the caller applies its own read-only absence proof.
+    pub(super) fn signal_if_armed(&mut self) -> Result<(), RuntimeError> {
+        let Some(identity) = self.group_identity else {
+            return terminate_unwitnessed_generation(self.group_pid);
+        };
+        if self.native_signal != NativeSignalAuthority::Armed {
+            return Ok(());
+        }
+        let reap_deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE / 4;
+        let result = terminate_attested_group_until(identity, reap_deadline);
+        self.native_signal = if result.is_ok() {
+            NativeSignalAuthority::Delivered { reap_deadline }
+        } else {
+            NativeSignalAuthority::ProbeOnly { reap_deadline }
+        };
+        result
+    }
+
+    /// Host fail-safe for this retained generation: the single armed signal
+    /// attempt, or afterwards only the read-only absence probe.
+    pub(super) fn terminate(&mut self) -> Result<(), RuntimeError> {
+        match (self.native_signal.probe_deadline(), self.group_identity) {
+            (Some(deadline), Some(identity)) => require_attested_group_absence(identity, deadline),
+            _ => self.signal_if_armed(),
+        }
+    }
+
+    /// Core's app-link failure report. A repeated report after a delivered
+    /// signal is idempotent: the Guardian's CLEAR, not a second signal,
+    /// proves absence. A failed attempt still reports its probe result.
+    fn fail(&mut self) -> Result<(), RuntimeError> {
+        match self.native_signal {
+            NativeSignalAuthority::Delivered { .. } => Ok(()),
+            _ => self.terminate(),
+        }
+    }
+
+    /// CLEAR's absence deadline. After an armed or delivered signal CLEAR
+    /// keeps its own `own` window: CLEAR's own `signal_if_armed` turns
+    /// `Armed` into `Delivered { now + D/4 }` before this deadline is
+    /// chosen, so capping at that budget would shrink CLEAR's own window
+    /// from D to D/4 and fail a group that is still draining when CLEAR
+    /// arrives. CLEAR runs at most once per attempt and any failure ends the
+    /// worker, so the window is never stacked. After a FAILED attempt CLEAR
+    /// is bounded by that attempt's already-spent deadline, plus at most one
+    /// poll interval of grace.
+    pub(super) fn clear_absence_deadline(&self, own: Instant) -> Instant {
+        match self.native_signal {
+            NativeSignalAuthority::ProbeOnly { .. } => self
+                .native_signal
+                .probe_deadline()
+                .map_or(own, |shared| shared.min(own)),
+            _ => own,
         }
     }
 }
 
-fn terminate_generation(generation: RegisteredPrimaryGeneration) -> Result<(), RuntimeError> {
-    if let Some(identity) = generation.group_identity {
-        return terminate_attested_group(identity);
-    }
+fn terminate_unwitnessed_generation(group_pid: u32) -> Result<(), RuntimeError> {
     #[cfg(test)]
     {
         // Older synthetic-only control/error fixtures explicitly supply no
         // kernel witness. They never stand in for production enrollment.
-        terminate_registered_group(generation.group_pid)
+        terminate_registered_group(group_pid)
     }
     #[cfg(not(test))]
-    Err(lifecycle_error(
-        "macOS guardian missing native generation identity",
-        io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "authenticated generation has no registered leader birth proof",
-        ),
-    ))
+    {
+        let _ = group_pid;
+        Err(lifecycle_error(
+            "macOS guardian missing native generation identity",
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "authenticated generation has no registered leader birth proof",
+            ),
+        ))
+    }
+}
+
+// One native fail-safe owner for every terminal path. Hold the generation
+// mutex across the birth-attested signal, just like fail_current_generation
+// and KGC1 CLEAR. A failed signal cannot consume the original group witness;
+// only successful termination or proven absence releases this enrollment.
+fn terminate_and_release_generation(
+    registered: &mut Option<RegisteredPrimaryGeneration>,
+) -> Result<(), RuntimeError> {
+    if let Some(generation) = registered.as_mut() {
+        generation.terminate()?;
+        *registered = None;
+    }
+    Ok(())
 }
 
 impl GuardedPrimary {
@@ -204,14 +321,14 @@ impl GuardedPrimary {
         // The generation lock remains held through kernel identity inspection
         // and signaling. Otherwise concurrent KGC1 CLEAR could retire this
         // attempt and publish a successor between the host's read and SIGKILL.
-        let current = lock_generation(&self.current_generation);
-        let Some(generation) = *current else {
+        let mut current = lock_generation(&self.current_generation);
+        let Some(generation) = current.as_mut() else {
             return Ok(());
         };
         if generation.attempt != attempt {
             return Ok(());
         }
-        terminate_generation(generation)
+        generation.fail()
     }
 
     /// Waits for one generation update up to `timeout`.
@@ -273,11 +390,7 @@ impl GuardedPrimary {
             Ok(None) => {}
             Ok(Some(status)) => {
                 self.liveness_writer.take();
-                let generation = take_generation(&self.current_generation);
-                let group_pid = generation.map_or(0, |generation| generation.group_pid);
-                let cleanup_error = generation
-                    .and_then(|generation| terminate_generation(generation).err())
-                    .map(|error| io::Error::other(error.to_string()));
+                let (group_pid, cleanup_error) = self.fatal_group_cleanup_status(true);
                 Err(RuntimeError::GuardianExited {
                     group_pid,
                     exit_code: status.code(),
@@ -326,8 +439,8 @@ impl GuardedPrimary {
         }
         let result = self.shutdown_once();
         if result.is_err() {
-            // Cleanup consumed the worker and group witnesses; a later call
-            // cannot turn the original failed shutdown into fresh success.
+            // A later call cannot turn the original failed shutdown into
+            // success, even when native failure retained the group witness.
             self.shutdown_failed = true;
         }
         result
@@ -337,6 +450,9 @@ impl GuardedPrimary {
     /// wrapper retains a failed terminal outcome across later calls.
     fn shutdown_once(&mut self) -> Result<ExitStatus, RuntimeError> {
         let mut failures = Vec::new();
+        // One shutdown transaction makes at most one native fail-safe call:
+        // a repeated call would re-report the same error and re-wait.
+        let mut native_attempted = false;
         if let Err(error) = self.prepare_orderly_shutdown() {
             failures.push(error);
         }
@@ -355,6 +471,7 @@ impl GuardedPrimary {
                         "macOS guardian generation shutdown deadline",
                         io::Error::new(io::ErrorKind::TimedOut, "guardian did not exit"),
                     ));
+                    native_attempted = true;
                     if let Err(error) = self.fail_safe_current_group() {
                         failures.push(error);
                     }
@@ -380,6 +497,7 @@ impl GuardedPrimary {
                         "macOS guardian generation shutdown wait",
                         source,
                     ));
+                    native_attempted = true;
                     if let Err(error) = self.fail_safe_current_group() {
                         failures.push(error);
                     }
@@ -398,11 +516,8 @@ impl GuardedPrimary {
         if let Some(observed) = status
             && !observed.success()
         {
-            let generation = take_generation(&self.current_generation);
-            let group_pid = generation.map_or(0, |generation| generation.group_pid);
-            let cleanup_error = generation
-                .and_then(|generation| terminate_generation(generation).err())
-                .map(|error| io::Error::other(error.to_string()));
+            let (group_pid, cleanup_error) = self.fatal_group_cleanup_status(!native_attempted);
+            native_attempted = true;
             failures.push(RuntimeError::GuardianExited {
                 group_pid,
                 exit_code: observed.code(),
@@ -416,7 +531,7 @@ impl GuardedPrimary {
                 io::Error::other("guardian exited with a registered group"),
             ));
         }
-        if worker_failed || group_still_registered {
+        if (worker_failed || group_still_registered) && !native_attempted {
             // Even a zero-status guardian or apparently successful worker
             // cannot leave a native group behind after the host's shutdown.
             if let Err(error) = self.fail_safe_current_group() {
@@ -563,8 +678,32 @@ impl GuardedPrimary {
         })?
     }
 
+    /// Group PID and cleanup outcome for a `GuardianExited` report. When
+    /// this transaction already ran the native fail-safe, never call it
+    /// again: report the retained group without re-waiting or duplicating
+    /// the earlier native error.
+    fn fatal_group_cleanup_status(&self, attempt: bool) -> (u32, Option<io::Error>) {
+        let mut current = lock_generation(&self.current_generation);
+        let group_pid = current
+            .as_ref()
+            .map_or(0, |generation| generation.group_pid);
+        let cleanup_error = if attempt {
+            terminate_and_release_generation(&mut current)
+                .err()
+                .map(|error| io::Error::other(error.to_string()))
+        } else {
+            current.is_some().then(|| {
+                io::Error::other(
+                    "native group cleanup failed earlier in this shutdown; the original group birth remains retained",
+                )
+            })
+        };
+        (group_pid, cleanup_error)
+    }
+
     fn fail_safe_current_group(&self) -> Result<(), RuntimeError> {
-        take_generation(&self.current_generation).map_or(Ok(()), terminate_generation)
+        let mut current = lock_generation(&self.current_generation);
+        terminate_and_release_generation(&mut current)
     }
 }
 
@@ -575,12 +714,6 @@ pub(super) fn lock_generation(
         Ok(generation) => generation,
         Err(poisoned) => poisoned.into_inner(),
     }
-}
-
-pub(super) fn take_generation(
-    generation: &Mutex<Option<RegisteredPrimaryGeneration>>,
-) -> Option<RegisteredPrimaryGeneration> {
-    lock_generation(generation).take()
 }
 
 impl Drop for GuardedPrimary {
