@@ -50,11 +50,11 @@ use outcomes::{
     assert_natural_outcomes, assert_page_outcomes,
 };
 use process_image::process_image_path;
-use quit_body_receipt::QuitBodyReceipt;
 use project::{
     CONTENT, Exercise, Policy, PreparedLaunch, PublicFsProject, RECOVERY_AFTER_CONTENT, SENTINEL,
     TITLE,
 };
+use quit_body_receipt::QuitBodyReceipt;
 
 #[derive(Clone, Copy, Debug)]
 struct ProcessFamily {

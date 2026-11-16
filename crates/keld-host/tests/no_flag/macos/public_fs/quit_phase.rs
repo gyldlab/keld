@@ -134,7 +134,9 @@ mod tests {
         assert_eq!(polls, 1, "native receipt was sampled only inside the wait");
         assert_eq!(
             logs,
-            vec!["KELD_KEL140_NATIVE_QUIT_PHASE last_live_http_stage=observer_response_written bun_body_stage=bun_body_verified"]
+            vec![
+                "KELD_KEL140_NATIVE_QUIT_PHASE last_live_http_stage=observer_response_written bun_body_stage=bun_body_verified"
+            ]
         );
     }
 
