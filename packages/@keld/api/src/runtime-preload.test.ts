@@ -38,7 +38,7 @@ type Message = {
 async function launch(
   observer: boolean,
   mutant = false,
-  installed?: { wrapper: string; entry: string },
+  installed?: { wrapper: string; entry: string; runAsMainGraph?: boolean },
 ) {
   const dir = mkdtempSync(join(tmpdir(), "krp-"));
   const endpoint =
@@ -95,8 +95,9 @@ async function launch(
           join(import.meta.dir, "runtime-preload-observer.fixture.mjs"),
         ]
       : []),
-    "--preload",
-    wrapper,
+    // Windows packaged startup uses one Bun main ESM graph for wrapper and app.
+    // Keep the separate preload route for the other existing fixture cases.
+    ...(installed?.runAsMainGraph ? [] : ["--preload", wrapper]),
     installed?.entry ??
       join(import.meta.dir, "runtime-preload-entry.fixture.mjs"),
   ];
@@ -327,7 +328,22 @@ test("actual packed API wrapper captures and ACKs over its same stamped installe
     const text = readFileSync(wrapper, "utf8");
     expect(text).toContain('from "@keld/kipc"');
     expect(text).toContain('from "./app.js"');
-    const run = await launch(false, false, { wrapper, entry });
+    // Bun 1.4.4 on Windows can split singleton identity between --preload
+    // and the main module. The actual Windows Host enters one main ESM graph.
+    // Dynamic imports preserve the required wrapper-before-entry ordering.
+    const runAsMainGraph = process.platform === "win32";
+    const mainEntry = join(stage, "packed-main-graph.mjs");
+    if (runAsMainGraph) {
+      writeFileSync(
+        mainEntry,
+        'await import("./node_modules/@keld/api/runtime-preload.js");\nawait import("./entry.mjs");\n',
+      );
+    }
+    const run = await launch(false, false, {
+      wrapper,
+      entry: runAsMainGraph ? mainEntry : entry,
+      runAsMainGraph,
+    });
     try {
       await run.ack();
       await run.subscribe();
