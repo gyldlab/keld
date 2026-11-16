@@ -5536,6 +5536,10 @@ fn wait_renderer_echo_outcome(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep the native renderer dequeue, bounded CONTROL terminal reservation, app-link reply and shutdown propagation in one ordered worker."
+)]
 fn start_renderer_dispatch(
     requests: Receiver<RendererBridgeRequest>,
     outcomes: Sender<RendererBridgeOutcome>,
@@ -8761,6 +8765,13 @@ impl PrimaryRouterHandle {
         expect(
             clippy::too_many_lines,
             reason = "Keep the ordered Quit admission, filesystem drain and terminal reply ownership in one lifecycle operation."
+        )
+    )]
+    #[cfg_attr(
+        target_os = "macos",
+        expect(
+            clippy::too_many_lines,
+            reason = "Keep macOS Quit admission, accepted reply, original window teardown and auth/FS retirement ordered under one lifecycle owner."
         )
     )]
     fn lifecycle_quit(

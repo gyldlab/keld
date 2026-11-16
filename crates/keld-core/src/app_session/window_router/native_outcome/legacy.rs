@@ -26,6 +26,13 @@ impl PrimaryRouterHandle {
             reason = "Keep the exhaustive legacy native-outcome match and its ordered publication effects together."
         )
     )]
+    #[cfg_attr(
+        target_os = "macos",
+        expect(
+            clippy::too_many_lines,
+            reason = "Preserve the guarded macOS native-outcome publication sequence and its retained caller, registry and error custody."
+        )
+    )]
     pub(in crate::app_session::window_router) fn publish_window_native_locked(
         &self,
         session: &mut WindowSession,
