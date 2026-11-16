@@ -54,7 +54,7 @@ impl PrimaryWriter {
 
     /// Canonical retirement wakes capacity waiters; it does not refund positions.
     pub(in crate::app_session) fn role_retired(&self) {
-        self.shared.changed.notify_all();
+        self.shared.notify_all();
         let wake = self
             .shared
             .state
@@ -83,7 +83,7 @@ impl PrimaryWriter {
         // The existing condition variable also serves the one synchronous
         // Window/Compat publisher. A queued UI marker does not consume this
         // actual release observation or require the UI to dispatch anything.
-        self.shared.changed.notify_all();
+        self.shared.notify_all();
         self.shared.wake(wake);
     }
 
@@ -162,7 +162,8 @@ impl Shared {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.closed = true;
-            self.changed.notify_all();
+            drop(state);
+            self.notify_all();
         }
     }
 }
