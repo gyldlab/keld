@@ -205,7 +205,7 @@ fn read_native_state(
                     io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
                 ) =>
             {
-                thread::yield_now()
+                thread::yield_now();
             }
             Err(error) => panic!("native observer read failed: {:?}", error.kind()),
         }
