@@ -9,7 +9,7 @@ This is a **developer-local** procedure for `keld build --target windows-x64`, n
 - An independently authenticated SignTool executable and its previously recorded SHA-256 pin. Use the exact tool path, never automatic signer/certificate selection.
 - Existing 32-byte raw update public key; approved Git/Cargo/Rustc source tools, compiler Bun/TypeScript tool paths and SHA-256 pins, an exact source commit, and unique private `outDir`. The update public key does not authorize or create a private signing key.
 - Resolved `typescriptRoot` and `outDir` must use ordinary absolute local-disk paths such as `C:\Work\keld`. Project-relative paths are valid when they resolve to that form. Extended-length `\\?\C:\...`, UNC and device aliases are refused before compiler capture, source-session creation, or executable signing because the local compiler binds imports through fixed `file:///` URLs.
-- Python 3 available as `python` for the portable read-only certificate public-SPKI parser (standard library only).
+- An independently authenticated local Python 3 `python.exe` and its previously recorded SHA-256 pin, selected by an ordinary absolute path. The read-only public-SPKI parser starts that pinned interpreter with `-I -S -B` to ignore ambient Python paths, site hooks and bytecode writes; it never picks a `python` executable from `PATH`.
 
 ## Derive the publisher scope from the selected certificate
 
@@ -17,7 +17,10 @@ From PowerShell at the repository root, without administrator elevation:
 
 ```powershell
 $thumbprint = '<YOUR-EXISTING-40-HEX-CODE-SIGNING-CERT-THUMBPRINT>'
-& .\tools\windows\developer_signer_preflight.ps1 -Thumbprint $thumbprint -DiscoverPublisherScope
+$pythonPath = '<INDEPENDENTLY-AUTHENTICATED-ABSOLUTE-PYTHON-EXE-PATH>'
+$pythonSha256 = '<INDEPENDENTLY-RECORDED-PYTHON-EXE-SHA256>'
+& .\tools\windows\developer_signer_preflight.ps1 -Thumbprint $thumbprint `
+  -PythonPath $pythonPath -ExpectedPythonSha256 $pythonSha256 -DiscoverPublisherScope
 ```
 
 The output is explicitly `DISCOVERY_ONLY`, **not** approval to sign. Copy its 64-character `publisherScope` into the project's closed literal `developerSigner.publisherScope` in `keld.build.ts`. The same closed `developerSigner` requires `certificateThumbprint`, `releasePublicKey`, pinned `signTool`, `git`, `cargo`, `rustc` and `cargoHome` paths. Set the compiled app's real identity and project input configuration separately. Do not paste the example development machine's paths, certificate, hashes, or public key into another developer's project.
@@ -27,13 +30,15 @@ The output is explicitly `DISCOVERY_ONLY`, **not** approval to sign. Copy its 64
 ```powershell
 & .\tools\windows\developer_signer_preflight.ps1 `
   -Thumbprint $thumbprint `
+  -PythonPath $pythonPath `
+  -ExpectedPythonSha256 $pythonSha256 `
   -ExpectedPublisherScope '<DERIVED-PUBLISHER-SCOPE>' `
   -SignToolPath '<PINNED-SIGNTOOL-EXE-PATH>' `
   -ExpectedSignToolSha256 '<INDEPENDENTLY-RECORDED-SIGNTOOL-SHA256>' `
   -ReleasePublicKeyPath '<EXISTING-RAW-32-BYTE-UPDATE-PUBLIC-KEY-PATH>'
 ```
 
-Only a `PREFLIGHT_PASS` is a successful **metadata** preflight. It checks certificate identity, validity, key availability indicator, EKU, key usage, public-SPKI publisher identity, pinned tool bytes and raw update public-key length. It does **not** prove that the private-key operation will succeed, make the self-issued certificate publicly trusted, or qualify general release. A wrong scope/hash, missing inputs or missing helper fail closed. Do not weaken checks to make a misconfigured developer project succeed.
+Only a `PREFLIGHT_PASS` is a successful **metadata** preflight. It checks certificate identity, validity, key availability indicator, EKU, key usage, public-SPKI publisher identity, the separately pinned Python interpreter and SignTool bytes, and raw update public-key length. It does **not** prove that the private-key operation will succeed, make the self-issued certificate publicly trusted, or qualify general release. A wrong scope/hash, missing inputs or missing helper fail closed. Do not weaken checks to make a misconfigured developer project succeed.
 
 ## Build and run
 

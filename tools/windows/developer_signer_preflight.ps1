@@ -6,6 +6,15 @@ param(
     [ValidatePattern('^[0-9a-fA-F]{40}$')]
     [string]$Thumbprint,
 
+    # Use an independently authenticated, exactly pinned Python executable.
+    # Neither PATH selection nor interpreter site startup can supply authority.
+    [Parameter(Mandatory = $true)]
+    [string]$PythonPath,
+
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{64}$')]
+    [string]$ExpectedPythonSha256,
+
     [Parameter(Mandatory = $true, ParameterSetName = 'Discovery')]
     [switch]$DiscoverPublisherScope,
 
@@ -100,13 +109,19 @@ $helper = Join-Path -Path $PSScriptRoot -ChildPath 'developer_signer_spki.py'
 if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) {
     Refuse 'read-only SPKI helper is missing'
 }
-$python = Get-Command -Name 'python' -CommandType Application -ErrorAction SilentlyContinue |
-    Select-Object -First 1
-if ($null -eq $python) {
-    Refuse 'python executable is missing; standard-library SPKI parsing is required'
+$python = Require-AbsoluteFile -Name 'Python' -SelectedPath $PythonPath
+if ([IO.Path]::GetExtension($python) -ine '.exe' -or
+    [IO.Path]::GetFileName($python) -ine 'python.exe') {
+    Refuse 'selected Python interpreter must be python.exe'
 }
+$actualPythonDigest = (Get-FileHash -LiteralPath $python -Algorithm SHA256).Hash
+if ($actualPythonDigest -cne $ExpectedPythonSha256.ToUpperInvariant()) {
+    Refuse 'selected Python bytes do not match independently pinned SHA256'
+}
+# -I ignores ambient PYTHONPATH and user sites; -S refuses site/.pth hooks;
+# -B avoids bytecode writes. This checked-in stdlib parser needs none of them.
 $encodedPublicCertificate = [Convert]::ToBase64String($certificate.RawData)
-$scopeOutput = @($encodedPublicCertificate | & $python.Source -B $helper)
+$scopeOutput = @($encodedPublicCertificate | & $python -I -S -B $helper)
 if ($LASTEXITCODE -ne 0 -or $scopeOutput.Count -ne 1 -or
     $scopeOutput[0] -cnotmatch '^[0-9a-f]{64}$') {
     Refuse 'certificate SPKI publisher scope could not be derived'

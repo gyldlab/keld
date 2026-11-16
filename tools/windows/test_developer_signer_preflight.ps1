@@ -3,6 +3,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)] [string]$Thumbprint,
+    [Parameter(Mandatory = $true)] [string]$PythonPath,
+    [Parameter(Mandatory = $true)] [string]$ExpectedPythonSha256,
     [Parameter(Mandatory = $true)] [string]$SignToolPath,
     [Parameter(Mandatory = $true)] [string]$ExpectedSignToolSha256,
     [Parameter(Mandatory = $true)] [string]$ReleasePublicKeyPath
@@ -38,8 +40,9 @@ function Invoke-Case([string]$Name, [string[]]$Arguments, [bool]$ExpectSuccess, 
 }
 
 if ($Thumbprint -ceq ('0' * 40)) { $missingThumbprint = '1' * 40 } else { $missingThumbprint = '0' * 40 }
-[void](Invoke-Case 'incorrect or missing certificate' @('-Thumbprint', $missingThumbprint, '-DiscoverPublisherScope') $false '')
-$discovery = Invoke-Case 'discovery' @('-Thumbprint', $Thumbprint, '-DiscoverPublisherScope') $true 'DISCOVERY_ONLY publisherScope=[0-9a-f]{64}'
+$pythonArgs = @('-PythonPath', $PythonPath, '-ExpectedPythonSha256', $ExpectedPythonSha256)
+[void](Invoke-Case 'incorrect or missing certificate' (@('-Thumbprint', $missingThumbprint, '-DiscoverPublisherScope') + $pythonArgs) $false '')
+$discovery = Invoke-Case 'discovery' (@('-Thumbprint', $Thumbprint, '-DiscoverPublisherScope') + $pythonArgs) $true 'DISCOVERY_ONLY publisherScope=[0-9a-f]{64}'
 $scopeMatches = [regex]::Matches($discovery, 'DISCOVERY_ONLY publisherScope=(?<scope>[0-9a-f]{64})')
 if ($scopeMatches.Count -ne 1) { throw 'KELD-PREFLIGHT-TEST: non-unique discovery scope' }
 $scope = $scopeMatches[0].Groups['scope'].Value
@@ -47,7 +50,9 @@ $validArgs = @('-Thumbprint', $Thumbprint,
     '-ExpectedPublisherScope', $scope,
     '-SignToolPath', $SignToolPath,
     '-ExpectedSignToolSha256', $ExpectedSignToolSha256,
-    '-ReleasePublicKeyPath', $ReleasePublicKeyPath)
+    '-ReleasePublicKeyPath', $ReleasePublicKeyPath,
+    '-PythonPath', $PythonPath,
+    '-ExpectedPythonSha256', $ExpectedPythonSha256)
 [void](Invoke-Case 'valid metadata' $validArgs $true 'PREFLIGHT_PASS publisherScope=[0-9a-f]{64}')
 
 $wrongScope = @($validArgs)
@@ -61,6 +66,13 @@ if ($wrongHash[7] -ceq $ExpectedSignToolSha256) { $wrongHash[7] = '1' * 64 }
 $missingTool = @($validArgs)
 $missingTool[5] = Join-Path $env:TEMP 'keld-nonexistent-signtool.exe'
 [void](Invoke-Case 'missing SignTool' $missingTool $false '')
+$wrongPythonHash = @($validArgs)
+$wrongPythonHash[13] = '0' * 64
+if ($wrongPythonHash[13] -ceq $ExpectedPythonSha256) { $wrongPythonHash[13] = '1' * 64 }
+[void](Invoke-Case 'wrong Python SHA256' $wrongPythonHash $false '')
+$missingPython = @($validArgs)
+$missingPython[11] = Join-Path $env:TEMP 'keld-nonexistent-python.exe'
+[void](Invoke-Case 'missing Python interpreter' $missingPython $false '')
 
 $fixture = Join-Path $env:TEMP ('keld-invalid-update-public-' + [guid]::NewGuid().ToString('N') + '.bin')
 try {
@@ -73,4 +85,29 @@ try {
 } finally {
     Remove-Item -LiteralPath $fixture -Force -ErrorAction SilentlyContinue
 }
-Write-Output 'KELD_DEVELOPER_SIGNER_PREFLIGHT_TEST: 8/8'
+# First prove that an unisolated Python startup would execute the fixture.
+# Then require the exact pinned interpreter's -I -S startup to leave no mark.
+$siteRoot = Join-Path $env:TEMP ('keld-ambient-python-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $siteRoot -ErrorAction Stop | Out-Null
+$siteMarker = Join-Path $siteRoot 'startup-hook.marker'
+$siteMarkerLiteral = ConvertTo-Json -InputObject $siteMarker -Compress
+[System.IO.File]::WriteAllText(
+    (Join-Path $siteRoot 'sitecustomize.py'),
+    "from pathlib import Path`nPath($siteMarkerLiteral).write_text('AMBIENT_PYTHON_HOOK_USED')`n")
+$previousPythonPath = $env:PYTHONPATH
+try {
+    $env:PYTHONPATH = $siteRoot
+    & $PythonPath -B -c 'pass' | Out-Null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $siteMarker)) {
+        throw 'KELD-PREFLIGHT-TEST: unisolated Python startup negative control was inert'
+    }
+    Remove-Item -LiteralPath $siteMarker -Force
+    [void](Invoke-Case 'ambient Python startup hook refused' $validArgs $true 'PREFLIGHT_PASS publisherScope=[0-9a-f]{64}')
+    if (Test-Path -LiteralPath $siteMarker) {
+        throw 'KELD-PREFLIGHT-TEST: preflight ran an ambient Python startup hook'
+    }
+} finally {
+    $env:PYTHONPATH = $previousPythonPath
+    Remove-Item -LiteralPath $siteRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+Write-Output 'KELD_DEVELOPER_SIGNER_PREFLIGHT_TEST: 11/11'

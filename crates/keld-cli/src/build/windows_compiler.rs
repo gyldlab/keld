@@ -468,7 +468,6 @@ mod rust_binder_acceptance_tests {
     use std::fs::{self, OpenOptions};
     use std::io::{Seek, SeekFrom};
     use std::path::{Path, PathBuf};
-    use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     const RENDERER: &[u8] =
@@ -520,13 +519,22 @@ mod rust_binder_acceptance_tests {
         digest
     }
 
-    fn version(path: &Path) -> String {
-        let output = Command::new(path)
-            .arg("--version")
-            .output()
-            .unwrap_or_else(|error| panic!("run qualified tool {}: {error}", path.display()));
-        assert!(
-            output.status.success(),
+    fn version(tool: &local_source::PinnedFile, cwd: &Path, input: &File) -> String {
+        // The caller admits exact executable bytes before this invocation.
+        // Reuse the production Windows Job and deadline for this diagnostic;
+        // never launch an unchecked path or leave a hung version child alive.
+        let output = local_source::run_captured_diagnostic(
+            tool,
+            &[OsString::from("--version")],
+            &[],
+            cwd,
+            input,
+            4096,
+        )
+        .expect("run pinned tool version under bounded process ownership");
+        assert_eq!(
+            output.status,
+            0,
             "qualified tool version failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
@@ -535,6 +543,37 @@ mod rust_binder_acceptance_tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         )
+    }
+
+    fn qualified_toolchain(
+        typescript_root: &Path,
+        bun: &Path,
+        bun_sha: &[u8; 32],
+        parser: &Path,
+        parser_sha: &[u8; 32],
+        repository: &Path,
+    ) -> Result<super::super::compiler_toolchain::CapturedCompilerToolchain, BuildError> {
+        // Admit all 416 captured source files and both exact executable digests
+        // before any version probe can start a child process.
+        let tools = super::super::compiler_toolchain::CapturedCompilerToolchain::capture(
+            typescript_root,
+            bun,
+            bun_sha,
+            parser,
+            parser_sha,
+        )?;
+        let version_input =
+            File::open(repository.join("Cargo.toml")).expect("read-only version probe input");
+        assert_eq!(
+            version(&tools.bun, repository, &version_input).trim(),
+            "1.4.4",
+            "Bun 1.4.4 is required"
+        );
+        assert!(
+            version(&tools.parser, repository, &version_input).contains("7.0.2"),
+            "TypeScript parser 7.0.2 is required"
+        );
+        Ok(tools)
     }
 
     fn compiler_environment(
@@ -719,25 +758,54 @@ mod rust_binder_acceptance_tests {
         let bun_sha = required_digest("KELD_COMPILER_TEST_BUN_SHA256");
         let parser_sha = required_digest("KELD_COMPILER_TEST_TSGO_SHA256");
 
-        assert_eq!(version(&bun).trim(), "1.4.4", "Bun 1.4.4 is required");
-        assert!(
-            version(&parser).contains("7.0.2"),
-            "TypeScript parser 7.0.2 is required"
-        );
         let package: serde_json::Value = serde_json::from_slice(
             &fs::read(typescript_root.join("package.json"))
                 .expect("read official TypeScript package manifest"),
         )
         .expect("parse official TypeScript package manifest");
         assert_eq!(package["version"], "7.0.2");
-        let tools = super::super::compiler_toolchain::CapturedCompilerToolchain::capture(
+        // Negative mutation: an unqualified selected executable would write
+        // this marker if its --version were invoked ahead of digest admission.
+        // Both Bun and the TypeScript parser must refuse it without execution.
+        let unverified = Scratch::new("unverified-version");
+        let marker = unverified.0.join("unverified-version.marker");
+        let fake_tool = unverified.0.join("unverified-tool.cmd");
+        fs::write(
+            &fake_tool,
+            b"@echo off\r\necho AMBIENT_TOOL_EXECUTED>\"%~dp0unverified-version.marker\"\r\necho 1.4.4\r\n",
+        )
+        .expect("create marker-writing unverified version probe");
+        for (selected_bun, selected_parser) in [(&fake_tool, &parser), (&bun, &fake_tool)] {
+            let refusal = qualified_toolchain(
+                &typescript_root,
+                selected_bun,
+                &bun_sha,
+                selected_parser,
+                &parser_sha,
+                repository,
+            )
+            .err()
+            .expect("wrong executable digest must reject before any version probe");
+            assert!(
+                refusal
+                    .to_string()
+                    .contains("explicit compiler executable digest mismatch"),
+                "unexpected tool refusal: {refusal}"
+            );
+            assert!(
+                !marker.exists(),
+                "unverified executable ran before its digest admission"
+            );
+        }
+        let tools = qualified_toolchain(
             &typescript_root,
             &bun,
             &bun_sha,
             &parser,
             &parser_sha,
+            repository,
         )
-        .expect("capture exact 416-file TypeScript 7.0.2 manifest and qualified executables");
+        .expect("capture exact compiler closure and bound version probes");
         let observation =
             super::super::local_source::compiler_source_observation_for_test(repository, &bun)
                 .expect("pin exact Rust production compiler source closure");
