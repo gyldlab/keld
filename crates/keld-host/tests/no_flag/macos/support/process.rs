@@ -32,6 +32,17 @@ pub(crate) struct NativeGroupBirth {
     start_usec: u64,
 }
 
+/// Independent live member evidence retained while the owning leader exists.
+/// A reaped leader alone cannot authorize a signal to a numeric PGID.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NativeMemberBirth {
+    pid: u32,
+    group: u32,
+    real_uid: libc::uid_t,
+    start_sec: u64,
+    start_usec: u64,
+}
+
 impl NativeGroupBirth {
     pub(crate) const fn group(self) -> u32 {
         self.group
@@ -63,6 +74,91 @@ fn native_group_birth(group: u32) -> Option<(NativeGroupBirth, u32)> {
         },
         info.pbi_ppid,
     ))
+}
+
+#[allow(unsafe_code)] // test-only fixed-size read-only Darwin process observation
+fn native_member_birth(pid: u32) -> Option<(NativeMemberBirth, u32)> {
+    let raw = i32::try_from(pid).ok()?;
+    if raw <= 1 {
+        return None;
+    }
+    // SAFETY: Darwin fills exactly the value-only proc_bsdinfo buffer; no
+    // reference to Rust memory is retained by the kernel.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = i32::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
+    // SAFETY: read-only process query writes at most the declared buffer size.
+    let count =
+        unsafe { libc::proc_pidinfo(raw, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
+    if count != size || info.pbi_pid != pid {
+        return None;
+    }
+    Some((
+        NativeMemberBirth {
+            pid,
+            group: info.pbi_pgid,
+            real_uid: info.pbi_ruid,
+            start_sec: info.pbi_start_tvsec,
+            start_usec: info.pbi_start_tvusec,
+        },
+        info.pbi_ppid,
+    ))
+}
+
+/// Retain an independently verified original descendant while its group
+/// leader is still present; a PID reported by the fixture is insufficient.
+pub(crate) fn retain_parented_group_member(
+    member: u32,
+    parent: u32,
+    leader: NativeGroupBirth,
+) -> NativeMemberBirth {
+    let (observed, actual_parent) =
+        native_member_birth(member).expect("original fixture group member must be live");
+    assert_eq!(actual_parent, parent, "member must have the owned parent");
+    assert_eq!(
+        observed.group, leader.group,
+        "member must be in the original group"
+    );
+    assert_ne!(
+        observed.pid, leader.group,
+        "member must be independent of leader"
+    );
+    assert_eq!(
+        observed.real_uid, leader.real_uid,
+        "member and leader UID must match"
+    );
+    assert_ne!(observed.group, process_group(std::process::id()));
+    let (current, _) = native_group_birth(leader.group).expect("leader must still be live");
+    assert_eq!(
+        (current.real_uid, current.start_sec, current.start_usec),
+        (leader.real_uid, leader.start_sec, leader.start_usec),
+        "member must belong to the original live group leader"
+    );
+    observed
+}
+
+/// Fallback is valid only while this exact, earlier-attested member continues
+/// to exist in its original group. No unverified numeric group signal occurs.
+pub(crate) fn signal_group_via_attested_member(
+    signal: &str,
+    original: NativeGroupBirth,
+    member: NativeMemberBirth,
+) -> std::io::Result<()> {
+    let still_same = native_member_birth(member.pid).is_some_and(|(current, _)| {
+        current.pid == member.pid
+            && current.group == original.group
+            && current.group == member.group
+            && current.real_uid == member.real_uid
+            && current.real_uid == original.real_uid
+            && current.start_sec == member.start_sec
+            && current.start_usec == member.start_usec
+    });
+    if !still_same || member.pid == original.group {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "original attested group member disappeared or changed birth; refuse group signal",
+        ));
+    }
+    signal_process_group(signal, original.group)
 }
 
 /// Verify expected native parentage at capture time, independently of test
@@ -98,6 +194,25 @@ pub(crate) fn signal_attested_group(
         ));
     }
     signal_process_group(signal, original.group)
+}
+
+// Independent test-owned rescue: an assertion failure must not leave the
+// fixture's sleep descendant running after the leader was reaped. A saved
+// numeric PGID is never authority without the original kernel birth witness.
+struct AttestedFixtureMemberRescue {
+    original: NativeGroupBirth,
+    member: Option<NativeMemberBirth>,
+}
+
+impl Drop for AttestedFixtureMemberRescue {
+    fn drop(&mut self) {
+        if self.member.is_some_and(|member| {
+            signal_group_via_attested_member("-KILL", self.original, member).is_ok()
+        }) {
+            return;
+        }
+        let _ = signal_attested_group("-KILL", self.original);
+    }
 }
 
 // This sentinel is a real, freshly spawned, isolated OS process group, not an
@@ -196,6 +311,121 @@ fn shipping_cleanup_wrong_original_birth_cannot_signal_outsider() {
         .expect_err("altered original kernel birth cannot authorize group signaling");
     assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
     assert_outsider_echo(&mut outsider);
+}
+
+#[test]
+fn shipping_cleanup_reaped_leader_uses_only_original_live_member() {
+    let cli = Command::new("/usr/bin/true")
+        .spawn()
+        .expect("completed fixture CLI");
+    let mut cleanup = ShippingLaunchCleanup::new(cli);
+    let mut leader = Command::new("/bin/sh")
+        .args(["-c", "sleep 60 & child=$!; printf '%s\\n' \"$child\"; wait"])
+        .process_group(0)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("original fixture group leader");
+    let group = leader.id();
+    cleanup.record_host_group(group, std::process::id());
+    let original = retain_parented_group_birth(group, std::process::id());
+    let mut rescue = AttestedFixtureMemberRescue {
+        original,
+        member: None,
+    };
+    let mut line = String::new();
+    BufReader::new(leader.stdout.take().expect("member PID pipe"))
+        .read_line(&mut line)
+        .expect("member PID line");
+    let member = line.trim().parse::<u32>().expect("member PID");
+    assert_eq!(process_group(member), group);
+    let attested_member = retain_parented_group_member(member, group, original);
+    rescue.member = Some(attested_member);
+    cleanup.host_member = Some(attested_member);
+
+    kill_pid(group);
+    leader.wait().expect("reap original group leader");
+    assert!(
+        process_exists(member),
+        "member survives original leader reap"
+    );
+    assert_eq!(process_group(member), group);
+    let denied = signal_attested_group("-TERM", original)
+        .expect_err("reaped group leader cannot authorize the normal group signal");
+    assert_eq!(denied.kind(), std::io::ErrorKind::PermissionDenied);
+    drop(cleanup);
+    await_process_gone(member);
+}
+
+#[test]
+fn shipping_cleanup_forged_member_birth_refuses_group_signal() {
+    let mut leader = Command::new("/bin/sh")
+        .args(["-c", "sleep 60 & child=$!; printf '%s\\n' \"$child\"; wait"])
+        .process_group(0)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("fixture leader");
+    let group = leader.id();
+    let original = retain_parented_group_birth(group, std::process::id());
+    let mut rescue = AttestedFixtureMemberRescue {
+        original,
+        member: None,
+    };
+    let mut line = String::new();
+    BufReader::new(leader.stdout.take().expect("member PID pipe"))
+        .read_line(&mut line)
+        .expect("member PID line");
+    let member_pid = line.trim().parse::<u32>().expect("member PID");
+    let member = retain_parented_group_member(member_pid, group, original);
+    rescue.member = Some(member);
+    let forged = NativeMemberBirth {
+        start_usec: member.start_usec.wrapping_add(1),
+        ..member
+    };
+    let denied = signal_group_via_attested_member("-TERM", original, forged)
+        .expect_err("forged member birth cannot authorize original group signal");
+    assert_eq!(denied.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(process_exists(group));
+    assert!(process_exists(member_pid));
+    // The retained direct Child is the independent cleanup authority.
+    leader.kill().expect("cleanup fixture leader");
+    leader.wait().expect("reap fixture leader");
+    signal_group_via_attested_member("-TERM", original, member)
+        .expect("original member remains authority after leader reap");
+    await_process_gone(member_pid);
+}
+
+#[test]
+fn attested_fixture_member_rescue_cleans_on_unwind() {
+    let mut leader = Command::new("/bin/sh")
+        .args(["-c", "sleep 60 & child=$!; printf '%s\\n' \"$child\"; wait"])
+        .process_group(0)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("isolated fixture group leader");
+    let group = leader.id();
+    let original = retain_parented_group_birth(group, std::process::id());
+    let mut rescue = AttestedFixtureMemberRescue {
+        original,
+        member: None,
+    };
+    let mut line = String::new();
+    BufReader::new(leader.stdout.take().expect("member PID pipe"))
+        .read_line(&mut line)
+        .expect("member PID line");
+    let member_pid = line.trim().parse::<u32>().expect("member PID");
+    rescue.member = Some(retain_parented_group_member(member_pid, group, original));
+    kill_pid(group);
+    leader.wait().expect("reap original leader");
+    assert!(
+        process_exists(member_pid),
+        "fixture member must be live before rescue"
+    );
+    let unwound = std::panic::catch_unwind(move || {
+        let _rescue = rescue;
+        panic!("test-only unwind exercises independently attested cleanup");
+    });
+    assert!(unwound.is_err(), "native fixture unwind must execute");
+    await_process_gone(member_pid);
 }
 
 #[test]
