@@ -397,6 +397,32 @@ fn windows_post_hello_pre_ready_exit_fails_startup_without_successor() {
         stderr.contains("Bun terminated before the initial window became ready"),
         "{stderr}"
     );
+    assert_emitted_pre_ready_bun_exit_evidence(&stderr, bun_pid);
+    assert!(!stderr.contains("KELD-RUNTIME-002"), "{stderr}");
+    // Corroboration only: this counts the window attempt; the held connection
+    // above is what proves the window was live and navigating.
+    assert!(stderr.contains("window=1]"), "{stderr}");
+    let attempts = fs::read_dir(&fixture.project)
+        .expect("list post-HELLO markers")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("post-hello-attempt.")
+        })
+        .count();
+    assert_eq!(
+        attempts, 1,
+        "a post-HELLO pre-Ready exit provisioned a successor"
+    );
+    assert_no_control_connection(&control_listener, "a successor reached the control service");
+    assert!(!process_exists(host_pid), "failed host remained live");
+    assert_process_signaled_within(&bun, "diagnostic pre-Ready Bun", PRODUCT_DEADLINE);
+    held.release();
+}
+
+fn assert_emitted_pre_ready_bun_exit_evidence(stderr: &str, bun_pid: u32) {
     // Exercise the actual Host error emitted after supervised nonzero Bun
     // termination, not only the formatter helper. The source-level owner must
     // append evidence from the *same* child before reporting CORE-037.
@@ -425,28 +451,6 @@ fn windows_post_hello_pre_ready_exit_fails_startup_without_successor() {
         !bounded_tail.chars().any(char::is_control),
         "Host output retained terminal controls in the bounded Bun stderr"
     );
-    assert!(!stderr.contains("KELD-RUNTIME-002"), "{stderr}");
-    // Corroboration only: this counts the window attempt; the held connection
-    // above is what proves the window was live and navigating.
-    assert!(stderr.contains("window=1]"), "{stderr}");
-    let attempts = fs::read_dir(&fixture.project)
-        .expect("list post-HELLO markers")
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("post-hello-attempt.")
-        })
-        .count();
-    assert_eq!(
-        attempts, 1,
-        "a post-HELLO pre-Ready exit provisioned a successor"
-    );
-    assert_no_control_connection(&control_listener, "a successor reached the control service");
-    assert!(!process_exists(host_pid), "failed host remained live");
-    assert_process_signaled_within(&bun, "diagnostic pre-Ready Bun", PRODUCT_DEADLINE);
-    held.release();
 }
 
 /// GH-1182 (PR #1300 review): a live Bun ends only its app link after its
