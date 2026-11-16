@@ -866,7 +866,6 @@ test("KEL-270 evidence executes before any candidate-controlled code", () => {
   ).toThrow();
 });
 
-
 test("KEL-270 evidence rejects in-step untrusted execution and failure masking", () => {
   const ci = Bun.YAML.parse(
     readFileSync(".github/workflows/ci.yml", "utf8"),
@@ -874,8 +873,14 @@ test("KEL-270 evidence rejects in-step untrusted execution and failure masking",
   const steps = ci.jobs.hygiene.steps as Record<string, any>[];
   const original = steps[2].run as string;
   for (const mutated of [
-    original.replace("export PYTHONSAFEPATH=1", "bash tools/untrusted.sh\\nexport PYTHONSAFEPATH=1".replace("\\n", "\n")),
-    original.replace("verify_spec_evidence.py --check", "verify_spec_evidence.py --check || true"),
+    original.replace(
+      "export PYTHONSAFEPATH=1",
+      "bash tools/untrusted.sh\nexport PYTHONSAFEPATH=1",
+    ),
+    original.replace(
+      "verify_spec_evidence.py --check",
+      "verify_spec_evidence.py --check || true",
+    ),
   ]) {
     expect(mutated).not.toBe(original);
     expect(() =>
