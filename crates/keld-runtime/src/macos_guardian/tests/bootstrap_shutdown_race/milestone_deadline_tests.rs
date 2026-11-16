@@ -62,7 +62,7 @@ fn native_lf_after_timely_pre_read_cannot_complete_authentication_milestone() {
         }))
     });
 
-    let prechecked = pre_rx.recv_timeout(Duration::from_millis(200));
+    let prechecked = pre_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()));
     while Instant::now() < deadline {
         thread::yield_now();
     }
@@ -115,7 +115,7 @@ fn real_native_accept_that_crosses_deadline_cannot_enter_accepted_stage() {
             })
         }))
     });
-    let accepted = accepted_rx.recv_timeout(Duration::from_millis(200));
+    let accepted = accepted_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()));
     while Instant::now() < deadline {
         thread::yield_now();
     }

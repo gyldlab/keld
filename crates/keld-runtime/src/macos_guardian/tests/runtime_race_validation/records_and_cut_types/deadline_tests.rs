@@ -15,7 +15,7 @@ fn actual_native_full_record_after_original_poll_entry_is_not_timely() {
     let (release_tx, release_rx) = mpsc::channel();
     let (native_tx, native_rx) = mpsc::channel();
     let controller = thread::spawn(move || {
-        let entered = entered_rx.recv_timeout(Duration::from_millis(200));
+        let entered = entered_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()));
         while Instant::now() < deadline {
             thread::yield_now();
         }

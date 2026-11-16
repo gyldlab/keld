@@ -54,7 +54,7 @@ fn real_accepted_refusal_peer_cannot_cross_original_post_accept_deadline() {
             })
         }))
     });
-    let observed = accepted_rx.recv_timeout(Duration::from_millis(200));
+    let observed = accepted_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()));
     while Instant::now() < deadline {
         thread::yield_now();
     }
@@ -102,7 +102,7 @@ fn real_late_native_lf_after_pre_read_check_cannot_complete_refusal_record() {
             })
         }))
     });
-    let prechecked = pre_rx.recv_timeout(Duration::from_millis(200));
+    let prechecked = pre_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()));
     while Instant::now() < deadline {
         thread::yield_now();
     }
