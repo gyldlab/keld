@@ -1,14 +1,14 @@
 # macOS Guardian architecture coverage — pinned partial ledger
 
-**Status: partial review evidence for #824; not a completed architecture audit, security certification, or merge authorization.** All implementation pull requests cited here remain draft and unmerged. This is a repository-tree comparison, not evidence that the draft stack is present on `main`.
+**Status: partial review evidence for #824; not a completed architecture audit, security certification, or merge authorization.** As verified on 2026-11-16, implementation PRs #941, #945, #947 and #948 are open, non-draft and unmerged. Existing merge holds still apply. This is a repository-tree comparison, not evidence that the pinned stack is present on `main`.
 
 ## Exact revisions and scope
 
 | Role | Commit |
 | --- | --- |
-| Current upstream `main` snapshot (fetched 2026-10-18) | `baf558f24b094c0dd5c0a77b5939f6e7013ba4aa` |
-| Reviewed macOS stacked tip, draft [#948](https://github.com/gyldlab/keld/pull/948) | `ea728589d0143df134c0f21fe5cf335240018d6a` |
-| Stack merge base with current `main` | `709d302dc8df9b3623fd29a0fca0a45d9a6087db` |
+| Pinned upstream `main` snapshot (fetched 2026-10-18) | `baf558f24b094c0dd5c0a77b5939f6e7013ba4aa` |
+| Reviewed macOS stacked tip, [#948](https://github.com/gyldlab/keld/pull/948) (draft at the 2026-10-18 snapshot) | `ea728589d0143df134c0f21fe5cf335240018d6a` |
+| Stack merge base with pinned `main` | `709d302dc8df9b3623fd29a0fca0a45d9a6087db` |
 
 The two branches are not the same tree. The inventory deliberately compares
 their Git blobs without implying a merge or completed merged-tree acceptance.
@@ -176,10 +176,10 @@ negative oracle as pending, without assuming an executing-child escape.
 
 ## Ownership and next review work
 
-The narrow fixes belong to their exact draft PRs above. The separate macOS
-auth-capacity draft [#941](https://github.com/gyldlab/keld/pull/941) is a
+The narrow fixes belong to their exact PRs above. The separate macOS
+auth-capacity PR [#941](https://github.com/gyldlab/keld/pull/941) is a
 sibling of the CLEAR chain; do not modify it or other-agent worktrees.
-The `main` tip is external to the #948 ancestry. No retarget, merge or
+The pinned `main` tip is external to the #948 ancestry. No retarget, merge or
 integration acceptance has been performed.
 
 The next coherent, independently reviewed source groups are the remaining
