@@ -231,7 +231,7 @@ fn update_existing(repo: &Repo, dest: &Path, force: bool) -> Result<(), String> 
     } else {
         let mut fetch = Command::new("git");
         fetch.current_dir(dest);
-        fetch.args(["fetch", "--depth", "1", "origin", &repo.branch]);
+        fetch.args(["fetch", "--depth", "1", "--", "origin", &repo.branch]);
         run_git(&mut fetch, &format!("fetch {}", repo.name))?;
 
         let mut reset = Command::new("git");
@@ -289,7 +289,7 @@ fn fetch_reset_sha(dest: &Path, sha: &str, force: bool) -> Result<(), String> {
     refuse_dirty_unless_force(dest, force)?;
     let mut fetch = Command::new("git");
     fetch.current_dir(dest);
-    fetch.args(["fetch", "--depth", "1", "origin", sha]);
+    fetch.args(["fetch", "--depth", "1", "--", "origin", sha]);
     run_git(&mut fetch, &format!("fetch sha {sha}"))?;
     let mut reset = Command::new("git");
     reset.current_dir(dest);
@@ -431,6 +431,93 @@ fn unquote(value: &str, line_no: usize) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Exercise real Git's option parser and local transport, not a command mock.
+    #[cfg(unix)]
+    fn check_fetch_reference_is_data(pinned: bool) {
+        struct TempDir(PathBuf);
+        impl Drop for TempDir {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let temp = TempDir(env::temp_dir().join(format!(
+            "keld-fetch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        )));
+        fs::create_dir_all(&temp.0).expect("temp directory");
+        let git = |dir: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .output()
+                .expect("git installed");
+            assert!(output.status.success(), "{:?}: {:?}", args, output);
+            String::from_utf8(output.stdout).expect("git output")
+        };
+        let origin = temp.0.join("origin");
+        let dest = temp.0.join("checkout");
+        fs::create_dir(&origin).expect("origin directory");
+        fs::create_dir(&dest).expect("checkout directory");
+        git(&origin, &["init", "--initial-branch=main"]);
+        git(
+            &origin,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "fixture",
+            ],
+        );
+        let sha = git(&origin, &["rev-parse", "HEAD"]).trim().to_string();
+        git(&dest, &["init"]);
+        git(
+            &dest,
+            &["remote", "add", "origin", origin.to_str().expect("path")],
+        );
+        let mut repo = sample_repos().remove(0);
+        let malicious = "--upload-pack=touch injected";
+        let result = if pinned {
+            fetch_reset_sha(&dest, malicious, true)
+        } else {
+            repo.branch = malicious.into();
+            update_existing(&repo, &dest, true)
+        };
+        assert!(result.is_err(), "invalid reference must fail");
+        assert!(
+            !dest.join("injected").exists(),
+            "reference executed a command"
+        );
+
+        // Both legitimate paths must still fetch and reset to the upstream commit.
+        if pinned {
+            fetch_reset_sha(&dest, &sha, true).expect("pinned fetch");
+        } else {
+            repo.branch = "main".into();
+            update_existing(&repo, &dest, true).expect("branch fetch");
+        }
+        assert_eq!(git(&dest, &["rev-parse", "HEAD"]).trim(), sha);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pinned_fetch_does_not_execute_reference() {
+        check_fetch_reference_is_data(true);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn branch_fetch_does_not_execute_reference() {
+        check_fetch_reference_is_data(false);
+    }
 
     fn sample_repos() -> Vec<Repo> {
         let text = r#"
