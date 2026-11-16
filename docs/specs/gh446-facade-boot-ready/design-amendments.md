@@ -26,17 +26,23 @@ only; Windows and Linux refuse it with `KELD-CORE-034` before any application re
 
 **KEL-96 approval metadata.** Amend in place:
 
-- **Header `Decision digest:`.** Replace it with the digest T-1 recomputes over KEL-96 D-1 through KEL-96 D-12,
-  using the §4.1 rule and the command in this spec's §7.
+- **Header `Decision digest:`.** Replace it with the digest T-1 recomputes over
+  D1–D12, using the §4.1 rule and the command in this spec's §7.
 - **§2 provenance.** "The eleven selections below" reads "The eleven original
-  selections below (KEL-96 D-1 through KEL-96 D-11)". After the provenance list, append:
+  selections below (D1–D11)". After the provenance list, append:
 
-  > **Amendment GH-446 (KEL-96 D-12).** GH-446 adds `KEL-96 D-12` under the owner delegation. The new header digest covers `KEL-96 D-1` through `KEL-96 D-12`. The historical `decision_digest` still binds the original `KEL-96 D-1` through `KEL-96 D-11`. Historical approval does not approve the new semantics.
+  > **Amendment GH-446 (D12).** `KEL-96-D12` was added by GH-446 (spec #657,
+  > implementation T1). The new owner-delegated decision and exact technical-content
+  > review are recorded on #657, bound to the reviewed technical head and specification
+  > blobs; the implementing PR separately records its exact diff review. The header
+  > digest covers D1–D12 under the §4.1 rule; the `decision_digest` in the list above
+  > remains the value the original review approved for D1–D11. Historical approval
+  > does not approve the new semantics.
 
-- **§7 "Decision completeness".** "Exactly one `KEL-96 D-1` through `KEL-96 D-11`" reads
-  "Exactly one `KEL-96 D-1` through `KEL-96 D-12`".
+- **§7 "Decision completeness".** "Exactly one `KEL-96-D1` through `KEL-96-D11`"
+  reads "Exactly one `KEL-96-D1` through `KEL-96-D12`".
 - **§10.** "The eleven architecture decisions are frozen" reads "The twelve
-  architecture decisions (KEL-96 D-1 through KEL-96 D-11, and KEL-96 D-12 added by GH-446) are frozen".
+  architecture decisions (D1–D11, and D12 added by GH-446) are frozen".
 
 **KEL-96 AC-1.** Replace with:
 
@@ -217,11 +223,14 @@ output. Its initial anchor is absent, not a fabricated native view. Under schema
 
 ### Pinned evidence and Electron v44.4.5 comparison
 
-This revision inspected [Keld main at `3503a8aa`](https://github.com/gyldlab/keld/tree/3503a8aa383427dcf50ccbf6653c4298e7fb8aad).
-The current behavior below is established by source inspection; proposed behavior
-still requires the tests above. Existing test definitions are not new run receipts.
+#### Historical source baseline at original approval base `3503a8aa`
 
-| Evidence | Observed current behavior / implication |
+The approved technical content was based on [Keld main at
+`3503a8aa`](https://github.com/gyldlab/keld/tree/3503a8aa383427dcf50ccbf6653c4298e7fb8aad).
+The table records that historical source state only. It does not describe the
+current Pin of this split, `ec29b7ce`.
+
+| Evidence | Observed behavior at the historical base / implication |
 |---|---|
 | `app_session/boot_contract.rs`, `parse_boot_bytes` | Only schema 1 is accepted; `renderer` is required. Schema 2 is an actual missing capability, not a compiler flag that already exists |
 | `app_session.rs`, macOS `run_app` and `coordinate_window_events`; `wkwebview/mod.rs`, navigation callback | The host authenticates the role, installs services, then unconditionally creates the initial renderer window. NavigationReady triggers initial Ready. HELLO alone does not emit it |
@@ -229,7 +238,30 @@ still requires the tests above. Existing test definitions are not new run receip
 | `packages/@keld/api/src/app.ts`, `link.ts`; `packages/@keld/kipc/src/transport.ts` | Lazy lifecycle link, raw host-ready state and later-task transport delivery; coalesced-delivery and entry-order assertions still need independent runtime tests |
 | `packages/@keld/electron/src/app.ts` and `index.ts` | The facade currently observes the native API Ready gate; BrowserWindow is not exported. An earlier host event alone does not implement the constructor |
 | macOS `NativeWindowObserver` and `native_window_probe.swift` | Existing positive observation filters by title/layer. A zero-length result does not prove process-wide absence |
-| `app_session.rs`, `HostRunFailure`; `keld-host/src/main.rs` | Current main retains unresolved native custody, reports by borrow and conditionally skips dev-stage removal. T-1 must preserve this newer contract |
+| `app_session.rs`, `HostRunFailure`; `keld-host/src/main.rs` | That base retained unresolved native custody, reported by borrow and conditionally skipped dev-stage removal. T-1 must preserve this contract |
+
+#### Current source reconciliation at Pin ec29b7ce
+
+The following source owners already exist at the index Pin. These are source-presence
+facts, not test receipts or native acceptance. T-1 must reuse them and fix only a
+gap that a current-Pin test proves.
+
+| Evidence at the current Pin | Existing source behavior and T-1 boundary |
+|---|---|
+| `crates/keld-core/src/app_session/boot_contract.rs:37-139@ec29b7ce2b155a8c98f96036cbb9c54488b5c302` | The closed schema-2 document parses to `InitialWindow::None`; schema 1 retains its renderer and optional auth path. Do not add another parser. |
+| `crates/keld-cli/src/boot.rs:380-410@ec29b7ce2b155a8c98f96036cbb9c54488b5c302` | The CLI stages schema 2 without a renderer on macOS and Windows. Linux rejects the declaration before it creates a bootable stage. |
+| `crates/keld-core/src/app_session.rs:1345-1383@ec29b7ce2b155a8c98f96036cbb9c54488b5c302` and `crates/keld-core/src/app_session.rs:1473-1507@ec29b7ce2b155a8c98f96036cbb9c54488b5c302` | Linux and Windows product hosts refuse schema 2 with `KELD-CORE-034`. Windows has a debug-only test admission; it is compiled out of product builds. |
+| `crates/keld-core/src/app_session.rs:2389-2518@ec29b7ce2b155a8c98f96036cbb9c54488b5c302` | The macOS path selects `HostInitialized`; its coordinator owns the first-Init deadline and terminal call. |
+| `crates/keld-core/src/app_session.rs:4670-4881@ec29b7ce2b155a8c98f96036cbb9c54488b5c302` | The coordinator checks the selected trigger and deadline, then invokes the borrowed terminal on expiry. |
+| `crates/keld-wv/src/wkwebview/mod.rs:411-445@ec29b7ce2b155a8c98f96036cbb9c54488b5c302` | The UI loop emits the genuine Init event. |
+| `crates/keld-host/src/main.rs:146-170@ec29b7ce2b155a8c98f96036cbb9c54488b5c302` | The no-flag binary supplies the borrowed, diverging pre-Init terminal callback. T-1 must preserve it and the retained main-thread custody contract. |
+| `crates/keld-host/tests/no_flag/macos/facade_ready.rs:19-134@ec29b7ce2b155a8c98f96036cbb9c54488b5c302` and `crates/keld-host/tests/no_flag/windows/facade_ready.rs:54-122@ec29b7ce2b155a8c98f96036cbb9c54488b5c302` | Native macOS Ready/zero-window and Windows product-refusal tests exist. Their presence does not prove they ran on this review head or replace real-device receipts. |
+| `packages/@keld/api/src/link.ts:172-184@ec29b7ce2b155a8c98f96036cbb9c54488b5c302` and `packages/@keld/api/src/link.ts:227-251@ec29b7ce2b155a8c98f96036cbb9c54488b5c302` | The private window source publishes public Ready only after raw Host Ready and accepted Subscribe/replay. #449 owns its constructor and native acceptance gates. |
+| `packages/@keld/electron/src/index.ts:13-40@ec29b7ce2b155a8c98f96036cbb9c54488b5c302` and `packages/@keld/electron/src/browser-window.ts:254-410@ec29b7ce2b155a8c98f96036cbb9c54488b5c302` | The facade exports `BrowserWindow` and its Host-backed implementation. #449 still owns the acceptance of subscription, replay, identity, adoption and first-window behavior. |
+| `crates/keld-host/tests/no_flag/macos/facade_ready.rs:19-37@ec29b7ce2b155a8c98f96036cbb9c54488b5c302` | The process-wide native-window census is distinct from the older title-filtered positive observer. A missing capture permission is not interpreted as zero windows. |
+
+The source paths above do not prove that tests ran. The review of this specification
+does not claim native acceptance.
 
 The requested oracle is [Electron v44.4.5, commit
 `694f4585`](https://github.com/electron/electron/tree/694f45852a0f1726cd23bfd379854de489cccb65):
@@ -237,16 +269,13 @@ The requested oracle is [Electron v44.4.5, commit
 **Electron v44.4.5 behavior comparison**
 
 - **Main-code loading before initialization completes:** [`lib/browser/init.ts`](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/lib/browser/init.ts), `appCodeLoaded`;
-  [`electron_browser_main_parts.cc`](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/shell/browser/electron_br
-  owser_main_parts.cc), `JoinAppCode`; [`esm-
-  spec.ts`](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/spec/esm-spec.ts), awaited initialization cases
+  [`electron_browser_main_parts.cc`](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/shell/browser/electron_browser_main_parts.cc), `JoinAppCode`; [`esm-spec.ts`](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/spec/esm-spec.ts), awaited initialization cases
   CJS and awaited native ESM are distinct checks. A synchronous top-level fixture cannot qualify awaited ESM
 - **isReady state, readiness promise and ready observers:** [`browser.cc`](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/shell/browser/browser.cc),
   `DidFinishLaunching`;
   [`promise.h`](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/shell/common/gin_helper/promise.h) One
   initialized state; late whenReady works. Do not assert that every ready listener precedes every promise continuation
-- **No constructor before initialization:** [`electron_api_browser_window.cc`](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/shell/browser/api/electron_
-  api_browser_window.cc), constructor guard Host enforcement plus a facade-visible refusal; window initialization is not the prerequisite for
+- **No constructor before initialization:** [`electron_api_browser_window.cc`](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/shell/browser/api/electron_api_browser_window.cc), constructor guard Host enforcement plus a facade-visible refusal; window initialization is not the prerequisite for
   application Ready
 - **Supervised main-role replacement:** No corresponding Electron main-process recovery contract is supplied by these sources Keld recovery is its own contract; keep its corpus cell
   unknown rather than report an Electron PASS

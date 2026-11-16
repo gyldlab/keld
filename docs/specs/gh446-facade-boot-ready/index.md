@@ -10,18 +10,19 @@ Pin: ec29b7ce2b155a8c98f96036cbb9c54488b5c302
 In an Electron app, readiness is independent of a window, and application code
 requests its windows after initialization. `ready` listeners and `whenReady()`
 continuations can both create them; this spec does not impose an order between those
-callbacks. In Keld, the
-host emits lifecycle `Ready` only after it has created its own window and finished
-that window's first navigation:
+callbacks. For the existing schema-1 renderer-declared boot, Keld's host emits
+lifecycle `Ready` only after it has created its own window and finished that
+window's first navigation:
 
 - `coordinate_window_events` maps `AppWindowEvent::NavigationReady` to
   `PrimaryRouterHandle::signal_ready` (`crates/keld-core/src/app_session.rs`).
 - That event fires only for the host-created initial window
   (`crates/keld-wv/src/wkwebview/mod.rs`, `NavigationReady` emission).
 
-So an `@keld/electron` main that calls `new BrowserWindow()` inside `whenReady` would
-get a second window next to a host window it never asked for. This spec decides who
-creates window #1 and what `Ready` means for each generation.
+So an `@keld/electron` main on a schema-1 boot that calls `new BrowserWindow()`
+inside `whenReady` would get a second window next to a host window it never asked
+for. This spec decides who creates window #1 and what `Ready` means for each
+generation.
 
 The observable outcome is a new boot kind. When the compiled descriptor declares that
 the app creates every window, the host on macOS:

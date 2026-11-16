@@ -4,7 +4,7 @@ Owns: Allowed implementation paths and the ordered implementation task.
 
 ## 5. Boundaries
 
-**Implement in:**
+**Existing implementation owners to reuse; change only for a proven gap:**
 
 - `crates/keld-core/src/app_session/boot_contract.rs`: the current parser owner.
 - `crates/keld-core/src/app_session.rs`: `run_app`, `run_guarded`, the coordinator and
@@ -36,31 +36,43 @@ Owns: Allowed implementation paths and the ordered implementation task.
 ### T-1: Schema-2 facade boot vertical slice
 
 - **Blocked by:** none
+- **External gate:** #445 must land before T-1 starts.
 
 - **Scope:** One vertical slice covers AC-1–AC-15, the host/link portion of AC-17 and AC-20. AC-16, AC-18 and AC-19 are F02-T2's tests of this spec's
-  cross-owner rules. T-1 contains:
-  - the schema-2 parser and resolver;
-  - the compiler;
-  - the macOS milestone loop and `HostInitialized`;
-  - the coordinator trigger, the bounded `Init` wait, the install-failure path and
-    `KELD-CORE-044`;
-  - the keld-host terminal function;
-  - the Linux and Windows refusal with 034;
+  cross-owner rules. At current Pin `ec29b7ce`, the parser, compiler, macOS
+  `HostInitialized` producer, coordinator deadline, terminal callback and Linux /
+  Windows product refusal already exist. T-1 is a reconciliation and qualification
+  task, not a greenfield implementation. It MUST reuse those owners. It MUST NOT add
+  a parallel parser, compiler, event loop, terminal path or Ready authority.
+  T-1 contains:
+  - reconcile the existing schema-2 parser, resolver and compiler against AC-1–AC-3;
+    fix only a proven gap;
+  - reconcile the existing macOS `HostInitialized` loop, coordinator, bounded `Init`
+    wait, install-failure path and `KELD-CORE-044` against AC-4–AC-7 and AC-14–AC-15;
+    add no second event loop or Ready authority;
+  - verify the existing binary-owned terminal function and retained main-thread custody
+    against AC-15 and AC-20;
+  - verify Linux and Windows product refusal with `KELD-CORE-034` against AC-11;
+    keep the Windows debug-only test admission out of product builds;
   - the `app.ready.recovered-generation` cell;
-  - the tests;
+  - any missing tests and negative controls, including current-Pin failing-first proof
+    for each remaining gap;
   - the §4.10 text, the error-code entries and the recomputed KEL-96 digest.
 
-  The descriptor cannot land without its consumer: KEL-96 D-6 rejects a standalone
-  descriptor as theater.
+  These parser, producer and consumer paths already exist at Pin
+  `ec29b7ce2b155a8c98f96036cbb9c54488b5c302`. Their source presence is not acceptance.
+  T-1 must qualify the existing vertical slice and fix only proven gaps. A parser or
+  staging test alone does not complete T-1.
 
 **Minimal sequence and #449 gates.** First bind this decision to independently reviewed
 specification bytes. Preserve and finish the existing #445/#656 conformance lane;
 #659 is already merged, and accepted structural AC-4 binding is separate from #663's
-harness-record production. Under an explicit implementation claim, add compiling
-RED tests before production edits, then implement the schema/compiler/host milestone
-as the single vertical T-1 slice, followed by the real-Mac and unchanged regression
-checks. #449 consumes that slice, adds the registry/subscription/mirror/constructor
-path, then proves AC-16/18/19 and first-window creation.
+harness-record production. At the current Pin, the parser, compiler,
+`HostInitialized` producer, coordinator and terminal path already exist. Reconcile
+their exact source and tests first. For any remaining gap, add a compiling RED against
+this Pin before a focused production edit. Then run the real-Mac and unchanged
+regression checks. #449 consumes the accepted T-1 slice and owns AC-16/18/19 and
+first-window creation.
 
 | Gate | Exact requirement | What it authorizes |
 |---|---|---|

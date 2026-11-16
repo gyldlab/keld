@@ -19,8 +19,11 @@ that the proposed runtime behavior has passed.
   - **Boundary and input/output:** `keld.config.ts` → `keld.boot.json` → `ParsedBoot`
   - **Failure mode:** the kind is inferred from absence, or the host guesses
   - **Observable:** AC-1–AC-3
-  - **Evidence:** FACT: schema 1 is closed, requires `renderer`, and admits the existing optional `auth`; KEL-96 §4.2 requires a version decision. Schema 2 is
-    absent on the pinned main
+  - **Evidence:** Schema 1 remains closed, requires `renderer`, and admits the
+    existing optional `auth`; KEL-96 §4.2 requires a version decision. Schema 2
+    was absent at historical approval base `3503a8aa`. Strict schema-2 parsing
+    and `InitialWindow::None` already exist at the current Pin `ec29b7ce`; see
+    [current source reconciliation](design-amendments.md#current-source-reconciliation-at-pin-ec29b7ce).
 
 - **A2: Host initialized**
   - **Owner:** `keld-core` startup state machine and the keld-wv macOS loop

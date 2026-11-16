@@ -279,10 +279,10 @@ fail. "Owner" is the implementing ticket.
     F06-T5 reuses the admission rule, not this window-specific replay barrier, for
     display and theme facts.
 
-    **Rendererless Init bound (GH-446 AC-15 and GH-446 AC-20):** Schema 2 waits at
-    most 15 seconds for the first genuine `HostInitialized` event. On expiry it returns
-    `KELD-CORE-037`, denies Ready and recovery, and uses the existing bounded cleanup
-    and main-thread custody path. This does not change the legacy renderer deadline.
+    **Rendererless Init bound (GH-446 AC-15/20):** Schema 2 waits 15 s for
+    `HostInitialized`. Expiry denies Ready/recovery and calls borrowed binary
+    terminal `fn(&HostAppError) -> !` once with `KELD-CORE-037` after bounded cleanup.
+    Main-thread `!Send` owners and unproved stage stay held to exit; exit is no drain receipt.
 
 ### (e) Close state machine (the #419 rules plus PANEL-D19)
 

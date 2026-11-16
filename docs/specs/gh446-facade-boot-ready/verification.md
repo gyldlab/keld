@@ -25,6 +25,10 @@ Owns: Test mapping, regression situations, platform acceptance and performance i
   `windows_pre_ready_crash_denies_successor_before_provisioning`
 - **AC-12:** `app.ready.emitted-once` and `app.when-ready.is-ready-agreement` (`electron-app-v1`, #656) and `app.when-ready.host-ready-gate` run unchanged;
   "before any window" is AC-4's keld-host test Anti-flake: unchanged cells
+- **AC-13:** review T-1 against §4.10. Recompute the KEL-96 header with
+  `awk '/KEL96_DECISIONS_V1_START/{f=1;next}/KEL96_DECISIONS_V1_END/{f=0}f' docs/specs/kel96-no-flag-host-boot.md | shasum -a 256`;
+  preserve the separately recorded original D1–D11 approval digest. Anti-flake:
+  deterministic exact bytes; removing D12 or one required amendment must fail.
 - **AC-14:** `closed_event_channel_before_host_initialized_is_startup_failure`; keld-core router unit Anti-flake: echo fence; dropped sender, no timing
 - **AC-15:** `init_wait_expiry_is_typed_startup_failure`; bounded terminal-callback observation plus AC-20 child fixture Anti-flake: past deadline; typed
   error received once; no ordinary-return marker
@@ -38,15 +42,20 @@ Owns: Test mapping, regression situations, platform acceptance and performance i
 - **AC-20:** `pre_init_failure_preserves_main_custody_and_stage`; child-process terminal test plus existing retained-custody regressions Anti-flake: typed
   error/exit receipt, explicit release markers; no successful-drain inference from death
 
-**Failing-first receipts.** The first RED must compile on pinned main: parse the exact
-valid four-field schema-2 document and assert success. Current main fails with
-`KELD-CORE-035` for missing `renderer` before its schema-version check. Do not use a
-reference to an unimplemented type as the failure. Then add the independent renderer
-and unknown-field rejection controls and the schema-1 regression. For each lifecycle
-test retain the source head, command, intended failing assertion, observed RED, GREEN,
-and one-at-a-time mutation result. A stub-host PASS cannot substitute for AC-4's real
-macOS native observation. The controls in each AC exercise different causal faults;
-one broad reverted implementation is not evidence that all controls work.
+**Current-pin source reconciliation.** The original first-RED statement belongs to
+historical approval base `3503a8aa`; it is not a valid RED at the current Pin
+`ec29b7ce`. At this Pin, the strict schema-2 parser, CLI stage producer,
+`HostInitialized` coordinator, first-Init deadline and terminal callback already
+exist. Linux refuses during staging; Windows product builds refuse with
+`KELD-CORE-034`. Windows test admission is debug-only and is compiled out of product
+builds. T-1 must reuse these owners and must not expect a valid schema-2 parse to fail.
+Source presence does not prove that tests ran or that native acceptance is complete.
+
+**Failure-first receipts for remaining gaps.** For each remaining AC atom, retain the
+exact source head, command, intended failing assertion, observed RED, GREEN and
+one-at-a-time mutation result. A stub-host PASS cannot substitute for AC-4's real
+macOS native observation. Each control must exercise its own causal fault; one broad
+reverted implementation is not evidence that all controls work.
 
 | Regression/recovery situation | Required preserved behavior | Owner/test boundary |
 |---|---|---|
