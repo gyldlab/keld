@@ -46,15 +46,14 @@ if [[ "${1-}" == -C && "${3-}" == commit ]]; then
     printf 'commit invoked\n' >> "$KELD_GIT_CALLS"
 fi
 if [[ "${1-}" == -C && "${3-}" == pull ]]; then
-    [[ "${4-}" == --ff-only && "${5-}" == origin && "${6-}" == main && "$#" == 6 ]] || exit 89
-    "$KELD_REAL_GIT" -C "$2" fetch --quiet "$KELD_BARE" refs/heads/main || exit $?
-    exec "$KELD_REAL_GIT" -C "$2" merge --ff-only FETCH_HEAD
+    [[ "${4-}" == --ff-only && "${5-}" == origin && "${6-}" == refs/heads/* && "$#" == 6 ]] || exit 89
+    exec "$KELD_REAL_GIT" -C "$2" pull --ff-only "$KELD_BARE" "$6"
 fi
 if [[ "${1-}" == -C && "${3-}" == push ]]; then
-    # Exactly one named remote/ref: never force or infer caller-configured destinations.
-    [[ "${4-}" == origin && "${5-}" == HEAD:refs/heads/main && "$#" == 5 ]] || exit 88
+    # Exactly one explicit local branch ref: never force or infer push defaults.
+    [[ "${4-}" == origin && "${5-}" == HEAD:refs/heads/* && "$#" == 5 ]] || exit 88
     printf 'unforced push\n' >> "$KELD_GIT_CALLS"
-    exec "$KELD_REAL_GIT" -C "$2" push "$KELD_BARE" HEAD:refs/heads/main
+    exec "$KELD_REAL_GIT" -C "$2" push "$KELD_BARE" "$5"
 fi
 if [[ "${1-}" == clone ]]; then
     case "${2-}" in
@@ -109,6 +108,24 @@ assert_parent_untouched() {
 run push "$PARENT" 'ignored on clean push'
 [[ "$status" == 0 ]]
 grep -Fq 'research-push: no local changes' "$TMP_ROOT/stdout"
+assert_parent_untouched
+
+# A same-named tag must not rewrite the full local branch ref to heads/main.
+"$REAL_GIT" -C "$DEST" tag main
+[[ "$("$REAL_GIT" -C "$DEST" symbolic-ref --short HEAD)" == 'heads/main' ]]
+printf 'branch/tag collision\n' > "$DEST/tag-collision.txt"
+run push "$PARENT" 'branch/tag collision'
+[[ "$status" == 0 ]]
+collision_head="$("$REAL_GIT" -C "$DEST" rev-parse HEAD)"
+[[ "$("$REAL_GIT" --git-dir="$KELD_BARE" rev-parse refs/heads/main)" == "$collision_head" ]]
+if "$REAL_GIT" --git-dir="$KELD_BARE" rev-parse --verify refs/heads/heads/main >/dev/null 2>&1; then
+    echo 'FAIL: tag collision published the ambiguous heads/main branch' >&2
+    exit 1
+fi
+if "$REAL_GIT" --git-dir="$KELD_BARE" rev-parse --verify refs/tags/main >/dev/null 2>&1; then
+    echo 'FAIL: branch push unexpectedly published the local tag' >&2
+    exit 1
+fi
 assert_parent_untouched
 
 # The same allowlist admits only the three published URL spellings (and the
@@ -251,7 +268,17 @@ grep -Fq 'HEAD is detached' "$TMP_ROOT/stderr"
 run push "$PARENT" detached-refusal
 [[ "$status" == 1 ]]
 grep -Fq 'HEAD is detached' "$TMP_ROOT/stderr"
-"$REAL_GIT" -C "$DEST" switch --quiet main
+"$REAL_GIT" -C "$DEST" symbolic-ref HEAD refs/heads/main
+
+# A symbolic HEAD outside refs/heads is not a branch destination either.
+"$REAL_GIT" -C "$DEST" symbolic-ref HEAD refs/tags/main
+run sync "$PARENT"
+[[ "$status" == 0 ]]
+grep -Fq 'HEAD is not under refs/heads' "$TMP_ROOT/stderr"
+run push "$PARENT" non-branch-symbolic-head
+[[ "$status" == 1 ]]
+grep -Fq 'HEAD is not under refs/heads' "$TMP_ROOT/stderr"
+"$REAL_GIT" -C "$DEST" symbolic-ref HEAD refs/heads/main
 
 # Dirty nested changes commit with exact whitespace-bearing message.
 printf 'nested only\n' > "$DEST/new note.txt"
@@ -312,6 +339,8 @@ rm -rf -- "$DEST"
 "$REAL_GIT" -C "$DEST" remote set-url origin "$HTTPS"
 "$REAL_GIT" -C "$DEST" config user.name 'Keld Fixture'
 "$REAL_GIT" -C "$DEST" config user.email 'fixture@example.invalid'
+"$REAL_GIT" -C "$DEST" tag main
+[[ "$("$REAL_GIT" -C "$DEST" symbolic-ref --short HEAD)" == 'heads/main' ]]
 printf 'later change\n' > "$TMP_ROOT/other writer/later.txt"
 "$REAL_GIT" -C "$TMP_ROOT/other writer" add later.txt
 "$REAL_GIT" -C "$TMP_ROOT/other writer" commit -qm later

@@ -10,7 +10,7 @@ Use [`CONTRIBUTING.md`](../CONTRIBUTING.md) for contributor steps, [`docs/agents
 | --- | --- |
 | [`ci_local.py`](ci_local.py), [`test_ci_local.py`](test_ci_local.py) | Executes the Just inventory with local changed-input selection; `just ci` or `just ci-full` (`ci-router-test` exercises selection). |
 | [`ci_changes.sh`](ci_changes.sh), [`ci_changes_test.sh`](ci_changes_test.sh) | Shared local/GitHub changed-path lane router and its independent fixtures; `just ci-router-test` or the hosted router job. |
-| [`ci_inputs.py`](ci_inputs.py), [`ci-inputs.json`](ci-inputs.json) | Reviewed reader scopes, membership, and content fingerprints for routing. `just ci-inputs-rebind` updates digests only after reviewing changed reader inputs; normal consumers check for drift. |
+| [`ci_inputs.py`](ci_inputs.py), [`ci-inputs.json`](ci-inputs.json) | Stateless v2 reader scopes and consumer edges; changed readers widen their consumers for that diff, and new/removed crate paths select all lanes. `just ci-route` checks the local plan, `just ci-router-test` tests routing, and `just ci` runs the routed inventory. No content digests or rebind step. |
 | [`ci_required.sh`](ci_required.sh) | Hosted required-job admission and its self-test; invoked from `ci.yml`. |
 | [`ci_webkitgtk_apt.sh`](ci_webkitgtk_apt.sh) | Hosted Ubuntu WebKitGTK apt/deb-cache preparation with signed-package verification; invoked from `ci.yml`. |
 | [`dependency_review_metadata.sh`](dependency_review_metadata.sh) | Hosted dependency-review metadata completeness check; invoked from `ci.yml`. |

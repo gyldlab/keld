@@ -46,8 +46,12 @@ sync_research() {
         if ! research_origin_ok "$origin"; then
             warn_skip "docs/research origin is not 0monish/keld-research (HTTPS or SSH). Fix remote or re-clone; left unchanged."
         fi
-        branch="$(git -C "$DEST" symbolic-ref --quiet --short HEAD 2>/dev/null)" || warn_skip "docs/research HEAD is detached; left unchanged."
-        if git -C "$DEST" pull --ff-only origin "$branch"; then
+        branch_ref="$(git -C "$DEST" symbolic-ref --quiet HEAD 2>/dev/null)" || warn_skip "docs/research HEAD is detached; left unchanged."
+        case "$branch_ref" in
+            refs/heads/?*) ;;
+            *) warn_skip "docs/research HEAD is not under refs/heads; left unchanged." ;;
+        esac
+        if git -C "$DEST" pull --ff-only origin "$branch_ref"; then
             echo "research-sync: updated $DEST"
             exit 0
         fi
@@ -106,10 +110,14 @@ push_research() {
         echo "error: research-push: refusing — origin push URL is not one exact 0monish/keld-research destination. Fix remote; Keld parent untouched." >&2
         exit 1
     fi
-    branch="$(git -C "$DEST" symbolic-ref --quiet --short HEAD 2>/dev/null)" || {
+    branch_ref="$(git -C "$DEST" symbolic-ref --quiet HEAD 2>/dev/null)" || {
         echo "error: research-push: docs/research HEAD is detached. Checkout a branch before pushing; Keld parent untouched." >&2
         exit 1
     }
+    case "$branch_ref" in
+        refs/heads/?*) ;;
+        *) echo "error: research-push: HEAD is not under refs/heads. Checkout a local branch before pushing; Keld parent untouched." >&2; exit 1 ;;
+    esac
     pending="$(git -C "$DEST" status --porcelain 2>/dev/null)" || {
         echo "error: research-push: git status failed inside docs/research. Fix checkout access; Keld parent untouched." >&2
         exit 1
@@ -131,7 +139,7 @@ push_research() {
 
     # Pin both the remote and the destination ref: ignore pushDefault,
     # branch.pushRemote, upstream, and caller-selected push refspec defaults.
-    if git -C "$DEST" push origin "HEAD:refs/heads/$branch"; then
+    if git -C "$DEST" push origin "HEAD:$branch_ref"; then
         echo "research-push: pushed $DEST"
         exit 0
     fi

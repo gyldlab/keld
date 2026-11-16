@@ -125,8 +125,9 @@ Runtime seam: none; process, principal, crash, handle and callback ownership is
 unchanged. Windows, Linux and macOS retain the same capture implementation.
 Shell verification includes native Windows Git Bash and stock macOS Bash 3.2;
 Linux behavior is qualified by its own actual run. No OS pass is inferred from
-another OS's compilation. Generated fingerprint updates use the existing generator
-on the integrated tree, never copied hash strings from another branch.
+another OS's compilation. The stateless v2 router stores no reader-content
+digests and has no rebind step. Review reader scopes and cross-tree input edges
+in `tools/ci-inputs.json`; use `just ci-route` to inspect the local plan.
 
 ## 5. Boundaries
 
@@ -138,7 +139,7 @@ Implement only the selected slice after approval and a fresh winning claim:
 - Research: the two private research recipes in `justfile`, new
   `tools/research_checkout.sh`, its narrowly scoped local-fixture tests and the
   existing navigation map. Keep public wrappers/reference-run contracts.
-- Reader/census digests required by the checks may change through canonical rebind.
+- Reader scopes and cross-tree edges remain in `tools/ci-inputs.json`; v2 stores no content digests and needs no rebind. `just ci-route` checks the local plan, `just ci-router-test` tests routing, and `just ci` runs the routed inventory. Add a new cross-tree read to `consumers[].inputs` in the same change.
 
 Must not touch root `Cargo.toml`, workflows, root/nested instructions, transport
 source, native guardian/job/profile implementations, other owners' worktrees,
