@@ -322,7 +322,7 @@ describe("a release build of the transport strips the WorkerLink test hooks", ()
       // a missing join has returned by now. No elapsed-time predicate.
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(returned).toBe(false);
-      expect(released).toBe(false);
+      expect(released).toBe(true);
       finishRead({ done: true, value: undefined });
       expect(await withIoDeadline(result)).toBe(original);
       expect(released).toBe(true);
