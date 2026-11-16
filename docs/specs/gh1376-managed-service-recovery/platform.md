@@ -3,7 +3,7 @@
 Part of: [index](index.md)
 Owns: D-8 platform registration, authentication, client lifetime and native custody candidates.
 
-## 4. Design
+## 4. Design: Platform bindings
 
 ### D-8: Installed activation, authenticated clients and native custody
 
