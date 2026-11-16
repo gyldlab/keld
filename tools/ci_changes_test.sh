@@ -1109,4 +1109,4 @@ case "$(uname -s)" in
     MINGW* | MSYS*) python_command=python ;;
     *) python_command=python3 ;;
 esac
-"$python_command" -B "$repo_root/tools/test_ci_local.py" InputContractTests ProductionConsumerTests RouterFailureBoundaryTests SelectionTests TempRepositoryMaintenanceTests FmtIncludedBashCompatibilityTests
+"$python_command" -B "$repo_root/tools/test_ci_local.py" InputContractTests ProductionConsumerTests RouterFailureBoundaryTests SelectionTests TempRepositoryMaintenanceTests RouterPythonCompatibilityTests FmtIncludedBashCompatibilityTests
