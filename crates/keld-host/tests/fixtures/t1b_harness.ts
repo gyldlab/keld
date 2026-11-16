@@ -298,6 +298,12 @@ if (preReadyHold === "1" || preReadyHold === "half-open") {
   if (command !== "EXIT_PRE_READY") {
     throw new Error(`KEL96 unexpected pre-Ready command ${command}`);
   }
+  if (process.env.KELD_T3_STDERR_PROBE === "1") {
+    // Public fixture marker only. Await the stderr write before this abrupt
+    // nonzero exit, so the OS-supervised crash ledger can retain its bytes.
+    // The marker includes controls to verify that Core scrubs them on display.
+    await Bun.write(Bun.stderr, "GH814_PRE_READY_PUBLIC_MARKER \x1b[31m\r\n");
+  }
   process.exit(19);
 }
 if (generationAttempt === 2) {

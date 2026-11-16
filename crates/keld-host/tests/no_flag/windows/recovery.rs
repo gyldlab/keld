@@ -345,6 +345,7 @@ fn windows_post_hello_pre_ready_exit_fails_startup_without_successor() {
     let mut child = dev_stage_command(stage.root(), stage.host())
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .env("KELD_T3_EXIT_AFTER_HELLO", "1")
+        .env("KELD_T3_STDERR_PROBE", "1")
         .env("KELD_T3_PRE_READY_MARKER", &marker)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -358,11 +359,14 @@ fn windows_post_hello_pre_ready_exit_fails_startup_without_successor() {
     );
     let mut reader = BufReader::new(control.try_clone().expect("clone post-HELLO control"));
     let mut writer = control;
-    parse_hello(&read_control_line_or_host_failure(
+    let (bun_pid, _app_link) = parse_hello(&read_control_line_or_host_failure(
         &mut reader,
         &mut child,
         "post-HELLO HELLO",
     ));
+    // Open while this authenticated Bun process is live; this retained handle
+    // proves its own exit, not merely the disappearance of a PID by name.
+    let bun = open_process_for_wait(bun_pid, false);
     assert_eq!(
         read_control_line_or_host_failure(&mut reader, &mut child, "post-HELLO DESCENDANT"),
         "DESCENDANT 0"
@@ -393,6 +397,34 @@ fn windows_post_hello_pre_ready_exit_fails_startup_without_successor() {
         stderr.contains("Bun terminated before the initial window became ready"),
         "{stderr}"
     );
+    // Exercise the actual Host error emitted after supervised nonzero Bun
+    // termination, not only the formatter helper. The source-level owner must
+    // append evidence from the *same* child before reporting CORE-037.
+    let primary = stderr
+        .lines()
+        .find(|line| line.starts_with("KELD-CORE-037"))
+        .expect("real pre-Ready Host failure carries its original error code");
+    assert!(
+        primary.contains(&format!(
+            "supervised Bun exit pid={bun_pid} status=Some(19)"
+        )),
+        "wrong or missing supervised Bun PID/exit evidence: {primary}"
+    );
+    let (_, after_tail_prefix) = primary
+        .split_once("; bounded Bun stderr tail: ")
+        .expect("real Host failure must carry the matched Bun stderr tail");
+    let (bounded_tail, _) = after_tail_prefix
+        .split_once(". Fix the app session failure and relaunch the no-flag host.")
+        .expect("tail must precede the unchanged Host failure guidance");
+    assert!(
+        bounded_tail.contains("GH814_PRE_READY_PUBLIC_MARKER"),
+        "real Bun stderr marker missing from bounded Host diagnostic: {primary}"
+    );
+    assert!(bounded_tail.chars().count() <= 384, "unbounded Bun stderr");
+    assert!(
+        !bounded_tail.chars().any(char::is_control),
+        "Host output retained terminal controls in the bounded Bun stderr"
+    );
     assert!(!stderr.contains("KELD-RUNTIME-002"), "{stderr}");
     // Corroboration only: this counts the window attempt; the held connection
     // above is what proves the window was live and navigating.
@@ -413,6 +445,7 @@ fn windows_post_hello_pre_ready_exit_fails_startup_without_successor() {
     );
     assert_no_control_connection(&control_listener, "a successor reached the control service");
     assert!(!process_exists(host_pid), "failed host remained live");
+    assert_process_signaled_within(&bun, "diagnostic pre-Ready Bun", PRODUCT_DEADLINE);
     held.release();
 }
 
