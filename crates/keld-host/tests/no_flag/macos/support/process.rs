@@ -196,6 +196,25 @@ pub(crate) fn signal_attested_group(
     signal_process_group(signal, original.group)
 }
 
+// Independent test-owned rescue: an assertion failure must not leave the
+// fixture's sleep descendant running after the leader was reaped. A saved
+// numeric PGID is never authority without the original kernel birth witness.
+struct AttestedFixtureMemberRescue {
+    original: NativeGroupBirth,
+    member: Option<NativeMemberBirth>,
+}
+
+impl Drop for AttestedFixtureMemberRescue {
+    fn drop(&mut self) {
+        if self.member.is_some_and(|member| {
+            signal_group_via_attested_member("-KILL", self.original, member).is_ok()
+        }) {
+            return;
+        }
+        let _ = signal_attested_group("-KILL", self.original);
+    }
+}
+
 // This sentinel is a real, freshly spawned, isolated OS process group, not an
 // arbitrary host PID. Its retained Child is the final independent rescue on
 // regression failure, even when ShippingLaunchCleanup drops in a panic.
@@ -309,13 +328,19 @@ fn shipping_cleanup_reaped_leader_uses_only_original_live_member() {
     let group = leader.id();
     cleanup.record_host_group(group, std::process::id());
     let original = retain_parented_group_birth(group, std::process::id());
+    let mut rescue = AttestedFixtureMemberRescue {
+        original,
+        member: None,
+    };
     let mut line = String::new();
     BufReader::new(leader.stdout.take().expect("member PID pipe"))
         .read_line(&mut line)
         .expect("member PID line");
     let member = line.trim().parse::<u32>().expect("member PID");
     assert_eq!(process_group(member), group);
-    cleanup.host_member = Some(retain_parented_group_member(member, group, original));
+    let attested_member = retain_parented_group_member(member, group, original);
+    rescue.member = Some(attested_member);
+    cleanup.host_member = Some(attested_member);
 
     kill_pid(group);
     leader.wait().expect("reap original group leader");
@@ -341,12 +366,17 @@ fn shipping_cleanup_forged_member_birth_refuses_group_signal() {
         .expect("fixture leader");
     let group = leader.id();
     let original = retain_parented_group_birth(group, std::process::id());
+    let mut rescue = AttestedFixtureMemberRescue {
+        original,
+        member: None,
+    };
     let mut line = String::new();
     BufReader::new(leader.stdout.take().expect("member PID pipe"))
         .read_line(&mut line)
         .expect("member PID line");
     let member_pid = line.trim().parse::<u32>().expect("member PID");
     let member = retain_parented_group_member(member_pid, group, original);
+    rescue.member = Some(member);
     let forged = NativeMemberBirth {
         start_usec: member.start_usec.wrapping_add(1),
         ..member
@@ -361,6 +391,40 @@ fn shipping_cleanup_forged_member_birth_refuses_group_signal() {
     leader.wait().expect("reap fixture leader");
     signal_group_via_attested_member("-TERM", original, member)
         .expect("original member remains authority after leader reap");
+    await_process_gone(member_pid);
+}
+
+#[test]
+fn attested_fixture_member_rescue_cleans_on_unwind() {
+    let mut leader = Command::new("/bin/sh")
+        .args(["-c", "sleep 60 & child=$!; printf '%s\\n' \"$child\"; wait"])
+        .process_group(0)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("isolated fixture group leader");
+    let group = leader.id();
+    let original = retain_parented_group_birth(group, std::process::id());
+    let mut rescue = AttestedFixtureMemberRescue {
+        original,
+        member: None,
+    };
+    let mut line = String::new();
+    BufReader::new(leader.stdout.take().expect("member PID pipe"))
+        .read_line(&mut line)
+        .expect("member PID line");
+    let member_pid = line.trim().parse::<u32>().expect("member PID");
+    rescue.member = Some(retain_parented_group_member(member_pid, group, original));
+    kill_pid(group);
+    leader.wait().expect("reap original leader");
+    assert!(
+        process_exists(member_pid),
+        "fixture member must be live before rescue"
+    );
+    let unwound = std::panic::catch_unwind(move || {
+        let _rescue = rescue;
+        panic!("test-only unwind exercises independently attested cleanup");
+    });
+    assert!(unwound.is_err(), "native fixture unwind must execute");
     await_process_gone(member_pid);
 }
 
