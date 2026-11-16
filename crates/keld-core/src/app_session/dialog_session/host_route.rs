@@ -63,10 +63,30 @@ impl PrimaryRouterHandle {
         let Some(dialog) = &self.dialog else {
             return Ok(()); // The channel validator cannot admit an unconfigured owner.
         };
-        with_primary_caller_locked(&self.current, &self.shutdown, caller, |current| {
+        let mut collision = None;
+        let result = with_primary_caller_locked(&self.current, &self.shutdown, caller, |current| {
             let active = current.as_mut().ok_or_else(|| {
                 app_detail("dialog admission", "authenticated generation disappeared")
             })?;
+            // The original owns this correlation until its terminal write. Check
+            // before decoding or refusing any CALL, including malformed Cancel.
+            if dialog.pending_original_for(active.identity, active.attempt) == Some(correlation) {
+                let attempt = active.attempt;
+                let primary = app_ipc(
+                    "dialog admission",
+                    &keld_ipc::IpcError::Protocol {
+                        detail: "dialog CALL reuses an already-pending correlation",
+                    },
+                );
+                let retirement = self.retire_current_generation_locked(
+                    current,
+                    attempt,
+                    "dialog correlation reused",
+                    "failed dialog session close",
+                );
+                collision = Some((attempt, retirement));
+                return Err(primary);
+            }
             if !active.identity.is_primary() {
                 return write_error(
                     active,
@@ -141,7 +161,20 @@ impl PrimaryRouterHandle {
                     Ok(())
                 }
             }
-        })
+        });
+        if let Some((attempt, retirement)) = collision {
+            // Runtime recovery may re-enter Core; neither writer nor transition
+            // lock may survive this call. A revoked reader otherwise suppresses
+            // its error, so surface failed cleanup/recovery to the UI owner.
+            let recovery = self.link_failed(attempt);
+            if retirement.is_err() || recovery.is_err() {
+                let _ = self.window_commands.send(super::AppWindowCommand::Fatal);
+            }
+            return result.map_err(|primary| {
+                super::super::append_app_cleanup(primary, [retirement, recovery])
+            });
+        }
+        result
     }
 
     /// Called by the Core UI event coordinator after the genuine `AppKit` sheet
@@ -155,15 +188,18 @@ impl PrimaryRouterHandle {
         let Some(dialog) = &self.dialog else {
             return Ok(());
         };
-        let terminal = dialog.complete(attempt, nonce, outcome)?;
-        let Some((owner, result)) = terminal else {
-            return Ok(());
-        };
-        let _transition = self.shutdown.transition_guard();
+        let transition = self.shutdown.transition_guard();
         let mut current = self
             .current
             .lock()
             .map_err(|_| app_detail("dialog native terminal", "generation writer lock poisoned"))?;
+        // Keep terminal custody until the writer is held, so a reused CALL
+        // cannot slip between taking the original terminal and publishing it.
+        // Even a retired/shutdown callback must release its native custody.
+        let terminal = dialog.complete(attempt, nonce, outcome)?;
+        let Some((owner, result)) = terminal else {
+            return Ok(());
+        };
         if !self.shutdown.is_running() {
             return Ok(());
         }
@@ -188,9 +224,30 @@ impl PrimaryRouterHandle {
         } else {
             result
         };
-        match result {
+        let written = match result {
             Ok(value) => write_reply(active, owner.correlation, &value),
             Err(error) => write_error(active, owner.correlation, &error.call_error()),
+        };
+        if let Err(primary) = written {
+            let retirement = self.retire_current_generation_locked(
+                &mut current,
+                owner.attempt,
+                "dialog terminal writer lost",
+                "failed dialog terminal close",
+            );
+            drop(current);
+            drop(transition);
+            let recovery = self.link_failed(owner.attempt);
+            if retirement.is_err() || recovery.is_err() {
+                return Err(super::super::append_app_cleanup(
+                    primary,
+                    [retirement, recovery],
+                ));
+            }
+            // The existing owner accepted generation failure. This is not an
+            // assertion that recovery or physical platform qualification passed.
+            eprintln!("{primary}");
         }
+        Ok(())
     }
 }
