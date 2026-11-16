@@ -37,10 +37,13 @@ This spec PR also amends GH-531 in place. Each change is marked "amended by #657
 - **Criterion 46:** independent host/facade identity controls and legitimate multiple
   creates distinguish adoption from an accidental one-window limit.
 
-The exact-content approval in §10 covers these amendments together. The
-historical approvals of KEL-96, KEL-139 and GH-531 do not by themselves approve the
-new semantics. This PR changes only this spec and GH-531; T-1 applies §4.10 to their
-owning documents with the production change.
+The historical delegated approval in §10 applies only to the technical
+candidate at head `a04e1ed889733a64cc33c1b64535e02b4afb0902` and the GH-531 content
+bound by that record. It does not approve this split directory or the amended GH-531
+bytes at the current PR head. The final split-head exact-content gate remains pending,
+as stated in `provenance.md`. Historical KEL-96, KEL-139 and GH-531 approvals do not
+by themselves approve the new semantics. This PR changes only this spec and GH-531;
+T-1 applies §4.10 to their owning documents with the production change.
 
 ## 3. Acceptance criteria
 
