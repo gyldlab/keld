@@ -237,3 +237,16 @@ actual shell-router regression definitions, not a Python model of shell behavior
 The cloud Python input-contract checks and shell syntax checks do not substitute
 for full shell/Cargo router execution; that requires its actual toolchain/hosted
 receipt. Source approval, hosted outcomes and remaining native gates stay separate.
+
+## Errata — 16 November 2026: disposition-check scope
+
+The enforcement supplement above uses “invented disposition/native labels fail
+closed” too broadly. At commit `ef312f2eb1613c4b1a93ae1fd7e5ca3faf586fec`,
+`docs/audits/verify.py::verify_guardian_current_source` validates
+`current_disposition` and requires `native_execution` to remain `NOT RUN`. It does
+not compare the values of `original_review_disposition` or
+`historical_disposition` with their historical ledgers. Those fields remain
+historical evidence, not checker-enforced disposition claims.
+
+This clarification preserves all preceding report text, ledger bytes and source
+pins. It changes no checker behavior and grants no native or security acceptance.
