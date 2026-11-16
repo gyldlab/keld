@@ -20,7 +20,7 @@ FACT: The prior storage-and-clock-only proposal is insufficient. The following c
 | Boundary | S1 evidence | Required patch or profile rule |
 |---|---|---|
 | Expiry equality | `lib.rs:665-669` uses `start <= expires` | Use strict `start < expires` for every applicable role. |
-| Equal timestamp version | `lib.rs:929-979` permits equality and then stores replacement metadata | Return an explicit unchanged outcome. Discard the replacement. |
+| Equal timestamp version | `lib.rs:929-979` permits equality and then stores replacement metadata | Require current authentication and identical signed content for Unchanged. Otherwise refuse. |
 | Historical floors after threshold changes | `lib.rs:934,1096` skips old comparisons when old signatures fail the new root policy | Compare intact historical floors independently of old-envelope verification against the new threshold. |
 | Root arithmetic | `lib.rs:741-745` adds the limit and next version without checked arithmetic | Count transitions separately. Check every next-version increment. |
 | Root transport error | `lib.rs:752-765` converts an initial fetch error into end-of-chain | Only an explicit absent-root result ends catch-up. Other failures refuse. |
@@ -33,6 +33,8 @@ The expiry rule follows S2 sections 5.3.10, 5.4.4, 5.5.6, and 5.6.5. The equal-v
 FACT: The historical-floor conditions affect timestamp, snapshot, and referenced targets comparisons. A threshold-only change can invalidate an old envelope under the new threshold without rotating its keys. D-24 does not reset floors for that change.
 
 Authenticate incoming metadata against the new root. Read historical floors from intact protected records that were accepted previously. Compare those floors even when the old envelope does not meet the new threshold. Only the durable D-24 key-set reset can clear those ordinary-refresh floors. Corrupt historical records refuse.
+
+Historical floors do not grant current target authority. A cached timestamp that fails the current root policy remains floor-only. D-25 forbids using that envelope to select snapshot or targets bytes.
 
 Run AC-28 for timestamp version, timestamp-to-snapshot version, snapshot version, and snapshot-to-targets references. Run each case before and after restart. Use unchanged keys, a threshold change from one to two, stored version 100, replay version 1, and valid version 101. Restore the upstream conditional as the isolated failing mutant.
 
@@ -266,16 +268,24 @@ Keep previous accepted metadata during failed refreshes. Do not use that metadat
 
 ### D-25: Make unchanged timestamp results explicit
 
-PROPOSED: Timestamp loading returns `Advanced`, `Unchanged`, or a typed failure. An equal timestamp version returns Unchanged after authentication. Discard the replacement bytes. Keep the stored timestamp. Do not update its expiry, snapshot description, or signature envelope from the replacement.
+PROPOSED: Timestamp loading returns `Advanced`, `Unchanged`, or a typed failure. Authenticate incoming metadata under the current root before comparing versions. Preserve D-20 historical floors independently.
+
+For equal versions, authenticate the stored timestamp under the current root, including its current threshold. Refuse if that authentication fails. Keep the stored envelope as a historical floor only. Do not select snapshot or targets bytes from that envelope.
+
+If both envelopes authenticate, compare their complete canonical signed content. Refuse any difference, including expiry or snapshot description. Only identical signed content permits `Unchanged`.
+Discard the replacement bytes and retain the stored envelope. Signature ordering or additional valid signatures do not change signed content. Do not replace the stored expiry, snapshot description, or signatures.
 
 Then continue snapshot and targets verification against the retained timestamp. Use matching cached objects or fetch their exact authenticated versions and hashes. Recheck their signatures, rollback rules, and expiry against this refresh's fixed time. This can complete a previous interrupted refresh without trusting changed same-version metadata.
 
-FACT: S6 follows this sequence in [refresh lines 174–177](https://github.com/theupdateframework/python-tuf/blob/e897eec93e37843884d0f37e37d40aa45393e1bb/tuf/ngclient/updater.py#L174-L177).
+FACT: S6 uses the refresh/load/discard-equality sequence in [refresh lines 174–177](https://github.com/theupdateframework/python-tuf/blob/e897eec93e37843884d0f37e37d40aa45393e1bb/tuf/ngclient/updater.py#L174-L177).
 Its [timestamp loader](https://github.com/theupdateframework/python-tuf/blob/e897eec93e37843884d0f37e37d40aa45393e1bb/tuf/ngclient/updater.py#L427-L467) discards equality.
 The outer refresh still loads snapshot and targets.
+The stricter signed-content equality refusal is a KELD profile requirement, not a claim about S6 behavior.
 The [trusted-set comparison](https://github.com/theupdateframework/python-tuf/blob/e897eec93e37843884d0f37e37d40aa45393e1bb/tuf/ngclient/_internal/trusted_metadata_set.py#L247-L278) uses the same pin.
 
-A successful unchanged timestamp is an online outcome. A failed fetch cannot use it. An expired retained timestamp refuses. A signed same-version replacement with a new expiry cannot extend authority. A signed same-version replacement with another snapshot description cannot select another graph.
+A successful unchanged timestamp is an online outcome. A failed fetch cannot use it. An expired retained timestamp refuses. A signed same-version replacement with a new expiry cannot extend authority. A signed same-version replacement with another snapshot description refuses before graph selection.
+
+A threshold increase alone does not clear floors or grant authority to an old envelope. A valid advancing timestamp can restore current authority through normal refresh checks. Refusal leaves protected floors unchanged, including after restart.
 
 ### D-26: Capture the clock and bind authority at use
 
