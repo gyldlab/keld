@@ -122,6 +122,10 @@ preparation blobs proved unreachable from every other protected owner.
 Empty is valid. The intent pins the exact authenticated old/current state,
 orphan generation and complete exclusive blob inventory. An existing
 intent is never overwritten with different bytes.
+For recovery mode, D-65 also binds the exact intent SHA-256 in the
+protected aborted journal before deletion. A matching durable completion
+digest MUST precede intent removal. Keep both journal digests through
+verified pending-pointer absence.
 
 Use only these validated components with retained-parent operations. Existing content-addressed objects require exact-byte and protection readback. Never overwrite an existing blob or generation with different bytes.
 
@@ -204,13 +208,19 @@ the recovery owner MUST durably publish and read back a D-23 intent at
 `retirements/<oldSequence+1>.json` with mode `recovery`, the exact
 `attemptId`, journal-bound successor digest and all exclusively owned
 preparation blobs. It MUST prove that no listed object is reachable
-from current/LKG/previous-LKG or another protected owner. Continue after
-a crash only using this same authenticated intent and pending pointer;
+from current/LKG/previous-LKG or another protected owner. Continue deletion
+after a crash only using this same authenticated intent and pending pointer;
 an absent intent-listed blob counts as retired, but any absent unlisted
 blob, divergent protected state or ambiguous owner halts without deletion.
 Verify the exact successor and all listed blobs absent, the old current,
-provenance, epoch, application and UTC floors unchanged, and the intent
-durably removed/read back as absent BEFORE D-68 removes its pointer.
+provenance, epoch, application and UTC floors unchanged. Before removing
+the intent, durably record and reread the matching completion digest in
+the aborted recovery journal. Then remove and reread the intent as absent.
+If restart finds the pointer but no intent, require the same protected
+old state, attempt and equal non-null journal intent/completion digests.
+Only D-68 pointer removal may proceed in that state. Missing or
+mismatched completion evidence MUST halt without deletion or pointer
+removal. Keep the aborted journal through verified pointer absence.
 A new attempt may use the immutable next-sequence filename only then.
 When `current` already names the committed successor, abort is forbidden.
 

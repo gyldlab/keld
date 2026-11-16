@@ -382,6 +382,12 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
   attempt, exact successor and complete exclusive-blob inventory. After a
   crash, only absent intent-listed objects may count as already retired;
   absent unlisted or live-referenced objects refuse without deletion.
+- Before deletion, the aborted journal MUST durably bind the exact intent
+  digest. After complete retirement readback, it MUST durably bind the same
+  completion digest before removing the intent.
+- With intent absent and pending pointer present, restart MUST verify both
+  matching non-null journal digests and unchanged old state. It MAY remove
+  only that pointer. Missing or mismatched completion evidence MUST refuse.
 - A distinct newly authorized replacement MUST be able to reuse the
   immutable next-sequence filename after safe retirement. An abandoned
   successor file MUST NOT silently grant trust or block the new attempt.
@@ -392,6 +398,9 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
   - **Single fault:** Resume the expired `prepared` journal as though its original directive remained valid.
   - **At-risk precondition:** Keep source, replacement graph, and all unrelated authorization checks valid.
   - **Expected RED:** The stale attempt commits trust without fresh authority or leaves conflicting pending state.
+  - **Additional independent fault:** Remove or change only the completion digest after intent removal.
+  - **Additional condition:** The aborted journal, old state and pointer remain valid; the intent is absent.
+  - **Additional RED:** Restart removes the pointer or admits a new attempt without matching completion evidence.
 
 ### AC-68: Loss-only policy changes are limited to bootstrap root replacement
 
