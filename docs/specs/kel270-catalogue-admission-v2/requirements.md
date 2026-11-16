@@ -379,8 +379,12 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
   It preserves established current/LKG.
 - Terminate before the first preparation blob, during blob publication,
   before successor generation publication, and before current replacement.
-  Each cut MUST allow bounded abort without deleting shared or unlisted objects.
+  Each cut with only absent or exact authenticated exclusive objects
+  MUST allow bounded abort without deleting shared or unrelated objects.
   The complete protected plan MUST predate every preparation write.
+- An incomplete, corrupt or foreign canonical object MUST halt automated
+  cleanup, preserve old current, journal and pointer, and require
+  KEL-53 operator disposition. No deletion or orphan adoption is allowed.
 - Before deleting any preparation object, the owner MUST read back a D-23
   retirement intent binding the aborted attempt, expected successor digest
   and complete sealed exclusive-blob inventory. Planned objects MAY be
@@ -393,7 +397,8 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
   the protected prewrite plan, old state, pointer and all present planned
   objects. It MUST publish a new D-23 intent before any deletion.
 - With intent absent and both journal digests non-null, restart MUST
-  verify equality, unchanged old state and matching attempt.
+  verify equality, unchanged old state, matching attempt and absence
+  of the successor and all planned exclusive blobs.
   It MAY remove only that pointer. Mixed or mismatched digests MUST refuse.
 - A distinct newly authorized replacement MUST be able to reuse the
   immutable next-sequence filename after safe retirement. An abandoned
@@ -414,6 +419,10 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
   - **Additional independent fault:** Refuse initial-intent creation whenever both journal digests remain null.
   - **Additional condition:** The aborted journal and matching pointer are valid; all present preparation objects match the plan.
   - **Additional RED:** The next authorized attempt remains blocked despite valid bounded cleanup.
+  - **Additional independent fault:** Truncate one canonical planned blob
+    during its first write while all other protected evidence remains valid.
+  - **Additional RED:** Cleanup deletes or adopts the damaged blob, removes
+    the pointer or changes established current without operator disposition.
 
 ### AC-68: Loss-only policy changes are limited to bootstrap root replacement
 
