@@ -17,7 +17,8 @@ use crate::support::process::parent_process;
 use crate::support::process::process_exists;
 use crate::support::process::process_group;
 use crate::support::process::{
-    NativeGroupBirth, retain_parented_group_birth, signal_attested_group, signal_process_group,
+    NativeGroupBirth, NativeMemberBirth, retain_parented_group_birth, retain_parented_group_member,
+    signal_attested_group, signal_group_via_attested_member, signal_process_group,
 };
 use crate::support::product::ProductFixture;
 use crate::support::recovery_cycle::RecoveryGeneration;
@@ -82,6 +83,8 @@ pub(crate) struct ShippingLaunchCleanup {
     pub(crate) bun_group: Option<u32>,
     host_birth: Option<NativeGroupBirth>,
     bun_birth: Option<NativeGroupBirth>,
+    pub(crate) host_member: Option<NativeMemberBirth>,
+    bun_member: Option<NativeMemberBirth>,
 }
 
 impl ShippingLaunchCleanup {
@@ -92,6 +95,8 @@ impl ShippingLaunchCleanup {
             bun_group: None,
             host_birth: None,
             bun_birth: None,
+            host_member: None,
+            bun_member: None,
         }
     }
 
@@ -107,6 +112,24 @@ impl ShippingLaunchCleanup {
             "Bun Guardian must belong to this Host"
         );
         self.record_bun_group(bun_group, guardian);
+    }
+
+    /// Only callers with an independently observed descendant may retain
+    /// optional member evidence for a reaped-leader cleanup fallback.
+    pub(crate) fn record_authenticated_members(&mut self, guardian: u32, descendant: u32) {
+        let host_group = self.host_group.expect("authenticated host group");
+        let bun_group = self.bun_group.expect("authenticated Bun group");
+        self.host_member = Some(retain_parented_group_member(
+            guardian,
+            host_group,
+            self.host_birth.expect("verified host leader"),
+        ));
+        assert_eq!(parent_process(bun_group), guardian);
+        self.bun_member = Some(retain_parented_group_member(
+            descendant,
+            bun_group,
+            self.bun_birth.expect("verified Bun leader"),
+        ));
     }
 
     pub(crate) fn record_host_group(&mut self, group: u32, parent: u32) {
@@ -126,6 +149,8 @@ impl ShippingLaunchCleanup {
         self.bun_group = None;
         self.host_birth = None;
         self.bun_birth = None;
+        self.host_member = None;
+        self.bun_member = None;
         self.cli.take().expect("shipping CLI cleanup owner")
     }
 }
@@ -138,16 +163,18 @@ impl Drop for ShippingLaunchCleanup {
             let _ = cli.kill();
             let _ = cli.wait();
         }
-        for (group, birth) in [
-            (self.host_group, self.host_birth),
-            (self.bun_group, self.bun_birth),
+        for (group, birth, member) in [
+            (self.host_group, self.host_birth, self.host_member),
+            (self.bun_group, self.bun_birth, self.bun_member),
         ] {
             // Raw marker edits, missing original births and changed group
             // numbers must never gain numeric kill(-PGID) authority.
             if let (Some(group), Some(original)) = (group, birth)
                 && original.group() == group
+                && signal_attested_group("-TERM", original).is_err()
+                && let Some(member) = member
             {
-                let _ = signal_attested_group("-TERM", original);
+                let _ = signal_group_via_attested_member("-TERM", original, member);
             }
         }
     }
@@ -205,13 +232,12 @@ impl ShippingDevCycle {
         let descendant_pid = parse_pid(descendant.split_whitespace().nth(1), &descendant);
         let guardian_pid = parent_process(bun_pid);
         let host_pid = parent_process(guardian_pid);
-        let owns_expected_tree =
-            parent_process(host_pid) == cli_pid && guardian_pid != cli_pid && host_pid != cli_pid;
         assert!(
-            owns_expected_tree,
+            parent_process(host_pid) == cli_pid && guardian_pid != cli_pid && host_pid != cli_pid,
             "shipping keld dev did not delegate CLI {cli_pid} -> host {host_pid} -> guardian {guardian_pid} -> Bun {bun_pid}"
         );
         cleanup.record_authenticated_groups(host_pid, bun_pid);
+        cleanup.record_authenticated_members(guardian_pid, descendant_pid);
         let mut cycle = Self {
             cli: Some(cleanup.release()),
             cli_pid,
@@ -225,11 +251,7 @@ impl ShippingDevCycle {
             control_writer: control,
             group_gone: false,
         };
-        assert_eq!(process_group(bun_pid), bun_pid);
-        assert_eq!(process_group(descendant_pid), bun_pid);
-        assert_eq!(process_group(cli_pid), cli_pid);
-        assert_eq!(process_group(host_pid), host_pid);
-        assert_eq!(process_group(guardian_pid), host_pid);
+        cycle.assert_initial_process_groups();
         assert_eq!(read_control_line(&mut cycle.control_reader), "READY");
         assert_eq!(read_control_line(&mut cycle.control_reader), "ECHO1");
         assert_eq!(read_control_line(&mut cycle.control_reader), "ECHO2");
@@ -255,6 +277,14 @@ impl ShippingDevCycle {
             );
         }
         cycle
+    }
+
+    fn assert_initial_process_groups(&self) {
+        assert_eq!(process_group(self.bun_pid), self.bun_pid);
+        assert_eq!(process_group(self.descendant_pid), self.bun_pid);
+        assert_eq!(process_group(self.cli_pid), self.cli_pid);
+        assert_eq!(process_group(self.host_pid), self.host_pid);
+        assert_eq!(process_group(self.guardian_pid), self.host_pid);
     }
 
     pub(crate) fn evidence(&self) -> String {
