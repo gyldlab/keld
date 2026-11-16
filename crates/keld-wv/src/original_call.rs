@@ -93,6 +93,7 @@ impl LocalCallBudget {
     }
     /// Extend a retained input record before its next allocation. Only its
     /// private token owner selects this operation; no new record is created.
+    #[cfg(windows)]
     pub(crate) fn grow_record_storage(&mut self, additional: usize) -> Result<(), WvError> {
         if self.records == 0 {
             return Err(bridge_error("input storage growth lacks a retained record"));
@@ -106,10 +107,12 @@ impl LocalCallBudget {
         Ok(())
     }
 
+    #[cfg(windows)]
     pub(crate) fn remaining_storage(&self) -> usize {
         MAX_LOCAL_CALL_BYTES.saturating_sub(self.bytes)
     }
 
+    #[cfg(windows)]
     pub(crate) fn release_record_storage(&mut self, bytes: usize) -> Result<(), WvError> {
         if self.records == 0 {
             return Err(bridge_error(

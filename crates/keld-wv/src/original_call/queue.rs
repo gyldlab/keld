@@ -160,6 +160,13 @@ impl<P> OriginalCallQueue<P> {
             numeric: None,
         })
     }
+    #[cfg_attr(
+        not(windows),
+        expect(
+            clippy::unused_self,
+            reason = "The numeric result owner exists only on Windows; non-Windows keeps the shared queue guard as a constant false."
+        )
+    )]
     fn numeric_occupied(&self) -> bool {
         #[cfg(windows)]
         {

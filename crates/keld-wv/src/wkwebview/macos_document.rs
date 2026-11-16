@@ -1,8 +1,8 @@
 //! Native WKNavigation witness for the shared document state owner.
 use crate::WebviewId;
 pub(crate) use crate::native_document::{
-    DocumentFailure, NativeAttempt, NativeCommitIdentity, NativeCommittedStamp,
-    NativeDocumentLease, NativeDocumentOwner, ResourceLease, VerifiedSourceId,
+    NativeAttempt, NativeCommitIdentity, NativeCommittedStamp, NativeDocumentOwner, ResourceLease,
+    VerifiedSourceId,
 };
 use objc2::Message;
 use std::num::NonZeroU64;

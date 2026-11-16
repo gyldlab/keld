@@ -23,6 +23,15 @@ use crate::{
     stalled_navigation_end_kill_switch, ui_end_kill_switch, wait_child, wait_for_host_window,
 };
 
+// The profile report may precede the Host error on stderr. The first
+// KELD-coded diagnostic still owns the original failure and its ranking.
+fn first_host_diagnostic(stderr: &str) -> &str {
+    stderr
+        .lines()
+        .find(|line| line.starts_with("KELD-"))
+        .expect("no KELD-coded Host error was emitted")
+}
+
 #[test]
 fn windows_no_flag_host_recovers_bun_in_the_same_native_window() {
     run_same_window_recovery("CRASH", false);
@@ -69,7 +78,10 @@ fn windows_status_zero_self_termination_keeps_pid_and_status_in_the_host_error()
         .expect("captured exit-zero stderr")
         .read_to_string(&mut stderr)
         .expect("read exit-zero stderr");
-    assert!(stderr.trim_start().starts_with("KELD-CORE-033"), "{stderr}");
+    assert!(
+        first_host_diagnostic(&stderr).starts_with("KELD-CORE-033"),
+        "{stderr}"
+    );
     assert!(stderr.contains(&bun_pid.to_string()), "{stderr}");
     assert!(stderr.contains("status Some(0)"), "{stderr}");
 }
@@ -198,7 +210,10 @@ fn windows_crash_loop_keeps_core033_as_the_outer_host_error() {
         .expect("captured crash-loop stderr")
         .read_to_string(&mut stderr)
         .expect("read crash-loop stderr");
-    assert!(stderr.trim_start().starts_with("KELD-CORE-033"), "{stderr}");
+    assert!(
+        first_host_diagnostic(&stderr).starts_with("KELD-CORE-033"),
+        "{stderr}"
+    );
     assert!(stderr.contains("KELD-RUNTIME-002"), "{stderr}");
 }
 
@@ -524,7 +539,7 @@ fn windows_live_pre_ready_link_close_reports_owner_cause_first_without_successor
         false,
     );
     // The 15 s initial-navigation deadline (KELD-WV-005) is still armed; the
-    // first-line assertion below rejects a run that lost that race.
+    // primary coded-diagnostic assertion below rejects a run that lost that race.
     held.await_connection(&mut child);
 
     writer
@@ -548,7 +563,7 @@ fn windows_live_pre_ready_link_close_reports_owner_cause_first_without_successor
         .read_to_string(&mut stderr)
         .expect("read pre-Ready link-close stderr");
     assert!(
-        stderr.trim_start().starts_with(
+        first_host_diagnostic(&stderr).starts_with(
             "KELD-CORE-037: no-flag host failed during primary generation before Ready"
         ),
         "{stderr}"
@@ -641,7 +656,7 @@ fn windows_stalled_initial_navigation_fails_startup_at_its_deadline() {
     // The navigation deadline is the primary error: the first one the
     // session's failure collapse names, ahead of any owner cleanup detail.
     assert!(
-        stderr.trim_start().starts_with(concat!(
+        first_host_diagnostic(&stderr).starts_with(concat!(
             "KELD-CORE-037: no-flag host failed during startup cleanup — ",
             "KELD-CORE-037: no-flag host failed during initial direct navigation — ",
             "KELD-WV-005"

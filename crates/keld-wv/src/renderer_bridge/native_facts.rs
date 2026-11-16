@@ -108,6 +108,13 @@ impl NativeMessageFacts {
 
     /// Only WK supplies an actual same-message native origin tuple.
     /// `WebView2`'s qualified Source URL does not manufacture such a tuple.
+    #[cfg_attr(
+        target_os = "macos",
+        expect(
+            clippy::unnecessary_wraps,
+            reason = "The shared origin API must preserve the absent native tuple of Windows source-qualified facts."
+        )
+    )]
     pub(crate) fn native_origin_tuple(&self) -> Option<(&str, &str, i64)> {
         match &self.provenance {
             #[cfg(target_os = "macos")]

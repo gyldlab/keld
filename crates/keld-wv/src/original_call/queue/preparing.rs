@@ -217,6 +217,7 @@ impl<P> OriginalCallQueue<P> {
 
     /// Retain only the captured ingress witness for the platform's existing
     /// final fence. This observation cannot acquire a successor role.
+    #[cfg(windows)]
     pub(crate) fn preparation_role(
         &self,
         invocation: &PreparingOriginalInvocation<P>,
