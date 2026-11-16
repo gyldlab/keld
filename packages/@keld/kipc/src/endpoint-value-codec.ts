@@ -441,6 +441,11 @@ class ValueWriter {
           "array length is not a bounded own data property",
         );
       const length: number = lengthDescriptor.value;
+      if (
+        length > ENDPOINT_VALUE_NODES - this.nodes ||
+        length > ENDPOINT_VALUE_NODES - this.visits
+      )
+        reject("CodecLimit", "array count exceeds remaining node budget");
       const keys = checkedOwnKeys(value);
       if (keys.length * 2 + 1 > ENDPOINT_VALUE_NODES - this.visits)
         reject(

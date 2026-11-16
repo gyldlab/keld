@@ -316,3 +316,25 @@ test("normal arrays and the 256 aggregate visit boundary remain accepted", () =>
     "KELD-COMPAT-102",
   );
 });
+
+// A declared oversized array must be refused before its key list is materialized.
+test.each([false, true])(
+  "oversized array length refuses before ownKeys (nested=%s)",
+  (nested) => {
+    let ownKeyCalls = 0;
+    const oversized = new Proxy(Array(256).fill(null), {
+      ownKeys(target) {
+        ownKeyCalls += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+    const failure = caught(() =>
+      nested
+        ? encodeEndpointArguments([oversized])
+        : encodeEndpointValue(oversized),
+    );
+    expect(failure.kind).toBe("CodecLimit");
+    expect(failure.code).toBe("KELD-COMPAT-102");
+    expect(ownKeyCalls).toBe(0);
+  },
+);
