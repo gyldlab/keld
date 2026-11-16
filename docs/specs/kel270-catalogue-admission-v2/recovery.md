@@ -426,8 +426,12 @@ If metadata current is new, finish only the committed exact attempt under the re
 No normal update may run while a manual-recovery journal is pending.
 Include process-termination cuts before the first preparation blob, during
 each blob publication, before successor generation publication, and before
-current replacement. Expiry at each cut MUST permit finite abort with no
-unauthorized deletion. Repeat each applicable cut with physical power loss.
+current replacement. Expiry at each cut with only absent or exact,
+authenticated, exclusively owned preparation objects MUST permit finite
+abort without unauthorized deletion. A malformed or foreign canonical
+object MUST halt automatic cleanup with the original pointer and evidence
+preserved for KEL-53 operator disposition. Repeat each applicable cut
+with physical power loss.
 All persisted edges need process-termination and separately named physical-power-loss qualification.
 
 ### D-67: State the limits of complete recovery
