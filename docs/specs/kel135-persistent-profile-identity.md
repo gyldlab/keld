@@ -63,7 +63,7 @@ Non-goals:
   explicit backend differences.
 - `docs/architecture/06-runtime-and-tooling.md` §2 and §4: packaging/update artifacts
   authenticate release inputs and own install/update/uninstall workflow.
-- `docs/specs/kel96-no-flag-host-boot.md` §4.2: the live dev stage is owner-private but
+- `kel96-no-flag-host-boot/boot.md` §4.2: the live dev stage is owner-private but
   per-launch and not release-authenticated; the current KEL-103 scope authenticates no
   app-specific sidecar facts.
 - KEL-63: the current Windows fix moved WebView2 data away from the executable but left
