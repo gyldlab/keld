@@ -33,18 +33,54 @@ pub(super) fn observe_pre_ack_image(group: i32, marker: &Path) -> String {
 }
 
 pub(super) fn receive_event(listener: &UnixListener, deadline: Instant) -> (UnixStream, String) {
+    receive_event_with_hooks(listener, deadline, |_| {}, |_| {})
+}
+
+// Preserve the shipping native Unix listener/peer while allowing the test to
+// independently hold a byte exactly AFTER a successful pre-read clock probe.
+// No mock peer, forged event, or new production control channel is introduced.
+fn receive_event_with_hooks(
+    listener: &UnixListener,
+    deadline: Instant,
+    mut on_prechecked_read: impl FnMut(usize),
+    mut on_native_byte: impl FnMut(u8),
+) -> (UnixStream, String) {
     loop {
+        assert!(
+            Instant::now() < deadline,
+            "original retained-ACK event deadline expired before native accept"
+        );
         match listener.accept() {
             Ok((mut stream, _)) => {
+                // A connection queued before accept() is not permission to
+                // consume it after the caller's original absolute deadline.
+                assert!(
+                    Instant::now() < deadline,
+                    "original retained-ACK event deadline expired after native accept"
+                );
                 stream
                     .set_nonblocking(true)
                     .expect("nonblocking event read");
                 let mut bytes = Vec::new();
                 loop {
+                    assert!(
+                        Instant::now() < deadline,
+                        "original retained-ACK event deadline expired before native read"
+                    );
+                    on_prechecked_read(bytes.len());
                     let mut byte = [0_u8; 1];
                     match stream.read(&mut byte) {
-                        Ok(1) if byte[0] == b'\n' => break,
                         Ok(1) => {
+                            on_native_byte(byte[0]);
+                            // One successful kernel byte is not a completed
+                            // on-time record. Include LF in the same clock.
+                            assert!(
+                                Instant::now() < deadline,
+                                "original retained-ACK event deadline expired after native read"
+                            );
+                            if byte[0] == b'\n' {
+                                break;
+                            }
                             bytes.push(byte[0]);
                             assert!(bytes.len() <= 100, "bounded cut receipt");
                         }
@@ -73,6 +109,10 @@ pub(super) fn receive_event(listener: &UnixListener, deadline: Instant) -> (Unix
         }
     }
 }
+
+#[cfg(test)]
+#[path = "observers/deadline_tests.rs"]
+mod deadline_tests;
 
 pub(super) fn group_gone(group: i32, descendant: Option<i32>, guardian: i32) {
     let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;

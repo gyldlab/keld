@@ -45,11 +45,39 @@ pub(in crate::macos_guardian) fn hold_before_group_ack(
         std::process::id()
     )?;
     stream.set_nonblocking(true)?;
-    let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
+    await_ack_release_with_hooks(
+        &mut stream,
+        Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE,
+        || {},
+        |_| {},
+    )
+}
+
+// A real connected and authenticated test cut peer, not a synthetic ACK. The
+// native byte callbacks are for a test-owned regression gate only and do not
+// exist on the shipping non-test KGR1 registration path.
+fn await_ack_release_with_hooks(
+    stream: &mut UnixStream,
+    deadline: Instant,
+    mut on_before_read: impl FnMut(),
+    mut on_native_byte: impl FnMut(u8),
+) -> io::Result<()> {
     loop {
+        if Instant::now() >= deadline {
+            return Err(ack_release_deadline_expired());
+        }
+        on_before_read();
         let mut release = [0_u8; 1];
         match stream.read(&mut release) {
-            Ok(1) if release == *b"R" => return Ok(()),
+            Ok(1) if release == *b"R" => {
+                on_native_byte(release[0]);
+                // A real R observed after the held ACK budget cannot turn a
+                // denied generation into a successful host-retained child.
+                if Instant::now() >= deadline {
+                    return Err(ack_release_deadline_expired());
+                }
+                return Ok(());
+            }
             Ok(0) => {
                 return Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
@@ -57,6 +85,7 @@ pub(in crate::macos_guardian) fn hold_before_group_ack(
                 ));
             }
             Ok(1) => {
+                on_native_byte(release[0]);
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     "test denied ACK",
@@ -68,14 +97,19 @@ pub(in crate::macos_guardian) fn hold_before_group_ack(
             Ok(_) => unreachable!("one-byte release buffer"),
         }
         if Instant::now() >= deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "test ACK fence exceeded deadline",
-            ));
+            return Err(ack_release_deadline_expired());
         }
         thread::yield_now();
     }
 }
+
+fn ack_release_deadline_expired() -> io::Error {
+    io::Error::new(io::ErrorKind::TimedOut, "test ACK fence exceeded deadline")
+}
+
+#[cfg(test)]
+#[path = "retained_ack/ack_deadline_tests.rs"]
+mod ack_deadline_tests;
 
 #[test]
 fn kgr1_retained_ack_process_role() {
