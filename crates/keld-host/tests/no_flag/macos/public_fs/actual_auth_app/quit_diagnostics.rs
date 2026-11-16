@@ -147,7 +147,9 @@ fn wait_for_auth_cli_quit_with_deadline(
                 // witness even though the exact CLI owner is still retained.
                 if began.elapsed() < timeout {
                     (hooks.on_sample)(snapshot);
-                    pre_cleanup = Some(snapshot);
+                    if began.elapsed() < timeout {
+                        pre_cleanup = Some(snapshot);
+                    }
                 }
             }
         })
