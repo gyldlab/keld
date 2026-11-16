@@ -794,6 +794,33 @@ test("tree census rechecks a 300-file count after enumeration", async () => {
 // B-82 evidence must run before candidate-owned source (including transitive
 // echo-codegen imports) can rewrite its verifier. Only the pinned, reviewed Rust
 // installer is allowed between credential-free checkout and this gate.
+// Keep the B-82 shell program pinned independently of the workflow YAML.
+// Otherwise an in-step command injection or `|| true` could pass a substring-only check.
+const approvedKEL270EvidenceRun = String.raw`set -euo pipefail
+# A pull request can add sourceless imports (for example argparse.pyc)
+# beside the verifier. -B alone prevents writes, not importing them.
+# Keep the unsafe checkout/script directory off sys.path, including
+# all Python subprocesses launched by verify_spec_evidence.py.
+export PYTHONSAFEPATH=1
+python3.12 -I -m venv "$RUNNER_TEMP/kel270-evidence-python"
+cat > "$RUNNER_TEMP/kel270-evidence-requirements.txt" <<'REQ'
+cryptography==50.0.2 \
+    --hash=sha256:9dab55f57c74c3cad24c323bacbbd04be4705ba6eb0d92e920b1fc4837ed5079
+cffi==2.0.0 \
+    --hash=sha256:3e17ed538242334bf70832644a32a7aae3d83b57567f9fd60a26257e992b79ba
+pycparser==2.23 \
+    --hash=sha256:e5c6e8d3fbad53479cab09ac03729e0a9faf2bee3db8208a550daf5af81a5934
+REQ
+"$RUNNER_TEMP/kel270-evidence-python/bin/python" -I -m pip install \
+  --disable-pip-version-check --no-input --no-cache-dir \
+  --only-binary=:all: --require-hashes \
+  -r "$RUNNER_TEMP/kel270-evidence-requirements.txt"
+"$RUNNER_TEMP/kel270-evidence-python/bin/python" -I -B -c \
+  'import cryptography; assert cryptography.__version__ == "50.0.2"'
+"$RUNNER_TEMP/kel270-evidence-python/bin/python" -I -B \
+  docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py --check
+`;
+
 function assertEvidenceBeforeCandidateCode(steps: Record<string, any>[]) {
   expect(steps[0].uses).toMatch(/^actions\/checkout@[a-f0-9]{40}$/);
   expect(steps[0].with["persist-credentials"]).toBe(false);
@@ -809,6 +836,7 @@ function assertEvidenceBeforeCandidateCode(steps: Record<string, any>[]) {
   expect(steps[2].run).toContain("export PYTHONSAFEPATH=1");
   expect(steps[2].run).toContain("python3.12 -I -m venv");
   expect(steps[2].run).toContain("verify_spec_evidence.py --check");
+  expect(steps[2].run).toBe(approvedKEL270EvidenceRun);
 }
 
 test("KEL-270 evidence executes before any candidate-controlled code", () => {
@@ -836,4 +864,27 @@ test("KEL-270 evidence executes before any candidate-controlled code", () => {
       ...steps.slice(3),
     ]),
   ).toThrow();
+});
+
+
+test("KEL-270 evidence rejects in-step untrusted execution and failure masking", () => {
+  const ci = Bun.YAML.parse(
+    readFileSync(".github/workflows/ci.yml", "utf8"),
+  ) as Record<string, any>;
+  const steps = ci.jobs.hygiene.steps as Record<string, any>[];
+  const original = steps[2].run as string;
+  for (const mutated of [
+    original.replace("export PYTHONSAFEPATH=1", "bash tools/untrusted.sh\\nexport PYTHONSAFEPATH=1".replace("\\n", "\n")),
+    original.replace("verify_spec_evidence.py --check", "verify_spec_evidence.py --check || true"),
+  ]) {
+    expect(mutated).not.toBe(original);
+    expect(() =>
+      assertEvidenceBeforeCandidateCode([
+        steps[0],
+        steps[1],
+        { ...steps[2], run: mutated },
+        ...steps.slice(3),
+      ]),
+    ).toThrow();
+  }
 });
