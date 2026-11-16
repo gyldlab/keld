@@ -195,9 +195,9 @@ fail. "Owner" is the implementing ticket.
     `CreateInitialWindow` makes the count 1 at Ready and 2 after construction.
     Owners: F01-T2 (Ready) and F02-T2 (constructor).
 14. **Registry is live at Ready.** Given a facade boot, when `Create` is sent in the
-    same task that `whenReady()` resolves in, then it succeeds. *NC:* starting the
-    registry after Ready is written makes this first `Create` fail with the registry's
-    not-ready error. Owner: F02-T2.
+    same task that `whenReady()` resolves in, then it succeeds. *NC:* keep the registry
+    unready through the first post-Ready `Create`; it fails with
+    `KELD-CORE-040`. Owner: F02-T2.
     *Before Ready (amended by #657).* `Subscribe` to `window` is accepted before Ready.
     Given a facade boot whose first Ready write has not happened, when a role whose
     link is subscribed to `window` sends `Create` or any other window call, then it gets
