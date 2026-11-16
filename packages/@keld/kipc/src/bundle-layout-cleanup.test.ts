@@ -296,7 +296,7 @@ describe("layout resource ownership on failure", () => {
             const owner = error.retainedLayout;
             if (owner !== undefined && !owner.disposed) {
               await withIoDeadline(owner.dispose());
-              expect(owner.disposed).toBe(true);
+              expect<boolean>(owner.disposed).toBe(true);
               if (owner.child !== undefined)
                 expect(await withIoDeadline(owner.child.exited)).toBeNumber();
             }
