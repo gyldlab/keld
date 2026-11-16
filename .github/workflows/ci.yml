@@ -910,6 +910,35 @@ jobs:
         with:
           toolchain: 1.99.1
           components: rustfmt, clippy
+      # KEL-270 B-82 candidate: synthetic definitions only; native product NOT_RUN.
+      # Use Ubuntu 24.04 / CPython 3.12 and SHA-256-pinned binary test dependencies.
+      # Keep the environment in runner temp, with no new action or write authority.
+      - name: KEL-270 definition evidence (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A pull request can add sourceless imports (for example argparse.pyc)
+          # beside the verifier. -B alone prevents writes, not importing them.
+          # Keep the unsafe checkout/script directory off sys.path, including
+          # all Python subprocesses launched by verify_spec_evidence.py.
+          export PYTHONSAFEPATH=1
+          python3.12 -I -m venv "$RUNNER_TEMP/kel270-evidence-python"
+          cat > "$RUNNER_TEMP/kel270-evidence-requirements.txt" <<'REQ'
+          cryptography==50.0.2 \
+              --hash=sha256:9dab55f57c74c3cad24c323bacbbd04be4705ba6eb0d92e920b1fc4837ed5079
+          cffi==2.0.0 \
+              --hash=sha256:3e17ed538242334bf70832644a32a7aae3d83b57567f9fd60a26257e992b79ba
+          pycparser==2.23 \
+              --hash=sha256:e5c6e8d3fbad53479cab09ac03729e0a9faf2bee3db8208a550daf5af81a5934
+          REQ
+          "$RUNNER_TEMP/kel270-evidence-python/bin/python" -I -m pip install \
+            --disable-pip-version-check --no-input --no-cache-dir \
+            --only-binary=:all: --require-hashes \
+            -r "$RUNNER_TEMP/kel270-evidence-requirements.txt"
+          "$RUNNER_TEMP/kel270-evidence-python/bin/python" -I -B -c \
+            'import cryptography; assert cryptography.__version__ == "50.0.2"'
+          "$RUNNER_TEMP/kel270-evidence-python/bin/python" -I -B \
+            docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py --check
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: "1.4.4"
@@ -941,35 +970,6 @@ jobs:
           target/spec-structure/spec-structure-test
           rustc --edition=2024 -D warnings tools/spec_structure.rs -o target/spec-structure/spec-structure
           target/spec-structure/spec-structure check .
-      # KEL-270 B-82 candidate: synthetic definitions only; native product NOT_RUN.
-      # Use Ubuntu 24.04 / CPython 3.12 and SHA-256-pinned binary test dependencies.
-      # Keep the environment in runner temp, with no new action or write authority.
-      - name: KEL-270 definition evidence (read-only)
-        shell: bash
-        run: |
-          set -euo pipefail
-          # A pull request can add sourceless imports (for example argparse.pyc)
-          # beside the verifier. -B alone prevents writes, not importing them.
-          # Keep the unsafe checkout/script directory off sys.path, including
-          # all Python subprocesses launched by verify_spec_evidence.py.
-          export PYTHONSAFEPATH=1
-          python3.12 -I -m venv "$RUNNER_TEMP/kel270-evidence-python"
-          cat > "$RUNNER_TEMP/kel270-evidence-requirements.txt" <<'REQ'
-          cryptography==50.0.2 \
-              --hash=sha256:9dab55f57c74c3cad24c323bacbbd04be4705ba6eb0d92e920b1fc4837ed5079
-          cffi==2.0.0 \
-              --hash=sha256:3e17ed538242334bf70832644a32a7aae3d83b57567f9fd60a26257e992b79ba
-          pycparser==2.23 \
-              --hash=sha256:e5c6e8d3fbad53479cab09ac03729e0a9faf2bee3db8208a550daf5af81a5934
-          REQ
-          "$RUNNER_TEMP/kel270-evidence-python/bin/python" -I -m pip install \
-            --disable-pip-version-check --no-input --no-cache-dir \
-            --only-binary=:all: --require-hashes \
-            -r "$RUNNER_TEMP/kel270-evidence-requirements.txt"
-          "$RUNNER_TEMP/kel270-evidence-python/bin/python" -I -B -c \
-            'import cryptography; assert cryptography.__version__ == "50.0.2"'
-          "$RUNNER_TEMP/kel270-evidence-python/bin/python" -I -B \
-            docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py --check
       # The `hygiene` recipe's hello-command regression reads the justfile and
       # two onboarding docs, both of which select this job (#650).
       - name: Hello command contract
@@ -1149,7 +1149,7 @@ jobs:
           persist-credentials: false
       - name: Reject incomplete dependency metadata
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: [value hidden by Chat On Steroids]
           KELD_DEPENDENCY_REPOSITORY: ${{ github.repository }}
           KELD_DEPENDENCY_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           KELD_DEPENDENCY_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}

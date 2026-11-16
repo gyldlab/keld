@@ -790,3 +790,50 @@ test("tree census rechecks a 300-file count after enumeration", async () => {
   );
   expect(f.getTrees()).toBe(2);
 });
+
+// B-82 evidence must run before candidate-owned source (including transitive
+// echo-codegen imports) can rewrite its verifier. Only the pinned, reviewed Rust
+// installer is allowed between credential-free checkout and this gate.
+function assertEvidenceBeforeCandidateCode(steps: Record<string, any>[]) {
+  expect(steps[0].uses).toMatch(/^actions\/checkout@[a-f0-9]{40}$/);
+  expect(steps[0].with["persist-credentials"]).toBe(false);
+  expect(steps[1].uses).toBe(
+    "dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8",
+  );
+  expect(steps[1].if).toBeUndefined();
+  expect(steps[1]["continue-on-error"]).toBeUndefined();
+  expect(steps[2].name).toBe("KEL-270 definition evidence (read-only)");
+  expect(steps[2].shell).toBe("bash");
+  expect(steps[2].if).toBeUndefined();
+  expect(steps[2]["continue-on-error"]).toBeUndefined();
+  expect(steps[2].run).toContain("export PYTHONSAFEPATH=1");
+  expect(steps[2].run).toContain("python3.12 -I -m venv");
+  expect(steps[2].run).toContain("verify_spec_evidence.py --check");
+}
+
+test("KEL-270 evidence executes before any candidate-controlled code", () => {
+  const ci = Bun.YAML.parse(
+    readFileSync(".github/workflows/ci.yml", "utf8"),
+  ) as Record<string, any>;
+  const steps = ci.jobs.hygiene.steps as Record<string, any>[];
+  assertEvidenceBeforeCandidateCode(steps);
+
+  // An injected candidate-owned command before verification must fail the
+  // ordering guard, even if that command later restores the verifier bytes.
+  expect(() =>
+    assertEvidenceBeforeCandidateCode([
+      steps[0],
+      steps[1],
+      { name: "Untrusted transport import", run: "bun echo-codegen.ts" },
+      ...steps.slice(2),
+    ]),
+  ).toThrow();
+  expect(() =>
+    assertEvidenceBeforeCandidateCode([
+      steps[0],
+      steps[1],
+      { ...steps[2], if: "false" },
+      ...steps.slice(3),
+    ]),
+  ).toThrow();
+});
