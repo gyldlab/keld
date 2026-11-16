@@ -87,7 +87,7 @@ pub(in crate::app_session) fn original_quit_selection() -> (tempfile::TempDir, O
 
 /// Supply explicit inert process facts when a component test builds the preload.
 #[cfg_attr(
-    windows,
+    any(windows, target_os = "macos"),
     expect(
         clippy::too_many_lines,
         reason = "Keep the independently pinned graph/provider fixtures and same retained source construction together."

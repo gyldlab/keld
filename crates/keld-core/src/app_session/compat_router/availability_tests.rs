@@ -2,10 +2,9 @@
 //! Fixture callers do not qualify Runtime authentication or native registration.
 
 use super::{
-    CallError, CompatSession, ConsumerDisposition, CorrelationId, FrameKind, PrimaryCallerContext,
-    PrimaryRouterHandle, Principal, RendererBridgeOutcome, RendererChannelQuery,
-    WvConsumerDisposition, consumer, dispatch_privileged_query, encode, preflight_privileged_query,
-    write_frame,
+    CallError, ConsumerDisposition, CorrelationId, FrameKind, PrimaryCallerContext,
+    PrimaryRouterHandle, Principal, RendererChannelQuery, WvConsumerDisposition, consumer,
+    dispatch_privileged_query, encode, preflight_privileged_query, write_frame,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -17,6 +16,10 @@ mod original_recovery;
 // Fixture identities do not prove Runtime admission or native registration.
 use super::test_fixture::availability_session;
 
+#[expect(
+    clippy::expect_used,
+    reason = "This native test fixture requires the original live component and must fail if its test-owned generation lock or reader is absent."
+)]
 fn active_caller(handle: &PrimaryRouterHandle) -> PrimaryCallerContext {
     let current = handle.current.lock().expect("component current");
     let active = current.as_ref().expect("component active link");

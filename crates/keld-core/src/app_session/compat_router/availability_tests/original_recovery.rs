@@ -41,26 +41,29 @@ fn initial_ready(
     // ready_recovery component does. Never set recovery_armed or fake Ready.
     let shutdown = handle.shutdown.clone();
     let ready = Arc::clone(&handle.window_ready);
-    let owner_receipt = std::thread::spawn(move || {
+    let owner_receipt = std::thread::spawn(move || -> Result<_, &'static str> {
+        let command = guardian
+            .recv_timeout(Duration::from_secs(3))
+            .map_err(|_| "actual initial arm request missing")?;
         let crate::app_session::GuardianOwnerCommand::ArmRecovery(
             crate::app_session::RecoveryArm::Initial(1),
             receipt,
-        ) = guardian
-            .recv_timeout(Duration::from_secs(3))
-            .expect("actual initial arm request")
+        ) = command
         else {
-            panic!("initial Ready must request this owner's recovery arm");
+            return Err("initial Ready must request this owner's recovery arm");
         };
         let transition = shutdown.transition_guard();
         assert!(ready.load(std::sync::atomic::Ordering::Acquire));
-        receipt.send(Ok(())).expect("actual owner receipt");
+        receipt
+            .send(Ok(()))
+            .map_err(|_| "actual owner receipt channel ended")?;
         drop(transition);
-        guardian
+        Ok(guardian)
     });
     let ready_result = handle.signal_ready();
     let guardian = owner_receipt
         .join()
-        .map_err(|_| "owner receipt thread panicked")?;
+        .map_err(|_| "owner receipt thread panicked")??;
     ready_result?;
     let (_, payload) = read_frame(peer)?;
     assert_eq!(decode::<LifecycleEvent>(&payload)?, LifecycleEvent::Ready);
