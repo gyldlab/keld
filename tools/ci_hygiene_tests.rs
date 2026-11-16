@@ -3018,6 +3018,79 @@ fn mermaid_renderer_rejects_target_symlink_before_creating_output() {
     );
 }
 
+#[cfg(windows)]
+fn native_git_shell(paths: &str) -> Option<PathBuf> {
+    paths
+        .lines()
+        .flat_map(|candidate| {
+            let git = Path::new(candidate.trim());
+            let nested_layout = git.parent().is_some_and(|directory| {
+                directory.ends_with("mingw64/bin") || directory.ends_with("mingw32/bin")
+            });
+            // Preserve the original nearest candidate. Only the known nested
+            // Git layouts may also select the installation-root bin directory.
+            [
+                git.ancestors().nth(2),
+                nested_layout.then(|| git.ancestors().nth(3)).flatten(),
+            ]
+            .into_iter()
+            .flatten()
+            .map(|root| root.join("bin/sh.exe"))
+        })
+        .find(|candidate| candidate.is_file())
+}
+
+#[test]
+#[cfg(windows)]
+fn native_git_shell_accepts_supported_install_layouts() {
+    let temp = TempDir::new();
+    temp.write("Git/bin/sh.exe", "fixture only; never executed");
+    let expected = temp.path().join("Git/bin/sh.exe");
+    for layout in [
+        "cmd/git.exe",
+        "bin/git.exe",
+        "mingw64/bin/git.exe",
+        "mingw32/bin/git.exe",
+    ] {
+        let git = temp.path().join("Git").join(layout);
+        assert_eq!(
+            native_git_shell(&git.to_string_lossy()),
+            Some(expected.clone()),
+            "{layout}"
+        );
+    }
+}
+
+#[test]
+#[cfg(windows)]
+fn native_git_shell_keeps_nearer_candidate_first() {
+    let temp = TempDir::new();
+    temp.write("Git/mingw64/bin/sh.exe", "near fixture");
+    temp.write("Git/bin/sh.exe", "root fixture");
+    let git = temp.path().join("Git/mingw64/bin/git.exe");
+    assert_eq!(
+        native_git_shell(&git.to_string_lossy()),
+        Some(temp.path().join("Git/mingw64/bin/sh.exe"))
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn native_git_shell_refuses_missing_shell() {
+    let temp = TempDir::new();
+    let git = temp.path().join("Git/mingw64/bin/git.exe");
+    assert_eq!(native_git_shell(&git.to_string_lossy()), None);
+}
+
+#[test]
+#[cfg(windows)]
+fn native_git_shell_does_not_search_above_standard_install_root() {
+    let temp = TempDir::new();
+    temp.write("bin/sh.exe", "unrelated ancestor fixture");
+    let git = temp.path().join("Git/cmd/git.exe");
+    assert_eq!(native_git_shell(&git.to_string_lossy()), None);
+}
+
 #[test]
 #[cfg(windows)]
 fn mermaid_native_dacl_does_not_depend_on_path_whoami() {
@@ -3033,15 +3106,29 @@ fn mermaid_native_dacl_does_not_depend_on_path_whoami() {
     // executable must not supply identity to the native restoration process.
     let renderer = include_str!("mermaid_render_check.sh");
     let start = renderer.find("running_under_msys() {").expect("MSYS owner");
+    // Stop at the end of the restoration helpers. The rest of the render
+    // script builds Mermaid documentation and invokes Docker, which are not
+    // inputs to this native DACL-only regression. In Git Bash those unrelated
+    // build steps can select GNU link.exe instead of the MSVC linker.
     let end = renderer
-        .find("\nrun_with_timeout 8 docker info")
-        .expect("helper boundary");
+        .find("\nworkspace=$(git rev-parse --show-toplevel")
+        .expect("restoration helper boundary");
     let script = format!(
         "set -euo pipefail\n{}\nrender_parent=$(cd \"$1\" && pwd -P)\nwhoami.exe() {{ echo 'GNU whoami rejects Windows arguments' >&2; return 64; }}\nrestore_docker_output_dir \"$render_parent/keld-mermaid-render.fixture\"\n",
         &renderer[start..end]
     );
     temp.write("native-dacl-restore.sh", &script);
-    let output = Command::new("bash")
+    // Windows CreateProcess can select System32\\bash.exe (WSL) before Git Bash,
+    // while Git's bin directory is normally absent from PATH. Discover the
+    // installed Git.exe and use that installation's native sh.exe explicitly.
+    let git_paths = Command::new("where.exe")
+        .arg("git.exe")
+        .output()
+        .expect("locate native Git for Windows");
+    assert!(git_paths.status.success(), "native Git for Windows missing");
+    let paths = String::from_utf8_lossy(&git_paths.stdout);
+    let shell = native_git_shell(&paths).expect("locate Git for Windows sh.exe beside git.exe");
+    let output = Command::new(shell)
         .arg(temp.path().join("native-dacl-restore.sh"))
         .arg(&parent)
         .output()

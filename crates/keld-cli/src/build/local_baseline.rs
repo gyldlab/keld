@@ -292,7 +292,11 @@ mod chain_tests {
         (verifier, manifest, signature)
     }
 
-    fn candidate(parent: &std::path::Path, name: &str, truncate: bool) -> LocalArchiveCandidate<'static> {
+    fn candidate(
+        parent: &std::path::Path,
+        name: &str,
+        truncate: bool,
+    ) -> LocalArchiveCandidate<'static> {
         let (mut bytes, produced) = package();
         if truncate {
             bytes.pop().expect("nonempty compressed fixture");

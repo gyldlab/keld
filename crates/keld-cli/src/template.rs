@@ -43,7 +43,9 @@ pub fn restamp_transport(source: &str) -> String {
 #[must_use]
 pub fn render_transport(source: &str, name: &str) -> String {
     restamp_transport(&source.replace("{{name}}", name).replacen(
-        KIPC_RELEASE_DECLARATION, KIPC_RELEASE_DEFINITION, 1,
+        KIPC_RELEASE_DECLARATION,
+        KIPC_RELEASE_DEFINITION,
+        1,
     ))
 }
 
@@ -310,17 +312,31 @@ mod retained_transport_render_tests {
             for file in HELLO_TEMPLATE {
                 let rendered = file.contents.replace("{{name}}", name);
                 let old = if file.path == "src/kipc-transport.ts" {
-                    restamp_transport(&rendered.replacen(KIPC_RELEASE_DECLARATION, KIPC_RELEASE_DEFINITION, 1))
-                } else { rendered };
+                    restamp_transport(&rendered.replacen(
+                        KIPC_RELEASE_DECLARATION,
+                        KIPC_RELEASE_DEFINITION,
+                        1,
+                    ))
+                } else {
+                    rendered
+                };
                 assert_eq!(file.render(name), old);
             }
         }
     }
     #[test]
     fn retained_dynamic_source_uses_exact_old_substitution_and_stamp() {
-        for source in ["", "// @keld/kipc-transport sha256:old\n{{name}}", KIPC_RELEASE_DECLARATION] {
+        for source in [
+            "",
+            "// @keld/kipc-transport sha256:old\n{{name}}",
+            KIPC_RELEASE_DECLARATION,
+        ] {
             let owned = source.to_owned();
-            let old = restamp_transport(&owned.replace("{{name}}", "hello").replacen(KIPC_RELEASE_DECLARATION, KIPC_RELEASE_DEFINITION, 1));
+            let old = restamp_transport(&owned.replace("{{name}}", "hello").replacen(
+                KIPC_RELEASE_DECLARATION,
+                KIPC_RELEASE_DEFINITION,
+                1,
+            ));
             assert_eq!(render_transport(&owned, "hello"), old);
         }
     }

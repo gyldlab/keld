@@ -216,32 +216,57 @@ fn validate_source_layout(members: &[SourceMember]) -> Result<(), BuildError> {
 /// One transaction-wide budget, never reset by another blob/tool/cache entry.
 /// Synchronous OS reads/flushes may block; checks bound work BETWEEN calls, not
 /// cancellation of a blocked kernel I/O. Existing process retirement grace remains.
-struct PreparationBudget { deadline: Instant }
+struct PreparationBudget {
+    deadline: Instant,
+}
 impl PreparationBudget {
-    fn new(now:Instant,limit:Duration)->Self { Self {deadline:now+limit} }
-    fn remaining_at(&self,now:Instant,cap:Duration)->Result<Duration,BuildError> {
-        self.deadline.checked_duration_since(now).filter(|remaining|!remaining.is_zero())
-            .map(|remaining|remaining.min(cap))
-            .ok_or_else(||failure("local source deadline","aggregate preparation deadline expired"))
+    fn new(now: Instant, limit: Duration) -> Self {
+        Self {
+            deadline: now + limit,
+        }
     }
-    fn remaining(&self,cap:Duration)->Result<Duration,BuildError> {self.remaining_at(Instant::now(),cap)}
-    fn check(&self)->Result<(),BuildError> {self.remaining(Duration::MAX).map(|_|())}
+    fn remaining_at(&self, now: Instant, cap: Duration) -> Result<Duration, BuildError> {
+        self.deadline
+            .checked_duration_since(now)
+            .filter(|remaining| !remaining.is_zero())
+            .map(|remaining| remaining.min(cap))
+            .ok_or_else(|| {
+                failure(
+                    "local source deadline",
+                    "aggregate preparation deadline expired",
+                )
+            })
+    }
+    fn remaining(&self, cap: Duration) -> Result<Duration, BuildError> {
+        self.remaining_at(Instant::now(), cap)
+    }
+    fn check(&self) -> Result<(), BuildError> {
+        self.remaining(Duration::MAX).map(|_| ())
+    }
 }
 
-/// git(1) GIT_ALTERNATE_OBJECT_DIRECTORIES: a path-list entry beginning with
-/// double quote is C-style quoted, so Windows ';' remains inside ONE entry.
+/// git(1) `GIT_ALTERNATE_OBJECT_DIRECTORIES`: a path-list entry beginning with
+/// double quote is C-style quoted, so `Windows` ';' remains inside ONE entry.
 /// Non-Unicode/control paths refuse rather than lossy encoding or list splitting.
-fn git_alternate_value(path:&Path)->Result<OsString,BuildError> {
-    let path=path.to_str().ok_or_else(||failure("Git alternate path","non-Unicode path unsupported"))?;
+fn git_alternate_value(path: &Path) -> Result<OsString, BuildError> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| failure("Git alternate path", "non-Unicode path unsupported"))?;
     if path.is_empty() || path.chars().any(char::is_control) {
-        return Err(failure("Git alternate path","empty/control path unsupported"));
+        return Err(failure(
+            "Git alternate path",
+            "empty/control path unsupported",
+        ));
     }
-    let mut quoted=String::from("\"");
+    let mut quoted = String::from("\"");
     for ch in path.chars() {
-        if matches!(ch,'\\'|'"') {quoted.push('\\');}
+        if matches!(ch, '\\' | '"') {
+            quoted.push('\\');
+        }
         quoted.push(ch);
     }
-    quoted.push('"');Ok(quoted.into())
+    quoted.push('"');
+    Ok(quoted.into())
 }
 
 pub(super) struct PinnedFile {
@@ -251,10 +276,16 @@ pub(super) struct PinnedFile {
 }
 
 pub(super) fn pin_file(path: &Path, limit: u64) -> Result<PinnedFile, BuildError> {
-    pin_file_with_budget(path,limit,None)
+    pin_file_with_budget(path, limit, None)
 }
-fn pin_file_with_budget(path:&Path,limit:u64,budget:Option<&PreparationBudget>)->Result<PinnedFile,BuildError> {
-    if let Some(budget)=budget {budget.check()?;}
+fn pin_file_with_budget(
+    path: &Path,
+    limit: u64,
+    budget: Option<&PreparationBudget>,
+) -> Result<PinnedFile, BuildError> {
+    if let Some(budget) = budget {
+        budget.check()?;
+    }
     let mut file = OpenOptions::new()
         .read(true)
         .share_mode(FILE_SHARE_READ)
@@ -277,11 +308,15 @@ fn pin_file_with_budget(path:&Path,limit:u64,budget:Option<&PreparationBudget>)-
     let mut buffer = vec![0_u8; 64 * 1024];
     let mut count = 0_u64;
     loop {
-        if let Some(budget)=budget {budget.check()?;}
+        if let Some(budget) = budget {
+            budget.check()?;
+        }
         let read = file
             .read(&mut buffer)
             .map_err(|error| failure("local source capture", error))?;
-        if let Some(budget)=budget {budget.check()?;}
+        if let Some(budget) = budget {
+            budget.check()?;
+        }
         if read == 0 {
             break;
         }
@@ -303,6 +338,26 @@ fn pin_file_with_budget(path:&Path,limit:u64,budget:Option<&PreparationBudget>)-
         file,
         sha256: digest.finalize().into(),
     })
+}
+
+// Retain one independently owned exact Job handle during the native test.
+// KILL_ON_JOB_CLOSE must not mask a removed explicit terminate-and-wait.
+#[cfg(test)]
+thread_local! {
+    static OWNED_JOB_TEST_TAP:
+        std::cell::RefCell<Option<std::sync::mpsc::Sender<std::os::windows::io::OwnedHandle>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_owned_job_test_tap(sender: std::sync::mpsc::Sender<std::os::windows::io::OwnedHandle>) {
+    OWNED_JOB_TEST_TAP.with(|tap| {
+        assert!(
+            tap.borrow().is_none(),
+            "one observer per owned fixture thread"
+        );
+        *tap.borrow_mut() = Some(sender);
+    });
 }
 
 fn run_owned(
@@ -364,6 +419,18 @@ fn run_owned(
             return Err(failure("local source Job assignment", error));
         }
     };
+    #[cfg(test)]
+    OWNED_JOB_TEST_TAP.with(|tap| -> Result<(), BuildError> {
+        if let Some(sender) = tap.borrow().as_ref() {
+            let witness = job
+                .duplicate_cleanup_observer_handle()
+                .map_err(|error| failure("source test Job witness", error))?;
+            sender
+                .send(witness)
+                .map_err(|_| failure("source test Job witness", "observer disconnected"))?;
+        }
+        Ok(())
+    })?;
     if let Err(error) = process.resume(&membership) {
         job.terminate_and_wait(process.child(), Duration::from_secs(10))
             .map_err(|cleanup| {
@@ -459,11 +526,30 @@ pub(super) fn run_captured(
     )
 }
 
-fn run_captured_budget(tool:&PinnedFile,args:&[OsString],environment:&[(OsString,OsString)],cwd:&Path,input:&File,limit:usize,budget:&PreparationBudget)->Result<Vec<u8>,BuildError> {
-    let result=run_captured_with_options(tool,args,environment,cwd,input,CaptureOptions {
-        stdout_limit:limit,stderr_limit:64*1024,timeout:budget.remaining(Duration::from_secs(120))?,stderr_file:None,
-    })?;
-    budget.check()?;Ok(result)
+fn run_captured_budget(
+    tool: &PinnedFile,
+    args: &[OsString],
+    environment: &[(OsString, OsString)],
+    cwd: &Path,
+    input: &File,
+    limit: usize,
+    budget: &PreparationBudget,
+) -> Result<Vec<u8>, BuildError> {
+    let result = run_captured_with_options(
+        tool,
+        args,
+        environment,
+        cwd,
+        input,
+        CaptureOptions {
+            stdout_limit: limit,
+            stderr_limit: 64 * 1024,
+            timeout: budget.remaining(Duration::from_secs(120))?,
+            stderr_file: None,
+        },
+    )?;
+    budget.check()?;
+    Ok(result)
 }
 
 fn run_captured_with_options(
@@ -634,9 +720,20 @@ impl LocalSourceBuildObservation {
 impl ObservedCompilerSources<'_> {
     /// Same pinned compiler-source closure, not an ambient canonical path.
     pub(super) fn canonical_transport(&self) -> Result<&PinnedFile, BuildError> {
-        let path = self.owner.source_root.join("packages/@keld/kipc/src/transport.ts");
-        self.owner.source_pins.iter().find(|pin| pin.path == path)
-            .ok_or_else(|| failure("observed canonical transport", "required retained source absent"))
+        let path = self
+            .owner
+            .source_root
+            .join("packages/@keld/kipc/src/transport.ts");
+        self.owner
+            .source_pins
+            .iter()
+            .find(|pin| pin.path == path)
+            .ok_or_else(|| {
+                failure(
+                    "observed canonical transport",
+                    "required retained source absent",
+                )
+            })
     }
 
     pub(super) fn kipc_root(&self) -> PathBuf {
@@ -686,6 +783,87 @@ fn validate_developer_cache(root: &Path) -> Result<(), BuildError> {
     Ok(())
 }
 
+/// Cargo walks from its manifest directory towards the volume root and can
+/// load .cargo/config(.toml) outside the materialized, measured source tree.
+/// Refuse any existing ancestor configuration before invoking Cargo, without
+/// opening its potentially sensitive contents. This removes one ambient input;
+/// compiler/linker/build-script inputs still prevent hermetic release claims.
+fn validate_cargo_ancestor_configuration(source: &Path) -> Result<(), BuildError> {
+    let parent = source
+        .parent()
+        .ok_or_else(|| failure("ambient Cargo configuration", "source parent missing"))?;
+    for ancestor in parent.ancestors() {
+        for name in ["config", "config.toml"] {
+            let path = ancestor.join(".cargo").join(name);
+            match fs::symlink_metadata(&path) {
+                Ok(_) => {
+                    return Err(failure(
+                        "ambient Cargo configuration",
+                        "unmeasured ancestor .cargo/config detected; isolated compiler refused",
+                    ));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(failure("ambient Cargo configuration", error)),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Reject recursive Git object stores that Git would otherwise follow through
+/// objects/info/alternates. This metadata-only check does not read the file's
+/// potentially sensitive path contents. It narrows one developer input, but
+/// concurrent object-store mutation is still not hermetically excluded.
+fn reject_recursive_object_alternates(objects: &Path) -> Result<(), BuildError> {
+    let info = objects.join("info");
+    match fs::symlink_metadata(&info) {
+        Ok(metadata) if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 => {
+            return Err(failure(
+                "Git recursive alternates",
+                "reparse info directory refused",
+            ));
+        }
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(failure(
+                "Git recursive alternates",
+                "non-directory info refused",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(failure("Git recursive alternates", error)),
+    }
+    match fs::symlink_metadata(info.join("alternates")) {
+        Ok(_) => Err(failure(
+            "Git recursive alternates",
+            "unmeasured objects/info/alternates refused",
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(failure("Git recursive alternates", error)),
+    }
+}
+
+/// Select and retain one explicit x64-hosted native MSVC linker. Cargo's
+/// Windows target otherwise resolves `link.exe` through mutable PATH, where
+/// Git for Windows also installs an unrelated executable with that name.
+/// This is developer-toolchain custody, not a Microsoft publisher assertion or
+/// a hermetic linker/SDK qualification.
+fn pin_native_msvc_linker(root: &Path) -> Result<(PinnedFile, Vec<File>), BuildError> {
+    if !root.is_absolute() {
+        return Err(failure(
+            "native MSVC linker",
+            "absolute selected VCToolsInstallDir required",
+        ));
+    }
+    let image = root.join("bin/Hostx64/x64/link.exe");
+    let parent = image
+        .parent()
+        .ok_or_else(|| failure("native MSVC linker", "linker parent missing"))?;
+    let directories = pin_directories(parent)?;
+    let linker = pin_file(&image, MAX_IMAGE)?;
+    Ok((linker, directories))
+}
+
 pub(super) struct Request {
     pub(super) source: PathBuf,
     pub(super) commit: String,
@@ -725,9 +903,9 @@ fn collect_pins(
     files: &mut Vec<PinnedFile>,
     directories: &mut Vec<File>,
     total: &mut u64,
-    budget:&PreparationBudget,
+    budget: &PreparationBudget,
 ) -> Result<(), BuildError> {
-    collect_pins_at(root, files, directories, total, 0,budget)
+    collect_pins_at(root, files, directories, total, 0, budget)
 }
 
 fn collect_pins_at(
@@ -736,7 +914,7 @@ fn collect_pins_at(
     directories: &mut Vec<File>,
     total: &mut u64,
     depth: usize,
-    budget:&PreparationBudget,
+    budget: &PreparationBudget,
 ) -> Result<(), BuildError> {
     budget.check()?;
     if depth > 64 || directories.len() >= 50_000 {
@@ -769,7 +947,7 @@ fn collect_pins_at(
             return Err(failure("local source snapshot", "reparse object refused"));
         }
         if metadata.is_dir() {
-            collect_pins_at(&entry.path(), files, directories, total, depth + 1,budget)?;
+            collect_pins_at(&entry.path(), files, directories, total, depth + 1, budget)?;
         } else {
             if files.len() >= 100_000 {
                 return Err(failure(
@@ -777,7 +955,7 @@ fn collect_pins_at(
                     "snapshot file count exceeds bound",
                 ));
             }
-            let pinned = pin_file_with_budget(&entry.path(), MAX_SOURCE_FILE,Some(budget))?;
+            let pinned = pin_file_with_budget(&entry.path(), MAX_SOURCE_FILE, Some(budget))?;
             *total = total
                 .checked_add(metadata.len())
                 .ok_or_else(|| failure("local source snapshot", "size overflow"))?;
@@ -796,9 +974,9 @@ fn copy_cache(
     destination: &Path,
     total: &mut u64,
     objects: &mut usize,
-    budget:&PreparationBudget,
+    budget: &PreparationBudget,
 ) -> Result<(), BuildError> {
-    copy_cache_at(source, destination, total, objects, 0,budget)
+    copy_cache_at(source, destination, total, objects, 0, budget)
 }
 
 fn copy_cache_at(
@@ -807,7 +985,7 @@ fn copy_cache_at(
     total: &mut u64,
     objects: &mut usize,
     depth: usize,
-    budget:&PreparationBudget,
+    budget: &PreparationBudget,
 ) -> Result<(), BuildError> {
     budget.check()?;
     if depth > 64 {
@@ -838,7 +1016,7 @@ fn copy_cache_at(
         }
         let target = destination.join(entry.file_name());
         if metadata.is_dir() {
-            copy_cache_at(&entry.path(), &target, total, objects, depth + 1,budget)?;
+            copy_cache_at(&entry.path(), &target, total, objects, depth + 1, budget)?;
         } else {
             *objects = objects
                 .checked_add(1)
@@ -849,7 +1027,7 @@ fn copy_cache_at(
                     "cache exceeds object limit",
                 ));
             }
-            let mut input = pin_file_with_budget(&entry.path(), MAX_SOURCE_FILE,Some(budget))?;
+            let mut input = pin_file_with_budget(&entry.path(), MAX_SOURCE_FILE, Some(budget))?;
             let input_len = input
                 .file
                 .metadata()
@@ -869,15 +1047,30 @@ fn copy_cache_at(
                 .create_new(true)
                 .open(&target)
                 .map_err(|error| failure("offline cache snapshot", error))?;
-            let mut count=0_u64;let mut buffer=vec![0_u8;64*1024];
+            let mut count = 0_u64;
+            let mut buffer = vec![0_u8; 64 * 1024];
             loop {
                 budget.check()?;
-                let read=input.file.read(&mut buffer).map_err(|error|failure("offline cache snapshot",error))?;
+                let read = input
+                    .file
+                    .read(&mut buffer)
+                    .map_err(|error| failure("offline cache snapshot", error))?;
                 budget.check()?;
-                if read==0 {break;}
-                count=count.checked_add(read as u64).ok_or_else(||failure("offline cache snapshot","copy size overflow"))?;
-                if count>input_len {return Err(failure("offline cache snapshot","copy grew beyond admitted length"));}
-                output.write_all(&buffer[..read]).map_err(|error|failure("offline cache snapshot",error))?;
+                if read == 0 {
+                    break;
+                }
+                count = count
+                    .checked_add(read as u64)
+                    .ok_or_else(|| failure("offline cache snapshot", "copy size overflow"))?;
+                if count > input_len {
+                    return Err(failure(
+                        "offline cache snapshot",
+                        "copy grew beyond admitted length",
+                    ));
+                }
+                output
+                    .write_all(&buffer[..read])
+                    .map_err(|error| failure("offline cache snapshot", error))?;
             }
             if count != input_len {
                 return Err(failure("offline cache snapshot", "copy length changed"));
@@ -893,8 +1086,11 @@ fn copy_cache_at(
 }
 
 #[allow(clippy::too_many_lines)] // one source/build transaction retains every input and output pin through completion
-pub(super) fn prepare(request: Request, initial_install: bool) -> Result<LocalSourceBuildObservation, BuildError> {
-    let budget=PreparationBudget::new(Instant::now(),Duration::from_mins(30));
+pub(super) fn prepare(
+    request: Request,
+    initial_install: bool,
+) -> Result<LocalSourceBuildObservation, BuildError> {
+    let budget = PreparationBudget::new(Instant::now(), Duration::from_mins(30));
     if !commit_id(&request.commit) {
         return Err(failure(
             "local source commit",
@@ -909,6 +1105,9 @@ pub(super) fn prepare(request: Request, initial_install: bool) -> Result<LocalSo
     // It never parses or follows a caller-controlled gitdir indirection file.
     directory_pins.extend(pin_directories(&request.source.join(".git"))?);
     directory_pins.extend(pin_directories(&request.source.join(".git/objects"))?);
+    // Git can recursively follow an unmeasured external object store through
+    // objects/info/alternates even with one explicit alternate in the child.
+    reject_recursive_object_alternates(&request.source.join(".git/objects"))?;
     let parent = request
         .session
         .parent()
@@ -923,9 +1122,15 @@ pub(super) fn prepare(request: Request, initial_install: bool) -> Result<LocalSo
             .ok_or_else(|| failure("local source tool", "tool parent missing"))?;
         directory_pins.extend(pin_directories(parent)?);
     }
-    let git = pin_file_with_budget(&request.git, MAX_IMAGE,Some(&budget))?;
-    let cargo = pin_file_with_budget(&request.cargo, MAX_IMAGE,Some(&budget))?;
-    let rustc = pin_file_with_budget(&request.rustc, MAX_IMAGE,Some(&budget))?;
+    let git = pin_file_with_budget(&request.git, MAX_IMAGE, Some(&budget))?;
+    let cargo = pin_file_with_budget(&request.cargo, MAX_IMAGE, Some(&budget))?;
+    let rustc = pin_file_with_budget(&request.rustc, MAX_IMAGE, Some(&budget))?;
+    // The selected native Cargo linker must be explicit, not an ambient PATH
+    // lookup that can choose Git for Windows' unrelated link.exe.
+    let selected_vc_tools = std::env::var_os("VCToolsInstallDir")
+        .ok_or_else(|| failure("native MSVC linker", "VCToolsInstallDir not selected"))?;
+    let (msvc_linker, linker_directories) = pin_native_msvc_linker(Path::new(&selected_vc_tools))?;
+    directory_pins.extend(linker_directories);
     create_private(&request.session)?;
     let gitdir = request.session.join("git");
     let source = request.session.join("source");
@@ -1000,7 +1205,15 @@ pub(super) fn prepare(request: Request, initial_install: bool) -> Result<LocalSo
     let null_input = File::open("NUL").map_err(|error| failure("source null input", error))?;
     let mut hash = os_args(&["hash-object", "-t", "tree", "-w"]);
     hash.push(empty.into_os_string());
-    let empty_id = run_captured_budget(&git, &hash, &environment, &request.session, &null_input, 42, &budget)?;
+    let empty_id = run_captured_budget(
+        &git,
+        &hash,
+        &environment,
+        &request.session,
+        &null_input,
+        42,
+        &budget,
+    )?;
     if empty_id != format!("{EMPTY_TREE}\n").as_bytes()
         && empty_id != format!("{EMPTY_TREE}\r\n").as_bytes()
     {
@@ -1035,18 +1248,20 @@ pub(super) fn prepare(request: Request, initial_install: bool) -> Result<LocalSo
         &request.session,
         &null_input,
         usize::try_from(MAX_TREE_LIST)
-            .map_err(|error| failure("local source inventory bound", error))?, &budget)?;
+            .map_err(|error| failure("local source inventory bound", error))?,
+        &budget,
+    )?;
     let members = parse_members(&listing)?;
     validate_source_layout(&members)?;
     let query = request.session.join("blob-size-input");
     {
         let mut file = File::create_new(&query).map_err(|error| failure("blob query", error))?;
         for member in &members {
-        budget.check()?;
+            budget.check()?;
             writeln!(file, "{}", member.object_id).map_err(|error| failure("blob query", error))?;
         }
     }
-    let query = pin_file_with_budget(&query, MAX_TREE_LIST,Some(&budget))?;
+    let query = pin_file_with_budget(&query, MAX_TREE_LIST, Some(&budget))?;
     let sizes = run_captured_budget(
         &git,
         &os_args(&[
@@ -1056,7 +1271,9 @@ pub(super) fn prepare(request: Request, initial_install: bool) -> Result<LocalSo
         &environment,
         &request.session,
         &query.file,
-        members.len().saturating_mul(80), &budget)?;
+        members.len().saturating_mul(80),
+        &budget,
+    )?;
     let sizes = parse_blob_sizes(&sizes, &members)?;
     // All individual/aggregate blob sizes are refused before ANY source file
     // materialization. Raw cat-file output avoids checkout filters/attributes.
@@ -1071,7 +1288,9 @@ pub(super) fn prepare(request: Request, initial_install: bool) -> Result<LocalSo
             &environment,
             &request.session,
             &null_input,
-            usize::try_from(size).map_err(|error| failure("source blob size", error))?, &budget)?;
+            usize::try_from(size).map_err(|error| failure("source blob size", error))?,
+            &budget,
+        )?;
         if bytes.len() as u64 != size {
             return Err(failure(
                 "source raw blob",
@@ -1087,7 +1306,7 @@ pub(super) fn prepare(request: Request, initial_install: bool) -> Result<LocalSo
             .map_err(|error| failure("source directories", error))?;
         let mut directory = source.clone();
         for component in relative_parent.components() {
-        budget.check()?;
+            budget.check()?;
             directory.push(component);
             if created_directories.insert(directory.clone()) {
                 // Never accept an unexplained preexisting child, follow a
@@ -1105,7 +1324,7 @@ pub(super) fn prepare(request: Request, initial_install: bool) -> Result<LocalSo
         file.sync_all()
             .map_err(|error| failure("source blob", error))?;
         drop(file);
-        let pinned = pin_file_with_budget(&path, size,Some(&budget))?;
+        let pinned = pin_file_with_budget(&path, size, Some(&budget))?;
         let expected: [u8; 32] = Sha256::digest(&bytes).into();
         if pinned.sha256 != expected {
             return Err(failure(
@@ -1125,7 +1344,13 @@ pub(super) fn prepare(request: Request, initial_install: bool) -> Result<LocalSo
     budget.check()?;
     let mut source_pins = Vec::new();
     let mut total = 0;
-    collect_pins(&source, &mut source_pins, &mut directory_pins, &mut total,&budget)?;
+    collect_pins(
+        &source,
+        &mut source_pins,
+        &mut directory_pins,
+        &mut total,
+        &budget,
+    )?;
     if source_pins.len() != members.len() {
         return Err(failure(
             "local source snapshot",
@@ -1163,7 +1388,7 @@ pub(super) fn prepare(request: Request, initial_install: bool) -> Result<LocalSo
         let mut copied_cache_bytes = 0;
         let mut copied_cache_objects = 0;
         for part in ["index", "cache", "src"] {
-        budget.check()?;
+            budget.check()?;
             let destination = registry.join(part);
             create_private(&destination)?;
             let input = request.cargo_home.join("registry").join(part);
@@ -1189,11 +1414,17 @@ pub(super) fn prepare(request: Request, initial_install: bool) -> Result<LocalSo
             }
         }
         let mut cache_pins = Vec::new();
-        collect_pins(&registry, &mut cache_pins, &mut directory_pins, &mut total,&budget)?;
+        collect_pins(
+            &registry,
+            &mut cache_pins,
+            &mut directory_pins,
+            &mut total,
+            &budget,
+        )?;
         let mut cache_digest = Sha256::new();
         cache_digest.update(b"keld.local-source-cache/v1\0");
         for file in &cache_pins {
-        budget.check()?;
+            budget.check()?;
             let relative = file
                 .path
                 .strip_prefix(&registry)
@@ -1222,6 +1453,10 @@ pub(super) fn prepare(request: Request, initial_install: bool) -> Result<LocalSo
         ("CARGO_INCREMENTAL".into(), "0".into()),
         ("CARGO_NET_OFFLINE".into(), "true".into()),
         ("RUSTC".into(), rustc.path.as_os_str().to_owned()),
+        (
+            "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER".into(),
+            msvc_linker.path.as_os_str().to_owned(),
+        ),
     ]);
     let mut args = os_args(&[
         "build",
@@ -1239,11 +1474,14 @@ pub(super) fn prepare(request: Request, initial_install: bool) -> Result<LocalSo
     args.push(source.join("Cargo.toml").into_os_string());
     args.push("--target-dir".into());
     args.push(target.as_os_str().to_owned());
-    append_initial_install_feature(&mut args,initial_install);
+    append_initial_install_feature(&mut args, initial_install);
     let mut recipe_digest = Sha256::new();
     recipe_digest.update(
-        b"keld.local-source-recipe/v5\0aggregate-prepare-30min-cooperative-io\0quoted-git-alternate\0cargo-capture-1MiB-per-stream-30min-private-stderr\0precreated-fixed-msvc-target-root\0",
+        b"keld.local-source-recipe/v6\0aggregate-prepare-30min-cooperative-io\0quoted-git-alternate\0cargo-capture-1MiB-per-stream-30min-private-stderr\0precreated-fixed-msvc-target-root\0pinned-explicit-msvc-linker\0",
     );
+    // The selected developer linker bytes change the observed recipe identity.
+    // A digest is not a publisher signature or complete toolchain provenance.
+    recipe_digest.update(msvc_linker.sha256);
     recipe_digest.update(match request.cache_mode {
         CacheMode::Snapshot => b"immutable-registry-snapshot".as_slice(),
         CacheMode::MutableDeveloper => b"mutable-developer-cache-unmeasured".as_slice(),
@@ -1256,10 +1494,13 @@ pub(super) fn prepare(request: Request, initial_install: bool) -> Result<LocalSo
         let wide: Vec<_> = word.encode_wide().collect();
         recipe_digest.update((wide.len() as u64).to_le_bytes());
         for unit in wide {
-        budget.check()?;
+            budget.check()?;
             recipe_digest.update(unit.to_le_bytes());
         }
     }
+    // Cargo would otherwise search unmeasured .cargo/config(.toml) in every
+    // ancestor of the private source checkout. Refuse before starting Cargo.
+    validate_cargo_ancestor_configuration(&source)?;
     // Retained source/tool pins remain alive. Never print arbitrary compiler diagnostics.
     // create_new refuses replacement; the enclosing session has retained private ancestry.
     let mut diagnostic = OpenOptions::new()
@@ -1283,8 +1524,12 @@ pub(super) fn prepare(request: Request, initial_install: bool) -> Result<LocalSo
     )?;
     let release = target.join("x86_64-pc-windows-msvc/release");
     directory_pins.extend(pin_directories(&release)?);
-    let host = pin_file_with_budget(&release.join("keld-host.exe"), MAX_IMAGE,Some(&budget))?;
-    let helper = pin_file_with_budget(&release.join("keld-updater-helper.exe"), MAX_IMAGE,Some(&budget))?;
+    let host = pin_file_with_budget(&release.join("keld-host.exe"), MAX_IMAGE, Some(&budget))?;
+    let helper = pin_file_with_budget(
+        &release.join("keld-updater-helper.exe"),
+        MAX_IMAGE,
+        Some(&budget),
+    )?;
     budget.check()?;
     Ok(LocalSourceBuildObservation {
         source_root: source,
@@ -1311,13 +1556,20 @@ pub(super) fn observed_hex(bytes: &[u8]) -> String {
     output
 }
 
-pub(super) fn prepare_from_args(args: &[String]) -> Result<LocalSourceBuildObservation, BuildError> {
-    prepare_from_args_with_role(args,false)
+pub(super) fn prepare_from_args(
+    args: &[String],
+) -> Result<LocalSourceBuildObservation, BuildError> {
+    prepare_from_args_with_role(args, false)
 }
-fn append_initial_install_feature(args:&mut Vec<OsString>,initial_install:bool) {
-    if initial_install {args.extend([OsString::from("--features"),OsString::from("keld-host/windows-initial-install,keld-host/windows-qualified-launch")]);}
+fn append_initial_install_feature(args: &mut Vec<OsString>, initial_install: bool) {
+    if initial_install {
+        args.extend([
+            OsString::from("--features"),
+            OsString::from("keld-host/windows-initial-install,keld-host/windows-qualified-launch"),
+        ]);
+    }
 }
-pub(super) fn request_from_args(args:&[String])->Result<Request,BuildError> {
+pub(super) fn request_from_args(args: &[String]) -> Result<Request, BuildError> {
     let (args, cache_mode) = cache_arguments(args)?;
     let [source, commit, session, git, cargo, rustc, cargo_home] = args else {
         return Err(BuildError::invocation(
@@ -1336,8 +1588,11 @@ pub(super) fn request_from_args(args:&[String])->Result<Request,BuildError> {
     })
 }
 
-fn prepare_from_args_with_role(args:&[String],initial_install:bool)->Result<LocalSourceBuildObservation,BuildError> {
-    prepare(request_from_args(args)?,initial_install)
+fn prepare_from_args_with_role(
+    args: &[String],
+    initial_install: bool,
+) -> Result<LocalSourceBuildObservation, BuildError> {
+    prepare(request_from_args(args)?, initial_install)
 }
 
 pub(super) fn run(args: &[String]) -> Result<(), BuildError> {
@@ -1515,6 +1770,83 @@ mod tests {
     }
 
     #[test]
+    fn git_recursive_object_alternates_are_refused_before_source_execution() {
+        let temporary = tempfile::tempdir().expect("owned synthetic Git object fixture");
+        let objects = temporary.path().join("objects");
+        let info = objects.join("info");
+        fs::create_dir_all(&info).expect("synthetic object info");
+        reject_recursive_object_alternates(&objects).expect("clean object store");
+        let external = info.join("alternates");
+        fs::write(&external, b"D:/external-unmeasured-objects\n")
+            .expect("write nonsecret synthetic alternate reference");
+        let error = reject_recursive_object_alternates(&objects)
+            .expect_err("unmeasured recursive Git object store must fail closed");
+        assert!(error.to_string().contains("Git recursive alternates"));
+        // A directory used in place of the alternate file is also an input.
+        fs::remove_file(&external).expect("remove only owned test fixture");
+        fs::create_dir(&external).expect("synthetic directory instead of alternate file");
+        assert!(reject_recursive_object_alternates(&objects).is_err());
+    }
+
+    #[test]
+    fn isolated_source_refuses_ambient_cargo_configuration_in_parent_directories() {
+        let temporary = tempfile::tempdir().expect("isolated source fixture");
+        let source = temporary.path().join("session").join("source");
+        fs::create_dir_all(&source).expect("source fixture");
+        validate_cargo_ancestor_configuration(&source).expect("clean ancestry");
+        let ambient = temporary.path().join(".cargo");
+        fs::create_dir(&ambient).expect("ambient Cargo directory");
+        for name in ["config", "config.toml"] {
+            let path = ambient.join(name);
+            fs::write(&path, b"[build]\nrustflags = ['--cfg=ambient_injection']\n")
+                .expect("write only owned nonsecret regression input");
+            assert!(
+                validate_cargo_ancestor_configuration(&source).is_err(),
+                "parent {name} must not influence the isolated build"
+            );
+            fs::remove_file(path).expect("remove owned regression input");
+        }
+        // Cargo config inside the materialized source is part of the measured source.
+        let tracked = source.join(".cargo");
+        fs::create_dir(&tracked).expect("tracked source config directory");
+        fs::write(tracked.join("config.toml"), b"[build]\n").expect("write tracked fixture");
+        validate_cargo_ancestor_configuration(&source).expect("source config is not ambient");
+    }
+
+    #[test]
+    fn selected_native_msvc_linker_is_explicitly_pinned_and_missing_image_refused() {
+        let temporary = tempfile::tempdir().expect("owned MSVC test fixture");
+        assert!(
+            pin_native_msvc_linker(Path::new("relative-vc-tools")).is_err(),
+            "relative linker root must not be accepted"
+        );
+        let root = temporary.path().join("native-vc-tools");
+        assert!(
+            pin_native_msvc_linker(&root).is_err(),
+            "missing native linker must refuse instead of falling back to PATH"
+        );
+        let image = root.join("bin/Hostx64/x64/link.exe");
+        fs::create_dir_all(image.parent().expect("linker parent")).expect("fixture directory");
+        fs::write(&image, b"nonsecret test-only native linker bytes").expect("fixture image");
+        let (linker, directories) =
+            pin_native_msvc_linker(&root).expect("capture explicit selected linker");
+        assert_eq!(linker.path, image);
+        let expected_digest: [u8; 32] =
+            Sha256::digest(b"nonsecret test-only native linker bytes").into();
+        assert_eq!(
+            linker.sha256, expected_digest,
+            "retained linker digest binds exactly the selected bytes"
+        );
+        assert!(!directories.is_empty(), "retain native linker parent chain");
+        assert!(
+            fs::write(&image, b"replaced while retained").is_err(),
+            "pinned image must not be overwritten during native compilation"
+        );
+        drop(linker);
+        drop(directories);
+    }
+
+    #[test]
     fn developer_cache_requires_explicit_opt_in_and_refuses_root_configuration() {
         let args = vec![String::new(); 7];
         assert_eq!(
@@ -1657,29 +1989,74 @@ mod tests {
 
 #[cfg(test)]
 mod initial_install_feature_tests {
-    #[test] fn only_explicit_role_adds_exact_feature_before_recipe_capture() {
-        let original=vec![std::ffi::OsString::from("build")];let mut args=original.clone();
-        super::append_initial_install_feature(&mut args,false);assert_eq!(args,original);
-        super::append_initial_install_feature(&mut args,true);
-        assert_eq!(args,vec!["build","--features","keld-host/windows-initial-install,keld-host/windows-qualified-launch"].into_iter().map(std::ffi::OsString::from).collect::<Vec<_>>());
+    #[test]
+    fn only_explicit_role_adds_exact_feature_before_recipe_capture() {
+        let original = vec![std::ffi::OsString::from("build")];
+        let mut args = original.clone();
+        super::append_initial_install_feature(&mut args, false);
+        assert_eq!(args, original);
+        super::append_initial_install_feature(&mut args, true);
+        assert_eq!(
+            args,
+            vec![
+                "build",
+                "--features",
+                "keld-host/windows-initial-install,keld-host/windows-qualified-launch"
+            ]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>()
+        );
     }
 }
 
 #[cfg(test)]
 mod preparation_budget_tests {
     use super::*;
-    #[test] fn aggregate_budget_does_not_reset_per_blob() {
-        let start=Instant::now();let budget=PreparationBudget::new(start,Duration::from_secs(10));
-        assert_eq!(budget.remaining_at(start,Duration::from_secs(120)).unwrap(),Duration::from_secs(10));
-        assert_eq!(budget.remaining_at(start+Duration::from_secs(9),Duration::from_secs(120)).unwrap(),Duration::from_secs(1));
-        assert!(budget.remaining_at(start+Duration::from_secs(10),Duration::from_secs(120)).is_err());
-        assert!(budget.remaining_at(start+Duration::from_secs(11),Duration::from_secs(120)).is_err());
-        assert_eq!(budget.remaining_at(start,Duration::from_secs(2)).unwrap(),Duration::from_secs(2));
+    #[test]
+    fn aggregate_budget_does_not_reset_per_blob() {
+        let start = Instant::now();
+        let budget = PreparationBudget::new(start, Duration::from_secs(10));
+        assert_eq!(
+            budget
+                .remaining_at(start, Duration::from_secs(120))
+                .unwrap(),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            budget
+                .remaining_at(start + Duration::from_secs(9), Duration::from_secs(120))
+                .unwrap(),
+            Duration::from_secs(1)
+        );
+        assert!(
+            budget
+                .remaining_at(start + Duration::from_secs(10), Duration::from_secs(120))
+                .is_err()
+        );
+        assert!(
+            budget
+                .remaining_at(start + Duration::from_secs(11), Duration::from_secs(120))
+                .is_err()
+        );
+        assert_eq!(
+            budget.remaining_at(start, Duration::from_secs(2)).unwrap(),
+            Duration::from_secs(2)
+        );
     }
-    #[test] fn git_alternate_is_one_c_quoted_entry() {
-        assert_eq!(git_alternate_value(Path::new("D:/semi;colon/λ/.git/objects")).unwrap(),OsString::from("\"D:/semi;colon/λ/.git/objects\""));
-        assert_eq!(git_alternate_value(Path::new(r#"D:\a"b\.git\objects"#)).unwrap(),OsString::from(r#""D:\\a\"b\\.git\\objects""#));
-        for value in ["", "D:/line\nbreak", "D:/tab\tpath", "D:/nul\0path"] { assert!(git_alternate_value(Path::new(value)).is_err()); }
+    #[test]
+    fn git_alternate_is_one_c_quoted_entry() {
+        assert_eq!(
+            git_alternate_value(Path::new("D:/semi;colon/λ/.git/objects")).unwrap(),
+            OsString::from("\"D:/semi;colon/λ/.git/objects\"")
+        );
+        assert_eq!(
+            git_alternate_value(Path::new(r#"D:\a"b\.git\objects"#)).unwrap(),
+            OsString::from(r#""D:\\a\"b\\.git\\objects""#)
+        );
+        for value in ["", "D:/line\nbreak", "D:/tab\tpath", "D:/nul\0path"] {
+            assert!(git_alternate_value(Path::new(value)).is_err());
+        }
     }
 }
 

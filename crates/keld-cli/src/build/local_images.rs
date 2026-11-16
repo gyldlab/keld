@@ -209,7 +209,11 @@ fn sign_and_admit_windows_image(
     let mut args: Vec<OsString> = ["verify", "/pa", "/v"].map(OsString::from).into();
     args.push(candidate.as_os_str().to_owned());
     local_source::run_captured(&signer.tool, &args, environment, session, &input, 64 * 1024)?;
-    Ok(PreparedLocalImage { verified, bytes, executable: candidate_pin })
+    Ok(PreparedLocalImage {
+        verified,
+        bytes,
+        executable: candidate_pin,
+    })
 }
 
 /// The optional cache mode changes dependency observation, never signing authority.
@@ -229,17 +233,17 @@ pub(super) fn image_source_args(args: &[String]) -> Result<Vec<String>, BuildErr
 /// Typed data-only inputs shared by diagnostic and ordinary product routes.
 /// Existing capture/signing owners retain all validation and operation authority.
 pub(super) struct ImageRequest {
-    pub(super) source:local_source::Request,
-    pub(super) app_root:PathBuf,
-    pub(super) channel:String,
-    pub(super) release_public_key:PathBuf,
-    pub(super) sign_tool:PathBuf,
-    pub(super) sign_tool_sha256:String,
-    pub(super) certificate_thumbprint:String,
-    pub(super) publisher_scope:String,
+    pub(super) source: local_source::Request,
+    pub(super) app_root: PathBuf,
+    pub(super) channel: String,
+    pub(super) release_public_key: PathBuf,
+    pub(super) sign_tool: PathBuf,
+    pub(super) sign_tool_sha256: String,
+    pub(super) certificate_thumbprint: String,
+    pub(super) publisher_scope: String,
 }
 pub(super) struct PreparedLocalPair {
-    pub(super) release_public_key: [u8;32],
+    pub(super) release_public_key: [u8; 32],
     pub(super) authoring: windows_inputs::CapturedAuthoring,
     pub(super) host: PreparedLocalImage,
     pub(super) helper: PreparedLocalImage,
@@ -251,20 +255,40 @@ pub(super) struct PreparedLocalPair {
 }
 
 #[allow(clippy::too_many_lines)] // one transaction retains source, signer and both verified-image witnesses
-pub(super) fn prepare(args: &[String]) -> Result<PreparedLocalPair, BuildError> {prepare_with_role(args,false)}
-#[allow(clippy::too_many_lines)] // same transaction; explicit build role never enables a qualification authority
-fn prepare_with_role(args:&[String],initial_install:bool)->Result<PreparedLocalPair,BuildError> {
-    prepare_request(request_from_args(args)?,initial_install)
+pub(super) fn prepare(args: &[String]) -> Result<PreparedLocalPair, BuildError> {
+    prepare_with_role(args, false)
 }
-pub(super) fn request_from_args(args:&[String])->Result<ImageRequest,BuildError> {
-    let source_args=image_source_args(args)?;
-    if args[14]!="local-test-untimestamped" {return Err(refuse("local timestamp mode","only explicit local-test-untimestamped is implemented; no production timestamp claim"));}
-    Ok(ImageRequest {source:local_source::request_from_args(&source_args)?,app_root:args[7].clone().into(),channel:args[8].clone(),
-        release_public_key:args[9].clone().into(),sign_tool:args[10].clone().into(),sign_tool_sha256:args[11].clone(),
-        certificate_thumbprint:args[12].clone(),publisher_scope:args[13].clone()})
+#[allow(clippy::too_many_lines)] // same transaction; explicit build role never enables a qualification authority
+fn prepare_with_role(
+    args: &[String],
+    initial_install: bool,
+) -> Result<PreparedLocalPair, BuildError> {
+    prepare_request(request_from_args(args)?, initial_install)
+}
+pub(super) fn request_from_args(args: &[String]) -> Result<ImageRequest, BuildError> {
+    let source_args = image_source_args(args)?;
+    if args[14] != "local-test-untimestamped" {
+        return Err(refuse(
+            "local timestamp mode",
+            "only explicit local-test-untimestamped is implemented; no production timestamp claim",
+        ));
+    }
+    Ok(ImageRequest {
+        source: local_source::request_from_args(&source_args)?,
+        app_root: args[7].clone().into(),
+        channel: args[8].clone(),
+        release_public_key: args[9].clone().into(),
+        sign_tool: args[10].clone().into(),
+        sign_tool_sha256: args[11].clone(),
+        certificate_thumbprint: args[12].clone(),
+        publisher_scope: args[13].clone(),
+    })
 }
 #[allow(clippy::too_many_lines)] // Same existing source/sign/image-custody transaction, not a second pipeline.
-pub(super) fn prepare_request(request:ImageRequest,initial_install:bool)->Result<PreparedLocalPair,BuildError> {
+pub(super) fn prepare_request(
+    request: ImageRequest,
+    initial_install: bool,
+) -> Result<PreparedLocalPair, BuildError> {
     let app_root = request.app_root.as_path();
     let authoring = windows_inputs::CapturedInputs::open(app_root)?.capture(app_root)?;
     let app = &authoring.app;
@@ -280,11 +304,17 @@ pub(super) fn prepare_request(request:ImageRequest,initial_install:bool)->Result
             "exactly32 raw public-key bytes required",
         )
     })?;
-    let expected = ExpectedAppIdentityPayload::new(&app.id, &request.channel, "windows-x64", key_bytes)
-        .map_err(|error| refuse("local expected identity", error))?;
+    let expected =
+        ExpectedAppIdentityPayload::new(&app.id, &request.channel, "windows-x64", key_bytes)
+            .map_err(|error| refuse("local expected identity", error))?;
     keld_update::ExpectedAppIdentity::decode(&expected.encode())
         .map_err(|error| refuse("local update identity", error))?;
-    let signer = LocalSigner::capture(&request.sign_tool, &request.sign_tool_sha256, &request.certificate_thumbprint, &request.publisher_scope)?;
+    let signer = LocalSigner::capture(
+        &request.sign_tool,
+        &request.sign_tool_sha256,
+        &request.certificate_thumbprint,
+        &request.publisher_scope,
+    )?;
     let session = request.source.session.clone();
     let source = local_source::prepare(request.source, initial_install)?;
     let images = session.join("local-test-images");

@@ -109,7 +109,7 @@ fn print_usage() {
     eprintln!("commands:");
     eprintln!("  create <name>   Scaffold the hello-world template");
     eprintln!("  dev             Run the app (Bun main + IPC echo + window)");
-    eprintln!("  build --target macos-arm64  Produce a locally signed macOS app and DMG");
+    eprintln!("  build --help    Show native macOS packaging and Windows local-test build usage");
     eprintln!("  doctor [--json] Check local toolchain and project layout");
     eprintln!("  mcp serve       Speak MCP over stdio (doctor/docs/permissions)");
     eprintln!("  hello           Open the hello window (WKWebView on macOS, WebView2 on Windows)");

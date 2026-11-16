@@ -135,7 +135,7 @@ impl<'a> BoundCompilerEntry<'a> {
                 name,
                 path.to_str()
                     .ok_or_else(|| refuse("compiler path is not UTF8"))?
-                    .to_owned(),
+                    .replace('\\', "/"),
             );
         }
         let map = serde_json::to_string(&imports).map_err(refuse)?;
@@ -156,8 +156,19 @@ impl<'a> BoundCompilerEntry<'a> {
             ".bunfig.toml",
             b"# KELD empty global compiler configuration\n",
         )?;
-        let tsconfig =
-            write_generated_input(stage, "tsconfig.json", b"{\"compilerOptions\":{}}\n")?;
+        // Bun 1.4.4 resolves these TypeScript modules through tsconfig paths
+        // even when a pinned Bun.plugin preload has been supplied. Generate the
+        // three exact mappings from the SAME captured official import map:
+        // no ambient package lookup, caller-supplied alias or mutable config.
+        let aliases: BTreeMap<_, _> = imports
+            .iter()
+            .map(|(name, path)| (*name, [path.clone()]))
+            .collect();
+        let mut tsconfig_bytes =
+            serde_json::to_vec(&serde_json::json!({ "compilerOptions": { "paths": aliases } }))
+                .map_err(refuse)?;
+        tsconfig_bytes.push(b'\n');
+        let tsconfig = write_generated_input(stage, "tsconfig.json", &tsconfig_bytes)?;
         Ok(Self {
             source,
             tools,

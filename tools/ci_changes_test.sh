@@ -836,7 +836,8 @@ diagram_sha="$(git -C "$temp_dir" rev-parse HEAD)"
 diagram_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$docs_sha" GITHUB_SHA="$diagram_sha" "$router" github)"
 expect_mermaid_flag "diagram addition selects Mermaid" true "$diagram_result"
 
-python3 - "$temp_dir/diagram.md" <<'PY'
+# Use the selected platform Python: Windows python3.exe can be a Store alias.
+"$python_command" - "$temp_dir/diagram.md" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 path.write_text(path.read_text().replace("# Diagram", "# Prose-only edit"))
@@ -845,7 +846,7 @@ prose_diagram_sha="$(git -C "$temp_dir" add diagram.md && git -C "$temp_dir" com
 prose_diagram_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$diagram_sha" GITHUB_SHA="$prose_diagram_sha" "$router" github)"
 expect_mermaid_flag "prose-only edit in a diagram file skips Mermaid" false "$prose_diagram_result"
 
-python3 - "$temp_dir/diagram.md" <<'PY'
+"$python_command" - "$temp_dir/diagram.md" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 path.write_text(path.read_text().replace('A["external"]', 'A["changed external"]'))
@@ -859,7 +860,7 @@ renamed_diagram_sha="$(git -C "$temp_dir" commit -qm diagram-rename && git -C "$
 renamed_diagram_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$changed_diagram_sha" GITHUB_SHA="$renamed_diagram_sha" "$router" github)"
 expect_mermaid_flag "diagram file rename selects Mermaid" true "$renamed_diagram_result"
 
-python3 - "$temp_dir/renamed.md" <<'PY'
+"$python_command" - "$temp_dir/renamed.md" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 path.write_text(path.read_text().replace("```mermaid", "```mermaidx"))

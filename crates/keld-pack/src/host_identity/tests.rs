@@ -9,6 +9,7 @@ use super::*;
 mod fixture;
 mod malformed;
 mod platform;
+mod postsign;
 mod reader;
 mod writer;
 
@@ -28,6 +29,7 @@ fn refusal<T: std::fmt::Debug>(result: Result<T, PackError>) -> (&'static str, &
                 | PackError::HostImageNotPristine { detail }
                 | PackError::HostImageNoRoom { detail }
                 | PackError::IdentityContainerInvalid { detail }
+                | PackError::PostSignIntegrity { detail }
                 | PackError::ExpectedIdentityInvalid { detail }
                 | PackError::InvalidMetadata { detail } => detail,
                 _ => "",

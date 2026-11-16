@@ -917,7 +917,20 @@ route_mermaid_diff() {
     source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
     binary="$root/target/ci-router/mermaid-docs"
     mkdir -p "$(dirname "$binary")"
-    if ! rustc --edition=2024 -D warnings "$source_root/tools/mermaid_docs.rs" -o "$binary"; then
+    # Git for Windows puts its POSIX /usr/bin/link.exe ahead of MSVC link.exe.
+    # That tool is not a PE linker; select the known native VC linker when
+    # a Windows VS development environment is active. Do not relax -D warnings
+    # or classifier failure's existing full-Mermaid fallback.
+    local -a rustc_linker=()
+    if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
+        if [[ -n "${VCToolsInstallDir:-}" ]]; then
+            local native_link="${VCToolsInstallDir}bin\\Hostx64\\x64\\link.exe"
+            if command -v cygpath >/dev/null 2>&1 && [[ -f "$(cygpath -u "$native_link")" ]]; then
+                rustc_linker=(-C "linker=$native_link")
+            fi
+        fi
+    fi
+    if ! rustc --edition=2024 -D warnings "${rustc_linker[@]}" "$source_root/tools/mermaid_docs.rs" -o "$binary"; then
         echo "ci router: Mermaid diff classifier did not compile; selecting full Mermaid validation/rendering" >&2
         mermaid="$TRUE"
         return
