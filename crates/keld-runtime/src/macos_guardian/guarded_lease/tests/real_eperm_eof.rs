@@ -2,7 +2,8 @@
 //! EPERM, then closes its authentic KGC1 stream while the host retains custody.
 //! Both original Children are owned by this fixture until their exact waits.
 
-use std::io;
+use std::io::{self, Read as _};
+use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -117,21 +118,180 @@ fn exiting_leader() -> (OwnedChild, ChildStdin) {
     (leader, exit)
 }
 
+#[test]
+fn native_zombie_observer_rejects_expired_deadline() {
+    let mut member = running_member(0);
+    member
+        .0
+        .kill()
+        .expect("kill original observer control Child");
+    await_native_zombie(member.0.id(), Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE);
+    let expired = std::panic::catch_unwind(|| await_native_zombie(member.0.id(), Instant::now()));
+    assert!(
+        expired.is_err(),
+        "an expired observer deadline cannot accept a real zombie"
+    );
+}
+
 fn await_native_zombie(pid: u32, deadline: Instant) {
     loop {
-        let output = Command::new("/bin/ps")
-            .args(["-p", &pid.to_string(), "-o", "stat="])
-            .output()
-            .expect("real Darwin process-state observation");
-        if output.status.success() && output.stdout.starts_with(b"Z") {
-            return;
-        }
         assert!(
             Instant::now() < deadline,
-            "original retained Child did not reach Darwin zombie state"
+            "native zombie observation deadline expired"
         );
+        // A socket pair gives the owned stdout reader a safe nonblocking API.
+        // Child exit alone does not prove that every inherited writer closed.
+        let (mut reader, writer) = UnixStream::pair().expect("owned native observer stdout");
+        let mut observer = OwnedChild(
+            Command::new("/bin/ps")
+                .args(["-p", &pid.to_string(), "-o", "stat="])
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(OwnedFd::from(writer)))
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("own real Darwin process-state observer"),
+        );
+        let status = wait_native_observer(&mut observer.0, deadline);
+        let state = read_native_state(&mut reader, deadline, Instant::now);
+        assert!(
+            Instant::now() < deadline,
+            "native zombie observation deadline expired"
+        );
+        if status.success() && state == Some(b'Z') {
+            return;
+        }
         thread::yield_now();
     }
+}
+
+fn wait_native_observer(child: &mut Child, deadline: Instant) -> std::process::ExitStatus {
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "native observer exit deadline expired"
+        );
+        let status = child.try_wait().expect("inspect owned native observer");
+        assert!(
+            Instant::now() < deadline,
+            "native observer exit deadline expired"
+        );
+        if let Some(status) = status {
+            return status;
+        }
+        thread::yield_now();
+    }
+}
+
+fn read_native_state(
+    reader: &mut UnixStream,
+    deadline: Instant,
+    mut now: impl FnMut() -> Instant,
+) -> Option<u8> {
+    reader
+        .set_nonblocking(true)
+        .expect("nonblocking native observer stdout");
+    let mut byte = [0];
+    loop {
+        assert!(now() < deadline, "native observer read deadline expired");
+        let result = reader.read(&mut byte);
+        assert!(now() < deadline, "native observer read deadline expired");
+        match result {
+            Ok(0) => return None,
+            Ok(1) => return Some(byte[0]),
+            Ok(_) => unreachable!("one-byte native state read"),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) =>
+            {
+                thread::yield_now()
+            }
+            Err(error) => panic!("native observer read failed: {:?}", error.kind()),
+        }
+    }
+}
+
+#[test]
+fn native_observer_silent_stdout_reaches_original_deadline() {
+    let (mut reader, _writer) = UnixStream::pair().expect("live silent stdout peer");
+    let deadline = Instant::now() + std::time::Duration::from_millis(50);
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        read_native_state(&mut reader, deadline, Instant::now)
+    }))
+    .expect_err("silent live peer must expire");
+    assert!(Instant::now() >= deadline);
+    assert_eq!(
+        failure.downcast_ref::<&str>().copied(),
+        Some("native observer read deadline expired")
+    );
+}
+
+#[test]
+fn native_observer_queued_byte_needs_unexpired_deadline() {
+    use std::io::Write as _;
+    let (mut reader, mut writer) = UnixStream::pair().expect("native stdout pair");
+    writer.write_all(b"Z").expect("queued native byte");
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        read_native_state(&mut reader, Instant::now(), Instant::now)
+    }))
+    .expect_err("expired reader must reject prequeued success");
+    assert_eq!(
+        failure.downcast_ref::<&str>().copied(),
+        Some("native observer read deadline expired")
+    );
+    assert_eq!(
+        read_native_state(
+            &mut reader,
+            Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE,
+            Instant::now
+        ),
+        Some(b'Z')
+    );
+}
+
+#[test]
+fn native_observer_success_after_clock_cut_is_rejected() {
+    use std::io::Write as _;
+    let (mut reader, mut writer) = UnixStream::pair().expect("native stdout pair");
+    writer.write_all(b"Z").expect("queued native byte");
+    let before = Instant::now();
+    let deadline = before + GUARDIAN_SHUTDOWN_DEADLINE;
+    let mut calls = 0;
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        read_native_state(&mut reader, deadline, || {
+            calls += 1;
+            if calls == 1 { before } else { deadline }
+        })
+    }))
+    .expect_err("a successful native read cannot cross the original clock cut");
+    assert_eq!(calls, 2);
+    assert_eq!(
+        failure.downcast_ref::<&str>().copied(),
+        Some("native observer read deadline expired")
+    );
+}
+
+#[test]
+fn native_observer_live_child_cannot_extend_original_deadline() {
+    let mut child = running_member(0);
+    let deadline = Instant::now() + std::time::Duration::from_millis(50);
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait_native_observer(&mut child.0, deadline)
+    }))
+    .expect_err("live observer must expire without waiting for child exit");
+    assert!(Instant::now() >= deadline);
+    assert_eq!(
+        failure.downcast_ref::<&str>().copied(),
+        Some("native observer exit deadline expired")
+    );
+    assert!(
+        child
+            .0
+            .try_wait()
+            .expect("original Child still owned")
+            .is_none()
+    );
 }
 
 // The existing shipping host worker consumes the real fixed KGC1 record and
