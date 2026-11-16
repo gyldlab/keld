@@ -1,0 +1,11 @@
+{
+  "name": "keld-gh1404-minimal-app",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@keld/api": "0.0.1",
+    "@keld/kipc": "0.0.1",
+    "electron": "npm:@keld/electron@0.0.1"
+  }
+}
