@@ -549,6 +549,15 @@ fn observe_recovery_actions(
         prepared,
     );
     assert_recovery_replacement_files(prepared, retired_root.as_deref());
+    assert_recovery_document_reused(host_pid, evidence);
+    observer.send_recovery_command(RecoveryCommand::Quit(successor.bun));
+    eprintln!(
+        "KELD_KEL140_RECOVERY_CONSUMER host={host_pid} window={:?} first_bun={} second_bun={} input_actions=0 completed_witness=[1,2] interrupted_effect_acceptance=false blocked_syscall_acceptance=false full_kel143_acceptance=false",
+        evidence.window, first.bun, successor.bun,
+    );
+}
+
+fn assert_recovery_document_reused(host_pid: u32, evidence: &LaunchEvidence) {
     assert_eq!(
         await_same_native_windows(host_pid, TITLE, &evidence.window),
         evidence.window
@@ -561,11 +570,6 @@ fn observe_recovery_actions(
             .count(),
         1,
         "same document; no second initial-page observation"
-    );
-    observer.send_recovery_command(RecoveryCommand::Quit(successor.bun));
-    eprintln!(
-        "KELD_KEL140_RECOVERY_CONSUMER host={host_pid} window={:?} first_bun={} second_bun={} input_actions=0 completed_witness=[1,2] interrupted_effect_acceptance=false blocked_syscall_acceptance=false full_kel143_acceptance=false",
-        evidence.window, first.bun, successor.bun,
     );
 }
 
