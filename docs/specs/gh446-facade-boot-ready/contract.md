@@ -129,12 +129,12 @@ The names below are proposed.
 ### AC-9: Recovered generation, compatibility side
 - **Given:** The `electron-app-v1` cell `app.ready.recovered-generation` on macOS.
 - **When:** The corpus records the compatibility result.
-- **Then:** The cell is `unknown` and uncited under GH-532 rule 6. Electron has no matching supervised main-process recovery contract. Its mapped today-test asserts that a fresh role process observes one replayed `Ready`.
-- **Negative control:** Delete the registry adoption arm while an eligible survivor exists.
-  - **Single fault:** Remove adoption from the registry's successor `Create` path.
-  - **At-risk precondition:** The successor has a surviving eligible host window.
-  - **Expected RED:** The successor allocates a new native window instead of adopting the survivor.
-- **Scope:** This is an adoption invariant, not a cap on legitimate application-created windows.
+- **Then:** The cell remains `unknown` and uncited under GH-532 rule 6. Electron has no matching supervised main-process recovery contract. The existing `app.ready.api-first-late-listener` today-test in `app-surface.test.ts` covers only the no-replay behavior for a listener registered after the API observed Host Ready; it does not exercise supervised role recovery and is not evidence for changing this cell's status.
+- **Negative control:** Replay cached Ready to a listener registered after the API observed Host Ready.
+  - **Single fault:** Deliver a cached `ready` event to a listener registered after the API has observed Host Ready.
+  - **At-risk precondition:** The API observed Host Ready before the late listener was registered.
+  - **Expected RED:** The mapped today-test observes `lateListener=1` instead of `lateListener=0`.
+- **Scope:** This cell remains unknown for supervised recovery. Eligible-survivor adoption is a separate registry invariant tested by AC-19; it is not a cap on legitimate application-created windows.
 
 ### AC-10: Renderer boots and KEL-237 regressions
 - **Given:** The existing renderer-boot and recovered-generation regression suite.
@@ -237,7 +237,11 @@ The names below are proposed.
   - **Single fault:** Use the facade's local counter as the host identity.
   - **At-risk precondition:** The host ID is deliberately different from the local allocation counter.
   - **Expected RED:** The returned identity is wrong or a new native window is allocated.
-- **Additional controls:** Drop an unclaimed survivor, disable adoption, or enforce a global one-window cap. Each mutation must fail its own assertion.
+- **Additional control — eligible-survivor adoption:** Delete the registry's successor `Create` adoption arm.
+  - **Single fault:** Skip the adoptable-window match and fall through to a new native allocation.
+  - **At-risk precondition:** The successor has an eligible survivor after accepted Subscribe/replay and invokes `Create` through the constructor.
+  - **Expected RED:** The host returns `Created` instead of `Adopted`, the native-allocation count increases, and the returned identity is not the survivor's.
+- **Other controls:** Drop an unclaimed survivor, disable adoption, or enforce a global one-window cap. Each mutation must fail its own assertion.
 
 ### AC-20: Failure custody survives the new boot mode
 - **Given:** The ordinary host runner returns `Result<(), HostRunFailure>` and unresolved AppKit, presentation or profile owners remain on the main thread.

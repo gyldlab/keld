@@ -302,11 +302,22 @@ All existing authority, filesystem and authentication service prerequisites stay
 before the earlier Ready boundary. A newly true readiness boolean cannot bypass
 permission checks or generation retirement/quiescence.
 
-At this spec's landing, the set of window-call servers is the UI wake bridge (`Quit`,
-`Fatal`), and no window call exists on the wire. So rule 2 has nothing to refuse yet,
-and "census 0 at `READY`" holds structurally (AC-4). F02-T2 adds the registry to the
-pre-loop slot and implements rule 2 with its first window call (AC-16; GH-531 criterion
-14 "Before Ready", amended by #657).
+At current Pin `ec29b7ce`, the window-call path is already present in source.
+The primary reader dispatches the `window` channel to `window_router`; facade boots
+construct a `WindowSession` that owns a `WindowRegistry`; and `Subscribe` replays
+window facts before its accepted reply. The host checks subscription (`KELD-CORE-045`)
+before registry readiness (`KELD-CORE-040`) and before decoding a window request.
+The Host-backed `BrowserWindow` sends `WindowRequest::Create`, while the existing
+`LifecycleLink` publishes public Ready only after raw Host Ready and accepted
+Subscribe/replay. These are source-presence facts, not acceptance receipts.
+
+F02-T2 owns the GH-531 registry implementation and qualification of the rule-2 path;
+do not assign any remaining registry gap to GH-446 T-1, add a parallel registry, or
+describe the window CALL as absent. F02-T2 is tracked by #449; that issue remains the
+acceptance record for subscription/replay, constructor identity, eligible-survivor
+adoption and first-window/native behavior. AC-4's zero-window claim is proved only by
+its process-wide observation at the stated boundary, not inferred from an absent
+window-call path.
 
 **Rejected:**
 

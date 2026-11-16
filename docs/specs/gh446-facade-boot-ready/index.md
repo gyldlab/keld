@@ -29,7 +29,7 @@ the app creates every window, the host on macOS:
 
 1. authenticates the role's `HELLO`;
 2. enters its UI loop with no window;
-3. writes `Ready` once, on the loop's `Init` turn.
+3. the loop emits `HostInitialized` on its `Init` turn; the coordinator receives it and writes `Ready` once afterward.
 
 In the initial generation, the app then sees `ready`/`whenReady` with zero application
 windows. From #449, the facade also completes window subscription and replay before

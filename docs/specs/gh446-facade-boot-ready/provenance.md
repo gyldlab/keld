@@ -19,20 +19,35 @@ existing authority, generation, filesystem-quiescence and native-custody guarant
 This is a new KEL-139 amendment. It supersedes the previous proposal's claim that no
 amendment was needed and resolves its parked owner-choice question.
 
-**Exact-content gate satisfied for specification approval.** The authoritative
+**Historical exact-content decision; current split-head gate pending.** The
 [delegated-approval record](https://github.com/gyldlab/keld/pull/657#issuecomment-6371083658)
 approves technical head `a04e1ed889733a64cc33c1b64535e02b4afb0902` against base
-`3503a8aa383427dcf50ccbf6653c4298e7fb8aad`. It binds this specification's blob
-`2f53f2a3cf558c099c66ee886c935084f4e31440` and GH-531's blob
+`3503a8aa383427dcf50ccbf6653c4298e7fb8aad`. It binds the original single-file
+GH-446 blob `2f53f2a3cf558c099c66ee886c935084f4e31440` and GH-531 blob
 `7b0fdeaf98c847387ea47ffdef9158f64868685b`, their SHA-256 file hashes, and content
 digest `3ebcbad966250005c6a8d4059405a8e519b02d93334fe9cbe817704ed434d4e5`.
-Independent reviewers `/root/ready_architecture_review` (lifecycle/API) and
-`/root/ready_security_review` (authority/custody/wire order) cleared that exact head.
-The record includes independent refutations and all three corrected findings.
-This following commit changes approval metadata only; it does not alter that
-technical content. The original KEL-96 D-1 through KEL-96 D-11, KEL-139 and GH-531 approvals remain
-historical evidence and do not cover these new semantics. No runtime acceptance is
-implied, and no PR may be merged under the current user instruction.
+That record is valid historical approval for that exact candidate only. It does not
+approve this split directory or the amended GH-531 bytes at split head
+`4ff6d72612f289eb7323bf7ec1e5c5b8c333b7eb`; the split parts and amended GH-531
+document are different blobs. Therefore exact-content approval for the current split
+head is **NOT SATISFIED**.
+
+A separate independent review of the final split commit on PR #657 is required
+before engineering relies on this specification. That review must bind the final
+split commit and base, reviewer identity, review ID/source URL, review state,
+submission time, and blob IDs for the index, each part, and GH-531. Record only
+actual submitted review values; do not use the historical reviewers or refutations
+below as current-head clearance. The T-1 implementation PR must also record its own
+exact-diff review separately, with its own reviewer, source, state, time, commit,
+base and changed-file blobs, as required by §4.10.
+
+Historical independent reviewers `/root/ready_architecture_review` (lifecycle/API)
+and `/root/ready_security_review` (authority/custody/wire order) cleared the
+historical head named above. Their review and refutation records do not clear the
+current split head. The original KEL-96 D-1 through KEL-96 D-11, KEL-139 and GH-531
+approvals remain historical evidence and do not cover these new semantics. No
+runtime acceptance is implied, and no PR may be merged under the current user
+instruction.
 
 **Remaining evidence, with owners.** #445/#446 own the compiling RED, lifecycle
 ordering and native zero-window proof; #446 owns schema-1/security/recovery/custody
