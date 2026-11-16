@@ -718,6 +718,38 @@ pub(super) fn retire_own_child_group(
 
 // Registration has not yet transferred ownership. A rejected or dropped
 // bootstrap must not block the host forever waiting for uncooperative EOF.
+#[cfg(test)]
+thread_local! {
+    static PENDING_GUARDIAN_KILL_TRAP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(super) struct TestPendingGuardianKillTrap;
+
+#[cfg(test)]
+impl Drop for TestPendingGuardianKillTrap {
+    fn drop(&mut self) {
+        PENDING_GUARDIAN_KILL_TRAP.with(|trap| trap.set(false));
+    }
+}
+
+#[cfg(test)]
+pub(super) fn trap_pending_guardian_kill_for_test() -> TestPendingGuardianKillTrap {
+    PENDING_GUARDIAN_KILL_TRAP.with(|trap| {
+        assert!(!trap.replace(true), "only one pending Guardian kill trap");
+    });
+    TestPendingGuardianKillTrap
+}
+
+fn kill_pending_guardian(child: &mut Child) -> io::Result<()> {
+    #[cfg(test)]
+    assert!(
+        !PENDING_GUARDIAN_KILL_TRAP.with(std::cell::Cell::get),
+        "attempted numeric PID kill after externally reaped Child"
+    );
+    child.kill()
+}
+
 pub(super) fn reap_pending_guardian(child: &mut Child) -> Result<ExitStatus, RuntimeError> {
     let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
     loop {
@@ -732,7 +764,7 @@ pub(super) fn reap_pending_guardian(child: &mut Child) -> Result<ExitStatus, Run
                         "guardian did not exit after host EOF",
                     ),
                 )];
-                if let Err(source) = child.kill()
+                if let Err(source) = kill_pending_guardian(child)
                     && source.kind() != io::ErrorKind::InvalidInput
                 {
                     failures.push(lifecycle_error(
@@ -748,12 +780,21 @@ pub(super) fn reap_pending_guardian(child: &mut Child) -> Result<ExitStatus, Run
                 }
                 return Err(collapse_failures(failures));
             }
+            Err(source) if source.raw_os_error() == Some(libc::ECHILD) => {
+                // Another reaper consumed this Child's exit status. Its PID
+                // may already belong to a different process, so neither
+                // Child::kill nor a second wait has remaining authority.
+                return Err(lifecycle_error(
+                    "macOS guardian rejected-registration process inspection",
+                    source,
+                ));
+            }
             Err(source) => {
                 let mut failures = vec![lifecycle_error(
                     "macOS guardian rejected-registration process inspection",
                     source,
                 )];
-                if let Err(source) = child.kill()
+                if let Err(source) = kill_pending_guardian(child)
                     && source.kind() != io::ErrorKind::InvalidInput
                 {
                     failures.push(lifecycle_error(
