@@ -2,19 +2,7 @@
 Status: approved
 Linear: GH-531 (#517) · Owner: @0monish · Updated: 2026-10-07
 
-**Scoped amendment approved — 2026-10-23:** the separate
-[owner-delegated approval](https://github.com/gyldlab/keld/pull/657#issuecomment-6371083658)
-binds reviewed technical head `a04e1ed889733a64cc33c1b64535e02b4afb0902` and this
-specification's blob `7b0fdeaf98c847387ea47ffdef9158f64868685b`, together with gh446.
-The status and date above preserve the original approved baseline. The agent made
-the new readiness/replay and recovery decisions under the repository owner's
-explicit delegation, after independent lifecycle/API and authority/custody/wire-order
-review. This commit carries approval metadata only. Neither personal human review
-of these bytes nor runtime acceptance is asserted. Carrier:
-[GH #446](https://github.com/gyldlab/keld/issues/446) /
-[PR #657](https://github.com/gyldlab/keld/pull/657); owning
-[claim](https://github.com/gyldlab/keld/issues/446#issuecomment-6370495240).
-The scoped recovery decision is recorded separately in §5.
+**Amendment:** See [GH-446](gh446-facade-boot-ready/index.md).
 
 ## 1. Goal & non-goals
 
@@ -120,14 +108,13 @@ fail. "Owner" is the implementing ticket.
    `new BrowserWindow(opts)` returns, then `win.id` equals the `WindowId` in the host's
    `Created` event for that window, and the `Create` request schema has no identity
    field. *NC:* minting the id in the facade, so the id was never delivered by the host,
-   fails the id-equality assertion. **Independent identity control (2026-10-23
-   approved amendment):** the fixture advances and retires host registry entries
-   before starting the fresh facade, so its first host-supplied reference
-   (`HostWindowRef` in the facade, `WindowRef` on the wire) has WindowId 41 while the
-   facade's first local allocation would be 1. Assert the host pair in the mirror
-   and subsequent addressed calls as well as public `win.id`. Substituting the local
-   counter for either host-supplied identity component must fail; coincident counters
-   are not evidence of host ownership. **Snapshot source:** `Created.state` is always
+   fails the id-equality assertion. **Host-identity control (GH-446 AC-19):** the
+   fixture advances and retires host registry entries before starting the fresh facade.
+   Its first host-supplied reference (`HostWindowRef` in the facade, `WindowRef` on the
+   wire) has WindowId 41 while the facade's first local allocation would be 1. Assert
+   the host pair in the mirror and subsequent addressed calls, as well as public
+   `win.id`. Substituting the local counter for either host-supplied identity component
+   must fail; coincident counters are not evidence of host ownership. **Snapshot source:** `Created.state` is always
    the `WindowSnapshot` carried by keld-wv's `WindowBuilt`, read from the built native
    window (with any buffered facts overlaid, §4.e), including when `Create` has `x` and
    `y` as `None`. Given a fake UI port whose `WindowBuilt` snapshot is
@@ -202,14 +189,11 @@ fail. "Owner" is the implementing ticket.
 
 ### (c) Window #1
 
-13. **No host window before the app asks.** Given a fresh facade boot in its initial
-    RoleInstance generation, with no surviving windows, as F01-T2 declares it,
-    when Ready is observed, then the host's native window count is 0. After the first
-    `new BrowserWindow()` it is 1, and that window's WindowId is 1. *NC:* keeping
-    `CreateInitialWindow` for facade boots makes the count 1 at Ready and 2 after the
-    constructor. This zero/count-one assertion does not apply to a recovered
-    RoleInstance generation with surviving windows (criterion 46). Owner: F01-T2
-    (count at Ready); F02-T2 (after construction).
+13. **No host window before the app asks.** A fresh initial RoleInstance with no
+    survivors has zero native windows at Ready; its first `BrowserWindow()` has
+    WindowId 1. Recovered survivors are excluded (criterion 46). *NC:*
+    `CreateInitialWindow` makes the count 1 at Ready and 2 after construction.
+    Owners: F01-T2 (Ready) and F02-T2 (constructor).
 14. **Registry is live at Ready.** Given a facade boot, when `Create` is sent in the
     same task that `whenReady()` resolves in, then it succeeds. *NC:* starting the
     registry after Ready is written makes this first `Create` fail with the registry's
@@ -238,13 +222,10 @@ fail. "Owner" is the implementing ticket.
     `getPosition()`, `isMaximized()` and `isFullScreen()` reads leave the app-link frame
     counter unchanged in both directions. *NC:* implementing any getter as a host round
     trip fails. Owner: F02-T2.
-    Static `BrowserWindow.getAllWindows()` also remains usable before public Ready
-    and returns the currently applied mirror entries without a host call or a wait
-    for Subscribe. Complete replay is promised only by criterion 20's readiness
-    barrier. This is required by the pinned draw.io context-menu initialization
-    (gh446 §4.12). *NC:* applying the constructor's pre-Ready refusal to static
-    enumeration, or waiting synchronously for subscription from that getter, fails
-    the pre-Ready entry fixture. No pre-Ready Host `Create` is authorized by this rule.
+    Static `BrowserWindow.getAllWindows()` returns applied mirror entries before public
+    Ready, without a Host call or Subscribe wait (GH-446 §4.12). Complete replay remains
+    criterion 20's barrier. *NC:* refusing or blocking this getter fails the pre-Ready
+    fixture; it does not authorize Host `Create`.
 18. **Per-window causal order.** Given the host writes `Bounds(r)` and then
     `CloseRequested` for one window, inside the `'close'` listener `getSize()` and
     `getPosition()` equal `r`. *NC:* dispatching `'close'` before the preceding `Bounds`
@@ -298,24 +279,10 @@ fail. "Owner" is the implementing ticket.
     F06-T5 reuses the admission rule, not this window-specific replay barrier, for
     display and theme facts.
 
-    **No unbounded rendererless Init (GH446 AC15/20, 2026-10-25):** A
-    schema-two macOS boot creates no initial native application window.
-    The coordinator has a 15-second absolute bound from entry into Tao's
-    application loop until the genuine `HostInitialized` first-Init event.
-    It cannot rely on Tao proxy commands before `applicationDidFinishLaunching`.
-    On expiry it reports `KELD-CORE-037` with the typed detail "the UI loop did
-    not deliver its first turn within 15 s", refuses Ready/recovery, stops
-    further worker admissions and invokes bounded UI-independent Guardian/role
-    cleanup. It then calls the shipping binary's borrowed
-    `fn(&HostAppError) -> !` terminal exactly once. The blocked main thread
-    retains its `!Send` AppKit, presentation and profile owners until process
-    exit, and an unproved dev stage is not deleted; process exit alone is not
-    evidence of physical cleanup. An actual first Init disarms the deadline,
-    so a healthy windowless app may keep running beyond 15 seconds. A
-    debug-only real Host/Guardian/Bun child test withholds pre-Init, checks
-    one typed terminal entry and no Ready, Bun retirement, a failed Host exit,
-    and retained stage. This separate first-milestone bound does not change
-    the legacy renderer navigation deadline. See approved GH446 D6 / AC15–20.
+    **Rendererless Init bound (GH-446 AC-15 and GH-446 AC-20):** Schema 2 waits at
+    most 15 seconds for the first genuine `HostInitialized` event. On expiry it returns
+    `KELD-CORE-037`, denies Ready and recovery, and uses the existing bounded cleanup
+    and main-thread custody path. This does not change the legacy renderer deadline.
 
 ### (e) Close state machine (the #419 rules plus PANEL-D19)
 
@@ -717,11 +684,7 @@ pub enum WindowResponse {
 }
 ```
 
-The `Adopted` row reconciles the existing [GH-657 owner
-approval](https://github.com/gyldlab/keld/pull/657#issuecomment-6371083658),
-technical `a04e1ed889733a64cc33c1b64535e02b4afb0902`, carried by
-`bb43e474577297f0792740676994aa153e5df1dd`. Its D6 behavior still requires the
-approved recovery integration; payload support alone does not complete it.
+The `Adopted` row implements GH-531 D-6; recovery integration remains required.
 
 Every `ERR` is a `CallError` with a registered code (02 §2). This spec reserves the
 next free numbers. FACT (2026-10-07): `origin/main`'s registry ends at
@@ -792,8 +755,8 @@ This spec consumes F01-T2's rule (#446) and adds no adoption shim.
   chooses): the host writes Ready after
   authenticated `HELLO` and creates no window. The registry is constructed before Ready
   is written (criterion 14). Window #1 is the first `Create`, so its WindowId is 1.
-  Public facade readiness additionally waits for criterion 20's accepted subscription
-  and applied complete replay; host Ready alone is not that barrier.
+  Public facade readiness also waits for criterion 20's accepted subscription and
+  complete replay; host Ready alone is not the barrier.
 - Renderer-declared boot: unchanged. The host-created initial window is not entered in
   the registry, no window-channel frame is written, and its `CloseRequested` keeps
   today's teardown and `LastWindowClosed` behaviour (criterion 15).
@@ -1704,9 +1667,4 @@ F01-T2 measures that delta under X05-T1's registered metric. Mirror event volume
 there (gh527 §10 Q1).
 
 ## 10. Open questions
-
-None. The questions raised in the first draft were decided under the orchestrator's
-delegation, and D6 by the owner; all are recorded, with falsifiers, in §4.i.
-This records the approved baseline. The separately identified 2026-10-23 amendment
-has independent technical review and exact-content approval under the explicit
-owner delegation recorded above; its implementation acceptance remains outstanding.
+None; implementation and native acceptance remain outstanding.
