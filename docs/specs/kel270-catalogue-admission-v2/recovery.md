@@ -255,7 +255,16 @@ Its canonical record has a 65,536-byte cap and these ordered fields:
 | `sourceGenerationSha256`, `sourceProvenanceSha256`, `sourceEpoch` | Protected before-state |
 | `destinationGenerationSha256`, `destinationProvenanceSha256`, `destinationEpoch` | Complete proposed after-state |
 | `applicationFloor`, `utcFloorMillis`, `browserBindingSha256`, `rollbackBindingSha256` | Invariants and finite LKG authority |
+| `retirementIntentSha256` | Null before abort cleanup; then the exact D-23 retirement-intent digest |
+| `retirementCompletionSha256` | Null until full cleanup readback; then the same intent digest |
 | `phase` | `prepared`, `aborted`, `trust-committed`, `activation-bound`, or `complete` |
+
+Both retirement fields are null in `prepared`. The recovery owner sets each
+field only at its specified step below. Each field changes from null once,
+under the protected journal writer. An `aborted` journal retains both
+fields after pending-pointer removal. Neither field grants deletion authority.
+Terminal `aborted` forbids trust commit. It permits only these two bounded,
+write-once cleanup-field updates under the original attempt and leases.
 
 Persist `prepared` before either store changes.
 Persist the record at `recoveries/<attemptId>.json`. Publish D-68's pending pointer before changing established trust or application state.
@@ -291,7 +300,16 @@ metadata, installation and physical-profile leases, first publish, flush
 and read back the D-23 mode-`recovery` retirement intent. Bind its exact
 attempt ID, protected old/current and destination generation, full list
 of exclusively owned blobs, and matching pending pointer to the aborted
-journal; no object deletion may precede this durable record. Then retire the *exact*
+journal. Compute SHA-256 over the exact readback-verified intent bytes.
+Persist and reread that digest in the aborted journal's
+`retirementIntentSha256` field BEFORE any object deletion.
+An existing intent MUST match this journal field, attempt and old state.
+If restart finds an intact intent but a null journal intent digest,
+verify all listed objects are still present with exact bytes.
+Also verify the complete inventory, old state and matching pending pointer.
+Only then persist and reread the intent digest. Delete nothing before
+that readback. A non-null mismatched journal digest MUST halt.
+No object deletion may precede both durable records. Then retire the *exact*
 unreferenced prepared successor generation at
 `generations/<oldSequence+1>.json` and exclusively owned preparation blobs.
 Verify its recorded digest, protection and ownership and prove it was
@@ -301,16 +319,31 @@ digest is historical, not live authority to keep uncommitted successor bytes.
 The immutable next-sequence filename MUST be absent before a new attempt
 can prepare different bytes at that same required sequence.
 Retirement is idempotent only under the matching authentic pre-deletion
-D-23 intent: a missing intent-listed blob or retired successor can be
-counted as completed only while the protected old state still matches.
-Missing unlisted or authoritative old-state files, a changed reference,
-or a mismatched/absent intent MUST refuse before any further deletion.
-After a crash following durable `aborted`, the matching pending pointer
-permits only finishing that same retirement and pointer cleanup.
-Reread the unchanged old metadata current, provenance, epoch, application
-state, and the verified absence of the prepared successor, exclusively
-owned blobs, and the retired D-23 intent before removing the pointer.
-Remove and reread the pointer under the same lease. An interrupted removal resumes this terminal cleanup only.
+D-23 intent. An absent intent-listed blob or successor counts as retired
+only while the authenticated intent, journal and old state still match.
+Missing unlisted or authoritative files, changed references, or a
+mismatched intent MUST refuse before any further deletion.
+Reread the unchanged old current, provenance, epoch and application state.
+Verify the successor and every intent-listed exclusive blob are absent.
+Then durably persist and reread `retirementCompletionSha256` in the
+aborted journal. It MUST equal the previously bound
+`retirementIntentSha256`. Do not change any other journal field.
+Only then remove the D-23 intent and durably verify its path absent.
+
+After a crash with the intent present, resume only under that exact intent.
+If the intent is absent and both journal digests are null, cleanup has
+not started. Verify the entire prepared successor and every exclusive
+blob remains present, exact and unreachable. Recheck the journal,
+old state and pointer before publishing a fresh D-23 intent.
+Any missing object or mismatched evidence MUST halt without deletion.
+After a crash with the intent absent and pending pointer present, require
+both non-null journal digests to match after cleanup and the old state to remain
+authenticated and unchanged. The journal MUST bind the same attempt and
+pointer. This completed state permits pointer-only cleanup, not deletion.
+An absent or mismatched completion digest MUST refuse pointer removal
+and a fresh attempt. Do not reconstruct missing inventory or delete any
+object after the intent is absent. Remove and reread the matching pointer
+under the same lease. An interrupted removal resumes this terminal cleanup only.
 If any readback or removal fails, keep the operation blocked; never infer success from a missing response.
 Only after verified pointer absence MAY a new random attempt and independently signed directive enter `prepared`.
 The new attempt requires a fresh native confirmation and full source, destination, policy, epoch, and expiry verification.
@@ -325,7 +358,9 @@ Reject a stale directive or a changed replacement without changing the establish
 | `prepared`, old metadata current, directive valid | Reverify the original authorization and all source/policy bindings, then commit or refuse. |
 | `prepared`, old metadata current, directive expired | Verify no trust or application effect, durably mark `aborted`, retire only authenticated unreferenced preparation, verify old state and clear matching pointer, then require a new attempt. |
 | `prepared`, new metadata current | Match the recorded destination generation. Advance the journal without repeating the epoch change. |
-| `aborted`, old metadata current | Verify no trust/application effect, idempotently finish the exact D-23 retirement-intent cleanup, verify intent removal, then clear the pending pointer; never resume trust commit. |
+| `aborted`, old metadata current, intent present | Match the journal-bound intent digest, finish only its listed retirement, persist exact completion digest, verify intent removal, then clear the pointer. |
+| `aborted`, old metadata current, intent absent, both digests null | Verify all prepared objects remain intact and unreferenced, then durably publish the initial D-23 intent. Never infer prior cleanup. |
+| `aborted`, old metadata current, intent absent, pointer present | Require equal non-null intent/completion journal digests, original state and matching attempt. Clear only the pointer; never delete more objects. |
 | `trust-committed` | Complete the exact activation binding. Refuse all unrelated selection until that binding exists. |
 | `activation-bound` | Resume only the corresponding KEL-53 activation phase. |
 | `complete` | Use the coherent new view or its finite LKG view. |
