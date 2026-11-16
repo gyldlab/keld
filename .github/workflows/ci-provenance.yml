@@ -198,6 +198,10 @@ jobs:
                 p === "crates/keld-wv/examples/linux_media_guard.rs" ||
                 p === "docs/audits/verify.py" ||
                 p === "docs/audits/test_verify.py" ||
+                // Catalogue evidence checks execute Python from docs; include
+                // future local Python helpers in the protected executor closure.
+                (p.startsWith("docs/engineering/evidence/kel270-catalogue-admission-v2/") &&
+                  p.endsWith(".py")) ||
                 p === "bunfig.toml" || p.endsWith("/bunfig.toml") ||
                 p === "rustfmt.toml" || p.endsWith("/rustfmt.toml") ||
                 p === ".rustfmt.toml" || p.endsWith("/.rustfmt.toml") ||

@@ -390,6 +390,66 @@ test("protected CI path is a real App failure, not an omitted or neutral result"
   expect(s.failures).toHaveLength(0);
 });
 
+const catalogueEvidence =
+  "docs/engineering/evidence/kel270-catalogue-admission-v2/";
+
+test.each([
+  "verify_spec_evidence.py",
+  "verify_identity_vectors.py",
+  "verify_evidence_capacity.py",
+  "helpers/future_helper.py",
+  "VERIFY_SPEC_EVIDENCE.PY",
+])(
+  "refresh refuses catalogue executor %s changes on either rename side",
+  async (name) => {
+    const filename = catalogueEvidence + name;
+    for (const file of [
+      { filename, status: "added" },
+      { filename, status: "modified" },
+      { filename, status: "removed" },
+      {
+        filename: "docs/old-executor.txt",
+        previous_filename: filename,
+        status: "renamed",
+      },
+      { filename, previous_filename: "docs/old-helper.txt", status: "renamed" },
+    ]) {
+      const s = scenario({ files: [file] });
+      await expect(s.run()).resolves.toBeUndefined();
+      expect(s.statuses).toHaveLength(1);
+      expect(s.statuses[0].conclusion).toBe("failure");
+      expect(s.failures).toEqual([]);
+    }
+  },
+);
+
+test("refresh admits ordinary catalogue evidence JSON updates", async () => {
+  for (const filename of [
+    catalogueEvidence + "identity-vectors.json",
+    catalogueEvidence + "metadata-golden.json",
+    catalogueEvidence + "acceptance-plan.json",
+    catalogueEvidence + "review-receipt.json",
+  ]) {
+    const s = scenario({ files: [{ filename, status: "modified" }] });
+    await expect(s.run()).resolves.toBeUndefined();
+    expect(s.statuses).toHaveLength(1);
+    expect(s.statuses[0].conclusion).toBe("success");
+  }
+});
+
+test("refresh refuses catalogue executor at the end of a 448-file immutable tree census", async () => {
+  const files = Array.from({ length: 448 }, (_, i) => ({
+    filename: `docs/benign-${i}.md`,
+    status: "added",
+  }));
+  files[447].filename = catalogueEvidence + "verify_spec_evidence.py";
+  const s = scenario({ changedFiles: files.length, files });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.getTreeReads()).toBe(2);
+  expect(s.statuses).toHaveLength(1);
+  expect(s.statuses[0].conclusion).toBe("failure");
+});
+
 test("601 changed files is a verified policy DENY before immutable comparison", async () => {
   const s = scenario({ changedFiles: 601 });
   await expect(s.run()).resolves.toBeUndefined();

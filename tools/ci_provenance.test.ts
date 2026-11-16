@@ -264,6 +264,69 @@ test("benign documentation and non-authority lockfile changes are admitted", asy
   });
 });
 
+const catalogueEvidence =
+  "docs/engineering/evidence/kel270-catalogue-admission-v2/";
+const catalogueExecutors = [
+  "verify_spec_evidence.py",
+  "verify_identity_vectors.py",
+  "verify_evidence_capacity.py",
+  // Any later local Python import or child process is also executable CI authority.
+  "helpers/future_helper.py",
+  "VERIFY_SPEC_EVIDENCE.PY",
+].map((name) => catalogueEvidence + name);
+
+test.each(catalogueExecutors)(
+  "catalogue CI executor %s cannot change or move without trusted-base review",
+  async (filename) => {
+    for (const status of ["added", "modified", "removed"]) {
+      await expect(fixture([{ filename, status }]).run()).rejects.toThrow(
+        "protected CI authority",
+      );
+    }
+    for (const file of [
+      {
+        filename: "docs/old-executor.txt",
+        previous_filename: filename,
+        status: "renamed",
+      },
+      { filename, previous_filename: "docs/old-helper.txt", status: "renamed" },
+    ]) {
+      await expect(fixture([file]).run()).rejects.toThrow(
+        "protected CI authority",
+      );
+    }
+  },
+);
+
+test("catalogue evidence JSON changes remain ordinary PR data", async () => {
+  for (const filename of [
+    catalogueEvidence + "identity-vectors.json",
+    catalogueEvidence + "metadata-golden.json",
+    catalogueEvidence + "acceptance-plan.json",
+    catalogueEvidence + "review-receipt.json",
+  ]) {
+    await expect(
+      fixture([{ filename, status: "modified" }]).run(),
+    ).resolves.toBeUndefined();
+  }
+});
+
+test("immutable 448-file census finds a catalogue executor beyond the first Compare page", async () => {
+  const files = Array.from({ length: 448 }, (_, i) => ({
+    filename: `docs/benign-${i}.md`,
+    status: "added",
+  }));
+  files[447].filename = catalogueEvidence + "verify_spec_evidence.py";
+  const f = fixture(files, {
+    head: "a".repeat(40),
+    base: "b".repeat(40),
+    changedFiles: files.length,
+    comparisonFiles: files.slice(0, 300),
+  });
+  await expect(f.run()).rejects.toThrow("protected CI authority");
+  expect(f.getTrees()).toBe(2);
+});
+
 test.each([
   [".github/workflows/evil.yml", "added"],
   [".github/workflows/ci.yml", "modified"],
