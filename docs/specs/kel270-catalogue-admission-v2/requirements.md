@@ -373,6 +373,12 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
 ### AC-67: An expired prepared recovery aborts durably before retry
 
 - **Given:** A `prepared` journal, sealed prewrite inventory and pending pointer, with old metadata and application state still current.
+- Before that journal, any valid orphan N+1 from interrupted ordinary
+  refresh MUST be retired using D-24's protected ordinary intent
+  while no pending pointer exists. The repository lease MUST cover
+  retirement, verified absence, plan sealing and pointer publication.
+- An ambiguous ordinary orphan or mismatched intent MUST block recovery
+  before any new recovery journal or pending pointer is published.
 - **When:** The process crashes, the directive expires, and the recovery owner restarts.
 - **Then:** It refuses expired trust commit and readback-verifies terminal `aborted`.
   It retires only present exact planned preparation objects before pointer removal.
@@ -423,6 +429,16 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
     during its first write while all other protected evidence remains valid.
   - **Additional RED:** Cleanup deletes or adopts the damaged blob, removes
     the pointer or changes established current without operator disposition.
+  - **Additional independent fault:** Leave an authentic uncommitted
+    ordinary-refresh N+1, normal epoch and valid D-24 retirement evidence
+    before starting recovery. Without predecessor cleanup, recovery's
+    immutable N+1 conflicts with different epoch and remains blocked.
+  - **Additional condition:** Keep old current valid, no pending pointer
+    and exact ordinary orphan ownership. Also test a foreign or corrupt
+    ordinary orphan independently.
+  - **Additional RED:** Recovery creates its journal/pointer over the
+    ordinary orphan, or deletes a foreign one. Correct behavior retires
+    only the authentic ordinary orphan first, or refuses before recovery.
 
 ### AC-68: Loss-only policy changes are limited to bootstrap root replacement
 
