@@ -611,6 +611,137 @@ describe("layout resource ownership on failure", () => {
     }, 20_000);
   }
 
+  test("stderr read failure keeps source custody until explicit finalization succeeds", async () => {
+    const audit = mkdtempSync(join(tmpdir(), "keld-stderr-read-failure-"));
+    const fd = openSync(join(audit, "owned-stderr-source"), "w+");
+    const readError = new Error("intentional stderr read failure");
+    const finalizationError = new Error(
+      "intentional first source finalization failure",
+    );
+    let root = "";
+    let finalized = false;
+    let attempts = 0;
+    let cancels = 0;
+    let owner: RetainedLayout | undefined;
+    try {
+      const error = await rejected(
+        runLayout(
+          {
+            deadlineMs: 1_000,
+            waitForExit: true,
+            ready: () => false,
+            async write(dir) {
+              root = dir;
+              await Bun.write(
+                join(dir, "failed-stderr.ts"),
+                'console.log("ready"); setInterval(() => {}, 60_000);',
+              );
+              return "failed-stderr.ts";
+            },
+          },
+          {
+            stderrOwner(stream) {
+              return {
+                reader: {
+                  read: () => Promise.reject(readError),
+                  async cancel() {
+                    cancels++;
+                  },
+                  releaseLock() {},
+                },
+                async finalizeSource() {
+                  attempts++;
+                  if (attempts <= 2) throw finalizationError;
+                  await stream.cancel();
+                  closeSync(fd);
+                  finalized = true;
+                },
+              };
+            },
+          },
+        ),
+      );
+      expect(error).toBeInstanceOf(LayoutCleanupError);
+      if (!(error instanceof LayoutCleanupError))
+        throw new Error("missing stderr read failure");
+      expect(error.cause).toBe(readError);
+      expect(error.errors).toContain(readError);
+      expect(error.errors).toContain(finalizationError);
+      owner = error.retainedLayout;
+      expect(owner).toBeDefined();
+      if (owner === undefined) throw new Error("missing retained stderr owner");
+      expect(attempts).toBe(2);
+      expect(cancels).toBe(0);
+      expect(fstatSync(fd).isFile()).toBe(true);
+      expect(owner.stderr?.state).toBe("rejected");
+      expect(owner.disposed).toBe(false);
+      expect(existsSync(root)).toBe(true);
+      const recovery = await rejected(withIoDeadline(owner.dispose(), 5_000));
+      expect(recovery).toBeInstanceOf(AggregateError);
+      expect((recovery as AggregateError).errors).toContain(readError);
+      expect(attempts).toBe(3);
+      expect(finalized).toBe(true);
+      expect(() => fstatSync(fd)).toThrow();
+      expect(owner.disposed).toBe(true);
+      expect(existsSync(root)).toBe(false);
+      await owner.dispose();
+      expect(attempts).toBe(3);
+    } finally {
+      if (owner !== undefined && !owner.disposed)
+        await rejected(withIoDeadline(owner.dispose(), 5_000));
+      if (!finalized) closeSync(fd);
+      rmSync(audit, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test("a stderr read error without an external finalizer closes the owned native pipe", async () => {
+    const readError = new Error(
+      "intentional native stderr read-wrapper failure",
+    );
+    let root = "";
+    const failure = await rejected(
+      runLayout(
+        {
+          deadlineMs: 1_000,
+          waitForExit: true,
+          ready: () => false,
+          async write(dir) {
+            root = dir;
+            await Bun.write(
+              join(dir, "failed-native-stderr.ts"),
+              'console.log("ready"); setInterval(() => {}, 60_000);',
+            );
+            return "failed-native-stderr.ts";
+          },
+        },
+        {
+          stderrOwner() {
+            return {
+              reader: {
+                read: () => Promise.reject(readError),
+                async cancel() {
+                  throw new Error(
+                    "reader cancellation must not replace a read failure",
+                  );
+                },
+                releaseLock() {},
+              },
+            };
+          },
+        },
+      ),
+    );
+    expect(failure).toBeInstanceOf(LayoutCleanupError);
+    if (!(failure instanceof LayoutCleanupError))
+      throw new Error("lost stderr read failure");
+    expect(failure.cause).toBe(readError);
+    expect(failure.errors).toContain(readError);
+    expect(root).not.toBe("");
+    expect(existsSync(root)).toBe(false);
+    if (failure.retainedLayout !== undefined)
+      expect(failure.retainedLayout.disposed).toBe(true);
+  }, 10_000);
+
   test("natural exit drains complete stderr before removing its layout root", async () => {
     const result = await runLayout({
       deadlineMs: 3_000,

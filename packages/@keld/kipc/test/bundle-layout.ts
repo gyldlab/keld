@@ -313,7 +313,10 @@ export async function runLayout(
   let proc: ReturnType<typeof Bun.spawn> | undefined;
   let childExit: CleanupTask<number> | undefined;
   let stderrTask: CleanupTask<string> | undefined;
+  let stderrStream: ReadableStream<Uint8Array> | undefined;
   let stderrReader: LayoutOutputReader | undefined;
+  let stderrNaturalEof = false;
+  let stderrCancellationStarted = false;
   let stderrCancellation: CleanupTask<void> | undefined;
   let stderrFinalization: CleanupTask<void> | undefined;
   let stderrFinalizeSource: (() => Promise<void>) | undefined;
@@ -327,11 +330,27 @@ export async function runLayout(
   let disposal: Promise<void> | undefined;
   const bound = <T>(promise: Promise<T>) =>
     withIoDeadline(promise, layout.deadlineMs);
+  const finalizeStderr = async () => {
+    if (
+      stderrFinalization === undefined ||
+      (stderrFinalization.state === "rejected" &&
+        stderrFinalizeSource !== undefined)
+    ) {
+      // A native stream cancel is used at most once after a read failure.
+      // Rejected source cancellation cannot be retried as proof of closure.
+      const finalize = stderrFinalizeSource ?? (() => stderrStream!.cancel());
+      stderrFinalization = cleanupTask(Promise.resolve().then(finalize));
+    }
+    await bound(stderrFinalization.promise);
+  };
   const stopChild = async () => {
     if (proc !== undefined && childExit?.state === "pending") proc.kill();
     if (proc === undefined) return;
     await bound(proc.exited);
-    if (stderrTask === undefined) return;
+    if (stderrTask === undefined) {
+      if (stderrStream !== undefined) await finalizeStderr();
+      return;
+    }
     if (stderrTask.state === "pending") {
       // Direct-child exit does not close pipe handles inherited by descendants.
       // Give native stderr a bounded drain before cancelling our own reader.
@@ -343,7 +362,10 @@ export async function runLayout(
       } catch (error) {
         if (stderrTask.state !== "pending") throw error;
         stderrCancellation ??= cleanupTask(
-          Promise.resolve().then(() => stderrReader!.cancel()),
+          Promise.resolve().then(() => {
+            stderrCancellationStarted = true;
+            return stderrReader!.cancel();
+          }),
         );
       }
     }
@@ -353,25 +375,21 @@ export async function runLayout(
       if (stderrCancellation.state === "rejected") {
         if (stderrFinalizeSource === undefined)
           await bound(stderrCancellation.promise);
-        if (
-          stderrFinalization === undefined ||
-          stderrFinalization.state === "rejected"
-        ) {
-          // A failed wrapper may leave a read locked. Releasing the lock does
-          // not finalize its source; the separate finalizer has that duty.
-          if (stderrTask.state === "pending") {
-            stderrReader?.releaseLock();
-            stderrLockReleasedForFinalization = true;
-          }
-          stderrFinalization = cleanupTask(
-            Promise.resolve().then(stderrFinalizeSource!),
-          );
+        // A failed wrapper may leave a read locked. Releasing the lock does
+        // not finalize its source; the separate finalizer has that duty.
+        if (stderrTask.state === "pending") {
+          stderrReader?.releaseLock();
+          stderrLockReleasedForFinalization = true;
         }
-        await bound(stderrFinalization.promise);
+        await finalizeStderr();
       } else {
         await bound(stderrCancellation.promise);
       }
     }
+    // A failed read is not a native EOF. Finalize the exact stderr source
+    // before the runner can release its listener and temporary directory.
+    if (stderrTask.state === "rejected" && stderrCancellation === undefined)
+      await finalizeStderr();
     try {
       await bound(stderrTask.promise);
     } catch (error) {
@@ -436,8 +454,9 @@ export async function runLayout(
     const stillPending =
       pending.some((task) => task!.state === "pending") ||
       // A later stop attempt may have started cancellation after our snapshot.
-      (stderrCancellation !== undefined &&
-        stderrCancellation.state !== "fulfilled" &&
+      (stderrStream !== undefined &&
+        !stderrNaturalEof &&
+        stderrCancellation?.state !== "fulfilled" &&
         stderrFinalization?.state !== "fulfilled") ||
       outputCleanup?.incomplete === true;
     if (!stillPending) {
@@ -524,6 +543,7 @@ export async function runLayout(
     owner.child = proc;
     childExit = cleanupTask(proc.exited);
     const stderr = proc.stderr as ReadableStream<Uint8Array>;
+    stderrStream = stderr;
     const stderrOwner = operations.stderrOwner?.(stderr) ?? {
       reader: stderr.getReader(),
     };
@@ -537,7 +557,10 @@ export async function runLayout(
         try {
           for (;;) {
             const chunk = await reader.read();
-            if (chunk.done) return stderr + decoder.decode();
+            if (chunk.done) {
+              stderrNaturalEof = !stderrCancellationStarted;
+              return stderr + decoder.decode();
+            }
             stderr += decoder.decode(chunk.value, { stream: true });
           }
         } catch (error) {
