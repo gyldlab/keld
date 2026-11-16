@@ -38,6 +38,8 @@ wrapper or packaged application release to install yet.
   | Fedora 43 x86_64 — bounded userland/control evidence | `gtk3-devel`, `webkit2gtk4.1-devel`, `pkgconf-pkg-config`, a C/C++ build toolchain, and `bubblewrap`; a pinned Fedora 43 userland produced a locked release host and a Fedora-owned X11/Xvfb+Fluxbox resize/minimize/restore/close control. The [public receipt bundle](https://github.com/gyldlab/keld-benches/tree/f997303d0da6dd727110b305a4408294f3eccee8/linux/keld/fedora43-acceptance) binds the package/toolchain/runtime evidence. This is **not** a bare-metal Fedora desktop qualification |
   | Arch Linux x86_64 — build portability only | `gtk3`, `webkit2gtk-4.1`, `libsoup3`, `pkgconf`, and `bubblewrap`; a pinned Arch userland produced a locked release host with no unresolved dynamic links. The [public portability receipt](https://github.com/gyldlab/keld-benches/tree/53253d9fcd0eed8d91b015d1fcbfbc752dbc7552/linux/keld/arch-build-portability) binds the package/toolchain/dynamic-link evidence. No Arch desktop runtime acceptance is claimed |
 
+For the separate, developer-local **signed Windows application folder** procedure, see [Windows developer-local build](09-windows-developer-local-build.md). It does not qualify a Store release, general installer or installed-Host admission.
+
 The Ubuntu build packages are recorded in the [CI workflow](../../.github/workflows/ci.yml).
 These non-Debian rows are deliberately narrower than release support: they establish
 package mapping/build portability (plus the Fedora-owned X11 control), not a physical

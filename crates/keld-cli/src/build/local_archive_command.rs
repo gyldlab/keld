@@ -241,6 +241,19 @@ impl BuildAudience {
         }
     }
 }
+/// Both compiler import namespaces must admit before tool capture, source
+/// session creation, or any Host/helper signer operation. Keep this identical
+/// to the sole file URL policy used by the actual compiler binder.
+fn require_compiler_import_paths(
+    source_session: &Path,
+    typescript_root: &Path,
+) -> Result<(), BuildError> {
+    for path in [source_session, typescript_root] {
+        let _ = super::compiler_toolchain::local_file_url(path)?;
+    }
+    Ok(())
+}
+
 #[expect(
     clippy::needless_pass_by_value,
     reason = "Keep compiler inputs owned for this complete build transaction."
@@ -254,6 +267,7 @@ fn execute(
     signing_session: bool,
     audience: BuildAudience,
 ) -> Result<(), BuildError> {
+    require_compiler_import_paths(&images.source.session, &tools.typescript_root)?;
     let compiler = CapturedCompilerToolchain::capture(
         &tools.typescript_root,
         &tools.bun,
@@ -475,6 +489,79 @@ fn emit_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compiler_url_prefix_refuses_before_tool_capture_or_signing_session() {
+        use super::super::{local_source, windows_inputs};
+        use std::path::PathBuf;
+
+        let scratch = tempfile::tempdir().expect("isolated compiler admission");
+        let missing = scratch.path().join("missing-tool");
+        let ordinary_session = scratch.path().join("must-not-create-session");
+        let images = |session: PathBuf| local_images::ImageRequest {
+            source: local_source::Request {
+                source: missing.clone(),
+                commit: "0".repeat(40),
+                session,
+                git: missing.clone(),
+                cargo: missing.clone(),
+                rustc: missing.clone(),
+                cargo_home: missing.clone(),
+                cache_mode: local_source::CacheMode::MutableDeveloper,
+            },
+            app_root: scratch.path().to_owned(),
+            channel: "stable".into(),
+            release_public_key: missing.clone(),
+            sign_tool: missing.clone(),
+            sign_tool_sha256: "0".repeat(64),
+            certificate_thumbprint: "0".repeat(40),
+            publisher_scope: "0".repeat(64),
+            profile_admission: windows_inputs::ProfileAdmission::UndeclaredDeveloper,
+        };
+        let compiler = |typescript_root: PathBuf| CompilerRequest {
+            typescript_root,
+            bun: missing.clone(),
+            bun_sha256: [0; 32],
+            tsc: missing.clone(),
+            tsc_sha256: [0; 32],
+        };
+
+        for (session, typescript) in [
+            (
+                ordinary_session.clone(),
+                PathBuf::from(r"\\?\C:\official\typescript"),
+            ),
+            (
+                PathBuf::from(format!(r"\\?\{}", ordinary_session.display())),
+                PathBuf::from(r"C:\official\typescript"),
+            ),
+        ] {
+            let error = run_developer(images(session), compiler(typescript), &[])
+                .expect_err("unsupported compiler file URL must fail before tools");
+            assert!(
+                error
+                    .to_string()
+                    .contains("ordinary absolute local disk path"),
+                "{error}"
+            );
+            assert!(
+                !ordinary_session.exists(),
+                "bad compiler path created a source or signer session"
+            );
+        }
+
+        let error = run_developer(
+            images(ordinary_session.clone()),
+            compiler(PathBuf::from(r"C:\official\typescript")),
+            &[],
+        )
+        .expect_err("missing qualified compiler inputs must refuse");
+        assert!(
+            !error.to_string().contains("compiler URL"),
+            "ordinary local path should reach the independent compiler tool gate: {error}"
+        );
+        assert!(!ordinary_session.exists());
+    }
 
     #[test]
     fn archive_entry_refuses_unimplemented_install_before_image_capture() {
