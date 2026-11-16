@@ -252,6 +252,10 @@ pub(super) struct PreparedLocalPair {
     pub(super) session: PathBuf,
     // Same retained authoring namespace; archive callers cannot supply another root.
     pub(super) app_root: PathBuf,
+    // Retain this exact already-qualified signer/tool handle for the developer
+    // app entrypoint, not a second independently selected certificate.
+    signer: LocalSigner,
+    signer_environment: Vec<(OsString, OsString)>,
     _image_directories: Vec<File>,
 }
 
@@ -371,8 +375,73 @@ pub(super) fn prepare_request(
         source,
         session,
         app_root: app_root.to_owned(),
+        signer,
+        signer_environment: environment,
         _image_directories: image_directories,
     })
+}
+
+/// Signs a bundled developer executable with the exact retained signer already
+/// used for Host/helper. Each bundled executable carries the same authenticated
+/// app ID and publisher; this is not installed or release-signing authority.
+pub(super) fn sign_developer_bundle_executable(
+    pair: &PreparedLocalPair,
+    executable: &Path,
+) -> Result<[u8; 32], BuildError> {
+    if !executable.starts_with(pair.session.join("developer-runnable-bundle")) {
+        return Err(refuse(
+            "developer bundle executable",
+            "executable escaped the owned output session",
+        ));
+    }
+    let input =
+        File::open("NUL").map_err(|error| refuse("developer bundle signer stdin", error))?;
+    local_source::run_captured(
+        &pair.signer.tool,
+        &sign_args(
+            &pair.signer.certificate_sha1,
+            &pair.authoring.app.id,
+            executable,
+        ),
+        &pair.signer_environment,
+        &pair.session,
+        &input,
+        64 * 1024,
+    )?;
+    let executable_pin = local_source::pin_file(executable, MAX_IMAGE_BYTES)?;
+    let verified = WindowsAuthenticodeImage::open(executable)
+        .and_then(WindowsAuthenticodeImage::verify)
+        .map_err(|error| refuse("developer signed bundle executable", error))?;
+    if verified.identity() != pair.host.verified.identity() {
+        return Err(refuse(
+            "developer signed bundle executable",
+            "the signed bundle executable and verified Host have different application/publisher identities",
+        ));
+    }
+    let signed_bytes = read_exact_image(verified.file(), MAX_IMAGE_BYTES)?;
+    if signed_bytes.len() as u64
+        != executable_pin
+            .file
+            .metadata()
+            .map_err(|e| refuse("bundle executable metadata", e))?
+            .len()
+    {
+        return Err(refuse(
+            "developer signed bundle executable",
+            "retained length differs after signing",
+        ));
+    }
+    let mut args: Vec<OsString> = ["verify", "/pa", "/v"].map(OsString::from).into();
+    args.push(executable.as_os_str().to_owned());
+    local_source::run_captured(
+        &pair.signer.tool,
+        &args,
+        &pair.signer_environment,
+        &pair.session,
+        &input,
+        64 * 1024,
+    )?;
+    Ok(Sha256::digest(&signed_bytes).into())
 }
 
 pub(super) fn run(args: &[String]) -> Result<(), BuildError> {
@@ -415,6 +484,91 @@ pub(super) fn run(args: &[String]) -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn developer_policy_refuses_before_signer_capture_or_session_creation() {
+        use std::fs;
+
+        let root = tempfile::tempdir().expect("isolated developer source");
+        fs::write(
+            root.path().join("keld.config.ts"),
+            "export default { name: 'Input check', id: 'com.example.check', version: '1.0.0', entry: 'main.js', renderer: 'index.html' };",
+        )
+        .expect("literal app config");
+        let session = root.path().join("must-not-create-session");
+        let missing = root.path().join("no-signer-or-key");
+        let request = || ImageRequest {
+            source: local_source::Request {
+                source: root.path().join("no-source"),
+                commit: "0".repeat(40),
+                session: session.clone(),
+                git: root.path().join("no-git"),
+                cargo: root.path().join("no-cargo"),
+                rustc: root.path().join("no-rustc"),
+                cargo_home: root.path().join("no-cargo-home"),
+                cache_mode: local_source::CacheMode::MutableDeveloper,
+            },
+            app_root: root.path().to_path_buf(),
+            channel: "stable".into(),
+            release_public_key: missing.clone(),
+            sign_tool: missing.clone(),
+            sign_tool_sha256: "0".repeat(64),
+            certificate_thumbprint: "0".repeat(40),
+            publisher_scope: "0".repeat(64),
+            profile_admission: windows_inputs::ProfileAdmission::UndeclaredDeveloper,
+        };
+        for (case, policy) in [
+            (
+                "grant",
+                br#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#.as_slice(),
+            ),
+            (
+                "CSP",
+                br#"{"windows":{"primary":{"web":{"csp":"original-editor-offline"}}}}"#.as_slice(),
+            ),
+            ("missing final newline", b"{}".as_slice()),
+        ] {
+            keld_guard::parse_manifest(std::str::from_utf8(policy).unwrap())
+                .expect("valid nonreplayable manifest");
+            fs::write(root.path().join("keld.permissions.jsonc"), policy).expect("source policy");
+            let Err(error) = prepare_request(request(), false) else {
+                panic!("{case} reached unqualified signing path");
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains("cannot replay source permission policy bytes"),
+                "{case}: {error}"
+            );
+            assert!(
+                !session.exists(),
+                "{case} created a source/session artifact"
+            );
+            assert_eq!(
+                fs::read_dir(root.path()).unwrap().count(),
+                2,
+                "{case} created unexpected signing/output artifacts"
+            );
+        }
+
+        fs::write(
+            root.path().join("keld.permissions.jsonc"),
+            boot::PERMISSIONS_BYTES,
+        )
+        .expect("positive exact policy");
+        let Err(error) = prepare_request(request(), false) else {
+            panic!("missing signer and public key must prevent signing");
+        };
+        assert!(
+            !error.to_string().contains("developer policy replay"),
+            "valid empty policy must reach subsequent key/signer admission: {error}"
+        );
+        assert!(
+            !session.exists(),
+            "pre-signer positive did not create a session"
+        );
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 2);
+    }
 
     #[test]
     fn image_cache_mode_requires_explicit_opt_in_and_preserves_signer_inputs() {
