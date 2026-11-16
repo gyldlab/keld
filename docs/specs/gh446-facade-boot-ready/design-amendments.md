@@ -24,24 +24,73 @@ calls before that `Ready` and creates no window in any generation on its own. Sc
 only; Windows and Linux refuse it with `KELD-CORE-034` before any application resource
 (GH-446).
 
-**KEL-96 approval metadata.** Amend in place:
+**KEL-96 approval metadata.** Apply these changes in the same T-1 documentation change.
 
-- **Header `Decision digest:`.** Replace it with the digest T-1 recomputes over
-  D1–D12, using the §4.1 rule and the command in this spec's §7.
-- **§2 provenance.** "The eleven selections below" reads "The eleven original
-  selections below (D1–D11)". After the provenance list, append:
+- **Header `Decision digest:`.** Recompute the header digest over the exact D1–D12
+  decision-table bytes using §4.1's LF and final-LF rule and the command in §7.
+  Keep the historical `decision_digest` in §2 unchanged at
+  `sha256:053ad0c45ccdb76ae81c554e803275313dcdceca04ef8f021904bf99d64c45da`;
+  it continues to identify the original D1–D11 decision set.
+- **§2 original provenance.** Change "The eleven selections below" to "The eleven
+  original selections below (D1–D11)". Preserve every existing D1–D11 approval
+  field and value without rewriting its historical reviewer, head, blob or digest.
+- **§2 D12 decision record.** Immediately after the original D1–D11 provenance
+  record, append this exact record. Do not describe it as a human approval:
 
-  > **Amendment GH-446 (D12).** `KEL-96-D12` was added by GH-446 (spec #657,
-  > implementation T1). The new owner-delegated decision and exact technical-content
-  > review are recorded on #657, bound to the reviewed technical head and specification
-  > blobs; the implementing PR separately records its exact diff review. The header
-  > digest covers D1–D12 under the §4.1 rule; the `decision_digest` in the list above
-  > remains the value the original review approved for D1–D11. Historical approval
-  > does not approve the new semantics.
+  > **Amendment GH-446 (D12) — owner-delegated decision record.**
+  >
+  > - `decision_id`: `KEL-96-D12`
+  > - `decision_authority`: repository-owner explicit delegation in the active
+  >   2026-10-23 session; [authority claim](https://github.com/gyldlab/keld/issues/446#issuecomment-6370495240)
+  > - `decision_actor`: ChatGPT acting under that delegation; this does not claim
+  >   that the human personally inspected or approved the revised bytes
+  > - `publisher_identity`: `github:0monish#155816356`
+  > - `approval_source_id`: `github-issue-comment:6371083658`
+  > - `approval_source_url`:
+  >   `https://github.com/gyldlab/keld/pull/657#issuecomment-6371083658`
+  > - `approved_candidate_base`:
+  >   `3503a8aa383427dcf50ccbf6653c4298e7fb8aad`
+  > - `approved_candidate_head`:
+  >   `a04e1ed889733a64cc33c1b64535e02b4afb0902`
+  > - `approved_candidate_spec_blob`:
+  >   `2f53f2a3cf558c099c66ee886c935084f4e31440`
+  > - `approved_candidate_spec_sha256`:
+  >   `8f52e5b54348d14a0bf1276a0336e77bc043558d85e0851cfc7e6e70d8fda7b7`
+  > - `approved_candidate_gh531_blob`:
+  >   `7b0fdeaf98c847387ea47ffdef9158f64868685b`
+  > - `approved_candidate_gh531_sha256`:
+  >   `9c8adcbb9a702729480533dda3db2934d731400b1d8e721d116e81d78940ba5a`
+  > - `content_binding_digest`:
+  >   `3ebcbad966250005c6a8d4059405a8e519b02d93334fe9cbe817704ed434d4e5`
+  > - `independent_reviewers`: `/root/ready_architecture_review`
+  >   (lifecycle/API) and `/root/ready_security_review` (authority/custody/wire order)
+  > - `independent_refuter`: `/root/ready_event_refuter` for R1–R3; root review
+  >   independently rechecked R3
+  > - `original_d1_d11_decision_digest`:
+  >   `sha256:053ad0c45ccdb76ae81c554e803275313dcdceca04ef8f021904bf99d64c45da`
+  >
+  > The approval source is a delegated specification-decision record, not a GitHub
+  > APPROVED review by a human. It binds the historical technical candidate only.
+- **Separate final split-head review.** PR #657 MUST record a separate review of
+  the final split content. That record MUST bind the final split commit, reviewer
+  identity, review ID/source URL, review state, submission time, and the blob IDs
+  for the index and every part. The historical D12 decision record above MUST NOT
+  be treated as approval of the split content.
+- **Separate implementation review.** The T-1 implementation PR MUST record its
+  own exact-diff review: PR URL, reviewer identity, review ID/source URL, review
+  state, submission time, exact reviewed commit, base, and changed-file blob IDs.
+  Neither the D12 decision record nor the #657 split-head review substitutes for
+  this implementation review. Do not use placeholders or infer a review that was
+  not actually submitted.
 
-- **§7 "Decision completeness".** "Exactly one `KEL-96-D1` through `KEL-96-D11`"
-  reads "Exactly one `KEL-96-D1` through `KEL-96-D12`".
-- **§10.** "The eleven architecture decisions are frozen" reads "The twelve
+- **§7 "Decision completeness".** Replace the D1–D11-only rule with a rule that
+  requires exactly one `KEL-96-D1` through `KEL-96-D12`; it MUST reject
+  `Status: approved` unless D1–D11 retain their original approver/source/head/blob
+  metadata and D12 contains the complete delegated decision/source/base/head/blob/
+  hash/content-binding record above. The final split-head review and T-1
+  implementation review are separate required evidence and cannot be substituted
+  for the D12 decision record.
+- **§10.** Change "The eleven architecture decisions are frozen" to "The twelve
   architecture decisions (D1–D11, and D12 added by GH-446) are frozen".
 
 **KEL-96 AC-1.** Replace with:
