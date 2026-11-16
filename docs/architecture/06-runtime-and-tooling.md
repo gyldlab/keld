@@ -1437,3 +1437,19 @@ attempt. Delta never changes provenance, journal, health, trust-floor, LKG or ro
 - DevTools: system engines expose what they have (CDP on WebView2, Safari inspector on
   macOS, WebKitGTK inspector); `keld dev` prints exact attach instructions per OS —
   no pretending parity exists where it doesn't.
+
+## Proposed native launch-envelope qualification
+
+[KEL-75 T9a](../specs/kel75-native-role-qualification.md) does not alter the current Bun path.
+The first private declaration names one AppBound role, packaged artifact, Echo contract and
+exact containment profile. No public config key or boot schema version is allocated here.
+KEL-96 owns any later serialized declaration. Do not reuse occupied boot versions.
+KEL-75 preparation and KEL-78 admission jointly bind executable/dependency custody, argv,
+cwd, explicit environment, loader behavior and inherited-handle allowlists on every restart.
+KELD_APP_LINK remains the sole bootstrap locator. Child metadata cannot select authority.
+The same lifecycle owner manages each role. A Windows per-generation resource boundary must
+not repurpose the shared Host-death Job. Linux cgroup delegation/membership must be proved
+before execution; namespaces alone are not quotas. Resource-group census is not direct reap.
+Select exact build inputs before the prototype; bind output hashes before qualification.
+Only an exact measured resource/containment record permits product admission. No macOS
+whole-tree quota is inferred from sandboxing or cleanup. Unsupported tuples stay unsupported.

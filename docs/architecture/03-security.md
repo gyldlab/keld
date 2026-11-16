@@ -345,3 +345,14 @@ Architecture 06
   engines — pinned-engine apps inherit an Electron-style update duty; `keld doctor`
   nags on stale pins).
 - No DRM/anti-tamper claims. Signed updates ≠ secure boot.
+
+## Proposed native-role authorization boundary
+
+[KEL-75 T9a](../specs/kel75-native-role-qualification.md) remains draft. The initial native
+Echo service cannot make privileged service-to-Host calls. Authentication is not a grant.
+Later privileged dispatch requires passed KEL-102 T5 integration, its T4 and exact KEL-97
+principal/stale-generation prerequisites, and Host-owned delegation across both hops.
+Authorize the caller for the service operation and the service for its downstream resource;
+do not union authority or trust caller identity in payloads. Retire authority synchronously
+before successor admission. Async revocation telemetry does not prove that fence completed.
+These are acceptance conditions, not claims that named native-role grants already ship.

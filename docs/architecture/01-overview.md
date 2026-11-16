@@ -255,3 +255,14 @@ KEL-83 pending a real concurrent-init consumer (Bun boot) to overlap it against.
   differential corpus and no package-name special cases.
 - No CEF-by-default anywhere; pinned engines are opt-in and per-platform. Keld promises
   no bundled Chromium by default, not literal no-Chromium execution on WebView2.
+
+## Proposed native application-role qualification
+
+[KEL-75 T9a](../specs/kel75-native-role-qualification.md) is a draft target, not shipped support.
+The proposed destination is runtime-neutral application roles with Bun as the default and
+Electron-compatibility runtime. The current Bun statements above remain current behavior.
+The first proof is one native AppBound service beside the unchanged Bun primary. Refuse an
+occupied AppBound slot; do not evict another role or generalize to arbitrary service counts.
+Reuse the existing lifecycle implementation with one authority owner per role. Native code
+is ordinary untrusted application code, not an in-host extension or automatic privilege.
+Rust-only primary and additional OS profiles require separate exact-artifact qualification.

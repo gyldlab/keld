@@ -173,3 +173,16 @@ Contract:
 The direct lifecycle transport implementation must not remain duplicated in
 both packages. Compatibility behavior stays unchanged; only the generic owner
 moves.
+
+### Proposed KEL-75 native caller qualification
+
+This note preserves the historical approved API above. It records the proposed target in
+[KEL-75 T9a](../kel75-native-role-qualification.md), not current native-role support.
+The first native Echo comparison uses the existing invoke surface and one in-flight request.
+No new option, channel or `.code` property is introduced. For the native-service failure path,
+an Error message starting exactly with `KELD-WV-011:` means Unknown outcome. It does not
+prove rollback or permit automatic replay; Host-known NotSent is deliberately internal-only.
+The Host classifies by trusted emitter/direction and preserves that prefix through the SDK.
+Peer-supplied codes, malformed ERR and Worker loss cannot mint safe-retry evidence.
+The qualification effect probe uses this same path and checks both caller prefix and durable
+count independently. Implementation and promotion remain blocked by KEL-75's exact gates.

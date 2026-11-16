@@ -21,7 +21,7 @@ framework.
 Non-goals:
 
 - no Node, Deno, Python, Go, C#, Zig, WASM or arbitrary executable support claim;
-- no runtime-plugin marketplace, public execution-provider trait or second supervisor;
+- no runtime-plugin marketplace, public execution-provider trait or competing lifecycle owner for the same role;
 - no new KIPC wire version/opcode, alternate permission engine or direct renderer-to-role transport;
 - no in-host Rust application code disguised as a confined backend;
 - no shared-memory lane, generic resource governor, distributed transaction system or exactly-once IPC claim;
@@ -104,20 +104,29 @@ This draft intentionally does not change architecture 01's normative “JS owns 
   - **At-risk precondition:** Observe one durable effect commit and suppress its reply. Retire the generation, then admit a successor that accepts the same operation without application deduplication.
   - **Expected RED:** After independent acknowledgement of the replayed effect, the durable counter is two instead of one. The caller must still report ambiguity, not rollback.
 
-AC-6 remains a target contract, not an existing native-service error mapping.
-`KELD-IPC-022` reports an unknown host effect after link closure; `KELD-IPC-023`
-reports an unknown host effect when the host retires the caller's role generation.
-Neither scope proves the outcome signal for a renderer calling a native service
-whose generation dies. `KELD-IPC-025` reports transport Worker loss and does not
-currently define an effect-status guarantee.
+The native caller-path mapping is a target, not current product support. For this slice,
+the Host maps native-service retirement or an unclassified service failure to the existing
+renderer `KELD-WV-011` failure prefix. For renderer callers the exact observable is an Error whose message starts with
+`KELD-WV-011:`. This prefix means outcome Unknown for this native-service caller path,
+including a Host-known pre-dispatch refusal; NotSent is deliberately internal-only.
+No renderer-visible code or `.code` property asserts safe retry. Register this scoped
+meaning in architecture 02 and the KEL-142 failure contract before T9a promotion.
+The SDK must preserve the prefix unchanged and must not infer effect status from peer text.
+The qualification fixture independently asserts this exact prefix and no replay. This does not extend IPC-022/023/025 semantics.
+The current renderer facade exposes an Error message, not the role SDK's `.code` field.
 
-Before approval, T9a must specify that caller path, its registered error or
-explicit effect-status contract, and its propagation through the SDK. It must
-cover loss before dispatch and loss after a possible effect, including Worker
-loss, without inferring safe retry from a transport error. T9a must then name the
-chosen observable in AC-6 and its negative control. The durable-effect count and
-caller-visible ambiguity assertion are separate required observations. This draft
-does not select a new code or extend an existing code's meaning.
+The Host must preserve trusted emitter and call direction internally. No error-code string
+alone proves an effect. A Host-local refusal before any dispatch attempt can prove NotSent.
+Attempted or partial forwarding, lost reply, Worker loss, empty/malformed peer ERR and
+unknown terminal state mean Unknown. Peer-chosen IPC-005, guard or Host-like codes cannot
+mint non-execution proof. A correlated application error does not prove rollback.
+
+Add a peer-code-laundering control: commit the durable effect, return a malformed ERR or
+forged non-execution code, and require Unknown with no replay. An admission/write ACK is
+not a transaction outcome. A later explicit retry requires either a terminal/fenced old
+effect owner plus authoritative negative outcome, or concurrency-safe durable deduplication
+for the same operation key. A status read of “absent” alone is insufficient.
+GH1095 remains a draft dependency direction, not evidence that this mapping is implemented.
 
 ### AC-7
 
@@ -133,7 +142,7 @@ does not select a new code or extend an existing code's meaning.
 
 - **Given:** the native role crashes, aborts, hangs, floods output, violates protocol or exhausts its declared resource budget.
 - **When:** failure handling runs.
-- **Then:** the host/window/other unrelated principals remain live, old generation authority is revoked, descendants are reaped by the platform owner and restart policy remains bounded.
+- **Then:** the host/window/other unrelated principals remain live, old generation authority is revoked, descendants terminate with an empty owned-group census, direct owned children are reaped, and restart policy remains bounded.
 - **Negative control:**
   - **Single fault:** Skip retirement of the old generation's dispatch authority.
   - **At-risk precondition:** Queue an authenticated old-generation request immediately before its dispatch-authority check. Retire that generation, then release the request to that check. Keep an unrelated role live.
@@ -189,7 +198,15 @@ Each control isolates one fault. The other obligations in each criterion still r
 
 **Authority:** `keld-host` remains the only long-lived general privileged process. A normal native application role is not trusted merely because it is Rust. KEL-78's real-OS profile determines ambient authority. Reviewed in-host extensions remain a distinct TCB-expanding mode.
 
-**Identity:** a role instance remains `(host-declared role, fresh host-minted generation)`. Executable path, PID, runtime kind, environment fields, KIPC frames and tracing metadata are never principals.
+**Identity:** the first slice has one native AppBound service and an unchanged Bun primary.
+Refuse an occupied AppBound slot or multiple service declarations; never evict an existing role.
+Host-owned role/generation identity and reader custody remain mandatory. Child metadata is not authority.
+Keep coordinator, counters, registry, ports and pending calls within one Host session lifetime.
+Do not hot-replace the coordinator while retaining its registry or generation tombstones.
+Retire all session context before exposing a new session; counter restart cannot alias old context.
+Before exposing a successor, require the authority/port owner to acknowledge its admission fence.
+An asynchronous Revoked notification is not this acknowledgement. Fencing stops new handler entry;
+it does not undo already admitted work or its effects. Drain/cancel outcomes stay explicit.
 
 **Lifecycle:** reuse `keld-runtime::Supervisor`, `ChildPreparer`, `PreparedChild`, `GenerationLease`, `RoleGenerationOwner` and the existing role registry/coordinator contracts. The second consumer may expose Bun-specific assumptions that need moving behind the existing preparation boundary; that does not justify a public generic-runtime framework.
 
@@ -211,17 +228,44 @@ No performance claim is made by this design.
 
 ### New/changed internal types and contracts
 
-The first implementation should extend the current internal preparation seam only as required by the native executable. Conceptually the declaration needs an implementation/artifact choice that is host-owned; exact public config syntax is intentionally not frozen by this draft.
+The first declaration is private Host-owned qualification input, not public application syntax.
+It names the exclusive AppBound role, packaged artifact identity, native artifact kind, existing
+Echo contract identifier and exact qualified containment profile. Packaging/admission resolves
+these values; child-supplied values cannot select identity, grants or profiles. Reject unknown
+fields and unsupported tuples. KEL-96 owns any later serialized public schema allocation;
+existing boot versions cannot be reused. No public runtime-provider or language registry is added.
+The KEL-75 preparer and KEL-78 artifact admission owners jointly freeze a closed launch envelope:
+exact executable/dependent-code hashes and custody through execution, ordered argv, approved cwd,
+explicit environment allowlist, loader/search behavior and inherited descriptor/handle allowlist.
+Do not inherit the parent environment by default. KELD_APP_LINK is the only bootstrap locator.
+Revalidate the envelope on every generation. Refuse an unsupported envelope before app code runs.
+Qualification plants harmless secret/loader canaries, shadow dependencies, replacement artifacts
+and unapproved handles. Independently prove refusal/absence and healthy approved execution.
 
 The implementation MUST NOT add a second environment bootstrap. `KELD_APP_LINK=<endpoint>#<token>` remains the sole child bootstrap locator unless a separately reviewed requirement proves it insufficient. Role/principal/grant/runtime metadata is negotiated or bound by the host after authentication, not trusted from environment values.
 
-KEL-98 owns the shared operation contract. The first native fixture uses the same existing typed/golden-vector source consumed by the TS implementation; no independently handwritten Rust/TS schema pair is accepted as parity evidence.
+KEL-98 Echo is the first operation: preserve its existing String/u32 schema and literal vectors.
+Both TS and Rust consume that canonical source. No independent hand-written schema pair is parity.
+No arbitrary bytes, null, streaming, wider integers or schema evolution claim is made.
+Postcard wire-format stability does not establish schema evolution compatibility.
+KEL-98 owns Echo value/error vectors; existing KIPC owners retain routing/correlation and
+ordering. Admit one in-flight request; reject excess work, do not add a hidden reorder queue.
+The durable-counter probe is qualification-only, not a product operation or opcode. It traverses
+the same Host failure mapper and renderer SDK path, not a fixture-only outcome shortcut.
+Exercise old effects still in flight and durable completion followed by lost reply separately.
+Retain stale readiness/reply and stale port-operation controls across generation replacement.
 
 ### Capabilities required; manifest changes
 
 No new capability name is required for native execution itself. Existing declared role-policy intent applies to both implementations. KEL-78/KEL-102 must prove that the selected OS mechanism and guarded dispatch enforce that intent for each supported tuple.
 
-Any future explicit privileged-service delegation requires a separate permission/public-contract review. Automatic authority union or blanket role-to-role trust is forbidden.
+The initial service has no privileged service-to-Host dispatch. Reject direct privilege attempts
+and callbacks after the originating renderer retires. Later privileged services require caller
+authorization for the declared operation and service authority for the downstream resource,
+both scoped by explicit Host-owned delegation across both hops. No automatic authority union.
+Later privileged product dispatch requires passed KEL-102 T5 accepted-link-to-role-guard
+integration, including its T4 and exact KEL-97 `role-guard-principal` and
+`stale-generation-dispatch` prerequisites. Generic link or Echo success is not proof.
 
 ### Wire/protocol changes
 
@@ -232,6 +276,29 @@ None for the first slice. Existing KIPC v2 bootstrap/framing/receiver semantics 
 - macOS: native-role admission must separately qualify executable identity, Hardened Runtime/App Sandbox/entitlements as applicable, descendant cleanup and signing/package provenance. Bun evidence is not inherited.
 - Windows: native-role admission must separately qualify token/LPAC/AppContainer/job/handle policy as applicable, executable/library ACLs, descendants and signing/package provenance. Bun evidence is not inherited.
 - Linux: native-role admission must separately qualify the supported namespace/seccomp/Landlock/artifact combination and exact executable/library mounts. Existing Bun strict-profile evidence is not inherited.
+
+### Resource qualification contract
+
+The shared Windows Host-death Job contains the Host. It is not a per-service quota boundary.
+Preserve its kill-on-close/release contract. Qualify a separate per-generation resource Job
+under the same lifecycle owner, with compatible nesting and assignment before untrusted execution.
+Disallow breakaway; exhausting or killing that Job must leave the Host and sibling functional.
+Linux requires delegated cgroup-v2 controllers, membership before execution and readback,
+and no child-controlled migration. Namespace visibility or post-spawn migration is not proof.
+Keep direct-child wait completion separate from resource-group census.
+No macOS whole-tree hard quota follows from App Sandbox, Hardened Runtime or cleanup.
+An unproven resource-profile cell remains unsupported, not silently weakened.
+
+KEL-78 must supply an exact artifact/OS/architecture/profile qualification record before product admission.
+It states finite CPU units/interval/scheduler scope, memory metric/overshoot, process/thread count,
+Host queue/correlation/output caps, restart budget, aggregate admission and measured Host reserve.
+Choose values from measured fixture startup and workload, not invented universal defaults.
+One in-flight Echo request is the first fixture concurrency limit; retain existing wire bounds.
+Each resource row names its enforcement mechanism, independent observable, exhaustion negative,
+and healthy Host/sibling positive. Include aggregate descendant consumption, not just one process.
+Remove one enforcement control while the workload reaches
+that bound: the independent measurement must fail even if kill/reap eventually succeeds.
+Liveness is qualified within this stated operating envelope, not against arbitrary system OOM.
 
 A platform may ship TS/Bun support while native-role support remains explicitly unsupported there.
 
@@ -263,41 +330,57 @@ Must not touch merely to make the design look generic:
 
 - **Blocked by:** none
 
-promote this draft with synchronized architecture/config/current-vs-target wording; freeze the smallest host-owned native-role declaration without adding a public runtime-plugin API; resolve and register the AC-6 caller-visible ambiguity contract and SDK mapping before approval. **T9b–T9g remain planning-only and MUST NOT begin until T9a lands with this specification at `Status: approved`.**
+promote this draft with synchronized architecture/config/current-vs-target wording; freeze the smallest
+host-owned native-role declaration without adding a public runtime-plugin API; resolve and register the AC-6
+caller-visible ambiguity contract and SDK mapping before approval. **T9b–T9g remain planning-only and MUST NOT
+begin until T9a lands with this specification at `Status: approved`.**
 
 ### T-2: T9b
 
 - **Blocked by:** T-1
 
-after approved T9a, implement one supervised Rust service role on one already-qualified OS using the existing preparation/generation/app-link owner; no renderer API change.
+After approved T9a, build one isolated native AppBound prototype with the existing owner.
+T9b entry also requires the KEL-75/KEL-78 owners to record one exact OS version,
+architecture, controlled build/dependency inputs and containment/resource profile. Select a tuple with
+controlled enforceable resource primitives; availability alone does not establish qualification.
+This is an implementation-owner selection record, not a request for more user design approval.
+Record immutable output artifact/dependency hashes at T9b completion, before T9d qualification.
+This permits isolated qualification work, not product admission or a support claim.
+No renderer API change.
 
 ### T-3: T9c
 
-- **Blocked by:** T-1
+- **Blocked by:** T-1, T-2
 
 same-contract hybrid fixture: TS implementation and Rust implementation separately satisfy value/error/permission/ordering/malformed-input vectors; renderer call site is unchanged.
 
 ### T-4: T9d
 
-- **Blocked by:** T-1
+- **Blocked by:** T-1, T-2
 
-KEL-78 containment qualification for that exact native artifact, including hostile file/network/process/code-load/hang/abort/resource tests and descendant cleanup.
+KEL-78 qualifies the immutable T9b candidate with hostile file/network/process/code-load,
+hang/abort/resource and descendant tests. Product admission requires this pass plus B-1.
+Qualification is not circular: T9b constructs the isolated candidate; T9d qualifies it.
 
 ### T-5: T9e
 
-- **Blocked by:** T-1
+- **Blocked by:** T-1, T-2, T-3, T-4
 
-Rust-only primary product fixture: no Bun process/artifact, real renderer call, guarded denial, recovery/ambiguous-effect case and clean Quit.
+Rust-only primary is a separate qualification target, not inherited AppBound acceptance.
+Before T9e completion, KEL-75/KEL-96 review primary boot/declaration/schema and lifecycle
+compatibility; qualify the exact primary artifact/dependencies and each claimed OS profile.
+Require no Bun process/artifact, real renderer call, guarded denial, ambiguous-effect handling
+and clean Quit. T9b–d AppBound success alone cannot authorize primary product admission.
 
 ### T-6: T9f
 
-- **Blocked by:** T-1
+- **Blocked by:** T-1, T-2, T-3, T-4, T-5
 
 repeat T9b–T9e independently on each additional claimed OS/architecture/security profile; unsupported cells remain explicit.
 
 ### T-7: T9g
 
-- **Blocked by:** T-1
+- **Blocked by:** T-1, T-3, T-4
 
 only after measured consumer evidence, decide whether any additional runtime/language adapter is worth product support.
 
@@ -333,9 +416,22 @@ The design itself changes no budget. A native role can add a process, memory, wa
 
 ## 10. Open questions, blockers & unknowns
 
-- Exact public configuration spelling and SDK package/crate naming are intentionally unresolved until T9a reviews the smallest consumer-facing surface against KEL-139/KEL-142 and packaging constraints.
-- Which OS should host T9b first is an execution/evidence choice, not an architecture decision; select the currently available platform with the smallest qualified containment/delivery delta without inferring support elsewhere.
-- Native-role resource limits remain platform/runtime-specific until a demonstrated workload requires a portable public policy.
+### B-1: Exact native admission evidence
 
-These questions do not authorize implementation while this specification remains `draft`.
+- **Status:** open
+- **Owner:** KEL-78 and KEL-102 implementation owners
+- **Impact:** native product admission remains blocked on exact resource/containment qualification.
+  Privileged dispatch is additionally blocked on role-aware authorization integration.
+- **Check:** exact numeric resource/profile record and artifact-specific OS controls pass
+  independent negative controls. For privilege, also require KEL-102 T5 with its named
+  KEL-97 prerequisites. The unprivileged Echo slice does not require privileged dispatch.
 
+### B-2: Promotion and synchronized documentation
+
+- **Status:** open
+- **Owner:** KEL-75
+- **Impact:** T9b–T9g remain planning-only while this spec is draft.
+- **Check:** architecture/config current-versus-target text, declaration and effect contract
+  receive exact-head independent review; required document gates pass before promotion.
+
+No native execution or acceptance is claimed by this documentation correction.
