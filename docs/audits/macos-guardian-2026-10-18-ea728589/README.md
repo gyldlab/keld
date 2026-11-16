@@ -27,15 +27,15 @@ and review disposition. `summary.json` pins the scope and the counts.
 | Production (B) | 18 |
 | Tests (C) | 59 |
 | **Total in this bounded macOS scope** | **77** |
-| Verified *for a prior narrow security PR*, not full architecture | 6 |
-| Reopened: a later review found a defect in the pinned blob | 2 |
+| Verified *for a prior narrow security PR*, not full architecture | 5 |
+| Reopened: a later review found a defect in the pinned blob | 3 |
 | **Pending complete file-level architecture review** | **69** |
 | Added relative to pinned `main` | 75 |
 | Modified relative to pinned `main` | 2 |
 
 All 77 rows are pinned to Git tree objects; `added` means absent from the
 specified `main` tree only. The 69 pending rows must **not** be inferred as
-cohesive, safe, or no-change. Even the six scoped-verified rows still require
+cohesive, safe, or no-change. Even the five scoped-verified rows still require
 any broader #824 cohesion, cross-component and integration disposition not
 demonstrated by their narrow security fixes.
 
@@ -54,6 +54,16 @@ the exact pinned blob. Neither blob is reviewed evidence:
   [#945 review](https://github.com/gyldlab/keld/pull/945) of 2026-10-21 found a
   medium duplicated group-absence predicate. The single absence owner landed in
   `20997b55`..`90c46fa0`, with different blobs.
+
+**Correction (2026-11-16).** A third row is now `reopened`:
+`registered_guardian.rs` blob `e716d4832d474e12f7a154ece1a3883f5462d136`.
+Its pinned `fail_observation` calls `Child::kill()` after an `ECHILD`
+inspection error. An external reap can release that PID before the signal.
+[Review #949](https://github.com/gyldlab/keld/pull/949#discussion_r4584736075)
+traces this historical defect. Current #948 `31af86e2` inherits the ECHILD
+guard, but that fix does not change the pinned blob. This row is not verified.
+The totals are now five verified-scoped, three reopened and 69 pending.
+Historical Git pins and test receipts below are unchanged.
 
 The descriptions below record what each PR claimed at the pinned commits.
 
