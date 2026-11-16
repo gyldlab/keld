@@ -31,7 +31,7 @@ type Message = {
 async function launch(
   observer: boolean,
   mutant = false,
-  installed?: { wrapper: string; entry: string },
+  installed?: { wrapper: string; entry: string; bootstrap?: string },
 ) {
   const dir = mkdtempSync(join(tmpdir(), "krp-"));
   const endpoint =
@@ -88,10 +88,13 @@ async function launch(
           join(import.meta.dir, "runtime-preload-observer.fixture.mjs"),
         ]
       : []),
-    "--preload",
-    wrapper,
-    installed?.entry ??
-      join(import.meta.dir, "runtime-preload-entry.fixture.mjs"),
+    ...(installed?.bootstrap ? [] : ["--preload", wrapper]),
+    ...(installed?.bootstrap
+      ? ["run", installed.bootstrap, installed.entry]
+      : [
+          installed?.entry ??
+            join(import.meta.dir, "runtime-preload-entry.fixture.mjs"),
+        ]),
   ];
   const proc = Bun.spawn(command, {
     env: {
@@ -250,7 +253,7 @@ test("wrong Init acknowledgement closes the link before application entry", asyn
   }
 }, 15000);
 
-test("actual packed API wrapper captures and ACKs over its same stamped installed transport", async () => {
+test("packed API captures and ACKs through the supported installed entry", async () => {
   const stage = mkdtempSync(join(tmpdir(), "krp-sdk-"));
   try {
     const producer = join(
@@ -301,7 +304,26 @@ test("actual packed API wrapper captures and ACKs over its same stamped installe
     const text = readFileSync(wrapper, "utf8");
     expect(text).toContain('from "@keld/kipc"');
     expect(text).toContain('from "./app.js"');
-    const run = await launch(false, false, { wrapper, entry });
+    // Bun 1.4.4 Windows does not share the app singleton between --preload
+    // and main. The signed Host selects this app-root bootstrap as Bun main,
+    // keeping the original and the API in one ESM graph. Keep the legacy
+    // wrapper-positive path on platforms where both phases share the cache.
+    const bootstrap =
+      process.platform === "win32"
+        ? join(stage, "keld-installed-runtime-entry.mjs")
+        : undefined;
+    if (bootstrap) {
+      const template = readFileSync(
+        join(import.meta.dir, "installed-runtime-entry.mjs"),
+        "utf8",
+      );
+      expect(template.split("__KELD_SELECTED_ENTRY__")).toHaveLength(3);
+      writeFileSync(
+        bootstrap,
+        template.replaceAll("__KELD_SELECTED_ENTRY__", "entry.mjs"),
+      );
+    }
+    const run = await launch(false, false, { wrapper, entry, bootstrap });
     try {
       await run.ack();
       await run.subscribe();

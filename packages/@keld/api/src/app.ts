@@ -1,4 +1,5 @@
 import type { MenuRequestV1, MenuInstallReceipt } from "./menu.generated.ts";
+import { isMainThread, parentPort } from "node:worker_threads";
 /**
  * Backend-independent application lifecycle over the canonical app-link.
  *
@@ -65,6 +66,33 @@ export function preloadRuntimeProcessFacts(versions: unknown): Promise<void> {
     snapshotRuntimeProcessFacts(versions),
   );
   return ensureLink().then(() => undefined);
+}
+
+/**
+ * Host-owned entry graph for runtimes where CLI --preload and application
+ * entry do not share the same module cache. A previously verified loader is
+ * supplied by the Host's admitted boot path, never read from mutable argv or
+ * environment. The real Init ACK and subscriptions must finish before user
+ * modules are evaluated, and both phases use this module's one app instance.
+ *
+ * This introduces no alternate link or permission source: the original
+ * trusted launch define, Host-minted endpoint and WorkerLink remain mandatory.
+ */
+export async function bootHostSelectedEntry(
+  loadVerifiedEntry: () => Promise<unknown>,
+): Promise<void> {
+  if (!isMainThread || parentPort !== null)
+    throw linkError(
+      "KELD-IPC-005",
+      "Host-selected runtime entry must execute in the role main thread.",
+    );
+  if (typeof loadVerifiedEntry !== "function")
+    throw linkError(
+      "KELD-IPC-005",
+      "Host-selected runtime entry requires a verified loader function.",
+    );
+  await preloadRuntimeProcessFacts(process.versions);
+  await loadVerifiedEntry();
 }
 
 let compatConsumer: CompatConsumer | undefined;

@@ -116,6 +116,21 @@ pub(super) struct CompilerRequest {
     pub(super) tsc_sha256: [u8; 32],
 }
 pub(super) fn run(args: &[String]) -> Result<(), BuildError> {
+    // The native Host does not implement the initial-install role or its
+    // required Cargo features. Refuse before image capture or signing, even
+    // through this explicit LOCAL TEST archive entry point.
+    if args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--initial-install-inputs"
+                | "--initial-install-observed-inputs"
+                | "--initial-install-create-scaffold-inputs"
+        )
+    }) {
+        return Err(BuildError::invocation(
+            "Windows initial installation is unavailable until the installed Host admission path is implemented and qualified",
+        ));
+    }
     let invocation = parse(args)?;
     let t = invocation.tools;
     let compiler = CompilerRequest {
@@ -134,6 +149,7 @@ pub(super) fn run(args: &[String]) -> Result<(), BuildError> {
             .initial_install
             .map(|path| (Path::new(path), invocation.install_mode)),
         invocation.signing_session,
+        BuildAudience::LocalTest,
     )
 }
 /// Ordinary Windows test-only product route. Same retained archive transaction;
@@ -145,7 +161,85 @@ pub(super) fn run_product(
     published_at: &str,
 ) -> Result<(), BuildError> {
     validate_stamp(published_at)?;
-    execute(images, compiler, modules, Some(published_at), None, true)
+    execute(
+        images,
+        compiler,
+        modules,
+        Some(published_at),
+        None,
+        true,
+        BuildAudience::LocalTest,
+    )
+}
+/// Local developer build reuses exact authenticated signing and archive gates,
+/// but does not invoke the externally authorized update-manifest signer.
+pub(super) fn run_developer(
+    images: local_images::ImageRequest,
+    compiler: CompilerRequest,
+    modules: &[String],
+) -> Result<(), BuildError> {
+    execute(
+        images,
+        compiler,
+        modules,
+        None,
+        None,
+        false,
+        BuildAudience::Developer,
+    )
+}
+/// Explicit developer-local initial install keeps the same produced archive and
+/// authenticated Host pinned while the existing one-use manifest signing
+/// session and verified `PerUserDirect` installer run. No key is created here.
+pub(super) fn run_developer_initial_install(
+    images: local_images::ImageRequest,
+    compiler: CompilerRequest,
+    modules: &[String],
+    published_at: &str,
+    inputs: &Path,
+    create_scaffold: bool,
+) -> Result<(), BuildError> {
+    validate_stamp(published_at)?;
+    if !inputs.is_absolute() {
+        return Err(BuildError::invocation(
+            "developer initial install requires absolute observed inputs",
+        ));
+    }
+    execute(
+        images,
+        compiler,
+        modules,
+        Some(published_at),
+        Some((
+            inputs,
+            if create_scaffold {
+                InitialInstallMode::CreateNew
+            } else {
+                InitialInstallMode::Observed
+            },
+        )),
+        true,
+        BuildAudience::Developer,
+    )
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildAudience {
+    Developer,
+    LocalTest,
+}
+impl BuildAudience {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Developer => "DEVELOPER LOCAL",
+            Self::LocalTest => "LOCAL TEST",
+        }
+    }
+    const fn event(self) -> &'static str {
+        match self {
+            Self::Developer => "windows-developer-build-complete",
+            Self::LocalTest => "windows-local-test-build-complete",
+        }
+    }
 }
 #[expect(
     clippy::needless_pass_by_value,
@@ -158,6 +252,7 @@ fn execute(
     published_at: Option<&str>,
     initial_install: Option<(&Path, InitialInstallMode)>,
     signing_session: bool,
+    audience: BuildAudience,
 ) -> Result<(), BuildError> {
     let compiler = CapturedCompilerToolchain::capture(
         &tools.typescript_root,
@@ -233,7 +328,8 @@ fn execute(
         "Source preparation remains nonhermetic; selected commit is not an official release/source-trust claim."
     );
     println!(
-        "Prepared LOCAL TEST application archive candidate: {}",
+        "Prepared {} application archive candidate: {}",
+        audience.label(),
         candidate.path().display()
     );
     println!(
@@ -248,7 +344,7 @@ fn execute(
     }
     println!(
         "{}",
-        serde_json::json!({"event":"windows-local-test-build-complete","sourceCommit":&pair.source.source_commit,
+        serde_json::json!({"event":audience.event(),"sourceCommit":&pair.source.source_commit,
         "sourceRecipeSha256":super::local_source::observed_hex(&pair.source.recipe_sha256),
         "archive":candidate.path(),"archiveBlake3":super::local_source::observed_hex(candidate.receipt().compressed_blake3()),
         "signedManifest":signed_manifest.is_some(),"initialBaselineCommitted":initial_install.is_some(),
@@ -258,7 +354,7 @@ fn execute(
     Ok(())
 }
 
-fn validate_stamp(stamp: &str) -> Result<(), BuildError> {
+pub(super) fn validate_stamp(stamp: &str) -> Result<(), BuildError> {
     let b = stamp.as_bytes();
     let valid_shape = b.len() == 20
         && [4, 7, 10, 13, 16, 19]
@@ -369,6 +465,38 @@ fn emit_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn archive_entry_refuses_unimplemented_install_before_image_capture() {
+        for flag in [
+            "--initial-install-inputs",
+            "--initial-install-observed-inputs",
+            "--initial-install-create-scaffold-inputs",
+        ] {
+            let args = vec![flag.into(), "D:/owned/install.json".into()];
+            assert_eq!(
+                run(&args)
+                    .expect_err("unimplemented installed Host must refuse")
+                    .exit_code(),
+                2
+            );
+        }
+    }
+
+    #[test]
+    fn developer_and_test_builds_keep_distinct_nonrelease_receipts() {
+        assert_eq!(BuildAudience::Developer.label(), "DEVELOPER LOCAL");
+        assert_eq!(
+            BuildAudience::Developer.event(),
+            "windows-developer-build-complete"
+        );
+        assert_eq!(BuildAudience::LocalTest.label(), "LOCAL TEST");
+        assert_eq!(
+            BuildAudience::LocalTest.event(),
+            "windows-local-test-build-complete"
+        );
+    }
+
     fn arguments(developer: bool) -> Vec<String> {
         let mut args: Vec<String> = (0..15).map(|i| format!("image-{i}")).collect();
         if developer {

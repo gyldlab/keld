@@ -1501,6 +1501,31 @@ pub(super) fn prepare(
     // Cargo would otherwise search unmeasured .cargo/config(.toml) in every
     // ancestor of the private source checkout. Refuse before starting Cargo.
     validate_cargo_ancestor_configuration(&source)?;
+    if initial_install {
+        // Cargo metadata itself accepts an absent --features flag without rejecting
+        // it. Inspect its actual selected-package feature map instead, before the
+        // expensive native Host build and before image signing can consume a nonce.
+        let mut metadata_args = os_args(&[
+            "metadata",
+            "--no-deps",
+            "--format-version",
+            "1",
+            "--frozen",
+            "--offline",
+            "--manifest-path",
+        ]);
+        metadata_args.push(source.join("Cargo.toml").into_os_string());
+        let metadata = run_captured_budget(
+            &cargo,
+            &metadata_args,
+            &environment,
+            &source,
+            &null_input,
+            4 * 1024 * 1024,
+            &budget,
+        )?;
+        require_initial_install_host_features(&metadata)?;
+    }
     // Retained source/tool pins remain alive. Never print arbitrary compiler diagnostics.
     // create_new refuses replacement; the enclosing session has retained private ancestry.
     let mut diagnostic = OpenOptions::new()
@@ -1561,6 +1586,49 @@ pub(super) fn prepare_from_args(
 ) -> Result<LocalSourceBuildObservation, BuildError> {
     prepare_from_args_with_role(args, false)
 }
+/// A Cargo feature request is not proof that the selected integrated Host
+/// implements it. Inspect pinned-source Cargo metadata before compilation or
+/// signing; this keeps unsupported installation runs fail-closed and cheap.
+/// This checks declared capabilities, not successful native installer behavior.
+fn require_initial_install_host_features(metadata: &[u8]) -> Result<(), BuildError> {
+    let json: serde_json::Value = serde_json::from_slice(metadata)
+        .map_err(|error| failure("initial-install Host metadata", error))?;
+    let packages = json
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| failure("initial-install Host metadata", "Cargo package list absent"))?;
+    let mut hosts = packages.iter().filter(|package| {
+        package.get("name").and_then(serde_json::Value::as_str) == Some("keld-host")
+    });
+    let host = hosts.next().ok_or_else(|| {
+        failure(
+            "initial-install Host metadata",
+            "selected Host package absent",
+        )
+    })?;
+    if hosts.next().is_some() {
+        return Err(failure(
+            "initial-install Host metadata",
+            "ambiguous selected Host package",
+        ));
+    }
+    let features = host
+        .get("features")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| failure("initial-install Host metadata", "Host feature map absent"))?;
+    for required in ["windows-initial-install", "windows-qualified-launch"] {
+        if !features.contains_key(required) {
+            return Err(failure(
+                "initial-install Host capability",
+                format!(
+                    "selected Host lacks `{required}`; no build, signing, or installation attempted"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn append_initial_install_feature(args: &mut Vec<OsString>, initial_install: bool) {
     if initial_install {
         args.extend([
@@ -1989,6 +2057,47 @@ mod tests {
 
 #[cfg(test)]
 mod initial_install_feature_tests {
+    use super::require_initial_install_host_features;
+
+    #[test]
+    fn selected_host_features_are_required_before_native_install_compilation() {
+        let host = serde_json::json!({
+            "packages": [{"name": "keld-host", "features": {
+                "windows-initial-install": [],
+                "windows-qualified-launch": []
+            }}]
+        });
+        let wire = serde_json::to_vec(&host).unwrap();
+        require_initial_install_host_features(&wire).expect("both declared capabilities");
+        for missing in ["windows-initial-install", "windows-qualified-launch"] {
+            let mut bad = host.clone();
+            bad["packages"][0]["features"]
+                .as_object_mut()
+                .unwrap()
+                .remove(missing);
+            let err = require_initial_install_host_features(&serde_json::to_vec(&bad).unwrap())
+                .expect_err("missing feature must refuse");
+            assert!(err.to_string().contains(missing), "{err}");
+        }
+        for invalid in [
+            serde_json::json!({"packages":[]}),
+            serde_json::json!({"packages":[{"name":"other", "features":{}}]}),
+            serde_json::json!({"packages":[{"name":"keld-host"}]}),
+            serde_json::json!({"packages":[
+                {"name":"keld-host","features":{}},
+                {"name":"keld-host","features":{}}
+            ]}),
+            serde_json::json!({"packages":"malformed"}),
+        ] {
+            assert!(
+                require_initial_install_host_features(&serde_json::to_vec(&invalid).unwrap())
+                    .is_err(),
+                "{invalid:?}"
+            );
+        }
+        assert!(require_initial_install_host_features(b"invalid JSON").is_err());
+    }
+
     #[test]
     fn only_explicit_role_adds_exact_feature_before_recipe_capture() {
         let original = vec![std::ffi::OsString::from("build")];

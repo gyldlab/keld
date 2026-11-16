@@ -3,7 +3,7 @@
 ## 1. keld-runtime: Bun as a supervised component
 
 **Explicit-profile implementation (KEL-78 / GH #586 and #588):**
-the [profile amendment](../specs/kel78-explicit-legacy-profile.md#44-boot-version-compatibility-and-downgrade-prevention)
+the [profile amendment](../specs/kel78-explicit-legacy-profile/design-policy.md#44-boot-version-compatibility-and-downgrade-prevention)
 R1 correction separates renderer/profile schema 3 from facade/profile schema 4,
 preserving current schema 1 and GH #446's no-profile facade schema 2. This
 correction has a separate delegated design approval on #1120/KEL-78. The compiler
@@ -531,7 +531,7 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
 
 **Current versus proposed:** `keld-pack` implements the separately scoped Windows
 update/container primitives; format names alone do not implement installers.
-[GH-1404's approved local macOS successor](../specs/macos-local-app-packaging.md)
+[GH-1404's approved local macOS successor](../specs/gh1404-macos-local-app-packaging/index.md)
 is being implemented using native Apple `codesign` and `hdiutil` for a local ad-hoc
 `.app`/DMG, with executable-derived installed-bundle admission. The candidate build
 command supports only native arm64 macOS and explicit Legacy; original draw.io

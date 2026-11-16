@@ -1,21 +1,14 @@
-# Installed original-application runtime facts
+# Spec: Installed original-application runtime facts
 
-Status: implementing (delegated design approval recorded; native acceptance open).
+- Status: implementing
+- Tracker: GH-1404
+- Owner: Core installed session and launch-facts codec
+- Updated: 2026-11-06
+- Pin: 151776c72f3615f6c87d8a03ccbab00a0c08e955
 
-Owner: Core installed session and existing launch-facts codec. Execution record:
-[GH-1404](https://github.com/gyldlab/keld/issues/1404).
-[Independent approval 6692318686](https://github.com/gyldlab/keld/issues/1404#issuecomment-6692318686)
-approved the prior exact design at SHA-256
-`921cd2e27a364f4bbc74213813850880e8ed9d2d869679df75e4102b7c968280`.
-The bounded implementation-review corrections below distinguish authentication
-from child-group acknowledgment, preserve the native preferred-language spelling,
-and make directory cardinality and retained-lock failure states explicit. The
-updated content requires its own recorded review digest; the earlier hash is not
-approval of changed bytes. This status claims neither implementation completion
-nor native acceptance.
+The recorded GH-1404 delegated review applies only to the prior exact design digest. The updated source remains unqualified until a new independent review and native tests.
 
-## Requirement and verified gap
-
+## 1. Goal & non-goals
 An original application may need a native user-data directory and locale before
 its first import, then the existing cooperative single-instance verdict at Ready.
 The qualified draw.io main calls `app.getPath('userData')`, `app.getLocale()` and
@@ -28,7 +21,7 @@ facts schemas 4–5 and private graph launch route are not installed provenance.
 Installed schema 6 already has a closed different meaning. Preserve it unchanged.
 
 For the **installed original-graph cell only**, this amendment supersedes the
-[graph-source amendment](macos-installed-graph-source.md) §4.4 sentence reusing
+[graph-source amendment](gh1404-macos-installed-graph-source.md) §4.4 sentence reusing
 launch-facts schema 6 and `local-bundle-v1`. That cell uses launch-facts schema 7
 and the twelve-argument `local-bundle-v2` role defined here. Its sealed **boot
 schema 6** remains the installed graph selector; boot and launch-facts schema
@@ -36,8 +29,97 @@ numbers are separate contracts. Non-graph installed launches retain launch-facts
 schema 6 and the eleven-argument `local-bundle-v1` role. Developer schemas and the
 seven-argument role are not reinterpreted.
 
-## Selected minimum extension
+## 2. Spec refs
+Architecture 03, 04 and 06; GH-1404 installed packaging; GH-452/GH-453 native directory and single-instance owners.
 
+[GH-1404](https://github.com/gyldlab/keld/issues/1404).
+[Independent approval 6692318686](https://github.com/gyldlab/keld/issues/1404#issuecomment-6692318686)
+approved the prior exact design at SHA-256
+`921cd2e27a364f4bbc74213813850880e8ed9d2d869679df75e4102b7c968280`.
+The bounded implementation-review corrections below distinguish authentication
+from child-group acknowledgment, preserve the native preferred-language spelling,
+and make directory cardinality and retained-lock failure states explicit. The
+updated content requires its own recorded review digest; the earlier hash is not
+approval of changed bytes. This status claims neither implementation completion
+nor native acceptance.
+
+## 3. Acceptance criteria
+### AC-1: Schema compatibility and malformed record refusal
+- **Given:** A valid installed GH-1404 local bundle reaches runtime case 1.
+- **When:** Runtime facts and process ownership are evaluated for case 1.
+- **Then:** Existing schema-6 fixtures and seven/eleven-argument role tests remain unchanged. Mixed records, unsupported versions, duplicates, accessors, unknown fields, wrong root/id/profile, missing verdict and over-bound records refuse before Bun.
+- **Negative control:**
+  - **Single fault:** Change one valid fact, version or native outcome in this case.
+  - **At-risk precondition:** A verified installed root and authenticated Host session exist.
+  - **Expected RED:** The corresponding native/codec oracle rejects the mutation before a forbidden effect.
+
+### AC-2: Authenticated installed handoff
+- **Given:** A valid installed GH-1404 local bundle reaches runtime case 2.
+- **When:** Runtime facts and process ownership are evaluated for case 2.
+- **Then:** A raw twelve-argument private invocation with plausible facts cannot authenticate or create a child. The genuine authenticated route checks independent signed roots/digests before consuming any Host-carried observation.
+- **Negative control:**
+  - **Single fault:** Change one valid fact, version or native outcome in this case.
+  - **At-risk precondition:** A verified installed root and authenticated Host session exist.
+  - **Expected RED:** The corresponding native/codec oracle rejects the mutation before a forbidden effect.
+
+### AC-3: Raw bound and group-registration sequencing
+- **Given:** A valid installed GH-1404 local bundle reaches runtime case 3.
+- **When:** Runtime facts and process ownership are evaluated for case 3.
+- **Then:** The raw record's 16,384-byte bound is enforced before authentication without JSON decoding. Forged registration cannot enter the command factory. After authenticated command construction, withholding or mismatching the actual group's `CONTROL_REGISTERED` acknowledgment prevents Bun execution.
+- **Negative control:**
+  - **Single fault:** Change one valid fact, version or native outcome in this case.
+  - **At-risk precondition:** A verified installed root and authenticated Host session exist.
+  - **Expected RED:** The corresponding native/codec oracle rejects the mutation before a forbidden effect.
+
+### AC-4: Exclusive native single-instance owner
+- **Given:** A valid installed GH-1404 local bundle reaches runtime case 4.
+- **When:** Runtime facts and process ownership are evaluated for case 4.
+- **Then:** Two actual installed Hosts of one declared identity cannot both acquire the same lock. A different identity does not contend. Lock failure cannot return acquired. After the real owner retires, a fresh launch acquires without deleting the persistent lock file. Bun replacement keeps the same owner/verdict.
+- **Negative control:**
+  - **Single fault:** Change one valid fact, version or native outcome in this case.
+  - **At-risk precondition:** A verified installed root and authenticated Host session exist.
+  - **Expected RED:** The corresponding native/codec oracle rejects the mutation before a forbidden effect.
+
+### AC-5: Retained owner across fatal session
+- **Given:** A valid installed GH-1404 local bundle reaches runtime case 5.
+- **When:** Runtime facts and process ownership are evaluated for case 5.
+- **Then:** A retained fatal session keeps its acquired lease while the Host remains alive; the negative control drops only that lease and must expose premature acquisition. Forced Host death separately proves owned cleanup and later reacquisition, without claiming exclusion after the lock-owning Host has died.
+- **Negative control:**
+  - **Single fault:** Change one valid fact, version or native outcome in this case.
+  - **At-risk precondition:** A verified installed root and authenticated Host session exist.
+  - **Expected RED:** The corresponding native/codec oracle rejects the mutation before a forbidden effect.
+
+### AC-6: Native facts before application imports
+- **Given:** A valid installed GH-1404 local bundle reaches runtime case 6.
+- **When:** Runtime facts and process ownership are evaluated for case 6.
+- **Then:** App imports observe native, frozen facts before dependencies. Decoy environment values do not affect them. File paths and unavailable fields are checked against an independent Foundation observer; user-agent text is checked in the real view.
+- **Negative control:**
+  - **Single fault:** Change one valid fact, version or native outcome in this case.
+  - **At-risk precondition:** A verified installed root and authenticated Host session exist.
+  - **Expected RED:** The corresponding native/codec oracle rejects the mutation before a forbidden effect.
+
+### AC-7: Native directory and locale cardinality
+- **Given:** A valid installed GH-1404 local bundle reaches runtime case 7.
+- **When:** Runtime facts and process ownership are evaluated for case 7.
+- **Then:** Directory results exercise zero (omitted), one (exact value) and multiple (typed failure). Language lists exercise empty (omitted), one and multiple ordered preferences (unchanged first value), malformed-first refusal and the raw-string bounds in both Core and canonical TypeScript.
+- **Negative control:**
+  - **Single fault:** Change one valid fact, version or native outcome in this case.
+  - **At-risk precondition:** A verified installed root and authenticated Host session exist.
+  - **Expected RED:** The corresponding native/codec oracle rejects the mutation before a forbidden effect.
+
+### AC-8: Original draw.io workflow acceptance
+- **Given:** A valid installed GH-1404 local bundle reaches runtime case 8.
+- **When:** Runtime facts and process ownership are evaluated for case 8.
+- - **Then:** Installed original draw.io still must pass its real Open/Edit/Save/unsaved Cancel/Discard/Quit workflow, file readback, permission
+  rejections and owned cleanup. These data changes or passing codec tests cannot satisfy that gate. Platform scope is macOS only. Windows/Linux
+  packaging, lock semantics and native directory acceptance are not implemented or claimed by this addition. No main merge is authorized. Final
+  source, wire/data, lifetime and native review are separate required evidence.
+- **Negative control:**
+  - **Single fault:** Change one valid fact, version or native outcome in this case.
+  - **At-risk precondition:** A verified installed root and authenticated Host session exist.
+  - **Expected RED:** The corresponding native/codec oracle rejects the mutation before a forbidden effect.
+
+## 4. Design
 1. **Authoring and sealed boot.** Only the installed graph cell accepts the two
    existing optional application declarations: `singleInstance:{id}` and
    `applicationNameForUserAgent`. The instance identifier must equal the canonical
@@ -104,18 +186,38 @@ refused before any getter/application code or resource effect. Optional means
 **omitted**, never `null` or an inferred fallback. Rust and the canonical JavaScript
 codec share these literal contract fixtures, not separate inferred shapes.
 
-| Field | Required shape and source |
-|---|---|
-| `schema` | Exactly integer `7`; no coercion. |
-| `kind` | Exactly `"local-development"`; never relabel as development. |
-| `name` | Exact sealed `CFBundleName` and parsed boot name. |
-| `version` | Exact sealed `CFBundleShortVersionString`. |
-| `root` | Absolute verified `Contents/Resources/app`, equal to the Guardian's independent retained root. |
-| `resourcesRoot` | Absolute verified `Contents/Resources`; appending literal `app` equals `root`. |
-| `paths` | Required closed object; zero or more `appData`, `userData`, `documents` own string fields. Each is an absolute native path. Each native directory query admits exactly one result, omits an empty result, and refuses multiple results. `userData` may exist only with `appData`, and equals `appData/name` with `name` exactly one safe path component. No `..`, environment expansion or app-provided directory. |
-| `locale` | Optional native preferred-language string: the exact first value from `NSLocale.preferredLanguages`, subject to the ordinary 4,096-byte, nonempty, NUL-free UTF-8 string bound. Preserve spelling, case and separators; do not normalize or impose an ASCII-only rule. An empty native list omits it. Multiple ordered preferences do not make the first choice ambiguous; a malformed first value fails rather than selecting a later value. No `Intl`, environment, renderer negotiation or default locale. |
-| `singleInstance` | Optional closed object `{ "verdict": "acquired" | "contended" }`. Required if and only if the verified boot contains `singleInstance`; its declaration ID already equals the verified canonical application ID. Either verdict requires an available `paths.appData` native namespace. Available `appData` alone does not imply a declaration or verdict. No ID, PID, path, lock descriptor or arbitrary field is accepted in this record. |
-| `originalResourcePolicy` | Required closed object with exactly the five string fields below. It describes the prepared source; it grants no permission and is not native load evidence. |
+- **`schema`**
+  - **Required shape and source:** Exactly integer `7`; no coercion.
+- **`kind`**
+  - **Required shape and source:** Exactly `"local-development"`; never relabel as development.
+- **`name`**
+  - **Required shape and source:** Exact sealed `CFBundleName` and parsed boot name.
+- **`version`**
+  - **Required shape and source:** Exact sealed `CFBundleShortVersionString`.
+- **`root`**
+  - **Required shape and source:** Absolute verified `Contents/Resources/app`, equal to the Guardian's independent retained root.
+- **`resourcesRoot`**
+  - **Required shape and source:** Absolute verified `Contents/Resources`; appending literal `app` equals `root`.
+- **`paths`**
+  - **Required shape and source:** Required closed object; zero or more `appData`, `userData`, `documents` own string fields. Each
+    is an absolute native path. Each native directory query admits exactly one result, omits an empty result, and refuses multiple
+    results. `userData` may exist only with `appData`, and equals `appData/name` with `name` exactly one safe path component. No
+    `..`, environment expansion or app-provided directory.
+- **`locale`**
+  - **Required shape and source:** Optional native preferred-language string: the exact first value from
+    `NSLocale.preferredLanguages`, subject to the ordinary 4,096-byte, nonempty, NUL-free UTF-8 string bound. Preserve spelling,
+    case and separators; do not normalize or impose an ASCII-only rule. An empty native list omits it. Multiple ordered
+    preferences do not make the first choice ambiguous; a malformed first value fails rather than selecting a later value. No
+    `Intl`, environment, renderer negotiation or default locale.
+- **`singleInstance`**
+  - **Required shape and source:** Optional closed object `{ "verdict": "acquired" | "contended" }`. Required if and only if the
+    verified boot contains `singleInstance`; its declaration ID already equals the verified canonical application ID. Either
+    verdict requires an available `paths.appData` native namespace. Available `appData` alone does not imply a declaration or
+    verdict. No ID, PID, path, lock descriptor or arbitrary field is accepted in this record.
+- **`originalResourcePolicy`**
+  - **Required shape and source:** Required closed object with exactly the five string fields below. It describes the prepared
+    source; it grants no permission and is not native load evidence.
+
 
 `originalResourcePolicy` has exactly:
 
@@ -221,7 +323,8 @@ as bounded data; an empty, NUL-containing or 4,097-byte value refuses. These
 controls test representation, not the language values normally returned by macOS.
 Unchanged schema-6 and developer fixtures remain required compatibility controls.
 
-## Alternatives and decision tests
+
+### Selected alternatives and reuse
 
 Deriving directories or a successful lock from configuration/environment is
 rejected: it has no OS evidence. Calling the developer facts factory for an
@@ -232,38 +335,40 @@ lock is larger and changes the established GH-453 lifetime/dispatch contract.
 The versioned private record reuses the already authenticated startup and existing
 Host resource owner, with no new transport or supervisor.
 
-## Failure-first acceptance
+## 5. Boundaries
+Implement only the GH-1404 installed-graph runtime-facts extension. Preserve developer schemas, private Host admission, Guard permissions and existing native lifetime ownership.
 
-- Existing schema-6 fixtures and seven/eleven-argument role tests remain unchanged.
-  Mixed records, unsupported versions, duplicates, accessors, unknown fields,
-  wrong root/id/profile, missing verdict and over-bound records refuse before Bun.
-- A raw twelve-argument private invocation with plausible facts cannot authenticate
-  or create a child. The genuine authenticated route checks independent signed
-  roots/digests before consuming any Host-carried observation.
-- The raw record's 16,384-byte bound is enforced before authentication without
-  JSON decoding. Forged registration cannot enter the command factory. After
-  authenticated command construction, withholding or mismatching the actual
-  group's `CONTROL_REGISTERED` acknowledgment prevents Bun execution.
-- Two actual installed Hosts of one declared identity cannot both acquire the
-  same lock. A different identity does not contend. Lock failure cannot return
-  acquired. After the real owner retires, a fresh launch acquires without deleting
-  the persistent lock file. Bun replacement keeps the same owner/verdict.
-- A retained fatal session keeps its acquired lease while the Host remains alive;
-  the negative control drops only that lease and must expose premature acquisition.
-  Forced Host death separately proves owned cleanup and later reacquisition,
-  without claiming exclusion after the lock-owning Host has died.
-- App imports observe native, frozen facts before dependencies. Decoy environment
-  values do not affect them. File paths and unavailable fields are checked against
-  an independent Foundation observer; user-agent text is checked in the real view.
-- Directory results exercise zero (omitted), one (exact value) and multiple
-  (typed failure). Language lists exercise empty (omitted), one and multiple
-  ordered preferences (unchanged first value), malformed-first refusal and the
-  raw-string bounds in both Core and canonical TypeScript.
-- Installed original draw.io still must pass its real Open/Edit/Save/unsaved
-  Cancel/Discard/Quit workflow, file readback, permission rejections and owned
-  cleanup. These data changes or passing codec tests cannot satisfy that gate.
+## 6. Tasks
+### T-1: Capture native directory, locale and lock facts
+- **Blocked by:** none
+Reuse the GH-452/GH-453 OS observer before the first application import.
 
-Platform scope is macOS only. Windows/Linux packaging, lock semantics and native
-directory acceptance are not implemented or claimed by this addition. No main
-merge is authorized. Final source, wire/data, lifetime and native review are
-separate required evidence.
+### T-2: Seal a closed installed launch-facts schema 7
+- **Blocked by:** T-1
+Reuse the shared Core and generated TypeScript codec; retain schemas 1–6 unchanged.
+
+### T-3: Validate authenticated private handoff and child-group acknowledgment
+- **Blocked by:** T-2
+Keep local-bundle-v1, developer argv, signed roots and Guard ownership unchanged.
+
+### T-4: Prove real installed draw.io workflow and cleanup
+- **Blocked by:** T-3
+Run the original workflow, independent native observations and role-retirement tests.
+
+## 7. Test plan & evidence
+Each AC is tied to the corresponding failure-first input and independent native or codec oracle in section 3. Keep mixed-record, malformed, owner-loss, schema-6 and developer negative fixtures active. Do not infer real native success from a simulated record.
+
+## 8. Review gates triggered
+Public API: private installed launch-facts schema and canonical TypeScript consumer. Permission model: retained Guard/session boundary. Unsafe: native directory and lock operations use existing approved owners. Wire protocol: private role v2 and schema 7; no public KIPC extension. Dependencies: no addition planned.
+
+## 9. Perf impact
+No performance claim. Capture and locked startup can affect cold launch; measure native startup before claiming a change.
+
+## 10. Open questions, blockers & unknowns
+Native first-import observations, Host-death retirement, real draw.io and current-head independent design review remain unqualified. The earlier approval digest cannot approve the revised record automatically.
+
+### B-1: Updated native installed-facts acceptance remains open
+- **Status:** open
+- **Owner:** GH-1404 Core installed-session and launch-facts owners
+- **Impact:** Design evidence cannot establish an installed original-app release.
+- **Check:** The current exact design is independently reviewed and native installed runtime-facts tests pass.

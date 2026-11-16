@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -42,13 +43,45 @@ const generationOutputs = [
   "packages/@keld/kipc/src/runtime-process.generated.ts",
 ];
 
-function withGeneratorCheckout(run: (root: string) => void): void {
-  const root = mkdtempSync(resolve(tmpdir(), "keld-generation-contract-"));
+function withGeneratorCheckout(
+  run: (root: string) => void,
+  inheritedEnvironment: NodeJS.ProcessEnv = process.env,
+): void {
+  const parent = mkdtempSync(resolve(tmpdir(), "keld-generation-contract-"));
+  const root = resolve(parent, "fixture");
+  const initializeRepository = (cwd: string) => {
+    // Match the CLI fixture policy: caller Git/config/template controls do not
+    // belong to either disposable repository, including case-insensitive Windows keys.
+    const env = { ...inheritedEnvironment };
+    for (const key of Object.keys(env)) {
+      const upper = key.toUpperCase();
+      if (
+        upper.startsWith("GIT_") ||
+        ["HOME", "USERPROFILE", "XDG_CONFIG_HOME"].includes(upper)
+      )
+        delete env[key];
+    }
+    const home = resolve(parent, "git-home");
+    mkdirSync(home, { recursive: true });
+    env.HOME = home;
+    env.USERPROFILE = home;
+    env.XDG_CONFIG_HOME = home;
+    env.GIT_CONFIG_NOSYSTEM = "1";
+    for (const args of [
+      ["init", "--quiet", "--template="],
+      ["config", "--local", "maintenance.auto", "false"],
+    ]) {
+      const result = Bun.spawnSync(["git", ...args], { cwd, env });
+      expect(result.exitCode, result.stderr.toString()).toBe(0);
+    }
+  };
   try {
-    // A checkout has its own repository boundary. Managed TMPDIR can otherwise
-    // inherit KELD's ignored .keld-work ancestor, making Bun formatting silently
-    // ignore the entire fixture instead of exercising destination overrides.
-    mkdirSync(resolve(root, ".git"));
+    mkdirSync(root);
+    // Reproduce managed scratch: the enclosing repository ignores this checkout.
+    // Its own Git root must keep native formatting from returning ignored input unchanged.
+    initializeRepository(parent);
+    writeFileSync(resolve(parent, ".gitignore"), "fixture/\n");
+    initializeRepository(root);
     for (const path of [
       ...generationOutputs,
       "packages/@keld/kipc/scripts/echo-codegen.ts",
@@ -73,9 +106,52 @@ function withGeneratorCheckout(run: (root: string) => void): void {
     writeFileSync(resolve(root, "bunfig.toml"), "[fmt]\nignorePatterns = []\n");
     run(root);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(parent, { recursive: true, force: true });
   }
 }
+
+test("generator checkout preserves caller Git configuration and excludes templates", () => {
+  const caller = mkdtempSync(resolve(tmpdir(), "keld-generator-caller-"));
+  try {
+    const template = resolve(caller, "template");
+    mkdirSync(template);
+    writeFileSync(resolve(template, "caller-template-marker"), "caller-owned");
+    const config = `[init]\n\ttemplateDir = ${JSON.stringify(template)}\n`;
+    const sentinel = resolve(caller, "caller.config");
+    const homeConfig = resolve(caller, ".gitconfig");
+    const xdgConfig = resolve(caller, "git/config");
+    mkdirSync(dirname(xdgConfig));
+    for (const path of [sentinel, homeConfig, xdgConfig])
+      writeFileSync(path, config);
+    // Separate cases prove environment template redirection and HOME/XDG lookup
+    // cannot populate either .git directory; caller configuration is never a target.
+    for (const templateControl of [false, true]) {
+      const env = {
+        ...process.env,
+        HOME: caller,
+        USERPROFILE: caller,
+        XDG_CONFIG_HOME: caller,
+        GIT_CONFIG: sentinel,
+        ...(templateControl ? { GIT_TEMPLATE_DIR: template } : {}),
+      };
+      withGeneratorCheckout((root) => {
+        for (const repository of [dirname(root), root]) {
+          expect(existsSync(resolve(repository, ".git/HEAD"))).toBe(true);
+          expect(
+            existsSync(resolve(repository, ".git/caller-template-marker")),
+          ).toBe(false);
+          expect(
+            readFileSync(resolve(repository, ".git/config"), "utf8"),
+          ).toContain("auto = false");
+        }
+      }, env);
+      for (const path of [sentinel, homeConfig, xdgConfig])
+        expect(readFileSync(path, "utf8"), path).toBe(config);
+    }
+  } finally {
+    rmSync(caller, { recursive: true, force: true });
+  }
+});
 
 function runGenerator(root: string, command: "generate" | "check") {
   return Bun.spawnSync(

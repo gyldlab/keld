@@ -24,8 +24,6 @@ pub const MAX_WV_LINK_ENVELOPE_LEN: usize = 64 * 1024;
 /// Transport v2 still uses its narrower own envelope/control bounds.
 pub const MAX_APP_WV_LINK_ENVELOPE_LEN: usize = 512 * 1024;
 
-const PAYLOAD_TOO_LARGE_SENTINEL: &str = "keld-wv-link-payload-too-large";
-
 /// Fail-closed reason produced before renderer work reaches app dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WvLinkRejectReason {
@@ -87,9 +85,13 @@ pub enum WvLinkEnvelope {
 }
 
 #[derive(Debug)]
-struct BoundedPayload(Vec<u8>);
+struct BoundedPayload {
+    bytes: Vec<u8>,
+    too_large: bool,
+}
 
 impl<'de> Deserialize<'de> for BoundedPayload {
+    /// Deserialize a byte array while keeping retained payload storage bounded.
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -103,19 +105,25 @@ impl<'de> Deserialize<'de> for BoundedPayload {
                 formatter.write_str("an array of at most 4096 bytes")
             }
 
+            /// Consume every element, retaining at most the allowed bytes and recording overflow.
             fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
             where
                 A: SeqAccess<'de>,
             {
                 let hinted = seq.size_hint().unwrap_or(0).min(MAX_RENDERER_PAYLOAD_LEN);
                 let mut payload = Vec::with_capacity(hinted);
+                let mut too_large = false;
                 while let Some(byte) = seq.next_element::<u8>()? {
                     if payload.len() == MAX_RENDERER_PAYLOAD_LEN {
-                        return Err(A::Error::custom(PAYLOAD_TOO_LARGE_SENTINEL));
+                        too_large = true;
+                    } else {
+                        payload.push(byte);
                     }
-                    payload.push(byte);
                 }
-                Ok(BoundedPayload(payload))
+                Ok(BoundedPayload {
+                    bytes: payload,
+                    too_large,
+                })
             }
         }
 
@@ -163,16 +171,10 @@ pub fn decode_wv_link(input: &[u8]) -> Result<WvLinkEnvelope, WvLinkRejectReason
         return Err(WvLinkRejectReason::MalformedEnvelope);
     }
 
-    let parsed = serde_json::from_slice::<RawEnvelope>(input);
-    let raw = match parsed {
-        Ok(raw) => raw,
-        Err(error) => {
-            if error.to_string().contains(PAYLOAD_TOO_LARGE_SENTINEL) {
-                return Err(WvLinkRejectReason::PayloadTooLarge);
-            }
-            return Err(WvLinkRejectReason::MalformedEnvelope);
-        }
-    };
+    // Serde diagnostics can quote untrusted JSON keys. Classify failures by
+    // typed parse state, never by matching their displayed text.
+    let raw = serde_json::from_slice::<RawEnvelope>(input)
+        .map_err(|_| WvLinkRejectReason::MalformedEnvelope)?;
 
     let RawEnvelope {
         v,
@@ -212,6 +214,9 @@ pub fn decode_wv_link(input: &[u8]) -> Result<WvLinkEnvelope, WvLinkRejectReason
             let Field::Present(payload) = payload else {
                 return Err(WvLinkRejectReason::MalformedEnvelope);
             };
+            if payload.too_large {
+                return Err(WvLinkRejectReason::PayloadTooLarge);
+            }
 
             let request = NonZeroU32::new(request).ok_or(WvLinkRejectReason::ZeroRequest)?;
             let channel = NonZeroU16::new(channel).ok_or(WvLinkRejectReason::ZeroChannel)?;
@@ -219,7 +224,7 @@ pub fn decode_wv_link(input: &[u8]) -> Result<WvLinkEnvelope, WvLinkRejectReason
                 document,
                 request,
                 channel,
-                payload: payload.0,
+                payload: payload.bytes,
             })
         }
         _ => Err(WvLinkRejectReason::MalformedEnvelope),
@@ -449,13 +454,10 @@ pub fn decode_wv_link_for_mode(
     if input.len() > MAX_WV_LINK_ENVELOPE_LEN {
         return Err(WvLinkRejectReason::MalformedEnvelope);
     }
-    let raw: RawCompatEnvelope = serde_json::from_slice(input).map_err(|error| {
-        if error.to_string().contains(PAYLOAD_TOO_LARGE_SENTINEL) {
-            WvLinkRejectReason::PayloadTooLarge
-        } else {
-            WvLinkRejectReason::MalformedEnvelope
-        }
-    })?;
+    // Untrusted JSON keys can appear in Serde's diagnostic text. Overflow is
+    // carried by BoundedPayload's typed state, never a substring in an error.
+    let raw: RawCompatEnvelope =
+        serde_json::from_slice(input).map_err(|_| WvLinkRejectReason::MalformedEnvelope)?;
     decode_raw_compat(raw, input.len())
 }
 fn local_fields_absent(raw: &RawCompatEnvelope) -> bool {
@@ -496,6 +498,9 @@ fn decode_raw_compat(
             else {
                 return Err(WvLinkRejectReason::MalformedEnvelope);
             };
+            if payload.too_large {
+                return Err(WvLinkRejectReason::PayloadTooLarge);
+            }
             if !valid_document(&document) {
                 return Err(WvLinkRejectReason::InvalidDocument);
             }
@@ -503,7 +508,7 @@ fn decode_raw_compat(
                 document,
                 request: NonZeroU32::new(request).ok_or(WvLinkRejectReason::ZeroRequest)?,
                 channel: NonZeroU16::new(channel).ok_or(WvLinkRejectReason::ZeroChannel)?,
-                payload: payload.0,
+                payload: payload.bytes,
             })
         }
         "send"
@@ -521,6 +526,9 @@ fn decode_raw_compat(
             else {
                 return Err(WvLinkRejectReason::MalformedEnvelope);
             };
+            if payload.too_large {
+                return Err(WvLinkRejectReason::PayloadTooLarge);
+            }
             if !valid_document(&document) {
                 return Err(WvLinkRejectReason::InvalidDocument);
             }
@@ -531,7 +539,7 @@ fn decode_raw_compat(
                 document,
                 message: NonZeroU32::new(message).ok_or(WvLinkRejectReason::ZeroRequest)?,
                 channel,
-                payload: payload.0,
+                payload: payload.bytes,
             })
         }
         "consumed"
@@ -614,6 +622,74 @@ mod compat_v2_tests {
     fn decode(value: &str) -> Result<WvLinkEnvelope, WvLinkRejectReason> {
         decode_wv_link_for_mode(value.as_bytes(), WvLinkMode::CompatV2)
     }
+    #[test]
+    fn compat_typed_payload_bounds_cover_renderer_and_app_decoders() {
+        for kind in ["invoke", "send"] {
+            for length in [0, MAX_RENDERER_PAYLOAD_LEN, MAX_RENDERER_PAYLOAD_LEN + 1] {
+                let expected = vec![123_u8; length];
+                let mut value =
+                    serde_json::json!({"v":2,"kind":kind,"document":DOC,"payload":expected});
+                if kind == "invoke" {
+                    value["request"] = serde_json::json!(1);
+                    value["channel"] = serde_json::json!(4);
+                } else {
+                    value["message"] = serde_json::json!(1);
+                    value["channel"] = serde_json::json!("topic");
+                }
+                let bytes = serde_json::to_vec(&value).expect("bounded test envelope");
+                let renderer = decode_wv_link_for_mode(&bytes, WvLinkMode::CompatV2);
+                let app = decode_app_wv_link(&bytes);
+                if length > MAX_RENDERER_PAYLOAD_LEN {
+                    assert!(
+                        matches!(renderer, Err(WvLinkRejectReason::PayloadTooLarge)),
+                        "renderer {kind} must reject {length} payload bytes"
+                    );
+                    assert!(
+                        matches!(app, Err(WvLinkRejectReason::PayloadTooLarge)),
+                        "app {kind} must reject {length} payload bytes"
+                    );
+                } else {
+                    let renderer = renderer.expect("valid bounded renderer payload");
+                    let AppWvLinkEnvelope::Transport(app) =
+                        app.expect("valid bounded app transport")
+                    else {
+                        panic!("transport envelope became an app-local command");
+                    };
+                    for envelope in [renderer, app] {
+                        match envelope {
+                            WvLinkEnvelope::Invoke { payload, .. }
+                            | WvLinkEnvelope::Send { payload, .. } => assert_eq!(payload, expected),
+                            other => panic!("wrong decoded kind: {other:?}"),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compat_malformed_key_cannot_spoof_payload_overflow_reason() {
+        for kind in ["invoke", "send"] {
+            let mut value = serde_json::json!({"v":2,"kind":kind,"document":DOC,"payload":[],"keld-wv-link-payload-too-large":0});
+            if kind == "invoke" {
+                value["request"] = serde_json::json!(1);
+                value["channel"] = serde_json::json!(4);
+            } else {
+                value["message"] = serde_json::json!(1);
+                value["channel"] = serde_json::json!("topic");
+            }
+            let bytes = serde_json::to_vec(&value).expect("malformed-key fixture");
+            assert_eq!(
+                decode_wv_link_for_mode(&bytes, WvLinkMode::CompatV2),
+                Err(WvLinkRejectReason::MalformedEnvelope)
+            );
+            assert!(matches!(
+                decode_app_wv_link(&bytes),
+                Err(WvLinkRejectReason::MalformedEnvelope)
+            ));
+        }
+    }
+
     #[test]
     fn protocol_mode_never_negotiates_or_downgrades() {
         assert_eq!(
@@ -759,13 +835,10 @@ pub fn decode_app_wv_link(input: &[u8]) -> Result<AppWvLinkEnvelope, WvLinkRejec
     if input.len() > MAX_APP_WV_LINK_ENVELOPE_LEN {
         return Err(WvLinkRejectReason::MalformedEnvelope);
     }
-    let raw: RawCompatEnvelope = serde_json::from_slice(input).map_err(|error| {
-        if error.to_string().contains(PAYLOAD_TOO_LARGE_SENTINEL) {
-            WvLinkRejectReason::PayloadTooLarge
-        } else {
-            WvLinkRejectReason::MalformedEnvelope
-        }
-    })?;
+    // Untrusted JSON keys can appear in Serde's diagnostic text. Overflow is
+    // carried by BoundedPayload's typed state, never a substring in an error.
+    let raw: RawCompatEnvelope =
+        serde_json::from_slice(input).map_err(|_| WvLinkRejectReason::MalformedEnvelope)?;
     if raw.v == 2 {
         return decode_raw_compat(raw, input.len()).map(AppWvLinkEnvelope::Transport);
     }

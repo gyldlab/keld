@@ -94,7 +94,7 @@ test("menu.set-application-menu source: void call reports actual missing-link fa
     stderr: "pipe",
     timeout: 4000,
   });
-  expect(child.exitCode).toBe(0);
+  expect(child.exitCode, child.stderr.toString()).toBe(0);
   expect(child.stdout.toString()).toBe("RETURN=undefined\n");
   const diagnostics = child.stderr
     .toString()
@@ -166,7 +166,7 @@ test("menu.role-quit.before-quit pending GH-563: generic live-window Quit stays 
     stderr: "pipe",
     timeout: 4000,
   });
-  expect(child.exitCode).toBe(0);
+  expect(child.exitCode, child.stderr.toString()).toBe(0);
   expect(child.stdout.toString()).toBe("PASS native-delete-before-import\n");
   expect(child.stderr.toString()).toBe("");
 });

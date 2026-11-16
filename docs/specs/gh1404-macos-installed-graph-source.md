@@ -1,16 +1,19 @@
 # Spec: Generic original source and preload in a local macOS installation
-Status: draft
-Linear: GH-1404 (#517 fallback) · Owner: GYLDLAB · Updated: 2026-11-06
+
+- Status: draft
+- Tracker: GH-1404
+- Owner: GYLDLAB
+- Updated: 2026-11-06
+- Pin: 151776c72f3615f6c87d8a03ccbab00a0c08e955
 
 This is the proposed original-content integration amendment to
-[GH-1404 macOS local packaging](macos-local-app-packaging.md) §§4.3–4.6, A12 and A14.
+[GH-1404 macOS local packaging](gh1404-macos-local-app-packaging/index.md) §§4.3–4.6, A12 and A14.
 The user already authorized the local ad-hoc goal and routine technical decisions.
 The exact source/boot/graph extension below still needs independent root review and
 recorded delegated spec approval before implementation. No native acceptance is
 claimed by this draft.
 
 ## 1. Goal & non-goals
-
 Ship the original, source-pinned draw.io desktop application through KELD's real
 installed macOS Host, bundled Bun, guarded Electron facade, original preload and
 verified webapp resources. A *different* app with different root, entry and preload
@@ -25,11 +28,10 @@ notarization, an updater, Windows/Linux implementation, a native harness launche
 or a whole-checkout copy. Source qualification is evidence of *our delivered
 original app*, not an entitlement that every developer must obtain from KELD.
 
-## 2. Spec refs and observed baseline
-
+## 2. Spec refs
 - [Architecture 01](../architecture/01-overview.md), [03](../architecture/03-security.md),
   [04](../architecture/04-electron-compat.md), [06](../architecture/06-runtime-and-tooling.md);
-  [GH-1404](macos-local-app-packaging.md) is the approved packaging/installed-boot
+  [GH-1404](gh1404-macos-local-app-packaging/index.md) is the approved packaging/installed-boot
   mission. [GH-499](https://github.com/gyldlab/keld/issues/499) owns graph admission,
   [GH-502](https://github.com/gyldlab/keld/issues/502) provider receipts,
   [GH-553](https://github.com/gyldlab/keld/issues/553) verified window CSP,
@@ -64,61 +66,130 @@ original app*, not an entitlement that every developer must obtain from KELD.
   is optional review evidence, not a build input, secret, qualified provider or
   signed-release receipt. No foreign WIP is automatically adopted.
 
-## 3. Acceptance criteria (binary)
-
-1. **Configuration:** An explicit-Legacy local facade with closed
+## 3. Acceptance criteria
+### AC-1: Configuration
+- **Given:** A local Legacy facade config exists.
+- **When:** Build captures renderer and preload selectors.
+- **Then:** An explicit-Legacy local facade with closed
    `rendererSource:{root,entry}` and one build-selected preload path/digest
    selects those exact project-relative members. Unknown/duplicate/dynamic
    fields, renderer+source conflicts, missing Legacy, traversal/symlink or
    an absent required source reject before publishing an app. Existing boot
    schemas 1–4 and unmodified development/renderer behavior remain byte-compatible.
-2. **Exact sealed graph:** Pack captures the declared app files and framework
+- **Negative control:**
+  - **Single fault:** Use an escaping renderer source path.
+  - **At-risk precondition:** Config uses the closed source form.
+  - **Expected RED:** Pack must refuse before output.
+
+### AC-2: Exact sealed graph
+- **Given:** Pack has declared app and provider trees.
+- **When:** The installed graph is sealed.
+- **Then:** Pack captures the declared app files and framework
    bootstrap first, then the existing GH-499 graph v1 independently verifies
    package/lock, three provider trees and the *actual copied* resource census.
    A new closed installed boot descriptor binds the graph digest, main entry,
    selected web root/entry, exact preload path/digest and permission digest.
    No unknown, uncensused, changed or symlinked app-source member may reach
    signing; Host, Bun and Info.plist retain their separate Pack checks.
-3. **Independent input claims:** Wrong source package, lock, any one provider
+- **Negative control:**
+  - **Single fault:** Mutate one copied resource after the census.
+  - **At-risk precondition:** All other graph inputs match.
+  - **Expected RED:** Graph verification must refuse.
+
+### AC-3: Independent input claims
+- **Given:** Independent provider claims are available.
+- **When:** Pack evaluates their expected hashes.
+- **Then:** Wrong source package, lock, any one provider
    tree, original preload or qualified Host/CSP pair fails release-input
    qualification. A successful self-consistent ad-hoc build cannot substitute
    for an independently established artifact/source receipt.
-4. **Installed origin:** Host and Guardian derive the same signed local app
+- **Negative control:**
+  - **Single fault:** Change one provider tree hash.
+  - **At-risk precondition:** The candidate package is otherwise self-consistent.
+  - **Expected RED:** Input qualification must refuse.
+
+### AC-4: Installed origin
+- **Given:** A copied signed app exists.
+- **When:** Host selects installed source before Bun.
+- **Then:** Host and Guardian derive the same signed local app
    root, read the exact closed boot and graph from retained no-follow handles,
    compare graph main entry to boot entry, verify the selected source and
    preload against graph rows, and recheck before each Bun generation.
    A root/entry/digest substitution refuses without a dev lease or fallback.
-5. **Guard and preload:** Only explicit Legacy plus GH-553's existing resolved
+- **Negative control:**
+  - **Single fault:** Replace the sealed preload file.
+  - **At-risk precondition:** Boot and graph are retained.
+  - **Expected RED:** The installed launch must refuse.
+
+### AC-5: Guard and preload
+- **Given:** An original preload targets an app WebView.
+- **When:** Host admits the current document.
+- **Then:** Only explicit Legacy plus GH-553's existing resolved
    window CSP and GH-542's actual current document admit original content.
    The app's absolute preload selector must map to the one pinned project-relative
    file, matched by SHA-256 **before** executing any JS in the untrusted app
    preload world; retain existing 512 KiB/window and 8 MiB/Host budgets,
    process-fact and argument bounds and isolated native handlers. Mismatch
    has zero partial preload effects.
-6. **Navigation and resources:** An original `file://` request must match
+- **Negative control:**
+  - **Single fault:** Run mismatched preload bytes.
+  - **At-risk precondition:** A verified Legacy graph exists.
+  - **Expected RED:** The preload must have zero partial effects.
+
+### AC-6: Navigation and resources
+- **Given:** A file URL references installed resources.
+- **When:** The native resource handler resolves it.
+- **Then:** An original `file://` request must match
    exactly the bound installed `root/entry`; only the existing bounded query
    value crosses as data. An alternate URL, path, fragment, query escape,
    different window/document or resource outside the selected root is denied.
    Native `keld-resource` admission still verifies graph bytes and Guard CSP;
    a graph row alone is not a browser grant.
-7. **Generic native cell:** A signed, relocated macOS arm64 app with an
+- **Negative control:**
+  - **Single fault:** Use a sibling root URL.
+  - **At-risk precondition:** A sealed graph exists.
+  - **Expected RED:** The resource must be denied.
+
+### AC-7: Generic native cell
+- **Given:** An unrelated fixture has different root and preload.
+- **When:** Native WebKit launches the generic cell.
+- **Then:** A signed, relocated macOS arm64 app with an
    unrelated source root, nested entry filename and different *pinned* preload
    actually renders through native WebKit and performs one authorized and
    one denied IPC action. Reusing the draw.io root, entry or preload constant
    makes the positive test fail.
-8. **Original native cell:** The real pinned original draw.io main, original
+- **Negative control:**
+  - **Single fault:** Hard-code draw.io root selection.
+  - **At-risk precondition:** The unrelated app is valid.
+  - **Expected RED:** The generic cell must fail visibly.
+
+### AC-8: Original native cell
+- **Given:** Pinned original draw.io assets are packaged.
+- **When:** The real editor workflow runs.
+- **Then:** The real pinned original draw.io main, original
    webapp, real packed SDK providers and unchanged accepted preload execute
    Launch → Open → Edit → Save → read back XML → unsaved Close → Cancel →
    Save/Discard → Reopen → Quit, with native observations, selected policy,
    child census and clean restart. An inert page or a HELLO receipt fails.
-9. **Artifact evidence:** Independently install/relocate the signed .app and
+- **Negative control:**
+  - **Single fault:** Replace the original app with an inert page.
+  - **At-risk precondition:** The installed package passes source checks.
+  - **Expected RED:** Native editor workflow must fail.
+
+### AC-9: Artifact evidence
+- **Given:** A signed app and DMG copy are retained.
+- **When:** Evidence is compared to the exact artifact.
+- **Then:** Independently install/relocate the signed .app and
    the DMG copy, break one sealed byte and one input qualification pin, and
    observe refusal. Record actual Host/Bun/app/graph/DMG hashes and cleanup
    outcomes. The **first Mac only** is evaluated; a second Mac, Intel and
    non-macOS targets remain unverified.
+- **Negative control:**
+  - **Single fault:** Change one sealed byte after signing.
+  - **At-risk precondition:** Install receipt predates the change.
+  - **Expected RED:** Signature/receipt verification must fail.
 
 ## 4. Design
-
 ### 4.1 Ownership and trust atoms
 
 | Owner / boundary | Inputs and sole output | Failure and independent falsifier |
@@ -267,7 +338,6 @@ Existing app-session, IPC, dialog, menu and Quit owners supply only
 their previously approved, selectively reviewed original behavior.
 
 ## 5. Boundaries
-
 Implement selectively after approval in CLI `src/build{,/config}.rs` and
 the shared `src/boot.rs` compiler; Pack
 `src/macos/{capture,assemble}.rs` as the *only* file capture/signing owner;
@@ -291,31 +361,40 @@ Do not touch Windows/Linux production code, root `AGENTS.md`,
 workspace manifests, global IPC wire format, private credentials,
 foreign working trees, main branch or unowned native/GUI work.
 
-## 6. Tasks (ordered vertical slices)
-
-- [ ] **T0 — independent exact-content approval.** Root reviews this
+## 6. Tasks
+### T-1: Approve exact source and graph contract (original T0)
+- **Blocked by:** none
+- **Work:** Independent exact-content approval. Root reviews this
   amendment against GH-1404/GH-499/GH-553/GH-484 and records delegated
   approval plus exact revision. Until then, implementation is blocked.
-- [ ] **T1 — generic installed source, real native cell.** Add the closed
+
+### T-2: Integrate generic installed source (original T1)
+- **Blocked by:** T-1
+- **Work:** Generic installed source, real native cell. Add the closed
   installed boot/source compiler and the one Pack pre-sign seam; integrate
   only required graph/CSP/preload owners with their existing protections.
   Sign, relocate and execute a **non-draw.io** app whose root, nested entry
   and pinned preload all differ from draw.io. Prove current-document native
   load, a permitted IPC effect, a denied IPC non-effect, and deterministic
   source/preload substitution refusal before proceeding.
-- [ ] **T2 — actual original app.** Supply an independently extracted
+
+### T-3: Integrate original draw.io source (original T2)
+- **Blocked by:** T-2
+- **Work:** Actual original app. Supply an independently extracted
   provider/Host/source qualification receipt; package the exact accepted
   original draw.io main/webapp/preload and required generated SDK peers;
   reconcile only failing compile-owner imports and the existing
   dialog/menu/IPC/quit contracts. No alternate loader or test-only main.
-- [ ] **T3 — installed workflow closeout.** Exercise the entire original
+
+### T-4: Qualify real installed workflows (original T3)
+- **Blocked by:** T-3
+- **Work:** Installed workflow closeout. Exercise the entire original
   Open/Edit/Save/unsaved-Close/Cancel/Save/Discard/Reopen/Quit sequence
   on the signed, relocated .app and verified DMG copy with real file
   readback, child-generation and cleanup observations. Final evidence
   and the second-Mac gap are reported separately.
 
-## 7. Test plan
-
+## 7. Test plan & evidence
 | Criteria | Independent oracle and single-fault control |
 | --- | --- |
 | 1, 2 | Closed parser/unit + Pack real-tree test. Inject duplicate/unknown keys, `../`, symlink root, missing/case-colliding entry, unexpected file, resource/boot collision; no published artifact. Mutate a copied file after census before signing and require refusal. |
@@ -334,7 +413,6 @@ workflow; report unrun ones as unverified. Test against owned temporary
 copies without sleep-based synchronization.
 
 ## 8. Review gates triggered
-
 **Public API/config:** additive literal `rendererSource`, build-only
 expected-source object and closed installed boot variant; independent
 compiler/architecture review. **Permission model:** GH-553 original
@@ -348,7 +426,6 @@ a new dependency reopens the gate. Independent reviewer must see the
 exact final diff before any implementation qualification claim.
 
 ## 9. Perf impact
-
 Cold graph capture/readback increases one-time packaging and installed
 admission I/O; preserve GH-499's existing 8 MiB graph limit, 32,768
 file cap and streaming hashes and GH-484's 512 KiB preload per window
@@ -356,8 +433,7 @@ and 8 MiB aggregate. Compare native startup and retained memory against
 the same installed inputs before making a performance claim. No new
 runtime/service/process or performance gain is proposed.
 
-## 10. Open questions / approval and evidence gates
-
+## 10. Open questions, blockers & unknowns
 No additional user account, maintainer secret or signing purchase is
 required for the approved **local ad-hoc** goal. Pending gates are
 owner-owned evidence and review: (1) root's exact-content approval of
@@ -369,3 +445,9 @@ parallel resource reader or graph-version change; (4) the required
 native generic/original acceptance. The second Mac remains unverified.
 Any failure keeps that criterion open and names its existing owner;
 it is not cured by widening Legacy, CSP or preload admission.
+
+### B-1: Installed original graph review and native proof are open
+- **Status:** open
+- **Owner:** GH-1404 original source and approved graph owners
+- **Impact:** Source graph and selected preload cannot be called qualified for original native packaging.
+- **Check:** Review exact full source and pass the generic and original installed ACs.

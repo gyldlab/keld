@@ -724,7 +724,9 @@ fn keld_build_requires_the_explicit_supported_target_before_io() {
     let dir = tempfile::tempdir().expect("tempdir");
     for args in [
         vec!["build", "hello"],
-        vec!["build", "--target", "windows-x64"],
+        // Windows x64 has its own admitted developer-build route now.
+        // Keep this pre-I/O negative on a genuinely unsupported target.
+        vec!["build", "--target", "linux-x64"],
         vec!["build", "--target", "macos-arm64", "--sign"],
     ] {
         let output = keld()

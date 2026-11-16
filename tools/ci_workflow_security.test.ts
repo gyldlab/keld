@@ -1609,7 +1609,7 @@ test("both Nextest installers pin 0.9.149 and reject unpinned or downgraded rele
     );
     expect(installer).toBeDefined();
     expect(installer!.uses).toBe(
-      "taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91",
+      "taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b",
     );
     expect((installer!.with as Step).tool).toBe(reviewed);
     expect((installer!.with as Step).fallback).toBe("none");
@@ -2137,6 +2137,79 @@ test("B3 Bun setup ownership rejects duplicated and rogue post-cache savers", ()
   const rogue = fixture();
   rogue.jobs.fmt!.steps.push({ ...b3BunAction(rogue, "check") });
   expect(() => check(rogue)).toThrow("B3 Bun cache action not approved in job");
+});
+
+test("Node 26 is installed exactly once before Bun on each selected host", () => {
+  for (const job of ["check", "bun-test"] as const) {
+    const wrongVersion = fixture();
+    const node = wrongVersion.jobs[job]!.steps.find(
+      (entry) =>
+        typeof entry.uses === "string" &&
+        entry.uses.startsWith("actions/setup-node@"),
+    )!;
+    (node.with as Step)["node-version"] = "24";
+    expect(() => check(wrongVersion)).toThrow(
+      "Node 26 must not inherit runner defaults",
+    );
+
+    const unsafeCache = fixture();
+    const cached = unsafeCache.jobs[job]!.steps.find(
+      (entry) =>
+        typeof entry.uses === "string" &&
+        entry.uses.startsWith("actions/setup-node@"),
+    )!;
+    (cached.with as Step)["package-manager-cache"] = true;
+    expect(() => check(unsafeCache)).toThrow("untrusted package cache");
+
+    const removed = fixture();
+    const steps = removed.jobs[job]!.steps;
+    const index = steps.findIndex(
+      (entry) =>
+        typeof entry.uses === "string" &&
+        entry.uses.startsWith("actions/setup-node@"),
+    );
+    steps.splice(index, 1);
+    expect(() => check(removed)).toThrow(
+      "Node 26 setup must appear exactly once",
+    );
+
+    const duplicate = fixture();
+    const copied = duplicate.jobs[job]!.steps.find(
+      (entry) =>
+        typeof entry.uses === "string" &&
+        entry.uses.startsWith("actions/setup-node@"),
+    )!;
+    duplicate.jobs[job]!.steps.push({ ...copied });
+    expect(() => check(duplicate)).toThrow(
+      "Node 26 setup must appear exactly once",
+    );
+  }
+});
+
+test("Rust corpus and Bun packages cannot skip their declared local-link setup", () => {
+  const rust = fixture();
+  step(
+    rust,
+    "check",
+    "Install declared KIPC, API, Electron links for Rust corpus oracles",
+  ).run = "echo link skipped";
+  expect(() => check(rust)).toThrow(
+    "Rust corpus must install all declared Bun links",
+  );
+
+  const bun = fixture();
+  const install = step(
+    bun,
+    "bun-test",
+    "frozen install, typecheck, and bun test",
+  );
+  install.run = String(install.run).replace(
+    "(cd packages/@keld/api && bun install --frozen-lockfile)",
+    "true",
+  );
+  expect(() => check(bun)).toThrow(
+    "Bun suite must pin Node26 and install KIPC/API links",
+  );
 });
 
 const b3RustCacheJobs = [
