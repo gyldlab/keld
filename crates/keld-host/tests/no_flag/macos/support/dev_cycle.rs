@@ -17,7 +17,8 @@ use crate::support::process::parent_process;
 use crate::support::process::process_exists;
 use crate::support::process::process_group;
 use crate::support::process::{
-    NativeGroupBirth, retain_parented_group_birth, signal_attested_group, signal_process_group,
+    NativeGroupBirth, NativeMemberBirth, retain_parented_group_birth, retain_parented_group_member,
+    signal_attested_group, signal_group_via_attested_member, signal_process_group,
 };
 use crate::support::product::ProductFixture;
 use crate::support::recovery_cycle::RecoveryGeneration;
@@ -82,6 +83,8 @@ pub(crate) struct ShippingLaunchCleanup {
     pub(crate) bun_group: Option<u32>,
     host_birth: Option<NativeGroupBirth>,
     bun_birth: Option<NativeGroupBirth>,
+    pub(crate) host_member: Option<NativeMemberBirth>,
+    bun_member: Option<NativeMemberBirth>,
 }
 
 impl ShippingLaunchCleanup {
@@ -92,21 +95,40 @@ impl ShippingLaunchCleanup {
             bun_group: None,
             host_birth: None,
             bun_birth: None,
+            host_member: None,
+            bun_member: None,
         }
     }
 
-    pub(crate) fn record_authenticated_groups(&mut self, host_group: u32, bun_group: u32) {
+    pub(crate) fn record_authenticated_groups(
+        &mut self,
+        host_group: u32,
+        guardian: u32,
+        bun_group: u32,
+        descendant: u32,
+    ) {
         let cli_pid = self.cli.as_ref().expect("live shipping CLI owner").id();
         // A parsed PID alone is not an authenticated process birth. Verify
         // kernel lineage from the live CLI down to Bun before retaining it.
         self.record_host_group(host_group, cli_pid);
-        let guardian = parent_process(bun_group);
+        assert_eq!(parent_process(guardian), host_group);
+        self.host_member = Some(retain_parented_group_member(
+            guardian,
+            host_group,
+            self.host_birth.expect("verified host leader"),
+        ));
+        assert_eq!(parent_process(bun_group), guardian);
         assert_eq!(
             parent_process(guardian),
             host_group,
             "Bun Guardian must belong to this Host"
         );
         self.record_bun_group(bun_group, guardian);
+        self.bun_member = Some(retain_parented_group_member(
+            descendant,
+            bun_group,
+            self.bun_birth.expect("verified Bun leader"),
+        ));
     }
 
     pub(crate) fn record_host_group(&mut self, group: u32, parent: u32) {
@@ -126,6 +148,8 @@ impl ShippingLaunchCleanup {
         self.bun_group = None;
         self.host_birth = None;
         self.bun_birth = None;
+        self.host_member = None;
+        self.bun_member = None;
         self.cli.take().expect("shipping CLI cleanup owner")
     }
 }
@@ -138,16 +162,20 @@ impl Drop for ShippingLaunchCleanup {
             let _ = cli.kill();
             let _ = cli.wait();
         }
-        for (group, birth) in [
-            (self.host_group, self.host_birth),
-            (self.bun_group, self.bun_birth),
+        for (group, birth, member) in [
+            (self.host_group, self.host_birth, self.host_member),
+            (self.bun_group, self.bun_birth, self.bun_member),
         ] {
             // Raw marker edits, missing original births and changed group
             // numbers must never gain numeric kill(-PGID) authority.
             if let (Some(group), Some(original)) = (group, birth)
                 && original.group() == group
             {
-                let _ = signal_attested_group("-TERM", original);
+                if signal_attested_group("-TERM", original).is_err()
+                    && let Some(member) = member
+                {
+                    let _ = signal_group_via_attested_member("-TERM", original, member);
+                }
             }
         }
     }
@@ -211,7 +239,7 @@ impl ShippingDevCycle {
             owns_expected_tree,
             "shipping keld dev did not delegate CLI {cli_pid} -> host {host_pid} -> guardian {guardian_pid} -> Bun {bun_pid}"
         );
-        cleanup.record_authenticated_groups(host_pid, bun_pid);
+        cleanup.record_authenticated_groups(host_pid, guardian_pid, bun_pid, descendant_pid);
         let mut cycle = Self {
             cli: Some(cleanup.release()),
             cli_pid,
