@@ -402,7 +402,7 @@ publish this draft and the truthful README; obtain independent exact-head review
 approval. No production staging implementation.
 
 ### T-4: Source-tree capture (T2; pending)
-- **Blocked by:** T-3
+- **Blocked by:** T-3, B-1
 after approval: one macOS source-capture/copy owner, normal sibling and nested-layout vertical slice, all
 containment/type/failure-cleanup controls, unchanged prepared-entry route and actual shipping no-flag Host
 result.
@@ -462,17 +462,21 @@ not an application performance benchmark.
 
 ## 10. Open questions, blockers & unknowns
 
-1. **Source/startup admission interface — implementation blocker, not a fabricated
-   completed closure.** GH499/source admission, GH502 installed graph and
-   GH593/KEL-75 role-startup owners must identify the existing qualification
-   consumed by the sole stage producer, including effective package/path config,
-   preload and environment inputs before evaluation. The exact owner action is
-   to bind that input selection and refusal contract to this source-tree scope;
-   its first check substitutes a startup preload/path redirect and must refuse
-   before its sentinel executes. No such artifact is proven by this fixture.
-   Until that contract is supplied, keep this draft unapproved for general-tree
-   production implementation; do not silently copy or silently discard active
-   configuration, and do not author a second resolver or config checker.
+### B-1: Source/startup admission interface
+- **Status:** open
+- **Owner:** GH499/source admission, GH502 installed graph and GH593/KEL-75 role-startup owners.
+- **Impact:** Block T-4 source-tree capture and approval for general-tree production implementation.
+- **Check:** Bind the existing input selection and refusal contract to this source-tree scope.
+  Substitute a startup preload or path redirect.
+  The admission check must refuse before the sentinel executes.
+
+The owners must identify the existing qualification that the sole stage producer consumes.
+This includes effective package/path configuration, preload and environment inputs before evaluation.
+No such artifact is proven by this fixture.
+Until the owners supply that contract, keep this draft unapproved for general-tree production implementation.
+Do not silently copy or silently discard active configuration.
+Do not author a second resolver or configuration checker.
+### Other open questions
 2. Exact-text approval of this bounded macOS regular-file tree contract. Rejecting
    all symlinks is deliberate for the first slice; a qualified installed graph
    requiring links remains blocked until its owner approves/proves a supported
