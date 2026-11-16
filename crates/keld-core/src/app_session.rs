@@ -2507,9 +2507,6 @@ fn run_app(
     )?;
     guardian_owner.attach_router(router.handle())?;
     let (window_events_tx, window_events_rx) = mpsc::channel();
-    let mut dialog_presentation = router.handle.dialog.as_ref().map(|session| {
-        dialog_session::DialogMainOwner::new(Arc::clone(session), window_events_tx.clone())
-    });
     let router_handle = router.handle();
     let commands_for_events = window_commands_tx.clone();
     let init_deadline = Arc::new(OnceLock::new());
@@ -2611,6 +2608,11 @@ fn run_app(
         drop(renderer_outcomes_rx);
         None
     };
+    // Create only after every pre-loop failure path: this owner retains a
+    // window-event sender, which would keep the coordinator alive during join.
+    let mut dialog_presentation = router.handle.dialog.as_ref().map(|session| {
+        dialog_session::DialogMainOwner::new(Arc::clone(session), window_events_tx.clone())
+    });
     let presentation_router = router.handle();
     let mut presentation_unproved = None;
     let mut retains_main_custody = false;
