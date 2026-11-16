@@ -1,4 +1,4 @@
-//! Native WKNavigation witness for the shared document state owner.
+//! Native `WKNavigation` witness for the shared document state owner.
 use crate::WebviewId;
 pub(crate) use crate::native_document::{
     NativeAttempt, NativeCommitIdentity, NativeCommittedStamp, NativeDocumentOwner, ResourceLease,
