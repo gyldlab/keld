@@ -312,6 +312,9 @@ export async function runLayout(
   let listener: ReturnType<typeof Bun.listen<undefined>> | undefined;
   let proc: ReturnType<typeof Bun.spawn> | undefined;
   let childExit: CleanupTask<number> | undefined;
+  let stdoutStream: ReadableStream<Uint8Array> | undefined;
+  let stdoutOwnedByOutput = false;
+  let orphanStdoutCancellation: CleanupTask<void> | undefined;
   let stderrTask: CleanupTask<string> | undefined;
   let stderrStream: ReadableStream<Uint8Array> | undefined;
   let stderrReader: LayoutOutputReader | undefined;
@@ -402,6 +405,16 @@ export async function runLayout(
         throw error;
     }
   };
+  // Owner acquisition can fail before withLayoutOutput takes the stdout pipe.
+  // Preserve custody until the native read end is closed.
+  const finalizeUnownedStdout = async () => {
+    if (stdoutOwnedByOutput || stdoutStream === undefined) return;
+    if (proc !== undefined) await bound(proc.exited);
+    orphanStdoutCancellation ??= cleanupTask(
+      Promise.resolve().then(() => stdoutStream!.cancel()),
+    );
+    await bound(orphanStdoutCancellation.promise);
+  };
   const owner: RetainedLayout = {
     root: dir,
     listener,
@@ -425,6 +438,14 @@ export async function runLayout(
     const stopAttempt = cleanupTask(Promise.resolve().then(stopChild));
     const [stopped] = await Promise.allSettled([bound(stopAttempt.promise)]);
     if (stopped!.status === "rejected") errors.push(stopped!.reason);
+    // The stdout source is independent of failed stderr/child disposal.
+    const orphanStdout = cleanupTask(
+      Promise.resolve().then(finalizeUnownedStdout),
+    );
+    const [orphanResult] = await Promise.allSettled([
+      bound(orphanStdout.promise),
+    ]);
+    if (orphanResult!.status === "rejected") errors.push(orphanResult!.reason);
     if (outputCleanup?.incomplete) {
       try {
         await outputCleanup.finalizeSource();
@@ -439,6 +460,8 @@ export async function runLayout(
       callbackTask,
       childExit,
       stopAttempt,
+      orphanStdout,
+      orphanStdoutCancellation,
       stderrTask,
       stderrCancellation,
       stderrFinalization,
@@ -453,6 +476,9 @@ export async function runLayout(
       if (result.status === "rejected") errors.push(result.reason);
     const stillPending =
       pending.some((task) => task!.state === "pending") ||
+      (stdoutStream !== undefined &&
+        !stdoutOwnedByOutput &&
+        orphanStdoutCancellation?.state !== "fulfilled") ||
       // A later stop attempt may have started cancellation after our snapshot.
       (stderrStream !== undefined &&
         !stderrNaturalEof &&
@@ -542,6 +568,7 @@ export async function runLayout(
     });
     owner.child = proc;
     childExit = cleanupTask(proc.exited);
+    stdoutStream = proc.stdout as ReadableStream<Uint8Array>;
     const stderr = proc.stderr as ReadableStream<Uint8Array>;
     stderrStream = stderr;
     const stderrOwner = operations.stderrOwner?.(stderr) ?? {
@@ -576,10 +603,11 @@ export async function runLayout(
     owner.stderr = stderrTask;
     const child = proc;
     const errorsText = stderrTask.promise;
-    const stdout = proc.stdout as ReadableStream<Uint8Array>;
+    const stdout = stdoutStream;
     const outputOwner = operations.outputOwner?.(stdout) ?? {
       reader: stdout.getReader(),
     };
+    stdoutOwnedByOutput = true;
     result = await withLayoutOutput(
       outputOwner.reader,
       layout,

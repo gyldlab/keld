@@ -761,6 +761,111 @@ describe("layout resource ownership on failure", () => {
     expect(existsSync(result.root)).toBe(false);
   }, 10_000);
 
+  for (const failedOwner of ["stdout", "stderr"] as const) {
+    test(
+      "owner acquisition failure closes inherited stdout before return: " +
+        failedOwner,
+      async () => {
+        const audit = mkdtempSync(join(tmpdir(), "keld-layout-orphan-stdout-"));
+        const readyPath = join(audit, "descendant-ready");
+        const gatePath = join(audit, "write-gate");
+        const outcomePath = join(audit, "writer-outcome");
+        const primary = new Error(
+          "intentional " + failedOwner + " owner acquisition failure",
+        );
+        let root = "";
+        const grandchild = [
+          'import { existsSync, writeFileSync, writeSync, renameSync } from "node:fs";',
+          "writeFileSync(" + JSON.stringify(readyPath) + ', "ready");',
+          "for (let i = 0; i < 800 && !existsSync(" +
+            JSON.stringify(gatePath) +
+            "); i++) await Bun.sleep(10);",
+          "if (!existsSync(" +
+            JSON.stringify(gatePath) +
+            ')) throw new Error("writer gate not opened");',
+          'let writerOutcome = "wrote";',
+          'try { writeSync(1, "POST_PARENT_STDOUT\\n"); }',
+          "catch (error) { writerOutcome = error instanceof Error ? ((error as NodeJS.ErrnoException).code ?? error.message) : String(error); }",
+          "writeFileSync(" +
+            JSON.stringify(outcomePath + ".pending") +
+            ", writerOutcome);",
+          "renameSync(" +
+            JSON.stringify(outcomePath + ".pending") +
+            ", " +
+            JSON.stringify(outcomePath) +
+            ");",
+        ].join("\n");
+        const parent = [
+          'import { existsSync } from "node:fs";',
+          'Bun.spawn([process.execPath, "-e", ' +
+            JSON.stringify(grandchild) +
+            '], { stdin: "ignore", stdout: "inherit", stderr: "inherit" });',
+          "for (let i = 0; i < 500 && !existsSync(" +
+            JSON.stringify(readyPath) +
+            "); i++) await Bun.sleep(10);",
+          "if (!existsSync(" +
+            JSON.stringify(readyPath) +
+            ')) throw new Error("descendant did not start");',
+          "process.exit(0);",
+        ].join("\n");
+        const waitFor = async (path: string) => {
+          for (let i = 0; i < 1_000 && !existsSync(path); i++)
+            await Bun.sleep(10);
+          if (!existsSync(path))
+            throw new Error("missing native writer observation at " + path);
+        };
+        try {
+          const error = await rejected(
+            withIoDeadline(
+              runLayout(
+                {
+                  deadlineMs: 1_500,
+                  ready: () => false,
+                  waitForExit: true,
+                  async write(dir) {
+                    root = dir;
+                    await Bun.write(join(dir, "orphan-stdout.ts"), parent);
+                    return "orphan-stdout.ts";
+                  },
+                },
+                {
+                  stderrOwner(stream) {
+                    // Observe the actual descendant before injecting the failure.
+                    for (let i = 0; i < 500 && !existsSync(readyPath); i++)
+                      Bun.sleepSync(10);
+                    if (!existsSync(readyPath))
+                      throw new Error("descendant failed to start");
+                    if (failedOwner === "stderr") throw primary;
+                    return { reader: stream.getReader() };
+                  },
+                  outputOwner(stream) {
+                    if (failedOwner === "stdout") throw primary;
+                    return { reader: stream.getReader() };
+                  },
+                },
+              ),
+              12_000,
+            ),
+          );
+          expect(error).toBe(primary);
+          expect(existsSync(readyPath)).toBe(true);
+          expect(existsSync(root)).toBe(false);
+          // Write only after the runner has returned and released its root.
+          await Bun.write(gatePath, "write");
+          await waitFor(outcomePath);
+          const writerOutcome = readFileSync(outcomePath, "utf8");
+          expect(writerOutcome).not.toBe("wrote");
+          if (process.platform !== "win32") expect(writerOutcome).toBe("EPIPE");
+        } finally {
+          if (!existsSync(gatePath)) await Bun.write(gatePath, "write");
+          if (existsSync(readyPath)) await waitFor(outcomePath);
+          rmSync(audit, { recursive: true, force: true });
+        }
+      },
+      25_000,
+    );
+  }
+
   test("a stalled callback retains its real layout until owner disposal after settlement", async () => {
     let release!: () => void;
     const callback = new Promise<void>((resolve) => {
