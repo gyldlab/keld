@@ -140,6 +140,13 @@ publication and before current replacement. For present canonical
 objects, distinguish fully authenticated and exclusively owned bytes
 from truncated, corrupt or foreign bytes. The former permits bounded
 retirement; the latter MUST halt without deletion or pointer removal.
+Before the first recovery journal, leave an authenticated uncommitted
+ordinary-refresh N+1 or D-23 ordinary intent from a prior crash.
+Require D-24 retirement and verified absence under the same lease.
+Use a separate negative with a foreign, corrupted or wrong-epoch
+orphan. It MUST refuse before publishing a recovery journal or pointer.
+Cut during ordinary orphan retirement and show that only the matching
+D-24 intent may resume. Never interpret it as a D-65 recovery intent.
 For R2, also cut before retirement-intent publication and after its journal digest readback.
 Cut after every exclusive blob deletion and after orphan-generation deletion.
 Also cut after durable completion-digest readback, after intent removal,

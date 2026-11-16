@@ -204,6 +204,12 @@ There is no caller-provided cleanup flag or empty-store fallback.
 When `current` already names N+1, the successor is committed and MUST
 NOT be retired. Manual recovery with a pending pointer uses only
 D-65's explicit terminal-`aborted` path, not ordinary orphan cleanup.
+Before D-65 publishes a fresh manual-recovery journal or D-68 pointer,
+the same lease-protected owner MUST finish any pending ordinary N+1
+retirement by these D-24 rules. Confirm both the ordinary intent
+and N+1 absent before sealing a new recovery prewrite inventory.
+If source identity, generation epoch or ownership is ambiguous,
+refuse recovery without creating its journal or pending pointer.
 
 For D-65 manual recovery only, a verified expired `prepared` journal,
 matching D-68 pending pointer, protected old `current` and terminal
