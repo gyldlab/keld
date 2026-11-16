@@ -41,6 +41,20 @@ Native AC-2 and AC-4 remain NOT_RUN. Require genuine changed-SPKI and joined bro
 - **Environment:** DESKTOP-3FMM79E, prior execution turn.
 - **Limits:** This was not a build. This turn has no Rust compiler in its local Linux PATH.
 
+AC-28 additionally requires the following equal-version matrix before and after restart:
+
+| Stored v100 under current threshold | Fetched valid v100 signed content | Required result |
+|---|---|---|
+| Invalid after threshold increase | Identical | Refuse before graph selection, retain floor |
+| Invalid after threshold increase | Changed snapshot | Refuse before graph selection, retain floor |
+| Valid | Identical, including different signature order | Unchanged, retain stored envelope |
+| Valid | Changed snapshot or expiry | Refuse before graph selection |
+
+Run isolated mutants for stored-envelope authentication and signed-content equality.
+Keep incoming signatures, expiry and all unrelated policies valid for each mutant.
+Retain the valid advancing-v101 positive and replay-v1 refusal controls.
+Synthetic signature or decision-table checks cannot qualify the patched client or Windows admission.
+
 Every AC above remains NOT_RUN. Definition review and golden-record checks do not change that status. A patch must make each negative control fail at its intended predicate. A later restored pass must use the same exact source.
 
 ## 7. Test plan & evidence: Windows admission

@@ -219,6 +219,12 @@ refuse without deleting another object.
   - **At-risk precondition:** The stored version 100 has one valid signature. Both incoming candidates meet the new two-signature threshold.
   - **Expected RED:** Version 1 passes the affected timestamp or snapshot comparison, or lowers a referenced targets version.
 
+- **Equal-version controls:** Serve a valid two-signature v100 after the same-key threshold increase. The stored one-signature v100 remains floor-only. Refuse before snapshot selection or catalogue authority, with either identical or changed signed content.
+- **Current-authority control:** Both stored and fetched v100 satisfy the current threshold. Identical canonical signed content permits `Unchanged`. Different snapshot descriptions or expiry values refuse. Different signature ordering alone does not refuse.
+- **Authority negative control:** Remove only D-25's stored-envelope authentication. Keep incoming signatures valid and signed content identical. The below-threshold stored envelope must not authorize the retained graph.
+- **Content negative control:** Remove only D-25's signed-content equality check. Keep both envelopes valid under the current threshold. A changed same-version snapshot description must fail the refusal assertion.
+- Repeat these controls after restart. Retain replay-v1 refusal and valid advancing-v101 eligibility. Product execution remains NOT_RUN until the patched client exists.
+
 ## 3. Acceptance criteria: Windows admission
 
 ### AC-40: Actual-worker admission
