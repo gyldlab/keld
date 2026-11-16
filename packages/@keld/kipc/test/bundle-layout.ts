@@ -295,6 +295,8 @@ export interface LayoutOperations {
   removeRoot?: (root: string) => void;
   /** Optional fault seam; the returned owner must retain this exact stdout source. */
   outputOwner?: (stream: ReadableStream<Uint8Array>) => LayoutOutputOwner;
+  /** Simulate delayed stderr finalization after reader cancellation reaches EOF. */
+  stderrReader?: (stream: ReadableStream<Uint8Array>) => LayoutOutputReader;
 }
 
 /**
@@ -311,6 +313,8 @@ export async function runLayout(
   let proc: ReturnType<typeof Bun.spawn> | undefined;
   let childExit: CleanupTask<number> | undefined;
   let stderrTask: CleanupTask<string> | undefined;
+  let stderrReader: LayoutOutputReader | undefined;
+  let stderrCancellation: CleanupTask<void> | undefined;
   let writeTask: CleanupTask<string> | undefined;
   let callbackTask: CleanupTask<void> | undefined;
   let outputCleanup: LayoutCleanupError["cleanup"] | undefined;
@@ -321,8 +325,28 @@ export async function runLayout(
     withIoDeadline(promise, layout.deadlineMs);
   const stopChild = async () => {
     if (proc !== undefined && childExit?.state === "pending") proc.kill();
-    if (proc !== undefined)
-      await bound(Promise.all([proc.exited, stderrTask?.promise]));
+    if (proc === undefined) return;
+    await bound(proc.exited);
+    if (stderrTask === undefined) return;
+    if (stderrTask.state === "pending") {
+      // Direct-child exit does not close pipe handles inherited by descendants.
+      // Give native stderr a bounded drain before cancelling our own reader.
+      try {
+        await withIoDeadline(
+          stderrTask.promise,
+          Math.min(layout.deadlineMs ?? 5_000, 200),
+        );
+      } catch (error) {
+        if (stderrTask.state !== "pending") throw error;
+        stderrCancellation ??= cleanupTask(
+          Promise.resolve().then(() => stderrReader!.cancel()),
+        );
+      }
+    }
+    // Cancellation may still be pending after the read observes synthetic EOF.
+    if (stderrCancellation !== undefined)
+      await bound(stderrCancellation.promise);
+    await bound(stderrTask.promise);
   };
   const owner: RetainedLayout = {
     root: dir,
@@ -344,10 +368,9 @@ export async function runLayout(
   const dispose = async () => {
     if (owner.disposed) return;
     const errors: unknown[] = [];
-    const stop = await Promise.allSettled([
-      bound(Promise.resolve().then(stopChild)),
-    ]);
-    if (stop[0]!.status === "rejected") errors.push(stop[0]!.reason);
+    const stopAttempt = cleanupTask(Promise.resolve().then(stopChild));
+    const [stopped] = await Promise.allSettled([bound(stopAttempt.promise)]);
+    if (stopped!.status === "rejected") errors.push(stopped!.reason);
     if (outputCleanup?.incomplete) {
       try {
         await outputCleanup.finalizeSource();
@@ -361,7 +384,9 @@ export async function runLayout(
       writeTask,
       callbackTask,
       childExit,
+      stopAttempt,
       stderrTask,
+      stderrCancellation,
       outputCleanup?.stopChild,
       outputCleanup?.cancellation,
       outputCleanup?.output,
@@ -373,6 +398,9 @@ export async function runLayout(
       if (result.status === "rejected") errors.push(result.reason);
     const stillPending =
       pending.some((task) => task!.state === "pending") ||
+      // A later stop attempt may have started cancellation after our snapshot.
+      (stderrCancellation !== undefined &&
+        stderrCancellation.state !== "fulfilled") ||
       outputCleanup?.incomplete === true;
     if (!stillPending) {
       // Independent steps: a listener-stop exception must not skip root removal.
@@ -457,8 +485,23 @@ export async function runLayout(
     });
     owner.child = proc;
     childExit = cleanupTask(proc.exited);
+    const stderr = proc.stderr as ReadableStream<Uint8Array>;
+    stderrReader = operations.stderrReader?.(stderr) ?? stderr.getReader();
+    const reader = stderrReader;
     stderrTask = cleanupTask(
-      new Response(proc.stderr as ReadableStream<Uint8Array>).text(),
+      (async () => {
+        const decoder = new TextDecoder();
+        let stderr = "";
+        try {
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) return stderr + decoder.decode();
+            stderr += decoder.decode(chunk.value, { stream: true });
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      })(),
     );
     owner.childExit = childExit;
     owner.stderr = stderrTask;

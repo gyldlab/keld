@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   LayoutCleanupError,
   LayoutDisposalError,
+  type RetainedLayout,
   runLayout,
   withLayoutOutput,
 } from "../test/bundle-layout.ts";
@@ -355,6 +356,141 @@ describe("layout resource ownership on failure", () => {
       await withIoDeadline(child.exited);
     }
   }, 35_000);
+
+  test("a direct child exiting with inherited descendant stderr permits bounded disposal", async () => {
+    const audit = mkdtempSync(join(tmpdir(), "keld-layout-stderr-audit-"));
+    const readyPath = join(audit, "descendant-ready");
+    let root = "";
+    let failure: unknown;
+    try {
+      failure = await rejected(
+        withIoDeadline(
+          runLayout({
+            deadlineMs: 1_500,
+            ready: () => false,
+            waitForExit: true,
+            async write(dir) {
+              root = dir;
+              const grandchild = `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(readyPath)}, "alive"); setTimeout(() => {}, 9_000);`;
+              const parent = `import { existsSync } from "node:fs"; Bun.spawn([process.execPath, "-e", ${JSON.stringify(grandchild)}], { stdin: "ignore", stdout: "ignore", stderr: "inherit" }); for (let i = 0; i < 400 && !existsSync(${JSON.stringify(readyPath)}); i++) await Bun.sleep(10); if (!existsSync(${JSON.stringify(readyPath)})) throw new Error("descendant did not start"); console.log("direct child exited"); process.exit(0);`;
+              await Bun.write(join(dir, "inherit-stderr.ts"), parent);
+              return "inherit-stderr.ts";
+            },
+          }),
+          12_000,
+        ),
+      );
+      expect(existsSync(readyPath)).toBe(true);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain("KELD-IPC-006");
+      expect(failure).not.toBeInstanceOf(LayoutCleanupError);
+      expect(failure).not.toBeInstanceOf(LayoutDisposalError);
+      expect(existsSync(root)).toBe(false);
+    } finally {
+      // The descendant exits on its own timer. No numeric PID is cleanup authority.
+      if (
+        (failure instanceof LayoutCleanupError ||
+          failure instanceof LayoutDisposalError) &&
+        failure.retainedLayout !== undefined &&
+        !failure.retainedLayout.disposed
+      ) {
+        if (failure.retainedLayout.stderr !== undefined)
+          await withIoDeadline(failure.retainedLayout.stderr.promise, 13_000);
+        await withIoDeadline(failure.retainedLayout.dispose(), 5_000);
+      }
+      rmSync(audit, { recursive: true, force: true });
+    }
+  }, 25_000);
+
+  test("stderr cancellation completion is required even after its reader reaches EOF", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let cancelEntered = false;
+    let root = "";
+    let owner: RetainedLayout | undefined;
+    try {
+      const failure = await rejected(
+        runLayout(
+          {
+            deadlineMs: 1_000,
+            ready: (stdout) => stdout.includes("ready"),
+            async write(dir) {
+              root = dir;
+              await Bun.write(
+                join(dir, "ready-stderr.ts"),
+                'console.log("ready"); setInterval(() => {}, 60_000);',
+              );
+              return "ready-stderr.ts";
+            },
+          },
+          {
+            stderrReader(stream) {
+              const nativeReader = stream.getReader();
+              type ReadResult = Awaited<ReturnType<typeof nativeReader.read>>;
+              let finishRead!: (chunk: ReadResult) => void;
+              const pending = new Promise<ReadResult>((resolve) => {
+                finishRead = resolve;
+              });
+              return {
+                read: () => pending,
+                async cancel() {
+                  // The reader sees cancellation EOF before the source closes.
+                  finishRead({ done: true, value: undefined });
+                  cancelEntered = true;
+                  await gate;
+                  await stream.cancel();
+                },
+                releaseLock: () => nativeReader.releaseLock(),
+              };
+            },
+          },
+        ),
+      );
+      expect(failure).toBeInstanceOf(LayoutCleanupError);
+      if (!(failure instanceof LayoutCleanupError))
+        throw new Error("missing retained stderr cancellation owner");
+      owner = failure.retainedLayout;
+      expect(owner).toBeDefined();
+      if (owner === undefined) throw new Error("missing retained layout");
+      expect(cancelEntered).toBe(true);
+      expect(owner.stderr?.state).toBe("fulfilled");
+      expect(owner.disposed).toBe(false);
+      expect(existsSync(root)).toBe(true);
+      // A completed read is not proof that its cancellation has finalized.
+      expect(await rejected(owner.dispose())).toBeInstanceOf(Error);
+      expect(owner.disposed).toBe(false);
+      expect(existsSync(root)).toBe(true);
+      release();
+      await withIoDeadline(owner.dispose(), 5_000);
+      expect(owner.disposed).toBe(true);
+      expect(existsSync(root)).toBe(false);
+    } finally {
+      release();
+      if (owner !== undefined && !owner.disposed)
+        await withIoDeadline(owner.dispose(), 5_000);
+    }
+  }, 20_000);
+
+  test("natural exit drains complete stderr before removing its layout root", async () => {
+    const result = await runLayout({
+      deadlineMs: 3_000,
+      ready: () => false,
+      waitForExit: true,
+      async write(dir) {
+        await Bun.write(
+          join(dir, "natural-stderr.ts"),
+          'console.error("direct-stderr"); console.log("done");',
+        );
+        return "natural-stderr.ts";
+      },
+    });
+    expect(result.stdout.trim()).toBe("done");
+    expect(result.stderr?.trim()).toBe("direct-stderr");
+    expect(result.exitCode).toBe(0);
+    expect(existsSync(result.root)).toBe(false);
+  }, 10_000);
 
   test("a stalled callback retains its real layout until owner disposal after settlement", async () => {
     let release!: () => void;
