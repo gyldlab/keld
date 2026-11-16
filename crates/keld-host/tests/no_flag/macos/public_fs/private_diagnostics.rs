@@ -15,6 +15,9 @@ pub(super) enum Phase {
     RecoveryConsumer,
     RecoveryPage,
     Observation,
+    ObservationClickStart,
+    ObservationResult,
+    ObservationUnrecognized,
     ProcessDisplay,
     ProcessImageMatch,
     StagedFixtureObservation,
@@ -30,10 +33,24 @@ impl Phase {
             Self::RecoveryConsumer => "KELD_KEL140_RECOVERY_CONSUMER",
             Self::RecoveryPage => "KELD_KEL140_RECOVERY_PAGE",
             Self::Observation => "KELD_KEL140_OBSERVATION",
+            Self::ObservationClickStart => "KELD_KEL140_OBSERVATION phase=page_click_start",
+            Self::ObservationResult => "KELD_KEL140_OBSERVATION phase=page_result",
+            Self::ObservationUnrecognized => "KELD_KEL140_OBSERVATION phase=unrecognized",
             Self::ProcessDisplay => "KELD_KEL140_PROCESS_DISPLAY",
             Self::ProcessImageMatch => "KELD_KEL140_PROCESS_IMAGE_MATCH",
             Self::StagedFixtureObservation => "KELD_KEL143_STAGED_FIXTURE_OBSERVATION",
             Self::StagedBoot => "KELD_KEL140_STAGED_BOOT",
+        }
+    }
+
+    /// The fixed stage of an untrusted observer HTTP report, chosen from an
+    /// allowlist of its `phase` field. Any other value, including a private
+    /// or malformed one, maps to `ObservationUnrecognized`.
+    pub(super) fn observation_stage(untrusted_report: &Value) -> Self {
+        match untrusted_report["phase"].as_str() {
+            Some("page-click-start") => Self::ObservationClickStart,
+            Some("page-result") => Self::ObservationResult,
+            _ => Self::ObservationUnrecognized,
         }
     }
 }
@@ -175,6 +192,9 @@ mod tests {
             Phase::RecoveryConsumer,
             Phase::RecoveryPage,
             Phase::Observation,
+            Phase::ObservationClickStart,
+            Phase::ObservationResult,
+            Phase::ObservationUnrecognized,
             Phase::ProcessDisplay,
             Phase::ProcessImageMatch,
             Phase::StagedFixtureObservation,
@@ -185,6 +205,35 @@ mod tests {
             assert!(!marker.contains(PRIVATE));
             assert!(!marker.contains("token"));
             assert!(!marker.contains("endpoint"));
+        }
+    }
+
+    #[test]
+    fn untrusted_report_values_cannot_reach_observer_diagnostics() {
+        const PRIVATE: &str = "KELD_TEST_PRIVATE_HTTP_TOKEN_PATH_BODY_SENTINEL";
+        for (report, expected) in [
+            (
+                serde_json::json!({"phase": "page-click-start", "token": PRIVATE}),
+                "KELD_KEL140_OBSERVATION phase=page_click_start",
+            ),
+            (
+                serde_json::json!({"phase": "page-result", "body": PRIVATE}),
+                "KELD_KEL140_OBSERVATION phase=page_result",
+            ),
+            (
+                serde_json::json!({"phase": PRIVATE, "path": PRIVATE}),
+                "KELD_KEL140_OBSERVATION phase=unrecognized",
+            ),
+        ] {
+            let marker = observed_marker(&report, Phase::observation_stage(&report));
+            assert!(
+                marker == expected,
+                "diagnostic stage must use fixed allowlisted words"
+            );
+            assert!(
+                !marker.contains(PRIVATE),
+                "private HTTP report escaped into diagnostics"
+            );
         }
     }
 
