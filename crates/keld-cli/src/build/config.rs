@@ -770,6 +770,16 @@ mod windows_build_tests {
         let value = parse_windows_build(&source).unwrap();
         assert_eq!(value.modules, ["main.js"]);
         assert_eq!(value.channel, "stable");
+        // Cross-platform tests MUST consume the complete Windows schema:
+        // otherwise Linux/macOS Clippy -D warnings sees unused Windows fields.
+        assert_eq!(value.out_dir, PathBuf::from("out"));
+        assert_eq!(value.source_root, PathBuf::from("source"));
+        assert_eq!(value.source_commit, "1".repeat(40));
+        assert_eq!(value.typescript_root, PathBuf::from("typescript"));
+        assert_eq!(value.bun.path, PathBuf::from("bun.exe"));
+        assert_eq!(value.bun.sha256, [0x22; 32]);
+        assert_eq!(value.tsc.path, PathBuf::from("tsc.js"));
+        assert_eq!(value.tsc.sha256, [0x33; 32]);
         assert!(parse_build(&source).is_err());
     }
     #[test]
