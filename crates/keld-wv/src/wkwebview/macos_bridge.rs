@@ -3119,7 +3119,7 @@ impl MacRendererBridge {
             view,
             world,
             &script,
-            &app,
+            app,
             EvaluationPurpose::FixtureBinding { index },
         );
         Ok(())
@@ -3180,7 +3180,7 @@ impl MacRendererBridge {
             view,
             world,
             "throw new Error('KELD fixture deliberate control exception'); void 0;",
-            &app,
+            app,
             EvaluationPurpose::Control,
         );
         Ok(())
@@ -3240,7 +3240,7 @@ impl MacRendererBridge {
             &format!(
                 "(()=>{{const old=JSON.parse({encoded});globalThis.__keldAppNativeCall(old);window.webkit.messageHandlers.__keld_app_world.postMessage({encoded});}})();"
             ),
-            &app,
+            app,
             EvaluationPurpose::FixtureReplay,
         );
         Ok(())
@@ -3294,7 +3294,7 @@ impl MacRendererBridge {
             .as_ref()
             .ok_or_else(|| bridge_error("no probe realm"))?;
         drop(state);
-        evaluate_owned(view, world, &script, &app, EvaluationPurpose::Control);
+        evaluate_owned(view, world, &script, app, EvaluationPurpose::Control);
         Ok(())
     }
     pub(super) fn fixture_origin_result(&self) -> Option<serde_json::Value> {
