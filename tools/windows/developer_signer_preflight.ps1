@@ -6,15 +6,6 @@ param(
     [ValidatePattern('^[0-9a-fA-F]{40}$')]
     [string]$Thumbprint,
 
-    # Use an independently authenticated, exactly pinned Python executable.
-    # Neither PATH selection nor interpreter site startup can supply authority.
-    [Parameter(Mandatory = $true)]
-    [string]$PythonPath,
-
-    [Parameter(Mandatory = $true)]
-    [ValidatePattern('^[0-9a-fA-F]{64}$')]
-    [string]$ExpectedPythonSha256,
-
     [Parameter(Mandatory = $true, ParameterSetName = 'Discovery')]
     [switch]$DiscoverPublisherScope,
 
@@ -61,6 +52,10 @@ function Require-AbsoluteFile([string]$Name, [string]$SelectedPath) {
     return $file.FullName
 }
 
+$spkiParser = Require-AbsoluteFile -Name 'in-process SPKI parser' -SelectedPath (
+    Join-Path -Path $PSScriptRoot -ChildPath 'developer_signer_spki.ps1')
+. $spkiParser
+
 if ($env:OS -cne 'Windows_NT') {
     Refuse 'native Windows certificate store is required'
 }
@@ -103,30 +98,7 @@ if (($usage.KeyUsages -band [System.Security.Cryptography.X509Certificates.X509K
     Refuse 'selected certificate lacks Digital Signature key usage'
 }
 
-# Preserve the exact certificate-encoded public SPKI DER. PowerShell/.NET key
-# export helpers can re-encode public keys; KEL-135 hashes original SPKI bytes.
-$helper = Join-Path -Path $PSScriptRoot -ChildPath 'developer_signer_spki.py'
-if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) {
-    Refuse 'read-only SPKI helper is missing'
-}
-$python = Require-AbsoluteFile -Name 'Python' -SelectedPath $PythonPath
-if ([IO.Path]::GetExtension($python) -ine '.exe' -or
-    [IO.Path]::GetFileName($python) -ine 'python.exe') {
-    Refuse 'selected Python interpreter must be python.exe'
-}
-$actualPythonDigest = (Get-FileHash -LiteralPath $python -Algorithm SHA256).Hash
-if ($actualPythonDigest -cne $ExpectedPythonSha256.ToUpperInvariant()) {
-    Refuse 'selected Python bytes do not match independently pinned SHA256'
-}
-# -I ignores ambient PYTHONPATH and user sites; -S refuses site/.pth hooks;
-# -B avoids bytecode writes. This checked-in stdlib parser needs none of them.
-$encodedPublicCertificate = [Convert]::ToBase64String($certificate.RawData)
-$scopeOutput = @($encodedPublicCertificate | & $python -I -S -B $helper)
-if ($LASTEXITCODE -ne 0 -or $scopeOutput.Count -ne 1 -or
-    $scopeOutput[0] -cnotmatch '^[0-9a-f]{64}$') {
-    Refuse 'certificate SPKI publisher scope could not be derived'
-}
-$scope = [string]$scopeOutput[0]
+$scope = Get-KeldPublisherScope $certificate.RawData
 if ($DiscoverPublisherScope) {
     Write-Output "DISCOVERY_ONLY publisherScope=$scope"
     return

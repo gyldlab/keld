@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Extract a certificate's exact DER SPKI for KELD developer-local discovery.
+"""Independent reference oracle for the PowerShell SPKI parser tests.
 
 The input is base64-encoded public certificate DER on stdin. No private key,
 certificate store, signer, or trust policy is accessed or changed here.
+Production signer preflight parses certificate DER in-process and never runs
+this module or another Python executable.
 """
 import base64
 import hashlib

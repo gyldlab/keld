@@ -9,7 +9,6 @@ This is a **developer-local** procedure for `keld build --target windows-x64`, n
 - An independently authenticated SignTool executable and its previously recorded SHA-256 pin. Use the exact tool path, never automatic signer/certificate selection.
 - Existing 32-byte raw update public key; approved Git/Cargo/Rustc source tools, compiler Bun/TypeScript tool paths and SHA-256 pins, an exact source commit, and unique private `outDir`. The update public key does not authorize or create a private signing key.
 - Resolved `typescriptRoot` and `outDir` must use ordinary absolute local-disk paths such as `C:\Work\keld`. Project-relative paths are valid when they resolve to that form. Extended-length `\\?\C:\...`, UNC and device aliases are refused before compiler capture, source-session creation, or executable signing because the local compiler binds imports through fixed `file:///` URLs.
-- An independently authenticated local Python 3 `python.exe` and its previously recorded SHA-256 pin, selected by an ordinary absolute path. The read-only public-SPKI parser starts that pinned interpreter with `-I -S -B` to ignore ambient Python paths, site hooks and bytecode writes; it never picks a `python` executable from `PATH`.
 
 ## Derive the publisher scope from the selected certificate
 
@@ -17,10 +16,7 @@ From PowerShell at the repository root, without administrator elevation:
 
 ```powershell
 $thumbprint = '<YOUR-EXISTING-40-HEX-CODE-SIGNING-CERT-THUMBPRINT>'
-$pythonPath = '<INDEPENDENTLY-AUTHENTICATED-ABSOLUTE-PYTHON-EXE-PATH>'
-$pythonSha256 = '<INDEPENDENTLY-RECORDED-PYTHON-EXE-SHA256>'
-& .\tools\windows\developer_signer_preflight.ps1 -Thumbprint $thumbprint `
-  -PythonPath $pythonPath -ExpectedPythonSha256 $pythonSha256 -DiscoverPublisherScope
+& .\tools\windows\developer_signer_preflight.ps1 -Thumbprint $thumbprint -DiscoverPublisherScope
 ```
 
 The output is explicitly `DISCOVERY_ONLY`, **not** approval to sign. Copy its 64-character `publisherScope` into the project's closed literal `developerSigner.publisherScope` in `keld.build.ts`. The same closed `developerSigner` requires `certificateThumbprint`, `releasePublicKey`, pinned `signTool`, `git`, `cargo`, `rustc` and `cargoHome` paths. Set the compiled app's real identity and project input configuration separately. Do not paste the example development machine's paths, certificate, hashes, or public key into another developer's project.
@@ -30,15 +26,29 @@ The output is explicitly `DISCOVERY_ONLY`, **not** approval to sign. Copy its 64
 ```powershell
 & .\tools\windows\developer_signer_preflight.ps1 `
   -Thumbprint $thumbprint `
-  -PythonPath $pythonPath `
-  -ExpectedPythonSha256 $pythonSha256 `
   -ExpectedPublisherScope '<DERIVED-PUBLISHER-SCOPE>' `
   -SignToolPath '<PINNED-SIGNTOOL-EXE-PATH>' `
   -ExpectedSignToolSha256 '<INDEPENDENTLY-RECORDED-SIGNTOOL-SHA256>' `
   -ReleasePublicKeyPath '<EXISTING-RAW-32-BYTE-UPDATE-PUBLIC-KEY-PATH>'
 ```
 
-Only a `PREFLIGHT_PASS` is a successful **metadata** preflight. It checks certificate identity, validity, key availability indicator, EKU, key usage, public-SPKI publisher identity, the separately pinned Python interpreter and SignTool bytes, and raw update public-key length. It does **not** prove that the private-key operation will succeed, make the self-issued certificate publicly trusted, or qualify general release. A wrong scope/hash, missing inputs or missing helper fail closed. Do not weaken checks to make a misconfigured developer project succeed.
+Only a `PREFLIGHT_PASS` is a successful **metadata** preflight. It checks certificate identity, validity, key availability indicator, EKU, key usage, publisher scope from the original certificate SPKI DER, pinned SignTool bytes, and raw update public-key length. The SPKI parser in `tools/windows/developer_signer_spki.ps1` runs in PowerShell/.NET in-process; production preflight does not resolve or launch Python, a launcher, or another helper executable. It does **not** prove that the private-key operation will succeed, make the self-issued certificate publicly trusted, or qualify general release. A wrong scope/hash or missing input fails closed. Do not weaken checks to make a misconfigured developer project succeed.
+
+Run the native read-only regression harness with an independently pinned Python `.exe` for its reference implementation and the existing SignTool metadata:
+
+```powershell
+$pythonPath = '<ABSOLUTE-PYTHON-EXE-PATH>'
+$pythonSha256 = '<INDEPENDENTLY-RECORDED-PYTHON-EXE-SHA256>'
+& .\tools\windows\test_developer_signer_preflight.ps1 `
+  -Thumbprint $thumbprint `
+  -PythonPath $pythonPath `
+  -ExpectedPythonSha256 $pythonSha256 `
+  -SignToolPath '<PINNED-SIGNTOOL-EXE-PATH>' `
+  -ExpectedSignToolSha256 '<INDEPENDENTLY-RECORDED-SIGNTOOL-SHA256>' `
+  -ReleasePublicKeyPath '<EXISTING-RAW-32-BYTE-UPDATE-PUBLIC-KEY-PATH>'
+```
+
+Python is test-only here. The harness uses the separately pinned interpreter with `-I -S -B` as an independent SPKI reference oracle, checks the in-process parser against Crypt32's `X509_PUBLIC_KEY_INFO` encoding, proves `.pth` and `sitecustomize` hooks execute in an ambient positive control, and places a marker-writing `python.cmd` first on `PATH`. Discovery and valid preflight must not launch that shim or write either startup marker. The production preflight itself has no Python dependency.
 
 ## Build and run
 

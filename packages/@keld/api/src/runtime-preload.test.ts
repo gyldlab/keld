@@ -117,40 +117,50 @@ async function launch(
       } else messages.push(message);
     },
   });
-  let startupResolved = false;
-  const startupFailure: Promise<never> = new Promise((_, reject) => {
-    void proc.exited
-      .then(async (code) => {
-        if (startupResolved) return;
-        const [stdout, stderr] = await Promise.all([
-          new Response(proc.stdout).text(),
-          new Response(proc.stderr).text(),
-        ]);
-        reject(
-          new Error(
-            `Bun child exited before app-link readiness (exit ${code}); stdout=${stdout}; stderr=${stderr}`,
-          ),
-        );
-      })
-      .catch(reject);
+  const childExit = proc.exited.then(async (code) => {
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    return { code, stdout, stderr };
   });
-  async function message(): Promise<Message> {
-    return (
-      messages.shift() ??
-      withTestIoDeadline(
-        new Promise<Message>((resolve) => {
-          pending = resolve;
-        }),
-      )
-    );
+  async function awaitChild<T>(label: string, promise: Promise<T>): Promise<T> {
+    try {
+      return await withTestIoDeadline(
+        Promise.race([
+          promise,
+          childExit.then(({ code, stdout, stderr }) => {
+            throw new Error(
+              `Bun child exited while waiting for ${label} (exit ${code}); stdout=${stdout}; stderr=${stderr}`,
+            );
+          }),
+        ]),
+      );
+    } catch (error) {
+      pending = undefined;
+      if (error instanceof Error && error.message.includes("KELD-IPC-006")) {
+        proc.kill();
+        const exited = await childExit;
+        throw new Error(
+          `Timed out waiting for ${label}; Bun child exit=${exited.code}; stdout=${exited.stdout}; stderr=${exited.stderr}`,
+          { cause: error },
+        );
+      }
+      throw error;
+    }
   }
-  const socket = await Promise.race([
-    withTestIoDeadline(opened),
-    startupFailure,
-  ]);
-  startupResolved = true;
+  async function message(label = "runtime event"): Promise<Message> {
+    const next = Promise.resolve(
+      messages.shift() ??
+      new Promise<Message>((resolve) => {
+        pending = resolve;
+      }),
+    );
+    return awaitChild(label, next);
+  }
+  const socket = await awaitChild("app-link socket open", opened);
   const writer = new WriteQueue(socket, drain);
-  const hello = await withTestIoDeadline(reader.readFrame());
+  const hello = await awaitChild("initial Hello frame", reader.readFrame());
   expect(hello.header.kind).toBe(FrameKind.Hello);
   await writer.writeFrame(
     FrameKind.Hello,
@@ -159,7 +169,7 @@ async function launch(
     0,
     new Uint8Array(32).fill(0x72),
   );
-  const init = await withTestIoDeadline(reader.readFrame());
+  const init = await awaitChild("runtime Init call", reader.readFrame());
   expect(init.header).toMatchObject({
     kind: FrameKind.Call,
     channel: LIFECYCLE_CHANNEL,
@@ -170,6 +180,7 @@ async function launch(
   const saved = init.payload.slice();
   return {
     proc,
+    childExit,
     reader,
     writer,
     captured,
@@ -187,7 +198,10 @@ async function launch(
     },
     async subscribe() {
       for (const channel of [WINDOW_CHANNEL, COMPAT_CONTROL_CHANNEL]) {
-        const call = await withTestIoDeadline(reader.readFrame());
+        const call = await awaitChild(
+          `subscription request for channel ${channel}`,
+          reader.readFrame(),
+        );
         expect(call.header.kind).toBe(FrameKind.Call);
         expect(call.header.channel).toBe(LIFECYCLE_CHANNEL);
         expect([...call.payload]).toEqual([1, channel]);
@@ -270,8 +284,9 @@ test("wrong Init acknowledgement closes the link before application entry", asyn
     run.proc.send({ kind: "probe" });
     expect(await run.message()).toEqual({ kind: "probe", entered: false });
     await run.ack(1);
-    expect(await withTestIoDeadline(run.proc.exited)).not.toBe(0);
-    const stderr = await new Response(run.proc.stderr).text();
+    const exited = await withTestIoDeadline(run.childExit);
+    expect(exited.code).not.toBe(0);
+    const stderr = exited.stderr;
     expect(stderr).toContain("Runtime facts require");
     expect(run.connections()).toBe(1);
   } finally {
@@ -347,11 +362,11 @@ test("actual packed API wrapper captures and ACKs over its same stamped installe
     try {
       await run.ack();
       await run.subscribe();
-      const entered = await run.message();
+      const entered = await run.message("packed API entry after Init ACK");
       expect(entered.kind).toBe("entry");
       expect(run.captured.versions).toEqual(entered.before!);
       expect(run.captured.versions.__keld_late).toBeUndefined();
-      expect((await run.message()).kind).toBe("ready");
+      expect((await run.message("packed API Ready event")).kind).toBe("ready");
       expect(run.connections()).toBe(1);
     } finally {
       await run.dispose();

@@ -588,6 +588,27 @@ pub(super) fn run_captured_diagnostic(
     input: &File,
     stdout_limit: usize,
 ) -> Result<CapturedToolOutput, BuildError> {
+    run_captured_diagnostic_with_timeout(
+        tool,
+        args,
+        environment,
+        cwd,
+        input,
+        stdout_limit,
+        Duration::from_secs(120),
+    )
+}
+
+#[cfg(test)]
+pub(super) fn run_captured_diagnostic_with_timeout(
+    tool: &PinnedFile,
+    args: &[OsString],
+    environment: &[(OsString, OsString)],
+    cwd: &Path,
+    input: &File,
+    stdout_limit: usize,
+    timeout: Duration,
+) -> Result<CapturedToolOutput, BuildError> {
     run_captured_with_output(
         tool,
         args,
@@ -597,7 +618,7 @@ pub(super) fn run_captured_diagnostic(
         CaptureOptions {
             stdout_limit,
             stderr_limit: 64 * 1024,
-            timeout: Duration::from_secs(120),
+            timeout,
             stderr_file: None,
         },
     )
@@ -610,6 +631,20 @@ fn run_captured_with_output(
     cwd: &Path,
     input: &File,
     options: CaptureOptions<'_>,
+) -> Result<CapturedToolOutput, BuildError> {
+    run_captured_with_output_and_job_observer(tool, args, environment, cwd, input, options, |_| {
+        Ok(())
+    })
+}
+
+fn run_captured_with_output_and_job_observer(
+    tool: &PinnedFile,
+    args: &[OsString],
+    environment: &[(OsString, OsString)],
+    cwd: &Path,
+    input: &File,
+    options: CaptureOptions<'_>,
+    observer: impl FnOnce(&WindowsProcessJob) -> Result<(), BuildError>,
 ) -> Result<CapturedToolOutput, BuildError> {
     use keld_runtime::windows_lpac::WindowsLpacStdio;
     use std::os::windows::io::AsHandle as _;
@@ -648,6 +683,7 @@ fn run_captured_with_output(
             return Err(failure("source capture assignment", error));
         }
     };
+    observer(&job)?;
     let capture_failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let out_failed = std::sync::Arc::clone(&capture_failed);
     let err_failed = std::sync::Arc::clone(&capture_failed);
@@ -1746,6 +1782,109 @@ mod tests {
     fn entry(mode: &str, path: &str) -> Vec<u8> {
         format!(":000000 {mode} 0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 A\0{path}\0").into_bytes()
     }
+
+    fn descendant_process_fixture(
+        temporary: &Path,
+        system_root: &Path,
+        powershell: &Path,
+    ) -> (Vec<OsString>, Vec<(OsString, OsString)>, PathBuf) {
+        let system32 = system_root.join("System32");
+        let parent_script = temporary.join("parent.ps1");
+        let child_script = temporary.join("descendant.ps1");
+        let started = temporary.join("descendant-started.marker");
+        let descendant_stdout = temporary.join("descendant.stdout");
+        let descendant_stderr = temporary.join("descendant.stderr");
+        fs::write(
+            &child_script,
+            b"$process = [System.Diagnostics.Process]::GetCurrentProcess()\n[System.IO.File]::WriteAllText($env:KELD_TEST_DESCENDANT_STARTED, ('{0}:{1}' -f $PID, $process.StartTime.ToUniversalTime().Ticks))\nStart-Sleep -Seconds 60\n",
+        )
+        .expect("write controlled descendant fixture");
+        fs::write(
+            &parent_script,
+            b"$arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ('\"{0}\"' -f $env:KELD_TEST_DESCENDANT_SCRIPT))\n$null = Start-Process -FilePath $env:KELD_TEST_POWERSHELL -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $env:KELD_TEST_DESCENDANT_STDOUT -RedirectStandardError $env:KELD_TEST_DESCENDANT_STDERR\nStart-Sleep -Seconds 60\n",
+        )
+        .expect("write controlled Job-parent fixture");
+        let environment = vec![
+            ("SystemRoot".into(), system_root.as_os_str().to_owned()),
+            ("WINDIR".into(), system_root.as_os_str().to_owned()),
+            ("PATH".into(), system32.as_os_str().to_owned()),
+            ("TEMP".into(), temporary.as_os_str().to_owned()),
+            ("TMP".into(), temporary.as_os_str().to_owned()),
+            ("HOME".into(), temporary.as_os_str().to_owned()),
+            ("USERPROFILE".into(), temporary.as_os_str().to_owned()),
+            ("APPDATA".into(), temporary.as_os_str().to_owned()),
+            ("LOCALAPPDATA".into(), temporary.as_os_str().to_owned()),
+            (
+                "KELD_TEST_POWERSHELL".into(),
+                powershell.as_os_str().to_owned(),
+            ),
+            (
+                "KELD_TEST_DESCENDANT_SCRIPT".into(),
+                child_script.as_os_str().to_owned(),
+            ),
+            (
+                "KELD_TEST_DESCENDANT_STARTED".into(),
+                started.as_os_str().to_owned(),
+            ),
+            (
+                "KELD_TEST_DESCENDANT_STDOUT".into(),
+                descendant_stdout.as_os_str().to_owned(),
+            ),
+            (
+                "KELD_TEST_DESCENDANT_STDERR".into(),
+                descendant_stderr.as_os_str().to_owned(),
+            ),
+        ];
+        let args = vec![
+            OsString::from("-NoProfile"),
+            OsString::from("-NonInteractive"),
+            OsString::from("-WindowStyle"),
+            OsString::from("Hidden"),
+            OsString::from("-ExecutionPolicy"),
+            OsString::from("Bypass"),
+            OsString::from("-File"),
+            parent_script.as_os_str().to_owned(),
+        ];
+        (args, environment, started)
+    }
+
+    fn assert_descendant_reaped(powershell: &Path, started: &Path) {
+        let process_identity = fs::read_to_string(started).expect("descendant identity marker");
+        let (pid, creation_ticks) = process_identity
+            .trim()
+            .split_once(':')
+            .expect("descendant marker contains PID and creation time");
+        let pid = pid.parse::<u32>().expect("descendant PID");
+        let creation_ticks = creation_ticks
+            .parse::<u64>()
+            .expect("descendant creation time");
+        let probe = format!(
+            "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); $p = Get-Process -Id {pid} -ErrorAction SilentlyContinue; if ($null -eq $p -or $p.HasExited) {{ 'EXITED' }} elseif ($p.StartTime.ToUniversalTime().Ticks -eq {creation_ticks}) {{ $p.Kill(); 'ALIVE' }} else {{ 'PID_REUSED' }}"
+        );
+        let output = std::process::Command::new(powershell)
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+            ])
+            .arg(&probe)
+            .output()
+            .expect("query descendant process after Job retirement");
+        assert!(
+            output.status.success(),
+            "descendant liveness query failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let process_state = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        assert!(
+            process_state == "EXITED" || process_state == "PID_REUSED",
+            "descendant process remained live after Job retirement: {process_state}"
+        );
+    }
     #[test]
     fn full_tree_listing_preserves_blob_identity_and_mode() {
         let mut bytes = entry("100644", "Cargo.toml");
@@ -2033,6 +2172,63 @@ mod tests {
         .expect_err("stderr bound");
         let detail = error.to_string();
         assert!(detail.contains("source stderr") && detail.contains("tool output exceeds limit"));
+    }
+
+    #[test]
+    fn capture_deadline_terminates_and_reaps_descendant_processes() {
+        let system_root =
+            PathBuf::from(std::env::var_os("SystemRoot").expect("Windows system root"));
+        let powershell = system_root
+            .join("System32")
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe");
+        let tool = pin_file(&powershell, MAX_IMAGE).expect("system PowerShell fixture");
+        let temporary = tempfile::tempdir().expect("owned descendant fixture");
+        let (args, environment, started) =
+            descendant_process_fixture(temporary.path(), &system_root, &powershell);
+        let input = File::open("NUL").expect("null input");
+        let start = Instant::now();
+        // Retain a second Job handle across the capture call. Otherwise Windows'
+        // kill-on-last-handle-close policy could hide a missing explicit family
+        // termination when the capture owner drops its Job.
+        let job_observer = std::sync::Mutex::new(None);
+        let Err(error) = run_captured_with_output_and_job_observer(
+            &tool,
+            &args,
+            &environment,
+            temporary.path(),
+            &input,
+            CaptureOptions {
+                stdout_limit: 1024,
+                stderr_limit: 64 * 1024,
+                timeout: Duration::from_secs(5),
+                stderr_file: None,
+            },
+            |job| {
+                let handle = job
+                    .duplicate_cleanup_observer_handle()
+                    .map_err(|error| failure("source capture test Job observer", error))?;
+                *job_observer.lock().map_err(|_| {
+                    failure("source capture test Job observer", "observer lock poisoned")
+                })? = Some(handle);
+                Ok(())
+            },
+        ) else {
+            panic!("parent and descendant must be terminated at the deadline");
+        };
+        assert!(
+            error.to_string().contains("tool deadline")
+                || error.to_string().contains("tool capture deadline"),
+            "{error}"
+        );
+        assert!(start.elapsed() < Duration::from_secs(20));
+        let _job_observer = job_observer
+            .into_inner()
+            .expect("test Job observer lock")
+            .expect("retained test Job observer handle");
+        assert!(started.exists(), "the descendant must start before timeout");
+        assert_descendant_reaped(&powershell, &started);
     }
 
     #[test]
