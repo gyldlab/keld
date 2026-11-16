@@ -24,7 +24,7 @@ Owns: Test mapping, regression situations, platform acceptance and performance i
   protects only no-replay behavior for a listener registered after Host Ready; its NC
   replays Ready to that late listener and expects `lateListener=0`. Eligible-survivor
   adoption is tested separately by AC-19 / GH-531 criterion 46. Anti-flake: gh566
-  admission; fresh role process, no timing
+  admission; observer child process, explicit listener-order markers, no timing
 - **AC-10:** the named existing tests; `lifecycle_corpus_rust_oracles_execute` Anti-flake: unchanged
 - **AC-11:** `schema_two_descriptor_is_refused_before_any_application_resource`; Linux and Windows no-flag integration (CI) Anti-flake: resource census like
   `windows_pre_ready_crash_denies_successor_before_provisioning`
