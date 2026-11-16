@@ -1071,7 +1071,7 @@ impl MacRendererBridge {
             webview,
             world,
             &format!("globalThis.__keldAppNativeEvent({json});"),
-            &app,
+            app,
             EvaluationPurpose::Event { id: request, lease },
         );
         Ok(())
@@ -1115,7 +1115,7 @@ impl MacRendererBridge {
                         webview,
                         world,
                         &format!("globalThis.__keldAppNativeTerminal({json});"),
-                        &app,
+                        app,
                         EvaluationPurpose::Control,
                     );
                 }
@@ -1153,7 +1153,7 @@ impl MacRendererBridge {
                     webview,
                     world,
                     &format!("globalThis.__keldAppRouteState({token},{ready});"),
-                    &app,
+                    app,
                     EvaluationPurpose::Control,
                 );
                 Ok(())
@@ -1204,7 +1204,7 @@ impl MacRendererBridge {
                 webview,
                 &self.world,
                 &format!("globalThis.__keldBridgeV2Result({private});"),
-                &app,
+                app,
                 EvaluationPurpose::Control,
             );
         } else {
@@ -2227,7 +2227,7 @@ fn handle_app_control(
                 webview,
                 &ivars.world,
                 &format!("globalThis.__keldAppNativeRegistered({token});"),
-                &app,
+                app,
                 EvaluationPurpose::Control,
             );
         }
@@ -2244,7 +2244,7 @@ fn handle_app_control(
                 webview,
                 &ivars.world,
                 &format!("globalThis.__keldAppNativeRefusal({token},{call});"),
-                &app,
+                app,
                 EvaluationPurpose::Control,
             );
         }
@@ -2381,7 +2381,7 @@ fn bind_compat_document(
         webview,
         &ivars.world,
         &script,
-        &app,
+        app,
         EvaluationPurpose::Control,
     );
     Ok(())
@@ -2860,9 +2860,9 @@ fn evaluate_owned_inner(
         if !admitted.as_ref().is_ok_and(|entered| *entered) {
             if let Some(prepared) = original {
                 let progress = app.borrow_mut().calls.defer_preparation(prepared)?;
-                post_original_service_wake(&app, progress.needs_service_wake);
+                post_original_service_wake(app, progress.needs_service_wake);
             }
-            flush_app_controls(&app);
+            flush_app_controls(app);
             return admitted.map(|_| ());
         }
     }
@@ -2883,7 +2883,7 @@ fn evaluate_owned_inner(
         prepared.native_returned()?;
         // An inline callback may already have supplied both independent facts.
         // The same charged record can release only now, after real API return.
-        flush_app_controls(&app);
+        flush_app_controls(app);
     }
     Ok(())
 }
