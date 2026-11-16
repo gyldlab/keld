@@ -372,22 +372,29 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
 
 ### AC-67: An expired prepared recovery aborts durably before retry
 
-- **Given:** A `prepared` journal and pending pointer, with the old metadata and application state still current.
+- **Given:** A `prepared` journal, sealed prewrite inventory and pending pointer, with old metadata and application state still current.
 - **When:** The process crashes, the directive expires, and the recovery owner restarts.
-- **Then:** It refuses expired trust commit, readback-verifies terminal `aborted`,
-  retires the exact unreferenced prepared successor generation and owned
-  blobs before pointer removal, and preserves established current/LKG.
-- Before deleting an orphan or exclusively owned preparation blob, the
-  owner MUST durably read back a D-23 retirement intent binding the aborted
-  attempt, exact successor and complete exclusive-blob inventory. After a
-  crash, only absent intent-listed objects may count as already retired;
-  absent unlisted or live-referenced objects refuse without deletion.
+- **Then:** It refuses expired trust commit and readback-verifies terminal `aborted`.
+  It retires only present exact planned preparation objects before pointer removal.
+  It preserves established current/LKG.
+- Terminate before the first preparation blob, during blob publication,
+  before successor generation publication, and before current replacement.
+  Each cut MUST allow bounded abort without deleting shared or unlisted objects.
+  The complete protected plan MUST predate every preparation write.
+- Before deleting any preparation object, the owner MUST read back a D-23
+  retirement intent binding the aborted attempt, expected successor digest
+  and complete sealed exclusive-blob inventory. Planned objects MAY be
+  absent because they were never written or were already retired.
+  Unlisted, altered, foreign or live-referenced objects MUST refuse deletion.
 - Before deletion, the aborted journal MUST durably bind the exact intent
   digest. After complete retirement readback, it MUST durably bind the same
   completion digest before removing the intent.
-- With intent absent and pending pointer present, restart MUST verify both
-  matching non-null journal digests and unchanged old state. It MAY remove
-  only that pointer. Missing or mismatched completion evidence MUST refuse.
+- With intent absent and both journal digests null, restart MUST verify
+  the protected prewrite plan, old state, pointer and all present planned
+  objects. It MUST publish a new D-23 intent before any deletion.
+- With intent absent and both journal digests non-null, restart MUST
+  verify equality, unchanged old state and matching attempt.
+  It MAY remove only that pointer. Mixed or mismatched digests MUST refuse.
 - A distinct newly authorized replacement MUST be able to reuse the
   immutable next-sequence filename after safe retirement. An abandoned
   successor file MUST NOT silently grant trust or block the new attempt.
@@ -401,6 +408,12 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
   - **Additional independent fault:** Remove or change only the completion digest after intent removal.
   - **Additional condition:** The aborted journal, old state and pointer remain valid; the intent is absent.
   - **Additional RED:** Restart removes the pointer or admits a new attempt without matching completion evidence.
+  - **Additional independent fault:** Remove the sealed prewrite inventory before the first preparation write.
+  - **Additional condition:** The pointer remains and only some planned objects exist when the directive expires.
+  - **Additional RED:** The owner deletes a shared/unlisted object or commits a partial successor.
+  - **Additional independent fault:** Refuse initial-intent creation whenever both journal digests remain null.
+  - **Additional condition:** The aborted journal and matching pointer are valid; all present preparation objects match the plan.
+  - **Additional RED:** The next authorized attempt remains blocked despite valid bounded cleanup.
 
 ### AC-68: Loss-only policy changes are limited to bootstrap root replacement
 

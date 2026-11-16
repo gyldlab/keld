@@ -209,7 +209,8 @@ retained-handle and filesystem acceptance.
 The definition-only helper
 `python3 -B docs/engineering/evidence/kel270-catalogue-admission-v2/verify_evidence_capacity.py --check`
 checks 20 required distinct objects, byte caps, duplicate references and
-over-limit mutants. The detailed output is regenerated in CI scratch.
+over-limit mutants. Regenerate detailed output locally with `--output-dir`
+in a scratch directory. Hosted regeneration requires B-82 approval.
 The research archive pins the earlier nine-case output.
 
 ## 9. Perf impact: Identity
