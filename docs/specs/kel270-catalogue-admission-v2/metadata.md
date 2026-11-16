@@ -120,8 +120,12 @@ checked successor of `oldSequence`. `exclusiveBlobs` is a sorted,
 duplicate-free, bounded list of canonical `{sha256,length}` references to
 preparation blobs proved unreachable from every other protected owner.
 Empty is valid. The intent pins the exact authenticated old/current state,
-orphan generation and complete exclusive blob inventory. An existing
-intent is never overwritten with different bytes.
+expected orphan digest and complete exclusive blob inventory. An existing
+intent is never overwritten with different bytes. Ordinary retirement requires
+the complete orphan and its references before intent publication.
+Recovery retirement may include a not-yet-written successor or blob only when
+D-65's protected prewrite plan and terminal aborted journal name it.
+An absent planned object never authorizes deletion of another object.
 For recovery mode, D-65 also binds the exact intent SHA-256 in the
 protected aborted journal before deletion. A matching durable completion
 digest MUST precede intent removal. Keep both journal digests through
@@ -203,23 +207,32 @@ D-65's explicit terminal-`aborted` path, not ordinary orphan cleanup.
 
 For D-65 manual recovery only, a verified expired `prepared` journal,
 matching D-68 pending pointer, protected old `current` and terminal
-readback-verified `aborted` phase are required. Before any deletion,
-the recovery owner MUST durably publish and read back a D-23 intent at
+readback-verified `aborted` phase are required. The protected journal
+MUST predate all preparation writes and bind the complete expected exclusive
+blob list. Verify each present planned object by digest, protection and
+retained owner. An absent planned object may not have been written.
+Refuse unlisted objects. Before any deletion, the recovery owner MUST
+durably publish and read back a D-23 intent at
 `retirements/<oldSequence+1>.json` with mode `recovery`, the exact
-`attemptId`, journal-bound successor digest and all exclusively owned
-preparation blobs. It MUST prove that no listed object is reachable
-from current/LKG/previous-LKG or another protected owner. Continue deletion
-after a crash only using this same authenticated intent and pending pointer;
-an absent intent-listed blob counts as retired, but any absent unlisted
-blob, divergent protected state or ambiguous owner halts without deletion.
-Verify the exact successor and all listed blobs absent, the old current,
+`attemptId`, journal-bound expected successor digest and all planned
+exclusively owned preparation blobs. It MUST prove that no present object
+is reachable from current/LKG/previous-LKG or another protected owner.
+Continue deletion only with the authenticated intent and pending pointer.
+Delete only present exact intent-listed objects. An absent listed object needs
+no deletion. Unlisted preparation, changed protected state or ambiguous
+ownership MUST halt without deletion. Verify the successor path and all listed
+blobs absent, the old current,
 provenance, epoch, application and UTC floors unchanged. Before removing
 the intent, durably record and reread the matching completion digest in
 the aborted recovery journal. Then remove and reread the intent as absent.
-If restart finds the pointer but no intent, require the same protected
-old state, attempt and equal non-null journal intent/completion digests.
-Only D-68 pointer removal may proceed in that state. Missing or
-mismatched completion evidence MUST halt without deletion or pointer
+If restart finds the pointer, no intent and both journal digests null,
+cleanup has not started. Verify the complete protected prewrite plan,
+old state, attempt and every present exact unreferenced planned object.
+Refuse unlisted objects, changed bytes and foreign ownership.
+Publish and reread the D-23 intent before any deletion.
+If both journal digests are non-null, require equality and matching old
+state and attempt. Only D-68 pointer removal may proceed.
+Mixed or mismatched journal digests MUST halt without deletion or pointer
 removal. Keep the aborted journal through verified pointer absence.
 A new attempt may use the immutable next-sequence filename only then.
 When `current` already names the committed successor, abort is forbidden.

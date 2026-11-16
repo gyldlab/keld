@@ -255,10 +255,17 @@ Its canonical record has a 65,536-byte cap and these ordered fields:
 | `sourceGenerationSha256`, `sourceProvenanceSha256`, `sourceEpoch` | Protected before-state |
 | `destinationGenerationSha256`, `destinationProvenanceSha256`, `destinationEpoch` | Complete proposed after-state |
 | `applicationFloor`, `utcFloorMillis`, `browserBindingSha256`, `rollbackBindingSha256` | Invariants and finite LKG authority |
+| `exclusivePreparationBlobs` | Exact sorted exclusive blob SHA-256 and length plan, sealed before any preparation write |
 | `retirementIntentSha256` | Null before abort cleanup; then the exact D-23 retirement-intent digest |
 | `retirementCompletionSha256` | Null until full cleanup readback; then the same intent digest |
 | `phase` | `prepared`, `aborted`, `trust-committed`, `activation-bound`, or `complete` |
 
+Derive `exclusivePreparationBlobs` from the complete verified replacement
+graph and the protected owner census under the existing leases. The bounded
+canonical list contains only new exclusively owned `{sha256,length}` objects.
+Existing shared or live-referenced blobs MUST NOT appear in the list.
+Bind the exact planned successor generation digest and exclusive list before
+writing any preparation object. A caller cannot supply or amend this plan.
 Both retirement fields are null in `prepared`. The recovery owner sets each
 field only at its specified step below. Each field changes from null once,
 under the protected journal writer. An `aborted` journal retains both
@@ -267,12 +274,17 @@ Terminal `aborted` forbids trust commit. It permits only these two bounded,
 write-once cleanup-field updates under the original attempt and leases.
 
 Persist `prepared` before either store changes.
-Persist the record at `recoveries/<attemptId>.json`. Publish D-68's pending pointer before changing established trust or application state.
+Flush and reread the complete record at `recoveries/<attemptId>.json`.
+Publish and reread D-68's pending pointer before any preparation blob or
+successor-generation write. No preparation object may predate both records.
 The metadata owner's private `rebootstrap` method consumes the narrow authorization and complete verified replacement graph.
 It compares the exact source generation and epoch under the lease.
 It advances the epoch once and retains at least the previous UTC floor.
 Its next generation is `ready`, with sequence equal to the old sequence plus one.
 Publish every referenced blob and the complete generation before replacing the single current pointer.
+Verify each newly published blob against the sealed exclusive plan.
+Flush and reread each complete blob and the successor before trust commit.
+A crash before or during publication leaves no committed trust.
 The prepared journal names that exact destination generation. No network request occurs during trust commit or activation binding.
 The application floor is outside this operation and cannot be reset.
 Persist `trust-committed` after protected readback of the new metadata generation.
@@ -292,28 +304,36 @@ Only the KEL-53 recovery owner may abort under the existing repository and insta
 First verify the protected journal, pending pointer, original signature evidence, and exact installed source generation.
 Check the old epoch, provenance, policy pins, and unchanged application current/LKG and browser bindings.
 Check that the metadata current pointer still selects the old generation and no trust or activation effect occurred.
-An unreferenced prepared successor is not committed trust; retain it until
-safe bounded cleanup while the matching pending pointer still guards the repository.
+An absent, partial or complete unreferenced prepared successor is not
+committed trust. The prewrite plan distinguishes its exact preparation
+paths from unlisted files. Retain present planned objects until bounded
+cleanup while the matching pending pointer guards the repository.
 Any ambiguous or changed state MUST refuse abortion and preserve all evidence for diagnosis.
 Persist and reread terminal `aborted` before any cleanup. Under the same
 metadata, installation and physical-profile leases, first publish, flush
 and read back the D-23 mode-`recovery` retirement intent. Bind its exact
-attempt ID, protected old/current and destination generation, full list
-of exclusively owned blobs, and matching pending pointer to the aborted
-journal. Compute SHA-256 over the exact readback-verified intent bytes.
+attempt ID, protected old/current, expected successor digest, complete
+prewrite exclusive-blob inventory and matching pending pointer to the aborted
+journal. It MUST bind paths that were planned but never written.
+Verify every present listed object is exact, exclusively owned and
+unreferenced. Refuse any unlisted, foreign or live-referenced object.
+Compute SHA-256 over the exact readback-verified intent bytes.
 Persist and reread that digest in the aborted journal's
 `retirementIntentSha256` field BEFORE any object deletion.
 An existing intent MUST match this journal field, attempt and old state.
 If restart finds an intact intent but a null journal intent digest,
-verify all listed objects are still present with exact bytes.
-Also verify the complete inventory, old state and matching pending pointer.
+verify every present listed object has exact bytes and protection.
+A listed absent object may be unwritten. Refuse unlisted or foreign objects.
+Also verify the complete sealed plan, old state and matching pending pointer.
 Only then persist and reread the intent digest. Delete nothing before
 that readback. A non-null mismatched journal digest MUST halt.
-No object deletion may precede both durable records. Then retire the *exact*
-unreferenced prepared successor generation at
-`generations/<oldSequence+1>.json` and exclusively owned preparation blobs.
-Verify its recorded digest, protection and ownership and prove it was
-never selected by current, LKG, previous LKG or another protected owner.
+No object deletion may precede both durable records. Retire only present
+exact planned blobs and the uncommitted successor generation at
+`generations/<oldSequence+1>.json`. The successor and planned blobs MAY
+be absent before first publication or after interrupted retirement.
+Verify each present object's digest, protection and exclusive ownership.
+Prove none is selected by current, LKG, previous LKG or another
+protected owner. Absence alone never proves exclusive ownership.
 The aborted journal remains as bounded diagnostic evidence; its destination
 digest is historical, not live authority to keep uncommitted successor bytes.
 The immutable next-sequence filename MUST be absent before a new attempt
@@ -332,15 +352,15 @@ Only then remove the D-23 intent and durably verify its path absent.
 
 After a crash with the intent present, resume only under that exact intent.
 If the intent is absent and both journal digests are null, cleanup has
-not started. Verify the entire prepared successor and every exclusive
-blob remains present, exact and unreachable. Recheck the journal,
-old state and pointer before publishing a fresh D-23 intent.
-Any missing object or mismatched evidence MUST halt without deletion.
+not started. Verify the sealed prewrite plan and every present exact
+unreferenced preparation object. A planned object MAY be absent.
+Refuse any unlisted object, divergent digest or foreign ownership.
+Recheck the journal, old state and pointer before publishing a D-23 intent.
 After a crash with the intent absent and pending pointer present, require
 both non-null journal digests to match after cleanup and the old state to remain
 authenticated and unchanged. The journal MUST bind the same attempt and
 pointer. This completed state permits pointer-only cleanup, not deletion.
-An absent or mismatched completion digest MUST refuse pointer removal
+Mixed or mismatched journal digests MUST refuse pointer removal
 and a fresh attempt. Do not reconstruct missing inventory or delete any
 object after the intent is absent. Remove and reread the matching pointer
 under the same lease. An interrupted removal resumes this terminal cleanup only.
@@ -356,11 +376,12 @@ Reject a stale directive or a changed replacement without changing the establish
 |---|---|
 | No journal | Established state remains authoritative. Discard only unreferenced owned preparation objects. |
 | `prepared`, old metadata current, directive valid | Reverify the original authorization and all source/policy bindings, then commit or refuse. |
-| `prepared`, old metadata current, directive expired | Verify no trust or application effect, durably mark `aborted`, retire only authenticated unreferenced preparation, verify old state and clear matching pointer, then require a new attempt. |
+| `prepared`, old metadata current, directive expired | Verify no trust or application effect. Durably mark `aborted`. Retire only present exact planned preparation under a D-23 intent. Clear the pointer after old-state verification. |
 | `prepared`, new metadata current | Match the recorded destination generation. Advance the journal without repeating the epoch change. |
 | `aborted`, old metadata current, intent present | Match the journal-bound intent digest, finish only its listed retirement, persist exact completion digest, verify intent removal, then clear the pointer. |
-| `aborted`, old metadata current, intent absent, both digests null | Verify all prepared objects remain intact and unreferenced, then durably publish the initial D-23 intent. Never infer prior cleanup. |
-| `aborted`, old metadata current, intent absent, pointer present | Require equal non-null intent/completion journal digests, original state and matching attempt. Clear only the pointer; never delete more objects. |
+| `aborted`, old metadata current, intent absent, both digests null | Verify the sealed plan and each present exact unreferenced preparation object. Permit planned objects not written. Publish the initial D-23 intent before deletion. |
+| `aborted`, old metadata current, intent absent, both digests non-null | Require equal intent/completion journal digests, old state and matching attempt. Clear only the pointer; never delete more objects. |
+| `aborted`, mixed digests or mismatched plan or unlisted object | Halt. Do not delete or remove the pointer. |
 | `trust-committed` | Complete the exact activation binding. Refuse all unrelated selection until that binding exists. |
 | `activation-bound` | Resume only the corresponding KEL-53 activation phase. |
 | `complete` | Use the coherent new view or its finite LKG view. |
@@ -373,6 +394,10 @@ Before trust commit, an expired directive MUST NOT resume trust commit.
 Follow the D-65 abort path before accepting a new directive and confirmation in a fresh attempt.
 If metadata current is new, finish only the committed exact attempt under the recorded durable authorization.
 No normal update may run while a manual-recovery journal is pending.
+Include process-termination cuts before the first preparation blob, during
+each blob publication, before successor generation publication, and before
+current replacement. Expiry at each cut MUST permit finite abort with no
+unauthorized deletion. Repeat each applicable cut with physical power loss.
 All persisted edges need process-termination and separately named physical-power-loss qualification.
 
 ### D-67: State the limits of complete recovery
