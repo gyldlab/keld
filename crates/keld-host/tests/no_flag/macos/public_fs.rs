@@ -372,10 +372,7 @@ fn run_launch_with_causal_receipt(
         if let Some(exit) = guardian_exit.as_mut() {
             exit.seal_before_quit_release();
         }
-        observer
-            .quit
-            .send(())
-            .expect("release public app Quit after observations");
+        observer.quit.send(()).expect("release public app Quit after observations");
     }
     // Keep the existing launch/group custody and collect host output even when
     // a post-Quit kernel/descendant assertion fails under the production mutation.
