@@ -897,7 +897,7 @@ jobs:
 
   hygiene:
     name: CODEOWNERS + templates
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: changes
     if: needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'
@@ -942,12 +942,29 @@ jobs:
           rustc --edition=2024 -D warnings tools/spec_structure.rs -o target/spec-structure/spec-structure
           target/spec-structure/spec-structure check .
       # KEL-270 B-82 candidate: synthetic definitions only; native product NOT_RUN.
-      # Use the existing read-only checkout and runner Python; no artifact action,
-      # extra permission, or change to trusted-base provenance policy.
+      # Use Ubuntu 24.04 / CPython 3.12 and SHA-256-pinned binary test dependencies.
+      # Keep the environment in runner temp, with no new action or write authority.
       - name: KEL-270 definition evidence (read-only)
+        shell: bash
         run: |
           set -euo pipefail
-          python3 -B docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py --check
+          python3.12 -m venv "$RUNNER_TEMP/kel270-evidence-python"
+          cat > "$RUNNER_TEMP/kel270-evidence-requirements.txt" <<'REQ'
+          cryptography==46.0.5 \
+              --hash=sha256:4c3341037c136030cb46e4b1e17b7418ea4cbd9dd207e4a6f3b2b24e0d4ac731
+          cffi==2.0.0 \
+              --hash=sha256:3e17ed538242334bf70832644a32a7aae3d83b57567f9fd60a26257e992b79ba
+          pycparser==2.23 \
+              --hash=sha256:e5c6e8d3fbad53479cab09ac03729e0a9faf2bee3db8208a550daf5af81a5934
+          REQ
+          "$RUNNER_TEMP/kel270-evidence-python/bin/python" -m pip install \
+            --disable-pip-version-check --no-input --no-cache-dir \
+            --only-binary=:all: --require-hashes \
+            -r "$RUNNER_TEMP/kel270-evidence-requirements.txt"
+          "$RUNNER_TEMP/kel270-evidence-python/bin/python" -B -c \
+            'import cryptography; assert cryptography.__version__ == "46.0.5"'
+          "$RUNNER_TEMP/kel270-evidence-python/bin/python" -B \
+            docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py --check
       # The `hygiene` recipe's hello-command regression reads the justfile and
       # two onboarding docs, both of which select this job (#650).
       - name: Hello command contract
