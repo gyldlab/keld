@@ -1149,7 +1149,7 @@ jobs:
           persist-credentials: false
       - name: Reject incomplete dependency metadata
         env:
-          GH_TOKEN: [value hidden by Chat On Steroids]
+          GH_TOKEN: ${{ github.token }}
           KELD_DEPENDENCY_REPOSITORY: ${{ github.repository }}
           KELD_DEPENDENCY_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           KELD_DEPENDENCY_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
