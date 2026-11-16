@@ -207,6 +207,40 @@ fn terminate_and_release_generation(
     Ok(())
 }
 
+// A test traps an attempted post-ECHILD direct-child kill before it reaches
+// the kernel. The trap is absent from shipping builds.
+#[cfg(test)]
+thread_local! {
+    static SHUTDOWN_ERROR_KILL_TRAP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(super) struct TestShutdownErrorKillTrap;
+
+#[cfg(test)]
+impl Drop for TestShutdownErrorKillTrap {
+    fn drop(&mut self) {
+        SHUTDOWN_ERROR_KILL_TRAP.with(|trap| trap.set(false));
+    }
+}
+
+#[cfg(test)]
+pub(super) fn trap_shutdown_error_kill_for_test() -> TestShutdownErrorKillTrap {
+    SHUTDOWN_ERROR_KILL_TRAP.with(|trap| {
+        assert!(!trap.replace(true), "only one shutdown kill trap");
+    });
+    TestShutdownErrorKillTrap
+}
+
+fn kill_after_shutdown_inspection_error(child: &mut Child) -> io::Result<()> {
+    #[cfg(test)]
+    assert!(
+        !SHUTDOWN_ERROR_KILL_TRAP.with(std::cell::Cell::get),
+        "attempted numeric Guardian PID kill after external reap"
+    );
+    child.kill()
+}
+
 impl GuardedPrimary {
     pub(super) fn start(
         mut child: Child,
@@ -493,6 +527,7 @@ impl GuardedPrimary {
                     break;
                 }
                 Err(source) => {
+                    let child_was_reaped = source.raw_os_error() == Some(nix::libc::ECHILD);
                     failures.push(lifecycle_error(
                         "macOS guardian generation shutdown wait",
                         source,
@@ -501,8 +536,10 @@ impl GuardedPrimary {
                     if let Err(error) = self.fail_safe_current_group() {
                         failures.push(error);
                     }
-                    let _ = self.child.kill();
-                    let _ = self.child.wait();
+                    if !child_was_reaped {
+                        let _ = kill_after_shutdown_inspection_error(&mut self.child);
+                        let _ = self.child.wait();
+                    }
                     break;
                 }
             }

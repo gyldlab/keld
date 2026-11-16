@@ -15,6 +15,8 @@ use super::super::{
 };
 use super::test_support::NativeChildOwner;
 
+mod echild_custody;
+
 struct PersistentPrimaryFixture {
     primary: GuardedPrimary,
     stderr: File,
