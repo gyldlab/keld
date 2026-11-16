@@ -11,8 +11,8 @@
   "main_sha": "baf558f24b094c0dd5c0a77b5939f6e7013ba4aa",
   "review_status_counts": {
     "pending": 69,
-    "reopened": 2,
-    "verified-scoped": 6
+    "reopened": 3,
+    "verified-scoped": 5
   },
   "schema_version": 1,
   "scope": "macOS Guardian runtime module and directly-owned native integration tests",

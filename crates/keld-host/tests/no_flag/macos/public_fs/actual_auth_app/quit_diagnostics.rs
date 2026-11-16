@@ -498,4 +498,102 @@ mod tests {
             "original CLI Child must be reaped even when native census finishes late"
         );
     }
+
+    #[test]
+    fn late_on_sample_is_not_published_as_live_evidence() {
+        const HELPER: &str =
+            "public_fs::actual_auth_app::quit_diagnostics::tests::late_on_sample_child";
+        let child = Command::new(std::env::current_exe().expect("native test executable"))
+            .args(["--ignored", "--exact", HELPER, "--nocapture"])
+            .env("KELD_AUTH_LATE_SAMPLE_CHILD", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("isolated late-sample child");
+        let output = crate::support::control::wait_child_output(child, EVENT_DEADLINE);
+        assert!(
+            output.status.success(),
+            "late-sample child failed: {output:?}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let witness = "KELD_KEL89_QUIT_BOUNDARY";
+        assert_eq!(
+            stderr.matches(witness).count(),
+            1,
+            "helper must execute once"
+        );
+        let line = stderr.lines().find(|line| line.contains(witness)).unwrap();
+        assert!(
+            line.contains(" pre_cleanup_family_visible=None "),
+            "a callback that crosses the original deadline must not publish live evidence: {line}"
+        );
+    }
+
+    /// The parent reads actual stderr, not this callback's local state. Removing
+    /// only the inner deadline fence must publish Some and fail the parent.
+    #[test]
+    #[ignore = "native subprocess role invoked by the late-sample parent"]
+    fn late_on_sample_child() {
+        assert_eq!(
+            std::env::var("KELD_AUTH_LATE_SAMPLE_CHILD").as_deref(),
+            Ok("1")
+        );
+        let observer = Observation::bind();
+        let family_owners = std::array::from_fn::<_, 4, _>(|_| OwnedChild::parked_cat());
+        let family = family_owners.each_ref().map(|owner| owner.child().id());
+        let cli = OwnedChild::parked_cat();
+        let cli_pid = cli.child().id();
+        let root = tempfile::tempdir().expect("native callback deadline fixture");
+        let timeout = Duration::from_millis(650);
+        let began = std::cell::Cell::new(None);
+        let entered = std::cell::Cell::new(false);
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            wait_for_auth_cli_quit_with_deadline(
+                cli.into_wait_owner(),
+                &observer,
+                root.path(),
+                &super::super::CASES[3],
+                family,
+                timeout,
+                QuitProbeHooks {
+                    after_probe: |start| began.set(Some(start)),
+                    on_sample: |_| {
+                        let start: Instant = began.get().expect("probe precedes callback");
+                        assert!(
+                            start.elapsed() < timeout,
+                            "callback must enter before deadline"
+                        );
+                        entered.set(true);
+                        while start.elapsed() < timeout {
+                            std::thread::yield_now();
+                        }
+                    },
+                },
+            )
+        }));
+        let panic = outcome.expect_err("original fatal deadline must propagate");
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .expect("timeout panic text");
+        assert!(
+            message.starts_with("child exceeded exit/output deadline"),
+            "wrong panic: {message}"
+        );
+        assert!(
+            entered.get(),
+            "the inner fence, not only the outer fence, must be reached"
+        );
+        assert!(
+            !process_exists_native(cli_pid),
+            "original owned CLI must be reaped"
+        );
+        for owner in &family_owners {
+            assert!(
+                process_exists_native(owner.child().id()),
+                "diagnostics must not kill family"
+            );
+        }
+    }
 }
