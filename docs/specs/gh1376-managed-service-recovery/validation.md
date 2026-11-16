@@ -24,6 +24,7 @@ Run AC-1 through AC-4, AC-7 through AC-10 and AC-12 within that isolated fixture
 Run AC-14, AC-16, AC-17, AC-19 and AC-20 at their owning boundaries.
 Run AC-21, AC-25, AC-26, AC-30 and AC-31 for authentication, decoding, enrollment and management ordering.
 Run AC-32 with a wrong-image root and an independent first-message witness.
+Run AC-33 and AC-34 at the effect-owner release gate and capable-owner registry.
 Do not expose managed activation or recovery to product callers in this task.
 T-4 owns exposure after the remaining safety criteria pass.
 
@@ -36,6 +37,7 @@ Then connect the outcome owner and canonical bridge to the admission contract.
 Run AC-5 and repeat AC-6 through the integrated boundary, including both cancellation/completion orderings.
 Run AC-11 and AC-13 with the core state owner. Keep T-3 isolated and non-product.
 Run AC-15 and AC-18 through actual recovery, subagent and background-wake paths.
+Include fork/import dependencies, delayed child completion and initial schedule-check creation in AC-15.
 Run AC-22 through AC-24 and AC-27 through AC-29 with the actual core state owner.
 Repeat AC-30 and AC-31 through the integrated management and background-execution paths.
 Preserve all managed and external connection journeys from #1377.
@@ -47,7 +49,7 @@ Preserve all managed and external connection journeys from #1377.
 Run all acceptance criteria on each claimed operating system.
 Use independent resource and effect witnesses.
 B-2 and U-1 gate completion and product exposure, not entry into this qualification task.
-Expose managed activation and recovery only after AC-1 through AC-32 pass on that platform.
+Expose managed activation and recovery only after AC-1 through AC-34 pass on that platform.
 Qualify the exact integrated artifact. Earlier primitive or reference-policy results cannot clear these gates.
 Complete the retained #1377 journeys before claiming full integration readiness.
 Consume #1382's terminal handoff proof for replacement, early adoption, expiry and failed replacement.
@@ -72,13 +74,13 @@ Keep source versions, host identity, commands, logs and artifact digests with ea
 | AC-6 | Cut after effect and before completion. Attempt fresh tool-call continuation. Compare certified and absent sink deduplication. |
 | AC-7 | Keep the predecessor handle open. Attempt its write before and after successor admission. |
 | AC-8 | Keep one descendant alive past cleanup deadlines. Verify refusal and retained cleanup ownership. |
-| AC-9 | Race first creation and prepared dispatch separately. Remove dispatch comparison. Verify typed loser and unrelated healthy work. |
+| AC-9 | Race creation and claim separately. Bypass the complete state/version claim predicate. Observe token issuance before release checks. |
 | AC-10 | Saturate count and bytes independently. Route Stop through exhausted ordinary execution permits. Observe control progress and terminal fidelity. |
 | AC-11 | Compact around unknown outcomes. Retry expired identities. Restore an old snapshot against an independent effect sink. |
 | AC-12 | Stop then trigger root activation without Start. Remove stopped-state enforcement. Test disabled registration separately. |
-| AC-13 | Hold recovery after reading DispatchIntent. Commit success, then resume recovery. Remove only the transition comparison. |
-| AC-14 | Barrier revocation before dispatch and reverse the order. Remove only the current grant comparison. |
-| AC-15 | Resume the affected execution with a fresh tool ID. Bypass its unresolved-outcome hold. Verify unrelated progress. |
+| AC-13 | One helper serves stale recovery and healthy unresolved work. Remove its comparison, then test a separate no-op mutation. |
+| AC-14 | Commit intent, revoke before effect-owner consume, then reverse the order. Remove only the current grant comparison. |
+| AC-15 | Fresh IDs, automatic fork/import, delayed child completion and schedule-check/run identities. Mutate one causal hold binding. |
 | AC-16 | Disabled and approval-required registrations. Inject a detached fallback and observe root creation. |
 | AC-17 | Hold runtime custody reconciliation. Inject early unregister and observe ordered owner events. |
 | AC-18 | Restore a pre-effect snapshot with surviving sink history. Bypass state-owner restore reconciliation. |
@@ -90,12 +92,14 @@ Keep source versions, host identity, commands, logs and artifact digests with ea
 | AC-24 | Lose all owner continuity with a surviving independent effect sink. Bypass only continuity admission. |
 | AC-25 | Decode exact golden vectors and single-fault malformed frames. Mutate one canonical-form or length check. |
 | AC-26 | Restart the root with complete, incomplete and retired-artifact enrollment tuples. Mutate only tuple completeness. |
-| AC-27 | Commit a contradictory receipt, then restart the state owner with qualified runtime continuity. Remove only durable conflict retention. |
-| AC-28 | Race Prepared cancellation against claim in both orders. Remove only cancellation's state/version comparison. |
+| AC-27 | Keep only effect_conflict in memory. Restart the core and inspect authenticated conflict evidence before independent hold/release gates. |
+| AC-28 | Race cancellation and claim in both orders. Bypass the complete Prepared/version/null-token cancellation predicate. |
 | AC-29 | Complete normal background-job cleanup, then query the retained outcome. Substitute an ephemeral Job-only output pointer. |
 | AC-30 | Hold Start across Stop and retry the captured attempt after reply loss. Replace its expected revision with the current revision. |
 | AC-31 | Hold the next background effect across desktop Quit. Incorrectly require the retired attachment. Separately revoke its grant. |
 | AC-32 | Connect a valid client to a wrong-image root. Inject sensitive first-message content before the authenticated response. |
+| AC-33 | Repeat actual-owner consume with the same committed claim. Mutate only Consumed-state handling. Count effect initiations. |
+| AC-34 | Race closure and owner enrollment in both orders. Inject an older open snapshot. Observe owner enablement before operation checks. |
 
 ### E-1: Existing native custody counterexamples
 
@@ -138,6 +142,21 @@ The earlier first-creation observation remains bounded evidence. The earlier rec
 V2 source SHA256: `3a293e55e1e2107fddc3bbd82c3f61b9a368946036cdf597bb2d4fcd377da8b2`.
 No-op mutant SHA256: `2b522e3d11cb7f5d095b8acddf6b2c4e2010ffaa574ba55943bdd3ab5e24d622`.
 All fixture children exited. Temporary database and mutant state was removed.
+
+### E-5: Takeover reference reruns and acceptance-oracle challenge
+
+- **Run:** [Takeover sources and receipt](https://github.com/gyldlab/keld/issues/1376#issuecomment-6914554873).
+  Commands: `node admission_model.mjs`, `python3 first_create_reference.py` and the byte-exact E-4 source.
+- **n:** The nominal admission model visits 372 states and 652 transitions. Four deliberate faults produce counterexamples.
+  Two first-creation policies pass. Removing creation-key lookup exposes the intended storage exception.
+  E-4's two positive policies and two faulty policies reproduce. A separate same-helper no-op mutation exits 1.
+- **Environment:** Cloud Linux, Python 3.12.14 and SQLite 3.53.1. Executed 2026-11-16.
+- **Limits:** Reference logic only. No shared release registry, causal graph, native authentication, custody or actual core qualification.
+
+FACT: The original AC-9 state-only mutation can remain green because the expected-version comparison still rejects the loser.
+FACT: The original AC-28 state-only mutation leaves the null-token comparison false after a successful claim.
+Bounded SQLite schedules reproduced both masking cases. The revised controls target the complete owning eligibility predicates.
+These are specification-oracle corrections. They do not report a deployed runtime defect.
 
 ## 9. Perf impact
 

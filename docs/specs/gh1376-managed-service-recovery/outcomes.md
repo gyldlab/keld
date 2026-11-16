@@ -59,6 +59,8 @@ These are proposed schema fields, not existing upstream fields or allocated wire
 | effect_binding | primary key(execution_id, upstream_key); unique(domain, sequence); execution_id BLOB(16); upstream_key BLOB(32); domain BLOB(16); sequence positive integer; access_binding BLOB; retired boolean. |
 | effect_operation | primary key(domain, sequence); execution_id BLOB(16); upstream_key BLOB(32); input_digest BLOB(32); state; version positive; claimant BLOB(16) nullable; grant_revision integer; dispatch_token BLOB(16) nullable unique; receipt BLOB nullable; attempt_of nullable reference; completed_at_ms nullable integer. |
 | effect_conflict | primary key(domain, sequence), referencing effect_operation; execution_id BLOB(16); version positive; resolved_version nonnegative; first_outcome BLOB; latest_digest BLOB(32); reconciliation BLOB nullable. |
+| effect_dependency | primary key(dependent_execution, source_execution, source_boundary); both executions BLOB(16); source_boundary BLOB(32); closed causal-kind enum; graph_revision nonnegative. |
+| effect_hold | execution_id BLOB(16) primary key; desired_closed boolean; closure_revision positive; dependency_revision and registry_revision nonnegative; closure evidence at most 8 KiB. |
 
 Use CHECK constraints for fixed blob lengths, state values and receipt length.
 Constrain resolved_version to at most version. A conflict is active when those versions differ.
@@ -73,6 +75,25 @@ The runtime mints writer identity. The database compares that admitted value wit
 Add a durable execution identity to the existing claim. Preserve it across restart, steering and background wake.
 Bind that claim to its retained access binding. Recovery cannot reconstruct authority from a caller's execution identifier.
 Child work inherits the affected execution group. A new generated call ID does not create a new group.
+Automatic fork and import continuation also retains its source execution and copied-history boundary in effect_dependency.
+Keep the graph acyclic. Preserve dependencies after source conversation deletion or outcome-detail compaction.
+Before enabling a dependent execution, install the current graph revision at its actual effect owners.
+A later uncertainty or conflict closes affected dependents through D-9. A copied settled projection is not effect-certainty evidence.
+Subagent completion events retain their originating execution, even when delivery wakes a different current execution in the parent session.
+Join that source dependency before automatic wake or release. Session ID alone cannot supply the source execution.
+
+Bind schedule-check and prompt-run origins separately to the admitted schedule identity and ordinal.
+Retries preserve those bindings. Later automatic checks and runs depend on unresolved prior schedule work unless approved independence applies.
+The initial schedule check needs a durable core-owned creation admission before any effect, even before the final schedule row exists.
+Retry schedule creation through that same admission. Minting another schedule ID cannot establish that the initial check had no effect.
+Explicit independent work uses deliberate current admission. Automatic continuation cannot select that exception.
+Charge persisted dependencies and hold evidence to the existing logical budget. D-9 bounds their live mirrors and owner enrollment.
+
+FACT: Forks clear parent_id and retain fork_session_id while copying selected history.
+Source: [projector.ts](https://github.com/anomalyco/opencode/blob/4423f42836aaaf2933bc7b94b35aca4e5bcce7c3/packages/core/src/session/projector.ts#L154-L205).
+FACT: Schedule creation evaluates its initial check before inserting the schedule row.
+Source: [schedule.ts](https://github.com/anomalyco/opencode/blob/4423f42836aaaf2933bc7b94b35aca4e5bcce7c3/packages/core/src/schedule.ts#L723-L789).
+INFERRED: Child-only inheritance and existing schedule rows do not cover these causal entry points.
 Bind upstream_key to the existing message ID, call identity and effect ordinal through Q-2's canonical encoding.
 Create the mapping, Prepared row and receipt and conflict allowances atomically before effects become possible.
 effect_binding preserves identity across domains and detail compaction. Repeated issuance returns its original reference, including Expired.
@@ -172,7 +193,8 @@ Do not automatically retry effectful work after storage errors or uncertain comm
 2. Mint or reuse its persistent reference. Create its mapping, Prepared row and reservations atomically.
 3. Use unique insert-or-read. Compare immutable bindings when the row already exists.
 4. Matching retries return the existing state. Changed input returns InputConflict. Unknown and retired references return Expired.
-5. Claim conditionally changes Prepared at the expected version to DispatchIntent with a fresh dispatch_token.
+5. Reserve the actual effect-owner record. Claim then compares Prepared and expected version as one eligibility predicate.
+   The winning transaction records DispatchIntent with the bound fresh dispatch_token.
 6. Claim compares the digest, execution holds and current owner/writer admission. Only one changed row returns the token.
 7. Commit DispatchIntent before presenting the token to the existing effect owner.
 8. The effect owner consumes the token once under Q-2's revocation-ordered release gate.
@@ -184,7 +206,8 @@ Lost commit acknowledgments require a query with the original reference. They ca
 
 Cancel compares Prepared, expectedVersion and a null dispatch token within the same transaction as claim.
 When that comparison wins, cancel records CancelledNoEffect and core-authenticated NoRelease evidence, then increments version.
-No dispatch token is created. The losing claim reloads the cancelled outcome and cannot return a release token.
+No releasable token is issued. Retire any unused non-authorizing reservation.
+The losing claim reloads the cancelled outcome and cannot return a release token.
 When claim wins, cancel returns Requested and invokes the existing effect owner's interruption path.
 Requested preserves possible effects. A terminal race returns AlreadyTerminal without changing the stored outcome.
 An expected-version mismatch reloads state. It never authorizes a new claim or an invented no-effect receipt.
@@ -218,6 +241,7 @@ A tool error, failed output encoding or missing destination record does not alon
 No-effect reconciliation must prove that the old attempt cannot still complete later.
 
 When a verified receipt conflicts with a terminal outcome, preserve the original operation row and receipt.
+Begin D-9 closure before persisting that hold. A partial acknowledgement remains Pending/Unresolved, including after conflict persistence.
 In the same transaction, create or update effect_conflict and commit the conflict event.
 The first conflict stores its complete VerifiedOutcome. Later conflicts preserve that evidence and advance version with the latest authenticated digest.
 This bounded record is not a complete history of every repeated receipt.
@@ -238,8 +262,9 @@ Before automatic continuation, check the durable execution group for Indetermina
 Also check restore_hold and ContinuityUnproven. Prepared alone does not establish an uncertain effect.
 Include tool retries, SessionExecution.resume/wake, subagent completion, scheduled work and startup recovery.
 All effectful entry points use the same hold. Unknown tool behavior defaults to effectful.
-Q-2 serializes current execution-hold checks and release with hold publication, as it does with grant revocation.
-An earlier Prepared or claim result cannot bypass a conflict committed before the release-admission point.
+Q-2 serializes release with acknowledged execution closure, including causal dependents and newly enrolled effect owners.
+An earlier Prepared or claim result cannot bypass a closure acknowledged before the release-admission point.
+Stored hold intent does not certify complete closure when a capable owner remains unreachable.
 Live pending work retains its current owner. A pending response alone does not imply owner loss.
 Inspection and unrelated authorized executions remain available.
 Deliberate new-attempt authorization names the unresolved reference and acknowledges possible duplicate effects.
@@ -273,7 +298,8 @@ Completion can consume its existing allowance when new-admission capacity is exh
 Count actual stored byte lengths. Do not charge compressed estimates.
 SQLite pages, indexes, WAL and filesystem overhead require separate physical-storage measurements and native fault injection.
 Logical reservation does not reserve physical WAL space against other applications.
-If an outcome commit fails, report Indeterminate and close new effect admission for that execution.
+If an outcome commit fails, report Indeterminate and invoke D-9 closure for that execution and its causal dependents.
+Retain Pending/Unresolved for missing owner acknowledgements. A local health flag cannot certify that remote releases stopped.
 Retain the durable intent. Do not acknowledge success or delete evidence to recover space.
 Queries, reconciliation and cleanup remain available where their own storage operations succeed.
 
@@ -316,6 +342,8 @@ This design binding blocks specification approval independently of later native 
 UNKNOWN: Full required outputs larger than the inline allowance have no approved durable retention binding in this proposal.
 The canonical output/state owners must supply a retention migration or an existing qualified owner with explicit lifetime and authorization.
 Until then, explicit Unavailable output is truthful state only. It does not qualify those product journeys.
+UNKNOWN: Durable schedule-creation admission and cross-execution dependency hooks need the existing core owners' exact binding review.
+Initial checks, fork/import continuation and delayed subagent completion cannot bypass that prerequisite.
 FACT: KEL-53 Slice A requires dataMigration:none and provides no migration hook.
 Source: `docs/specs/kel53-full-package-activation.md:606@413c128e5375df3ffa241809db651bf7fd27e498`.
 This schema change requires a coordinated migration/compatibility amendment before shipped activation.
@@ -326,7 +354,9 @@ Actual core instrumentation, full effect coverage, native durability and product
 
 PROPOSED: Run AC-27 through a core restart while qualified runtime continuity survives.
 The original terminal receipt must remain queryable. The conflict must hold only its affected execution.
-Remove only durable conflict persistence to make the affected continuation reach the independent sink.
+Keep only effect_conflict in memory for the mutation. After restart, inspect its required authenticated evidence at the state owner.
+Missing evidence must fail before independent effect_hold or runtime release gates can mask that loss.
+AC-34 separately checks closure. Do not require a sink release to prove this storage mutation failed.
 Run AC-28 against the actual cancel and claim operations in both transaction orders.
 Cancellation first must produce no token or sink effect. Claim first must preserve possible effects and permit an actual later outcome.
 Run AC-29 with inline output through real Job.completeBackground cleanup and core reopen before detail expiry.

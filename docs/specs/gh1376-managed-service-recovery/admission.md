@@ -286,7 +286,8 @@ The transaction persists DispatchIntent and its 16-byte token before external re
 Only that winning claim reaches release_effect. No external work runs inside the transaction.
 The effect owner serializes current-authority checks and token consumption with revocation.
 It also checks current desired state and the execution's continuation holds before release.
-Serialize that check and queue insertion with the state owner's hold publication. A hold committed first prevents release.
+Serialize that check and queue insertion with the execution closure protocol below.
+An acknowledged closure before queue insertion prevents release. Persisting a database flag alone cannot establish that closure.
 The claim, BoundEffect and reserved capacity must belong to the same operation and immutable input digest.
 Successful insertion into its reserved executor queue is the release-admission point.
 Transport queuing, adapter Ack and Prepared are not that point.
@@ -300,6 +301,52 @@ A crash that loses ordering evidence preserves Indeterminate.
 A new generation cannot reuse a predecessor token.
 Q-3 conditionally stores a late verified receipt without overwriting committed success.
 Retired delivery drops the reply, not the committed outcome.
+
+#### One-use release records
+
+PROPOSED: The actual effect owner keeps one shared record for the operation, token and effect-owner generation.
+Reserve that record and its capacity before the core can return a releasable claim.
+Reservation grants no release authority. Bind its opaque reference to the proposed token and immutable input digest.
+A failed claim retires the reservation. An ambiguous commit preserves the original reservation and pending outcome.
+The core sends bounded authenticated commit references across IPC. It does not transmit a Rust capability value.
+The effect owner validates the current core writer, committed operation, token, reservation and immutable inputs.
+Only that owner can construct the local CommittedDispatchClaim witness. Wire decoding cannot construct it.
+
+Under the release gate, Reserved changes once to Consumed or Retired.
+Only Reserved-to-Consumed inserts work into the reserved executor queue.
+Repeated reserve or consume returns the retained disposition without another insertion.
+Current QueryOutcome authority still governs any retained outcome disclosure.
+Unknown or retired reservation references refuse. Saved intent cannot reconstruct a missing release reservation.
+Retain consumed and retired records until generation retirement and delayed-message fencing make their references unusable.
+Owner loss leaves durable intent uncertain. Missing memory does not prove non-release.
+
+Bound release records to 1024 per service, including consumed and retired records.
+Bound their complete storage, indices and retained dispositions to 1 MiB, charged against the existing 8 MiB buffer cap.
+At either limit, refuse new reservations and preserve independent Stop, revocation, inspection and cleanup.
+Do not evict consumed records to regain capacity. Generation turnover requires the ordinary custody and retirement checks.
+These are experimental bounds. Full journeys must qualify them before shipping.
+
+#### Execution closure and owner enrollment
+
+PROPOSED: Runtime owns the registry of every effect owner capable of releasing the affected execution or causal dependent.
+Registration and closure share one ordered registry revision. D-10 owns persisted causal dependencies and hold intent.
+Begin closure before persisting a new uncertainty or conflict hold.
+Each owner closes its release gate and invalidates unconsumed affected reservations before acknowledging its generation and closure revision.
+Complete closure requires every capable owner's acknowledgement or approved effective fencing.
+Missing acknowledgement leaves Pending/Unresolved. Persisting conflict evidence does not certify that unreachable release is excluded.
+Keep reached gates closed. Preserve possible effects from earlier consumes and unresolved owners.
+If hold persistence fails, keep admission closed and retain the unresolved closure through the existing continuity owner.
+
+A newly joined or restarted owner remains non-effectful until it installs current closures and causal dependencies.
+Bind that installation to the current registry, dependency and closure revisions before enabling release.
+An owner-set or dependency change invalidates stale closure-completion and reopen witnesses.
+Reopen requires current authority, durable reconciliation and those exact current revisions.
+No gate lock spans storage synchronization or external work. A database write cannot replace the owner acknowledgements.
+
+Limit the live registry to 64 capable owners, 1024 held executions and 4096 causal edges per service.
+Charge their complete live storage to a separate 1 MiB allowance within the existing 8 MiB buffer cap.
+Refuse excess enrollment or dependency admission before release becomes possible. Never discard a live hold to regain capacity.
+Reserve closure-state capacity before admitting an execution. Unrelated allowed work and independent control progress remain available within capacity.
 
 #### Codec and resource binding
 

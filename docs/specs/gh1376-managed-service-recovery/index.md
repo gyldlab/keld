@@ -27,7 +27,7 @@ Non-goals:
 
 | Part | Owns | Load when |
 | --- | --- | --- |
-| [contract](contract.md) | Source references and AC-1 through AC-32. | Defining or checking required behavior and negative controls. |
+| [contract](contract.md) | Source references and AC-1 through AC-34. | Defining or checking required behavior and negative controls. |
 | [design](design.md) | D-1 through D-7 and architectural alternatives. | Reviewing the selected architecture and its alternatives. |
 | [platform](platform.md) | D-8 platform registration, authentication and custody candidates. | Reviewing installed root and client lifetime. |
 | [admission](admission.md) | D-9 proposed identities, interfaces, grants and release ordering. | Reviewing admission and bounded transport. |

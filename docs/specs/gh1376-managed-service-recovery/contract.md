@@ -136,9 +136,11 @@ External source references below use that commit. Retrieval date: 2026-11-16.
   A storage uniqueness exception cannot escape as the protocol result.
   Unrelated permitted work still succeeds.
 - **Negative control:**
-  - **Single fault:** Remove the expected-state comparison from dispatch admission.
-  - **At-risk precondition:** Both callers pass guard and writer admission before either effect starts.
-  - **Expected RED:** The independent sink records two releases for the same operation.
+  - **Single fault:** Bypass the complete Prepared-and-expected-version claim predicate at the state owner.
+  - **At-risk precondition:** Both callers observed the same Prepared version. All other admission checks pass.
+    Observe claim issuance before the separate effect-owner one-use check can mask duplicate claims.
+  - **Expected RED:** The state owner returns two distinct releasable claims for one operation.
+    AC-33 separately observes repeated consumption at the actual effect owner.
 
 ### AC-10: Saturation preserves control progress and output integrity
 
@@ -185,6 +187,7 @@ External source references below use that commit. Retrieval date: 2026-11-16.
 - **Then:** The recovery transition compares the current state and version atomically.
   It preserves the committed receipt and returns success to an authorized query.
   Test both transition orders. An unresolved operation still becomes Indeterminate when no success exists.
+  Both schedules call the same recovery transition. A separate no-op mutation must fail the unresolved healthy control.
 - **Negative control:**
   - **Single fault:** Remove the expected-state/version comparison from the recovery transition.
   - **At-risk precondition:** Recovery read DispatchIntent before the outcome owner committed success. Both use valid writer admission.
@@ -192,7 +195,7 @@ External source references below use that commit. Retrieval date: 2026-11-16.
 
 ### AC-14: Revocation and dispatch have an observable order
 
-- **Given:** A valid operation is Prepared after authorization. Dispatch pauses before its effect-owner admission point.
+- **Given:** A valid operation has committed DispatchIntent. Dispatch pauses before its effect-owner admission point.
 - **When:** Revocation commits before dispatch resumes, or dispatch admission commits before revocation.
 - **Then:** The first ordering refuses release. The second preserves possible effects and reports the actual outcome.
   Neither ordering invents rollback. A separate permitted operation still succeeds.
@@ -207,8 +210,13 @@ External source references below use that commit. Retrieval date: 2026-11-16.
 - **When:** Restart, a subagent completion or a background wake proposes the same effect with a fresh operation reference.
 - **Then:** The execution's effectful continuation remains held. Inspection and an unrelated execution remain available.
   Deliberate authorized new admission must link the unresolved attempt. A fresh identifier alone is insufficient.
+  Include automatic forks, imports, delayed subagent completions and later schedule checks or runs with retained causal dependencies.
+  Test fork-before-conflict and conflict-before-fork. Source conversation deletion cannot erase a surviving dependent's hold.
+  Test a crash after the initial schedule-check effect but before the schedule row commits.
+  Creation retry retains its durable check admission. An unrelated deliberately admitted execution still succeeds.
 - **Negative control:**
   - **Single fault:** Bypass the execution-wide unresolved-outcome hold for a fresh operation reference.
+    For a copied or dependent execution, separately omit only its required source dependency. Run each mutation alone.
   - **At-risk precondition:** The new operation has valid inputs, grants and dispatch admission. No separate policy blocks it.
   - **Expected RED:** The sink records a second effect without reconciliation or deliberate new admission.
 
@@ -350,10 +358,11 @@ External source references below use that commit. Retrieval date: 2026-11-16.
   Authorized inspection works. Only the specified reconciliation action can clear that conflict hold.
   An unrelated execution can still admit permitted work.
 - **Negative control:**
-  - **Single fault:** Store the conflict hold only in process memory.
-  - **At-risk precondition:** Runtime continuity is qualified. No cold-start or unresolved-operation hold masks the conflict predicate.
-    Observe execution admission after the state owner restarts.
-  - **Expected RED:** The conflicted execution admits a new automatic effect without reconciliation.
+  - **Single fault:** Keep the effect_conflict record only in process memory instead of persisting its authenticated evidence.
+  - **At-risk precondition:** Runtime continuity and current inspection authority remain valid after the core restart.
+    Inspect the state owner's durable conflict evidence before independent effect_hold or release gates can mask its loss.
+  - **Expected RED:** The core cannot recover the required conflict evidence for reconciliation.
+    A surviving runtime closure or hold flag cannot satisfy that evidence assertion.
 
 ### AC-28: Cancellation before claim cannot require a dispatch token
 
@@ -362,7 +371,7 @@ External source references below use that commit. Retrieval date: 2026-11-16.
 - **Then:** The first ordering commits CancelledNoEffect without dispatch. The second preserves the possible-effect outcome.
   The state owner returns a typed result in both orders. A permitted uncancelled operation still releases once.
 - **Negative control:**
-  - **Single fault:** Remove the Prepared-state comparison from the cancellation transition.
+  - **Single fault:** Bypass the complete pre-claim cancellation predicate: Prepared, expected version and null dispatch token.
   - **At-risk precondition:** Claim won and released a witnessed effect before the held cancellation resumes.
   - **Expected RED:** Cancellation overwrites DispatchIntent with CancelledNoEffect despite the witnessed release.
 
@@ -415,3 +424,31 @@ External source references below use that commit. Retrieval date: 2026-11-16.
   - **At-risk precondition:** The wrong-image root can receive the first outgoing request.
     An independent message witness observes that root before the client rejects its response.
   - **Expected RED:** The wrong-image root receives the sensitive payload despite the later authentication refusal.
+
+### AC-33: Repeated consumption cannot enqueue another effect
+
+- **Given:** The actual effect owner consumed a reservation and enqueued one effect for its committed claim.
+- **When:** The caller repeats reserve or consume with that same operation, token and effect-owner generation.
+- **Then:** The owner returns the retained disposition without another enqueue. Current authority still governs outcome disclosure.
+  Unknown or retired reservations refuse. Saved intent cannot reconstruct missing release authority.
+  Count consumed and retired records in capacity. Saturation preserves Stop, revocation and cleanup.
+  A separate admitted operation progresses when capacity is available.
+- **Negative control:**
+  - **Single fault:** Treat the shared Consumed record as Reserved during the repeated consume.
+  - **At-risk precondition:** Both calls reach the effect owner with the same valid claim and immutable inputs.
+    Do not rerun the state-owner claim; that independent comparison would mask this release fault.
+  - **Expected RED:** The independent effect witness records two initiations for the same token.
+
+### AC-34: Closure includes reserved work and newly capable owners
+
+- **Given:** An affected execution has reserved work and a closure in progress. Another effect owner requests enrollment.
+- **When:** Closure and enrollment occur in either order, including failed persistence or a missing acknowledgement.
+- **Then:** Acknowledged closure prevents later consume of its unconsumed affected reservations.
+  New owners remain non-effectful until current closure and dependency revisions are installed.
+  Missing acknowledgement stays Pending/Unresolved. A database hold alone cannot certify exclusion.
+  Stale reopen refuses. Unrelated allowed work and independent control progress remain available within capacity.
+- **Negative control:**
+  - **Single fault:** Admit the joining owner using its older open closure snapshot.
+  - **At-risk precondition:** Closure has been acknowledged. The new owner otherwise passes identity, grants and capacity checks.
+    Observe owner enablement before downstream operation checks can hide the stale snapshot.
+  - **Expected RED:** The registry enables release capability without installing the current closure revision.

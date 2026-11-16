@@ -37,6 +37,14 @@ FACT: The current Mac Guardian cannot contain detached descendants or simultaneo
 Source: `docs/architecture/06-runtime-and-tooling.md:220@413c128e5375df3ffa241809db651bf7fd27e498`.
 FACT: Existing Windows peer observation requires separate installed-image authentication and a live protocol challenge.
 Source: `crates/keld-runtime/src/windows_job/process_peer.rs:20@413c128e5375df3ffa241809db651bf7fd27e498`.
+FACT: macOS accepts InitialWindow::None. Windows permits that facade only through a debug test hook. Linux refuses it.
+Sources: `crates/keld-core/src/app_session.rs:2404@413c128e5375df3ffa241809db651bf7fd27e498`,
+`crates/keld-core/src/app_session.rs:1355@413c128e5375df3ffa241809db651bf7fd27e498` and
+`crates/keld-core/src/app_session.rs:3500@413c128e5375df3ffa241809db651bf7fd27e498`.
+FACT: Installed-package selection is a separate Windows boot branch. macOS and Linux use validated development-stage selection.
+Source: `crates/keld-core/src/app_session.rs:1218@413c128e5375df3ffa241809db651bf7fd27e498`.
+INFERRED: A no-window facade does not establish an installed independent service.
+Reuse Core's validated boot boundary. Q-1 retains the missing installed-platform composition.
 PROPOSED: Extend the canonical runtime with an OS-activated root session. Keep the existing Supervisor beneath that root.
 The desktop owns an attachment to that session. Desktop exit releases that attachment and its desktop resources.
 Do not add an adapter supervisor, service journal, package verifier or independent terminal owner.
