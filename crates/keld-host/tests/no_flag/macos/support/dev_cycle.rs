@@ -171,12 +171,10 @@ impl Drop for ShippingLaunchCleanup {
             // numbers must never gain numeric kill(-PGID) authority.
             if let (Some(group), Some(original)) = (group, birth)
                 && original.group() == group
+                && signal_attested_group("-TERM", original).is_err()
+                && let Some(member) = member
             {
-                if signal_attested_group("-TERM", original).is_err()
-                    && let Some(member) = member
-                {
-                    let _ = signal_group_via_attested_member("-TERM", original, member);
-                }
+                let _ = signal_group_via_attested_member("-TERM", original, member);
             }
         }
     }
@@ -234,10 +232,8 @@ impl ShippingDevCycle {
         let descendant_pid = parse_pid(descendant.split_whitespace().nth(1), &descendant);
         let guardian_pid = parent_process(bun_pid);
         let host_pid = parent_process(guardian_pid);
-        let owns_expected_tree =
-            parent_process(host_pid) == cli_pid && guardian_pid != cli_pid && host_pid != cli_pid;
         assert!(
-            owns_expected_tree,
+            parent_process(host_pid) == cli_pid && guardian_pid != cli_pid && host_pid != cli_pid,
             "shipping keld dev did not delegate CLI {cli_pid} -> host {host_pid} -> guardian {guardian_pid} -> Bun {bun_pid}"
         );
         cleanup.record_authenticated_groups(host_pid, bun_pid);
@@ -255,11 +251,7 @@ impl ShippingDevCycle {
             control_writer: control,
             group_gone: false,
         };
-        assert_eq!(process_group(bun_pid), bun_pid);
-        assert_eq!(process_group(descendant_pid), bun_pid);
-        assert_eq!(process_group(cli_pid), cli_pid);
-        assert_eq!(process_group(host_pid), host_pid);
-        assert_eq!(process_group(guardian_pid), host_pid);
+        cycle.assert_initial_process_groups();
         assert_eq!(read_control_line(&mut cycle.control_reader), "READY");
         assert_eq!(read_control_line(&mut cycle.control_reader), "ECHO1");
         assert_eq!(read_control_line(&mut cycle.control_reader), "ECHO2");
@@ -285,6 +277,14 @@ impl ShippingDevCycle {
             );
         }
         cycle
+    }
+
+    fn assert_initial_process_groups(&self) {
+        assert_eq!(process_group(self.bun_pid), self.bun_pid);
+        assert_eq!(process_group(self.descendant_pid), self.bun_pid);
+        assert_eq!(process_group(self.cli_pid), self.cli_pid);
+        assert_eq!(process_group(self.host_pid), self.host_pid);
+        assert_eq!(process_group(self.guardian_pid), self.host_pid);
     }
 
     pub(crate) fn evidence(&self) -> String {
