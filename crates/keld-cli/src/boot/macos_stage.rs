@@ -295,6 +295,8 @@ mod tests {
         let uid = rustix::process::geteuid().as_raw();
         let outside = root.path().join("outside");
         fs::create_dir(&outside).expect("outside directory");
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o700))
+            .expect("outside private mode");
         fs::write(outside.join("sentinel"), b"preserve").expect("outside sentinel");
         let link = temporary.join(format!("keld-dev-{uid}"));
         symlink(&outside, &link).expect("namespace symlink");
