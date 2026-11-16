@@ -1,11 +1,14 @@
 // Group-leader disappearance does not establish group disappearance. An
 // unrelated process in the same private group can outlive the original leader.
 use std::io::Write as _;
+use std::os::fd::AsFd as _;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
+use std::time::Instant;
 
 use nix::errno::Errno;
+use nix::fcntl::{FcntlArg, OFlag, fcntl};
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
 
@@ -29,15 +32,269 @@ use self::native_descendant::spawn_held_native_descendant;
 // leaves an unrelated native process alive after panic/unwind.
 struct TestOwnedGroupChild(Child);
 
+// Even if inspecting the *retained* direct Child itself fails, do not
+// transfer its wait to an unbounded blocking operation without first trying
+// SIGKILL through that same Child handle. Only a verified/cached exit can
+// suppress the exact-child kill. This is never authority over an observed PID.
+fn kill_owned_child_unless_reaped(
+    child: &mut Child,
+    inspection: &std::io::Result<Option<ExitStatus>>,
+) {
+    if !matches!(inspection, Ok(Some(_))) {
+        let _ = child.kill();
+    }
+}
+
 impl Drop for TestOwnedGroupChild {
     fn drop(&mut self) {
-        // A test may have reaped its owned Child already. Never issue a late
-        // numeric-PID kill after wait() could have released that identity.
-        if matches!(self.0.try_wait(), Ok(None)) {
-            let _ = self.0.kill();
-        }
+        // This test owns the Child handle until wait completes. A failed
+        // try_wait is NOT proof the Child exited or that a signal is unsafe.
+        let inspection = self.0.try_wait();
+        kill_owned_child_unless_reaped(&mut self.0, &inspection);
         let _ = self.0.wait();
     }
+}
+
+#[test]
+fn inspection_failure_still_kills_and_reaps_exact_native_child() {
+    let mut owned = TestOwnedGroupChild(
+        Command::new("/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("original direct owned native Child"),
+    );
+    assert!(
+        owned
+            .0
+            .try_wait()
+            .expect("new Child is still live")
+            .is_none(),
+        "test must start with one genuinely live directly owned process"
+    );
+    // Fault injection covers Child::try_wait's typed inspection error path,
+    // while the signal and reaping use the actual retained native Child.
+    kill_owned_child_unless_reaped(
+        &mut owned.0,
+        &Err(std::io::Error::other(
+            "injected owned Child inspection failure",
+        )),
+    );
+    // This is the existing five-second Guardian cleanup budget, not a new
+    // scheduler-sensitive 300ms magic timeout on loaded hosted Macs.
+    let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
+    let mut observed = None;
+    while Instant::now() < deadline {
+        if let Some(status) = owned.0.try_wait().expect("inspect real native exit") {
+            observed = Some(status);
+            break;
+        }
+        thread::yield_now();
+    }
+    // Always clean up the exact Child before making the negative assertion.
+    // A mutant that skips the kill cannot strand a native process on RED.
+    if observed.is_none() {
+        let _ = owned.0.kill();
+        let _ = owned.0.wait();
+    }
+    assert_eq!(
+        observed.and_then(|status| status.signal()),
+        Some(9),
+        "failed inspection must still SIGKILL/reap the actual retained direct Child"
+    );
+}
+
+// Darwin may finish reaping a group leader before an independently owned,
+// SIGKILL-targeted same-group member has actually transitioned to zombie.
+// Read only the state of the member retained by THIS exact Child owner. A
+// leader's wait status alone never proves a zombie-only EPERM group.
+// The /bin/ps direct Child can exit while another inherited stdout writer is
+// still alive. Waiting for its Child exit therefore does NOT make the pipe read
+// bounded. Use the same original monotonic cleanup clock for every byte read.
+fn bounded_native_state_byte<R: std::io::Read + std::os::fd::AsFd>(
+    reader: &mut R,
+    deadline: Instant,
+) -> Option<u8> {
+    let raw =
+        fcntl(reader.as_fd(), FcntlArg::F_GETFL).expect("inspect owned native observer pipe flags");
+    fcntl(
+        reader.as_fd(),
+        FcntlArg::F_SETFL(OFlag::from_bits_truncate(raw) | OFlag::O_NONBLOCK),
+    )
+    .expect("make owned native observer pipe nonblocking");
+    let mut first = [0_u8; 1];
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "native process-state pipe exceeded original cleanup deadline"
+        );
+        match reader.read(&mut first) {
+            Ok(0) => return None,
+            Ok(1) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "native state byte arrived after original cleanup deadline"
+                );
+                return Some(first[0]);
+            }
+            Ok(_) => unreachable!("one-byte native state read returned multiple bytes"),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                thread::yield_now();
+            }
+            Err(error) => panic!(
+                "native state pipe read failed with class {:?}",
+                error.kind()
+            ),
+        }
+    }
+}
+
+#[test]
+fn silent_owned_native_state_pipe_cannot_block_past_its_monotonic_deadline() {
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+    let (mut reader, silent_peer) = UnixStream::pair().expect("owned native Unix pipe pair");
+    let deadline = Instant::now() + Duration::from_millis(70);
+    let timed_out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        bounded_native_state_byte(&mut reader, deadline)
+    }));
+    let returned_at = Instant::now();
+    drop(silent_peer);
+    let error = timed_out.expect_err("a live byte-silent native writer must reach its deadline");
+    assert_eq!(
+        error.downcast_ref::<&str>().copied(),
+        Some("native process-state pipe exceeded original cleanup deadline")
+    );
+    assert!(
+        returned_at >= deadline,
+        "a live byte-silent native writer must retry until the original deadline"
+    );
+}
+
+#[test]
+fn expired_native_state_pipe_deadline_rejects_a_prequeued_byte_before_reading() {
+    use std::os::unix::net::UnixStream;
+    let (mut reader, mut writer) = UnixStream::pair().expect("owned native Unix pipe pair");
+    writer
+        .write_all(b"Z")
+        .expect("one owned process-state byte");
+    let deadline = Instant::now();
+    let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        bounded_native_state_byte(&mut reader, deadline)
+    }))
+    .expect_err("an expired deadline must reject even a prequeued byte");
+    assert_eq!(
+        error.downcast_ref::<&str>().copied(),
+        Some("native process-state pipe exceeded original cleanup deadline")
+    );
+}
+
+#[test]
+fn native_state_pipe_receives_exact_first_byte() {
+    use std::os::unix::net::UnixStream;
+    let (mut reader, mut writer) = UnixStream::pair().expect("owned native Unix pipe pair");
+    writer
+        .write_all(b"Z")
+        .expect("one owned process-state byte");
+    assert_eq!(
+        bounded_native_state_byte(&mut reader, Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE),
+        Some(b'Z')
+    );
+}
+
+fn native_member_is_zombie(member_pid: u32, deadline: Instant) -> bool {
+    assert!(
+        Instant::now() < deadline,
+        "native state observation cannot start after the cleanup deadline"
+    );
+    // Keep the actual read-only /bin/ps Child owned and bounded by the SAME
+    // monotonic shutdown clock. Command::output() would wait indefinitely if
+    // this observer itself stalled before reaching a zombie-state result.
+    let mut observer = TestOwnedGroupChild(
+        Command::new("/bin/ps")
+            .args(["-p", &member_pid.to_string(), "-o", "stat="])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("own read-only Darwin process-state observer"),
+    );
+    let status = loop {
+        match observer.0.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => thread::yield_now(),
+            Ok(None) => panic!("native process-state observer exceeded original cleanup deadline"),
+            Err(error) => panic!(
+                "native process-state observer inspection failed with class {:?}",
+                error.kind()
+            ),
+        }
+    };
+    let first = bounded_native_state_byte(
+        observer
+            .0
+            .stdout
+            .as_mut()
+            .expect("original read-only observer stdout"),
+        deadline,
+    );
+    status.success() && first == Some(b'Z')
+}
+
+fn await_owned_native_zombie(member: &Child, deadline: Instant) {
+    loop {
+        if native_member_is_zombie(member.id(), deadline) {
+            assert!(
+                Instant::now() < deadline,
+                "the native member reached zombie state only after the original cleanup bound"
+            );
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the retained original member did not reach native zombie state within the cleanup bound"
+        );
+        thread::yield_now();
+    }
+}
+
+#[test]
+fn real_running_member_must_not_be_accepted_as_native_zombie() {
+    let mut member = TestOwnedGroupChild(
+        Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("original test-owned live process"),
+    );
+    let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
+    assert!(
+        !native_member_is_zombie(member.0.id(), deadline),
+        "a genuine live original Child is not an unreaped zombie"
+    );
+    member
+        .0
+        .kill()
+        .expect("terminate only the exactly owned Child");
+    await_owned_native_zombie(&member.0, deadline);
+    assert_eq!(
+        member
+            .0
+            .wait()
+            .expect("reap original Child after zombie proof")
+            .signal(),
+        Some(9)
+    );
 }
 
 #[test]
@@ -164,11 +421,13 @@ fn guardian_signal_eperm_reconciles_only_after_native_group_absence() {
         "read-only reconciliation must not kill a live outsider"
     );
 
+    let shutdown_deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
     terminate_registered_group(group).expect("SIGKILL only the test-owned group");
     assert_eq!(
         leader.0.wait().expect("reap exact original Child").signal(),
         Some(9)
     );
+    await_owned_native_zombie(&member.0, shutdown_deadline);
     assert_unreaped_native_member_remains_denied(original, raw, denied);
 
     let (observed_tx, observed_rx) = std::sync::mpsc::channel();
@@ -488,11 +747,13 @@ fn reaped_leader_with_temporarily_unreaped_dead_member_clears_without_false_host
         Ok(Pid::from_raw(group_raw)),
         "the un-reaped member belongs to the enrolled group"
     );
+    let shutdown_deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
     terminate_registered_group(group).expect("signal only the test-owned group");
     assert_eq!(
         leader.0.wait().expect("reap original leader").signal(),
         Some(9)
     );
+    await_owned_native_zombie(&member.0, shutdown_deadline);
     assert_eq!(
         nix::unistd::getpgid(Some(Pid::from_raw(group_raw))),
         Err(Errno::ESRCH),
@@ -552,11 +813,13 @@ fn reaped_leader_with_persistently_unreaped_member_must_not_claim_clear() {
         ))),
         Ok(Pid::from_raw(raw))
     );
+    let shutdown_deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
     terminate_registered_group(group).expect("signal original real group");
     assert_eq!(
         leader.0.wait().expect("reap original leader").signal(),
         Some(9)
     );
+    await_owned_native_zombie(&member.0, shutdown_deadline);
     assert_eq!(
         nix::unistd::getpgid(Some(Pid::from_raw(raw))),
         Err(Errno::ESRCH)

@@ -735,41 +735,53 @@ unsafe extern "C" {
 pub(crate) struct ProcessExitObserver {
     pid: u32,
     queue: std::os::fd::OwnedFd,
+    observed_status: Option<std::process::ExitStatus>,
+    /// Test seam: the next native read reports the kernel's EINTR outcome.
+    interrupt_next_read: bool,
 }
 
 impl ProcessExitObserver {
     const FILTER: i16 = -5; // EVFILT_PROC
     const EXIT_FLAGS: u32 = 0x8000_0000 | 0x0400_0000; // NOTE_EXIT | NOTE_EXITSTATUS
     const ERROR_FLAG: u16 = 0x4000; // EV_ERROR
+    const EINTR: i32 = 4; // <sys/errno.h>
 
     pub(crate) fn arm(pid: u32) -> Self {
+        Self::try_arm(pid).expect("fixture-admitted native process exit observer")
+    }
+
+    /// Try to register one real kernel process before its exit. A vanished or
+    /// inaccessible nonchild is an unproved watch, never proof of liveness.
+    pub(crate) fn try_arm(pid: u32) -> std::io::Result<Self> {
         use std::os::fd::{AsRawFd as _, FromRawFd as _};
-        assert!(pid > 1 && pid != std::process::id(), "fixture-admitted PID");
-        assert_eq!(std::mem::size_of::<ProcessKevent>(), 48, "SDK kevent64 ABI");
-        assert_eq!(
-            std::mem::align_of::<ProcessKevent>(),
-            8,
-            "SDK kevent64 alignment"
-        );
-        assert_eq!(
-            std::mem::size_of::<ProcessKeventTimeout>(),
-            16,
-            "SDK timespec ABI"
-        );
+        if pid <= 1 || pid == std::process::id() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid native process exit witness target",
+            ));
+        }
+        if std::mem::size_of::<ProcessKevent>() != 48
+            || std::mem::align_of::<ProcessKevent>() != 8
+            || std::mem::size_of::<ProcessKeventTimeout>() != 16
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "native process observer ABI is not supported",
+            ));
+        }
         // SAFETY: kqueue takes no arguments and returns a new owned descriptor.
         let fd = unsafe { kqueue() };
-        assert!(fd >= 0, "kqueue: {}", std::io::Error::last_os_error());
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
         // SAFETY: successful kqueue returned a valid descriptor owned only here.
         let queue = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
         // SAFETY: variadic fcntl receives this valid owned fd, F_SETFD=2 and the
         // promoted integer FD_CLOEXEC=1. No other owner's descriptor is changed.
         let cloexec = unsafe { process_observer_fcntl(queue.as_raw_fd(), 2, 1_i32) };
-        assert_eq!(
-            cloexec,
-            0,
-            "observer CLOEXEC: {}",
-            std::io::Error::last_os_error()
-        );
+        if cloexec != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
         let change = ProcessKevent {
             ident: u64::from(pid),
             filter: Self::FILTER,
@@ -792,21 +804,121 @@ impl ProcessExitObserver {
                 std::ptr::null(),
             )
         };
-        assert_eq!(
-            registered,
-            1,
-            "exit watcher receipt: {}",
-            std::io::Error::last_os_error()
-        );
-        assert_eq!(receipt.ident, u64::from(pid));
-        assert_eq!(receipt.filter, Self::FILTER);
-        assert_ne!(receipt.flags & Self::ERROR_FLAG, 0, "EV_RECEIPT missing");
-        assert_eq!(receipt.data, 0, "exit watcher registration errno for {pid}");
-        Self { pid, queue }
+        if registered < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if registered != 1
+            || receipt.ident != u64::from(pid)
+            || receipt.filter != Self::FILTER
+            || receipt.flags & Self::ERROR_FLAG == 0
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "native exit watcher registration receipt is invalid",
+            ));
+        }
+        if receipt.data != 0 {
+            let native_errno = i32::try_from(receipt.data).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "native exit registration error is outside its SDK representation",
+                )
+            })?;
+            return Err(std::io::Error::from_raw_os_error(native_errno));
+        }
+        Ok(Self {
+            pid,
+            queue,
+            observed_status: None,
+            interrupt_next_read: false,
+        })
+    }
+
+    /// Read an already armed process-exit event without delaying Host shutdown.
+    /// No event never proves the original process is still live. An
+    /// interrupted read is reported as no event; retry loops rely on that.
+    pub(crate) fn try_poll_exit(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        match self.try_read_exit() {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Ok(None),
+            outcome => outcome,
+        }
+    }
+
+    /// Make the next [`Self::try_read_exit`] see `kevent64` return -1 with
+    /// `EINTR`. The real read still runs first; only an empty result is
+    /// replaced, so arm it while the process is provably live.
+    pub(crate) fn interrupt_next_read(&mut self) {
+        self.interrupt_next_read = true;
+    }
+
+    /// The one zero-time native read. Unlike [`Self::try_poll_exit`], an
+    /// interrupted read stays an `Interrupted` error, so an ordering witness
+    /// never mistakes a read that did not complete for a proven-empty queue.
+    pub(crate) fn try_read_exit(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        use std::os::fd::AsRawFd as _;
+        if let Some(status) = self.observed_status {
+            return Ok(Some(status));
+        }
+        let no_wait = ProcessKeventTimeout {
+            seconds: 0,
+            nanoseconds: 0,
+        };
+        let mut event = ProcessKevent::default();
+        // SAFETY: the registered, CLOEXEC queue remains owned by this observer.
+        // An empty changelist and a zero timespec make this one native event
+        // read nonblocking. The SDK-matched one-event buffer is valid here;
+        // this neither signals nor reaps the observed process.
+        let received = unsafe {
+            kevent64(
+                self.queue.as_raw_fd(),
+                std::ptr::null(),
+                0,
+                &raw mut event,
+                1,
+                0,
+                &raw const no_wait,
+            )
+        };
+        // The seam replaces only a real empty read: an event is never dropped.
+        let interrupted = std::mem::take(&mut self.interrupt_next_read) && received == 0;
+        let received = if interrupted { -1 } else { received };
+        if received == 0 {
+            return Ok(None);
+        }
+        if received < 0 {
+            return Err(if interrupted {
+                std::io::Error::from_raw_os_error(Self::EINTR)
+            } else {
+                std::io::Error::last_os_error()
+            });
+        }
+        if received != 1
+            || event.ident != u64::from(self.pid)
+            || event.filter != Self::FILTER
+            || event.flags & Self::ERROR_FLAG != 0
+            || event.fflags & Self::EXIT_FLAGS != Self::EXIT_FLAGS
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "native exit event failed original registration and status checks",
+            ));
+        }
+        let raw = i32::try_from(event.data).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "native process exit status did not fit its SDK representation",
+            )
+        })?;
+        let status = std::process::ExitStatus::from_raw(raw);
+        self.observed_status = Some(status);
+        Ok(Some(status))
     }
 
     pub(crate) fn wait(self) -> std::process::ExitStatus {
         use std::os::fd::AsRawFd as _;
+        if let Some(status) = self.observed_status {
+            return status;
+        }
         let deadline = Instant::now() + PROCESS_DEADLINE;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
