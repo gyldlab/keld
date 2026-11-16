@@ -356,6 +356,53 @@ fn shipping_cleanup_reaped_leader_uses_only_original_live_member() {
     await_process_gone(member);
 }
 
+// Public-FS owns Host directly rather than through a shipping CLI. Its Bun
+// member enrollment must work without an authenticated host_group and must
+// rescue the descendant after the original Bun leader has been reaped.
+#[test]
+fn shipping_cleanup_public_fs_reaped_bun_uses_attested_descendant() {
+    let cli = Command::new("/usr/bin/true")
+        .spawn()
+        .expect("completed fixture Host");
+    let mut cleanup = ShippingLaunchCleanup::new(cli);
+    let mut leader = OwnedOutsider(
+        Command::new("/bin/sh")
+            .args(["-c", "sleep 60 & child=$!; printf '%s\\n' \"$child\"; wait"])
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("original fixture Bun group"),
+    );
+    let group = leader.0.id();
+    cleanup.record_bun_group(group, std::process::id());
+    let original = retain_parented_group_birth(group, std::process::id());
+    let mut rescue = AttestedFixtureMemberRescue {
+        original,
+        member: None,
+    };
+    let mut line = String::new();
+    BufReader::new(leader.0.stdout.take().expect("descendant PID pipe"))
+        .read_line(&mut line)
+        .expect("descendant PID line");
+    let descendant = line.trim().parse::<u32>().expect("descendant PID");
+    rescue.member = Some(retain_parented_group_member(descendant, group, original));
+    // A live process in another group cannot become this Bun's fallback.
+    let mut outsider = native_outsider();
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        cleanup.record_bun_member(outsider.0.id());
+    }));
+    assert!(refused.is_err(), "foreign member must fail closed");
+    assert_outsider_echo(&mut outsider);
+    cleanup.record_bun_member(descendant);
+    leader.0.kill().expect("terminate exact retained Bun leader");
+    leader.0.wait().expect("reap original Bun leader");
+    assert!(process_exists(descendant), "descendant survives Bun reap");
+    assert!(signal_attested_group("-TERM", original).is_err());
+    drop(cleanup);
+    // Verdict precedes rescue Drop: independent cleanup cannot create GREEN.
+    await_process_gone(descendant);
+}
+
 #[test]
 fn shipping_cleanup_forged_member_birth_refuses_group_signal() {
     let mut leader = Command::new("/bin/sh")
