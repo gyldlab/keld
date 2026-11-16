@@ -1851,7 +1851,14 @@ mod tests {
         fs::write(&image, b"nonsecret test-only native linker bytes").expect("fixture image");
         let (linker, directories) =
             pin_native_msvc_linker(&root).expect("capture explicit selected linker");
-        assert_eq!(linker.path, image);
+        // The pinned path is now resolved from the exact open file handle.
+        // GitHub runners may expose a short (RUNNER~1) pathname that spells
+        // the same object differently from the stable long DOS path.
+        assert_eq!(
+            linker.path.canonicalize().expect("retained linker path"),
+            image.canonicalize().expect("selected linker path"),
+            "the stable executable pathname must reference the selected file"
+        );
         let expected_digest: [u8; 32] =
             Sha256::digest(b"nonsecret test-only native linker bytes").into();
         assert_eq!(
