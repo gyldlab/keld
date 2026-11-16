@@ -273,6 +273,35 @@ const catalogueExecutors = [
   // Any later local Python import or child process is also executable CI authority.
   "helpers/future_helper.py",
   "VERIFY_SPEC_EVIDENCE.PY",
+  // -B disables bytecode creation, not reading an existing sourceless module.
+  "argparse.pyc",
+  "json.pyc",
+  "pathlib.pyc",
+  "__pycache__/argparse.cpython-312.pyc",
+  "helpers/future_helper.PYC",
+  "helpers/future_helper.pyo",
+  "helpers/future_helper.PYO",
+  "helpers/future_helper.cpython-312-x86_64-linux-gnu.so",
+  "helpers/future_helper.abi3.SO",
+  "helpers/dependency.so.1",
+  "helpers/future_helper.cp312-win_amd64.pyd",
+  "helpers/future_helper.PYD",
+  "helpers/dependency.dll",
+  "helpers/dependency.dylib",
+  "helpers/dependency.bundle",
+  "helpers/launcher.pyw",
+  "helpers/import-path.pth",
+  "helpers/bundle.pyz",
+  "helpers/bundle.pyzw",
+  "helpers/bundle.zip",
+  "helpers/bundle.whl",
+  "helpers/bundle.egg",
+  "helpers/helper.exe",
+  "helpers/helper.sh",
+  "helpers/helper.bat",
+  "helpers/helper.cmd",
+  "helpers/helper.ps1",
+  "helpers/helper.psm1",
 ].map((name) => catalogueEvidence + name);
 
 test.each(catalogueExecutors)(
@@ -316,7 +345,7 @@ test("immutable 448-file census finds a catalogue executor beyond the first Comp
     filename: `docs/benign-${i}.md`,
     status: "added",
   }));
-  files[447].filename = catalogueEvidence + "verify_spec_evidence.py";
+  files[447].filename = catalogueEvidence + "argparse.pyc";
   const f = fixture(files, {
     head: "a".repeat(40),
     base: "b".repeat(40),

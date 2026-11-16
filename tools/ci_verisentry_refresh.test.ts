@@ -399,6 +399,34 @@ test.each([
   "verify_evidence_capacity.py",
   "helpers/future_helper.py",
   "VERIFY_SPEC_EVIDENCE.PY",
+  "argparse.pyc",
+  "json.pyc",
+  "pathlib.pyc",
+  "__pycache__/argparse.cpython-312.pyc",
+  "helpers/future_helper.PYC",
+  "helpers/future_helper.pyo",
+  "helpers/future_helper.PYO",
+  "helpers/future_helper.cpython-312-x86_64-linux-gnu.so",
+  "helpers/future_helper.abi3.SO",
+  "helpers/dependency.so.1",
+  "helpers/future_helper.cp312-win_amd64.pyd",
+  "helpers/future_helper.PYD",
+  "helpers/dependency.dll",
+  "helpers/dependency.dylib",
+  "helpers/dependency.bundle",
+  "helpers/launcher.pyw",
+  "helpers/import-path.pth",
+  "helpers/bundle.pyz",
+  "helpers/bundle.pyzw",
+  "helpers/bundle.zip",
+  "helpers/bundle.whl",
+  "helpers/bundle.egg",
+  "helpers/helper.exe",
+  "helpers/helper.sh",
+  "helpers/helper.bat",
+  "helpers/helper.cmd",
+  "helpers/helper.ps1",
+  "helpers/helper.psm1",
 ])(
   "refresh refuses catalogue executor %s changes on either rename side",
   async (name) => {
@@ -442,7 +470,7 @@ test("refresh refuses catalogue executor at the end of a 448-file immutable tree
     filename: `docs/benign-${i}.md`,
     status: "added",
   }));
-  files[447].filename = catalogueEvidence + "verify_spec_evidence.py";
+  files[447].filename = catalogueEvidence + "argparse.pyc";
   const s = scenario({ changedFiles: files.length, files });
   await expect(s.run()).resolves.toBeUndefined();
   expect(s.getTreeReads()).toBe(2);
