@@ -3,9 +3,12 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![allow(unsafe_code)] // Exact volume, relative-directory, never-follow deletion and sibling-publication operations in AGENTS.md.
 
+use std::ffi::OsString;
 use std::fs::File;
 use std::io;
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::path::PathBuf;
 use std::ptr;
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
@@ -28,7 +31,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_WRITE, FILE_TRAVERSE, FileAttributeTagInfo, FileDispositionInfoEx,
     FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, GetDriveTypeW,
     GetFileInformationByHandleEx, GetFinalPathNameByHandleW, GetVolumeInformationByHandleW,
-    READ_CONTROL, SYNCHRONIZE, SetFileInformationByHandle, VOLUME_NAME_GUID, WRITE_DAC,
+    READ_CONTROL, SYNCHRONIZE, SetFileInformationByHandle, VOLUME_NAME_DOS, VOLUME_NAME_GUID,
+    WRITE_DAC,
 };
 use windows_sys::Win32::System::IO::{IO_STATUS_BLOCK, IO_STATUS_BLOCK_0};
 use windows_sys::Win32::System::SystemServices::{FILE_PERSISTENT_ACLS, FILE_READ_ONLY_VOLUME};
@@ -42,6 +46,75 @@ use directory_entries::{DirectoryChild, parse_directory_entries};
 
 const MAX_WINDOWS_PATH_UNITS: usize = 32_768;
 const VOLUME_GUID_ROOT_UNITS: usize = 49;
+
+/// Resolves the same retained OS object to a stable local DOS path.
+/// Mapped SMB handles resolve to UNC (or fail after disconnect) and are refused.
+pub(crate) fn fixed_local_dos_path(handle: &File) -> io::Result<PathBuf> {
+    let path = normalized_dos_path(handle)?;
+    let prefix = [
+        u16::from(b'\\'),
+        u16::from(b'\\'),
+        u16::from(b'?'),
+        u16::from(b'\\'),
+    ];
+    let offset = if path.starts_with(&prefix) { 4 } else { 0 };
+    if path.len() < offset + 3 {
+        return Err(unsupported(
+            "retained handle does not resolve to a local DOS disk path",
+        ));
+    }
+    let drive_letter = path[offset];
+    let is_drive_letter = (u16::from(b'A')..=u16::from(b'Z')).contains(&drive_letter)
+        || (u16::from(b'a')..=u16::from(b'z')).contains(&drive_letter);
+    if !is_drive_letter
+        || path[offset + 1] != u16::from(b':')
+        || path[offset + 2] != u16::from(b'\\')
+    {
+        return Err(unsupported(
+            "retained handle does not resolve to a local DOS disk path",
+        ));
+    }
+    let mut root = path[..offset + 3].to_vec();
+    root.push(0);
+    // SAFETY: `root` is the checked, NUL-terminated DOS drive root derived from
+    // the live handle's final path; the synchronous API retains no pointer.
+    let drive_type = unsafe { GetDriveTypeW(root.as_ptr()) };
+    if drive_type != DRIVE_FIXED {
+        return Err(unsupported(
+            "retained handle is not on a fixed local volume",
+        ));
+    }
+    Ok(PathBuf::from(OsString::from_wide(&path[offset..])))
+}
+
+fn normalized_dos_path(handle: &File) -> io::Result<Vec<u16>> {
+    let mut path = Vec::new();
+    path.try_reserve_exact(MAX_WINDOWS_PATH_UNITS)
+        .map_err(io::Error::other)?;
+    path.resize(MAX_WINDOWS_PATH_UNITS, 0_u16);
+    let capacity = u32::try_from(path.len()).map_err(io::Error::other)?;
+    // SAFETY: `handle` owns the live object throughout this synchronous query;
+    // `path` is writable for `capacity` UTF-16 units and no pointer escapes.
+    let length = unsafe {
+        GetFinalPathNameByHandleW(
+            handle.as_raw_handle().cast(),
+            path.as_mut_ptr(),
+            capacity,
+            FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
+        )
+    };
+    if length == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let length = usize::try_from(length).map_err(io::Error::other)?;
+    if length >= path.len() || path[length] != 0 {
+        return Err(unsupported(
+            "final DOS path exceeds the supported Windows path bound",
+        ));
+    }
+    path.truncate(length);
+    Ok(path)
+}
 
 /// Duplicates an exclusive activation-lock open into a non-writable keeper
 /// retention handle. The duplicate references the exact same OS file object and

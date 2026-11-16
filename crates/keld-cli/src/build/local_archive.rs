@@ -48,6 +48,7 @@ impl LocalArchiveCandidate<'_> {
         use std::io::Write as _;
         boot::create_windows_stage_root(root).map_err(refuse)?;
         let directories = windows_inputs::pin_input_root(root)?;
+        let root = windows_inputs::stable_local_path(&directories)?;
         let path = root.join("test-only-archive.candidate");
         let mut file = OpenOptions::new()
             .read(true)
@@ -101,6 +102,7 @@ pub(super) fn prepare<'images>(
     let root = pair.session.join("local-app-archive");
     boot::create_windows_stage_root(&root).map_err(refuse)?;
     let directories = windows_inputs::pin_input_root(&root)?;
+    let root = windows_inputs::stable_local_path(&directories)?;
     let compiler = BoundCompilerEntry::bind(sources, tools, &root)?;
     let mut request = OpenOptions::new()
         .read(true)

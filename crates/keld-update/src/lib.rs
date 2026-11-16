@@ -44,6 +44,19 @@ mod windows_extraction;
 #[cfg(windows)]
 mod windows_fs;
 
+/// Resolve a retained Windows file or directory handle to its stable DOS path,
+/// refusing mapped network, removable and non-fixed volumes. Use the returned
+/// path for subsequent path-based operations instead of the original drive alias.
+///
+/// # Errors
+///
+/// Returns an error when the handle is disconnected, cannot be resolved to a
+/// local DOS path, or its final volume is not a fixed local drive.
+#[cfg(windows)]
+pub fn fixed_local_dos_path(handle: &std::fs::File) -> std::io::Result<std::path::PathBuf> {
+    windows_fs::fixed_local_dos_path(handle)
+}
+
 #[cfg(test)]
 mod tests;
 

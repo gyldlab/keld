@@ -114,6 +114,7 @@ impl CapturedModules {
         keld_guard::validate_windows_package_paths(&paths.into_iter().collect::<Vec<_>>())
             .map_err(refusal)?;
         let mut directories = windows_inputs::pin_input_root(root)?;
+        let root = windows_inputs::stable_local_path(&directories)?;
         let scaffold_transport = if entry.ends_with(".ts") {
             let parent = root
                 .join(entry)

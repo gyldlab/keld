@@ -2,10 +2,11 @@
 //!
 //! This explicit check creates no package, stage, process, profile or grant.
 
+use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
-use std::path::{Component, Path, Prefix};
+use std::path::{Component, Path, PathBuf, Prefix};
 
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
@@ -16,37 +17,62 @@ use crate::boot;
 
 const AUTHORING_LIMIT: u64 = 64 * 1024;
 
-/// Drive-letter syntax is not a local-volume identity. The normalized
-/// final pathname can reveal remote UNC/device aliases, which we refuse.
-/// This extra pathname check is not a replacement for the retained, no-follow
-/// file/directory handles or native mapped-volume qualification.
-fn resolved_local_disk(path: &Path) -> bool {
-    let mut components = path.components();
-    matches!(
-        components.next(),
-        Some(Component::Prefix(prefix))
-            if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
-    ) && matches!(components.next(), Some(Component::RootDir))
+/// Return the stable drive path of the exact directory handle retained last
+/// by `pin_input_root`. A mapped drive may be rebound while that handle remains
+/// open; callers must use this path rather than reusing the original alias.
+pub(super) fn stable_local_path(pins: &[File]) -> Result<PathBuf, BuildError> {
+    let root = pins
+        .last()
+        .ok_or_else(|| BuildError::input("Windows local volume", "missing retained root handle"))?;
+    keld_update::fixed_local_dos_path(root)
+        .map_err(|error| BuildError::input("Windows local volume", error))
 }
 
-/// Requires a live path to resolve onto a local Windows disk namespace.
-/// This is only a second admission predicate: existing pinned file and
-/// directory handles remain the source of launch/authorization identity.
-pub(super) fn require_existing_local_volume(path: &Path) -> Result<(), BuildError> {
-    let resolved = path
-        .canonicalize()
-        .map_err(|error| BuildError::input("Windows local volume", error))?;
-    if !resolved_local_disk(&resolved) {
+/// Resolve a directory that may be created later from its nearest existing,
+/// retained fixed-local ancestor. The returned path no longer depends on a
+/// mapped drive alias and the pins keep the selected namespace alive.
+pub(super) fn stable_local_target_path(path: &Path) -> Result<(PathBuf, Vec<File>), BuildError> {
+    let mut components = path.components();
+    if !path.is_absolute()
+        || !matches!(components.next(), Some(Component::Prefix(prefix))
+        if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)))
+        || components
+            .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
+    {
         return Err(BuildError::input(
-            "Windows local volume",
-            "selected path resolves to a remote share or non-disk namespace",
+            "Windows local target",
+            "use an absolute local-disk target without parent traversal",
         ));
     }
-    Ok(())
+    let mut suffix = Vec::<OsString>::new();
+    let mut cursor = path;
+    loop {
+        match std::fs::symlink_metadata(cursor) {
+            Ok(_) => {
+                let pins = pin_input_root(cursor)?;
+                let mut stable = stable_local_path(&pins)?;
+                for component in suffix.iter().rev() {
+                    stable.push(component);
+                }
+                return Ok((stable, pins));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let name = cursor.file_name().ok_or_else(|| {
+                    BuildError::input("Windows local target", "no existing ancestor")
+                })?;
+                suffix.push(name.to_os_string());
+                cursor = cursor.parent().ok_or_else(|| {
+                    BuildError::input("Windows local target", "no existing ancestor")
+                })?;
+            }
+            Err(error) => return Err(BuildError::input("Windows local target", error)),
+        }
+    }
 }
 
 pub(super) struct CapturedInputs {
     _ancestors: Vec<File>,
+    root: PathBuf,
     config: File,
     permissions: File,
 }
@@ -68,24 +94,26 @@ pub(super) fn pin_input_root(root: &Path) -> Result<Vec<File>, BuildError> {
     }
     let mut ancestors = Vec::new();
     for path in root.ancestors().collect::<Vec<_>>().into_iter().rev() {
-        ancestors.push(
-            boot::open_windows_input_directory_guard(path)
-                .map_err(|error| BuildError::input("Windows authoring namespace", error))?,
-        );
+        let guard = boot::open_windows_input_directory_guard(path)
+            .map_err(|error| BuildError::input("Windows authoring namespace", error))?;
+        keld_update::fixed_local_dos_path(&guard)
+            .map_err(|error| BuildError::input("Windows local volume", error))?;
+        ancestors.push(guard);
     }
-    require_existing_local_volume(root)?;
     Ok(ancestors)
 }
 
 impl CapturedInputs {
     pub(super) fn open(root: &Path) -> Result<Self, BuildError> {
         let ancestors = pin_input_root(root)?;
-        boot::ensure_current_principal_owns(root)
+        let root = stable_local_path(&ancestors)?;
+        boot::ensure_current_principal_owns(&root)
             .map_err(|error| BuildError::input("Windows project owner", error))?;
-        let config = open_leaf(root, "keld.config.ts")?;
-        let permissions = open_leaf(root, "keld.permissions.jsonc")?;
+        let config = open_leaf(&root, "keld.config.ts")?;
+        let permissions = open_leaf(&root, "keld.permissions.jsonc")?;
         Ok(Self {
             _ancestors: ancestors,
+            root,
             config,
             permissions,
         })
@@ -96,7 +124,8 @@ impl CapturedInputs {
     }
 
     /// Retain literal authoring bytes and their Windows namespace witnesses.
-    pub(super) fn capture(mut self, root: &Path) -> Result<CapturedAuthoring, BuildError> {
+    pub(super) fn capture(mut self, _root: &Path) -> Result<CapturedAuthoring, BuildError> {
+        let root = self.root.clone();
         let mut source = Vec::new();
         (&mut self.config)
             .take(AUTHORING_LIMIT + 1)
@@ -203,6 +232,8 @@ fn open_leaf(root: &Path, name: &'static str) -> Result<File, BuildError> {
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(&path)
         .map_err(|error| BuildError::input(name, error))?;
+    let stable_path = keld_update::fixed_local_dos_path(&file)
+        .map_err(|error| BuildError::input("Windows local volume", error))?;
     let metadata = file
         .metadata()
         .map_err(|error| BuildError::input(name, error))?;
@@ -212,7 +243,8 @@ fn open_leaf(root: &Path, name: &'static str) -> Result<File, BuildError> {
             "input must be a non-reparse regular file",
         ));
     }
-    boot::ensure_current_principal_owns(&path).map_err(|error| BuildError::input(name, error))?;
+    boot::ensure_current_principal_owns(&stable_path)
+        .map_err(|error| BuildError::input(name, error))?;
     Ok(file)
 }
 
@@ -482,26 +514,233 @@ fn require_windows_authoring_paths(entry: &str, renderer: Option<&str>) -> Resul
 #[cfg(test)]
 mod windows_local_volume_tests {
     use super::*;
+    use std::process::{Command, ExitStatus};
 
     #[test]
-    fn resolved_unc_and_device_namespaces_are_not_local_disks() {
-        for local in [r"C:\tool.exe", r"\\?\C:\tool.exe"] {
-            assert!(resolved_local_disk(Path::new(local)), "{local}");
-        }
-        for remote in [
-            r"\\server\share\tool.exe",
-            r"\\?\UNC\server\share\tool.exe",
-            r"\\?\GLOBALROOT\Device\Mup\server\share\tool.exe",
-        ] {
-            assert!(!resolved_local_disk(Path::new(remote)), "{remote}");
-        }
+    fn retained_local_directory_returns_a_stable_fixed_dos_path() {
+        let owned = tempfile::tempdir().expect("private Windows fixture");
+        let pins = pin_input_root(owned.path()).expect("fixed local directory");
+        let stable = stable_local_path(&pins).expect("handle-derived stable path");
+        assert!(stable.is_absolute());
+        assert!(stable.is_dir());
+        assert_eq!(
+            stable.canonicalize().expect("stable path"),
+            owned.path().canonicalize().expect("fixture path")
+        );
     }
 
     #[test]
-    fn real_local_directory_is_admitted_and_missing_path_refused() {
+    fn not_yet_created_target_uses_a_retained_existing_local_ancestor() {
         let owned = tempfile::tempdir().expect("private Windows fixture");
-        require_existing_local_volume(owned.path()).expect("real local drive");
-        assert!(require_existing_local_volume(&owned.path().join("absent")).is_err());
+        let target = owned.path().join("new-install").join("updates");
+        let (stable, pins) = stable_local_target_path(&target).expect("existing local ancestor");
+        let stable_root = stable_local_path(&pins).expect("retained ancestor path");
+        assert_eq!(stable, stable_root.join("new-install").join("updates"));
+        assert!(!stable.exists());
+        assert!(stable_local_target_path(&owned.path().join("..").join("escape")).is_err());
+    }
+
+    fn system32_command(executable: &str, arguments: &[&str]) -> std::io::Result<ExitStatus> {
+        let system_root = std::env::var_os("SystemRoot")
+            .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+        Command::new(system_root.join("System32").join(executable))
+            .args(arguments)
+            .status()
+    }
+
+    fn net_use(arguments: &[&str]) -> std::io::Result<ExitStatus> {
+        system32_command("net.exe", arguments)
+    }
+
+    fn subst(arguments: &[&str]) -> std::io::Result<ExitStatus> {
+        system32_command("subst.exe", arguments)
+    }
+
+    #[derive(Clone, Copy)]
+    enum MappingKind {
+        None,
+        Smb,
+        Subst,
+    }
+
+    struct TemporaryMappedDrive {
+        kind: MappingKind,
+    }
+
+    impl Drop for TemporaryMappedDrive {
+        fn drop(&mut self) {
+            match self.kind {
+                MappingKind::None => {}
+                MappingKind::Smb => {
+                    let _ = net_use(&["use", "Z:", "/delete", "/y"]);
+                }
+                MappingKind::Subst => {
+                    let _ = subst(&["Z:", "/D"]);
+                }
+            }
+        }
+    }
+
+    /// Run only on a Windows acceptance host with an existing readable SMB share:
+    /// `KELD_TEST_SMB_SHARE`=\\\\host\\share,
+    /// `KELD_TEST_REBIND_SHARE`=\\\\host\\other-share,
+    /// `KELD_TEST_SMB_DIRECTORY`=Z:\\existing\\directory,
+    /// `KELD_TEST_REBIND_DIRECTORY`=Z:\\existing\\directory.
+    #[test]
+    #[ignore = "requires a controlled SMB share and a free Z: drive letter"]
+    fn mapped_smb_and_rebound_drive_handles_fail_closed() {
+        let remote_share = std::env::var("KELD_TEST_SMB_SHARE").expect("mapped SMB share fixture");
+        let rebound_share =
+            std::env::var("KELD_TEST_REBIND_SHARE").expect("second SMB share fixture");
+        let remote_directory =
+            std::env::var("KELD_TEST_SMB_DIRECTORY").expect("mapped directory fixture");
+        let rebound_directory =
+            std::env::var("KELD_TEST_REBIND_DIRECTORY").expect("rebound directory fixture");
+        assert!(remote_directory.starts_with(r"Z:\"));
+        assert!(rebound_directory.starts_with(r"Z:\"));
+        assert!(
+            !Path::new(r"Z:\").exists(),
+            "Z: must be unused before the test"
+        );
+        assert!(
+            !net_use(&["use", "Z:"]).expect("net use query").success(),
+            "Z: must not already have a network connection"
+        );
+        let mut mapping = TemporaryMappedDrive {
+            kind: MappingKind::None,
+        };
+        assert!(
+            net_use(&["use", "Z:", remote_share.as_str(), "/persistent:no"])
+                .expect("net use executable")
+                .success(),
+            "initial temporary SMB mapping"
+        );
+        mapping.kind = MappingKind::Smb;
+        assert!(
+            pin_input_root(Path::new(&remote_directory)).is_err(),
+            "the complete authoring-root admission must refuse mapped SMB"
+        );
+        let original = boot::open_windows_input_directory_guard(Path::new(&remote_directory))
+            .expect("open mapped remote directory");
+        assert!(
+            keld_update::fixed_local_dos_path(&original).is_err(),
+            "mapped SMB handle must be refused"
+        );
+        assert!(
+            net_use(&["use", "Z:", "/delete", "/y"])
+                .expect("net use delete")
+                .success(),
+            "Windows must release the temporary mapping while the handle remains open"
+        );
+        mapping.kind = MappingKind::None;
+        assert!(
+            net_use(&["use", "Z:", rebound_share.as_str(), "/persistent:no"])
+                .expect("net use rebind")
+                .success(),
+            "rebind the same drive letter to a different SMB share"
+        );
+        mapping.kind = MappingKind::Smb;
+        assert!(
+            pin_input_root(Path::new(&rebound_directory)).is_err(),
+            "authoring-root admission must refuse the rebound SMB namespace"
+        );
+        assert!(
+            keld_update::fixed_local_dos_path(&original).is_err(),
+            "the original retained handle must not become a local DOS path after rebind"
+        );
+        let rebound = boot::open_windows_input_directory_guard(Path::new(&rebound_directory))
+            .expect("open newly rebound remote directory");
+        assert!(
+            keld_update::fixed_local_dos_path(&rebound).is_err(),
+            "new handle on the rebound remote share must be refused"
+        );
+    }
+
+    /// Verify that rebinding a local SUBST alias to SMB cannot redirect a
+    /// retained local handle or the stable path returned from that handle.
+    #[test]
+    #[ignore = "requires a local D: fixture, a controlled SMB share and a free Z: drive letter"]
+    fn local_alias_rebind_keeps_the_retained_object_on_its_fixed_volume() {
+        let local_directory =
+            std::env::var("KELD_TEST_LOCAL_DIRECTORY").expect("local directory fixture");
+        let remote_share =
+            std::env::var("KELD_TEST_REBIND_SHARE").expect("SMB rebind share fixture");
+        let remote_directory =
+            std::env::var("KELD_TEST_REBIND_DIRECTORY").expect("SMB rebind directory fixture");
+        assert!(!Path::new(r"Z:\").exists(), "Z: must be unused");
+        assert!(
+            !net_use(&["use", "Z:"]).expect("net use query").success(),
+            "Z: must not already have a network connection"
+        );
+        let mut mapping = TemporaryMappedDrive {
+            kind: MappingKind::None,
+        };
+        assert!(
+            subst(&["Z:", local_directory.as_str()])
+                .expect("subst executable")
+                .success(),
+            "create temporary local DOS alias"
+        );
+        mapping.kind = MappingKind::Subst;
+        let local_pins =
+            pin_input_root(Path::new(r"Z:\")).expect("local alias must admit as fixed local");
+        assert!(
+            !stable_local_path(&local_pins)
+                .expect("stable local alias")
+                .starts_with(r"Z:\"),
+            "the admitted stable path must not retain the mutable alias"
+        );
+        drop(local_pins);
+        let original = boot::open_windows_input_directory_guard(Path::new(r"Z:\"))
+            .expect("open local alias directory");
+        let stable_before = keld_update::fixed_local_dos_path(&original)
+            .expect("handle resolves to fixed local volume");
+        assert!(stable_before.is_absolute());
+        assert!(stable_before.is_dir());
+        assert!(
+            !stable_before.starts_with(r"Z:\"),
+            "handle-derived path must not retain the mutable Z: drive alias"
+        );
+        assert_eq!(
+            stable_before.canonicalize().expect("stable local identity"),
+            Path::new(&local_directory)
+                .canonicalize()
+                .expect("original local directory identity"),
+        );
+        assert!(
+            subst(&["Z:", "/D"])
+                .expect("remove local DOS alias")
+                .success(),
+            "remove alias while the original handle remains open"
+        );
+        mapping.kind = MappingKind::None;
+        assert!(
+            net_use(&["use", "Z:", remote_share.as_str(), "/persistent:no"])
+                .expect("net use rebind")
+                .success(),
+            "rebind the same letter to a remote SMB share"
+        );
+        mapping.kind = MappingKind::Smb;
+        assert!(
+            pin_input_root(Path::new(&remote_directory)).is_err(),
+            "authoring-root admission must refuse an alias rebound to SMB"
+        );
+        let stable_after = keld_update::fixed_local_dos_path(&original)
+            .expect("retained local handle must remain bound to its original object");
+        assert_eq!(stable_after, stable_before);
+        let rebound = boot::open_windows_input_directory_guard(Path::new(&remote_directory))
+            .expect("open newly rebound remote directory");
+        assert!(
+            keld_update::fixed_local_dos_path(&rebound).is_err(),
+            "new handle on the remote mapping must be refused"
+        );
+        let local_again = boot::open_windows_input_directory_guard(&stable_after)
+            .expect("open stable handle-derived local path");
+        assert_eq!(
+            keld_update::fixed_local_dos_path(&local_again)
+                .expect("stable local path remains fixed"),
+            stable_before
+        );
     }
 }
 

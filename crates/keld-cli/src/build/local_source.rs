@@ -292,6 +292,8 @@ fn pin_file_with_budget(
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
         .map_err(|error| failure("local source capture", error))?;
+    let stable_path = keld_update::fixed_local_dos_path(&file)
+        .map_err(|error| failure("local source volume", error))?;
     let metadata = file
         .metadata()
         .map_err(|error| failure("local source capture", error))?;
@@ -334,7 +336,7 @@ fn pin_file_with_budget(
     file.seek(SeekFrom::Start(0))
         .map_err(|error| failure("local source capture", error))?;
     Ok(PinnedFile {
-        path: path.to_owned(),
+        path: stable_path,
         file,
         sha256: digest.finalize().into(),
     })
@@ -923,10 +925,11 @@ fn collect_pins_at(
             "directory depth/count exceeds support limit",
         ));
     }
-    directories.push(
-        boot::open_windows_input_directory_guard(root)
-            .map_err(|error| failure("local source snapshot", error))?,
-    );
+    let directory = boot::open_windows_input_directory_guard(root)
+        .map_err(|error| failure("local source snapshot", error))?;
+    keld_update::fixed_local_dos_path(&directory)
+        .map_err(|error| failure("local source snapshot volume", error))?;
+    directories.push(directory);
     let mut entries = Vec::new();
     for entry in fs::read_dir(root).map_err(|error| failure("local source snapshot", error))? {
         budget.check()?;
@@ -1091,16 +1094,40 @@ pub(super) fn prepare(
     initial_install: bool,
 ) -> Result<LocalSourceBuildObservation, BuildError> {
     let budget = PreparationBudget::new(Instant::now(), Duration::from_mins(30));
+    let mut request = request;
     if !commit_id(&request.commit) {
         return Err(failure(
             "local source commit",
             "exact lowercase SHA1 commit required",
         ));
     }
+    // Resolve every path root from its retained directory handle. A drive alias
+    // can be rebound after pinning; all later subprocess cwd and source paths
+    // must use the handle-derived fixed-local DOS path, not that alias.
+    let source_pins = pin_directories(&request.source)?;
+    request.source = super::windows_inputs::stable_local_path(&source_pins)?;
+    let cargo_home_pins = pin_directories(&request.cargo_home)?;
+    request.cargo_home = super::windows_inputs::stable_local_path(&cargo_home_pins)?;
+    let session_name = request
+        .session
+        .file_name()
+        .ok_or_else(|| failure("local source session", "session leaf missing"))?
+        .to_os_string();
+    let parent = request
+        .session
+        .parent()
+        .ok_or_else(|| failure("local source session", "session parent missing"))?;
+    let session_pins = pin_directories(parent)?;
+    let stable_session_parent = super::windows_inputs::stable_local_path(&session_pins)?;
+    boot::ensure_current_principal_owns(&stable_session_parent)
+        .map_err(|error| failure("local source session owner", error))?;
+    request.session = stable_session_parent.join(session_name);
+    let mut directory_pins = source_pins;
+    directory_pins.extend(cargo_home_pins);
+    directory_pins.extend(session_pins);
     if request.cache_mode == CacheMode::MutableDeveloper {
         validate_developer_cache(&request.cargo_home)?;
     }
-    let mut directory_pins = pin_directories(&request.source)?;
     // The first source cell intentionally refuses linked worktrees/bare repos.
     // It never parses or follows a caller-controlled gitdir indirection file.
     directory_pins.extend(pin_directories(&request.source.join(".git"))?);
@@ -1108,13 +1135,6 @@ pub(super) fn prepare(
     // Git can recursively follow an unmeasured external object store through
     // objects/info/alternates even with one explicit alternate in the child.
     reject_recursive_object_alternates(&request.source.join(".git/objects"))?;
-    let parent = request
-        .session
-        .parent()
-        .ok_or_else(|| failure("local source session", "session parent missing"))?;
-    directory_pins.extend(pin_directories(parent)?);
-    boot::ensure_current_principal_owns(parent)
-        .map_err(|error| failure("local source session owner", error))?;
     for tool in [&request.git, &request.cargo, &request.rustc] {
         budget.check()?;
         let parent = tool
@@ -1312,10 +1332,11 @@ pub(super) fn prepare(
                 // Never accept an unexplained preexisting child, follow a
                 // junction, or write below an unpinned new directory.
                 fs::create_dir(&directory).map_err(|error| failure("source directories", error))?;
-                directory_pins.push(
-                    boot::open_windows_input_directory_guard(&directory)
-                        .map_err(|error| failure("source directory pin", error))?,
-                );
+                let guard = boot::open_windows_input_directory_guard(&directory)
+                    .map_err(|error| failure("source directory pin", error))?;
+                keld_update::fixed_local_dos_path(&guard)
+                    .map_err(|error| failure("source directory volume", error))?;
+                directory_pins.push(guard);
             }
         }
         let mut file = File::create_new(&path).map_err(|error| failure("source blob", error))?;

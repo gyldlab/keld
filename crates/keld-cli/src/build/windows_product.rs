@@ -4,7 +4,6 @@ use super::{
     BuildError, config, local_archive_command, local_images, local_source, windows_inputs,
 };
 use serde::Deserialize;
-use std::fs::File;
 use std::io::Read as _;
 use std::path::{Component, Path, PathBuf, Prefix};
 const MAX_INPUT: u64 = 64 * 1024;
@@ -139,40 +138,34 @@ pub(super) fn run(session_path: &Path) -> Result<(), BuildError> {
         ));
     }
     let root = std::env::current_dir().map_err(refuse)?;
-    let _project = windows_inputs::pin_input_root(&root)?;
+    let project_pins = windows_inputs::pin_input_root(&root)?;
+    let root = windows_inputs::stable_local_path(&project_pins)?;
     let mut build = local_source::pin_file(&root.join("keld.build.ts"), MAX_INPUT)?;
     let bytes = read(&mut build)?;
     let recipe = config::parse_windows_build(std::str::from_utf8(&bytes).map_err(refuse)?)?;
     let parent = session_path
         .parent()
         .ok_or_else(|| refuse("session input parent missing"))?;
-    let _session_parents = windows_inputs::pin_input_root(parent)?;
-    let mut session_pin = local_source::pin_file(session_path, MAX_INPUT)?;
+    let session_parent_pins = windows_inputs::pin_input_root(parent)?;
+    let stable_session_parent = windows_inputs::stable_local_path(&session_parent_pins)?;
+    let session_name = session_path
+        .file_name()
+        .ok_or_else(|| refuse("session input leaf missing"))?;
+    let session_path = stable_session_parent.join(session_name);
+    let mut session_pin = local_source::pin_file(&session_path, MAX_INPUT)?;
     let session = parse_session(&read(&mut session_pin)?)?;
-    // A syntactically drive-rooted tool may still be a mapped network volume.
-    // The existing path owners retain file and directory identity separately.
-    for path in [
-        &session.git,
-        &session.cargo,
-        &session.rustc,
-        &session.cargo_home,
-        &session.sign_tool.path,
-        &session.release_public_key,
-    ] {
-        windows_inputs::require_existing_local_volume(path)?;
-    }
+    // Actual file and directory handles, not drive-letter syntax, own local-volume
+    // admission. Their stable DOS paths are retained before any child is launched.
     require_source_commit(&session.expected_source_commit, &recipe.source_commit)?;
     let out_dir = resolve(&root, &recipe.out_dir)?;
     // Existing output root is admitted, not silently created/repaired with a new
     // policy. Same source owner creates only the fresh transaction child below it.
-    let _output: Vec<File> = windows_inputs::pin_input_root(&out_dir)?;
+    let output_pins = windows_inputs::pin_input_root(&out_dir)?;
+    let out_dir = windows_inputs::stable_local_path(&output_pins)?;
     let source_root = resolve(&root, &recipe.source_root)?;
     let typescript_root = resolve(&root, &recipe.typescript_root)?;
     let bun = resolve(&root, &recipe.bun.path)?;
     let tsc = resolve(&root, &recipe.tsc.path)?;
-    for path in [&source_root, &typescript_root, &bun, &tsc] {
-        windows_inputs::require_existing_local_volume(path)?;
-    }
     let source = local_source::Request {
         source: source_root,
         commit: recipe.source_commit,
