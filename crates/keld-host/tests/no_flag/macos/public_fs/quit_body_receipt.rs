@@ -4,6 +4,13 @@
 //! The listener is armed before Host spawn. The parent polls it only while the
 //! real Host Child is live; it is not a Host stderr marker, protocol reply or
 //! runtime/process authority.
+//!
+//! Cohesion review exception (.agents/test-layout.md): GH-824's native no-flag
+//! public Quit fixture owns the one-use listener, exact HTTP/body receipt and
+//! the composition/real-Bun negative tests in this one private seam. Splitting
+//! them today would duplicate the one-use capability and its fail-closed proof.
+//! Reassess when another scenario owns this receipt or GH-824 native custody
+//! acceptance is closed.
 use std::fs::File;
 use std::io::{ErrorKind, Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};

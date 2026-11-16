@@ -282,21 +282,39 @@ fn prepare_public_fs_exercise(
 
 fn report_public_launch_witness(
     fixture: &PublicFsProject,
-    prepared: &PreparedLaunch,
     launch: usize,
-    host_pid: u32,
     evidence: &LaunchEvidence,
     exercise: Exercise,
 ) {
     eprintln!(
-        "KELD_KEL140_PUBLIC_WITNESS policy={:?} launch={launch} host={host_pid} window={:?} identities={:?} policy_sha256={} host_sha256={} reports={:?} exercise={exercise:?}",
-        fixture.policy,
-        evidence.window,
-        evidence.family,
-        prepared.digest,
-        prepared.host_digest,
-        evidence.reports,
+        "{}",
+        public_launch_witness_summary(fixture.policy, launch, &evidence.reports, exercise)
     );
+}
+
+fn public_launch_witness_summary(
+    policy: Policy,
+    launch: usize,
+    reports: &[Value],
+    exercise: Exercise,
+) -> String {
+    format!(
+        "KELD_KEL140_PUBLIC_WITNESS policy={policy:?} launch={launch} report_count={} exercise={exercise:?}",
+        reports.len()
+    )
+}
+
+#[test]
+fn public_launch_diagnostics_never_serialize_private_observer_reports() {
+    let private =
+        json!({"path":"/private/home/sentinel-internal-path","token":"sentinel-secret-token"});
+    let diagnostic =
+        public_launch_witness_summary(Policy::Narrow, 7, &[private], Exercise::RendererPointer);
+    assert_eq!(
+        diagnostic,
+        "KELD_KEL140_PUBLIC_WITNESS policy=Narrow launch=7 report_count=1 exercise=RendererPointer"
+    );
+    assert!(!diagnostic.contains("sentinel"));
 }
 
 fn register_selected_original_guardian(
@@ -379,7 +397,7 @@ fn run_launch_with_causal_receipt(
                     .expect("independently attributed product family"),
             );
         }
-        report_public_launch_witness(fixture, &prepared, launch, host_pid, &evidence, exercise);
+        report_public_launch_witness(fixture, launch, &evidence, exercise);
     }));
     let mut guardian_exit = None;
     if observation_result.is_err() {
