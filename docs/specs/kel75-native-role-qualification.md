@@ -1,7 +1,12 @@
 # Spec: native application-role qualification
 
 Status: draft
-Linear: KEL-75 · Owner: GYLDLAB · Updated: 2026-09-17
+Linear: KEL-75 · Owner: GYLDLAB · Updated: 2026-11-16
+Pin: 1fff0fbc8f6d214b63d865181bb0d483c6fed670
+
+This pin records the pre-correction PR snapshot reviewed on 2026-11-16.
+It is not a reconstructed baseline for the original 2026-09-17 design.
+T9a must reconcile the governing contracts against its implementation baseline before approval.
 
 ## 1. Goal & non-goals
 
@@ -33,18 +38,129 @@ This draft intentionally does not change architecture 01's normative “JS owns 
 
 ## 3. Acceptance criteria (binary, each becomes a test)
 
-1. Given the existing Bun primary, when the native-role implementation is absent, then every current Bun lifecycle, renderer, guard and packaging acceptance continues unchanged; the native slice is additive.
-2. Given one declared native role, when the host starts it, then the existing Supervisor preparation path owns spawn/restart/backoff/reap and the existing generation owner mints endpoint/token/principal state; no second restart or identity owner exists.
-3. Given a child-supplied role name, principal, grant, runtime feature or trace identifier, when it authenticates, then none of those fields can select or enlarge authority; host-bound declaration/generation metadata remains authoritative.
-4. Given the same versioned application contract implemented once by Bun/TypeScript and once by Rust, when a renderer invokes the qualified operation, then both implementations produce the same accepted values, typed errors, permission result and ordering through the host.
-5. Given malformed, truncated, out-of-range, non-scalar or version-incompatible contract input on an authenticated link, when the role/host decodes it, then the request fails with the registered typed error before the application handler observes a lossy value.
-6. Given a live generation that commits a non-idempotent side effect and loses its reply before the host observes completion, when the generation dies, then Keld rejects stale replies and reports an unknown/ambiguous outcome rather than claiming rollback or automatically replaying the call.
-7. Given a low-authority renderer/document and a higher-authority service role, when the renderer asks the service to perform an operation it is not allowed to request on its behalf, then the host's caller/delegation policy rejects the deputy escalation unless a separately reviewed privileged-service contract explicitly authorizes that delegation.
-8. Given the native role crashes, aborts, hangs, floods output, violates protocol or exhausts its declared resource budget, when failure handling runs, then the host/window/other unrelated principals remain live, old generation authority is revoked, descendants are reaped by the platform owner and restart policy remains bounded.
-9. Given a Rust-only primary configuration, when a packaged app starts and exercises one renderer operation plus clean Quit, then the runtime/process/artifact census contains no Bun runtime and no dummy TypeScript primary; frontend JavaScript/build tooling is reported separately.
-10. Given a TS-only application, when installed and run through the supported prebuilt workflow, then no Rust toolchain or framework-host compilation is required; third-party native dependency requirements are diagnosed separately rather than hidden.
-11. Given an unsupported OS/runtime/artifact/security-profile tuple, when create/dev/build/doctor evaluates it, then Keld fails closed or reports unsupported with an actionable diagnostic; it does not silently downgrade strict containment or load native application code into the host.
-12. Given a performance-motivated native substitution, when measured against the simpler correct Bun baseline, then equivalent functionality, security profile, complete process/engine census, tail latency and cleanup are measured before retaining the added complexity. Language choice alone is not evidence of improvement.
+### AC-1
+
+- **Given:** the existing Bun primary.
+- **When:** the native-role implementation is absent.
+- **Then:** every current Bun lifecycle, renderer, guard and packaging acceptance continues unchanged; the native slice is additive.
+- **Negative control:**
+  - **Single fault:** Require a native artifact before launching the existing Bun primary.
+  - **At-risk precondition:** Use a Bun-only package with no native-role artifact or toolchain.
+  - **Expected RED:** The previously passing Bun startup acceptance fails at that new prerequisite.
+
+### AC-2
+
+- **Given:** one declared native role.
+- **When:** the host starts it.
+- **Then:** the existing Supervisor preparation path owns spawn/restart/backoff/reap and the existing generation owner mints endpoint/token/principal state; no second restart or identity owner exists.
+- **Negative control:**
+  - **Single fault:** Enable a second restart owner for the same failed role generation.
+  - **At-risk precondition:** Crash one authenticated native child with a positive restart budget. Both owners reach independently eligible spawn decisions.
+  - **Expected RED:** The owner/attempt trace records a second spawn decision for one retirement. Later admission deduplication or cleanup cannot hide this violation.
+
+### AC-3
+
+- **Given:** a child-supplied role name, principal, grant, runtime feature or trace identifier.
+- **When:** it authenticates.
+- **Then:** none of those fields can select or enlarge authority; host-bound declaration/generation metadata remains authoritative.
+- **Negative control:**
+  - **Single fault:** Use the child's claimed principal instead of the host-bound principal in authorization.
+  - **At-risk precondition:** An authenticated low-authority child claims a known higher-authority principal and requests its restricted operation.
+  - **Expected RED:** The denial oracle observes the unauthorized effect or accepted result.
+
+### AC-4
+
+- **Given:** the same versioned application contract implemented once by Bun/TypeScript and once by Rust.
+- **When:** a renderer invokes the qualified operation.
+- **Then:** both implementations produce the same accepted values, typed errors, permission result and ordering through the host.
+- **Negative control:**
+  - **Single fault:** Change one Rust result value for a shared accepted contract vector.
+  - **At-risk precondition:** Invoke that vector through the same renderer and host route for both implementations.
+  - **Expected RED:** The literal golden-vector comparison fails for Rust while Bun remains the positive control.
+
+### AC-5
+
+- **Given:** malformed, truncated, out-of-range, non-scalar or version-incompatible contract input on an authenticated link.
+- **When:** the role/host decodes it.
+- **Then:** the request fails with the registered typed error before the application handler observes a lossy value.
+- **Negative control:**
+  - **Single fault:** Bypass rejection of one out-of-range integer before handler dispatch.
+  - **At-risk precondition:** Send that authenticated malformed vector with a handler-entry receipt armed.
+  - **Expected RED:** The test observes handler entry or lacks the required typed decoding error.
+
+### AC-6
+
+- **Given:** a live generation that commits a non-idempotent side effect and loses its reply before the host observes completion.
+- **When:** the generation dies.
+- **Then:** Keld rejects stale replies and reports an unknown/ambiguous outcome rather than claiming rollback or automatically replaying the call.
+- **Negative control:**
+  - **Single fault:** Automatically replay the pending non-idempotent request on the successor generation.
+  - **At-risk precondition:** Observe one durable effect commit and suppress its reply. Retire the generation, then admit a successor that accepts the same operation without application deduplication.
+  - **Expected RED:** After independent acknowledgement of the replayed effect, the durable counter is two instead of one. The caller must still report ambiguity, not rollback.
+
+### AC-7
+
+- **Given:** a low-authority renderer/document and a higher-authority service role.
+- **When:** the renderer asks the service to perform an operation it is not allowed to request on its behalf.
+- **Then:** the host's caller/delegation policy rejects the deputy escalation unless a separately reviewed privileged-service contract explicitly authorizes that delegation.
+- **Negative control:**
+  - **Single fault:** Remove caller/delegation binding from the service authorization decision.
+  - **At-risk precondition:** A low-authority caller reaches the higher-authority service with an otherwise valid restricted request.
+  - **Expected RED:** The independent effect witness records the denied operation. Direct authorized service access remains the positive control.
+
+### AC-8
+
+- **Given:** the native role crashes, aborts, hangs, floods output, violates protocol or exhausts its declared resource budget.
+- **When:** failure handling runs.
+- **Then:** the host/window/other unrelated principals remain live, old generation authority is revoked, descendants are reaped by the platform owner and restart policy remains bounded.
+- **Negative control:**
+  - **Single fault:** Skip retirement of the old generation's dispatch authority.
+  - **At-risk precondition:** Queue an authenticated old-generation request immediately before its dispatch-authority check. Retire that generation, then release the request to that check. Keep an unrelated role live.
+  - **Expected RED:** The old-generation dispatch is accepted instead of rejected at the authority fence. Transport closure must not prevent this at-risk check. Unrelated-role liveness cannot substitute for rejection.
+
+### AC-9
+
+- **Given:** a Rust-only primary configuration.
+- **When:** a packaged app starts and exercises one renderer operation plus clean Quit.
+- **Then:** the runtime/process/artifact census contains no Bun runtime and no dummy TypeScript primary; frontend JavaScript/build tooling is reported separately.
+- **Negative control:**
+  - **Single fault:** Add a Bun runtime artifact to the Rust-only package.
+  - **At-risk precondition:** Package the Rust-only primary with its actual runtime dependencies and execute renderer invocation and Quit.
+  - **Expected RED:** The independent artifact census finds Bun even if invocation and Quit pass.
+
+### AC-10
+
+- **Given:** a TS-only application.
+- **When:** installed and run through the supported prebuilt workflow.
+- **Then:** no Rust toolchain or framework-host compilation is required; third-party native dependency requirements are diagnosed separately rather than hidden.
+- **Negative control:**
+  - **Single fault:** Make the prebuilt TS-only workflow invoke Cargo before launch.
+  - **At-risk precondition:** Use a clean environment without Cargo, rustc or rustup and without third-party native dependencies.
+  - **Expected RED:** The supported workflow fails instead of completing without framework compilation.
+
+### AC-11
+
+- **Given:** an unsupported OS/runtime/artifact/security-profile tuple.
+- **When:** create/dev/build/doctor evaluates it.
+- **Then:** Keld fails closed or reports unsupported with an actionable diagnostic; it does not silently downgrade strict containment or load native application code into the host.
+- **Negative control:**
+  - **Single fault:** Replace one unsupported strict-profile refusal with admission under a weaker profile.
+  - **At-risk precondition:** Request that unsupported tuple through the real admission path with the selected profile observable.
+  - **Expected RED:** The test observes downgraded admission instead of the unsupported/refusal result.
+
+### AC-12
+
+- **Given:** a performance-motivated native substitution.
+- **When:** measured against the simpler correct Bun baseline.
+- **Then:** equivalent functionality, security profile, complete process/engine census, tail latency and cleanup are measured before retaining the added complexity. Language choice alone is not evidence of improvement.
+- **Negative control:**
+  - **Single fault:** Omit one known child process from the measurement census.
+  - **At-risk precondition:** Run equivalent workloads with that child alive and independently counted by the OS.
+  - **Expected RED:** The qualification check detects the census mismatch and rejects the performance evidence.
+
+
+The controls above specify future qualification tests. None was executed for this document correction.
+Each control isolates one fault. The other obligations in each criterion still require their planned tests.
 
 ## 4. Design
 
@@ -165,3 +281,4 @@ The design itself changes no budget. A native role can add a process, memory, wa
 - Native-role resource limits remain platform/runtime-specific until a demonstrated workload requires a portable public policy.
 
 These questions do not authorize implementation while this specification remains `draft`.
+
