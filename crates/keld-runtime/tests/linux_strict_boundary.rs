@@ -202,6 +202,35 @@ fn strict_profile_constructs_only_from_an_unprivileged_launcher_and_private_root
 }
 
 #[test]
+fn strict_profile_rejects_replaceable_role_ancestry_before_command_admission() {
+    // A private fixture above this ancestor would correctly block other principals.
+    let shared = Path::new("/tmp");
+    let metadata = fs::symlink_metadata(shared).expect("shared temp metadata");
+    assert!(metadata.is_dir());
+    assert_eq!(metadata.permissions().mode() & 0o1777, 0o1777);
+    let root = tempfile::tempdir_in(shared).expect("public role ancestry fixture");
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755))
+        .expect("traversable fixture mode");
+    let ancestor = root.path().join("replaceable");
+    fs::create_dir(&ancestor).expect("replaceable ancestor");
+    fs::set_permissions(&ancestor, fs::Permissions::from_mode(0o777))
+        .expect("replaceable ancestor mode");
+    let role = ancestor.join("role");
+    fs::create_dir(&role).expect("private role root");
+    fs::set_permissions(&role, fs::Permissions::from_mode(0o700)).expect("private role mode");
+
+    let error = LinuxStrictProfile::new(Path::new("/usr/bin/bwrap"), strict_launcher(), &role)
+        .expect_err("untrusted role ancestry must refuse a usable profile");
+    let diagnostic = error.to_string();
+    assert!(diagnostic.starts_with("KELD-RUNTIME-016:"), "{diagnostic}");
+    assert!(diagnostic.contains("role root ancestor"), "{diagnostic}");
+    assert!(
+        diagnostic.contains(&ancestor.display().to_string()),
+        "{diagnostic}"
+    );
+}
+
+#[test]
 fn strict_profile_rejects_untrusted_inputs_and_setup_failure_runs_no_target() {
     let root = tempfile::tempdir().expect("negative root");
     let role = root.path().join("role");

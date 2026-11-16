@@ -107,7 +107,9 @@ impl LinuxStrictProfile {
     /// Bubblewrap must be root-owned with no privilege bit/capability. The
     /// Keld launcher must be root- or current-user-owned and immutable to other
     /// principals. Both are regular non-symlink executables. The role root is
-    /// a real current-user-owned directory with exact mode `0o700`.
+    /// a real current-user-owned directory with exact mode `0o700`; its canonical
+    /// path is checked under the same trusted-ancestor policy. These pathname
+    /// checks do not retain a directory handle across later lookups.
     ///
     /// # Errors
     ///
@@ -975,8 +977,11 @@ fn validate_role_root(path: &Path) -> Result<PathBuf, LinuxStrictError> {
             ),
         ));
     }
-    path.canonicalize()
-        .map_err(|source| LinuxStrictError::new("role root path", source.to_string()))
+    let path = path
+        .canonicalize()
+        .map_err(|source| LinuxStrictError::new("role root path", source.to_string()))?;
+    validate_trusted_ancestors(&path, current_uid, "role root ancestor")?;
+    Ok(path)
 }
 
 pub(crate) fn current_effective_uid() -> Result<u32, LinuxStrictError> {
@@ -1135,6 +1140,94 @@ fn seccomp_programs() -> Result<[BpfProgram; 2], LinuxStrictError> {
             LinuxStrictError::new("clone3 seccomp compilation", source.to_string())
         })?;
         Ok([denied, clone3])
+    }
+}
+
+#[cfg(test)]
+mod role_root_tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::path::Path;
+
+    use super::validate_role_root;
+
+    #[test]
+    fn role_root_rejects_a_replaceable_ancestor() {
+        // Keep the negative reachable outside the managed runner's private TMPDIR.
+        let shared = Path::new("/tmp");
+        let metadata = fs::symlink_metadata(shared).expect("shared temp metadata");
+        assert!(metadata.is_dir());
+        assert_eq!(metadata.permissions().mode() & 0o1777, 0o1777);
+        let root = tempfile::tempdir_in(shared).expect("role ancestry fixture");
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755))
+            .expect("traversable fixture mode");
+        let ancestor = root.path().join("replaceable");
+        fs::create_dir(&ancestor).expect("replaceable ancestor");
+        fs::set_permissions(&ancestor, fs::Permissions::from_mode(0o777))
+            .expect("replaceable ancestor mode");
+        let role = ancestor.join("role");
+        fs::create_dir(&role).expect("role root");
+        fs::set_permissions(&role, fs::Permissions::from_mode(0o700)).expect("private role mode");
+
+        let error = validate_role_root(&role).expect_err("replaceable ancestry must fail");
+        assert_eq!(error.phase, "role root ancestor");
+        assert!(
+            error.detail.contains(&ancestor.display().to_string()),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn role_root_accepts_private_barriers_and_sticky_ancestors() {
+        for (root_mode, ancestor_mode) in [(0o700, 0o777), (0o755, 0o1777)] {
+            let root = tempfile::tempdir_in("/tmp").expect("safe role ancestry fixture");
+            fs::set_permissions(root.path(), fs::Permissions::from_mode(root_mode))
+                .expect("fixture mode");
+            let ancestor = root.path().join("ancestor");
+            fs::create_dir(&ancestor).expect("safe ancestor");
+            fs::set_permissions(&ancestor, fs::Permissions::from_mode(ancestor_mode))
+                .expect("safe ancestor mode");
+            let role = ancestor.join("role");
+            fs::create_dir(&role).expect("private role root");
+            fs::set_permissions(&role, fs::Permissions::from_mode(0o700))
+                .expect("private role mode");
+
+            assert_eq!(
+                validate_role_root(&role).expect("protected role ancestry"),
+                role.canonicalize().expect("canonical role root")
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn role_root_command_binds_the_accepted_canonical_path() {
+        use super::LinuxStrictProfile;
+
+        let role = tempfile::tempdir().expect("private role root");
+        fs::set_permissions(role.path(), fs::Permissions::from_mode(0o700))
+            .expect("private role mode");
+        let input = role.path().join(".");
+        let expected = role.path().canonicalize().expect("canonical role root");
+        let executable = std::env::current_exe().expect("test executable");
+        let launcher = role.path().join("launcher");
+        fs::copy(&executable, &launcher).expect("stage trusted launcher");
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o500))
+            .expect("trusted launcher mode");
+        let profile = LinuxStrictProfile::new(Path::new("/usr/bin/bwrap"), &launcher, &input)
+            .expect("private role profile");
+        assert_eq!(profile.role_root, expected);
+        let prepared = profile
+            .command(&executable, &[], &[])
+            .expect("strict command");
+        let arguments: Vec<_> = prepared.command.get_args().collect();
+        let binds: Vec<_> = arguments
+            .windows(3)
+            .filter(|arguments| arguments[0] == "--bind")
+            .collect();
+        assert_eq!(binds.len(), 1);
+        assert_eq!(binds[0][1], expected.as_os_str());
+        assert_eq!(binds[0][2], "/app");
     }
 }
 
