@@ -295,8 +295,8 @@ export interface LayoutOperations {
   removeRoot?: (root: string) => void;
   /** Optional fault seam; the returned owner must retain this exact stdout source. */
   outputOwner?: (stream: ReadableStream<Uint8Array>) => LayoutOutputOwner;
-  /** Simulate delayed stderr finalization after reader cancellation reaches EOF. */
-  stderrReader?: (stream: ReadableStream<Uint8Array>) => LayoutOutputReader;
+  /** Own stderr through read cancellation and separately retryable source finalization. */
+  stderrOwner?: (stream: ReadableStream<Uint8Array>) => LayoutOutputOwner;
 }
 
 /**
@@ -315,6 +315,10 @@ export async function runLayout(
   let stderrTask: CleanupTask<string> | undefined;
   let stderrReader: LayoutOutputReader | undefined;
   let stderrCancellation: CleanupTask<void> | undefined;
+  let stderrFinalization: CleanupTask<void> | undefined;
+  let stderrFinalizeSource: (() => Promise<void>) | undefined;
+  let stderrLockReleasedForFinalization = false;
+  let stderrReadReleaseError: unknown;
   let writeTask: CleanupTask<string> | undefined;
   let callbackTask: CleanupTask<void> | undefined;
   let outputCleanup: LayoutCleanupError["cleanup"] | undefined;
@@ -343,10 +347,42 @@ export async function runLayout(
         );
       }
     }
-    // Cancellation may still be pending after the read observes synthetic EOF.
-    if (stderrCancellation !== undefined)
-      await bound(stderrCancellation.promise);
-    await bound(stderrTask.promise);
+    // A synthetic EOF can precede source cancellation settlement. If cancel
+    // rejects, only the separate resource owner can prove finalization.
+    if (stderrCancellation !== undefined) {
+      if (stderrCancellation.state === "rejected") {
+        if (stderrFinalizeSource === undefined)
+          await bound(stderrCancellation.promise);
+        if (
+          stderrFinalization === undefined ||
+          stderrFinalization.state === "rejected"
+        ) {
+          // A failed wrapper may leave a read locked. Releasing the lock does
+          // not finalize its source; the separate finalizer has that duty.
+          if (stderrTask.state === "pending") {
+            stderrReader?.releaseLock();
+            stderrLockReleasedForFinalization = true;
+          }
+          stderrFinalization = cleanupTask(
+            Promise.resolve().then(stderrFinalizeSource!),
+          );
+        }
+        await bound(stderrFinalization.promise);
+      } else {
+        await bound(stderrCancellation.promise);
+      }
+    }
+    try {
+      await bound(stderrTask.promise);
+    } catch (error) {
+      // Releasing a pending read rejects it with TypeError. Only that exact
+      // local release consequence is safe to ignore after source finalization.
+      if (
+        stderrFinalization?.state !== "fulfilled" ||
+        error !== stderrReadReleaseError
+      )
+        throw error;
+    }
   };
   const owner: RetainedLayout = {
     root: dir,
@@ -387,6 +423,7 @@ export async function runLayout(
       stopAttempt,
       stderrTask,
       stderrCancellation,
+      stderrFinalization,
       outputCleanup?.stopChild,
       outputCleanup?.cancellation,
       outputCleanup?.output,
@@ -400,7 +437,8 @@ export async function runLayout(
       pending.some((task) => task!.state === "pending") ||
       // A later stop attempt may have started cancellation after our snapshot.
       (stderrCancellation !== undefined &&
-        stderrCancellation.state !== "fulfilled") ||
+        stderrCancellation.state !== "fulfilled" &&
+        stderrFinalization?.state !== "fulfilled") ||
       outputCleanup?.incomplete === true;
     if (!stillPending) {
       // Independent steps: a listener-stop exception must not skip root removal.
@@ -486,7 +524,11 @@ export async function runLayout(
     owner.child = proc;
     childExit = cleanupTask(proc.exited);
     const stderr = proc.stderr as ReadableStream<Uint8Array>;
-    stderrReader = operations.stderrReader?.(stderr) ?? stderr.getReader();
+    const stderrOwner = operations.stderrOwner?.(stderr) ?? {
+      reader: stderr.getReader(),
+    };
+    stderrReader = stderrOwner.reader;
+    stderrFinalizeSource = stderrOwner.finalizeSource?.bind(stderrOwner);
     const reader = stderrReader;
     stderrTask = cleanupTask(
       (async () => {
@@ -498,6 +540,10 @@ export async function runLayout(
             if (chunk.done) return stderr + decoder.decode();
             stderr += decoder.decode(chunk.value, { stream: true });
           }
+        } catch (error) {
+          if (stderrLockReleasedForFinalization && error instanceof TypeError)
+            stderrReadReleaseError = error;
+          throw error;
         } finally {
           reader.releaseLock();
         }

@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -362,29 +370,43 @@ describe("layout resource ownership on failure", () => {
     const readyPath = join(audit, "descendant-ready");
     let root = "";
     let failure: unknown;
+    let success: Awaited<ReturnType<typeof runLayout>> | undefined;
     try {
-      failure = await rejected(
-        withIoDeadline(
-          runLayout({
-            deadlineMs: 1_500,
-            ready: () => false,
-            waitForExit: true,
-            async write(dir) {
-              root = dir;
-              const grandchild = `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(readyPath)}, "alive"); setTimeout(() => {}, 9_000);`;
-              const parent = `import { existsSync } from "node:fs"; Bun.spawn([process.execPath, "-e", ${JSON.stringify(grandchild)}], { stdin: "ignore", stdout: "ignore", stderr: "inherit" }); for (let i = 0; i < 400 && !existsSync(${JSON.stringify(readyPath)}); i++) await Bun.sleep(10); if (!existsSync(${JSON.stringify(readyPath)})) throw new Error("descendant did not start"); console.log("direct child exited"); process.exit(0);`;
-              await Bun.write(join(dir, "inherit-stderr.ts"), parent);
-              return "inherit-stderr.ts";
-            },
-          }),
-          12_000,
+      const operation = runLayout({
+        deadlineMs: 1_500,
+        ready: () => false,
+        waitForExit: true,
+        async write(dir) {
+          root = dir;
+          const grandchild = `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(readyPath)}, "alive"); setTimeout(() => {}, 9_000);`;
+          const parent = `import { existsSync } from "node:fs"; Bun.spawn([process.execPath, "-e", ${JSON.stringify(grandchild)}], { stdin: "ignore", stdout: "ignore", stderr: "inherit" }); for (let i = 0; i < 400 && !existsSync(${JSON.stringify(readyPath)}); i++) await Bun.sleep(10); if (!existsSync(${JSON.stringify(readyPath)})) throw new Error("descendant did not start"); console.log("direct child exited"); process.exit(0);`;
+          await Bun.write(join(dir, "inherit-stderr.ts"), parent);
+          return "inherit-stderr.ts";
+        },
+      });
+      const observed = await withIoDeadline(
+        operation.then(
+          (result) => ({ result, error: undefined }),
+          (error: unknown) => ({ result: undefined, error }),
         ),
+        12_000,
       );
+      success = observed.result;
+      failure = observed.error;
       expect(existsSync(readyPath)).toBe(true);
-      expect(failure).toBeInstanceOf(Error);
-      expect((failure as Error).message).toContain("KELD-IPC-006");
-      expect(failure).not.toBeInstanceOf(LayoutCleanupError);
-      expect(failure).not.toBeInstanceOf(LayoutDisposalError);
+      if (success !== undefined) {
+        // Bun on Windows can close the pipe with the direct child even when a
+        // descendant stays alive. Unix must exercise the inherited-pipe path.
+        expect(process.platform).toBe("win32");
+        expect(success.stdout.trim()).toBe("direct child exited");
+        expect(success.exitCode).toBe(0);
+        expect(success.stderr).toBe("");
+      } else {
+        expect(failure).toBeInstanceOf(Error);
+        expect((failure as Error).message).toContain("KELD-IPC-006");
+        expect(failure).not.toBeInstanceOf(LayoutCleanupError);
+        expect(failure).not.toBeInstanceOf(LayoutDisposalError);
+      }
       expect(existsSync(root)).toBe(false);
     } finally {
       // The descendant exits on its own timer. No numeric PID is cleanup authority.
@@ -426,7 +448,7 @@ describe("layout resource ownership on failure", () => {
             },
           },
           {
-            stderrReader(stream) {
+            stderrOwner(stream) {
               const nativeReader = stream.getReader();
               type ReadResult = Awaited<ReturnType<typeof nativeReader.read>>;
               let finishRead!: (chunk: ReadResult) => void;
@@ -434,15 +456,17 @@ describe("layout resource ownership on failure", () => {
                 finishRead = resolve;
               });
               return {
-                read: () => pending,
-                async cancel() {
-                  // The reader sees cancellation EOF before the source closes.
-                  finishRead({ done: true, value: undefined });
-                  cancelEntered = true;
-                  await gate;
-                  await stream.cancel();
+                reader: {
+                  read: () => pending,
+                  async cancel() {
+                    // The reader sees cancellation EOF before the source closes.
+                    finishRead({ done: true, value: undefined });
+                    cancelEntered = true;
+                    await gate;
+                    await stream.cancel();
+                  },
+                  releaseLock: () => nativeReader.releaseLock(),
                 },
-                releaseLock: () => nativeReader.releaseLock(),
               };
             },
           },
@@ -472,6 +496,120 @@ describe("layout resource ownership on failure", () => {
         await withIoDeadline(owner.dispose(), 5_000);
     }
   }, 20_000);
+
+  for (const eofBeforeReject of [true, false] as const) {
+    test(`rejected stderr cancellation recovers after owned source finalization (synthetic EOF: ${eofBeforeReject})`, async () => {
+      const audit = mkdtempSync(
+        join(tmpdir(), "keld-layout-stderr-finalizer-"),
+      );
+      const fd = openSync(join(audit, "retained-source"), "w+");
+      const cancelError = new Error(
+        "intentional stderr cancellation rejection",
+      );
+      const finalizeError = new Error(
+        "intentional initial stderr source-finalization failure",
+      );
+      let root = "";
+      let cancelCalls = 0;
+      let finalizationCalls = 0;
+      let closed = false;
+      let owner: RetainedLayout | undefined;
+      try {
+        const error = await rejected(
+          runLayout(
+            {
+              deadlineMs: 1_000,
+              ready: (stdout) => stdout.includes("ready"),
+              async write(dir) {
+                root = dir;
+                await Bun.write(
+                  join(dir, "stderr-rejection.ts"),
+                  'console.log("ready"); setInterval(() => {}, 60_000);',
+                );
+                return "stderr-rejection.ts";
+              },
+            },
+            {
+              stderrOwner(stream) {
+                const nativeReader = eofBeforeReject
+                  ? stream.getReader()
+                  : undefined;
+                const heldReader = eofBeforeReject
+                  ? undefined
+                  : new ReadableStream<Uint8Array>().getReader();
+                type ReadResult = Awaited<
+                  ReturnType<NonNullable<typeof nativeReader>["read"]>
+                >;
+                let finishRead!: (chunk: ReadResult) => void;
+                const pending = new Promise<ReadResult>((resolve) => {
+                  finishRead = resolve;
+                });
+                return {
+                  reader: {
+                    read: () =>
+                      eofBeforeReject ? pending : heldReader!.read(),
+                    async cancel() {
+                      cancelCalls++;
+                      // Either synthetic EOF or a still-pending native read must
+                      // leave cancellation finalization to the separate owner.
+                      if (eofBeforeReject)
+                        finishRead({ done: true, value: undefined });
+                      throw cancelError;
+                    },
+                    releaseLock: () => {
+                      if (eofBeforeReject) nativeReader!.releaseLock();
+                      else heldReader!.releaseLock();
+                    },
+                  },
+                  async finalizeSource() {
+                    finalizationCalls++;
+                    if (finalizationCalls === 1) throw finalizeError;
+                    await stream.cancel();
+                    closeSync(fd);
+                    closed = true;
+                  },
+                };
+              },
+            },
+          ),
+        );
+        expect(error).toBeInstanceOf(LayoutCleanupError);
+        if (!(error instanceof LayoutCleanupError))
+          throw new Error("stderr cancellation failure was not preserved");
+        expect(error.errors).toContain(cancelError);
+        expect(error.errors).toContain(finalizeError);
+        owner = error.retainedLayout;
+        expect(owner).toBeDefined();
+        if (owner === undefined) throw new Error("lost retained layout owner");
+        expect(cancelCalls).toBe(1);
+        expect(finalizationCalls).toBe(1);
+        expect(owner.stderr?.state).toBe(
+          eofBeforeReject ? "fulfilled" : "rejected",
+        );
+        if (!eofBeforeReject)
+          expect(await rejected(owner.stderr!.promise)).toBeInstanceOf(
+            TypeError,
+          );
+        expect(fstatSync(fd).isFile()).toBe(true);
+        expect(owner.disposed).toBe(false);
+        expect(existsSync(root)).toBe(true);
+        await withIoDeadline(owner.dispose(), 5_000);
+        expect(cancelCalls).toBe(1);
+        expect(finalizationCalls).toBe(2);
+        expect(closed).toBe(true);
+        expect(() => fstatSync(fd)).toThrow();
+        expect(owner.disposed).toBe(true);
+        expect(existsSync(root)).toBe(false);
+        await owner.dispose();
+        expect(finalizationCalls).toBe(2);
+      } finally {
+        if (owner !== undefined && !owner.disposed)
+          await withIoDeadline(owner.dispose(), 5_000);
+        if (!closed) closeSync(fd);
+        rmSync(audit, { recursive: true, force: true });
+      }
+    }, 20_000);
+  }
 
   test("natural exit drains complete stderr before removing its layout root", async () => {
     const result = await runLayout({
