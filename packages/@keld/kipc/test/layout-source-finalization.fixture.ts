@@ -300,6 +300,81 @@ async function nativePipe(): Promise<void> {
   }
 }
 
+async function pendingRead(): Promise<void> {
+  const primary = new Error("use failed before the first chunk");
+  const cancellationFailure = new Error("wrapper refused cancellation");
+  let sourceCancels = 0;
+  let finalized = false;
+  let enterSource!: () => void;
+  const sourceEntered = new Promise<void>((resolve) => {
+    enterSource = resolve;
+  });
+  let releaseSource!: () => void;
+  const sourceGate = new Promise<void>((resolve) => {
+    releaseSource = resolve;
+  });
+  const stream = new ReadableStream<Uint8Array>({
+    async cancel() {
+      sourceCancels += 1;
+      enterSource();
+      await sourceGate;
+      finalized = true;
+    },
+  });
+  const reader = stream.getReader();
+  try {
+    const error = await rejected(
+      withLayoutOutput(
+        {
+          read: () => reader.read(),
+          cancel: async () => {
+            throw cancellationFailure;
+          },
+          releaseLock: () => reader.releaseLock(),
+        },
+        { ready: () => false, deadlineMs: 1000 },
+        async () => {
+          throw primary;
+        },
+        async () => {},
+        async () => {
+          await stream.cancel();
+        },
+      ),
+    );
+    assert(error instanceof LayoutCleanupError);
+    assert.equal(error.cause, primary);
+    assert(error.errors.includes(cancellationFailure));
+    assert.equal(stream.locked, false);
+    assert.equal(error.cleanup.readerReleased, true);
+    assert.equal(error.cleanup.output.state, "rejected");
+    const readFailure = await rejected(error.cleanup.output.promise);
+    assert(readFailure instanceof TypeError);
+    assert(error.errors.includes(readFailure));
+    assert.equal(sourceCancels, 0);
+    assert.equal(error.cleanup.sourceFinalized, false);
+    assert.equal(error.cleanup.incomplete, true);
+    const recovery = error.cleanup.finalizeSource();
+    // The source hook announces entry; no timer estimates source completion.
+    await withIoDeadline(sourceEntered);
+    assert.equal(sourceCancels, 1);
+    assert.equal(finalized, false);
+    assert.equal(error.cleanup.sourceFinalized, false);
+    assert.equal(error.cleanup.incomplete, true);
+    releaseSource();
+    await recovery;
+    assert.equal(finalized, true);
+    assert.equal(sourceCancels, 1);
+    assert.equal(error.cleanup.sourceFinalized, true);
+    assert.equal(error.cleanup.incomplete, false);
+    assert(error.errors.includes(cancellationFailure));
+  } finally {
+    releaseSource();
+    reader.releaseLock();
+    await stream.cancel();
+  }
+}
+
 if (
   ["unowned", "cancel-eof", "owned", "retry", "pending"].includes(mode ?? "")
 ) {
@@ -310,6 +385,8 @@ if (
   mode === "method-owner"
 ) {
   await outerLayout();
+} else if (mode === "pending-read") {
+  await pendingRead();
 } else if (mode === "native-pipe") {
   await nativePipe();
 } else {

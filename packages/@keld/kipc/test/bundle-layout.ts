@@ -209,18 +209,19 @@ export async function withLayoutOutput<T>(
     const [cancelled] = await Promise.allSettled([
       withIoDeadline(cancellation.promise, layout.deadlineMs),
     ]);
+    const cleanupErrors: unknown[] = [];
+    try {
+      // Releasing a reader rejects pending reads without finalizing the source.
+      // A refusing cancellation wrapper must not retain the lock needed by its
+      // separate resource-owner finalizer. Join the resulting read rejection below.
+      release();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
     const terminalTask = cleanupTask(output);
     const [terminal] = await Promise.allSettled([
       withIoDeadline(terminalTask.promise, layout.deadlineMs),
     ]);
-    const cleanupErrors: unknown[] = [];
-    if (settled) {
-      try {
-        release();
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-    }
     if (stopped.status === "rejected") cleanupErrors.push(stopped.reason);
     if (cancelled.status === "rejected") cleanupErrors.push(cancelled.reason);
     if (

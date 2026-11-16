@@ -14,6 +14,7 @@ for (const mode of [
   "outer-unowned",
   "method-owner",
   "native-pipe",
+  "pending-read",
 ]) {
   test(`layout source finalization: ${mode}`, async () => {
     const child = Bun.spawn(
