@@ -12,6 +12,17 @@ use crate::app_session::{
     read_primary_frames,
 };
 
+const MUTANT_WITNESS_FAILURE_EXIT_CODE: i32 = 86;
+const INVALID_WITNESS_EXIT_CODE: i32 = 87;
+const INVALID_EXIT_ENV: &str = "KELD_TEST_QUIT_WITNESS_WRONG_EXIT";
+const PREMATURE_PANIC_ENV: &str = "KELD_TEST_QUIT_WITNESS_PREMATURE_PANIC";
+const PREMATURE_PANIC_MARKER: &str = "KELD-QUIT-PREMATURE-PANIC-CONTROL";
+const LIBTEST_FAILED_TEST_EXIT_CODE: i32 = 101;
+
+fn is_expected_witness_failure(status: std::process::ExitStatus) -> bool {
+    status.code() == Some(MUTANT_WITNESS_FAILURE_EXIT_CODE)
+}
+
 #[expect(
     clippy::needless_pass_by_value,
     reason = "This worker owns the actual receiver and router through its acknowledgement loop; borrowing would change their thread and disposal custody."
@@ -46,15 +57,196 @@ fn tail_owner(
     observations
 }
 
+fn wait_quit_child(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let status = child.wait().map_err(|error| error.to_string())?;
+            return Err(format!(
+                "child exceeded {timeout:?} and was killed ({status})"
+            ));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn verify_quit_child_negative_controls(
+    executable: &std::path::Path,
+    child_name: &str,
+    mutant: &str,
+) {
+    // Prove the parent oracle rejects an exact selector that runs no child test.
+    let wrong_child_name = format!("{child_name}__wrong_selector");
+    let mut wrong_selector = std::process::Command::new(executable)
+        .arg("--ignored")
+        .arg("--exact")
+        .arg(&wrong_child_name)
+        .arg("--nocapture")
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("wrong-selector child starts");
+    let wrong_selector_status = wait_quit_child(&mut wrong_selector, Duration::from_secs(20))
+        .expect("wrong-selector child exits within the hard deadline");
+    let wrong_selector_output = wrong_selector
+        .wait_with_output()
+        .expect("capture wrong-selector output");
+    assert!(
+        wrong_selector_status.success(),
+        "wrong selector must complete"
+    );
+    assert!(
+        String::from_utf8_lossy(&wrong_selector_output.stdout).contains("running 0 tests"),
+        "wrong selector unexpectedly matched a test: {}",
+        String::from_utf8_lossy(&wrong_selector_output.stdout)
+    );
+    assert!(
+        !is_expected_witness_failure(wrong_selector_status),
+        "a wrong child selector must not satisfy the mutant oracle"
+    );
+
+    // A panic before the witness is also an unrelated failure, not proof that
+    // the transition-lock-retention mutant was detected.
+    let mut premature_failure = std::process::Command::new(executable)
+        .arg("--ignored")
+        .arg("--exact")
+        .arg(child_name)
+        .arg("--nocapture")
+        .env(PREMATURE_PANIC_ENV, "1")
+        .env_remove(mutant)
+        .env_remove(INVALID_EXIT_ENV)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("premature-failure child starts");
+    let premature_status = wait_quit_child(&mut premature_failure, Duration::from_secs(20))
+        .expect("premature-failure child exits within the hard deadline");
+    let premature_output = premature_failure
+        .wait_with_output()
+        .expect("capture premature panic output");
+    let panic_stderr = String::from_utf8_lossy(&premature_output.stderr);
+    assert_eq!(
+        premature_status.code(),
+        Some(LIBTEST_FAILED_TEST_EXIT_CODE),
+        "the injected panic must fail in libtest; got {premature_status}: {panic_stderr}"
+    );
+    assert!(
+        panic_stderr.contains(PREMATURE_PANIC_MARKER),
+        "the injected pre-witness panic marker is missing: {panic_stderr}"
+    );
+    assert!(
+        !is_expected_witness_failure(premature_status),
+        "a panic before the witness must not satisfy the mutant oracle"
+    );
+
+    // The witness oracle must reject the wrong nonzero exit code as well.
+    // Missing the injected exit makes this child return zero and fails the control.
+    let mut wrong_exit = std::process::Command::new(executable)
+        .arg("--ignored")
+        .arg("--exact")
+        .arg(child_name)
+        .arg("--nocapture")
+        .env(INVALID_EXIT_ENV, "1")
+        .env_remove(mutant)
+        .env_remove(PREMATURE_PANIC_ENV)
+        .spawn()
+        .expect("wrong-exit child starts");
+    let wrong_exit_status = wait_quit_child(&mut wrong_exit, Duration::from_secs(20))
+        .expect("wrong-exit child exits within the hard deadline");
+    assert_eq!(
+        wrong_exit_status.code(),
+        Some(INVALID_WITNESS_EXIT_CODE),
+        "wrong-exit injection must produce its own code; got {wrong_exit_status}"
+    );
+    assert!(
+        !is_expected_witness_failure(wrong_exit_status),
+        "an incorrect nonzero exit must not satisfy the lock-witness oracle"
+    );
+}
+
 #[test]
+fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_reply() {
+    const MUTANT: &str = "KELD_TEST_QUIT_RETAIN_TRANSITION_LOCK";
+    let executable = std::env::current_exe().expect("current test executable");
+    let current_thread = thread::current();
+    let test_name = current_thread.name().expect("named test").to_owned();
+    let child_name = test_name.replace(
+        "written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_reply",
+        "quit_ready_lock_witness_child",
+    );
+    assert_ne!(child_name, test_name, "child test name must be distinct");
+
+    verify_quit_child_negative_controls(&executable, &child_name, MUTANT);
+
+    // Run the real Quit path with a test-only transition-lock-retention mutant.
+    // Its witness must fail inside the isolated child; no parent thread can hang.
+    let mut mutant = std::process::Command::new(&executable)
+        .arg("--ignored")
+        .arg("--exact")
+        .arg(&child_name)
+        .arg("--nocapture")
+        .env(MUTANT, "1")
+        .env_remove(PREMATURE_PANIC_ENV)
+        .env_remove(INVALID_EXIT_ENV)
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .expect("transition-retention mutant child starts");
+    let mutant_status = wait_quit_child(&mut mutant, Duration::from_secs(20))
+        .expect("transition-retention mutant must fail within the hard deadline");
+    assert!(
+        is_expected_witness_failure(mutant_status),
+        "transition-retention mutant must exit with the dedicated lock-witness code; got {mutant_status}"
+    );
+
+    // Then run the unchanged production wait path in a second bounded child.
+    let mut healthy = std::process::Command::new(executable)
+        .arg("--ignored")
+        .arg("--exact")
+        .arg(child_name)
+        .arg("--nocapture")
+        .env_remove(MUTANT)
+        .env_remove(PREMATURE_PANIC_ENV)
+        .env_remove(INVALID_EXIT_ENV)
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .expect("healthy Quit scenario child starts");
+    let healthy_status = wait_quit_child(&mut healthy, Duration::from_secs(20))
+        .expect("healthy Quit scenario must finish within the hard deadline");
+    assert!(
+        healthy_status.success(),
+        "healthy Quit scenario failed: {healthy_status}"
+    );
+}
+
+#[test]
+#[ignore = "spawned only by the bounded parent test"]
+fn quit_ready_lock_witness_child() {
+    assert!(
+        std::env::var_os(PREMATURE_PANIC_ENV).is_none(),
+        "{PREMATURE_PANIC_MARKER}: injected failure before transition-lock witness"
+    );
+    if std::env::var_os(INVALID_EXIT_ENV).is_some() {
+        std::process::exit(INVALID_WITNESS_EXIT_CODE);
+    }
+    run_written_ready_quit_drain_scenario();
+}
+
 #[cfg_attr(
     windows,
     expect(
         clippy::too_many_lines,
-        reason = "Keep Ready return, accepted Quit, stopped-reader Drain and original owner joins in one ordered test."
+        reason = "Keep Ready return, accepted Quit, stopped-reader Drain and original owner joins in one ordered scenario."
     )
 )]
-fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_reply() {
+fn run_written_ready_quit_drain_scenario() {
     let Fixture {
         router,
         mut peer,
@@ -109,9 +301,30 @@ fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_rep
     assert!(router.shutdown.is_running());
     assert!(!router.window_ready.load(Ordering::Acquire));
     assert!(router.current.try_lock().is_ok());
-    assert!(router.shutdown.transition.try_lock().is_ok());
+    // The Quit hook sends just before Condvar::wait_timeout releases its mutex.
+    // Receiving the hook is not evidence that the transition lock is free.
+    // Verify the real unlock while Ready stays blocked, without a sleep or a
+    // scheduling-sensitive immediate try_lock.
     let writer = router.primary_writer_owner().expect("one primary writer");
     let (quit_dequeued, quit_write) = writer.hold_next_dequeue_for_test();
+    let (available, available_rx) = mpsc::sync_channel(1);
+    let waiting_router = router.clone();
+    let mutex_witness = thread::spawn(move || {
+        let _transition = waiting_router.shutdown.transition_guard();
+        available
+            .send(waiting_router.current.try_lock().is_ok())
+            .expect("transition release witness");
+    });
+    let transition_released_during_wait = available_rx.recv_timeout(Duration::from_secs(3));
+    if !matches!(transition_released_during_wait, Ok(true)) {
+        // This test body runs in an isolated child test process. Release both
+        // barriers before exiting so a deliberate lock-retention mutant cannot
+        // strand the Ready writer, a dequeued Quit writer, or the parent suite.
+        let _ = ready_resume.send(());
+        let _ = quit_write.send(());
+        drop(peer);
+        std::process::exit(MUTANT_WITNESS_FAILURE_EXIT_CODE);
+    }
     ready_resume.send(()).expect("allow canonical Ready commit");
     ready
         .join()
@@ -180,12 +393,18 @@ fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_rep
         ["arm", "prepare", "shutdown"]
     );
     assert!(router.current.lock().expect("retired current").is_none());
+    // Join only after all Ready/Quit writer barriers have been released; even a
+    // failed mutex observation must not leave the actual peer/worker stranded.
+    mutex_witness.join().expect("transition witness joins");
     worker.stop_and_join().expect("physical writer joins");
     drop(worker);
     drop(router);
     drop(windows);
+    assert!(
+        matches!(transition_released_during_wait, Ok(true)),
+        "Quit must release transition/current locks before awaiting Ready: {transition_released_during_wait:?}"
+    );
 }
-
 #[test]
 #[cfg_attr(
     windows,

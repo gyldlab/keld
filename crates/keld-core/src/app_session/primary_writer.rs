@@ -30,7 +30,7 @@ pub(super) use router::admit_locked;
 pub(super) use worker::{PrimaryWriterWorker, WriterLink};
 
 use std::sync::mpsc::{Sender, TrySendError};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, WaitTimeoutResult};
 use std::time::Instant;
 
 use keld_ipc::{ChannelId, CorrelationId, FrameHeader, FrameKind};
@@ -126,6 +126,21 @@ struct Shared {
     state: Mutex<State>,
     changed: Condvar,
     progress: Sender<AppWindowCommand>,
+    #[cfg(test)]
+    deterministic_waiters: Mutex<Option<Arc<DeterministicWaiters>>>,
+}
+
+#[cfg(test)]
+struct DeterministicWaiters {
+    capacity: Condvar,
+    worker: Condvar,
+    // Explicit test-only wake tokens make spurious Condvar wakeups non-events.
+    capacity_wake_generation: std::sync::atomic::AtomicU64,
+    worker_wake_generation: std::sync::atomic::AtomicU64,
+    capacity_wait_count: std::sync::atomic::AtomicUsize,
+    capacity_rewait_observer: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
+    // One-shot controlled mutation for the actual-writer liveness regression.
+    notify_one_next: std::sync::atomic::AtomicBool,
 }
 
 pub(super) struct Reservation {
@@ -173,6 +188,93 @@ impl PrimaryWriter {
     }
 
     #[cfg(test)]
+    pub(super) fn use_deterministic_waiters_for_test(&self) {
+        *self
+            .shared
+            .deterministic_waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Arc::new(DeterministicWaiters {
+                capacity: Condvar::new(),
+                worker: Condvar::new(),
+                capacity_wake_generation: std::sync::atomic::AtomicU64::new(0),
+                worker_wake_generation: std::sync::atomic::AtomicU64::new(0),
+                capacity_wait_count: std::sync::atomic::AtomicUsize::new(0),
+                capacity_rewait_observer: Mutex::new(None),
+                notify_one_next: std::sync::atomic::AtomicBool::new(false),
+            }));
+    }
+
+    #[cfg(test)]
+    pub(super) fn arm_notify_one_next_for_test(&self) {
+        let waiters = self
+            .shared
+            .deterministic_waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned()
+            .expect("deterministic waiter mode is enabled");
+        waiters
+            .notify_one_next
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(super) fn observe_capacity_rewait_for_test(
+        &self,
+        observed: std::sync::mpsc::SyncSender<()>,
+    ) {
+        let waiters = self
+            .shared
+            .deterministic_waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned()
+            .expect("deterministic waiter mode is enabled");
+        *waiters
+            .capacity_rewait_observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(observed);
+    }
+
+    #[cfg(test)]
+    pub(super) fn worker_wake_generation_for_test(&self) -> u64 {
+        let waiters = self
+            .shared
+            .deterministic_waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned()
+            .expect("deterministic waiter mode is enabled");
+        waiters
+            .worker_wake_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(super) fn hold_next_completion_for_test(
+        &self,
+    ) -> (
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::SyncSender<()>,
+    ) {
+        let (arrived, observed) = std::sync::mpsc::sync_channel(1);
+        let (resume, proceed) = std::sync::mpsc::sync_channel(1);
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .after_write_before_completion = Some(Arc::new(worker::CompletionHook {
+            arrived,
+            resume: Mutex::new(proceed),
+        }));
+        (observed, resume)
+    }
+
+    #[cfg(test)]
     pub(in crate::app_session) fn observe_next_capacity_wait_for_test(
         &self,
         observed: std::sync::mpsc::SyncSender<()>,
@@ -190,6 +292,8 @@ impl PrimaryWriter {
                 state: Mutex::new(State::new()),
                 changed: Condvar::new(),
                 progress,
+                #[cfg(test)]
+                deterministic_waiters: Mutex::new(None),
             }),
         }
     }
@@ -297,15 +401,13 @@ impl PrimaryWriter {
                         continue;
                     }
                     serviced = None;
-                    let remaining = deadline.saturating_duration_since(Instant::now());
                     #[cfg(test)]
                     if let Some(observed) = state.capacity_wait_observer.take() {
                         let _ = observed.try_send(());
                     }
                     let (next, _) = self
                         .shared
-                        .changed
-                        .wait_timeout(state, remaining)
+                        .wait_capacity_timeout(state, deadline)
                         .map_err(|_| WriterRefusal::Poisoned)?;
                     state = next;
                 }
@@ -324,7 +426,7 @@ impl PrimaryWriter {
             state.closed = true;
             std::array::from_fn::<_, POSITIONS, _>(|index| state.slots[index].target.clone())
         };
-        self.shared.changed.notify_all();
+        self.shared.notify_all();
         for target in targets.into_iter().flatten() {
             let _ = target.shutdown();
         }
@@ -332,6 +434,144 @@ impl PrimaryWriter {
 }
 
 impl Shared {
+    fn wait_capacity_timeout<'a>(
+        &self,
+        state: MutexGuard<'a, State>,
+        deadline: Instant,
+    ) -> std::sync::LockResult<(MutexGuard<'a, State>, WaitTimeoutResult)> {
+        // Extract the test waiter handle before waiting. In an if-let
+        // scrutinee the MutexGuard temporary otherwise survives into the
+        // body, holding this control mutex across the condvar wait and
+        // deadlocking every notifier that needs to inspect it.
+        #[cfg(test)]
+        let deterministic = {
+            self.deterministic_waiters
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .cloned()
+        };
+        #[cfg(test)]
+        if let Some(waiters) = deterministic {
+            let wait_index = waiters
+                .capacity_wait_count
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            if wait_index != 0
+                && let Some(observed) = waiters
+                    .capacity_rewait_observer
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+            {
+                let _ = observed.try_send(());
+            }
+            let generation = waiters
+                .capacity_wake_generation
+                .load(std::sync::atomic::Ordering::Acquire);
+            let mut state = state;
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let (next, timeout) = waiters.capacity.wait_timeout(state, remaining)?;
+                state = next;
+                if waiters
+                    .capacity_wake_generation
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    != generation
+                    || timeout.timed_out()
+                {
+                    return Ok((state, timeout));
+                }
+                // A spurious wake is not a capacity notification. Keep waiting
+                // against the original absolute deadline and wake generation.
+            }
+        }
+        self.changed
+            .wait_timeout(state, deadline.saturating_duration_since(Instant::now()))
+    }
+
+    fn wait_worker<'a>(
+        &self,
+        state: MutexGuard<'a, State>,
+    ) -> std::sync::LockResult<MutexGuard<'a, State>> {
+        // The worker must not hold deterministic_waiters' MutexGuard while
+        // sleeping; the queue publisher also needs it to issue the wake.
+        #[cfg(test)]
+        let deterministic = {
+            self.deterministic_waiters
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .cloned()
+        };
+        #[cfg(test)]
+        if let Some(waiters) = deterministic {
+            let generation = waiters
+                .worker_wake_generation
+                .load(std::sync::atomic::Ordering::Acquire);
+            let mut state = state;
+            loop {
+                state = waiters.worker.wait(state)?;
+                if waiters
+                    .worker_wake_generation
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    != generation
+                {
+                    return Ok(state);
+                }
+                // A spurious wake without a new token cannot advance the writer.
+            }
+        }
+        self.changed.wait(state)
+    }
+
+    fn notify_all(&self) {
+        #[cfg(test)]
+        let deterministic = {
+            self.deterministic_waiters
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .cloned()
+        };
+        #[cfg(test)]
+        if let Some(waiters) = deterministic {
+            let single_capacity_wake = waiters
+                .notify_one_next
+                .swap(false, std::sync::atomic::Ordering::AcqRel);
+            // Serialize token publication with the same State mutex used by
+            // both waiters. This closes the check-to-sleep window: a publisher
+            // cannot advance a token before a waiter has atomically released
+            // State in its Condvar wait.
+            {
+                let _state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                waiters
+                    .capacity_wake_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::Release);
+                if !single_capacity_wake {
+                    waiters
+                        .worker_wake_generation
+                        .fetch_add(1, std::sync::atomic::Ordering::Release);
+                }
+            }
+            if single_capacity_wake {
+                // Model the allowed single-wake selection: the capacity
+                // producer receives a token, but the physical worker does not.
+                waiters.capacity.notify_one();
+            } else {
+                waiters.capacity.notify_all();
+                waiters.worker.notify_all();
+            }
+            // Receipts and quiescence observations still wait on the original
+            // condition variable. Test-only split waiters must not strand them.
+            self.changed.notify_all();
+            return;
+        }
+        self.changed.notify_all();
+    }
+
     fn release(&self, position: Position, reservation: bool) {
         let wake = {
             let mut state = self
@@ -340,7 +580,7 @@ impl Shared {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.release(position, reservation)
         };
-        self.changed.notify_all();
+        self.notify_all();
         self.wake(wake);
     }
 }
@@ -383,7 +623,10 @@ impl PreparedFrame {
         state.enqueue(position.index);
         self.reservation.position = None;
         drop(state);
-        shared.changed.notify_one();
+        // Queue, capacity and receipt waiters share this condition variable.
+        // A single wake may select a producer whose predicate is still false,
+        // leaving the idle physical writer asleep with a queued frame.
+        shared.notify_all();
         Ok(WriteReceipt {
             shared,
             position,
