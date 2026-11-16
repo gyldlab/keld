@@ -36,7 +36,13 @@ where
         poll: impl FnMut() -> &'static str,
     ) -> Output {
         let mut poll = poll;
-        self.finish_with_poll(observation_succeeded, || {}, || (poll(), "not_armed"), true, false)
+        self.finish_with_poll(
+            observation_succeeded,
+            || {},
+            || (poll(), "not_armed"),
+            true,
+            false,
+        )
     }
 
     /// A separate native Guardian observation is ordered against the Bun
@@ -160,7 +166,9 @@ mod tests {
         assert_eq!(polls, 1, "native receipt was sampled only inside the wait");
         assert_eq!(
             logs,
-            vec!["KELD_KEL140_NATIVE_QUIT_PHASE last_live_http_stage=observer_response_written bun_body_stage=bun_body_verified"]
+            vec![
+                "KELD_KEL140_NATIVE_QUIT_PHASE last_live_http_stage=observer_response_written bun_body_stage=bun_body_verified"
+            ]
         );
     }
 
@@ -180,14 +188,22 @@ mod tests {
         let failure = catch_unwind(AssertUnwindSafe(|| {
             wait.public_with_joint_poll(true, || {
                 polls += 1;
-                ("bun_body_verified", "guardian_exit_event_observed_after_body_receipt")
+                (
+                    "bun_body_verified",
+                    "guardian_exit_event_observed_after_body_receipt",
+                )
             })
         }));
         assert!(failure.is_err(), "the original Host wait must still fail");
-        assert_eq!(polls, 1, "both native phases came from the same live callback");
+        assert_eq!(
+            polls, 1,
+            "both native phases came from the same live callback"
+        );
         assert_eq!(
             logs,
-            vec!["KELD_KEL140_NATIVE_QUIT_PHASE last_live_http_stage=observer_response_written bun_body_stage=bun_body_verified guardian_exit_stage=guardian_exit_event_observed_after_body_receipt"]
+            vec![
+                "KELD_KEL140_NATIVE_QUIT_PHASE last_live_http_stage=observer_response_written bun_body_stage=bun_body_verified guardian_exit_stage=guardian_exit_event_observed_after_body_receipt"
+            ]
         );
     }
 
