@@ -214,24 +214,49 @@ fn capture_native_same_uri_overlap(
     verify_native_same_uri_overlap(receipt, &observed, attempt)
 }
 
+fn single_overlap_event<'a>(
+    observed: &'a [Value],
+    phase: &str,
+    kind: &str,
+) -> Result<&'a Value, String> {
+    let matches: Vec<_> = observed
+        .iter()
+        .filter(|event| event["phase"] == phase && event["kind"] == kind)
+        .collect();
+    if matches.len() != 1 {
+        return Err(format!(
+            "AC06 {phase}/{kind} observed {} events, expected 1",
+            matches.len()
+        ));
+    }
+    Ok(matches[0])
+}
+
+fn reject_unexpected_top_level_child_callbacks(observed: &[Value]) -> Result<(), String> {
+    // Equal URI and DOCUMENT source kind do not make an iframe a top-level load.
+    if observed.iter().any(|event| {
+        event["phase"] == "race-child"
+            && matches!(
+                event["kind"].as_str(),
+                Some(
+                    "navigation-starting"
+                        | "content-loading"
+                        | "dom-content-loaded"
+                        | "navigation-completed"
+                )
+            )
+    }) {
+        return Err("AC06 iframe phase unexpectedly navigated the top-level document".into());
+    }
+    Ok(())
+}
+
 fn verify_native_same_uri_overlap(
     receipt: &mut Value,
     observed: &[Value],
     attempt: &str,
 ) -> Result<(), String> {
-    let single = |phase: &str, kind: &str| -> Result<&Value, String> {
-        let matches: Vec<_> = observed
-            .iter()
-            .filter(|event| event["phase"] == phase && event["kind"] == kind)
-            .collect();
-        if matches.len() != 1 {
-            return Err(format!(
-                "AC06 {phase}/{kind} observed {} events, expected 1",
-                matches.len()
-            ));
-        }
-        Ok(matches[0])
-    };
+    let single = |phase: &str, kind: &str| single_overlap_event(observed, phase, kind);
     let frame_start = single("race-child", "frame-navigation-starting")?;
     let held = single("race-child", "race-child-held")?;
     let child = single("race-child", "resource-request")?;
@@ -257,6 +282,7 @@ fn verify_native_same_uri_overlap(
             "AC06 native race callback ordering mismatch: {observed:?}"
         ));
     }
+    reject_unexpected_top_level_child_callbacks(observed)?;
     let top_id = host_start["data"]["navigation_id"].as_u64();
     let correct = frame_start["data"]["uri"] == receipt["uri"]
         && frame_start["data"]["header"]["state"] == "absent"
@@ -473,150 +499,6 @@ pub(super) fn child_entry() -> Result<(), String> {
     assessment.map(|_| ())
 }
 
-// These are receipt-oracle mutations, not substituted native callbacks.
-// They ensure a good raw SDK run cannot be reported when identity evidence is lost.
-#[cfg(test)]
-mod ac06_overlap_receipt_tests {
-    use super::*;
-
-    #[test]
-    fn reject_missing_collapsed_or_swapped_frame_identity_and_forged_source() {
-        let uri = "file:///D:/fixture/index.html";
-        let nonce = "host-attempt";
-        let frame = json!({"phase":"race-child","kind":"frame-navigation-starting","seq":15,
-            "data":{"uri":uri,"navigation_id":5,"header":{"state":"absent"}}});
-        let held = json!({"phase":"race-child","kind":"race-child-held","seq":16,
-            "data":{"uri":uri,"resource_context":1,"source_kind":1,"real_deferral":true}});
-        let child = json!({"phase":"race-child","kind":"resource-request","seq":17,
-            "data":{"uri":uri,"resource_context":1,"source_kind":1,
-                "header":{"state":"absent"},"held_iframe":true}});
-        let top = json!({"phase":"race-host","kind":"navigation-starting","seq":18,
-            "data":{"uri":uri,"navigation_id":6,
-                "header":{"state":"present","value":nonce}}});
-        let resource = json!({"phase":"race-host","kind":"resource-request","seq":19,
-            "data":{"uri":uri,"resource_context":1,"source_kind":1,
-                "header":{"state":"present","value":nonce}}});
-        let released = json!({"phase":"race-host","kind":"race-child-released","seq":20,
-            "data":{"completed":true}});
-        let frame_done = json!({"phase":"race-host","kind":"frame-navigation-completed","seq":21,
-            "data":{"navigation_id":5,"success":false}});
-        let content = json!({"phase":"race-host","kind":"content-loading","seq":22,
-            "data":{"navigation_id":6,"is_error_page":false}});
-        let top_done = json!({"phase":"race-host","kind":"navigation-completed","seq":24,
-            "data":{"navigation_id":6,"success":true}});
-        let good = vec![
-            frame, held, child, top, resource, released, frame_done, content, top_done,
-        ];
-        let check = |events: &[Value]| {
-            verify_native_same_uri_overlap(&mut json!({"uri":uri}), events, nonce)
-        };
-        assert!(check(&good).is_ok(), "valid two-navigation receipt refused");
-
-        let mut early_top_content = good.clone();
-        early_top_content[7]["seq"] = json!(13);
-        assert!(
-            check(&early_top_content).is_err(),
-            "ContentLoading before Host NavigationStarting accepted"
-        );
-
-        let mut late_top_content = good.clone();
-        late_top_content[7]["seq"] = json!(25);
-        assert!(
-            check(&late_top_content).is_err(),
-            "ContentLoading after top completion accepted"
-        );
-
-        let mut foreign_host_start = good.clone();
-        foreign_host_start[3]["data"]["uri"] = json!("file:///D:/fixture/foreign.html");
-        assert!(
-            check(&foreign_host_start).is_err(),
-            "foreign Host navigation-starting URI accepted"
-        );
-
-        let mut missing_host_start = good.clone();
-        missing_host_start[3]["data"]
-            .as_object_mut()
-            .expect("Host start data is an object")
-            .remove("uri");
-        assert!(
-            check(&missing_host_start).is_err(),
-            "missing Host navigation-starting URI accepted"
-        );
-
-        let mut absent_host_header = good.clone();
-        absent_host_header[3]["data"]["header"]["state"] = json!("absent");
-        assert!(
-            check(&absent_host_header).is_err(),
-            "Host navigation-starting with absent nonce header accepted"
-        );
-
-        let mut missing = good.clone();
-        missing.remove(0);
-        assert!(
-            check(&missing).is_err(),
-            "missing frame-start event accepted"
-        );
-
-        let mut collapsed = good.clone();
-        collapsed[0]["data"]["navigation_id"] = json!(6);
-        collapsed[6]["data"]["navigation_id"] = json!(6);
-        assert!(
-            check(&collapsed).is_err(),
-            "shared iframe/top navigation ID accepted"
-        );
-
-        let mut wrong_completion = good.clone();
-        wrong_completion[6]["data"]["navigation_id"] = json!(7);
-        assert!(
-            check(&wrong_completion).is_err(),
-            "wrong iframe completion ID accepted"
-        );
-
-        let mut absent_completion = good.clone();
-        absent_completion.remove(6);
-        assert!(
-            check(&absent_completion).is_err(),
-            "absent iframe completion accepted"
-        );
-
-        let mut delayed_completion = good.clone();
-        delayed_completion[6]["seq"] = json!(25);
-        assert!(
-            check(&delayed_completion).is_err(),
-            "iframe completion after top completion accepted"
-        );
-
-        let mut wrong_kinds = good.clone();
-        wrong_kinds[2]["data"]["source_kind"] = json!(0);
-        wrong_kinds[4]["data"]["source_kind"] = json!(0);
-        assert!(
-            check(&wrong_kinds).is_err(),
-            "matching non-DOCUMENT source kinds accepted"
-        );
-
-        let mut no_deferral = good.clone();
-        no_deferral[1]["data"]["real_deferral"] = json!(false);
-        assert!(
-            check(&no_deferral).is_err(),
-            "forged held deferral accepted"
-        );
-
-        let mut late_start = good.clone();
-        late_start[0]["seq"] = json!(19);
-        assert!(
-            check(&late_start).is_err(),
-            "frame start after Host start accepted"
-        );
-
-        let mut wrong_header = good.clone();
-        wrong_header[0]["data"]["header"] = json!({"state":"present","value":nonce});
-        assert!(
-            check(&wrong_header).is_err(),
-            "Host nonce on iframe navigation accepted"
-        );
-    }
-}
-
 /// Actual native Source plus an immutable owned-document observation qualify
 /// this runtime's serialization only. This does not implement production policy.
 fn assess_file_origin(receipt: &Value) -> Result<(), String> {
@@ -669,4 +551,282 @@ fn assess_file_origin(receipt: &Value) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+// These are receipt-oracle mutations, not substituted native callbacks.
+// They ensure a good raw SDK run cannot be reported when identity evidence is lost.
+#[cfg(test)]
+mod ac06_overlap_receipt_tests {
+    use super::*;
+
+    const URI: &str = "file:///D:/fixture/index.html";
+    const NONCE: &str = "host-attempt";
+
+    fn good_receipt_events() -> Vec<Value> {
+        let uri = URI;
+        let nonce = NONCE;
+        let frame = json!({"phase":"race-child","kind":"frame-navigation-starting","seq":15,
+            "data":{"uri":uri,"navigation_id":5,"header":{"state":"absent"}}});
+        let held = json!({"phase":"race-child","kind":"race-child-held","seq":16,
+            "data":{"uri":uri,"resource_context":1,"source_kind":1,"real_deferral":true}});
+        let child = json!({"phase":"race-child","kind":"resource-request","seq":17,
+            "data":{"uri":uri,"resource_context":1,"source_kind":1,
+                "header":{"state":"absent"},"held_iframe":true}});
+        let top = json!({"phase":"race-host","kind":"navigation-starting","seq":18,
+            "data":{"uri":uri,"navigation_id":6,
+                "header":{"state":"present","value":nonce}}});
+        let resource = json!({"phase":"race-host","kind":"resource-request","seq":19,
+            "data":{"uri":uri,"resource_context":1,"source_kind":1,
+                "header":{"state":"present","value":nonce}}});
+        let released = json!({"phase":"race-host","kind":"race-child-released","seq":20,
+            "data":{"completed":true}});
+        let frame_done = json!({"phase":"race-host","kind":"frame-navigation-completed","seq":21,
+            "data":{"navigation_id":5,"success":false}});
+        let content = json!({"phase":"race-host","kind":"content-loading","seq":22,
+            "data":{"navigation_id":6,"is_error_page":false}});
+        let top_done = json!({"phase":"race-host","kind":"navigation-completed","seq":24,
+            "data":{"navigation_id":6,"success":true}});
+        vec![
+            frame, held, child, top, resource, released, frame_done, content, top_done,
+        ]
+    }
+
+    fn check(events: &[Value]) -> Result<(), String> {
+        verify_native_same_uri_overlap(&mut json!({"uri":URI}), events, NONCE)
+    }
+
+    #[test]
+    fn reject_missing_collapsed_or_swapped_frame_identity_and_forged_source() {
+        let good = good_receipt_events();
+        let nonce = NONCE;
+        assert!(check(&good).is_ok(), "valid two-navigation receipt refused");
+
+        let mut missing = good.clone();
+        missing.remove(0);
+        assert!(
+            check(&missing).is_err(),
+            "missing frame-start event accepted"
+        );
+
+        let mut collapsed = good.clone();
+        collapsed[0]["data"]["navigation_id"] = json!(6);
+        collapsed[6]["data"]["navigation_id"] = json!(6);
+        assert!(
+            check(&collapsed).is_err(),
+            "shared iframe/top navigation ID accepted"
+        );
+
+        let mut wrong_completion = good.clone();
+        wrong_completion[6]["data"]["navigation_id"] = json!(7);
+        assert!(
+            check(&wrong_completion).is_err(),
+            "wrong iframe completion ID accepted"
+        );
+
+        let mut absent_completion = good.clone();
+        absent_completion.remove(6);
+        assert!(
+            check(&absent_completion).is_err(),
+            "absent iframe completion accepted"
+        );
+
+        let mut delayed_completion = good.clone();
+        delayed_completion[6]["seq"] = json!(25);
+        assert!(
+            check(&delayed_completion).is_err(),
+            "iframe completion after top completion accepted"
+        );
+
+        let mut no_deferral = good.clone();
+        no_deferral[1]["data"]["real_deferral"] = json!(false);
+        assert!(
+            check(&no_deferral).is_err(),
+            "forged held deferral accepted"
+        );
+
+        let mut late_start = good.clone();
+        late_start[0]["seq"] = json!(19);
+        assert!(
+            check(&late_start).is_err(),
+            "frame start after Host start accepted"
+        );
+
+        let mut wrong_top_uri = good.clone();
+        wrong_top_uri[3]["data"]["uri"] = json!("file:///D:/fixture/other.html");
+        assert!(
+            check(&wrong_top_uri).is_err(),
+            "foreign top-level start URI accepted"
+        );
+
+        let mut missing_top_uri = good.clone();
+        missing_top_uri[3]["data"]
+            .as_object_mut()
+            .unwrap()
+            .remove("uri");
+        assert!(
+            check(&missing_top_uri).is_err(),
+            "missing top-level start URI accepted"
+        );
+
+        let mut missing_top_header_state = good.clone();
+        missing_top_header_state[3]["data"]["header"]["state"] = json!("absent");
+        assert!(
+            check(&missing_top_header_state).is_err(),
+            "Host start without present header state accepted"
+        );
+        let mut wrong_header = good.clone();
+        wrong_header[0]["data"]["header"] = json!({"state":"present","value":nonce});
+        assert!(
+            check(&wrong_header).is_err(),
+            "Host nonce on iframe navigation accepted"
+        );
+    }
+
+    #[test]
+    fn reject_top_content_loading_out_of_order_or_child_top_level_callback() {
+        let good = good_receipt_events();
+        assert!(check(&good).is_ok(), "valid two-navigation receipt refused");
+
+        // Each mutation changes one independently observed native callback fact.
+        // An iframe response cannot stand in for a top-level document commit.
+        let mut early_top_content = good.clone();
+        early_top_content[7]["seq"] = json!(13);
+        assert!(
+            check(&early_top_content).is_err(),
+            "top-level ContentLoading before Host navigation accepted"
+        );
+        let mut late_top_content = good.clone();
+        late_top_content[7]["seq"] = json!(25);
+        assert!(
+            check(&late_top_content).is_err(),
+            "top-level ContentLoading after completion accepted"
+        );
+        for kind in [
+            "navigation-starting",
+            "content-loading",
+            "dom-content-loaded",
+            "navigation-completed",
+        ] {
+            let mut unexpected_top_callback = good.clone();
+            unexpected_top_callback.insert(
+                0,
+                json!({"phase":"race-child","kind":kind,"seq":14,
+                    "data":{"uri":URI,"navigation_id":8,"header":{"state":"absent"}}}),
+            );
+            assert!(
+                check(&unexpected_top_callback).is_err(),
+                "top-level {kind} in iframe phase was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn reject_worker_source_kind_non_document_context_and_stale_host_nonce() {
+        let good = good_receipt_events();
+        assert!(check(&good).is_ok(), "valid two-navigation receipt refused");
+        // A simultaneous child/Host mutation could still fail if only one
+        // source-kind check existed. Mutate the native hold and both requests
+        // separately, using real WebView2 worker source-kind bit values.
+        for (label, index) in [
+            ("held iframe", 1),
+            ("iframe request", 2),
+            ("Host request", 4),
+        ] {
+            for worker_kind in [2, 4] {
+                let mut worker = good.clone();
+                worker[index]["data"]["source_kind"] = json!(worker_kind);
+                assert!(
+                    check(&worker).is_err(),
+                    "{label}: worker source kind {worker_kind} accepted as DOCUMENT"
+                );
+            }
+        }
+        for (label, index) in [
+            ("held iframe", 1),
+            ("iframe request", 2),
+            ("Host request", 4),
+        ] {
+            let mut non_document_context = good.clone();
+            non_document_context[index]["data"]["resource_context"] = json!(0);
+            assert!(
+                check(&non_document_context).is_err(),
+                "{label}: non-DOCUMENT resource context accepted"
+            );
+        }
+        let mut foreign_host_nonce = good.clone();
+        foreign_host_nonce[4]["data"]["header"]["value"] = json!("old-attempt");
+        assert!(
+            check(&foreign_host_nonce).is_err(),
+            "stale Host resource nonce accepted"
+        );
+    }
+
+    #[test]
+    fn file_origin_claim_requires_actual_native_web_message_source_and_sender() {
+        let uri = URI;
+        let nonce = "owned-page-nonce";
+        let page = json!({
+            "href":uri,"origin":"file://","protocol":"file:","host":"","port":""
+        });
+        let body = json!({
+            "kind":"owned-file-origin-observation","nonce":nonce,
+            "href":uri,"origin":"file://","protocol":"file:",
+            "host":"","port":"","is_main":true
+        })
+        .to_string();
+        let events: Vec<Value> = ["host-header", "plain", "page"]
+            .into_iter()
+            .map(|phase| {
+                json!({
+                    "phase":phase,"kind":"web-message",
+                    "data":{"canonical_sender":true,"native_source":uri,
+                        "view_source":uri,"raw_body":body}
+                })
+            })
+            .collect();
+        let good = json!({
+            "uri":uri,"nonce":nonce,
+            "pages":{"host-header":page,"plain":page,"page":page},
+            "events":events
+        });
+        assert!(
+            assess_file_origin(&good).is_ok(),
+            "actual WebMessageReceived Source and owned page nonce should qualify"
+        );
+        for (field, wrong) in [
+            ("canonical_sender", json!(false)),
+            ("native_source", json!("file:///D:/foreign/index.html")),
+            ("view_source", json!("file:///D:/foreign/index.html")),
+            ("raw_body", json!("invalid native message JSON")),
+        ] {
+            let mut forged = good.clone();
+            forged["events"][0]["data"][field] = wrong;
+            assert!(
+                assess_file_origin(&forged).is_err(),
+                "Host web-message {field} was accepted without native Source"
+            );
+        }
+        let mut forged_page = good.clone();
+        forged_page["events"][1]["data"]["raw_body"] = json!(
+            json!({
+                "kind":"owned-file-origin-observation","nonce":"stale-page",
+                "href":uri,"origin":"file://","protocol":"file:",
+                "host":"","port":"","is_main":true
+            })
+            .to_string()
+        );
+        assert!(
+            assess_file_origin(&forged_page).is_err(),
+            "page-controlled message nonce impersonated native Source"
+        );
+        let mut missing = good.clone();
+        missing["events"]
+            .as_array_mut()
+            .expect("sample events")
+            .remove(2);
+        assert!(
+            assess_file_origin(&missing).is_err(),
+            "missing native page WebMessageReceived was accepted"
+        );
+    }
 }
