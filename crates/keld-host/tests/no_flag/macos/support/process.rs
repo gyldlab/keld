@@ -411,7 +411,10 @@ fn shipping_cleanup_public_fs_reaped_bun_uses_attested_descendant() {
     assert!(refused.is_err(), "foreign member must fail closed");
     assert_outsider_echo(&mut outsider);
     cleanup.record_bun_member(descendant);
-    leader.0.kill().expect("terminate exact retained Bun leader");
+    leader
+        .0
+        .kill()
+        .expect("terminate exact retained Bun leader");
     leader.0.wait().expect("reap original Bun leader");
     assert!(process_exists(descendant), "descendant survives Bun reap");
     assert!(signal_attested_group("-TERM", original).is_err());
