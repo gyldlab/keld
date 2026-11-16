@@ -125,9 +125,15 @@ impl ShippingLaunchCleanup {
             self.host_birth.expect("verified host leader"),
         ));
         assert_eq!(parent_process(bun_group), guardian);
+        self.record_bun_member(descendant);
+    }
+
+    /// Retain the verified descendant without requiring a CLI-owned Host group.
+    /// Public-FS launches own the Host directly, but need the same Bun fallback.
+    pub(crate) fn record_bun_member(&mut self, descendant: u32) {
         self.bun_member = Some(retain_parented_group_member(
             descendant,
-            bun_group,
+            self.bun_group.expect("authenticated Bun group"),
             self.bun_birth.expect("verified Bun leader"),
         ));
     }
@@ -142,6 +148,8 @@ impl ShippingLaunchCleanup {
         let birth = retain_parented_group_birth(group, parent);
         self.bun_group = Some(group);
         self.bun_birth = Some(birth);
+        // A successor must independently enroll its own live member.
+        self.bun_member = None;
     }
 
     pub(crate) fn release(mut self) -> Child {

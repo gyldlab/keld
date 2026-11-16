@@ -524,6 +524,7 @@ fn observe_recovery_actions(
     };
     assert_eq!(first.guardian, successor.guardian, "persistent guardian");
     assert_app_identity(&ready, successor, host_pid, prepared);
+    cleanup.record_bun_member(successor.descendant);
     evidence.reports.push(ready);
     evidence.retired_family = Some(first);
     evidence.family = Some(successor);
@@ -997,6 +998,7 @@ fn await_ready(
             // Ordinary app data gains fallback custody only after the
             // independent live host/guardian/group/image/link census passes.
             cleanup.record_bun_group(bun, guardian);
+            cleanup.record_bun_member(descendant);
             evidence.family = Some(family);
         }
         assert!(
