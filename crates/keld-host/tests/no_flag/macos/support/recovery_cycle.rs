@@ -368,7 +368,8 @@ fn recovery_accept_refuses_a_queued_control_peer_after_the_original_deadline() {
         .expect("close queued peer writes");
     match RecoveryGeneration::try_accept_before(&listener, "late", deadline) {
         Ok(_) => panic!("a queued peer after the deadline became a generation"),
-        Err(error) => assert_eq!(error, "late: Bun did not connect the fixture control"),
+        // Expired on entry: refuse before accept(), leaving the queued peer untouched.
+        Err(error) => assert_eq!(error, "late: Bun did not connect before original deadline"),
     }
     listener
         .set_nonblocking(true)
