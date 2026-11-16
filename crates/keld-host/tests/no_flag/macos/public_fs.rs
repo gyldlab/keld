@@ -51,11 +51,11 @@ use outcomes::{
     assert_natural_outcomes, assert_page_outcomes,
 };
 use process_image::process_image_path;
-use quit_body_receipt::QuitBodyReceipt;
 use project::{
     CONTENT, Exercise, Policy, PreparedLaunch, PublicFsProject, RECOVERY_AFTER_CONTENT, SENTINEL,
     TITLE,
 };
+use quit_body_receipt::QuitBodyReceipt;
 
 #[derive(Clone, Copy, Debug)]
 struct ProcessFamily {
@@ -172,28 +172,22 @@ fn wait_public_host_with_phase(
     let deadline = Instant::now() + EVENT_DEADLINE;
     match (body_receipt, guardian_exit) {
         (Some(receipt), Some(exit)) => {
-            public_host_wait(child, observer).public_with_joint_poll(
-                observation_succeeded,
-                || {
-                    receipt.poll(deadline);
-                    // The Guardian event is ordered after body verification
-                    // only if an empty post-verification native read fences it.
-                    if receipt.is_verified() {
-                        exit.note_body_receipt_verified();
-                    }
-                    exit.poll(deadline);
-                    (receipt.stage(), exit.marker())
-                },
-            )
+            public_host_wait(child, observer).public_with_joint_poll(observation_succeeded, || {
+                receipt.poll(deadline);
+                // The Guardian event is ordered after body verification
+                // only if an empty post-verification native read fences it.
+                if receipt.is_verified() {
+                    exit.note_body_receipt_verified();
+                }
+                exit.poll(deadline);
+                (receipt.stage(), exit.marker())
+            })
         }
         (Some(receipt), None) => {
-            public_host_wait(child, observer).public_with_poll(
-                observation_succeeded,
-                || {
-                    receipt.poll(deadline);
-                    receipt.stage()
-                },
-            )
+            public_host_wait(child, observer).public_with_poll(observation_succeeded, || {
+                receipt.poll(deadline);
+                receipt.stage()
+            })
         }
         (None, None) => public_host_wait(child, observer).public(observation_succeeded),
         (None, Some(_)) => panic!("Guardian exit witness requires a native Bun body receipt"),
