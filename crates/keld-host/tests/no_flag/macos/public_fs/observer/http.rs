@@ -130,7 +130,13 @@ fn decode_complete_request(bytes: &[u8]) -> Option<(String, Vec<u8>)> {
         "observation request oversized"
     );
     let end = bytes.windows(4).position(|part| part == b"\r\n\r\n")? + 4;
-    let header = String::from_utf8(bytes[..end].to_vec()).expect("HTTP header UTF-8");
+    // Never render the header bytes: the request line carries the route path.
+    let header = String::from_utf8(bytes[..end].to_vec()).unwrap_or_else(|error| {
+        panic!(
+            "KELD_KEL140_OBSERVER_HEADER not UTF-8; header_bytes={end} valid_up_to={}",
+            error.utf8_error().valid_up_to()
+        )
+    });
     let length = header
         .lines()
         .filter_map(|line| line.split_once(':'))
