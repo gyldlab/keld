@@ -332,6 +332,60 @@ impl Drop for HostGuardian {
     }
 }
 
+impl GuardianReport {
+    /// OS process id of the direct Bun child and process-group leader.
+    #[must_use]
+    pub const fn leader_pid(&self) -> u32 {
+        self.leader_pid
+    }
+
+    /// Exit status observed by waiting the direct Bun child.
+    #[must_use]
+    pub const fn leader_status(&self) -> ExitStatus {
+        self.leader_status
+    }
+}
+
+fn unexpected_guardian_exit(group: GroupIdentity, status: ExitStatus) -> RuntimeError {
+    let cleanup_error = terminate_attested_group(group)
+        .err()
+        .map(|error| io::Error::other(error.to_string()));
+    RuntimeError::GuardianExited {
+        group_pid: group.pid,
+        exit_code: status.code(),
+        cleanup_error,
+    }
+}
+
+fn require_same_registered_group(group: GroupIdentity) -> Result<(), RuntimeError> {
+    if observe_group_identity(group.pid)? == group {
+        Ok(())
+    } else {
+        Err(lifecycle_error(
+            "macOS guardian registration identity changed",
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "group leader changed after authenticated host registration",
+            ),
+        ))
+    }
+}
+
+fn reject_proven_registration(
+    child: Child,
+    liveness_writer: ChildStdin,
+    group: GroupIdentity,
+    error: RuntimeError,
+) -> RuntimeError {
+    // Close host authority and wait for Guardian cleanup first. A leftover
+    // Bun group is then killed ONLY if its original kernel birth still matches.
+    let primary = reject_host_registration(child, liveness_writer, error);
+    match terminate_attested_group(group) {
+        Ok(()) => primary,
+        Err(cleanup) => collapse_failures(vec![primary, cleanup]),
+    }
+}
+
 #[cfg(test)]
 mod externally_reaped_tests {
     use super::*;
@@ -404,59 +458,5 @@ mod externally_reaped_tests {
             "#948 retains the attested birth witness after denied cleanup"
         );
         assert!(group.0.try_wait().expect("group is still owned").is_none());
-    }
-}
-
-impl GuardianReport {
-    /// OS process id of the direct Bun child and process-group leader.
-    #[must_use]
-    pub const fn leader_pid(&self) -> u32 {
-        self.leader_pid
-    }
-
-    /// Exit status observed by waiting the direct Bun child.
-    #[must_use]
-    pub const fn leader_status(&self) -> ExitStatus {
-        self.leader_status
-    }
-}
-
-fn unexpected_guardian_exit(group: GroupIdentity, status: ExitStatus) -> RuntimeError {
-    let cleanup_error = terminate_attested_group(group)
-        .err()
-        .map(|error| io::Error::other(error.to_string()));
-    RuntimeError::GuardianExited {
-        group_pid: group.pid,
-        exit_code: status.code(),
-        cleanup_error,
-    }
-}
-
-fn require_same_registered_group(group: GroupIdentity) -> Result<(), RuntimeError> {
-    if observe_group_identity(group.pid)? == group {
-        Ok(())
-    } else {
-        Err(lifecycle_error(
-            "macOS guardian registration identity changed",
-            io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "group leader changed after authenticated host registration",
-            ),
-        ))
-    }
-}
-
-fn reject_proven_registration(
-    child: Child,
-    liveness_writer: ChildStdin,
-    group: GroupIdentity,
-    error: RuntimeError,
-) -> RuntimeError {
-    // Close host authority and wait for Guardian cleanup first. A leftover
-    // Bun group is then killed ONLY if its original kernel birth still matches.
-    let primary = reject_host_registration(child, liveness_writer, error);
-    match terminate_attested_group(group) {
-        Ok(()) => primary,
-        Err(cleanup) => collapse_failures(vec![primary, cleanup]),
     }
 }
