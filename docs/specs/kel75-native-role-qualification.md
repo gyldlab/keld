@@ -98,6 +98,21 @@ This draft intentionally does not change architecture 01's normative “JS owns 
   - **At-risk precondition:** Observe one durable effect commit and suppress its reply. Retire the generation, then admit a successor that accepts the same operation without application deduplication.
   - **Expected RED:** After independent acknowledgement of the replayed effect, the durable counter is two instead of one. The caller must still report ambiguity, not rollback.
 
+AC-6 remains a target contract, not an existing native-service error mapping.
+`KELD-IPC-022` reports an unknown host effect after link closure; `KELD-IPC-023`
+reports an unknown host effect when the host retires the caller's role generation.
+Neither scope proves the outcome signal for a renderer calling a native service
+whose generation dies. `KELD-IPC-025` reports transport Worker loss and does not
+currently define an effect-status guarantee.
+
+Before approval, T9a must specify that caller path, its registered error or
+explicit effect-status contract, and its propagation through the SDK. It must
+cover loss before dispatch and loss after a possible effect, including Worker
+loss, without inferring safe retry from a transport error. T9a must then name the
+chosen observable in AC-6 and its negative control. The durable-effect count and
+caller-visible ambiguity assertion are separate required observations. This draft
+does not select a new code or extend an existing code's meaning.
+
 ### AC-7
 
 - **Given:** a low-authority renderer/document and a higher-authority service role.
@@ -237,7 +252,7 @@ Must not touch merely to make the design look generic:
 
 ## 6. Tasks
 
-- [ ] T9a — promote this draft with synchronized architecture/config/current-vs-target wording; freeze the smallest host-owned native-role declaration without adding a public runtime-plugin API. **T9b–T9g remain planning-only and MUST NOT begin until T9a lands with this specification at `Status: approved`.**
+- [ ] T9a — promote this draft with synchronized architecture/config/current-vs-target wording; freeze the smallest host-owned native-role declaration without adding a public runtime-plugin API; resolve and register the AC-6 caller-visible ambiguity contract and SDK mapping before approval. **T9b–T9g remain planning-only and MUST NOT begin until T9a lands with this specification at `Status: approved`.**
 - [ ] T9b — after approved T9a, implement one supervised Rust service role on one already-qualified OS using the existing preparation/generation/app-link owner; no renderer API change.
 - [ ] T9c — same-contract hybrid fixture: TS implementation and Rust implementation separately satisfy value/error/permission/ordering/malformed-input vectors; renderer call site is unchanged.
 - [ ] T9d — KEL-78 containment qualification for that exact native artifact, including hostile file/network/process/code-load/hang/abort/resource tests and descendant cleanup.
