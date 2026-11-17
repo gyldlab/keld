@@ -25,10 +25,10 @@ fn unsafe_namespace(path: &Path, detail: &str) -> io::Error {
 /// Returns an error for a symlink, foreign owner, replaceable directory, ACL
 /// grant or unreadable metadata. Does not modify an existing directory.
 pub fn validate_macos_dev_stage_directory(path: &Path) -> io::Result<()> {
+    let uid = nix::unistd::geteuid().as_raw();
     // A mode/UID check is not an authority check on noowners volumes. Inspect
     // the actual opened mount before relying on the directory's metadata.
-    keld_native::macos_dev_stage_volume::validate_macos_dev_stage_volume(path)?;
-    let uid = nix::unistd::geteuid().as_raw();
+    keld_native::macos_dev_stage_volume::validate_macos_dev_stage_volume(path, uid)?;
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_dir() || (metadata.uid() != uid && metadata.uid() != 0) {
         return Err(unsafe_namespace(
