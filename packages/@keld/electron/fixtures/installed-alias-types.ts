@@ -5,10 +5,11 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, isAbsolute, join, sep } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 type Run = (
   command: string[],
@@ -89,6 +90,30 @@ export function prepareTypeConsumer(consumer: string): void {
   assert(!existsSync(join(consumer, "node_modules/bun-types")));
 }
 
+type PhysicalDirectoryIdentity = { dev: bigint; ino: bigint };
+
+function hasPhysicalAncestor(
+  file: string,
+  root: PhysicalDirectoryIdentity,
+): boolean {
+  if (root.dev === 0n || root.ino === 0n) return false;
+  let current = dirname(file);
+  for (;;) {
+    const identity = statSync(current, { bigint: true });
+    if (
+      identity.dev !== 0n &&
+      identity.ino !== 0n &&
+      identity.dev === root.dev &&
+      identity.ino === root.ino
+    ) {
+      return true;
+    }
+    const parent = dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
+
 export function checkInstalledDeclarations(
   source: string,
   consumer: string,
@@ -128,6 +153,8 @@ export function checkInstalledDeclarations(
   assert.equal(platformManifest.version, compilerManifest.version);
   const compilerLib = realpathSync(join(dirname(platformManifestPath), "lib"));
   const installedConsumer = realpathSync(consumer);
+  const consumerIdentity = statSync(installedConsumer, { bigint: true });
+  const compilerLibIdentity = statSync(compilerLib, { bigint: true });
   const files = compiled.stdout
     .split(/\r?\n/)
     .filter((line) => isAbsolute(line));
@@ -138,8 +165,8 @@ export function checkInstalledDeclarations(
   for (const file of files) {
     const path = realpathSync(file);
     assert(
-      path.startsWith(installedConsumer + sep) ||
-        path.startsWith(compilerLib + sep),
+      hasPhysicalAncestor(path, consumerIdentity) ||
+        hasPhysicalAncestor(path, compilerLibIdentity),
       "Compiler escaped the installed graph: " + path,
     );
     assert(!path.includes("/bun-types/") && !path.includes("/@types/bun/"));
