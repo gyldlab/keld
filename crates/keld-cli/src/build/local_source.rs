@@ -2186,8 +2186,8 @@ mod tests {
         let input = File::open("NUL").expect("null input");
         let mut stderr = tempfile::tempfile().expect("private descendant stderr");
         let start = Instant::now();
-        // Keep a non-inheritable least-rights Job handle after the capture
-        // owner returns; the query witness below attenuates it to QUERY only.
+        // Failure-first oracle: the same query-only Job witness must see the
+        // suspended parent before resume and zero members after timeout cleanup.
         let job_observer = std::sync::Mutex::new(None);
         let result = run_captured_with_output_and_job_observer(
             &tool,
@@ -2205,9 +2205,20 @@ mod tests {
                 let handle = job
                     .duplicate_lifecycle_keeper_handle()
                     .map_err(|error| failure("source capture test Job observer", error))?;
+                let witness = WindowsLifecycleQueryWitness::adopt_transferred(handle)
+                    .map_err(|error| failure("source capture test Job observer", error))?;
+                let active = witness
+                    .active_processes()
+                    .map_err(|error| failure("source capture test Job observer", error))?;
+                if active != 1 {
+                    return Err(failure(
+                        "source capture test Job observer",
+                        format!("expected one suspended parent before resume, observed {active}"),
+                    ));
+                }
                 *job_observer.lock().map_err(|_| {
                     failure("source capture test Job observer", "observer lock poisoned")
-                })? = Some(handle);
+                })? = Some(witness);
                 Ok(())
             },
         );
@@ -2244,12 +2255,10 @@ mod tests {
             "the child marker must belong to the process created by the parent; stderr: {stderr_detail}"
         );
 
-        let observer = job_observer
+        let job = job_observer
             .into_inner()
             .expect("test Job observer lock")
-            .expect("retained test Job observer handle");
-        let job = WindowsLifecycleQueryWitness::adopt_transferred(observer)
-            .expect("adopt retained query-only Job observer");
+            .expect("retained query-only Job observer");
         assert_eq!(
             job.active_processes().expect("query Job after deadline"),
             0,
