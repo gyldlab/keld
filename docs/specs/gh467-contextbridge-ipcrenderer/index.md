@@ -81,6 +81,7 @@ Non-goals for this first-proof slice:
 - B-4
 - B-5
 - B-6
+- B-7
 ## 8. Review gates triggered
 
 - **Public API / compatibility:** yes; cross-world graph, method

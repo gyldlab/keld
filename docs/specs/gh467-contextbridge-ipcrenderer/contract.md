@@ -250,18 +250,25 @@ divergence before claiming the Symbol cell PASS (GH-464 has same gate).
 
 **Request state:** The page calls `electron.request` with an allowed action and registered callbacks.
 
-**Failure path:** Local action or codec validation rejects before the original preload call. The final Host guard can also deny after the preload assigns `reqId`.
+**Failure path:** A post-bind local refusal precedes the original preload call. A final Host denial follows `reqInfo[reqId]`. Bun can also retire before `mainResp` while the native document survives.
 
-**Required cleanup:** Local rejection calls the bounded error callback before `reqInfo` is created. A final Host denial delivers one terminal
-error `mainResp` to the same current document and exact `reqId`, with `error: true` and sanitized `msg` and `e`. The original
-preload calls its error callback and deletes `reqInfo`. Callback wrappers contain callback exceptions and report them after
-cleanup. A retired document receives no event; its realm and callback state are destroyed. Direct `ipcRenderer.send` keeps its
-`undefined` return and no-retroactive-error contract.
+**Required cleanup:** A post-bind local refusal calls the error callback once before `reqInfo` exists.
+Before bind, §4.7 wins: `electron.request` returns `undefined`, invokes neither callback and creates no `reqInfo`.
+Its `requestSync` Promise remains pending until document retirement; bind never replays it.
+A final Host denial or Bun-loss event sends one private `mainResp` to the same document and exact `reqId`.
+Set `error: true` and use sanitized `msg` and `e` values.
+The original preload calls its error callback, deletes `reqInfo`, and rejects `requestSync`.
+GH-484/542 register the post-assigned `reqId` at the trusted app-world send seam.
+GH-543 owns the terminal event on GH-540 role retirement; GH-1095 owns typed error mapping.
+Use `KELD-WV-011` only for proved no-dispatch and `KELD-WV-013` for attempted or ambiguous dispatch.
+GH-540 charges remain until native/ring quiescence; the event is not a release receipt.
+If the document retires first, destroy its realm. Never deliver to a successor.
+Direct `ipcRenderer.send` keeps its `undefined` return and no-retroactive-error contract.
 
 **Cleanup oracle:**
-- **Fault:** Suppress local preflight or the terminal Host error, or let a callback exception bypass cleanup.
+- **Fault:** Suppress preflight, request-ID registration or terminal `mainResp`; duplicate it; or bypass cleanup on callback throw.
 - **At-risk:** The pinned preload stores `reqInfo[reqId]` before sending `rendererReq` and deletes it only after `mainResp`.
-- **Expected failure:** Repeated rejected requests retain callbacks, leave `requestSync` pending, or deliver to a successor.
+- **Expected failure:** Bun loss leaves `requestSync` pending, repeats callbacks, retains `reqInfo` or delivers to a successor.
 
 The real-KELD pass for C01/C12/C13/C14/C15/C21 is on **macOS
 WKWebView** only, with exact build, source hash and native outcome. A mock,

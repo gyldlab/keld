@@ -310,11 +310,23 @@ Cross-bind old window/document callback to second window → other-window payloa
 
 **Fault and expected failure:** Refuse local listener registration before bind, or forward that registration to Host. The pinned `EditorUi.init` listener must be available for a later allowed event after bind. The pre-bind Host/Bun frame count must remain zero.
 
+#### BRG028_prebind_request_precedence
+
+**ACs:** C08, C13, C23.
+
+**Fault and expected failure:** Invoke a disallowed pre-bind request with an error callback. A mutant invokes either callback or replays after bind. Require `undefined`, no callbacks, no `reqInfo`/frame, pending `requestSync` until realm retirement, and no replay. A post-bind control rejects once.
+
 #### BRG026_request_callback_terminal_cleanup
 
 **ACs:** C08, C11, C13, C23.
 
-**Fault and expected failure:** Suppress request preflight or the terminal Host denial event, or let a callback exception bypass cleanup. Repeated rejected requests must not retain `reqInfo`, leave `requestSync` pending or deliver to a successor document.
+**Fault and expected failure:** Suppress request preflight, request-ID registration or terminal `mainResp`. Also test duplicate terminal events and callback throws. Repeated failures must not retain `reqInfo`, leave `requestSync` pending or deliver to a successor.
+
+#### BRG027_bun_loss_before_mainResp
+
+**ACs:** C17, C23.
+
+**Fault and expected failure:** Kill Bun after the original preload stores `reqInfo` but before `mainResp`. Suppress the trusted request-ID sidecar or terminal event. The same document's `requestSync` must reject once and `reqInfo` must be deleted. No successor receives it. No replay occurs. GH540 charges remain until native/ring quiescence. A fresh request after role recovery succeeds.
 
 Do not aggregate all 22 into a single giant mixed-owner
 test module. GH-464 owns its corpus cells, GH-567 preload/process
@@ -401,10 +413,13 @@ hide ordering, or infer speed from a small 4 KiB fixture.
    Original `ipcRenderer.on/once` setup and page-visible listener registration
    may occur before bind as bounded document-local state. This creates no
    native subscription, Host call, Bun send, queued event or replay.
-   Pre-bind page-carrier requests/sends retain no work. Local action/codec
-   preflight rejects before the original preload creates `reqInfo`.
-   Direct void callers retain `undefined`; request callers receive the
-   bounded typed refusal. No later document or Bun role may replay it.
+   Pre-bind page-carrier requests/sends retain no work. A pre-bind
+   `electron.request` returns `undefined` and invokes neither callback.
+   Its `requestSync` Promise remains pending until document retirement;
+   bind does not replay it. A required early request keeps C14 BLOCKED.
+   After bind, local action/codec refusal calls the error callback once
+   before `reqInfo` is created; `requestSync` rejects with the typed refusal.
+   No later document or Bun role may replay it.
    After bind, actual sends and deliveries still require current document
    identity, role, topic, credit and final Guard admission.
    GH-540/GH-542 must qualify the document-correlated Bind and checked-u32
@@ -467,6 +482,13 @@ hide ordering, or infer speed from a small 4 KiB fixture.
 - **Owner:** GH-467 and Host error-registry owner
 - **Impact:** No implementation may invent a local error code or leave rejected request callbacks retained.
 - **Check:** Approve the typed refusal and terminal Host error event; pass codec rejection, final denial, callback-throw and retired-document cleanup tests.
+
+### B-7: Bun-loss terminal request cleanup
+
+- **Status:** open
+- **Owner:** GH-484, GH-542, GH-543, GH-540 and GH-1095 owners
+- **Impact:** A Bun role loss can leave `requestSync` pending and `reqInfo` retained in a surviving document.
+- **Check:** Approve trusted post-assignment request-ID capture, bounded document registration and one private GH-543 terminal `mainResp`. Prove same-document rejection, cleanup, no successor delivery, no replay and GH-540 quiescence.
 **Disposition:** changes above are reviewable draft contracts. Full
 security-qualified publication, #540/#542 world binding, registered
 errors, source-image authenticity, real Host/Bun effects and independent

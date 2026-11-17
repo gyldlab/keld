@@ -320,20 +320,46 @@ an action.
 
 #### 4.5.3 Request preflight and terminal callback cleanup
 
-Before the original preload `request` runs, the facade checks the exact action and the GH-544 value shape. A local refusal invokes
-the bounded error callback and does not call the original preload. Therefore it creates no `reqInfo` entry and no `rendererReq`
-frame.
+After bind, and before the original preload `request` runs, the facade checks the exact action and GH-544 value shape.
+A post-bind local refusal calls the bounded error callback once. It does not call the original preload. It creates no
+`reqInfo` entry and sends no `rendererReq` frame. The void `electron.request` call returns `undefined`.
+The `requestSync` wrapper rejects with the bounded local refusal.
 
-A final Host denial occurs after the pinned preload has stored `reqInfo[reqId]`. GH-543 must deliver one Host-owned terminal error
-`mainResp` to the same current document and exact request ID. Set `error: true` and use sanitized `msg` and `e` values. This is a
-real Host denial event, not a main-handler success or canned Boolean. It creates zero Bun frames. The original preload invokes its
-error callback and deletes the `reqInfo` entry.
+Before bind, §4.7 takes precedence. The void `electron.request` call returns `undefined`.
+Neither callback runs, including the supplied error callback. No `reqInfo` entry or frame is created.
+The `requestSync` Promise remains pending for that document; bind does not replay it.
+Document retirement destroys the realm and discards that Promise. A required early startup request keeps C14 BLOCKED.
 
-Wrap the supplied success/error callbacks before passing them to the original preload. A callback exception must not skip the
-preload's following `delete reqInfo`. Contain the exception at the wrapper and report it after cleanup. On document retirement,
-destroy the old realm and all callback state. Never deliver a terminal error to a successor document. For `watchFile`, keep a
-bounded proxy slot. A terminal failure deactivates its captured page callback; only an inert bounded wrapper may remain until
-realm retirement.
+A final Host denial occurs after the pinned preload stores `reqInfo[reqId]`.
+GH-543 delivers one Host-owned terminal error `mainResp` to the same current document and request ID.
+Set `error: true` and use sanitized `msg` and `e` values.
+This is not a main-handler success or canned Boolean. It creates zero Bun frames.
+The original preload calls its error callback and deletes `reqInfo`.
+
+**Bun loss before `mainResp`:** GH-542 preserves a surviving document across Bun role restart.
+The GH-540 link retirement alone does not clear the original preload's `reqInfo`.
+GH-484 must expose the post-assigned `reqId` from the original app-world send seam.
+It registers `(document stamp, role generation, reqId)` with the GH-542 document owner before forwarding.
+The Host never reads page-supplied IDs or decodes opaque endpoint bytes.
+This document-scoped record uses existing GH-467 callback/retained-byte limits; it adds no app-link field, channel, parser, queue or ledger.
+
+On authenticated GH-540 role retirement, GH-543 sends one private terminal `mainResp` to that original document.
+It uses the exact registered request ID and the sanitized terminal error.
+The original preload calls its error callback, deletes `reqInfo`, and rejects `requestSync`.
+GH-1095 maps proved no-dispatch to `KELD-WV-011`; attempted or ambiguous dispatch uses `KELD-WV-013`.
+Never replay or retarget the request. The terminal event is not physical release.
+GH-540 retains charges until native/ring work is quiescent.
+If GH-542 retires the document first, destroy its realm and pending-ID records; never send to a successor.
+This is a proposed cross-owner contract, not shipped behavior.
+GH-484, GH-542, GH-543, GH-540 and GH-1095 must approve it before implementation.
+If they cannot provide the request-ID sidecar and terminal event, C23 stays BLOCKED.
+
+Wrap supplied success/error callbacks before passing them to the original preload.
+A callback exception must not skip the preload's following `delete reqInfo`.
+Contain the exception at the wrapper and report it after cleanup.
+For `watchFile`, keep a bounded proxy slot.
+A terminal failure deactivates its captured page callback.
+Only an inert bounded wrapper may remain until realm retirement.
 
 Direct `ipcRenderer.send` is separate. It keeps its `undefined` return and receives no retroactive exception, Promise or
 fabricated `mainResp` result.
@@ -347,17 +373,20 @@ loses the table.
 
 The startup control registers the pinned `EditorUi.init` listeners before bind. It then binds the same document and delivers one
 later allowlisted event. The callback must run once. No early native frame is allowed. If the pinned application requires replay
-of an event that arrived before bind, the first-proof row stays BLOCKED until its owner approves a separate bounded rule.#### 4.5.5 Selected A2 data-only page carrier and native authority boundary
+of an event that arrived before bind, the first-proof row stays BLOCKED until its owner approves a separate bounded rule.
+
+#### 4.5.5 Selected A2 data-only page carrier and native authority boundary
 
 A2 is the selected carrier direction recorded by the owner in [GH-484 decision](https://github.com/gyldlab/keld/issues/484#issuecomment-6560086477) and [A2 correction handoff](https://github.com/gyldlab/keld/issues/484#issuecomment-6560285327). A1 direct cross-world callable publication is not selected.
 
 The page-world carrier transports untrusted data only. Its event source, origin, DOM token, payload or claimed method cannot authenticate a sender, create a principal, mint a realm credential, register a privileged method or widen a grant. Treat every carrier event as hostile input, including events produced by the real page.
 
-The original app-world preload and its native receiver are installed in the named `WKContentWorld` on the same per-view `WKUserContentController`. The receiver accepts only the current main-frame committed document qualified by GH-542. It uses the native world/frame/document facts, not page event fields. It resolves the method only through the original app-world registry, checks the exact method/action allowlist, then enters the single GH-552 Host Guard. A page event cannot create or mutate that registry. The Host rechecks current document, role, exact channel, action and grant immediately before the effect.
-
-A2 does not use tokenless Bind to mint either new dual-world credential or emit `bound.document`. The current-document stamp and document-correlated Bind remain GH-540/GH-542 owner gates. The static page facade is visible before first inline, but it has no authority of its own. If the native app-world receiver cannot be installed and tied to the committed document before first inline, A2 is a feasibility NO-GO. Do not fall back to F0, page-world authentication, or A1.
-
-This is the selected design direction, not native proof. The first-inline hostile-page test, actual original-method invocation, zero forged Bun effects and independent custody receipt remain mandatory.
+The original app-world preload and native receiver share one per-view `WKUserContentController` and named `WKContentWorld`. The receiver accepts only the current GH-542-qualified committed main frame and trusts native world/frame/document facts, never page event fields.
+It resolves methods through the original app-world registry, checks exact method/action, then enters the single GH-552 Host Guard.
+Page events cannot create or mutate that registry; Host rechecks current document, role, channel, action and grant before effect.
+A2 never uses tokenless Bind to mint a credential or emit `bound.document`; GH-540/GH-542 own the current-document stamp and correlated Bind.
+The visible static facade has no authority. If native receiver cannot bind before first inline, A2 is NO-GO; do not fall back to F0, page-world authentication or A1.
+This is the selected direction, not native proof. Hostile-page, original-method, zero-forged-effect and custody tests remain mandatory.
 
 ### 4.6 Transport integration and real application witness
 
@@ -427,19 +456,18 @@ physical release, GH-544 for codec-local throw. The accepted
 secondary evaluator. No raw path, policy digest, socket, KIPC
 correlation, native nonce or scoped grant appears in page diagnostics.
 
-**Selected fail-closed early-call policy for this draft:** when a
-page-visible method is invoked before an actual #542 qualified app-world
-bind **or** without a captured live Bun generation, allocate **zero**
-pending native/transport records, return `undefined` for its declared
-void interface and emit one bounded Host-private typed admission
-refusal/diagnostic. Do not buffer, defer, replay, infer authorization
-from API visibility, attach work to a later role, throw retroactively
-or fabricate a `mainResp`. The application-level request callback
-does not fire. A paired granted call after bind must still work.
-If the pinned draw.io startup trace sends a required request during
-that interval, **C14 remains BLOCKED** until #484/#540/#542 prove
-a correct earlier admission/order or approve a revised finite policy;
-the rejection is not counted as application compatibility.
+**Selected fail-closed early-call policy for this draft:** a
+page-visible method invoked before a qualified #542 app-world bind
+or without a live Bun generation creates zero pending records.
+A void method returns `undefined`. It emits one bounded Host-private
+admission refusal. Do not buffer, defer, replay or infer authority
+from API visibility. Do not attach work to a later role or fabricate
+a `mainResp`. A pre-bind `electron.request` invokes neither callback.
+Its `requestSync` Promise remains pending until the realm is retired.
+A paired granted call after bind must still work.
+If draw.io requires this early request, C14 remains BLOCKED.
+#484/#540/#542 must prove earlier admission or approve a finite policy.
+The rejected request is not application compatibility.
 
 ### 4.8 Runtime seam, configuration, migration
 
