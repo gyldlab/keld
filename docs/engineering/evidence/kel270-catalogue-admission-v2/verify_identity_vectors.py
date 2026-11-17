@@ -48,8 +48,8 @@ def encode_v1(f):
     return DOMAIN1 + lp8(f["appId"], 255) + lp8(f["channel"], 16) + lp8(f["target"], 64) + bytes.fromhex(f["updatePublicKeyEd25519"])
 
 def encode_v2(f):
-    o = f["profileOid"].encode("ascii")
     oid(f["profileOid"])
+    o = f["profileOid"].encode("ascii")
     return (DOMAIN2 + lp8(f["appId"], 255) + lp8(f["channel"], 16) + lp8(f["target"], 64)
             + bytes.fromhex(f["updatePublicKeyEd25519"]) + b"\x01" + struct.pack(">H", len(o)) + o
             + b"".join(bytes.fromhex(f[n]) for n in ["issuerPolicySha256", "repositoryId", "repositoryPolicySha256", "discoveryPolicySha256"])
@@ -276,8 +276,16 @@ def build(output_dir: Path | None = None):
     case("app limit plus one",lambda:encode_v2({**f,"appId":"a"*256}),False)
     case("channel limit plus one",lambda:encode_v2({**f,"channel":"a"*17}),False)
     case("target limit plus one",lambda:encode_v2({**f,"target":"a"*65}),False)
-    for bad in ["1.03.6","1..6","3.1","1.40","2.4294967296","1.3.","1.3\n","1.+3","1.3 "]:
+    for bad in ["1.03.6","1..6","3.1","1.40","2.4294967296","1.3.","1.+3","1.3 "]:
         case("invalid oid "+repr(bad),lambda bad=bad:oid(bad),False)
+    def reject_profile_oid_variants():
+        for bad in ["1.3\n", "1.3\u2603"]:
+            try:
+                encode_v2({**f, "profileOid": bad})
+            except ValueError:
+                continue
+            raise AssertionError(f"accepted invalid profile OID: {bad!r}")
+    case("v2 rejects newline and non-ASCII profile OIDs",reject_profile_oid_variants)
     for kind,value in fixtures.items():
         b=canonical(value)
         case(kind+" canonical shape",lambda kind=kind,b=b:json_validate(kind,b))

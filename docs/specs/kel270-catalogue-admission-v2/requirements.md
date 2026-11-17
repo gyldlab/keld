@@ -384,73 +384,34 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
 
 ### AC-67: An expired prepared recovery aborts durably before retry
 
-- **Given:** A `prepared` journal, sealed prewrite inventory and pending pointer, with old metadata and application state still current.
-- Before that journal, any valid orphan N+1 from interrupted ordinary
-  refresh MUST be retired using D-24's protected ordinary intent
-  while no pending pointer exists. The repository lease MUST cover
-  retirement, verified absence, plan sealing and pointer publication.
-- An ambiguous ordinary orphan or mismatched intent MUST block recovery
-  before any new recovery journal or pending pointer is published.
+- **Given:** A `prepared` journal, sealed prewrite inventory and pending pointer. Old metadata and application state remain current.
+- Before that journal, D-24 MUST retire any valid ordinary N+1 orphan while no pointer exists. Hold the repository lease through retirement, absence, plan sealing and pointer publication.
+- An ambiguous ordinary orphan or mismatched intent MUST block recovery before a new journal or pointer.
 - **When:** The process crashes, the directive expires, and the recovery owner restarts.
-- **Then:** It refuses expired trust commit and readback-verifies terminal `aborted`.
-  It retires only present exact planned preparation objects before pointer removal.
-  It preserves established current/LKG.
-- Terminate before the first preparation blob, during blob publication,
-  before successor generation publication, and before current replacement.
-  Each cut with only absent or exact authenticated exclusive objects
-  MUST allow bounded abort without deleting shared or unrelated objects.
-  The complete protected plan MUST predate every preparation write.
-- An incomplete, corrupt or foreign canonical object MUST halt automated
-  cleanup, preserve old current, journal and pointer, and require
-  KEL-53 operator disposition. No deletion or orphan adoption is allowed.
-- Before deleting any preparation object, the owner MUST read back a D-23
-  retirement intent binding the aborted attempt, expected successor digest
-  and complete sealed exclusive-blob inventory. Planned objects MAY be
-  absent because they were never written or were already retired.
-  Unlisted, altered, foreign or live-referenced objects MUST refuse deletion.
-- Before deletion, the aborted journal MUST durably bind the exact intent
-  digest. After complete retirement readback, it MUST durably bind the same
-  completion digest before removing the intent.
-- With intent absent and both journal digests null, restart MUST verify
-  the protected prewrite plan, old state, pointer and all present planned
-  objects. It MUST publish a new D-23 intent before any deletion.
-- With intent absent and both journal digests non-null, restart MUST
-  verify equality, unchanged old state, matching attempt and absence
-  of the successor and all planned exclusive blobs.
-  It MAY remove only that pointer. Mixed or mismatched digests MUST refuse.
-- A distinct newly authorized replacement MUST be able to reuse the
-  immutable next-sequence filename after safe retirement. An abandoned
-  successor file MUST NOT silently grant trust or block the new attempt.
-- A new signed directive and fresh consent MAY start a new attempt only after verified pointer absence.
-- Recheck old generation, provenance, epoch, protected policies, destination, current/LKG, and browser binding.
+- **Then:** It refuses expired trust commit and readback-verifies terminal `aborted`. It preserves established current/LKG.
+- Retire present exact-or-partial planned objects only when the exact path is a regular non-reparse file with the expected owner SID and KEL-53 DACL. It MUST be unreferenced by current/LKG/previous-LKG and every other protected owner. Validate and delete through the same retained handle. Partial bytes are cleanup-only, never trust.
+- Terminate before the first preparation blob, during blob publication, before successor generation publication, and before current replacement. Each cut with absent, exact or partial-but-protected unreferenced objects MUST allow bounded abort. The complete protected plan MUST predate every write.
+- Before sealing, prove the successor and each listed exclusive-blob path absent under the complete owner census. Exclude existing authenticated shared blobs.
+- A partial/corrupt planned object MUST never be parsed, adopted or selected as trust. Delete it only after the durable D-23 intent and journal digest bind the same attempt and exact path, and owner/DACL, regular-file, retained-handle and unreachability checks pass.
+- A foreign/wrong-owner object, protection mismatch, reparse/directory, unlisted path or live reference MUST halt cleanup. Preserve old current, journal and pointer for KEL-53 operator disposition.
+- Before deletion, read back a D-23 intent binding the aborted attempt, expected successor digest and complete sealed exclusive-blob inventory. Planned objects MAY be absent because they were never written or were already retired.
+- Unlisted, altered-path, foreign, wrong-owner/DACL or live-referenced objects MUST refuse deletion. Digest/length mismatch alone classifies a planned object as partial. It never authorizes adoption.
+- Before deletion, the aborted journal MUST durably bind the exact intent digest. After retirement readback, it MUST bind the same completion digest before intent removal.
+- With intent absent and both journal digests null, verify the prewrite plan, old state, pointer and all present exact-or-partial planned objects with expected owner/DACL and no references. Publish a new D-23 intent before deletion.
+- With intent absent and both journal digests non-null, verify equality, unchanged old state, matching attempt and absence of the successor and all planned blobs. It MAY remove only that pointer. Mixed or mismatched digests MUST refuse.
+- A distinct newly authorized replacement MUST reuse the immutable next-sequence filename after safe retirement. An abandoned successor MUST NOT grant trust or block the new attempt.
+- A new signed directive and fresh consent MAY start only after verified pointer absence. Recheck old generation, provenance, epoch, protected policies, destination, current/LKG and browser binding.
 - An altered replacement or ambiguous first attempt MUST refuse without replacing established trust.
 - **Negative control:**
-  - **Single fault:** Resume the expired `prepared` journal as though its original directive remained valid.
-  - **At-risk precondition:** Keep source, replacement graph, and all unrelated authorization checks valid.
+  - **Single fault:** Resume the expired `prepared` journal as if its original directive remained valid.
+  - **At-risk precondition:** Keep source, replacement graph and all unrelated authorization checks valid.
   - **Expected RED:** The stale attempt commits trust without fresh authority or leaves conflicting pending state.
-  - **Additional independent fault:** Remove or change only the completion digest after intent removal.
-  - **Additional condition:** The aborted journal, old state and pointer remain valid; the intent is absent.
-  - **Additional RED:** Restart removes the pointer or admits a new attempt without matching completion evidence.
-  - **Additional independent fault:** Remove the sealed prewrite inventory before the first preparation write.
-  - **Additional condition:** The pointer remains and only some planned objects exist when the directive expires.
-  - **Additional RED:** The owner deletes a shared/unlisted object or commits a partial successor.
-  - **Additional independent fault:** Refuse initial-intent creation whenever both journal digests remain null.
-  - **Additional condition:** The aborted journal and matching pointer are valid; all present preparation objects match the plan.
-  - **Additional RED:** The next authorized attempt remains blocked despite valid bounded cleanup.
-  - **Additional independent fault:** Truncate one canonical planned blob
-    during its first write while all other protected evidence remains valid.
-  - **Additional RED:** Cleanup deletes or adopts the damaged blob, removes
-    the pointer or changes established current without operator disposition.
-  - **Additional independent fault:** Leave an authentic uncommitted
-    ordinary-refresh N+1, normal epoch and valid D-24 retirement evidence
-    before starting recovery. Without predecessor cleanup, recovery's
-    immutable N+1 conflicts with different epoch and remains blocked.
-  - **Additional condition:** Keep old current valid, no pending pointer
-    and exact ordinary orphan ownership. Also test a foreign or corrupt
-    ordinary orphan independently.
-  - **Additional RED:** Recovery creates its journal/pointer over the
-    ordinary orphan, or deletes a foreign one. Correct behavior retires
-    only the authentic ordinary orphan first, or refuses before recovery.
+  - **Additional fault:** Remove the completion digest after intent removal. Keep the aborted journal, old state and pointer valid. The intent is absent. **Expected RED:** Restart removes the pointer or admits a new attempt without matching completion evidence.
+  - **Additional fault:** Remove the sealed prewrite inventory before the first write. Keep the pointer and some planned objects. **Expected RED:** The owner deletes a shared/unlisted object or commits a partial successor.
+  - **Additional fault:** Refuse initial-intent creation when both journal digests are null. Keep the aborted journal, matching pointer and planned objects valid. **Expected RED:** The next authorized attempt remains blocked despite valid bounded cleanup.
+  - **Additional fault:** Truncate a planned blob or successor during its first write. Keep its owner/DACL correct and prove no protected references. **Expected RED:** Cleanup refuses bounded abort, adopts the object, deletes another object, or changes established current. It must delete only the partial planned object after both durable records.
+  - **Additional fault:** Replace a planned path with a foreign owner, wrong DACL, reparse point, directory or live reference. **Expected RED:** Cleanup deletes that object or removes the pointer instead of preserving evidence for KEL-53 operator disposition.
+  - **Additional fault:** Leave an authentic ordinary N+1 orphan, normal epoch and valid D-24 evidence before recovery. Keep old current valid and no pointer. **Expected RED:** Recovery writes its journal over the orphan or deletes a foreign orphan. It must retire only the authentic ordinary orphan first, or refuse.
 
 ### AC-68: Loss-only policy changes are limited to bootstrap root replacement
 

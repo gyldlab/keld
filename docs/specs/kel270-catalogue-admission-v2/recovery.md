@@ -280,7 +280,9 @@ final exclusive blob inventory. Never seal a plan calculated before
 ordinary orphan retirement.
 Keep the repository lease while sealing the recovery plan and publishing
 its journal and pointer. No ordinary writer may publish N+1 between
-this retirement check and the D-68 pending pointer.
+this retirement check and the D-68 pending pointer. Before sealing, prove
+the successor path and every new exclusive-blob path absent under the complete
+protected-owner census. Exclude existing authenticated shared blobs.
 Bind the exact planned successor generation digest and exclusive list before
 writing any preparation object. A caller cannot supply or amend this plan.
 Both retirement fields are null in `prepared`. The recovery owner sets each
@@ -321,15 +323,21 @@ Only the KEL-53 recovery owner may abort under the existing repository and insta
 First verify the protected journal, pending pointer, original signature evidence, and exact installed source generation.
 Check the old epoch, provenance, policy pins, and unchanged application current/LKG and browser bindings.
 Check that the metadata current pointer still selects the old generation and no trust or activation effect occurred.
-An absent successor or a partly published set of complete preparation
-objects is not committed trust. A present canonical successor or blob
-MUST match its journal-bound digest, length, protection and ownership.
-A truncated, corrupt, foreign or partially written canonical object
-MUST halt cleanup. Preserve the pointer, journal and established current
-for the KEL-53 operator. Never delete or adopt that object automatically.
-The prewrite plan distinguishes exact preparation paths from unrelated
-shared files. Retain present exact planned objects until bounded cleanup
-while the matching pending pointer guards the repository.
+An absent successor or a partly published set of preparation objects is
+not committed trust. A prepared transaction may commit only after every
+required object matches its journal-bound digest and length. During abort,
+no planned object is adopted; an object whose bytes are truncated or corrupt
+is cleanup-only and MAY be retired when the sealed prewrite plan and terminal
+aborted journal name its exact path, the object is a regular non-reparse file with the exact
+store-owner SID and KEL-53 DACL profile, and it is unreachable from
+current/LKG/previous-LKG and every other protected owner. Open it relative
+to the retained parent, validate through that handle, and delete through the
+same handle; never reopen the pathname after validation. The matching
+pending pointer and leases remain held throughout. A partial/corrupt object
+MUST never be parsed, adopted, or selected as trust. A foreign or wrong-owner
+object, protection mismatch, reparse/directory, unlisted path, or live
+reference MUST halt cleanup and preserve the pointer, journal and established
+current for KEL-53 operator disposition.
 Any ambiguous or changed state MUST refuse abortion and preserve all evidence for diagnosis.
 Persist and reread terminal `aborted` before any cleanup. Under the same
 metadata, installation and physical-profile leases, first publish, flush
@@ -337,28 +345,35 @@ and read back the D-23 mode-`recovery` retirement intent. Bind its exact
 attempt ID, protected old/current, expected successor digest, complete
 prewrite exclusive-blob inventory and matching pending pointer to the aborted
 journal. It MUST bind paths that were planned but never written.
-Verify every present listed object is exact, exclusively owned and
-unreferenced. Refuse unexpected attempt-owned preparation objects,
-foreign ownership or live-referenced deletion targets.
+Verify every present listed object is exact or partial, has the expected
+store owner and DACL on its retained handle, and is unreferenced. Refuse
+unexpected attempt-owned preparation objects, foreign ownership, protection
+mismatch, reparse/directory objects or live-referenced deletion targets.
 Compute SHA-256 over the exact readback-verified intent bytes.
 Persist and reread that digest in the aborted journal's
 `retirementIntentSha256` field BEFORE any object deletion.
 If the journal intent digest is non-null, an existing intent MUST match
 that digest, the sealed plan, attempt and protected old state.
 If restart finds an intact intent but a null journal intent digest,
-verify every present listed object has exact bytes and protection.
-A listed absent object may be unwritten. Refuse unexpected attempt-owned
-preparation objects or foreign-owned candidate objects.
+verify every present listed object is an exact-or-partial planned regular
+file with the expected owner and DACL on its retained handle, and remains
+unreferenced. A listed absent object may be unwritten. Refuse unexpected
+attempt-owned preparation objects, foreign-owned objects, protection
+mismatches, reparse points, directories or live references.
 Also verify the complete sealed plan, old state and matching pending pointer.
 Only then persist and reread the intent digest. Delete nothing before
 that readback. A non-null mismatched journal digest MUST halt.
 No object deletion may precede both durable records. Retire only present
-exact planned blobs and the uncommitted successor generation at
+exact-or-partial planned blobs and the uncommitted successor generation at
 `generations/<oldSequence+1>.json`. The successor and planned blobs MAY
 be absent before first publication or after interrupted retirement.
-Verify each present object's digest, protection and exclusive ownership.
-Prove none is selected by current, LKG, previous LKG or another
-protected owner. Absence alone never proves exclusive ownership.
+For each present object, verify the exact planned path, regular non-reparse
+type, expected owner SID and KEL-53 DACL through one retained handle. Prove
+none is selected by current, LKG, previous LKG or another protected owner.
+Delete only through that same handle. A digest/length mismatch classifies
+the object as partial/corrupt cleanup residue, never as trust. Owner/DACL
+mismatch, foreign or unlisted path, reparse/directory type, or a live
+reference MUST halt. Absence alone never proves exclusive ownership.
 The aborted journal remains as bounded diagnostic evidence; its destination
 digest is historical, not live authority to keep uncommitted successor bytes.
 The immutable next-sequence filename MUST be absent before a new attempt
@@ -378,8 +393,9 @@ Only then remove the D-23 intent and durably verify its path absent.
 
 After a crash with the intent present, resume only under that exact intent.
 If the intent is absent and both journal digests are null, cleanup has
-not started. Verify the sealed prewrite plan and every present exact
-unreferenced preparation object. A planned object MAY be absent.
+not started. Verify the sealed prewrite plan and every present exact-or-partial
+unreferenced preparation object using the same owner/DACL and retained-handle
+checks. A planned object MAY be absent.
 Refuse unexpected attempt-owned objects, divergent candidate digest
 or foreign ownership. Leave existing authenticated shared blobs untouched.
 Recheck the journal, old state and pointer before publishing a D-23 intent.
@@ -406,10 +422,10 @@ Reject a stale directive or a changed replacement without changing the establish
 | No journal, no pointer, no ordinary orphan or intent, and no unreferenced blobs | Established state remains authoritative. No retirement is needed. |
 | Before manual journal, no pointer, ordinary N+1 orphan, blob-only residue or either ordinary intent | Finish exact D-24 retirement under the repository lease. Verify N+1, D-23 intent, and unreferenced blobs absent before writing the recovery journal. Ambiguous state halts without deletion. |
 | `prepared`, old metadata current, directive valid | Reverify the original authorization and all source/policy bindings, then commit or refuse. |
-| `prepared`, old metadata current, directive expired | Verify no trust or application effect. Durably mark `aborted`. Retire only present exact planned preparation under a D-23 intent. Clear the pointer after old-state verification. |
+| `prepared`, old metadata current, directive expired | Verify no trust or application effect. Durably mark `aborted`. Retire present exact-or-partial planned preparation only with expected owner/DACL, regular non-reparse type and no protected references under a D-23 intent. Clear the pointer after old-state verification. |
 | `prepared`, new metadata current | Match the recorded destination generation. Advance the journal without repeating the epoch change. |
 | `aborted`, old metadata current, intent present | Match the journal-bound intent digest, finish only its listed retirement, persist exact completion digest, verify intent removal, then clear the pointer. |
-| `aborted`, old metadata current, intent absent, both digests null | Verify the sealed plan and each present exact unreferenced preparation object. Permit planned objects not written. Publish the initial D-23 intent before deletion. |
+| `aborted`, old metadata current, intent absent, both digests null | Verify the sealed plan and each present exact-or-partial unreferenced preparation object with expected owner/DACL and retained-handle identity. Permit planned objects not written. Publish the initial D-23 intent before deletion. |
 | `aborted`, old metadata current, intent absent, both digests non-null | Require equal journal digests, old state, matching attempt and absence of every planned object. Clear only the pointer. |
 | `aborted`, mixed digests or mismatched plan or unlisted object | Halt. Do not delete or remove the pointer. |
 | `trust-committed` | Complete the exact activation binding. Refuse all unrelated selection until that binding exists. |
@@ -426,12 +442,13 @@ If metadata current is new, finish only the committed exact attempt under the re
 No normal update may run while a manual-recovery journal is pending.
 Include process-termination cuts before the first preparation blob, during
 each blob publication, before successor generation publication, and before
-current replacement. Expiry at each cut with only absent or exact,
-authenticated, exclusively owned preparation objects MUST permit finite
-abort without unauthorized deletion. A malformed or foreign canonical
-object MUST halt automatic cleanup with the original pointer and evidence
-preserved for KEL-53 operator disposition. Repeat each applicable cut
-with physical power loss.
+current replacement. Expiry at each cut with absent, exact, or partial
+planned objects that retain the expected owner/DACL and are unreferenced
+MUST permit finite abort without unauthorized deletion. A foreign or
+wrong-owner object, protection mismatch, reparse/directory, unlisted path,
+or referenced object MUST halt automatic cleanup with the original pointer
+and evidence preserved for KEL-53 operator disposition. Repeat each
+applicable cut with physical power loss.
 All persisted edges need process-termination and separately named physical-power-loss qualification.
 
 ### D-67: State the limits of complete recovery

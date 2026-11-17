@@ -9,9 +9,10 @@ Owns: Definition and native evidence, performance limits, and open release or ap
 
 - **Run:** `python3 -B docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py --check`.
 - **n:** 94 definition checks. The exact output digest is in the compact review receipt.
-- **Environment:** Python 3.10 or newer with the test-only `cryptography`
-  package. Local qualification used version 46.0.5.
-  A future hosted hook needs the separate B-82 trusted-base approval.
+- **Environment:** Python 3.10 or newer with test-only `cryptography`.
+  Local qualification used 46.0.5. The B-82 candidate workflow pins 50.0.2
+  and verifies its wheel hashes. Its hosted run is evidence, not trusted-base
+  authorization, until B-82 integration is approved.
 - **Limits:** This validates candidate bytes and signature domains. It does not execute product codecs, Authenticode, Windows storage, or migration.
 
 The vector files contain synthetic public fixture keys and identities. They commission no real authority.
@@ -145,15 +146,20 @@ commissioning; those remain separate T-81/AC-66 gates.
 | Group | Positive | Single-fault refusal and independent oracle |
 |---|---|---|
 | R1 / AC-66 | Genuinely independent recovery signer accepted under pinned durable profile/issuer, including a renewed leaf with a different SPKI | Ordinary application signer, recovery signer on an ordinary candidate, or a dual-profile leaf with valid Authenticode and directive must fail the role-specific signer predicate; record zero trust mutations |
-| R2 / AC-67 | Expire `prepared` with zero, some or all exact preparation objects published. Durably abort, retire exact planned objects and start a fresh authorized attempt | Truncated or foreign canonical objects halt for KEL-53 operator disposition. Stale directive, missing completion or divergent journal refuses. Check pointer, old current/LKG, epoch and planned objects at each crash cut |
+| R2 / AC-67 | Expired prepared abort with absent, exact and partial planned objects. Retire only protected, unreferenced objects before retry. | Foreign, unprotected, unlisted or referenced objects halt. See AC-67 and the R2 crash cuts below. |
 | R3 / AC-68 | Old U1 signer unavailable. Valid signed recovery-only Host/directive, fresh consent, new root and U2 complete loss-only recovery | Missing independent recovery authority refuses before trust commit. A normal transition without U1 signature refuses under AC-61. Single-field repository-policy mutations refuse. Check current, provenance, and epoch before and after |
 
-For R2, cut after prepared-journal and pointer readback, before the
+For R2, prove every planned path absent before sealing. Exclude existing
+shared blobs. Cut after prepared-journal and pointer readback, before the
 first preparation blob, during each blob write, before successor
 publication and before current replacement. For present canonical
-objects, distinguish fully authenticated and exclusively owned bytes
-from truncated, corrupt or foreign bytes. The former permits bounded
-retirement; the latter MUST halt without deletion or pointer removal.
+objects, distinguish exact bytes, partial/corrupt bytes, and foreign or
+unprotected objects. Exact and partial planned objects permit bounded
+retirement only when the exact plan path, regular non-reparse type, expected
+owner SID, KEL-53 DACL, retained handle and complete unreachability proof
+all pass. Partial bytes are never parsed or adopted. Foreign/wrong-owner,
+wrong-DACL, reparse/directory, unlisted or referenced objects MUST halt
+without deletion or pointer removal.
 Before the first recovery journal, leave an authenticated uncommitted
 ordinary-refresh N+1 or D-23 ordinary intent from a prior crash.
 Require D-24 retirement and verified absence under the same lease.
@@ -165,19 +171,22 @@ Also cut ordinary refresh after zero, one, and many blob writes, before
 N+1 publication. The blob-only case MUST create its own authenticated
 D-23 intent before deletion. Check the retained current, all owner references,
 pointer absence, exact blob inventory, and N+1 absence on every restart.
-Mutate one blob, owner ACL, intent field, live reference, or pending pointer
-independently. Each MUST refuse deletion. Cut after intent publication,
+Prepopulate a planned path before sealing and require refusal without deletion.
+Mutate planned blob bytes/length while retaining the expected owner/DACL and
+no references; cleanup MUST retire that partial object without adopting it.
+Mutate owner/DACL, intent field, live reference, or pending pointer
+independently; each MUST refuse deletion. Cut after intent publication,
 each listed deletion, and intent removal. Prove a new valid N+1 remains writable.
-For R2, also cut before retirement-intent publication and after its journal digest readback.
-Cut after every exclusive blob deletion and after orphan-generation deletion.
-Also cut after durable completion-digest readback, after intent removal,
-and before pending-pointer removal. With the intent present, restart
-MUST finish only its listed cleanup. With the intent absent, restart
-MUST publish the first intent for both null journal digests, or verify
-equal non-null digests and all planned-object paths absent before
+For R2, also cut before retirement-intent publication and after its
+journal-digest readback. Cut after every exclusive-blob deletion and after
+orphan-generation deletion. Also cut after durable completion-digest
+readback, after intent removal, and before pending-pointer removal. With the
+intent present, restart MUST finish only its listed cleanup. With the intent
+absent, restart MUST publish the first intent for both null journal digests,
+or verify equal non-null digests and all planned-object paths absent before
 pointer-only removal.
 Remove or mismatch the completion digest as separate single-fault controls.
-Both MUST refuse pointer removal and fresh admission. Unexpected
+Both MUST refuse pointer removal and fresh admission. Unlisted
 attempt-owned or newly referenced objects MUST halt without deletion.
 For R3, independently mutate recovery digest, recovery signer, catalogue keys, metadata/targets URLs, discovery digest, publisher digest, and root version.
 Keep Windows signature validity, source-state integrity, and unrelated checks valid in each negative control.

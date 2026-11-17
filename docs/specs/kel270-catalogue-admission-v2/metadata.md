@@ -131,8 +131,11 @@ the complete orphan and its references before intent publication.
 The blob-only list MUST be nonempty and cover every unreferenced blob from
 the protected store census. The intent cannot invent a missing generation.
 Recovery retirement may include a not-yet-written successor or blob only when
-D-65's protected prewrite plan and terminal aborted journal name it.
-An absent planned object never authorizes deletion of another object.
+D-65's protected prewrite plan and terminal aborted journal name it. A present
+planned object with incomplete or corrupt bytes is cleanup-only: D-65 may retire
+it under the same attempt, owner/protection and unreachability proofs, but it
+MUST never be parsed, adopted, or treated as committed trust. An absent planned
+object never authorizes deletion of another object.
 For recovery mode, D-65 also binds the exact intent SHA-256 in the
 protected aborted journal before deletion. A matching durable completion
 digest MUST precede intent removal. Keep both journal digests through
@@ -245,8 +248,22 @@ For D-65 manual recovery only, a verified expired `prepared` journal,
 matching D-68 pending pointer, protected old `current` and terminal
 readback-verified `aborted` phase are required. The protected journal
 MUST predate all preparation writes and bind the complete expected exclusive
-blob list. Verify each present planned object by digest, protection and
-retained owner. An absent planned object may not have been written.
+blob list. Before sealing the plan, prove the successor path and every listed
+exclusive-blob path absent under the complete protected-owner census. List
+only absent new paths; exclude existing authenticated shared blobs. An absent
+planned object may not have been written. A present
+planned object is opened relative to its retained parent without following
+reparse points. The same retained handle MUST prove a regular-file object,
+the exact store-owner SID and KEL-53 DACL profile. Keep that same handle open
+and use it for deletion; never reopen the pathname after validation. The
+object MUST be unreachable from
+current/LKG/previous-LKG and every other protected owner. Exact digest/length
+means the complete planned object; a digest/length mismatch means partial or
+corrupt bytes. Both may be retired as cleanup-only objects after the durable
+D-23 intent and journal digest below. A partial/corrupt object MUST never be
+parsed, adopted, or selected as trust. Owner/DACL mismatch, reparse/directory
+type, unlisted path, or any live reference MUST halt and preserve the pointer,
+journal, and established current for operator disposition.
 Refuse unlisted attempt-owned preparation objects, not unrelated
 authenticated shared objects. Before any deletion, the recovery owner MUST
 durably publish and read back a D-23 intent at
@@ -255,8 +272,9 @@ durably publish and read back a D-23 intent at
 exclusively owned preparation blobs. It MUST prove that no present object
 is reachable from current/LKG/previous-LKG or another protected owner.
 Continue deletion only with the authenticated intent and pending pointer.
-Delete only present exact intent-listed objects. An absent listed object needs
-no deletion. Unlisted preparation, changed protected state or ambiguous
+Delete only present exact-or-partial intent-listed objects whose same-handle
+owner/protection and unreachability checks above pass. An absent listed object
+needs no deletion. Unlisted preparation, changed protected state or ambiguous
 ownership MUST halt without deletion. Verify the successor path and all listed
 blobs absent, the old current,
 provenance, epoch, application and UTC floors unchanged. Before removing
@@ -264,9 +282,11 @@ the intent, durably record and reread the matching completion digest in
 the aborted recovery journal. Then remove and reread the intent as absent.
 If restart finds the pointer, no intent and both journal digests null,
 cleanup has not started. Verify the complete protected prewrite plan,
-old state, attempt and every present exact unreferenced planned object.
-Refuse unlisted attempt-owned preparation objects, changed candidate
-bytes and foreign ownership. Leave unrelated shared blobs untouched.
+old state, attempt and every present exact-or-partial unreferenced planned
+object using the same owner/protection and retained-handle checks above.
+Refuse unlisted attempt-owned preparation objects, changed journal-bound
+expected digests, altered plans and foreign ownership. Leave unrelated
+shared blobs untouched.
 Publish and reread the D-23 intent before any deletion.
 If both journal digests are non-null, require equality and matching old
 state and attempt. Verify the expected successor and all journal-planned

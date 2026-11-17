@@ -69,7 +69,7 @@
     "identity": {
       "passed": 94,
       "failed": 0,
-      "sha256": "70bd03deb5d287a97d8ec6044351f811a6fad42df467ff72545a3dc39c917e52",
+      "sha256": "6721d0a8356bfc42bf3fb42d1b5bcc2b9c3b38a560689001c7109e68122393df",
       "source": "verify_identity_vectors.py",
       "qualification": "synthetic grammar and signatures only; no native Windows result"
     },
@@ -86,16 +86,16 @@
     "docs/engineering/evidence/kel270-catalogue-admission-v2/identity-vectors.json": "400e007fc279f1895910aeeaaf5b3c78788656cc5982b6f49eeeee6fae3caf51",
     "docs/engineering/evidence/kel270-catalogue-admission-v2/metadata-golden.json": "e9c0eb71df1a8c6f62373a8977c20405afc54f83752a7da4b7f3e6e582a7abea",
     "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_evidence_capacity.py": "37364937a7909b3a8700b24b47b86dd6e3e8fb3d49b65dc4d475b945edcb2373",
-    "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py": "a190748447ce6b9330f81215f93eb7b4ff8c52f2dcb77d692709405a3430506a",
+    "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py": "d4ffb85035632fbd4a498dd1bf646f2a31603441bfb10092935f78695a32c207",
     "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py": "eff04319abf7df5aa4b384f611f067c0538ee6535b8e1de26b14e47c38003bbe",
     "docs/specs/kel270-catalogue-admission-v2/identity.md": "5634bd627985407710fd13e72fa8bde8345c26c88bf2890d3c1ea9b672561ece",
-    "docs/specs/kel270-catalogue-admission-v2/implementation.md": "01aa9b7df3c79273acb6ff82e26ea167a8479924798e7e784cb2b8e292b7534e",
-    "docs/specs/kel270-catalogue-admission-v2/index.md": "32d6293dd15c6804f00e0754597a0d5ad974196e8e6199a5857cfc8fce3a16d7",
+    "docs/specs/kel270-catalogue-admission-v2/implementation.md": "6310481279ac6f147c954107b22d3eb4e917718e2dfc65196200dcc74a3399fa",
+    "docs/specs/kel270-catalogue-admission-v2/index.md": "b99a38dc9d4cf825533f2db8a84329828a4bd6b7fa18bde6301cdece7369b278",
     "docs/specs/kel270-catalogue-admission-v2/integration.md": "10ea8844e3baa1a9799f2a7b4d76f2d394da6d23564bc9769aa038ab285b3a0d",
-    "docs/specs/kel270-catalogue-admission-v2/metadata.md": "1df72cd380a935f26b57788894fd325cd9a67c7c803337a4b3eea40d737605f8",
-    "docs/specs/kel270-catalogue-admission-v2/qualification.md": "fe8288a18594d5771ee69067ad5d8810a5770e74091982246ab0301de14ffea3",
-    "docs/specs/kel270-catalogue-admission-v2/recovery.md": "6b92340c7b3069b0ef34d3c28b035fd9483f3288f2df87d78d7e919fb89ed4fa",
-    "docs/specs/kel270-catalogue-admission-v2/requirements.md": "b127d3c7dacf2e7521ea91a707a3729188937abef8103d2a8b91bcaec50ac165",
+    "docs/specs/kel270-catalogue-admission-v2/metadata.md": "54418a58f76705fda8996a3da99370c0c77f4f7bf60ef6d78d27e4dbea3abbf0",
+    "docs/specs/kel270-catalogue-admission-v2/qualification.md": "f475489a3a143c0c8c9a0e7c54743534bb5ccc2ecc2149aa9d824df20510ee35",
+    "docs/specs/kel270-catalogue-admission-v2/recovery.md": "0292fb99dd497b1d096dd428d8008dc0b937db6cb221c34e50aa300020caba00",
+    "docs/specs/kel270-catalogue-admission-v2/requirements.md": "f68ad1b2ca2b2e35bba5558d26188834c3bd5de9c03110c8c142d64357b75ea1",
     "docs/specs/kel270-catalogue-admission-v2/windows.md": "4bf869fb42468b7bdaa07c75367177f192df65495fd068119f7819b3b52748dc"
   },
   "reproduction": {
@@ -111,6 +111,7 @@
     "original_planned_product_cases": 110,
     "new_synthetic_review_cases": "NOT_NATIVE",
     "independent_exact_head_design_review": "PENDING",
+    "partial_prepared_object_disposition": "PROPOSED_FOR_EXACT_HEAD_REVIEW: the sealed plan proves each new path absent before writes; exact or partial planned regular files may be retired only with expected owner/DACL, same retained handle and no protected references; foreign, protection-mismatched, unlisted, reparse or referenced objects halt; partial bytes are never adopted",
     "human_signoff": "PENDING",
     "production_signing_and_recovery_authority": "NOT_COMMISSIONED",
     "merge_release": "DO_NOT_MERGE_OR_RELEASE"

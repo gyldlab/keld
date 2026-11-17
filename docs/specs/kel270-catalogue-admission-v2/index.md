@@ -3,7 +3,7 @@
 - Status: draft
 - Tracker: KEL-270
 - Owner: Monish Khandelwal, specification sign-off
-- Updated: 2026-11-15
+- Updated: 2026-11-17
 - Pin: ec29b7ce2b155a8c98f96036cbb9c54488b5c302
 
 ## 1. Goal & non-goals

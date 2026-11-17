@@ -166,10 +166,15 @@ Reject ordinary application signers, unattended recovery, unauthorized policy ch
 - **Blocked by:** T-61, T-60, T-23, T-2
 
 Implement D-65 and D-66 without another writer. Run AC-63, AC-64, and AC-67.
-Crash after `prepared`, terminal `aborted`, and pending-pointer removal.
-Require idempotent retirement of the exact unreferenced prepared successor
-generation before pointer removal. A new attempt MUST be able to write
-different independently authorized bytes at the required old-sequence-plus-one path.
+Prove successor and new exclusive-blob paths absent before sealing the plan.
+Exclude existing shared blobs. Crash after `prepared`, terminal `aborted`, and pending-pointer removal.
+Require idempotent retirement of exact or partial unreferenced planned
+successor/blob objects only when the sealed plan, regular non-reparse type,
+expected owner SID, KEL-53 DACL, retained handle and complete protected-owner
+unreachability proof agree. Delete through the same handle; never adopt partial
+bytes. Foreign, wrong-owner/DACL, unlisted, reparse, directory or referenced
+objects MUST halt. A new attempt MUST be able to write different independently
+authorized bytes at the required old-sequence-plus-one path.
 Observe the metadata epoch and current/LKG state independently before a fresh attempt.
 Qualify loss-only recovery separately from fresh-v2 and legacy cells.
 
