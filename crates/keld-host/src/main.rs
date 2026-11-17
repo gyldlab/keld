@@ -576,6 +576,7 @@ mod tests {
 
     // Production Host paths are canonical; Darwin temp_dir can spell /var as
     // an alias to /private/var, so the positive fixtures must do the same.
+    #[allow(clippy::expect_used)] // native test fixture cannot proceed without its scratch root
     fn canonical_tempdir() -> tempfile::TempDir {
         let base = std::env::temp_dir()
             .canonicalize()

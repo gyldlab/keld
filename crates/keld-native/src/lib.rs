@@ -9,6 +9,9 @@
 /// Authentication contracts; the guarded runtime broker is being implemented.
 pub mod auth;
 pub mod fs;
+/// Native read-only macOS mount-ownership evidence for protected dev stages.
+#[cfg(target_os = "macos")]
+pub mod macos_dev_stage_volume;
 
 #[cfg(test)]
 #[path = "../build.rs"]

@@ -2392,6 +2392,32 @@ fn configure_guardian_boot_mode(command: &mut Command, ready_trigger: AppReadyTr
 }
 
 #[cfg(target_os = "macos")]
+fn guardian_stage_executable(root: &Path) -> Result<PathBuf, HostAppError> {
+    // The boot validator selected the canonical root of the running staged
+    // Host. A second current_exe() may still name a replaceable invocation
+    // symlink outside that root. Re-exec the sole fixed staged Host leaf.
+    let executable = root.join("keld-host");
+    let metadata = std::fs::symlink_metadata(&executable)
+        .map_err(|source| app_io("guardian staged executable", &source))?;
+    if !metadata.is_file() {
+        return Err(target_error(
+            "guardian staged executable",
+            "the staged Host executable is not a regular non-symlink file",
+        ));
+    }
+    let canonical = executable
+        .canonicalize()
+        .map_err(|source| app_io("guardian staged executable", &source))?;
+    if canonical != executable {
+        return Err(target_error(
+            "guardian staged executable",
+            "the staged Host executable must be the canonical direct stage child",
+        ));
+    }
+    Ok(executable)
+}
+
+#[cfg(target_os = "macos")]
 #[allow(clippy::too_many_lines)] // one startup/cleanup state machine keeps every owned handle transition contiguous
 fn run_app(
     boot: AppBootSelection,
@@ -2429,8 +2455,7 @@ fn run_app(
     let entry_metadata = entry_file
         .metadata()
         .map_err(|source| app_io("validated entry identity", &source))?;
-    let executable =
-        std::env::current_exe().map_err(|source| app_io("current executable", &source))?;
+    let executable = guardian_stage_executable(&root)?;
     let mut guardian_command = Command::new(executable);
     guardian_command
         .arg(keld_runtime::macos_guardian::SUPERVISED_GUARDIAN_ARG)
