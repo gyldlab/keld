@@ -521,10 +521,20 @@ fn assess_file_origin(receipt: &Value) -> Result<(), String> {
                 "actual file origin observation disagrees in {phase}: {page}"
             ));
         }
-        let matched = events.iter().any(|event| {
-            if event["phase"] != phase || event["kind"] != "web-message" {
-                return false;
-            }
+        // Exactly one native-owned observation is expected per document phase.
+        // `any` would let one valid callback conceal a conflicting sender,
+        // foreign Source, or duplicate/replayed observation in the same phase.
+        let messages: Vec<_> = events
+            .iter()
+            .filter(|event| event["phase"] == phase && event["kind"] == "web-message")
+            .collect();
+        if messages.len() != 1 {
+            return Err(format!(
+                "ambiguous native WebMessageReceived count for {phase}: {}",
+                messages.len()
+            ));
+        }
+        let matched = messages.into_iter().any(|event| {
             let data = &event["data"];
             let Some(raw) = data["raw_body"].as_str() else {
                 return false;
@@ -827,6 +837,33 @@ mod ac06_overlap_receipt_tests {
         assert!(
             assess_file_origin(&missing).is_err(),
             "missing native page WebMessageReceived was accepted"
+        );
+        // An accepted callback must not mask a second, contradictory callback
+        // for the same phase. A positive native source is not exclusive proof.
+        let mut mixed_sender = good.clone();
+        mixed_sender["events"]
+            .as_array_mut()
+            .expect("sample events")
+            .push(json!({
+                "phase":"host-header","kind":"web-message",
+                "data":{"canonical_sender":false,
+                    "native_source":"file:///D:/foreign/index.html",
+                    "view_source":uri,"raw_body":body}
+            }));
+        assert!(
+            assess_file_origin(&mixed_sender).is_err(),
+            "valid native Source masked a conflicting same-phase callback"
+        );
+
+        let mut replay = good.clone();
+        let repeated = replay["events"][0].clone();
+        replay["events"]
+            .as_array_mut()
+            .expect("sample events")
+            .push(repeated);
+        assert!(
+            assess_file_origin(&replay).is_err(),
+            "duplicate native-owned observation accepted as unique proof"
         );
     }
 }
