@@ -293,6 +293,9 @@ fn verify_native_same_uri_overlap(
                     && Some(id) != top_id
                     && frame_completed["data"]["navigation_id"].as_u64() == Some(id)
             })
+        // A cancelled held iframe may legitimately report success=false, but
+        // the native IsSuccess status must be present and boolean either way.
+        && frame_completed["data"]["success"].as_bool().is_some()
         && held["data"]["real_deferral"] == true
         && held["data"]["uri"] == receipt["uri"]
         && held["data"]["source_kind"] == 1
@@ -638,6 +641,24 @@ mod ac06_overlap_receipt_tests {
         assert!(
             check(&absent_completion).is_err(),
             "absent iframe completion accepted"
+        );
+
+        // A terminal iframe event without a native IsSuccess result cannot
+        // establish that the held frame was actually completed or cancelled.
+        let mut missing_completion_status = good.clone();
+        missing_completion_status[6]["data"]
+            .as_object_mut()
+            .expect("sample frame completion")
+            .remove("success");
+        assert!(
+            check(&missing_completion_status).is_err(),
+            "iframe completion without native success status accepted"
+        );
+        let mut forged_completion_status = good.clone();
+        forged_completion_status[6]["data"]["success"] = json!("unknown");
+        assert!(
+            check(&forged_completion_status).is_err(),
+            "nonboolean iframe completion status accepted"
         );
 
         let mut delayed_completion = good.clone();
