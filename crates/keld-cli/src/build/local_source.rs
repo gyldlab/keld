@@ -1793,16 +1793,17 @@ mod tests {
         let child_script = temporary.join("descendant.ps1");
         let parent_started = temporary.join("parent-started.marker");
         let started = temporary.join("descendant-started.marker");
-        let descendant_stdout = temporary.join("descendant.stdout");
-        let descendant_stderr = temporary.join("descendant.stderr");
+
         fs::write(
             &child_script,
             b"try {\n$process = [System.Diagnostics.Process]::GetCurrentProcess()\n[System.IO.File]::WriteAllText($env:KELD_TEST_DESCENDANT_STARTED, ('{0}:{1}' -f $PID, $process.StartTime.ToUniversalTime().Ticks))\nStart-Sleep -Seconds 60\n} catch {\n[System.IO.File]::WriteAllText($env:KELD_TEST_DESCENDANT_ERROR, $_.Exception.ToString())\nexit 43\n}\n"
         )
         .expect("write controlled descendant fixture");
+        // .NET Process.Start gives this fixture a direct child-start witness.
+        // The child inherits the capture handles until the Job kills the family.
         fs::write(
             &parent_script,
-            b"[System.IO.File]::WriteAllText($env:KELD_TEST_PARENT_STARTED, 'started')\ntry {\n$arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ('\"{0}\"' -f $env:KELD_TEST_DESCENDANT_SCRIPT))\n$child = Start-Process -FilePath $env:KELD_TEST_POWERSHELL -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $env:KELD_TEST_DESCENDANT_STDOUT -RedirectStandardError $env:KELD_TEST_DESCENDANT_STDERR -ErrorAction Stop\n[System.IO.File]::WriteAllText($env:KELD_TEST_PARENT_SPAWNED, ('{0}' -f $child.Id))\nStart-Sleep -Seconds 60\n} catch {\n[System.IO.File]::WriteAllText($env:KELD_TEST_PARENT_ERROR, $_.Exception.ToString())\nexit 42\n}\n"
+            b"[System.IO.File]::WriteAllText($env:KELD_TEST_PARENT_STARTED, 'started')\ntry {\n$startInfo = New-Object System.Diagnostics.ProcessStartInfo\n$startInfo.FileName = $env:KELD_TEST_POWERSHELL\n$startInfo.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"' + $env:KELD_TEST_DESCENDANT_SCRIPT + '\"'\n$startInfo.UseShellExecute = $false\n$startInfo.CreateNoWindow = $true\n$child = [System.Diagnostics.Process]::Start($startInfo)\nif ($null -eq $child) { throw 'Process.Start returned no child process' }\n[System.IO.File]::WriteAllText($env:KELD_TEST_PARENT_SPAWNED, ('{0}' -f $child.Id))\n$child.Dispose()\nStart-Sleep -Seconds 60\n} catch {\n[System.IO.File]::WriteAllText($env:KELD_TEST_PARENT_ERROR, $_.Exception.ToString())\nexit 42\n}\n"
         )
         .expect("write controlled Job-parent fixture");
         let environment = vec![
@@ -1848,14 +1849,6 @@ mod tests {
             (
                 "KELD_TEST_DESCENDANT_STARTED".into(),
                 started.as_os_str().to_owned(),
-            ),
-            (
-                "KELD_TEST_DESCENDANT_STDOUT".into(),
-                descendant_stdout.as_os_str().to_owned(),
-            ),
-            (
-                "KELD_TEST_DESCENDANT_STDERR".into(),
-                descendant_stderr.as_os_str().to_owned(),
             ),
         ];
         let args = vec![
@@ -2214,8 +2207,7 @@ mod tests {
         let parent_spawned = temporary.path().join("parent-spawned.marker");
         let parent_error = temporary.path().join("parent-error.txt");
         let descendant_error = temporary.path().join("descendant-error.txt");
-        let descendant_stdout = temporary.path().join("descendant.stdout");
-        let descendant_stderr = temporary.path().join("descendant.stderr");
+
         let input = File::open("NUL").expect("null input");
         let mut stderr = tempfile::tempfile().expect("private descendant stderr");
         let start = Instant::now();
@@ -2266,12 +2258,10 @@ mod tests {
             .expect("test Job observer lock")
             .expect("retained test Job observer handle");
         let diagnostics = format!(
-            "parent spawned: {}; parent error: {}; descendant error: {}; descendant stdout: {}; descendant stderr: {}; capture stderr: {stderr_detail}",
+            "parent spawned: {}; parent error: {}; descendant error: {}; capture stderr: {stderr_detail}",
             fs::read_to_string(&parent_spawned).unwrap_or_else(|_| "<not written>".into()),
             fs::read_to_string(&parent_error).unwrap_or_else(|_| "<not written>".into()),
             fs::read_to_string(&descendant_error).unwrap_or_else(|_| "<not written>".into()),
-            fs::read_to_string(&descendant_stdout).unwrap_or_else(|_| "<not written>".into()),
-            fs::read_to_string(&descendant_stderr).unwrap_or_else(|_| "<not written>".into()),
         );
         assert!(
             parent_started.exists(),
@@ -2281,18 +2271,18 @@ mod tests {
             started.exists(),
             "the descendant script must write its own start identity before timeout; {diagnostics}"
         );
-        if let Ok(parent_child_pid) = fs::read_to_string(&parent_spawned) {
-            let identity = fs::read_to_string(&started).expect("descendant identity marker");
-            let (descendant_pid, _) = identity
-                .trim()
-                .split_once(':')
-                .expect("descendant marker contains PID and creation time");
-            assert_eq!(
-                descendant_pid,
-                parent_child_pid.trim(),
-                "the child marker must belong to the process created by the parent; {diagnostics}"
-            );
-        }
+        let parent_child_pid =
+            fs::read_to_string(&parent_spawned).expect("parent child PID marker");
+        let identity = fs::read_to_string(&started).expect("descendant identity marker");
+        let (descendant_pid, _) = identity
+            .trim()
+            .split_once(':')
+            .expect("descendant marker contains PID and creation time");
+        assert_eq!(
+            descendant_pid,
+            parent_child_pid.trim(),
+            "the child marker must belong to the process created by the parent; {diagnostics}"
+        );
         assert_descendant_reaped(&powershell, &started);
     }
 
