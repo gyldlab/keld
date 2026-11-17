@@ -99,7 +99,9 @@ function retained(error: unknown): RetainedFailure {
 function expectExited(pid: number): void {
   let alive = true;
   try {
-    process.kill(pid, 0);
+    // Bun may return false for an exited Windows process instead of ESRCH.
+    // Both signals mean the diagnostic PID is no longer live.
+    alive = process.kill(pid, 0);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
     alive = false;
@@ -247,6 +249,25 @@ async function cleanupNativeWriterProbe(
 }
 
 describe("layout resource ownership on failure", () => {
+  test("the native exit observer accepts a completed child on each OS", async () => {
+    const child = Bun.spawn([process.execPath, "-e", "process.exit(0);"], {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    try {
+      expect(await withIoDeadline(child.exited, 5_000)).toBe(0);
+      // The observer handles ESRCH on Unix and the supported false return on
+      // Windows without treating a stale audit PID as a kill target.
+      expectExited(child.pid);
+    } finally {
+      // A deadline does not cancel the exact child. Only its retained Bun
+      // process handle is authorized to stop it; never signal an audit PID.
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await withIoDeadline(child.exited, 5_000);
+    }
+  });
+
   test("an outer assertion deadline cannot discard a pending layout operation", async () => {
     const operation = new Promise<Awaited<ReturnType<typeof runLayout>>>(
       () => {},
