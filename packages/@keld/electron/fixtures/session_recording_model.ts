@@ -23,6 +23,7 @@ const claim = Object.freeze(
   }),
 );
 mock.module("@keld/kipc", () => ({
+  nativeFacadeBootSelected: phase !== "renderer",
   hostLaunchFacts:
     phase === "missing"
       ? { schema: 4 }
@@ -32,7 +33,6 @@ mock.module("@keld/kipc", () => ({
 }));
 mock.module("@keld/api/internal/app", () => ({
   app: { isReady: () => ready },
-  isDesktopS1Selected: () => true,
   getDesktopSnapshot() {
     sourceReads++;
     if (phase === "dead-source")

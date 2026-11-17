@@ -43,11 +43,11 @@ impl RecoveryFixture {
             repo,
             "facade-profile-recovery",
             &format!(
-                "import {{ app, fs, isCallError }} from {api};\nimport {{ getWindowSnapshots }} from {application_observer_path};\nimport {{ WorkerLink, LIFECYCLE_CHANNEL, WINDOW_CHANNEL, nativeFacadeBootSelected }} from {transport};\n{role}"
+                "import {{ app, fs, isCallError }} from {api};\nimport {{ getWindowSnapshots, isDesktopS1Selected }} from {application_observer_path};\nimport {{ WorkerLink, LIFECYCLE_CHANNEL, WINDOW_CHANNEL, nativeFacadeBootSelected, hostLaunchFacts }} from {transport};\nif (!isDesktopS1Selected() || hostLaunchFacts?.schema !== 1 || hostLaunchFacts.kind !== \"development\" || hostLaunchFacts.name !== \"Facade Profile Recovery\") throw new Error(\"shipping development S1 producer was not selected\");\n{role}"
             ),
         );
         fs::write(project.project_root().join("keld.config.ts"),
-            "export default { name: 'Facade Profile Recovery', entry: 'src/main.ts', initialWindow: 'none' } as const;\n").expect("explicit facade input");
+            "export default {\n  name: \"Facade Profile Recovery\",\n  entry: \"src/main.ts\",\n  initialWindow: \"none\",\n} as const;\n").expect("explicit facade input");
         let stage = keld_cli::boot::stage_dev_boot(
             project.project_root(),
             Path::new(env!("CARGO_BIN_EXE_keld-host")),
@@ -59,6 +59,10 @@ impl RecoveryFixture {
         .expect("boot JSON");
         eprintln!("KEL78_SCHEMA4_BOOT {descriptor}");
         assert_eq!(descriptor["schema"], 4);
+        assert_eq!(
+            descriptor["name"], "Facade Profile Recovery",
+            "stock compiler must select the exact fixture name"
+        );
         assert!(descriptor.get("renderer").is_none() && descriptor.get("auth").is_none());
         assert!(!stage.root().join("index.html").exists());
         let digest = file_digest(&stage.root().join("keld.permissions.jsonc"));

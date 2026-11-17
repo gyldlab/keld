@@ -30,8 +30,19 @@ Architecture 02 §1 owns the one transport Worker and its self-entry; architectu
 7. Actual Node cold import of the installed artifacts succeeds: under Node 26.10 the offline consumer imports the API root, its internal entries and KIPC, `require` of the API root yields the same app, and API and KIPC share one transport identity (main fcf013a8, PR #1289, merged into this branch). Opening an app link under Node remains
    unqualified: `WorkerLink.open` refuses with typed `KELD-IPC-005` before reading options or constructing a MessageChannel, Worker or SharedArrayBuffer. No fake pass, shim, or alternate transport is permitted.
 
-Open follow-up for the GH1301 CI owner: criterion 1 requires pinned tools, but the hosted Bun test lane runs this packed-consumer test with the runner-provided `node` and `npm`; no workflow pins Node (`setup-node` and `node-version` appear nowhere in `.github/workflows/*.yml`). Bun (1.4.4) and the compiler (lockfile `typescript` 7.0.2) are
-pinned. Hosted Node and npm evidence is therefore unpinned and is not claimed pinned here until that owner pins Node with a SHA-pinned setup step or scopes Node out of the lane.
+Hosted Node selection is now pinned: `.github/workflows/ci.yml` uses
+`actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1` with
+`node-version: "26.10.0"`, `check-latest: false` and package-manager caching
+disabled before the Bun test lane. Bun (1.4.4) and the compiler (lockfile
+`typescript` 7.0.2) are also pinned. This corrects the earlier claim that no
+workflow selects Node; it is source evidence of configuration, not a new
+exact-head hosted test receipt.
+
+The remaining GH1301 toolchain follow-up concerns npm: the packed-consumer test
+invokes `npm` by name, and this workflow has no separate npm version pin or
+version assertion. Qualify the npm identity supplied with the selected Node
+distribution and the artifact reproducibility evidence separately. A Node pin
+does not close installed-graph Source, security, native or final-head CI gates.
 
 ### AC-1: Offline installed SDK artifact identity
 
@@ -82,7 +93,7 @@ Do not edit canonical transport runtime, Electron implementation, production Rus
   `packages/@keld/api` passes 2/0 and logs `"runtimes":{"bun":"1.4.4","node":"v26.10.0"}` (darwin arm64, 2026-10-31).
 - [ ] T2 Qualify artifact closure, reproducibility, Worker integrity, lifecycle and Source representation with negative controls and independent review. Landed in `package-artifact.test.ts`: missing-edge repack and removed installed KIPC package controls, byte-equal tarballs from two producer directories, a corrupted stamp with zero accepted
   connections, installed initial and recovery lifecycle with two `link.js` mutations, and Source witnesses on installed emitted JS; the staged-source Rust test in §5 (not run in this reconciliation). Open: independent security/memory review on the exact final diff (criterion 6).
-- [ ] T3 Reconcile separately owned Node prerequisite, routed gates and integration evidence before merge. Done: the Node prerequisite (fcf013a8, PR #1289) is merged here and criterion 7 records its result. Open: the §8 gates, hosted `CI required` at the final head, and the unpinned Node/npm follow-up under §3.
+- [ ] T3 Reconcile separately owned Node prerequisite, routed gates and integration evidence before merge. Done: the Node prerequisite (fcf013a8, PR #1289) is merged here and criterion 7 records its result. Open: the §8 gates, hosted `CI required` at the final head, and the remaining npm toolchain/reproducibility follow-up under §3.
 
 ### T-1: Verify packed SDK identity through offline imports
 
@@ -107,4 +118,4 @@ No performance claim. Architecture 01 §5 Source and memory budgets require qual
 
 ## 10. Open questions, blockers & unknowns
 
-None for the admitted design. Installed-graph Source qualification (criterion 6) is an acceptance hold, not a design decision. Pinning Node in hosted CI (§3 follow-up) belongs to the GH1301 CI owner.
+None for the admitted design. Installed-graph Source qualification (criterion 6) is an acceptance hold, not a design decision. The remaining npm toolchain/reproducibility follow-up (§3) belongs to the GH1301 CI owner; the hosted Node selection is already pinned.

@@ -103,6 +103,68 @@ pub const fn macos_local_launch_bootstrap_sources() -> [(&'static str, &'static 
     ]
 }
 
+/// Development-only view of the canonical closed launch-facts codec.
+/// It cannot carry installed origin or permission authority.
+#[derive(Debug)]
+pub struct DevelopmentLaunchFacts(LaunchFacts);
+
+impl DevelopmentLaunchFacts {
+    pub(super) fn from_validated_development(
+        name: &str,
+        root: &Path,
+        has_dev_lease: bool,
+    ) -> Result<Option<Self>, HostAppError> {
+        if !has_dev_lease {
+            return Ok(None);
+        }
+        let facts = LaunchFacts {
+            schema: 1,
+            kind: String::from("development"),
+            name: name.to_owned(),
+            root: root
+                .to_str()
+                .ok_or_else(|| invalid("development root is not UTF-8"))?
+                .to_owned(),
+            version: None,
+            locale: None,
+            paths: None,
+            resources_root: None,
+            single_instance: None,
+            original_resource_policy: None,
+        };
+        facts.validate(root)?;
+        facts.private_argument()?;
+        Ok(Some(Self(facts)))
+    }
+
+    /// Decode the private development record and bind it to the validated stage.
+    /// # Errors
+    /// Refuses malformed, foreign-root or installed records.
+    pub fn from_private_argument(text: &str, root: &Path) -> Result<Self, HostAppError> {
+        let facts = LaunchFacts::from_private_argument(text, root)?;
+        if !matches!(facts.schema, 1..=3) {
+            return Err(invalid(
+                "development Guardian cannot consume installed facts",
+            ));
+        }
+        Ok(Self(facts))
+    }
+
+    /// Encode the bounded record for the authenticated Guardian argument.
+    /// # Errors
+    /// Refuses an oversized or unencodable record.
+    pub fn private_argument(&self) -> Result<String, HostAppError> {
+        self.0.private_argument()
+    }
+
+    /// Emit the immutable Bun literal before application evaluation.
+    /// # Errors
+    /// Refuses an oversized or unencodable record.
+    pub fn bun_define_argument(&self) -> Result<String, HostAppError> {
+        self.0.bun_define_argument()
+    }
+}
+
 /// One closed Host record. Construction requires an independently admitted origin.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -656,8 +718,15 @@ mod tests {
                 "the import argument must be a literal in generated source"
             );
             assert!(
-                text.contains(&format!("join(canonicalRoot, \"{relative}\")")),
-                "the runtime arg check must bind the same original member"
+                text.contains(&format!("const sealedOriginalRelative = \"{relative}\";"))
+                    && text.contains(
+                        "canonicalEntry = realpathSync(join(canonicalRoot, sealedOriginalRelative));"
+                    ),
+                "the compiled literal must drive the canonical original-member check"
+            );
+            assert!(
+                text.contains("process.argv.length !== 2") && !text.contains("process.argv[2]"),
+                "the compiled original entry must not become a user argument"
             );
         }
         for invalid in [
@@ -683,6 +752,43 @@ mod tests {
 
     fn original() -> serde_json::Value {
         serde_json::from_str(ORIGINAL_FIXTURE).expect("shared literal schema-7 fixture")
+    }
+
+    #[test]
+    fn development_record_requires_a_lease_and_never_accepts_installed_origin() {
+        use super::DevelopmentLaunchFacts;
+        let root = Path::new("/stage");
+        assert!(
+            DevelopmentLaunchFacts::from_validated_development("Dev", root, false)
+                .expect("absence")
+                .is_none()
+        );
+        let facts = DevelopmentLaunchFacts::from_validated_development("Dev", root, true)
+            .expect("admitted lease")
+            .expect("facts");
+        let encoded = facts.private_argument().expect("encoded");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&encoded).expect("JSON"),
+            serde_json::json!({"schema":1,"kind":"development","name":"Dev","root":"/stage"})
+        );
+        assert!(
+            DevelopmentLaunchFacts::from_private_argument(&encoded, Path::new("/other")).is_err()
+        );
+        assert!(
+            DevelopmentLaunchFacts::from_private_argument(
+                ORIGINAL_FIXTURE,
+                Path::new("/Applications/Paper Map.app/Contents/Resources/app")
+            )
+            .is_err()
+        );
+        let installed = serde_json::json!({"schema":6,"kind":"local-development","name":"Installed","version":"1.0.0","root":"/Applications/Installed.app/Contents/Resources/app","resourcesRoot":"/Applications/Installed.app/Contents/Resources"}).to_string();
+        let installed_root = Path::new("/Applications/Installed.app/Contents/Resources/app");
+        assert!(LaunchFacts::from_private_argument(&installed, installed_root).is_ok());
+        assert!(DevelopmentLaunchFacts::from_private_argument(&installed, installed_root).is_err());
+        assert_eq!(
+            facts.bun_define_argument().expect("literal"),
+            format!("--define=__KELD_HOST_LAUNCH_FACTS__:{encoded}")
+        );
     }
 
     #[test]

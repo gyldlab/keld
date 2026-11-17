@@ -46,7 +46,7 @@ pub use self::graph_contract::{
 };
 #[cfg(target_os = "macos")]
 pub use self::launch_facts::{
-    MACOS_LOCAL_LAUNCH_PRELOAD_PATH, MACOS_LOCAL_RUNTIME_ENTRY_PATH,
+    DevelopmentLaunchFacts, MACOS_LOCAL_LAUNCH_PRELOAD_PATH, MACOS_LOCAL_RUNTIME_ENTRY_PATH,
     macos_local_launch_bootstrap_sources, macos_local_original_entry_bootstrap_source,
 };
 #[cfg(target_os = "macos")]
@@ -2612,6 +2612,12 @@ fn run_app(
     // observation and lock effect. Reuse the retained boot-6 graph; neither the
     // application nor a later generation can supply a replacement source root.
     profile_preflight::disclose_profile(admitted_profile, false)?;
+    // Restore the bounded GH452 T2a record from retained validated inputs only.
+    let development_launch_facts = if matches!(&mac_origin, MacBootOrigin::DevStage) {
+        DevelopmentLaunchFacts::from_validated_development(&name, &root, dev_lease.is_some())?
+    } else {
+        None
+    };
     let original_source = match &mac_origin {
         MacBootOrigin::LocalDevelopment(local) => local
             .graph()
@@ -2724,6 +2730,9 @@ fn run_app(
         if let Some(facts) = &installed_launch_facts {
             guardian_command.arg(facts.private_argument()?);
         }
+    }
+    if let Some(facts) = &development_launch_facts {
+        guardian_command.arg(facts.private_argument()?);
     }
     guardian_command
         // The facade Host's blocked pre-Init main stack can retain an open

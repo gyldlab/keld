@@ -1,6 +1,6 @@
 //! Native CLI refusal controls for the first GH-1404 local packaging cell.
 
-#![cfg(target_os = "macos")]
+#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #![allow(clippy::expect_used)] // Integration fixture setup failures must fail the test.
 
 use std::fs;

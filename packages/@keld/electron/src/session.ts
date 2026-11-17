@@ -1,10 +1,6 @@
 /** GH553 recorded divergence; integrate only after the exact native qualification gate. */
-import {
-  app as apiApp,
-  getDesktopSnapshot,
-  isDesktopS1Selected,
-} from "@keld/api/internal/app";
-import { hostLaunchFacts } from "@keld/kipc";
+import { app as apiApp, getDesktopSnapshot } from "@keld/api/internal/app";
+import { hostLaunchFacts, nativeFacadeBootSelected } from "@keld/kipc";
 import { isProxy } from "node:util/types";
 import {
   method,
@@ -81,7 +77,7 @@ function record(name: RecordedMethod, args: unknown[]): void {
   // Guardian startup and frozen by the canonical preload. It is data eligibility,
   // not a native grant, raw policy or proof inferred from generic launch metadata.
   if (
-    !isDesktopS1Selected() ||
+    !nativeFacadeBootSelected ||
     !apiApp.isReady() ||
     (hostLaunchFacts?.schema !== 5 && hostLaunchFacts?.schema !== 7) ||
     hostLaunchFacts.originalResourcePolicy === undefined
@@ -90,6 +86,7 @@ function record(name: RecordedMethod, args: unknown[]): void {
       name,
       "GH-473 verified response CSP/resource containment and the exact qualified Host/package composition are unavailable; use that admitted lane.",
     );
+  // Session eligibility covers schemas 5 and 7, not development-only S1.
   // Existing live Source check is availability, never a second policy evaluator.
   // Preserve its actual terminal error instead of swallowing or retrying it.
   getDesktopSnapshot();

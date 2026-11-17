@@ -22,6 +22,8 @@ const electronFiles = [
   "screen.ts",
   "native-theme.ts",
   "unsupported.ts",
+  "session.ts",
+  "session-unsupported.ts",
 ] as const;
 const apiManifest = JSON.parse(
   readFileSync(join(apiRoot, "package.json"), "utf8"),
@@ -69,7 +71,10 @@ function sourceFixture(withMapping: boolean): {
           compilerOptions: {
             module: "Preserve",
             moduleResolution: "Bundler",
-            paths: { "@keld/api/internal/app": [canonicalApp] },
+            paths: {
+              "@keld/api/internal/app": [canonicalApp],
+              "@keld/kipc": [transport],
+            },
           },
         },
         null,
@@ -117,6 +122,10 @@ test("GH481 real Electron source fails closed without the test-owned API export 
 for (const mode of [
   "other-facade",
   "other-renderer",
+  "installed-basic",
+  "installed-original",
+  "installed-original-missing",
+  "installed-renderer",
   "mac-valid",
   "mac-missing",
   "mac-no-mirror",
@@ -125,19 +134,39 @@ for (const mode of [
   test(`GH481 S1 platform/Ready/zero-effect ${mode}`, () => {
     const fixture = sourceFixture(true);
     try {
-      // Existing Guardian defines these two literals before the app entry.
-      // Only the macOS dev-host test carries its existing Host launch-facts
-      // record; Windows/Linux Host paths never mint this record. This test
-      // models the platform seam but cannot claim a real Windows/Linux run.
-      const payload = mode.startsWith("mac-")
-        ? JSON.stringify(qualifiedMacDevFacts)
-        : "undefined";
+      // Synthetic development facts exercise the selector, not a shipping
+      // producer: historical Guardian dev currently emits undefined. Installed
+      // input reuses the codec fixture. No case claims native qualification.
+      const installed = JSON.parse(
+        readFileSync(
+          resolve(
+            import.meta.dir,
+            "../../kipc/test/fixtures/installed-launch-facts-v7.json",
+          ),
+          "utf8",
+        ),
+      );
+      const payload =
+        mode === "installed-basic"
+          ? JSON.stringify({
+              schema: 6,
+              kind: installed.kind,
+              name: installed.name,
+              version: installed.version,
+              root: installed.root,
+              resourcesRoot: installed.resourcesRoot,
+            })
+          : mode.startsWith("installed-")
+            ? JSON.stringify(installed)
+            : mode.startsWith("mac-")
+              ? JSON.stringify(qualifiedMacDevFacts)
+              : "undefined";
       const child = Bun.spawnSync({
         cmd: [
           process.execPath,
           "--no-install",
           "--no-env-file",
-          `--define=process.env.KELD_NATIVE_WINDOW_FACADE:"${mode === "other-renderer" ? "0" : "1"}"`,
+          `--define=process.env.KELD_NATIVE_WINDOW_FACADE:"${mode.endsWith("renderer") ? "0" : "1"}"`,
           `--define=__KELD_HOST_LAUNCH_FACTS__:${payload}`,
           `--preload=${transport}`,
           role,

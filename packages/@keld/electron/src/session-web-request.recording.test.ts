@@ -41,7 +41,7 @@ test("pre-Ready defaultSession remains the typed GH553 property refusal", () => 
   expect(value.sourceReads).toBe(0);
 });
 test("old metadata and Ready without a prepared-source descriptor never accept hooks", () => {
-  for (const phase of ["missing", "missing-descriptor"]) {
+  for (const phase of ["missing", "missing-descriptor", "renderer"]) {
     const value = observe(phase);
     expect(value.stable).toBe(true);
     expect(value.results).toEqual([

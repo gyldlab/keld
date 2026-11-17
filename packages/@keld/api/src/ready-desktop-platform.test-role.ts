@@ -20,6 +20,10 @@ assert.ok(
   [
     "other-facade",
     "other-renderer",
+    "installed-basic",
+    "installed-original",
+    "installed-original-missing",
+    "installed-renderer",
     "mac-valid",
     "mac-missing",
     "mac-no-mirror",
@@ -37,8 +41,11 @@ for (const name of ["screen.ts", "native-theme.ts", "unsupported.ts"]) {
   assert.ok(metadata.isFile() && !metadata.isSymbolicLink());
   assert.equal(realpathSync(path), path);
 }
-assert.equal(hostLaunchFacts !== undefined, mode?.startsWith("mac-"));
-assert.equal(nativeFacadeBootSelected, mode !== "other-renderer");
+assert.equal(
+  hostLaunchFacts !== undefined,
+  mode?.startsWith("mac-") || mode?.startsWith("installed-"),
+);
+assert.equal(nativeFacadeBootSelected, !mode?.endsWith("renderer"));
 
 let callbacks: LifecycleHandler | undefined;
 let linkCloses = 0;
@@ -76,8 +83,9 @@ mock.module("./link.ts", () => ({
 }));
 
 process.env.KELD_APP_LINK = `/controlled-no-socket#${"a".repeat(64)}`;
-const { app, getDesktopSnapshot, isDesktopS1Selected } =
-  await import("./app.ts");
+const { app, getDesktopSnapshot, isDesktopS1Selected } = await import(
+  "./app.ts"
+);
 assert.equal(isDesktopS1Selected(), mode?.startsWith("mac-"));
 const ready = app.whenReady();
 assert.ok(callbacks, "the real app installs exactly one lifecycle handler");
@@ -103,15 +111,37 @@ const apply = (event: Parameters<typeof encodeWindowEvent>[0]): void => {
   source.apply(fact);
 };
 
-if (mode === "mac-valid" || mode === "mac-invalidated") {
+if (
+  mode === "mac-valid" ||
+  mode === "mac-invalidated" ||
+  mode === "installed-original" ||
+  mode === "installed-renderer"
+) {
   apply(captured(1n, false));
 }
 if (mode === "mac-invalidated") {
   apply({ variant: "DesktopSnapshot", epoch: 2n, snapshot: null });
 }
 
-callbacks.onReady();
-assert.equal(app.isReady(), false, "raw Ready cannot commit synchronously");
+// The application realm can overwrite globals after the canonical Host preload
+// imported app.ts. Public Ready must still defer beyond this raw callback stack.
+const originalQueueMicrotask = globalThis.queueMicrotask;
+let applicationSchedulerCalls = 0;
+try {
+  globalThis.queueMicrotask = (callback: VoidFunction): void => {
+    applicationSchedulerCalls += 1;
+    callback();
+  };
+  callbacks.onReady();
+  assert.equal(app.isReady(), false, "raw Ready cannot commit synchronously");
+} finally {
+  globalThis.queueMicrotask = originalQueueMicrotask;
+}
+assert.equal(
+  applicationSchedulerCalls,
+  0,
+  "Host Ready must not consult the application-replaced scheduler",
+);
 
 if (
   mode === "mac-missing" ||
@@ -142,7 +172,11 @@ if (
   assert.equal(linkCloses, 0);
 }
 
-if (mode === "other-facade" || mode === "other-renderer") {
+if (
+  mode === "other-facade" ||
+  mode === "other-renderer" ||
+  mode?.startsWith("installed-")
+) {
   // Windows/Linux facade (or renderer) without the macOS-only immutable
   // development record MUST preserve the previous public Ready contract.
   // It does not manufacture desktop support on these platforms.
@@ -200,6 +234,43 @@ if (mode === "other-facade" || mode === "other-renderer") {
     true,
     "post-Ready loss only invalidates desktop reads",
   );
+}
+if (mode?.startsWith("installed-")) {
+  const diagnostics: string[] = [];
+  const oldWarn = console.warn;
+  console.warn = (message: unknown) => {
+    diagnostics.push(String(message));
+  };
+  try {
+    const { session: facade } = await import(
+      pathToFileURL(join(privateElectronSource, "session.ts")).href
+    );
+    const register = () =>
+      facade.defaultSession.webRequest.onBeforeRequest(null);
+    if (mode === "installed-original") {
+      assert.doesNotThrow(register);
+      assert.equal(diagnostics.length, 1);
+      apply({ variant: "DesktopSnapshot", epoch: 2n, snapshot: null });
+      assert.throws(
+        register,
+        (error: unknown) =>
+          (error as { code?: string })?.code === "KELD-CORE-049",
+      );
+      assert.equal(diagnostics.length, 1);
+    } else {
+      assert.throws(
+        register,
+        (error: unknown) =>
+          (error as { code?: string })?.code ===
+          (mode === "installed-original-missing"
+            ? "KELD-CORE-049"
+            : "KELD-COMPAT-013"),
+      );
+      assert.equal(diagnostics.length, 0);
+    }
+  } finally {
+    console.warn = oldWarn;
+  }
 }
 assert.equal(
   hostCalls,

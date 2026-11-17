@@ -6,10 +6,10 @@ import { createInterface } from "node:readline";
 let readyCount = 0;
 let openCount = 0;
 let receivesWindows = false;
-let finishEnd: () => void = () => {
+let finishEnd: (code: string) => void = () => {
   throw new Error("end observer not installed");
 };
-const ended = new Promise<void>((resolve) => {
+const ended = new Promise<string>((resolve) => {
   finishEnd = resolve;
 });
 const open = WorkerLink.open;
@@ -23,7 +23,7 @@ WorkerLink.open = async (options) => {
   actual.onEvent(LIFECYCLE_CHANNEL, (payload) => {
     if (payload.length === 1 && payload[0] === 0) readyCount += 1;
   });
-  actual.onEnd(() => finishEnd());
+  actual.onEnd((error) => finishEnd(error.code));
   return actual;
 };
 
@@ -70,7 +70,11 @@ try {
     } else if (command === "QUIT") {
       await app.quit();
       report("QUIT_REPLY");
-      await ended;
+      const terminalCode = await ended;
+      if (terminalCode !== "KELD-IPC-022") {
+        report(`LINK_END_ERROR ${terminalCode}`);
+        throw new Error(`unexpected WorkerLink terminal code: ${terminalCode}`);
+      }
       report(`READY_COUNT ${readyCount} OPEN_COUNT ${openCount}`);
       report("LINK_EOF");
       break;

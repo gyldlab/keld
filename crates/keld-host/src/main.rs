@@ -378,7 +378,7 @@ fn dev_stage_cleanup_root_for(
 
 #[cfg(target_os = "macos")]
 fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
-    let (native_facade, local_launch) = parse_guardian_launch_arguments(args)?;
+    let (native_facade, local_launch, development_facts) = parse_guardian_launch_arguments(args)?;
     let root = PathBuf::from(&args[2]);
     let entry = PathBuf::from(&args[3]);
     let expected_dev = args[4]
@@ -416,10 +416,15 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
                         &entry,
                         expected_dev,
                         expected_ino,
-                        native_facade,
+                        (native_facade, development_facts.as_deref()),
                         app_link,
                     )
                 } else {
+                    if development_facts.is_some() {
+                        return Err(guardian_entry_error(
+                            "installed Guardian cannot consume development facts",
+                        ));
+                    }
                     let handoff = local_launch.as_ref().ok_or_else(|| {
                         guardian_entry_error("installed Guardian requires exact parent bundle pins")
                     })?;
@@ -645,9 +650,20 @@ fn parse_guardian_boot_mode(args: &[String]) -> Result<bool, String> {
 #[cfg(target_os = "macos")]
 fn parse_guardian_launch_arguments(
     args: &[String],
-) -> Result<(bool, Option<LocalGuardianLaunch>), String> {
+) -> Result<(bool, Option<LocalGuardianLaunch>, Option<String>), String> {
     if args.len() == 7 {
-        return parse_guardian_boot_mode(args).map(|mode| (mode, None));
+        return parse_guardian_boot_mode(args).map(|mode| (mode, None, None));
+    }
+    // Only the canonical JSON-object envelope is a development payload.
+    // Installed suffix markers must not be reinterpreted when their pins are truncated.
+    // Keep the bounded body opaque until authenticated startup.
+    if args.len() == 8
+        && args[7].starts_with('{')
+        && args[7].ends_with('}')
+        && args[7].len() <= 16_384
+    {
+        let mode = parse_guardian_boot_mode(&args[..7])?;
+        return Ok((mode, None, Some(args[7].clone())));
     }
     if args.len() == 11 && args[7] == "local-bundle-v1" {
         let mode = parse_guardian_boot_mode(&args[..7])?;
@@ -661,6 +677,7 @@ fn parse_guardian_launch_arguments(
                 pins,
                 host_facts: None,
             }),
+            None,
         ));
     }
     if args.len() == 12
@@ -679,6 +696,7 @@ fn parse_guardian_launch_arguments(
                 pins,
                 host_facts: Some(args[11].clone()),
             }),
+            None,
         ));
     }
     Err(String::from(
@@ -693,9 +711,10 @@ fn guardian_bun_command(
     entry: &Path,
     expected_dev: u64,
     expected_ino: u64,
-    native_facade: bool,
+    startup: (bool, Option<&str>),
     app_link: &str,
 ) -> Result<Command, keld_runtime::RuntimeError> {
+    let (native_facade, launch_facts) = startup;
     cleanup_validation
         .as_ref()
         .map_err(|error| guardian_entry_error(error.clone()))?;
@@ -706,6 +725,14 @@ fn guardian_bun_command(
     // release-grade resistance to a same-user replacement in that
     // residual window; the signed-container successor must close it.
     drop(reopened);
+    // This factory runs only after Guardian registration/liveness admission.
+    // Reuse the canonical closed codec and bind to the validated development stage.
+    let launch_facts = launch_facts
+        .map(|text| {
+            keld_core::app_session::DevelopmentLaunchFacts::from_private_argument(text, root)
+                .map_err(|error| guardian_entry_error(error.to_string()))
+        })
+        .transpose()?;
     // No `pre_exec` hook here: the Guardian's SpawnAdmission gate must be
     // the only one, so a child refused before its exec permit is its whole
     // process group (keld-runtime `GuardedPrimaryPreparer::prepare`).
@@ -719,7 +746,10 @@ fn guardian_bun_command(
         )?)
         // Absence is also fixed by the Host; an application global cannot
         // fabricate the private constant on the historical development path.
-        .arg("--define=__KELD_HOST_LAUNCH_FACTS__:undefined")
+        .arg(match launch_facts.as_ref() {
+            Some(facts) => facts.bun_define_argument().map_err(|error| guardian_entry_error(error.to_string()))?,
+            None => String::from("--define=__KELD_HOST_LAUNCH_FACTS__:undefined"),
+        })
         .arg("run")
         .arg(root.join(entry))
         .current_dir(root)
@@ -805,6 +835,172 @@ mod tests {
         parse_guardian_launch_arguments, reconcile_guardian_result, reopen_validated_entry,
     };
 
+    fn development_facts_fixture() -> std::io::Result<(tempfile::TempDir, fs::Metadata, Vec<String>)>
+    {
+        let temp = tempfile::tempdir()?;
+        let entry = temp.path().join("entry.ts");
+        fs::write(
+            &entry,
+            "console.log(JSON.stringify(__KELD_HOST_LAUNCH_FACTS__ ?? null));",
+        )?;
+        let identity = fs::metadata(&entry)?;
+        let root = temp.path().to_str().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "development fixture root is not UTF-8",
+            )
+        })?;
+        let encoded = serde_json::json!({"schema":1,"kind":"development","name":"Dev","root":root})
+            .to_string();
+        let args = vec![
+            "host".to_owned(),
+            "--keld-supervised-guardian".to_owned(),
+            root.to_owned(),
+            "entry.ts".to_owned(),
+            identity.dev().to_string(),
+            identity.ino().to_string(),
+            "1".to_owned(),
+            encoded.clone(),
+        ];
+        Ok((temp, identity, args))
+    }
+
+    #[test]
+    fn guardian_development_facts_use_closed_stage_bound_argv() {
+        let (temp, identity, args) =
+            development_facts_fixture().expect("development facts fixture");
+        let encoded = args[7].clone();
+        let (facade, local, facts) =
+            parse_guardian_launch_arguments(&args).expect("closed dev facts");
+        assert!(facade && local.is_none());
+        let mut command = guardian_bun_command(
+            &Ok(temp.path().to_path_buf()),
+            temp.path(),
+            std::path::Path::new("entry.ts"),
+            identity.dev(),
+            identity.ino(),
+            (facade, facts.as_deref()),
+            "/tmp/link#token",
+        )
+        .expect("command");
+        let command_args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let emitted = command_args
+            .iter()
+            .find_map(|arg| arg.strip_prefix("--define=__KELD_HOST_LAUNCH_FACTS__:"))
+            .expect("facts define");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(emitted).expect("emitted JSON"),
+            serde_json::from_str::<serde_json::Value>(&encoded).expect("input JSON")
+        );
+        let definition = command_args
+            .iter()
+            .position(|arg| arg.starts_with("--define=__KELD_HOST_LAUNCH_FACTS__:"))
+            .expect("define");
+        let entry_index = command_args
+            .iter()
+            .position(|arg| arg == "run")
+            .expect("entry");
+        assert!(definition < entry_index);
+        let output = command
+            .output()
+            .expect("actual Bun launch with emitted facts");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("Bun fact record"),
+            serde_json::from_str::<serde_json::Value>(&encoded).expect("input record")
+        );
+        let absent = guardian_bun_command(
+            &Ok(temp.path().to_path_buf()),
+            temp.path(),
+            std::path::Path::new("entry.ts"),
+            identity.dev(),
+            identity.ino(),
+            (facade, None),
+            "/tmp/link#token",
+        )
+        .expect("historical command")
+        .output()
+        .expect("actual Bun absent launch");
+        assert!(
+            absent.status.success(),
+            "{}",
+            String::from_utf8_lossy(&absent.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&absent.stdout), "null\n");
+    }
+
+    #[test]
+    fn guardian_development_facts_preserve_historical_fields() {
+        let (temp, identity, mut args) =
+            development_facts_fixture().expect("development facts fixture");
+        let root = temp.path().to_str().expect("root");
+        let facade = true;
+        for schema in [2, 3] {
+            let mut input = serde_json::json!({"schema":schema,"kind":"development","name":"Dev","root":root,"version":"1.2.3","paths":{"appData":"/Users/native/Library/Application Support","userData":"/Users/native/Library/Application Support/Dev","documents":"/Users/native/Documents"}});
+            if schema == 3 {
+                input["locale"] = serde_json::json!("en-GB");
+            }
+            args[7] = input.to_string();
+            let (_, _, facts) = parse_guardian_launch_arguments(&args).expect("historical shape");
+            let output = guardian_bun_command(
+                &Ok(temp.path().to_path_buf()),
+                temp.path(),
+                std::path::Path::new("entry.ts"),
+                identity.dev(),
+                identity.ino(),
+                (facade, facts.as_deref()),
+                "/tmp/link#token",
+            )
+            .expect("historical fields command")
+            .output()
+            .expect("Bun historical fields");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                    .expect("emitted historical fields"),
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn guardian_development_facts_reject_foreign_root_and_installed_markers() {
+        let (temp, identity, mut args) =
+            development_facts_fixture().expect("development facts fixture");
+        let facade = true;
+        args[7] =
+            serde_json::json!({"schema":1,"kind":"development","name":"Dev","root":"/foreign"})
+                .to_string();
+        let (_, _, facts) = parse_guardian_launch_arguments(&args).expect("opaque input");
+        assert!(
+            guardian_bun_command(
+                &Ok(temp.path().to_path_buf()),
+                temp.path(),
+                std::path::Path::new("entry.ts"),
+                identity.dev(),
+                identity.ino(),
+                (facade, facts.as_deref()),
+                "/tmp/link#token"
+            )
+            .is_err()
+        );
+        for malformed in ["", "local-bundle-v1", "local-bundle-v2"] {
+            args[7] = malformed.to_owned();
+            assert!(parse_guardian_launch_arguments(&args).is_err());
+        }
+    }
+
     #[test]
     fn successful_guardian_report_survives_cleanup_failure() {
         let (report, cleanup_failure) =
@@ -833,7 +1029,7 @@ mod tests {
             relative,
             identity.dev(),
             identity.ino(),
-            true,
+            (true, None),
             "/tmp/link#token",
         )
         .expect_err("failed stage validation must refuse the Bun command");
@@ -852,7 +1048,7 @@ mod tests {
             relative,
             identity.dev(),
             identity.ino(),
-            true,
+            (true, None),
             "/tmp/link#token",
         )
         .expect("validated stage must still produce the Bun command");
@@ -876,7 +1072,7 @@ mod tests {
             relative,
             identity.dev(),
             identity.ino(),
-            true,
+            (true, None),
             "/tmp/link#token",
         )
         .expect("canonical sidecar launch");
@@ -902,7 +1098,7 @@ mod tests {
                 relative,
                 identity.dev(),
                 identity.ino(),
-                true,
+                (true, None),
                 "/tmp/link#token",
             )
             .expect_err("ambient preload override must refuse launch");
@@ -931,7 +1127,7 @@ mod tests {
                     std::path::Path::new("entry.ts"),
                     identity.dev(),
                     identity.ino(),
-                    native_facade,
+                    (native_facade, None),
                     "/tmp/link#token",
                 )
                 .expect("raw no-sidecar launch remains supported");
@@ -982,11 +1178,59 @@ mod tests {
     }
 
     #[test]
+    fn development_object_envelope_never_consumes_truncated_installed_markers() {
+        let mut args: Vec<String> = ["host", "guardian", "/stage", "entry", "1", "2", "1", "{}"]
+            .map(String::from)
+            .into();
+        let (_, local, body) =
+            parse_guardian_launch_arguments(&args).expect("opaque object envelope");
+        assert!(local.is_none());
+        assert_eq!(body.as_deref(), Some("{}"));
+        // Object validity remains deferred: this proves framing does not parse/mint facts.
+        assert!(
+            keld_core::app_session::DevelopmentLaunchFacts::from_private_argument(
+                "{}",
+                std::path::Path::new("/stage")
+            )
+            .is_err()
+        );
+        args[7] = "{not-json}".to_owned();
+        let (_, _, body) = parse_guardian_launch_arguments(&args).expect("opaque invalid JSON");
+        assert_eq!(body.as_deref(), Some("{not-json}"));
+        assert!(
+            keld_core::app_session::DevelopmentLaunchFacts::from_private_argument(
+                body.as_deref().expect("body"),
+                std::path::Path::new("/stage")
+            )
+            .is_err()
+        );
+        args[7] = format!("{{{}}}", " ".repeat(16_382));
+        assert_eq!(args[7].len(), 16_384);
+        assert!(parse_guardian_launch_arguments(&args).is_ok());
+        args[7] = format!("{{{}}}", " ".repeat(16_383));
+        assert_eq!(args[7].len(), 16_385);
+        assert!(parse_guardian_launch_arguments(&args).is_err());
+        for marker in [
+            "local-bundle-v1",
+            "local-bundle-v2",
+            "local-bundle-v3",
+            "{",
+            "}",
+        ] {
+            args[7] = marker.to_owned();
+            assert!(
+                parse_guardian_launch_arguments(&args).is_err(),
+                "truncated/unknown carrier {marker}"
+            );
+        }
+    }
+
+    #[test]
     fn local_guardian_suffix_is_closed_and_does_not_change_development_arguments() {
         let base: Vec<String> = ["host", "guardian", "root", "entry", "1", "2", "1"]
             .map(String::from)
             .into();
-        let (mode, pins) = parse_guardian_launch_arguments(&base).expect("existing dev shape");
+        let (mode, pins, _) = parse_guardian_launch_arguments(&base).expect("existing dev shape");
         assert!(mode);
         assert!(pins.is_none());
 
@@ -997,7 +1241,7 @@ mod tests {
             "cd".repeat(32),
             "ef".repeat(32),
         ]);
-        let (mode, pins) = parse_guardian_launch_arguments(&local).expect("closed local inputs");
+        let (mode, pins, _) = parse_guardian_launch_arguments(&local).expect("closed local inputs");
         assert!(mode);
         let local_launch = pins.expect("local expected pins");
         assert!(local_launch.host_facts.is_none());
@@ -1041,7 +1285,7 @@ mod tests {
         // The outer dispatcher may bound this value, but must not decode native
         // data before Runtime authenticates and retains the Host registration.
         args.push("not-yet-authenticated-json".to_owned());
-        let (facade, local) = parse_guardian_launch_arguments(&args)
+        let (facade, local, _) = parse_guardian_launch_arguments(&args)
             .expect("closed role-v2 carries opaque bounded data until authentication");
         assert!(facade);
         assert!(local.is_some());
@@ -1167,7 +1411,7 @@ mod tests {
                     std::path::Path::new("entry.ts"),
                     identity.dev(),
                     identity.ino(),
-                    native_facade,
+                    (native_facade, None),
                     "/tmp/link#token",
                 )
                 .expect_err("runtime config must refuse before entry execution");
@@ -1194,7 +1438,7 @@ mod tests {
             std::path::Path::new("entry.ts"),
             identity.dev(),
             identity.ino(),
-            true,
+            (true, None),
             "/tmp/link#token",
         )
         .expect("qualified command");
@@ -1263,7 +1507,7 @@ mod tests {
             std::path::Path::new("entry.ts"),
             identity.dev(),
             identity.ino(),
-            true,
+            (true, None),
             "/tmp/link#token",
         )
         .expect("actual shipping Bun command")
