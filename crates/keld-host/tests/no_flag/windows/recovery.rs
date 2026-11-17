@@ -28,7 +28,7 @@ use crate::{
 fn first_host_diagnostic(stderr: &str) -> &str {
     stderr
         .lines()
-        .find(|line| line.starts_with("KELD-"))
+        .find(|line| line.trim_start().starts_with("KELD-"))
         .expect("no KELD-coded Host error was emitted")
 }
 
@@ -78,11 +78,12 @@ fn windows_status_zero_self_termination_keeps_pid_and_status_in_the_host_error()
         .expect("captured exit-zero stderr")
         .read_to_string(&mut stderr)
         .expect("read exit-zero stderr");
+    let outer_core_error = first_host_diagnostic(&stderr);
     assert!(
-        first_host_diagnostic(&stderr).starts_with("KELD-CORE-033"),
+        outer_core_error.trim_start().starts_with("KELD-CORE-033:"),
         "{stderr}"
     );
-    assert!(stderr.contains(&bun_pid.to_string()), "{stderr}");
+    assert!(outer_core_error.contains(&bun_pid.to_string()), "{stderr}");
     assert!(stderr.contains("status Some(0)"), "{stderr}");
 }
 
@@ -210,11 +211,12 @@ fn windows_crash_loop_keeps_core033_as_the_outer_host_error() {
         .expect("captured crash-loop stderr")
         .read_to_string(&mut stderr)
         .expect("read crash-loop stderr");
+    let outer_core_error = first_host_diagnostic(&stderr);
     assert!(
-        first_host_diagnostic(&stderr).starts_with("KELD-CORE-033"),
+        outer_core_error.trim_start().starts_with("KELD-CORE-033:"),
         "{stderr}"
     );
-    assert!(stderr.contains("KELD-RUNTIME-002"), "{stderr}");
+    assert!(outer_core_error.contains("KELD-RUNTIME-002"), "{stderr}");
 }
 
 #[test]
@@ -562,14 +564,15 @@ fn windows_live_pre_ready_link_close_reports_owner_cause_first_without_successor
         .expect("captured pre-Ready link-close stderr")
         .read_to_string(&mut stderr)
         .expect("read pre-Ready link-close stderr");
+    let outer_core_error = first_host_diagnostic(&stderr);
     assert!(
-        first_host_diagnostic(&stderr).starts_with(
+        outer_core_error.trim_start().starts_with(
             "KELD-CORE-037: no-flag host failed during primary generation before Ready"
         ),
         "{stderr}"
     );
     assert!(
-        stderr.contains("Bun terminated before the initial window became ready"),
+        outer_core_error.contains("Bun terminated before the initial window became ready"),
         "{stderr}"
     );
     assert_process_signaled_within(&bun, "pre-Ready link-close Bun", PRODUCT_DEADLINE);
@@ -655,8 +658,9 @@ fn windows_stalled_initial_navigation_fails_startup_at_its_deadline() {
         .expect("read stalled-navigation stderr");
     // The navigation deadline is the primary error: the first one the
     // session's failure collapse names, ahead of any owner cleanup detail.
+    let first_core_error = first_host_diagnostic(&stderr);
     assert!(
-        first_host_diagnostic(&stderr).starts_with(concat!(
+        first_core_error.trim_start().starts_with(concat!(
             "KELD-CORE-037: no-flag host failed during startup cleanup — ",
             "KELD-CORE-037: no-flag host failed during initial direct navigation — ",
             "KELD-WV-005"
