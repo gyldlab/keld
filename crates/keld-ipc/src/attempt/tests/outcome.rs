@@ -94,6 +94,8 @@ fn the_owner_waits_for_the_candidates_end_of_file_after_ak1_accepted() -> io::Re
 /// §7 "8 (health sequence)" negative control: an owner that disconnects
 /// right after writing `KELD-AK1` accepted, before the candidate reads it,
 /// leaves the candidate unarmed: the disconnect discards the unread record.
+/// The fault is the abortive `DisconnectNamedPipe` close; the graceful
+/// link shutdown keeps unread bytes (#1073), so it cannot inject it.
 #[test]
 fn disconnecting_right_after_ak1_accepted_leaves_the_candidate_unarmed() -> io::Result<()> {
     let (mut owner, candidate, _) = healthy_pair()?;
@@ -103,7 +105,7 @@ fn disconnecting_right_after_ak1_accepted_leaves_the_candidate_unarmed() -> io::
     AttemptRecord::HealthResult(AttemptHealthResult::Accepted)
         .write_to(owner.stream_mut())
         .map_err(io::Error::other)?;
-    owner.stream_mut().shutdown()?;
+    owner.stream_mut().close_terminal_for_test()?;
     let result = candidate.await_health_accepted(kill_switch());
     assert!(
         matches!(&result, Err(error) if is_end_of_file(error)),

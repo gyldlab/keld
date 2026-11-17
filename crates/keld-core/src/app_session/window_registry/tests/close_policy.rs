@@ -129,6 +129,81 @@ fn repeated_destroy_has_one_teardown_and_all_replies_wait_for_release() -> TestR
 }
 
 #[test]
+fn delayed_native_release_caps_distinct_destroy_calls_without_losing_accepted_replies() -> TestResult
+{
+    let mut registry = ready();
+    let window = complete(&mut registry, owner(1), 1, 7)?;
+    // One delayed native Released leaves the Host holding correlation custody.
+    for corr in 2..=65 {
+        let result = registry.destroy(owner(1), window, CorrelationId(corr), |_| {})?;
+        if corr == 2 {
+            assert!(matches!(result, CloseOutcome::Teardown(_)));
+        } else {
+            assert_eq!(result, CloseOutcome::AlreadyClosing);
+        }
+    }
+    assert_eq!(registry.entries[&window.id.0].destroy_calls.len(), 64);
+    let refusal = registry
+        .destroy(owner(1), window, CorrelationId(66), |_| {})
+        .unwrap_err();
+    assert_eq!(
+        refusal.code(),
+        "KELD-CORE-046",
+        "typed nonterminal admission refusal"
+    );
+    assert!(!registry.has_pending_call(owner(1), CorrelationId(66)));
+    assert_eq!(registry.entries[&window.id.0].destroy_calls.len(), 64);
+    assert_eq!(
+        registry.request_close(owner(1), window)?,
+        CloseOutcome::AlreadyClosing
+    );
+
+    let released = registry.native_released(WebviewId(7));
+    assert_eq!(
+        released.fact.expect("Host release").event,
+        WindowEvent::Destroyed { window }
+    );
+    assert_eq!(released.last_window, Some(owner(1)));
+    assert_eq!(released.destroy_calls.len(), 64);
+    for (offset, call) in released.destroy_calls.iter().enumerate() {
+        assert_eq!(
+            (call.owner, call.correlation),
+            (
+                owner(1),
+                CorrelationId(u32::try_from(offset).expect("at most 64 correlations") + 2)
+            )
+        );
+    }
+    assert!(!registry.has_pending_call(owner(1), CorrelationId(65)));
+    assert_eq!(
+        registry.native_released(WebviewId(7)).destroy_calls,
+        Vec::<PendingWindowCall>::new()
+    );
+    Ok(())
+}
+
+#[test]
+fn role_loss_at_destroy_capacity_retires_every_correlation_without_successor_replies() -> TestResult
+{
+    let mut registry = ready();
+    let window = complete(&mut registry, owner(1), 1, 7)?;
+    for corr in 2..=65 {
+        registry.destroy(owner(1), window, CorrelationId(corr), |_| {})?;
+    }
+    registry.role_lost(owner(1), |_| {});
+    for corr in 2..=65 {
+        assert!(!registry.has_pending_call(owner(1), CorrelationId(corr)));
+    }
+    registry.subscribe_successor(owner(2));
+    assert_eq!(registry.replay(owner(2)).count(), 0);
+    assert_eq!(
+        registry.native_released(WebviewId(7)).destroy_calls,
+        Vec::<PendingWindowCall>::new()
+    );
+    Ok(())
+}
+
+#[test]
 fn role_loss_abandons_once_and_new_gap_close_is_held_until_terminal_end() -> TestResult {
     let mut registry = ready();
     let window = complete(&mut registry, owner(1), 1, 7)?;

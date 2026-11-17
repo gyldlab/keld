@@ -34,7 +34,11 @@ import {
   validateReceivedHeader,
   windowReceiver,
 } from "../../kipc/src/transport.ts";
-import { decodeWindowEvent, decodeWindowRequest, decodeWindowResponse } from "../../api/src/window-codec.ts";
+import {
+  decodeWindowEvent,
+  decodeWindowRequest,
+  decodeWindowResponse,
+} from "../../api/src/window-codec.ts";
 
 const CORPUS_PATH = join(
   import.meta.dir,
@@ -42,9 +46,13 @@ const CORPUS_PATH = join(
 );
 const STALL_LIMIT_MS = 5000;
 /** One owner, one digest: the Rust suite asserts this same constant. */
-const CORPUS_SHA256 = "94f6dd8a39aab2baf8b6e2ac4eb6c7c8e91e780c20d419ef927bd4dd5faff4af";
+const CORPUS_SHA256 =
+  "94f6dd8a39aab2baf8b6e2ac4eb6c7c8e91e780c20d419ef927bd4dd5faff4af";
 /** Pre-auth policies may reaccept after a rejection; authenticated ones close. */
-const PRE_AUTH_POLICIES = new Set(["server-pre-auth-hello", "client-await-hello"]);
+const PRE_AUTH_POLICIES = new Set([
+  "server-pre-auth-hello",
+  "client-await-hello",
+]);
 
 /** Fixture token declared in the corpus version row (0x01..0x20). */
 const FIXTURE_TOKEN = Uint8Array.from({ length: 32 }, (_, i) => i + 1);
@@ -94,7 +102,10 @@ function unhex(hex: string): Uint8Array {
 
 function policyByName(name: string): ReceivePolicy {
   const separator = name.indexOf(":");
-  const [base, arg] = separator < 0 ? [name, undefined] : [name.slice(0, separator), name.slice(separator + 1)];
+  const [base, arg] =
+    separator < 0
+      ? [name, undefined]
+      : [name.slice(0, separator), name.slice(separator + 1)];
   switch (base) {
     case "server-pre-auth-hello":
       return RECEIVE_POLICIES.serverPreAuthHello;
@@ -135,7 +146,14 @@ function policyByName(name: string): ReceivePolicy {
 async function readWithProductionReader(
   bytes: Uint8Array,
   truncated: boolean,
-): Promise<{ kind: number; flags: number; channel: number; corr: number; len: number; payload: Uint8Array }> {
+): Promise<{
+  kind: number;
+  flags: number;
+  channel: number;
+  corr: number;
+  len: number;
+  payload: Uint8Array;
+}> {
   const reader = new FrameReader();
   const pending = reader.readFrame();
   reader.push(bytes);
@@ -158,7 +176,10 @@ function timingSafeEq(a: Uint8Array, b: Uint8Array): boolean {
  * bytes for exactly the channel schemas the Rust suite decodes; they are
  * consumers of the corpus bytes, not a second semantic table.
  */
-function decodePostcardString(bytes: Uint8Array, at: number): { value: string; next: number } {
+function decodePostcardString(
+  bytes: Uint8Array,
+  at: number,
+): { value: string; next: number } {
   // postcard varint length (LEB128) then UTF-8 bytes.
   let len = 0;
   let shift = 0;
@@ -172,11 +193,16 @@ function decodePostcardString(bytes: Uint8Array, at: number): { value: string; n
     shift += 7;
   }
   if (i + len > bytes.length) throw new Error("KELD-IPC-003: truncated string");
-  const value = new TextDecoder("utf-8", { fatal: true }).decode(bytes.slice(i, i + len));
+  const value = new TextDecoder("utf-8", { fatal: true }).decode(
+    bytes.slice(i, i + len),
+  );
   return { value, next: i + len };
 }
 
-function decodeVarintU32(bytes: Uint8Array, at: number): { value: number; next: number } {
+function decodeVarintU32(
+  bytes: Uint8Array,
+  at: number,
+): { value: number; next: number } {
   let value = 0;
   let shift = 0;
   let i = at;
@@ -194,7 +220,8 @@ function decodeVarintU32(bytes: Uint8Array, at: number): { value: number; next: 
 function decodeEchoShape(payload: Uint8Array): void {
   const s = decodePostcardString(payload, 0);
   const n = decodeVarintU32(payload, s.next);
-  if (n.next !== payload.length) throw new Error("KELD-IPC-003: trailing bytes");
+  if (n.next !== payload.length)
+    throw new Error("KELD-IPC-003: trailing bytes");
 }
 
 function decodeUnitEnum(payload: Uint8Array, max: number): void {
@@ -204,34 +231,44 @@ function decodeUnitEnum(payload: Uint8Array, max: number): void {
 }
 
 /** Corpus-only schema validation for the closed enums in keld-ipc lifecycle.rs. */
-function decodeLifecycleShape(payload: Uint8Array, schema: "request" | "response"): void {
+function decodeLifecycleShape(
+  payload: Uint8Array,
+  schema: "request" | "response",
+): void {
   const [variant, afterVariant] = decodeVarint(payload, 0);
   let end = afterVariant;
   if (schema === "request") {
-    if (variant === 1) { // Subscribe { channel: u16 }
+    if (variant === 1) {
+      // Subscribe { channel: u16 }
       const [channel, afterChannel] = decodeVarint(payload, end);
       // Postcard u16 permits at most three bytes, including overlong encodings.
       if (afterChannel - end > 3 || channel > 0xffff) {
         throw new Error("KELD-IPC-003: lifecycle channel exceeds u16 encoding");
       }
       end = afterChannel;
-    } else if (variant !== 0) { // Quit
+    } else if (variant !== 0) {
+      // Quit
       throw new Error("KELD-IPC-003: unknown LifecycleRequest discriminant");
     }
-  } else if (variant === 2) { // SubscribeRefused { reason: SubscribeRefusal }
+  } else if (variant === 2) {
+    // SubscribeRefused { reason: SubscribeRefusal }
     const [reason, afterReason] = decodeVarint(payload, end);
-    if (reason > 3) throw new Error("KELD-IPC-003: unknown SubscribeRefusal discriminant");
+    if (reason > 3)
+      throw new Error("KELD-IPC-003: unknown SubscribeRefusal discriminant");
     end = afterReason;
-  } else if (variant > 1) { // Quit | Subscribed
+  } else if (variant > 1) {
+    // Quit | Subscribed
     throw new Error("KELD-IPC-003: unknown LifecycleResponse discriminant");
   }
-  if (end !== payload.length) throw new Error("KELD-IPC-003: trailing lifecycle bytes");
+  if (end !== payload.length)
+    throw new Error("KELD-IPC-003: trailing lifecycle bytes");
 }
 
 function decodeCallErrorShape(payload: Uint8Array): void {
   const code = decodePostcardString(payload, 0);
   const message = decodePostcardString(payload, code.next);
-  if (message.next !== payload.length) throw new Error("KELD-IPC-003: trailing bytes");
+  if (message.next !== payload.length)
+    throw new Error("KELD-IPC-003: trailing bytes");
 }
 
 function decodeCorpusCallError(payload: Uint8Array): void {
@@ -243,7 +280,11 @@ function decodeCorpusCallError(payload: Uint8Array): void {
   }
 }
 
-function stageTwo(policyName: string, header: FrameHeader, payload: Uint8Array): void {
+function stageTwo(
+  policyName: string,
+  header: FrameHeader,
+  payload: Uint8Array,
+): void {
   const base = policyName.split(":", 1)[0];
   const { kind, channel } = header;
   if (kind === FrameKind.Ping) return;
@@ -304,10 +345,15 @@ async function runFrameRow(row: Row): Promise<string> {
     // A row whose bytes cannot complete a frame is the peer-close path.
     const declaredLen =
       headerBytes.length >= HEADER_LEN
-        ? new DataView(headerBytes.buffer, headerBytes.byteOffset, headerBytes.byteLength).getUint32(12, true)
+        ? new DataView(
+            headerBytes.buffer,
+            headerBytes.byteOffset,
+            headerBytes.byteLength,
+          ).getUint32(12, true)
         : Number.MAX_SAFE_INTEGER;
     const truncated =
-      headerBytes.length < HEADER_LEN || (declaredLen <= MAX_FRAME_LEN && payload.length < declaredLen);
+      headerBytes.length < HEADER_LEN ||
+      (declaredLen <= MAX_FRAME_LEN && payload.length < declaredLen);
     const frame = await readWithProductionReader(bytes, truncated);
     validateReceivedHeader(policyByName(row.policy), frame);
     stageTwo(row.policy, frame, frame.payload);
@@ -330,7 +376,11 @@ describe("receiver-semantics corpus (Bun consumer)", () => {
         // corpus does not materialize a MAX_FRAME_LEN payload. Decode the
         // header through the production reader with an empty pending body.
         const headerBytes = unhex(row.headerOrTrace);
-        const view = new DataView(headerBytes.buffer, headerBytes.byteOffset, headerBytes.byteLength);
+        const view = new DataView(
+          headerBytes.buffer,
+          headerBytes.byteOffset,
+          headerBytes.byteLength,
+        );
         expect(view.getUint32(12, true)).toBeLessThanOrEqual(MAX_FRAME_LEN);
         validateReceivedHeader(policyByName(row.policy), {
           kind: headerBytes[3],
@@ -345,10 +395,19 @@ describe("receiver-semantics corpus (Bun consumer)", () => {
       const got = await runFrameRow(row);
       expect(`${row.id}: ${got}`).toBe(`${row.id}: ${row.expectedCode}`);
       const base = row.policy.split(":", 1)[0];
-      const expectedAction = got === "ok" ? "admit" : PRE_AUTH_POLICIES.has(base) ? "close-reaccept" : "close";
-      expect(`${row.id}: ${row.linkAction}`).toBe(`${row.id}: ${expectedAction}`);
+      const expectedAction =
+        got === "ok"
+          ? "admit"
+          : PRE_AUTH_POLICIES.has(base)
+            ? "close-reaccept"
+            : "close";
+      expect(`${row.id}: ${row.linkAction}`).toBe(
+        `${row.id}: ${expectedAction}`,
+      );
       if (got !== "ok") {
-        expect(`${row.id}: effects=${row.handlerEffects}`).toBe(`${row.id}: effects=0`);
+        expect(`${row.id}: effects=${row.handlerEffects}`).toBe(
+          `${row.id}: effects=0`,
+        );
       }
       checked += 1;
     }
@@ -359,7 +418,9 @@ describe("receiver-semantics corpus (Bun consumer)", () => {
     let checked = 0;
     for (const row of rows) {
       if (!row.policy.startsWith("trace:")) continue;
-      const [kind, ms] = row.policy.slice("trace:".length).split("-deadline-ms=");
+      const [kind, ms] = row.policy
+        .slice("trace:".length)
+        .split("-deadline-ms=");
       expect(["generation", "session"]).toContain(kind);
       const deadlineMs = Number(ms);
 
@@ -392,13 +453,17 @@ describe("receiver-semantics corpus (Bun consumer)", () => {
       if (row.expectedCode === "ok") {
         expect(completedAt).not.toBeNull();
       } else {
-        expect(`${row.id}: ${row.expectedCode}`).toBe(`${row.id}: KELD-IPC-006`);
+        expect(`${row.id}: ${row.expectedCode}`).toBe(
+          `${row.id}: KELD-IPC-006`,
+        );
         expect(completedAt).toBeNull();
         const closeAt = row.linkAction.startsWith("close-at-")
           ? Number(row.linkAction.slice("close-at-".length))
           : null;
         if (closeAt !== null) {
-          expect(`${row.id}: expiry=${expiry}`).toBe(`${row.id}: expiry=${closeAt}`);
+          expect(`${row.id}: expiry=${expiry}`).toBe(
+            `${row.id}: expiry=${closeAt}`,
+          );
         }
       }
       checked += 1;

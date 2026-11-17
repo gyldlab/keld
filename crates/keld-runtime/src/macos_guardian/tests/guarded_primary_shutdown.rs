@@ -51,6 +51,7 @@ impl PersistentPrimaryFixture {
             .arg(entry)
             .arg(identity.dev().to_string())
             .arg(identity.ino().to_string())
+            .arg("0") // existing staged public-FS fixture is renderer-declared
             .env_remove("KELD_DEV_LEASE")
             .process_group(0)
             .stderr(Stdio::from(

@@ -277,6 +277,87 @@ fn identity_exhaustion_is_checked_before_either_counter_changes() {
 }
 
 #[test]
+fn cumulative_window_churn_refuses_max_plus_one_without_minting_or_native_effect() -> TestResult {
+    // Candidate GH1149 numeric policy, deliberately not yet accepted. A
+    // destroyed window must still consume a session identity slot.
+    const PROPOSED_SESSION_CAP: u32 = 1024;
+    let mut registry = ready();
+    for correlation in 1..=PROPOSED_SESSION_CAP {
+        let (build, window) = begin(&mut registry, owner(1), correlation)?;
+        assert_eq!(window.id.0, correlation);
+        let failure = registry.native_failed(build);
+        assert_eq!(
+            failure
+                .call
+                .expect("admitted Create must have a terminal reply")
+                .correlation,
+            CorrelationId(correlation)
+        );
+    }
+    assert_eq!(registry.entries.len(), PROPOSED_SESSION_CAP as usize);
+    let before = (registry.last_id, registry.last_incarnation);
+    assert_eq!(
+        registry.create(owner(1), CorrelationId(2000), 320, 240, None, None),
+        Err(WindowError::SessionWindowCapacity)
+    );
+    assert_eq!((registry.last_id, registry.last_incarnation), before);
+    assert_eq!(registry.entries.len(), PROPOSED_SESSION_CAP as usize);
+    // Both authenticated limits can be reached concurrently: original
+    // counter-exhaustion diagnostics retain their precedence, and no pair
+    // changes on a refused call.
+    registry.last_id = u32::MAX;
+    assert_eq!(
+        registry.create(owner(1), CorrelationId(2002), 320, 240, None, None),
+        Err(WindowError::Exhausted(WindowCounter::Id))
+    );
+    registry.last_id = before.0;
+    registry.last_incarnation = u64::MAX;
+    assert_eq!(
+        registry.create(owner(1), CorrelationId(2003), 320, 240, None, None),
+        Err(WindowError::Exhausted(WindowCounter::Incarnation))
+    );
+    registry.last_incarnation = before.1;
+    // Retiring a Bun role does not reset the Host session's lifetime history.
+    registry.role_lost(owner(1), |_| {});
+    registry.subscribe_successor(owner(2));
+    assert_eq!(
+        registry.create(owner(2), CorrelationId(2001), 320, 240, None, None),
+        Err(WindowError::SessionWindowCapacity)
+    );
+    let mut fresh = WindowRegistry::new();
+    assert!(fresh.mark_ready());
+    assert!(matches!(
+        fresh.create(owner(3), CorrelationId(1), 320, 240, None, None),
+        Ok(CreateOutcome::Build { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn adopted_survivor_at_cumulative_capacity_does_not_mint_another_identity() -> TestResult {
+    const PROPOSED_SESSION_CAP: u32 = 1024;
+    let mut registry = ready();
+    let survivor = complete(&mut registry, owner(1), 1, 7)?;
+    for correlation in 2..=PROPOSED_SESSION_CAP {
+        let (build, _) = begin(&mut registry, owner(1), correlation)?;
+        assert!(registry.native_failed(build).call.is_some());
+    }
+    registry.role_lost(owner(1), |_| {});
+    registry.subscribe_successor(owner(2));
+    let before = (registry.last_id, registry.last_incarnation);
+    assert_eq!(
+        registry.create(owner(2), CorrelationId(2000), 1, 1, None, None),
+        Ok(CreateOutcome::Adopted(survivor)),
+    );
+    assert_eq!((registry.last_id, registry.last_incarnation), before);
+    assert_eq!(
+        registry.create(owner(2), CorrelationId(2001), 1, 1, None, None),
+        Err(WindowError::SessionWindowCapacity)
+    );
+    Ok(())
+}
+
+#[test]
 fn maximum_pair_is_usable_once_and_never_wraps() -> TestResult {
     let mut registry = ready();
     registry.last_id = u32::MAX - 1;

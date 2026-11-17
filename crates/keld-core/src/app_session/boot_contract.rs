@@ -1,4 +1,4 @@
-//! Exact strict schema-v1 application boot descriptor and portable input admission.
+//! Exact strict versioned application boot descriptors and portable input admission.
 //! Host resource acquisition, package verification, and session lifecycle stay parent-owned.
 
 use std::path::{Component, Path, PathBuf};
@@ -27,6 +27,22 @@ struct BootDocument {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 #[derive(Deserialize)]
+struct SchemaProbe {
+    schema: u8,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FacadeBootDocument {
+    schema: u8,
+    name: String,
+    entry: String,
+    permissions: PermissionsDocument,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PermissionsDocument {
     file: String,
@@ -37,9 +53,15 @@ struct PermissionsDocument {
 pub(super) struct ParsedBoot {
     pub(super) name: String,
     pub(super) entry: PathBuf,
-    pub(super) renderer: PathBuf,
+    pub(super) initial: InitialWindow,
     pub(super) permissions_digest: [u8; 32],
     pub(super) auth_configuration: AuthConfiguration,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
+pub(super) enum InitialWindow {
+    Renderer(PathBuf),
+    None,
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
@@ -56,42 +78,81 @@ pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError>
             "Write the descriptor as strict UTF-8 JSON.",
         )
     })?;
-    let document: BootDocument = serde_json::from_str(text).map_err(|source| {
+    // Probe the version with Serde, not a JSON Value map: even a duplicate
+    // schema key must fail before selecting either closed descriptor shape.
+    let probe: SchemaProbe = serde_json::from_str(text).map_err(|source| {
         boot_error(
-            format!("strict schema-v1 JSON was rejected: {source}"),
-            "Remove duplicate/unknown fields and regenerate keld.boot.json schema 1.",
+            format!("boot descriptor schema probe was rejected: {source}"),
+            "Write one schema key and a strict versioned boot descriptor.",
         )
     })?;
-    if document.schema != 1 {
-        return Err(boot_error(
-            format!("unsupported schema {}", document.schema),
-            "Regenerate keld.boot.json with schema 1.",
-        ));
-    }
-    if document.name.is_empty() {
+    let (name, entry, renderer, permissions, auth_configuration) = match probe.schema {
+        1 => {
+            let document: BootDocument = serde_json::from_str(text).map_err(|source| {
+                boot_error(
+                    format!("strict schema-v1 JSON was rejected: {source}"),
+                    "Remove duplicate/unknown fields and regenerate keld.boot.json schema 1.",
+                )
+            })?;
+            debug_assert_eq!(document.schema, 1);
+            (
+                document.name,
+                document.entry,
+                Some(document.renderer),
+                document.permissions,
+                document.auth,
+            )
+        }
+        2 => {
+            let document: FacadeBootDocument = serde_json::from_str(text).map_err(|source| {
+                boot_error(
+                    format!("strict schema-v2 JSON was rejected: {source}"),
+                    "Remove renderer, auth, profile, duplicate and unknown fields from the facade descriptor.",
+                )
+            })?;
+            debug_assert_eq!(document.schema, 2);
+            (
+                document.name,
+                document.entry,
+                None,
+                document.permissions,
+                AuthConfiguration::default(),
+            )
+        }
+        version => {
+            return Err(boot_error(
+                format!("unsupported schema {version}"),
+                "Regenerate the descriptor with supported schema 1 or 2.",
+            ));
+        }
+    };
+    if name.is_empty() {
         return Err(boot_error(
             "name must be a non-empty string",
             "Set the reviewed project name before compiling the boot descriptor.",
         ));
     }
-    let entry = validate_relative_path("entry", &document.entry)?;
-    let renderer = validate_relative_path("renderer", &document.renderer)?;
-    if document.permissions.file != PERMISSIONS_FILE {
+    let entry = validate_relative_path("entry", &entry)?;
+    let initial = match renderer {
+        Some(renderer) => InitialWindow::Renderer(validate_relative_path("renderer", &renderer)?),
+        None => InitialWindow::None,
+    };
+    if permissions.file != PERMISSIONS_FILE {
         return Err(boot_error(
             format!(
                 "permissions.file must be the literal {PERMISSIONS_FILE}, found {}",
-                document.permissions.file
+                permissions.file
             ),
             "Regenerate the descriptor with the fixed permissions filename.",
         ));
     }
-    let permissions_digest = decode_digest(&document.permissions.content_sha256)?;
+    let permissions_digest = decode_digest(&permissions.content_sha256)?;
     Ok(ParsedBoot {
-        name: document.name,
+        name,
         entry,
-        renderer,
+        initial,
         permissions_digest,
-        auth_configuration: document.auth,
+        auth_configuration,
     })
 }
 

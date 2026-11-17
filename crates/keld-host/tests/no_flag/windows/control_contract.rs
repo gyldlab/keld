@@ -2,6 +2,7 @@
 
 use std::io::{BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::windows::process::CommandExt as _;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -10,6 +11,9 @@ use crate::support::control::{
     HandshakeKillSwitches, accept_ready_generation_with_descendant,
     accept_ready_generation_with_descendant_within, read_control_line_or_host_failure,
     try_read_control_line,
+};
+use crate::support::process::{
+    PIPE_DRAIN_KILL_SWITCH, wait_for_child_process, wait_for_cleanup_sentinel,
 };
 use crate::{CONTROL_LINE_LIMIT, PRODUCT_DEADLINE, startup_kill_switch, wait_child};
 
@@ -307,5 +311,110 @@ fn startup_ready_after_the_product_deadline_is_accepted_within_the_startup_bound
     assert!(
         elapsed >= late_by,
         "READY was accepted before the injected startup delay: {elapsed:?}"
+    );
+}
+
+/// A `keld dev` parent that exits before delegating its host or cleanup sentinel
+/// can never delegate it. Both waits fail at once with the parent's status and
+/// captured output, rather than waiting out their deadline and reporting only
+/// `parent_alive=false` (the unexplained GH-1182 host-death failure under load).
+#[test]
+fn delegation_waits_report_an_exited_parent_with_its_output() {
+    type DelegationWait = fn(&mut std::process::Child, Instant) -> u32;
+    let host: DelegationWait =
+        |parent, deadline| wait_for_child_process(parent, "keld-host.exe", deadline);
+    let sentinel: DelegationWait = wait_for_cleanup_sentinel;
+    for (wait, delegate) in [(host, "keld-host.exe"), (sentinel, "cleanup sentinel")] {
+        let mut parent = Command::new("cmd.exe")
+            .args([
+                "/d",
+                "/c",
+                "echo GH1182_PARENT_STDOUT & echo GH1182_PARENT_STDERR 1>&2 & exit /b 29",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("exiting delegation parent");
+        let parent_pid = parent.id();
+        let started = Instant::now();
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            wait(&mut parent, Instant::now() + PRODUCT_DEADLINE)
+        }))
+        .expect_err("an exited parent cannot delegate");
+        let message = failure
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| failure.downcast_ref::<&str>().copied())
+            .expect("panic message");
+        for expected in [
+            format!("parent {parent_pid} exited before `{delegate}` was observed under it"),
+            "exit code: 29".to_owned(),
+            "stdout:\nGH1182_PARENT_STDOUT".to_owned(),
+            "stderr:\nGH1182_PARENT_STDERR".to_owned(),
+        ] {
+            assert!(message.contains(&expected), "missing {expected}: {message}");
+        }
+        assert!(
+            started.elapsed() < PRODUCT_DEADLINE,
+            "the wait ran out its deadline instead of failing on the parent's exit"
+        );
+    }
+}
+
+/// A dev CLI's host inherits its stdio, so the CLI can exit while a descendant
+/// still holds its pipes. The exited-parent report must still return, within
+/// `PIPE_DRAIN_KILL_SWITCH`, with what the parent wrote before exiting and a
+/// marker for the held pipe, instead of blocking on it.
+#[test]
+fn delegation_wait_report_does_not_block_on_a_pipe_a_descendant_holds() {
+    const HOLDER: &str = "GH1182_PIPE_HOLDER";
+    // Raw, because cmd.exe does not read the backslash-escaped quotes `args`
+    // would emit: `start /b` must leave the sleeper holding the inherited stdio
+    // while `exit /b 31` ends the parent at once.
+    let mut parent = Command::new("cmd.exe")
+        .raw_arg(format!(
+            "/d /c start \"\" /b powershell.exe -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 60; '{HOLDER}' | Out-Null\" & echo GH1182_HELD_STDOUT & echo GH1182_HELD_STDERR 1>&2 & exit /b 31"
+        ))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("exiting parent with a pipe-holding descendant");
+    let started = Instant::now();
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait_for_child_process(
+            &mut parent,
+            "keld-host.exe",
+            Instant::now() + PRODUCT_DEADLINE,
+        )
+    }))
+    .expect_err("an exited parent cannot delegate");
+    let elapsed = started.elapsed();
+    let _ = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &format!(
+                "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | Where-Object {{ $_.ProcessId -ne $PID -and $_.CommandLine -match '{HOLDER}' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}"
+            ),
+        ])
+        .output();
+    let message = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .expect("panic message");
+    // What the parent wrote before exiting survives the descendant's open pipe.
+    for expected in [
+        "exit code: 31",
+        "stdout:\nGH1182_HELD_STDOUT",
+        "stderr:\nGH1182_HELD_STDERR",
+        "<pipe still open at its kill switch>",
+    ] {
+        assert!(message.contains(expected), "missing {expected}: {message}");
+    }
+    assert!(
+        elapsed < PIPE_DRAIN_KILL_SWITCH + PRODUCT_DEADLINE,
+        "the report blocked on the held pipe for {elapsed:?}"
     );
 }

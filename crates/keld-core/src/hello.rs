@@ -198,8 +198,8 @@ where
 mod tests {
     use super::{
         DEFAULT_ENTRY, DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, entry_from_config_ts,
-        hello_title_from_args, host_hello_unknown_arg, read_config_entry, renderer_from_config_ts,
-        resolve_hello_title, title_from_config_ts,
+        hello_title_from_args, host_hello_unknown_arg, initial_window_from_config_ts,
+        read_config_entry, renderer_from_config_ts, resolve_hello_title, title_from_config_ts,
     };
 
     #[test]
@@ -305,6 +305,284 @@ mod tests {
     }
 
     #[test]
+    fn facade_declaration_is_a_closed_root_literal() {
+        assert!(
+            !initial_window_from_config_ts(
+                "export default { name: \"Demo\", renderer: \"index.html\" } as const;"
+            )
+            .expect("absent declaration preserves renderer mode")
+        );
+        assert!(
+            initial_window_from_config_ts(
+                "export default { initialWindow: \"none\", entry: \"src/main.ts\" } as const;"
+            )
+            .expect("literal facade declaration")
+        );
+        assert!(
+            initial_window_from_config_ts(
+                "// initialWindow: 'renderer'\nexport default { 'initialWindow': 'none' } as const;"
+            )
+            .expect("comments cannot select a different mode")
+        );
+        assert!(
+            !initial_window_from_config_ts(
+                "export default { nested: { initialWindow: 'none' } } as const;"
+            )
+            .expect("nested declaration must not select facade mode")
+        );
+        assert!(
+            initial_window_from_config_ts(
+                "export default { ['unrelated']: 1, nested: { ...options, ['renderer']: 'nested' }, initialWindow: 'none' } as const;"
+            )
+            .expect("unambiguous unrelated keys and nested spreads are harmless")
+        );
+        for source in [
+            "export default { initialWindow: 'renderer' } as const;",
+            "export default { initialWindow: false } as const;",
+            "export default { initialWindow: 'none', initialWindow: 'none' } as const;",
+            "export default { ['initialWindow']: 'none' } as const;",
+            "export default { initialWindow: 'none', renderer: 'index.html' } as const;",
+            "export default { initialWindow: 'none', auth: {} } as const;",
+            "export default { ['initial' + 'Window']: 'none' } as const;",
+            "export default { ...{ initialWindow: 'none' } } as const;",
+            "export default { ...options, initialWindow: 'none' } as const;",
+            "export default { initialWindow: 'none', ...{ renderer: 'index.html' } } as const;",
+            "export default { initialWindow: 'none', ...options } as const;",
+            "export default { initialWindow: 'none', [dynamicKey]: true } as const;",
+            "export default { initialWindow: 'none', get ['ren' + 'derer']() { return 'index.html' } } as const;",
+            "export default { initialWindow: 'none', async ['renderer']() { return 'index.html' } } as const;",
+            "export default { initialWindow: 'none', [`renderer`]: 'index.html' } as const;",
+        ] {
+            assert!(
+                initial_window_from_config_ts(source).is_err(),
+                "unsupported or conflicting facade declaration must refuse: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn facade_rejects_hidden_reserved_root_keys() {
+        let mut accepted = Vec::new();
+        for source in [
+            "export default { initialWindow: 'none', async renderer() {} } as const;",
+            "export default { initialWindow: 'none', *auth() {} } as const;",
+            "export default { initialWindow: 'none', async *renderer() {} } as const;",
+            "export default { initialWindow: 'none', async initialWindow() {} } as const;",
+            "export default { initialWindow: 'none', async /*comment*/ renderer() {} } as const;",
+            "export default { initialWindow: 'none', * /*comment*/ auth() {} } as const;",
+            "export default { initialWindow: 'none', get renderer() { return 'index.html' } } as const;",
+            "export default { initialWindow: 'none', set auth(value) {} } as const;",
+            r"export default { initialWindow: 'none', rend\u0065rer: 'index.html' } as const;",
+            r"export default { initia\u006cWindow: 'none' } as const;",
+            r"export default { initialWindow: 'none', render\u0065r() {} } as const;",
+            r"export default { initialWindow: 'none', 'ren\x64erer': 'index.html' } as const;",
+            r"export default { initialWindow: 'none', ['ren\x64erer']: 'index.html' } as const;",
+            r"export default { initialWindow: 'none', ['rend\u0065rer']: 'index.html' } as const;",
+            r#"export default { initialWindow: 'none', "rend\u{65}rer": 'index.html' } as const;"#,
+        ] {
+            if initial_window_from_config_ts(source).is_ok() {
+                accepted.push(source);
+            }
+        }
+        assert!(
+            accepted.is_empty(),
+            "obscured reserved root members accepted:\n{}",
+            accepted.join("\n")
+        );
+    }
+
+    #[test]
+    fn facade_allows_unrelated_root_methods_and_nested_keys() {
+        assert!(
+            initial_window_from_config_ts(
+                "export default { initialWindow: 'none', async unrelated() { return 1 }, *other() { yield 2 }, get safe() { return { renderer: 1 } }, set safe(value) { this.x = value } } as const;"
+            )
+            .expect("unrelated methods are not reserved boot fields")
+        );
+        assert!(
+            initial_window_from_config_ts(
+                r"export default { initialWindow: 'none', async: 'data', 'unrel\u0061ted': 1, ['unrel\u0061ted']: 2, name: 'A\x61', nested: { 'ren\x64erer': 3 } } as const;"
+            )
+            .expect("static unrelated keys, value escapes, and nested data remain allowed")
+        );
+    }
+
+    #[test]
+    fn facade_root_accepts_numeric_keys_and_unrelated_generic_methods() {
+        for source in [
+            "export default { 1.5: 'unrelated', initialWindow: 'none' } as const;",
+            "export default { initialWindow: 'none', helper<T extends typeof Math.PI>() { return 1 } } as const;",
+            "export default { .25: 'unrelated', initialWindow: 'none' } as const;",
+            "export default { initialWindow: 'none', helper<T extends Foo['renderer']>() { return 1 } } as const;",
+            "export default { initialWindow: 'none', helper<T extends number, renderer extends string>() { return 1 } } as const;",
+            r"export default { initialWindow: 'none', helper<T extends rend\u0065rer>() { return 1 } } as const;",
+            "export default { initialWindow: 'none', helper<T extends () => typeof Math.PI, renderer extends string>() { return 1 } } as const;",
+            "type renderer = string; export default { initialWindow: 'none', helper(): Map<string, renderer> { return new Map() } } as const;",
+        ] {
+            assert!(
+                initial_window_from_config_ts(source).expect("valid unrelated syntax"),
+                "literal facade selection must survive unrelated members: {source}"
+            );
+        }
+        assert!(
+            !initial_window_from_config_ts(
+                "export default { 1.5: 'unrelated', renderer: 'index.html' } as const;"
+            )
+            .expect("valid renderer configuration"),
+            "unrelated numeric keys must not invalidate schema one"
+        );
+        assert!(
+            initial_window_from_config_ts(
+                "export default { initialWindow: 'none', ...extra } as const;"
+            )
+            .is_err(),
+            "genuine root spread must remain rejected"
+        );
+    }
+
+    #[test]
+    fn parenthesized_literal_root_preserves_facade_identity() {
+        for source in [
+            "export default ({ initialWindow: 'none' }) as const;",
+            "export default (({ initialWindow: 'none' })) as const;",
+            "export default ({ initialWindow: 'none' } as const);",
+            "export default ({ initialWindow: 'none' } satisfies App.Config);",
+            "export default ({ initialWindow: 'none' } as const satisfies App.Config);",
+            "export default ({ initialWindow: 'none' }) satisfies DynamicConfig;",
+            "export default { initialWindow: 'none' } satisfies App.Config;",
+            "export default { initialWindow: 'none' } as const satisfies App.Config;",
+            "export default { initialWindow: 'none' }\nexport const helper = 1;",
+            "export default { initialWindow: 'none' } as const\nexport type Helper = string;",
+        ] {
+            assert!(
+                initial_window_from_config_ts(source).expect("parenthesized literal root"),
+                "parentheses must not silently downgrade facade to renderer: {source}"
+            );
+        }
+        assert!(
+            !initial_window_from_config_ts("export default ({ renderer: 'index.html' }) as const;")
+                .expect("parenthesized renderer root"),
+            "truly absent facade declaration stays renderer mode"
+        );
+        for source in [
+            "export default ({ initialWindow: 'none' }).renderer;",
+            "export default ({ initialWindow: 'none' }) as any && { renderer: 'index.html' };",
+            "export default ({ initialWindow: 'none' }) as const && other;",
+            "export default ({ initialWindow: 'none' }) satisfies DynamicConfig && other;",
+            "export default { initialWindow: 'none' } && { renderer: 'index.html' };",
+            "export default { initialWindow: 'none' }['missing'] ?? { renderer: 'index.html' };",
+            "export default { initialWindow: 'none' } as any && { renderer: 'index.html' };",
+        ] {
+            assert!(
+                initial_window_from_config_ts(source).is_err(),
+                "unsupported wrapper expression must fail closed: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn facade_literal_root_preserves_javascript_automatic_semicolon_insertion() {
+        for source in [
+            "export default { initialWindow: 'none' }\nexport const helper = 1;",
+            "export default ({ initialWindow: 'none' }) as const\nexport type Helper = string;",
+            "export default { initialWindow: 'none' } satisfies App.Config\nexport const helper = 1;",
+            "export default { initialWindow: 'none' } // an independent export follows\nexport const helper = 1;",
+            "export default { initialWindow: 'none' } as const /* comment with\n newline */ export type Helper = string;",
+            "export default { initialWindow: 'none' }\nconst helper = 1;",
+        ] {
+            assert!(
+                initial_window_from_config_ts(source).expect("independent next declaration"),
+                "valid next-line declaration must not invalidate facade selection: {source}"
+            );
+        }
+        for source in [
+            "export default ({ initialWindow: 'none' })\n.renderer;",
+            "export default { initialWindow: 'none' }\n['renderer'];",
+            "export default ({ initialWindow: 'none' })\n&& other;",
+        ] {
+            assert!(
+                initial_window_from_config_ts(source).is_err(),
+                "line break must not hide a continuing expression: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn facade_root_keeps_generic_arrow_value_parameters_out_of_root_keys() {
+        for source in [
+            "export default { initialWindow: 'none', helper: <T, renderer>(x: T): T => x } as const;",
+            "export default { initialWindow: 'none', helper: async <T, auth>(x: T): Promise<T> => x } as const;",
+        ] {
+            assert!(
+                initial_window_from_config_ts(source).expect("unrelated generic arrow value"),
+                "type parameters in an unrelated value must not be root declarations: {source}"
+            );
+        }
+        assert!(
+            !initial_window_from_config_ts(
+                "export default { renderer: 'index.html', helper: <T, auth>(x: T): T => x } as const;"
+            )
+            .expect("renderer boot with unrelated generic arrow value"),
+            "type parameters must not select facade mode"
+        );
+        assert!(
+            initial_window_from_config_ts(
+                "export default { initialWindow: 'none', helper: <T, auth>(x: T): T => x, ...extra } as const;"
+            )
+            .is_err(),
+            "a genuine root spread must still fail after a generic arrow value"
+        );
+    }
+
+    #[test]
+    fn static_type_annotations_preserve_boot_mode() {
+        for suffix in [
+            "satisfies Record<string, string>;",
+            "satisfies App.Config<Record<string, string>>;",
+            "satisfies { initialWindow: 'none' };",
+            "satisfies { values: Record<string, { nested: string[] }> };",
+        ] {
+            let facade = format!("export default {{ initialWindow: 'none' }} {suffix}");
+            assert!(initial_window_from_config_ts(&facade).expect("static facade type"));
+            let renderer = format!("export default {{ renderer: 'index.html' }} {suffix}");
+            assert!(!initial_window_from_config_ts(&renderer).expect("static renderer type"));
+        }
+        for suffix in [
+            "satisfies Record<string, string> && other;",
+            "satisfies { initialWindow: 'none' } && other;",
+            "satisfies Record<string, string;",
+        ] {
+            let source = format!("export default {{ initialWindow: 'none' }} {suffix}");
+            assert!(initial_window_from_config_ts(&source).is_err());
+        }
+    }
+
+    #[test]
+    fn next_line_expression_statements_preserve_boot_mode() {
+        for statement in ["console.log('after');", "runAfter();"] {
+            for suffix in ["", "as const", "satisfies App.Config"] {
+                let facade =
+                    format!("export default {{ initialWindow: 'none' }} {suffix}\n{statement}");
+                assert!(initial_window_from_config_ts(&facade).expect("independent statement"));
+                let renderer =
+                    format!("export default {{ renderer: 'index.html' }} {suffix}\n{statement}");
+                assert!(!initial_window_from_config_ts(&renderer).expect("independent statement"));
+            }
+        }
+        for continuation in [
+            "in other",
+            "instanceof Other",
+            "(other)",
+            "['renderer']",
+            ".renderer",
+            "&& other",
+        ] {
+            let source = format!("export default {{ initialWindow: 'none' }}\n{continuation}");
+            assert!(initial_window_from_config_ts(&source).is_err());
+        }
+    }
+
+    #[test]
     fn default_renderer_is_index_html() {
         assert_eq!(DEFAULT_RENDERER, "index.html");
         assert_eq!(DEFAULT_ENTRY, "src/main.ts");
@@ -339,7 +617,10 @@ mod tests {
 }
 
 mod auth_config;
-pub use self::auth_config::{AuthConfigError, auth_configuration_from_config_ts};
+pub use self::auth_config::{
+    AuthConfigError, InitialWindowConfigError, auth_configuration_from_config_ts,
+    initial_window_from_config_ts,
+};
 
 #[cfg(test)]
 mod auth_config_tests {

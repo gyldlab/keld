@@ -35,8 +35,12 @@ use tao::window::Window;
 use wry::WebViewExtMacOS;
 
 use crate::WebviewId;
+pub use crate::engine::AppReadyTrigger;
 pub use crate::engine::{AppWindowCommand, AppWindowEvent};
-use crate::engine::{DevtoolsAction, NavTarget, Rect, WebEngine, WebviewSpec, WkWebViewEngineExt};
+use crate::engine::{
+    DevtoolsAction, NavTarget, Rect, WebEngine, WebviewSpec, WkWebViewEngineExt,
+    first_host_init_turn,
+};
 use crate::error::WvError;
 use crate::profile::{
     EphemeralProfile, ProfileError, ProfileErrorKind, ProfileIdentity, WebProfileSelection,
@@ -312,8 +316,9 @@ impl WkWebViewEngine {
             commands,
             events,
             None,
+            AppReadyTrigger::NavigationReady,
             &mut |_, _, _| Ok((true, None)),
-            &mut unproved,
+            (&mut unproved, || {}),
         )
     }
 
@@ -342,8 +347,11 @@ impl WkWebViewEngine {
         commands: Receiver<AppWindowCommand>,
         events: Sender<AppWindowEvent>,
         anchor: Option<WebviewId>,
+        ready_trigger: AppReadyTrigger,
         service: &mut F,
-        retains_main_custody: &mut bool,
+        // Keep the main-custody result paired with the loop-entry clock handoff.
+        // Neither moves its underlying AppKit/profile owner to another thread.
+        startup: (&mut bool, impl FnOnce()),
     ) -> Result<(), WvError>
     where
         F: FnMut(
@@ -352,6 +360,7 @@ impl WkWebViewEngine {
             bool,
         ) -> Result<(bool, Option<Instant>), WvError>,
     {
+        let (retains_main_custody, on_loop_entry) = startup;
         *retains_main_custody = false;
         let Some(main_thread) = MainThreadMarker::new() else {
             return Err(WvError::EventLoop(String::from(
@@ -395,15 +404,44 @@ impl WkWebViewEngine {
         let mut terminal_requested = false;
         let mut closing = Vec::new();
         let mut main_owner_failure = None;
+        let mut host_init_emitted = false;
         let profile = &self.profile;
         let next_id = &mut self.next_id;
         let media_seed_allow = self.profile_test_media_seed_allow;
+        // Arm the host's external Init watchdog only after loop setup has succeeded.
+        // The watchdog is independent of Tao's pre-Init proxy/waker availability.
+        on_loop_entry();
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        if ready_trigger == AppReadyTrigger::HostInitialized
+            && std::env::var_os("KELD_T1B_STALL_BEFORE_INIT").is_some()
+        {
+            // Private child-only failure control. The coordinator must terminate
+            // this process: the main thread cannot service a proxy or unwind.
+            std::thread::park();
+        }
         let code = event_loop.run_return(|event, target, control_flow| {
             // The existing bridge accepts terminal intent before its proxy event.
             // One terminal state closes renderer dispatch and Native main admission.
             if terminal_intent_in_loop.load(Ordering::Acquire) {
                 terminal_requested = true;
                 destroy_renderer_bridges(&mut renderer_bridges);
+            }
+            if ready_trigger == AppReadyTrigger::HostInitialized
+                && !terminal_requested
+                && first_host_init_turn(&event, &mut host_init_emitted)
+            {
+                // Capture on the native UI owner before enqueueing: the Core
+                // receiver may be descheduled past the absolute first-Init
+                // deadline even when this genuine event happened on time.
+                let observed_at = Instant::now();
+                if events
+                    .send(AppWindowEvent::HostInitialized { observed_at })
+                    .is_err()
+                {
+                    fatal_in_loop.store(true, Ordering::Release);
+                    terminal_requested = true;
+                    destroy_renderer_bridges(&mut renderer_bridges);
+                }
             }
             let terminal = is_terminal_app_event(&event) || terminal_requested;
             let live_navigation = views.iter().any(|(id, view)| {
@@ -439,20 +477,53 @@ impl WkWebViewEngine {
                         destroy_renderer_bridges(&mut renderer_bridges);
                     }
                     Event::UserEvent(WkUserEvent::App(command)) => {
+                        // Debug+feature-gated real-main-thread hostile fixture:
+                        // a test-controlled maximization request instead calls
+                        // AppKit's genuine `NSWindow.close()` (NOT Tao's
+                        // cancelable `performClose:` / AX red-button path).
+                        // Default/shipping builds compile out this injection,
+                        // and only the dedicated test host opts into it.
+                        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                        let test_external_close = if let AppWindowCommand::SetMaximized {
+                            view,
+                            ..
+                        } = command
+                        {
+                            if std::env::var_os("KELD_T1B_UNEXPECTED_NATIVE_CLOSE").is_some() {
+                                if let Some(window) = views
+                                    .get(&view.0)
+                                    .filter(|view| view.registry_managed)
+                                    .and_then(|view| view.webview.webview().window())
+                                {
+                                    window.close();
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+                        #[cfg(not(all(feature = "profile-test-hooks", debug_assertions)))]
+                        let test_external_close = false;
                         let native = managed_windows::NativeBuild {
                             target,
                             profile,
                             startup: &startup_in_loop,
                             media_seed_allow,
                         };
-                        if let Err(error) = managed_windows::command(
-                            command,
-                            &native,
-                            next_id,
-                            &mut views,
-                            &mut renderer_bridges,
-                            &events,
-                        ) {
+                        if !test_external_close
+                            && let Err(error) = managed_windows::command(
+                                command,
+                                &native,
+                                next_id,
+                                &mut views,
+                                &mut renderer_bridges,
+                                &events,
+                            )
+                        {
                             main_owner_failure.get_or_insert(error);
                             fatal_in_loop.store(true, Ordering::Release);
                             terminal_requested = true;
@@ -517,6 +588,34 @@ impl WkWebViewEngine {
                         }
                         if legacy_closed && views.is_empty() {
                             let _ = events.send(AppWindowEvent::LastWindowClosed);
+                        }
+                    }
+                    Event::WindowEvent {
+                        window_id,
+                        event: WindowEvent::Destroyed,
+                        ..
+                    } => {
+                        // Tao 0.35.3 can report `windowWillClose:` as Destroyed
+                        // after an out-of-band NSWindow.close(), *without* a
+                        // preceding cancelable CloseRequested. Ordinary Keld
+                        // DestroyWindow removes the owned view from `views`
+                        // BEFORE its NSWindow drops, so that path is not here.
+                        // An observed Destroyed while this registry-managed
+                        // view is still present means physical release has
+                        // bypassed Core's close veto and T11 tombstone order.
+                        // No caller or renderer may fabricate a successful
+                        // Released reply or keep a ghost BrowserWindow alive.
+                        if let Some((id, _)) = views.iter().find(|(_, view)| {
+                            view.registry_managed && view.window.id() == window_id
+                        }) {
+                            main_owner_failure.get_or_insert_with(|| {
+                                WvError::EventLoop(format!(
+                                    "unexpected out-of-band native NSWindow close for registry view {id}; fail-closed Host shutdown instead of a ghost window or forged close veto"
+                                ))
+                            });
+                            fatal_in_loop.store(true, Ordering::Release);
+                            terminal_requested = true;
+                            destroy_renderer_bridges(&mut renderer_bridges);
                         }
                     }
                     Event::WindowEvent {
@@ -998,9 +1097,30 @@ mod startup_tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use super::{page_load_trace_handler, run_app_wake_bridge, wry_page_load};
+    use super::{
+        WkUserEvent, first_host_init_turn, page_load_trace_handler, run_app_wake_bridge,
+        wry_page_load,
+    };
     use crate::AppWindowCommand;
     use crate::startup::{PageLoad, StartupPhase, StartupTrace, phase_for_page_load};
+    use tao::event::{Event, StartCause};
+
+    #[test]
+    fn facade_ready_is_only_the_first_real_tao_init_turn() {
+        let mut emitted = false;
+        let opened: Event<'_, WkUserEvent> = Event::Opened { urls: vec![] };
+        assert!(!first_host_init_turn(&opened, &mut emitted));
+        assert!(!emitted, "Opened can precede applicationDidFinishLaunching");
+
+        // StartCause::WaitCancelled is non-exhaustive outside Tao; an
+        // independently constructible non-Init turn checks the same boundary.
+        let later: Event<'_, WkUserEvent> = Event::MainEventsCleared;
+        assert!(!first_host_init_turn(&later, &mut emitted));
+        let init: Event<'_, WkUserEvent> = Event::NewEvents(StartCause::Init);
+        assert!(first_host_init_turn(&init, &mut emitted));
+        assert!(!first_host_init_turn(&init, &mut emitted));
+        assert!(!first_host_init_turn(&later, &mut emitted));
+    }
 
     #[test]
     fn wry_finished_maps_to_nav_finished_started_does_not() {

@@ -203,6 +203,7 @@ impl Inputs {
             .arg(&self.entry_relative)
             .arg(entry.dev().to_string())
             .arg(entry.ino().to_string())
+            .arg("0") // existing staged public-FS fixture is renderer-declared
             .env_remove("KELD_DEV_LEASE")
             .stderr(Stdio::inherit())
             .process_group(0);

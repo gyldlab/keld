@@ -821,6 +821,13 @@ impl PrimaryRouterHandle {
                     "legacy lifecycle fact entered managed registry dispatch",
                 ));
             }
+            #[cfg(any(target_os = "macos", windows))]
+            AppWindowEvent::HostInitialized { .. } => {
+                return Err(app_detail(
+                    "window native event",
+                    "the first host Init milestone belongs only to the lifecycle coordinator",
+                ));
+            }
         };
         match fact {
             FactOutcome::Event(fact) => owned_event(current, subscribed, fact, failed),

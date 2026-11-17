@@ -41,9 +41,9 @@
 # override (binary `no_flag_windows`, below) exists because a kill switch of its
 # own is longer, not because a test ran slower. Re-measure before adding a slower
 # test; never raise this to absorb a hang. The pinned
-# taiki-e/install-action step installs `cargo-nextest@latest` (0.9.145 on the hosted
-# runs that introduced this bound). That version is not pinned: re-check this bound's
-# behaviour whenever the installed nextest version changes.
+# taiki-e/install-action is SHA-pinned, and both native CI jobs explicitly
+# select `nextest@0.9.149` with an executable-version assertion. Re-measure
+# this bound whenever the reviewed Nextest binary pin changes.
 slow-timeout = { period = "60s", terminate-after = 10 }
 
 # Real macOS no-flag rows own native AppKit/WKWebView sessions. KEL-142 adds

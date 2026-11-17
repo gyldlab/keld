@@ -1,4 +1,6 @@
 //! KEL-97 authenticated identity proof; no OS-containment or grant claim.
+#[cfg(target_os = "macos")]
+use super::super::MacBoundStart;
 use super::super::{PrimaryCallerContext, dispatch_primary_echo};
 use super::*;
 use keld_runtime::primary::{
@@ -125,9 +127,11 @@ fn accepted_app_bound_identity_is_refused_by_primary_admission() {
         SessionShutdownState::new(),
         None,
         #[cfg(target_os = "macos")]
-        AuthConfiguration::new(),
-        #[cfg(target_os = "macos")]
-        None,
+        MacBoundStart {
+            auth_configuration: AuthConfiguration::new(),
+            presentation: None,
+            facade_windows: false,
+        },
     );
     let Err(error) = result else {
         panic!("accepted app-bound role entered primary router");
@@ -166,9 +170,11 @@ fn accepted_primary_identity_fences_caller_context_before_healthy_echo() {
         SessionShutdownState::new(),
         None,
         #[cfg(target_os = "macos")]
-        AuthConfiguration::new(),
-        #[cfg(target_os = "macos")]
-        None,
+        MacBoundStart {
+            auth_configuration: AuthConfiguration::new(),
+            presentation: None,
+            facade_windows: false,
+        },
     )
     .expect("actual authenticated primary router");
     let handle = router.handle();

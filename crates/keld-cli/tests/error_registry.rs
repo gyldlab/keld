@@ -3,7 +3,7 @@
 //! The registry file is the docs stub. These tests fail when:
 //! - a code is listed twice
 //! - an entry is missing `crate` / `message` / `fix`
-//! - scanned crates or workspace tools emit a code that is not listed
+//! - scanned crates, TypeScript package sources or workspace tools emit an unlisted code
 //! - the registry lists a code the scanned sources do not emit
 //!
 //! Why: a deleted uniqueness check, an empty `fix`, or a new `KELD-WV-008` in
@@ -44,6 +44,9 @@ const SCAN_REL: &[&str] = &[
     "packages/@keld/kipc/src",
     // Application-layer errors must not rely on Rust fixture copies.
     "packages/@keld/api/src",
+    // Public Electron facade errors must not be silently invisible just
+    // because no Rust binary emits the same KELD-COMPAT identifier.
+    "packages/@keld/electron/src",
     "tools",
 ];
 
@@ -373,4 +376,28 @@ fn api_emitter_is_scanned_without_a_rust_shadow() {
         emitted_codes(root.path()).contains("KELD-API-001"),
         "the production application emitter must be covered without a Rust copy"
     );
+}
+
+#[test]
+fn electron_emitter_is_scanned_without_a_rust_shadow() {
+    let root = tempfile::tempdir().expect("isolated registry source roots");
+    for rel in SCAN_REL {
+        fs::create_dir_all(root.path().join(rel)).expect("create scanner root");
+    }
+    // Neither the Rust crates nor the other packages contain these errors.
+    fs::write(root.path().join("crates/keld-core/src/lib.rs"), "")
+        .expect("write empty Rust source");
+    let electron = root.path().join("packages/@keld/electron/src");
+    fs::copy(
+        workspace_root().join("packages/@keld/electron/src/browser-window.ts"),
+        electron.join("browser-window.ts"),
+    )
+    .expect("copy real Electron facade emitter");
+    let emitted = emitted_codes(root.path());
+    for code in ["KELD-COMPAT-010", "KELD-COMPAT-011"] {
+        assert!(
+            emitted.contains(code),
+            "{code} must be covered without Rust shadows or test-only copies"
+        );
+    }
 }

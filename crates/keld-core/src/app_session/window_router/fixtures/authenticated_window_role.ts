@@ -2,14 +2,25 @@
 import { createConnection } from "node:net";
 import { createInterface } from "node:readline";
 import {
-  LIFECYCLE_CHANNEL, WINDOW_CHANNEL, WorkerLink, isCallError,
+  LIFECYCLE_CHANNEL,
+  WINDOW_CHANNEL,
+  WorkerLink,
+  isCallError,
 } from "../../../../../../packages/@keld/kipc/src/transport.ts";
 import {
-  decodeWindowEvent, decodeWindowResponse, encodeWindowRequest,
-  type WindowEvent, type WindowRef, type WindowRequest, type WindowResponse,
+  decodeWindowEvent,
+  decodeWindowResponse,
+  encodeWindowRequest,
+  type WindowEvent,
+  type WindowRef,
+  type WindowRequest,
+  type WindowResponse,
 } from "../../../../../../packages/@keld/api/src/window-codec.ts";
 
-const control = createConnection({ host: "127.0.0.1", port: Number(process.argv[2]) });
+const control = createConnection({
+  host: "127.0.0.1",
+  port: Number(process.argv[2]),
+});
 await new Promise<void>((resolve, reject) => {
   control.once("connect", resolve);
   control.once("error", reject);
@@ -19,7 +30,10 @@ const endpoint = process.env.KELD_APP_LINK;
 if (endpoint === undefined) throw new Error("missing authenticated app link");
 const link = await WorkerLink.open({
   link: endpoint,
-  receive: { eventChannels: [LIFECYCLE_CHANNEL, WINDOW_CHANNEL], callReceivers: [] },
+  receive: {
+    eventChannels: [LIFECYCLE_CHANNEL, WINDOW_CHANNEL],
+    callReceivers: [],
+  },
 });
 
 let facts = 0;
@@ -29,19 +43,28 @@ let window: WindowRef | undefined;
 let pendingClose = 0n;
 let readyBytes = "absent";
 let readyResolve: () => void = () => undefined;
-const ready = new Promise<void>((resolve) => { readyResolve = resolve; });
+const ready = new Promise<void>((resolve) => {
+  readyResolve = resolve;
+});
 let maximizedResolve: () => void = () => undefined;
-const maximized = new Promise<void>((resolve) => { maximizedResolve = resolve; });
-const ended = new Promise<string>((resolve) => { link.onEnd((error) => resolve(error.code)); });
+const maximized = new Promise<void>((resolve) => {
+  maximizedResolve = resolve;
+});
+const ended = new Promise<string>((resolve) => {
+  link.onEnd((error) => resolve(error.code));
+});
 link.setStateApplier(LIFECYCLE_CHANNEL, (payload) => {
-  readyBytes = Array.from(payload, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  readyBytes = Array.from(payload, (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
   readyResolve();
 });
 link.setStateApplier(WINDOW_CHANNEL, (payload) => {
   const fact = decodeWindowEvent(payload);
   facts += 1;
   latest = fact;
-  if (fact.variant === "Created" && firstCreated === undefined) firstCreated = fact;
+  if (fact.variant === "Created" && firstCreated === undefined)
+    firstCreated = fact;
   if (fact.variant === "Maximized") maximizedResolve();
   if (fact.variant === "CloseRequested") pendingClose = fact.close_seq;
 });
@@ -50,7 +73,8 @@ function ref(value: WindowRef | undefined): string {
   return value === undefined ? "absent" : `${value.id}:${value.incarnation}`;
 }
 function requireWindow(): WindowRef {
-  if (window === undefined) throw new Error("Create did not return a window reference");
+  if (window === undefined)
+    throw new Error("Create did not return a window reference");
   return window;
 }
 function confirmedMaximized(): string {
@@ -59,7 +83,9 @@ function confirmedMaximized(): string {
   return "absent";
 }
 async function call(request: WindowRequest): Promise<WindowResponse> {
-  return decodeWindowResponse(await link.call(WINDOW_CHANNEL, encodeWindowRequest(request), 5000));
+  return decodeWindowResponse(
+    await link.call(WINDOW_CHANNEL, encodeWindowRequest(request), 5000),
+  );
 }
 async function refusal(request: WindowRequest): Promise<string> {
   try {
@@ -69,35 +95,57 @@ async function refusal(request: WindowRequest): Promise<string> {
     return isCallError(error) ? error.code : "untyped";
   }
 }
-function report(line: string): void { control.write(`${line}\n`); }
+function report(line: string): void {
+  control.write(`${line}\n`);
+}
 
 report("BOUND");
 for await (const command of commands) {
   if (command === "PRE-SUB") {
-    report(`PRE-SUB ${await refusal({ variant: "Create", width: 640, height: 480, x: null, y: null })}`);
+    report(
+      `PRE-SUB ${await refusal({ variant: "Create", width: 640, height: 480, x: null, y: null })}`,
+    );
   } else if (command === "SUBSCRIBE") {
     // The existing lifecycle enum is Subscribe=1, followed by this allocated u16
     // channel (5 fits one byte). Subscribed's exact unit payload is checked by Rust.
-    const response = await link.call(LIFECYCLE_CHANNEL, Uint8Array.of(1, WINDOW_CHANNEL), 5000);
+    const response = await link.call(
+      LIFECYCLE_CHANNEL,
+      Uint8Array.of(1, WINDOW_CHANNEL),
+      5000,
+    );
     report(`SUBSCRIBE ${Array.from(response).join(",")}`);
   } else if (command === "READY") {
     await ready;
     report(`READY ${readyBytes}`);
   } else if (command === "CREATE") {
-    const response = await call({ variant: "Create", width: 640, height: 480, x: null, y: null });
+    const response = await call({
+      variant: "Create",
+      width: 640,
+      height: 480,
+      x: null,
+      y: null,
+    });
     if (response.variant === "Created") window = response.window;
     const fact = firstCreated;
     const bounds = fact?.state.bounds;
-    report(`CREATE ${response.variant} ${ref(window)} ${fact?.variant ?? "absent"} ${ref(fact?.window)} ` +
-      `${bounds === undefined ? "absent" : `${bounds.x},${bounds.y},${bounds.width},${bounds.height}`} ` +
-      `${fact === undefined ? "absent" : `${fact.state.focused},${fact.state.maximized},${fact.state.full_screen}`} ` +
-      `${String(fact?.pending_close)} ${facts}`);
+    report(
+      `CREATE ${response.variant} ${ref(window)} ${fact?.variant ?? "absent"} ${ref(fact?.window)} ` +
+        `${bounds === undefined ? "absent" : `${bounds.x},${bounds.y},${bounds.width},${bounds.height}`} ` +
+        `${fact === undefined ? "absent" : `${fact.state.focused},${fact.state.maximized},${fact.state.full_screen}`} ` +
+        `${String(fact?.pending_close)} ${facts}`,
+    );
   } else if (command === "SET-MAX") {
-    const response = await call({ variant: "SetMaximized", window: requireWindow(), maximized: true });
+    const response = await call({
+      variant: "SetMaximized",
+      window: requireWindow(),
+      maximized: true,
+    });
     report(`SET-MAX ${response.variant} ${facts} ${confirmedMaximized()}`);
   } else if (command === "MAX-FACT") {
     await maximized;
-    report(`MAX-FACT ${latest?.variant} ${ref(latest?.window)} ${facts} ${confirmedMaximized()}`);
+    report(
+      `MAX-FACT ${latest?.variant} ${ref(latest?.window)} ${facts} ${confirmedMaximized()}`,
+    );
   } else if (command === "STALE") {
     const current = requireWindow();
     const code = await refusal({
@@ -107,23 +155,40 @@ for await (const command of commands) {
     });
     report(`STALE ${code} ${facts}`);
   } else if (command === "HEALTHY") {
-    const response = await call({ variant: "SetFullScreen", window: requireWindow(), full_screen: true });
+    const response = await call({
+      variant: "SetFullScreen",
+      window: requireWindow(),
+      full_screen: true,
+    });
     report(`HEALTHY ${response.variant} ${facts} ${confirmedMaximized()}`);
   } else if (command === "REQUEST-CLOSE" || command === "MERGE-CLOSE") {
-    const response = await call({ variant: "RequestClose", window: requireWindow() });
-    report(`${command} ${response.variant} ${pendingClose} ${facts} ${latest?.variant}`);
+    const response = await call({
+      variant: "RequestClose",
+      window: requireWindow(),
+    });
+    report(
+      `${command} ${response.variant} ${pendingClose} ${facts} ${latest?.variant}`,
+    );
   } else if (command === "VETO-CLOSE" || command === "STALE-CLOSE") {
-    const response = await call({ variant: "CloseReply", window: requireWindow(),
+    const response = await call({
+      variant: "CloseReply",
+      window: requireWindow(),
       close_seq: command === "STALE-CLOSE" ? pendingClose - 1n : pendingClose,
-      verdict: command === "STALE-CLOSE" ? "Allow" : "Veto" });
+      verdict: command === "STALE-CLOSE" ? "Allow" : "Veto",
+    });
     report(`${command} ${response.variant} ${pendingClose} ${facts}`);
   } else if (command === "DESTROY-PAIR") {
     const first = call({ variant: "Destroy", window: requireWindow() });
     const second = call({ variant: "Destroy", window: requireWindow() });
-    const fence = await call({ variant: "RequestClose", window: requireWindow() });
+    const fence = await call({
+      variant: "RequestClose",
+      window: requireWindow(),
+    });
     report(`DESTROY-WAIT ${fence.variant} ${facts}`);
     const [one, two] = await Promise.all([first, second]);
-    report(`DESTROY-PAIR ${one.variant} ${two.variant} ${latest?.variant} ${facts}`);
+    report(
+      `DESTROY-PAIR ${one.variant} ${two.variant} ${latest?.variant} ${facts}`,
+    );
   } else if (command === "WAIT-END") {
     report(`ENDED ${await ended} ${facts}`);
   } else {

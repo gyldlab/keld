@@ -1,0 +1,346 @@
+# KEL-169: base-branch-owned CI admission, intentionally CodeQL-free.
+# The verification job never executes PR code or accesses secrets. The separate
+# publisher job uses a restricted environment-scoped GitHub App credential; no
+# job checks out PR code, writes a cache, or runs a shell step.
+name: CI provenance
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  provenance:
+    name: CI provenance
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      verified_head_sha: ${{ steps.verify.outputs.verified_head_sha }}
+      verified_base_sha: ${{ steps.verify.outputs.verified_base_sha }}
+    steps:
+      - name: Refuse unreviewed CI authority changes
+        id: verify
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0, pinned
+        with:
+          script: |
+            // This script is sourced from protected default-branch bytes by
+            // pull_request_target. PR contents are read only as untrusted API
+            // metadata; never interpolate filenames into shell or run PR code.
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const event = context.payload.pull_request;
+            if (owner !== "gyldlab" || repo !== "keld" || !event) {
+              throw new Error("CI provenance requires the expected base repository and PR event");
+            }
+            if (!Number.isSafeInteger(event.number) || event.number < 1) {
+              throw new Error("CI provenance requires a valid pull request number");
+            }
+            const fetchPR = async () =>
+              (await github.rest.pulls.get({ owner, repo, pull_number: event.number })).data;
+            const verifyPR = (pr) => {
+              if (!pr || pr.state !== "open" || pr.number !== event.number) {
+                throw new Error("CI provenance refuses absent, closed or changed pull requests");
+              }
+              if (pr.base?.ref !== "main" || pr.base?.repo?.full_name !== "gyldlab/keld") {
+                throw new Error("CI provenance accepts only gyldlab/keld main as the base");
+              }
+              if (pr.head?.sha !== event.head?.sha || pr.base?.sha !== event.base?.sha) {
+                throw new Error("CI provenance refuses stale pull-request head/base event data");
+              }
+              // The policy permits at most 600 changed files. GitHub's
+              // Compare Commits API caps the immutable file list at 300;
+              // larger PRs require a complete immutable Git-tree census.
+              if (!Number.isSafeInteger(pr.changed_files) ||
+                  pr.changed_files < 0 || pr.changed_files > 600) {
+                throw new Error("CI provenance refuses more than 600 changed files");
+              }
+              return pr;
+            };
+            const before = verifyPR(await fetchPR());
+            // PR-number listFiles is mutable, allowing an A -> B -> A ABA
+            // force-push to hide a protected file in the middle of enumeration.
+            // Compare the event's immutable base and head commit SHAs instead.
+            // Only the first page of the comparison includes a file list.
+            const comparison = (await github.rest.repos.compareCommits({
+              owner, repo, base: before.base.sha, head: before.head.sha,
+              page: 1, per_page: 100,
+            })).data;
+            const files = comparison?.files;
+            if (comparison?.base_commit?.sha !== before.base.sha) {
+              throw new Error("CI provenance refuses a comparison for the wrong immutable base");
+            }
+            if (before.changed_files < 300 &&
+                (!Array.isArray(files) || files.length !== before.changed_files ||
+                 files.length >= 300)) {
+              throw new Error("CI provenance refuses an incomplete or truncated file list");
+            }
+            // Canonical census source. Regenerate the refresh copy with:
+            // bun tools/ci_provenance_codegen.ts --write
+            // __IMMUTABLE_CHANGED_PATHS_BEGIN__
+            const immutableChangedPaths = async (mergeBaseSha, headSha, expectedFiles) => {
+              const isSha = (value) => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
+              if (!isSha(mergeBaseSha) || !isSha(headSha)) {
+                throw new Error("CI provenance refuses missing immutable comparison commits");
+              }
+              const readCommitFiles = async (commitSha) => {
+                const commit = (await github.rest.git.getCommit({
+                  owner, repo, commit_sha: commitSha,
+                })).data;
+                if (commit?.sha !== commitSha || !isSha(commit?.tree?.sha)) {
+                  throw new Error("CI provenance refuses unbound Git commit tree");
+                }
+                // A recursive tree is an immutable SHA-addressed snapshot, not
+                // a mutable PR-number file listing. Never accept truncation.
+                const tree = (await github.rest.git.getTree({
+                  owner, repo, tree_sha: commit.tree.sha, recursive: "1",
+                })).data;
+                if (tree?.sha !== commit.tree.sha || tree.truncated !== false ||
+                    !Array.isArray(tree.tree)) {
+                  throw new Error("CI provenance refuses truncated or unbound Git tree");
+                }
+                const files = new Map();
+                const seen = new Set();
+                for (const entry of tree.tree) {
+                  if (!entry || typeof entry.path !== "string" || !entry.path ||
+                      entry.path.startsWith("/") || entry.path.endsWith("/") ||
+                      entry.path.includes("\\") || entry.path.includes("\u0000") ||
+                      entry.path.split("/").some((part) => !part || part === "." || part === "..") ||
+                      !isSha(entry.sha) || !/^[0-7]{6}$/.test(entry.mode) ||
+                      !["tree", "blob", "commit"].includes(entry.type) || seen.has(entry.path)) {
+                    throw new Error("CI provenance refuses malformed or duplicated Git tree entry");
+                  }
+                  seen.add(entry.path);
+                  if (entry.type !== "tree") {
+                    files.set(entry.path, `${entry.type}:${entry.mode}:${entry.sha}`);
+                  }
+                }
+                return files;
+              };
+              const [oldFiles, newFiles] = await Promise.all([
+                readCommitFiles(mergeBaseSha), readCommitFiles(headSha),
+              ]);
+              const changed = new Set();
+              const removed = new Map();
+              const added = new Map();
+              const countIdentity = (counts, identity) =>
+                counts.set(identity, (counts.get(identity) || 0) + 1);
+              for (const [path, identity] of oldFiles) {
+                if (newFiles.get(path) !== identity) {
+                  changed.add(path);
+                  if (!newFiles.has(path)) countIdentity(removed, identity);
+                }
+              }
+              for (const [path, identity] of newFiles) {
+                if (oldFiles.get(path) !== identity) {
+                  changed.add(path);
+                  if (!oldFiles.has(path)) countIdentity(added, identity);
+                }
+              }
+              // Renames expose both source and destination tree paths but are
+              // one PR file. Count only provably identical mode/type/blob
+              // pairs as renames; uncertain modified renames fail closed.
+              let provenRenames = 0;
+              for (const [identity, count] of removed) {
+                provenRenames += Math.min(count, added.get(identity) || 0);
+              }
+              if (changed.size - provenRenames !== expectedFiles) {
+                throw new Error("CI provenance immutable tree census disagrees with changed-file count");
+              }
+              return [...changed];
+            };
+            // __IMMUTABLE_CHANGED_PATHS_END__
+            // The PR itself can mint the old 'CI required' status. Until a
+            // trusted job is made required, it must not be allowed to change
+            // workflow definitions, the router, or executable CI policy.
+            const protectedPath = (path) => {
+              if (typeof path !== "string" || !path || path.includes("\\") ||
+                  path.includes("\u0000")) {
+                throw new Error("CI provenance refuses malformed Git paths");
+              }
+              const p = path.toLowerCase();
+              const basename = p.slice(p.lastIndexOf("/") + 1);
+              // Bun's native formatter can hide tracked sources via ignores
+              // or change accepted formatting through per-directory configs.
+              // These inputs are CI authority even when no workflow changes.
+              const formatterPolicy =
+                basename === ".gitignore" ||
+                basename === ".prettierignore" ||
+                basename === ".editorconfig" ||
+                basename === ".prettierrc" ||
+                basename.startsWith(".prettierrc.") ||
+                basename.startsWith("prettier.config.") ||
+                basename === ".oxfmtrc" ||
+                basename.startsWith(".oxfmtrc.") ||
+                basename.startsWith("oxfmt.config.") ||
+                basename === "biome.json" ||
+                basename === "biome.jsonc" ||
+                basename === "package.yaml" ||
+                basename === "package.yml";
+              // Strict first rollout: scripts and config files executed by
+              // CI are also authority, not merely the workflow YAML itself.
+              // Require a separate trusted-base review for their changes.
+              // Root workspace metadata and formatter/test configs can also
+              // suppress required test discovery without changing ci.yml.
+              return formatterPolicy ||
+                p === "cargo.toml" || p.endsWith("/cargo.toml") ||
+                p === "package.json" || p.endsWith("/package.json") ||
+                p === "packages/@keld/kipc/scripts/echo-codegen.ts" ||
+                // Directly executed native CI validation/harness sources. A
+                // candidate must not replace a smoke/registry gate with echo 0.
+                // Protect direct and transitive WebView test harness inputs;
+                // e.g. linux_gui_smoke.sh -> linux_media_guard.sh ->
+                // linux_media_checkout.sh, plus C interposers and Windows ps1.
+                (p.startsWith("crates/keld-wv/tests/") &&
+                  [".sh", ".ps1", ".c", ".bat", ".cmd"].some((ext) => p.endsWith(ext))) ||
+                p === "crates/keld-wv/examples/linux_media_guard.rs" ||
+                p === "docs/audits/verify.py" ||
+                p === "docs/audits/test_verify.py" ||
+                p === "bunfig.toml" || p.endsWith("/bunfig.toml") ||
+                p === "rustfmt.toml" || p.endsWith("/rustfmt.toml") ||
+                p === ".rustfmt.toml" || p.endsWith("/.rustfmt.toml") ||
+                p === "tsconfig.json" || p.endsWith("/tsconfig.json") ||
+                p.startsWith(".github/") ||
+                p === ".ci-reader-proofs" || p.startsWith(".ci-reader-proofs/") ||
+                p.startsWith(".cargo/") ||
+                p.startsWith(".config/") ||
+                p.startsWith("tools/") ||
+                p === "justfile" ||
+                p === "rust-toolchain.toml" ||
+                p === "deny.toml" ||
+                p.endsWith("/deny.toml") ||
+                p.startsWith(".gitleaks") ||
+                p === "clippy.toml" || p.endsWith("/clippy.toml") ||
+                p === ".clippy.toml" || p.endsWith("/.clippy.toml");
+            };
+            const protectedChanges = [];
+            let changedPaths;
+            if (before.changed_files < 300) {
+              changedPaths = [];
+              for (const file of files) {
+                if (!file || !["added", "removed", "modified", "renamed", "changed", "copied"].includes(file.status)) {
+                  throw new Error("CI provenance refuses unknown changed-file status");
+                }
+                if (file.status === "renamed" && !file.previous_filename) {
+                  throw new Error("CI provenance refuses a rename with missing source path");
+                }
+                changedPaths.push(file.filename);
+                if (file.previous_filename) changedPaths.push(file.previous_filename);
+              }
+            } else {
+              changedPaths = await immutableChangedPaths(
+                comparison?.merge_base_commit?.sha, before.head.sha, before.changed_files,
+              );
+            }
+            for (const path of changedPaths) {
+              if (protectedPath(path)) protectedChanges.push(path);
+            }
+            // Reject every protected authority change until a separate,
+            // revocation-aware maintainer approval protocol is live. GitHub
+            // review dismissal does not trigger this pull_request_target job,
+            // so caching a past APPROVED review would permit stale PASS.
+            if (protectedChanges.length) {
+              throw new Error("CI provenance: changes to protected CI authority require a separately reviewed trusted-base policy update: " +
+                protectedChanges.slice(0, 12).join(", "));
+            }
+            const after = verifyPR(await fetchPR()); // A new head must trigger its own event.
+            if (after.changed_files !== before.changed_files) {
+              throw new Error("CI provenance refuses changed PR file count during verification");
+            }
+            core.info("CI provenance: unchanged workflow/router/CI authority; " +
+              before.changed_files + " PR files inspected at " + before.head.sha);
+            core.setOutput("verified_head_sha", before.head.sha);
+            core.setOutput("verified_base_sha", before.base.sha);
+
+  publish:
+    name: KELD VeriSentry publisher
+    # A failure must publish FAIL on the exact current PR head, not a skipped
+    # GitHub Actions job. The required check itself is App-authenticated.
+    needs: provenance
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: verisentry-publisher
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Mint repository-scoped VeriSentry installation token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # pinned v3, 2026-10-31
+        with:
+          app-id: "5550363"
+          private-key: ${{ secrets.VERISENTRY_APP_PRIVATE_KEY }}
+          owner: gyldlab
+          repositories: keld
+          # Narrow the installation token; the App installation has more access.
+          permission-checks: write
+          permission-pull-requests: read
+      - name: Publish fail-closed exact-head VeriSentry check
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # pinned v9.0.0
+        env:
+          VERISENTRY_ADMISSION_RESULT: ${{ needs.provenance.result }}
+          VERISENTRY_VERIFIED_HEAD: ${{ needs.provenance.outputs.verified_head_sha }}
+          VERISENTRY_VERIFIED_BASE: ${{ needs.provenance.outputs.verified_base_sha }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            // Runs only from protected default-branch bytes. Never execute
+            // untrusted code or interpolate PR data into a shell command.
+            const { owner, repo } = context.repo;
+            const event = context.payload.pull_request;
+            const isSha = (value) => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
+            if (owner !== "gyldlab" || repo !== "keld" || !event ||
+                !Number.isSafeInteger(event.number) || event.number < 1 ||
+                !isSha(event.head?.sha) || !isSha(event.base?.sha)) {
+              throw new Error("VeriSentry refuses an untrusted PR event");
+            }
+            // GitHub computes the test-merge SHA asynchronously. Retry only
+            // bounded GitHub API reads, never execute or fetch PR code.
+            // Reject a moved/closed PR on EVERY read (including after delay).
+            let pr;
+            let ready = false;
+            for (let attempt = 0; attempt < 6; attempt++) {
+              pr = (await github.rest.pulls.get({
+                owner, repo, pull_number: event.number,
+              })).data;
+              if (pr?.state !== "open" || pr?.number !== event.number ||
+                  pr.base?.ref !== "main" ||
+                  pr.base?.repo?.full_name !== "gyldlab/keld" ||
+                  pr.head?.sha !== event.head.sha || pr.base?.sha !== event.base.sha) {
+                throw new Error("VeriSentry refuses stale or changed PR state");
+              }
+              if (pr.mergeable === false) {
+                throw new Error("VeriSentry refuses an unmergeable PR");
+              }
+              // Checks on the synthetic merge commit cannot be replayed by a
+              // different PR that uses the same source head SHA.
+              if (pr.mergeable === true && isSha(pr.merge_commit_sha)) {
+                ready = true;
+                break;
+              }
+              if (attempt < 5) {
+                await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+              }
+            }
+            if (!ready) {
+              throw new Error("VeriSentry requires a current test-merge commit");
+            }
+            const verified = process.env.VERISENTRY_ADMISSION_RESULT === "success" &&
+              process.env.VERISENTRY_VERIFIED_HEAD === event.head.sha &&
+              process.env.VERISENTRY_VERIFIED_BASE === event.base.sha;
+            const details = `${process.env.GITHUB_SERVER_URL || "https://github.com"}/gyldlab/keld/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            await github.rest.checks.create({
+              owner, repo, name: "KELD VeriSentry", head_sha: pr.merge_commit_sha,
+              status: "completed", conclusion: verified ? "success" : "failure",
+              details_url: details,
+              output: {
+                title: verified ? "Trusted CI admission passed" : "Trusted CI admission rejected",
+                summary: verified
+                  ? "Protected-base CI authority inspected for the current PR head, base and test merge."
+                  : "Protected-base verification failed or lacked matching head/base evidence for this PR merge.",
+              },
+            });
+            if (!verified) throw new Error("VeriSentry published a blocking failure");

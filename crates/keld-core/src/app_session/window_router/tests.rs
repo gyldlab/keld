@@ -343,6 +343,53 @@ fn window_router_subscription_precedes_ready_and_body_decoding() -> TestResult {
     assert!(fixture.commands.try_recv().is_err());
     Ok(())
 }
+
+#[test]
+fn cumulative_churn_refuses_correlated_create_before_any_native_command() -> TestResult {
+    // GH1149 review-only candidate: the public authenticated writer must
+    // report capacity without mutating a single native window or ending link.
+    let mut fixture = Fixture::new(Some(true))?;
+    fixture.subscribe()?;
+    fixture.ready()?;
+    let caller = fixture.caller()?;
+    let owner = WindowOwner::new(caller.identity, caller.attempt);
+    {
+        let mut locked = fixture
+            .handle
+            .windows
+            .as_ref()
+            .expect("window service")
+            .lock()
+            .expect("single-registry test lock");
+        for n in 1..=1024_u32 {
+            let super::super::window_registry::CreateOutcome::Build { build, .. } = locked
+                .registry
+                .create(owner, CorrelationId(n), 320, 240, None, None)?
+            else {
+                panic!("capacity fixture cannot claim adoption");
+            };
+            assert!(locked.registry.native_failed(build).call.is_some());
+        }
+    }
+    for correlation in [1500_u32, 1501_u32] {
+        fixture.call(
+            &WindowRequest::Create {
+                width: 320,
+                height: 240,
+                x: None,
+                y: None,
+            },
+            correlation,
+        )?;
+        fixture.error(correlation, "KELD-CORE-047")?;
+        assert!(
+            fixture.commands.try_recv().is_err(),
+            "an over-capacity Create must not enqueue a native effect"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn window_router_native_snapshot_identity_and_setter_wire_are_actual() -> TestResult {
     let mut fixture = Fixture::new(Some(true))?;

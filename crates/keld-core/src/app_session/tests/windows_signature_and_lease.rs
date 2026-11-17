@@ -125,28 +125,6 @@ fn kel135_signed_package_purge_acceptance_fixture() {
 
 #[test]
 #[cfg(windows)]
-fn quit_peer_close_wait_is_bounded_for_a_non_closing_client() {
-    let (mut server, client) = primary_test_stream_pair();
-    server
-        .set_app_link_read_deadline(Some(Duration::from_millis(10)))
-        .expect("server poll deadline");
-
-    let started = Instant::now();
-    let error = await_windows_quit_peer_close_until(
-        &mut server,
-        Instant::now() + Duration::from_millis(50),
-    )
-    .expect_err("non-closing client must hit the peer-close deadline");
-    assert!(
-        started.elapsed() < Duration::from_secs(1),
-        "peer-close deadline did not bound the wait"
-    );
-    assert!(error.to_string().contains("did not close"), "{error}");
-    drop(client);
-}
-
-#[test]
-#[cfg(windows)]
 fn dev_stage_cleanup_retries_only_transient_final_directory_sharing() {
     let temp = tempfile::tempdir().expect("cleanup fixture root");
     let root = temp.path().join("stage");

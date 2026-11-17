@@ -4,8 +4,76 @@ fn strict_boot_schema_accepts_exact_v1() {
         .expect("exact schema-v1 descriptor");
     assert_eq!(parsed.name, "Fixture");
     assert_eq!(parsed.entry, Path::new("src/main.ts"));
-    assert_eq!(parsed.renderer, Path::new("index.html"));
+    assert!(
+        matches!(parsed.initial, InitialWindow::Renderer(path) if path == Path::new("index.html"))
+    );
     assert_eq!(parsed.permissions_digest.len(), 32);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn approved_schema_two_facade_boot_accepts_no_renderer() {
+    let bytes = br#"{"schema":2,"name":"Fixture","entry":"src/main.ts","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#;
+    let parsed = parse_boot_bytes(bytes).expect("schema-two facade descriptor without renderer");
+    assert_eq!(parsed.name, "Fixture");
+    assert_eq!(parsed.entry, Path::new("src/main.ts"));
+    assert!(parsed.auth_configuration.is_empty());
+}
+
+#[test]
+fn schema_one_still_requires_renderer() {
+    let bytes = br#"{"schema":1,"name":"Fixture","entry":"src/main.ts","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#;
+    let error = must_err(
+        parse_boot_bytes(bytes),
+        "schema one still requires renderer",
+    );
+    assert_eq!(error.code(), "KELD-CORE-035");
+    assert!(error.to_string().contains("renderer"), "{error}");
+}
+
+#[test]
+fn schema_two_strictly_rejects_renderer_auth_profile_unknown_and_duplicate_fields() {
+    const FIELDS: &str = r#""name":"Fixture","entry":"src/main.ts","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}"#;
+    for injected in [
+        r#","renderer":"index.html""#,
+        r#","renderer":null"#,
+        r#","auth":{}"#,
+        r#","profile":"Legacy""#,
+        r#","initial_window":"none""#,
+        r#","name":"Duplicate""#,
+        r#","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}"#,
+    ] {
+        let payload = format!(r#"{{"schema":2,{FIELDS}{injected}}}"#);
+        let error = must_err(parse_boot_bytes(payload.as_bytes()), "strict schema two");
+        assert_eq!(error.code(), "KELD-CORE-035", "{payload}");
+    }
+    let duplicate_schema = format!(r#"{{"schema":2,"schema":1,{FIELDS}}}"#);
+    let error = must_err(
+        parse_boot_bytes(duplicate_schema.as_bytes()),
+        "duplicate discriminator",
+    );
+    assert_eq!(error.code(), "KELD-CORE-035");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn facade_stage_host_preflight_requires_no_renderer_file() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = tempfile::tempdir().expect("private staged root");
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).expect("private stage");
+    fs::create_dir(root.path().join("src")).expect("source directory");
+    fs::write(root.path().join("src/main.ts"), "export {};\n").expect("entry");
+    fs::write(root.path().join(PERMISSIONS_FILE), b"{}\n").expect("permissions");
+    fs::write(root.path().join(BOOT_FILE), br#"{"schema":2,"name":"Fixture","entry":"src/main.ts","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#).expect("facade boot");
+    let selection = validate_from_root(root.path()).expect("exact facade preflight");
+    assert!(matches!(
+        selection.app.initial_window,
+        ValidatedInitialWindow::None
+    ));
+    assert!(selection.app.auth_configuration.is_empty());
+    assert_eq!(selection.app.name, "Fixture");
+    assert_eq!(selection.app.entry_path, Path::new("src/main.ts"));
+    assert!(!root.path().join("index.html").exists());
 }
 
 #[test]
@@ -171,7 +239,7 @@ fn duplicate_unknown_version_name_and_permissions_fields_fail_closed() {
     let cases = [
         r#"{"schema":1,"schema":1,"name":"x","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
         r#"{"schema":1,"name":"x","entry":"a","renderer":"b","unknown":1,"permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
-        r#"{"schema":2,"name":"x","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
+        r#"{"schema":3,"name":"x","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
         r#"{"schema":1,"name":"","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
         r#"{"schema":1,"name":"x","entry":"a","renderer":"b","permissions":{"file":"wrong.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
         r#"{"schema":1,"name":"x","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
@@ -183,33 +251,6 @@ fn duplicate_unknown_version_name_and_permissions_fields_fail_closed() {
             "accepted: {bytes}"
         );
     }
-}
-
-#[test]
-fn kipc_transport_sidecar_admission_skips_absent_and_accepts_regular_file() {
-    let temp = tempfile::tempdir().expect("sidecar root");
-    let sidecar = temp.path().join("kipc-transport.ts");
-    assert!(
-        !admit_kipc_transport_sidecar(&sidecar).expect("absent sidecar"),
-        "NotFound must allow self-contained entries"
-    );
-    fs::write(&sidecar, "export {}\n").expect("regular sidecar");
-    assert!(
-        admit_kipc_transport_sidecar(&sidecar).expect("regular sidecar"),
-        "regular file must be eligible to bind"
-    );
-}
-
-#[test]
-fn kipc_transport_sidecar_admission_rejects_directory() {
-    let temp = tempfile::tempdir().expect("sidecar root");
-    let sidecar = temp.path().join("kipc-transport.ts");
-    fs::create_dir(&sidecar).expect("directory sidecar");
-    let error = must_err(
-        admit_kipc_transport_sidecar(&sidecar),
-        "directory sidecar must fail closed",
-    );
-    assert!(error.to_string().contains("not a regular file"), "{error}");
 }
 
 #[test]
@@ -229,49 +270,6 @@ fn fs_route_keeps_guard_evaluation_out_of_core_production_source() {
         !production.contains(&forbidden_evaluate),
         "keld-core must never become a second guard evaluator"
     );
-}
-
-#[test]
-fn kipc_transport_sidecar_admission_uses_lstat_not_follow() {
-    let source = include_str!("../../app_session.rs");
-    let start = source
-        .find("fn admit_kipc_transport_sidecar")
-        .expect("admission helper");
-    let body = source
-        .get(start..start.saturating_add(900))
-        .expect("admission helper body");
-    assert!(
-        body.contains("symlink_metadata"),
-        "admission must lstat so a sidecar symlink is not followed into --ro-bind"
-    );
-    assert!(
-        !body.contains(".metadata()"),
-        "Path::metadata follows symlinks and would reintroduce CWE-59"
-    );
-    assert!(
-        body.contains("is_symlink()"),
-        "admission must reject a symlink before readonly_runtime"
-    );
-}
-
-#[test]
-#[cfg(unix)]
-fn kipc_transport_sidecar_admission_rejects_symlink_to_regular_file() {
-    let temp = tempfile::tempdir().expect("sidecar root");
-    let outside = temp.path().join("outside.ts");
-    fs::write(&outside, "export const steal = 1;\n").expect("external target");
-    let sidecar = temp.path().join("kipc-transport.ts");
-    std::os::unix::fs::symlink(&outside, &sidecar).expect("sidecar symlink");
-    // `metadata()` follows and would admit this as a regular file — CWE-59.
-    assert!(
-        fs::metadata(&sidecar).expect("follow").is_file(),
-        "negative control: following the symlink sees a regular file"
-    );
-    let error = must_err(
-        admit_kipc_transport_sidecar(&sidecar),
-        "symlink sidecar must fail closed before --ro-bind",
-    );
-    assert!(error.to_string().contains("symbolic link"), "{error}");
 }
 
 #[test]
@@ -316,7 +314,10 @@ fn validated_root_opens_same_handle_targets_and_rejects_symlink_escape() {
     .expect("boot");
 
     let selection = validate_from_root(&root).expect("validated selection");
-    assert_eq!(selection.app.renderer_html, b"<p id=fixture>exact</p>\n");
+    assert!(matches!(
+        &selection.app.initial_window,
+        ValidatedInitialWindow::Renderer(bytes) if bytes == b"<p id=fixture>exact</p>\n"
+    ));
     assert_eq!(selection.app.name, "Fixture");
 
     let mut substituted: serde_json::Value =
@@ -334,7 +335,11 @@ fn validated_root_opens_same_handle_targets_and_rejects_symlink_escape() {
     fs::remove_file(root.join("index.html")).expect("remove renderer");
     symlink(&outside, root.join("index.html")).expect("escape symlink");
     assert_eq!(
-        selection.app.renderer_html, b"<p id=fixture>exact</p>\n",
+        match &selection.app.initial_window {
+            ValidatedInitialWindow::Renderer(bytes) => bytes.as_slice(),
+            ValidatedInitialWindow::None => panic!("renderer selection became facade"),
+        },
+        b"<p id=fixture>exact</p>\n",
         "post-selection renderer substitution changed consumed bytes"
     );
     assert_eq!(
@@ -366,7 +371,8 @@ fn guarded_preflight_preserves_read_error_before_resources() {
         .expect("write-only retained handle");
     let before = startup_resource_snapshot();
 
-    let error = run_guarded(selection).expect_err("read failure must fail preflight");
+    let error = run_guarded(selection, |_| -> ! { unreachable!() })
+        .expect_err("read failure must fail preflight");
     assert_eq!(error.code(), "KELD-GUARD004");
     assert_eq!(error.resources, before, "preflight advanced app resources");
     let message = error.to_string();

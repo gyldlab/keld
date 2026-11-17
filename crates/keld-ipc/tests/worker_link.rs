@@ -105,10 +105,23 @@ impl RoleOutput {
 impl Role {
     fn spawn(scenario: &str, app_link: &str) -> Self {
         let mut child = Command::new("bun")
-            .arg(role_script())
+            .arg(if scenario.starts_with("source-") {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../packages/@keld/api/src/window-source-link.test-role.ts")
+            } else {
+                role_script()
+            })
             .arg(scenario)
             .env("KELD_APP_LINK", app_link)
             .env("KELD_KIPC_TEST_HOOKS", "1")
+            .env(
+                "KELD_NATIVE_WINDOW_FACADE",
+                if scenario.starts_with("source-") {
+                    "1"
+                } else {
+                    "0"
+                },
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -752,14 +765,9 @@ fn mirror_source_failure_cannot_replace_a_prior_terminal_cause() {
 /// Criterion 5: a host close without an `ERR` throws `KELD-IPC-022`, returns no
 /// value, and the records that preceded the close are still delivered in order.
 ///
-/// Unix only until W2 is fixed (#1073; #528 T5, gh527 §10). The host writes
-/// and then closes with `DisconnectNamedPipe`, which discards unread pipe
-/// data, so on Windows the outcome depends on whether the transport Worker
-/// already has a read pending. Native Windows 11 runs with every CPU busy
-/// lost the written data (`EPIPE` on the role's read) and failed this case
-/// (2026-10-21; gh527 §10 has the counts). The W2 fix restores it on Windows.
+/// On Windows this holds only while the host's close keeps unread pipe data;
+/// with `DisconnectNamedPipe` every busy-CPU run lost the records (#1073 W2).
 #[test]
-#[cfg(not(windows))]
 fn criterion5_close_without_err_throws_022_and_keeps_prior_records() {
     let (mut stream, role) = start("close-wake");
     read_call_named(&mut stream, "close");
@@ -790,14 +798,9 @@ fn criterion5_close_without_err_throws_022_and_keeps_prior_records() {
 /// others. *Negative control:* notifying before the ring is drained puts
 /// `end:` ahead of the events.
 ///
-/// Unix only until W2 is fixed (#1073; #528 T5, gh527 §10). The host writes
-/// and then closes with `DisconnectNamedPipe`, which discards unread pipe
-/// data, so on Windows the outcome depends on whether the transport Worker
-/// already has a read pending. Native Windows 11 runs with every CPU busy
-/// lost the written data (`EPIPE` on the role's read) and failed this case
-/// (2026-10-21; gh527 §10 has the counts). The W2 fix restores it on Windows.
+/// On Windows this holds only while the host's close keeps unread pipe data;
+/// with `DisconnectNamedPipe` every busy-CPU run lost `event:1` (#1073 W2).
 #[test]
-#[cfg(not(windows))]
 fn on_end_reports_the_close_after_retained_records() {
     let (mut stream, role) = start("on-end");
     long_reads(&stream);
@@ -1763,14 +1766,9 @@ fn criterion27_host_call_without_a_handler_closes_the_link() {
 /// until the Worker has published and recorded the close. The real reply
 /// returns and the slot is emptied, never `KELD-IPC-022`.
 ///
-/// Unix only until W2 is fixed (#1073; #528 T5, gh527 §10). The host writes
-/// and then closes with `DisconnectNamedPipe`, which discards unread pipe
-/// data, so on Windows the outcome depends on whether the transport Worker
-/// already has a read pending. Native Windows 11 runs with every CPU busy
-/// lost the written data (`EPIPE` on the role's read) and failed this case
-/// (2026-10-21; gh527 §10 has the counts). The W2 fix restores it on Windows.
+/// On Windows this holds only while the host's close keeps unread pipe data;
+/// with `DisconnectNamedPipe` a busy-CPU run lost the REPLY (#1073 W2).
 #[test]
-#[cfg(not(windows))]
 fn review_reply_published_before_the_close_wins() {
     let (mut stream, role) = start("reply-then-close");
     let call = read_call_named(&mut stream, "reply-then-close");
@@ -1934,6 +1932,226 @@ fn expiry_after_the_link_ended_rejects_with_the_recorded_code() {
             ("park-code", "KELD-IPC-022"),
             ("early-code", "KELD-IPC-022"),
             ("early-returned", "false"),
+            ("done", "true"),
+        ],
+    );
+}
+
+/// GH1149 Source consumer regressions reuse the actual authenticated writer and
+/// role owner above. This fixture adds no Host registry or native implementation.
+fn source_replay(scenario: &str) -> (BootstrapStream, Role, keld_ipc::window::WindowRef) {
+    use keld_ipc::codec::{decode, encode};
+    use keld_ipc::lifecycle::{LifecycleEvent, LifecycleRequest, LifecycleResponse};
+    use keld_ipc::window::{Rect, WindowEvent, WindowGeneration, WindowId, WindowRef, WindowState};
+    let (mut stream, role) = start(scenario);
+    long_reads(&stream);
+    let (subscribe, bytes) = read_call(&mut stream);
+    assert_eq!(subscribe.channel, LIFECYCLE_CHANNEL);
+    assert_eq!(
+        decode::<LifecycleRequest>(&bytes).expect("Subscribe codec"),
+        LifecycleRequest::Subscribe {
+            channel: keld_ipc::channel_table::WINDOW.wire_id()
+        }
+    );
+    let window = WindowRef {
+        id: WindowId(7),
+        incarnation: WindowGeneration(300),
+    };
+    for pair in [
+        window,
+        WindowRef {
+            id: WindowId(8),
+            incarnation: WindowGeneration(301),
+        },
+    ] {
+        let fact = WindowEvent::Created {
+            window: pair,
+            state: WindowState {
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 640,
+                    height: 480,
+                },
+                focused: false,
+                maximized: false,
+                full_screen: false,
+            },
+            pending_close: Some(300),
+        };
+        host_write(
+            &mut stream,
+            FrameKind::Event,
+            keld_ipc::channel_table::WINDOW.id(),
+            CorrelationId(0),
+            &encode(&fact).expect("Created codec"),
+        );
+    }
+    host_write(
+        &mut stream,
+        FrameKind::Event,
+        LIFECYCLE_CHANNEL,
+        CorrelationId(0),
+        &encode(&LifecycleEvent::Ready).expect("Ready codec"),
+    );
+    host_reply(
+        &mut stream,
+        subscribe,
+        &encode(&LifecycleResponse::Subscribed).expect("Subscribed codec"),
+    );
+    (stream, role, window)
+}
+
+#[test]
+fn source_close_before_deferred_dispatch_drains_before_end() {
+    use keld_ipc::codec::{decode, encode};
+    use keld_ipc::window::{WindowEvent, WindowRequest, WindowResponse};
+    let (mut stream, role, window) = source_replay("source-close-drain");
+    let (call, bytes) = read_call(&mut stream);
+    assert_eq!(call.channel, keld_ipc::channel_table::WINDOW.id());
+    assert_eq!(
+        decode::<WindowRequest>(&bytes).expect("Destroy codec"),
+        WindowRequest::Destroy { window }
+    );
+    host_write(
+        &mut stream,
+        FrameKind::Event,
+        keld_ipc::channel_table::WINDOW.id(),
+        CorrelationId(0),
+        &encode(&WindowEvent::Destroyed { window }).expect("Destroyed codec"),
+    );
+    host_reply(
+        &mut stream,
+        call,
+        &encode(&WindowResponse::Destroyed).expect("reply codec"),
+    );
+    assert!(
+        read_until_link_loss(&mut stream).is_empty(),
+        "close admits no more calls"
+    );
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("order", "Created:7,Created:8,return,Destroyed:7,end"),
+            ("ordinary-callback-root", "true"),
+            ("callback-throws", "0"),
+            ("done", "true"),
+        ],
+    );
+}
+
+#[test]
+fn source_nested_destroy_keeps_each_terminal_until_its_own_throwing_dispatch() {
+    use keld_ipc::codec::{decode, encode};
+    use keld_ipc::window::{WindowEvent, WindowRequest, WindowResponse};
+    let (mut stream, role, _) = source_replay("source-nested-destroy");
+    for expected in [7, 8] {
+        let (call, bytes) = read_call(&mut stream);
+        assert_eq!(call.channel, keld_ipc::channel_table::WINDOW.id());
+        let WindowRequest::Destroy { window } = decode(&bytes).expect("Destroy codec") else {
+            panic!("expected Destroy");
+        };
+        assert_eq!(window.id.0, expected);
+        host_write(
+            &mut stream,
+            FrameKind::Event,
+            keld_ipc::channel_table::WINDOW.id(),
+            CorrelationId(0),
+            &encode(&WindowEvent::Destroyed { window }).expect("Destroyed codec"),
+        );
+        host_reply(
+            &mut stream,
+            call,
+            &encode(&WindowResponse::Destroyed).expect("reply codec"),
+        );
+    }
+    let after = read_until_link_loss(&mut stream);
+    assert!(
+        after.is_empty(),
+        "nested terminal dispatch admits no further role calls: {after:?}"
+    );
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            (
+                "order",
+                "Created:7,Created:8,return,Destroyed:7,Destroyed:8,end",
+            ),
+            ("ordinary-callback-root", "true"),
+            ("callback-throws", "1"),
+            ("done", "true"),
+        ],
+    );
+}
+
+#[test]
+fn source_earlier_reply_applied_survives_later_bad_fact_in_fenced_drain() {
+    use keld_ipc::codec::{decode, encode};
+    use keld_ipc::window::{CloseVerdict, WindowEvent, WindowRequest, WindowResponse};
+    let (mut stream, role, window) = source_replay("source-earlier-answer");
+    let (answer, bytes) = read_call(&mut stream);
+    assert_eq!(answer.channel, keld_ipc::channel_table::WINDOW.id());
+    assert_eq!(
+        decode::<WindowRequest>(&bytes).expect("CloseReply codec"),
+        WindowRequest::CloseReply {
+            window,
+            close_seq: 300,
+            verdict: CloseVerdict::Veto
+        }
+    );
+    let (fence, bytes) = read_call(&mut stream);
+    assert_eq!(fence.channel, keld_ipc::channel_table::WINDOW.id());
+    assert_eq!(
+        decode::<WindowRequest>(&bytes).expect("fence codec"),
+        WindowRequest::SetMaximized {
+            window,
+            maximized: true
+        }
+    );
+    host_reply(
+        &mut stream,
+        answer,
+        &encode(&WindowResponse::ReplyApplied).expect("ReplyApplied codec"),
+    );
+    host_write(
+        &mut stream,
+        FrameKind::Event,
+        keld_ipc::channel_table::WINDOW.id(),
+        CorrelationId(0),
+        &encode(&WindowEvent::Focus {
+            window,
+            focused: true,
+        })
+        .expect("Focus codec"),
+    );
+    let mut wrong = window;
+    wrong.incarnation.0 += 1;
+    host_write(
+        &mut stream,
+        FrameKind::Event,
+        keld_ipc::channel_table::WINDOW.id(),
+        CorrelationId(0),
+        &encode(&WindowEvent::Focus {
+            window: wrong,
+            focused: false,
+        })
+        .expect("bad-pair codec"),
+    );
+    host_reply(
+        &mut stream,
+        fence,
+        &encode(&WindowResponse::Accepted).expect("fence reply codec"),
+    );
+    read_until_link_loss(&mut stream);
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("answer", "ReplyApplied"),
+            ("facts", "Created,Created,Focus"),
+            ("sticky-source", "KELD-IPC-005"),
             ("done", "true"),
         ],
     );

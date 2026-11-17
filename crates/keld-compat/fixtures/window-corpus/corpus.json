@@ -31,8 +31,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
-      "test_name": "window.constructor.host-id today: @keld/electron exports no BrowserWindow constructor, so no window id exists",
-      "negative_control": "Today: exporting a BrowserWindow constructor from @keld/electron fails the mapped case. After GH-449 inverts it: two windows that share one id, or a non-integer id, fail it."
+      "test_name": "window.constructor.host-id: exported constructor refuses to mint a local ID without Host Ready",
+      "negative_control": "Removing the exported constructor or returning a fabricated local WindowId with no authenticated Host fails the Bun admission test; real Host identity is separately asserted by facade_window acceptance, and parity stays held until its corpus runner owns that observable."
     },
     {
       "operation_id": "app.browser-window-created.once-per-window",
@@ -48,8 +48,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
-      "test_name": "app.browser-window-created.once-per-window today: construction throws, so a browser-window-created listener never runs",
-      "negative_control": "Today: exporting a BrowserWindow whose construction emits browser-window-created fails the mapped case. After GH-449 inverts it: emitting browser-window-created twice, or not at all, for one window fails it."
+      "test_name": "app.browser-window-created.once-per-window: unhosted constructor emits no creation event",
+      "negative_control": "Emitting browser-window-created for a failed or unhosted Create fails. The macOS native acceptance independently counts exactly one event for a successful Host Create."
     },
     {
       "operation_id": "app.web-contents-created.once-per-window",
@@ -65,8 +65,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
-      "test_name": "app.web-contents-created.once-per-window today: construction throws, so a web-contents-created listener never runs",
-      "negative_control": "Today: exporting a BrowserWindow whose construction emits web-contents-created fails the mapped case. After GH-449 inverts it: not emitting web-contents-created, so draw.io's will-navigate listener count stays zero, fails it."
+      "test_name": "app.web-contents-created.once-per-window: unhosted constructor emits no content event",
+      "negative_control": "Emitting web-contents-created for a failed or unhosted Create fails. The native acceptance independently pins the successful event once and its creation order."
     },
     {
       "operation_id": "app.window-created-events.constructor-order",
@@ -76,8 +76,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
-      "test_name": "app.window-created-events.constructor-order today: no creation event and no constructor return exist to order",
-      "negative_control": "Today: exporting a BrowserWindow constructor fails the mapped case. Unknown, not cited: only a v44.4.5 source receipt orders the two events against the constructor return, and gh532 Q1 admits doc citations only."
+      "test_name": "app.window-created-events.constructor-order: no fabricated events before Host Create",
+      "negative_control": "Synthesizing either creation event without a successful authenticated Host Create fails. This source-only Electron ordering cell remains unknown."
     },
     {
       "operation_id": "window.get-all-windows.sync",
@@ -93,8 +93,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
-      "test_name": "window.get-all-windows.sync today: BrowserWindow.getAllWindows does not exist",
-      "negative_control": "Today: exporting a BrowserWindow with a static getAllWindows fails the mapped case. After GH-449 inverts it: returning a Promise, or an array without the opened window, fails it."
+      "test_name": "window.get-all-windows.sync: local empty read has no Host side effects",
+      "negative_control": "Removing the synchronous static getter or returning a fabricated local window when no Host windows exist fails. Real macOS acceptance separately asserts it holds the Host-created window."
     },
     {
       "operation_id": "window.get-all-windows.order",
@@ -104,8 +104,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
-      "test_name": "window.get-all-windows.order today: no BrowserWindow.getAllWindows exists whose order could be observed",
-      "negative_control": "Today: exporting a BrowserWindow with a static getAllWindows fails the mapped case. Unknown, not cited: the v44.4.5 docs leave the order unspecified (an unordered map in the source), so Keld's creation order is ▲-stronger and never scored as parity."
+      "test_name": "window.get-all-windows.order: no window can be invented by the local collection",
+      "negative_control": "Inventing a window locally without a host identity fails. The upstream ordering oracle is source-only and remains unknown."
     },
     {
       "operation_id": "window.get-focused-window.sync",
@@ -121,8 +121,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
-      "test_name": "window.get-focused-window.sync today: BrowserWindow.getFocusedWindow does not exist",
-      "negative_control": "Today: exporting a BrowserWindow with a static getFocusedWindow fails the mapped case. After GH-449 inverts it: returning a Promise instead of the focused window or null fails it."
+      "test_name": "window.get-focused-window.sync: no focused window without native fact",
+      "negative_control": "Returning a locally invented focused window without an observed Host Focus fact fails. Full native focus parity is not yet qualified."
     },
     {
       "operation_id": "window.maximize.state-in-listener",
@@ -138,8 +138,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
-      "test_name": "window.maximize.state-in-listener today: BrowserWindow has no maximize or isMaximized",
-      "negative_control": "Today: exporting a BrowserWindow with isMaximized fails the mapped case. After GH-449 inverts it: updating the isMaximized mirror after the maximize listener runs fails it."
+      "test_name": "window.maximize.state-in-listener: exposed accessors cannot construct without Host Ready",
+      "negative_control": "Removing maximize or isMaximized from the prototype fails. Host-confirmed maximization inside a real listener is not established by this shape test."
     },
     {
       "operation_id": "window.set-full-screen.state",
@@ -155,8 +155,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
-      "test_name": "window.set-full-screen.state today: BrowserWindow has no setFullScreen or isFullScreen",
-      "negative_control": "Today: exporting a BrowserWindow with isFullScreen fails the mapped case. After GH-449 inverts it: isFullScreen() still false once enter-full-screen has been emitted after setFullScreen(true) fails it."
+      "test_name": "window.set-full-screen.state: exposed accessors cannot construct without Host Ready",
+      "negative_control": "Removing setFullScreen or isFullScreen from the prototype fails. Native fullscreen event confirmation remains unqualified."
     },
     {
       "operation_id": "window.constructor.drawio-options",
@@ -172,8 +172,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
-      "test_name": "window.constructor.drawio-options today: the draw.io main-window options create no window and throw TypeError, not a triage error",
-      "negative_control": "Today: making the draw.io main-window options construct a window fails the mapped case. After GH-455 inverts it: refusing disableBlinkFeatures, so draw.io's main window is not created, fails it."
+      "test_name": "window.constructor.drawio-options: safe draw.io options pass security triage but cannot create without Host",
+      "negative_control": "Rejecting pinned safe draw.io options as a privilege escalation instead of reaching the missing-Host Ready boundary fails. draw.io preload and app-content launch remain unimplemented."
     },
     {
       "operation_id": "window.constructor.escalating-web-preferences",
@@ -189,8 +189,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
-      "test_name": "window.constructor.escalating-web-preferences today: each escalating value throws TypeError, not a KELD-COMPAT triage refusal",
-      "negative_control": "Today: refusing any of the six escalating values with a KELD-COMPAT triage error fails the mapped case. After GH-455 implements it: honouring or silently ignoring nodeIntegration:true fails it."
+      "test_name": "window.constructor.escalating-web-preferences: six unsafe values refuse before Host access",
+      "negative_control": "Accepting any of the six escalating preferences or returning CORE-040 instead of explicit COMPAT-010 fails the safe-constructor triage."
     },
     {
       "operation_id": "window.close-event.prevent-default",
@@ -206,8 +206,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
-      "test_name": "window.close-event.prevent-default today: BrowserWindow has no close, so no close event can be vetoed",
-      "negative_control": "Today: exporting a BrowserWindow with close fails the mapped case. After GH-450 inverts it: removing the view on CloseRequested before the reply, so a vetoed close still closes, fails it."
+      "test_name": "window.close-event.prevent-default: close method is exposed only on Host-backed windows",
+      "negative_control": "Removing the close method fails; the separate native macOS acceptance proves preventDefault keeps the identical on-screen window until another close."
     },
     {
       "operation_id": "window.destroy.closed-without-close",
@@ -223,8 +223,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
-      "test_name": "window.destroy.closed-without-close today: BrowserWindow has no destroy",
-      "negative_control": "Today: exporting a BrowserWindow with destroy fails the mapped case. After GH-450 inverts it: emitting close from destroy() fails it."
+      "test_name": "window.destroy.closed-without-close: destroy method is exposed only on Host-backed windows",
+      "negative_control": "Removing destroy fails. The native macOS acceptance separately proves destroy emits closed without close after real release."
     },
     {
       "operation_id": "window.closed.is-destroyed-in-listener",
@@ -234,8 +234,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
-      "test_name": "window.closed.is-destroyed-in-listener today: BrowserWindow has no isDestroyed",
-      "negative_control": "Today: exporting a BrowserWindow with isDestroyed fails the mapped case. Unknown, not cited: its oracle is a v44.4.5 source receipt (gh532 Q1). Once GH-450 implements it, emitting closed before the tombstone flips fails it."
+      "test_name": "window.closed.is-destroyed-in-listener: public isDestroyed requires a Host-created window",
+      "negative_control": "Removing isDestroyed fails. The source-only Electron order remains unknown despite native Keld tombstone observation."
     },
     {
       "operation_id": "window.web-contents.read-after-destroy-throws",
@@ -251,8 +251,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
-      "test_name": "window.web-contents.read-after-destroy-throws today: BrowserWindow has no destroy, so no window can be read after destruction",
-      "negative_control": "Today: exporting a BrowserWindow with destroy fails the mapped case. After GH-450 inverts it: a destroyed window whose webContents read returns instead of throwing Object has been destroyed fails it."
+      "test_name": "window.web-contents.read-after-destroy-throws: public Destroy requires a Host-created window",
+      "negative_control": "Removing destroy fails; separate native acceptance checks the post-Destroy getter throws Object has been destroyed."
     },
     {
       "operation_id": "window.close.repeat-after-veto-emits-closed",
@@ -268,8 +268,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
-      "test_name": "window.close.repeat-after-veto-emits-closed today: BrowserWindow has no close",
-      "negative_control": "Today: exporting a BrowserWindow with close fails the mapped case. After GH-450 inverts it: a window closed by a second close() after a vetoed close that never emits closed fails it."
+      "test_name": "window.close.repeat-after-veto-emits-closed: public close requires a Host-created window",
+      "negative_control": "Removing close fails; separate native acceptance vetoes one close then confirms closed from a later allowed close."
     },
     {
       "operation_id": "window.destroy.after-veto-emits-closed",
@@ -285,8 +285,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
-      "test_name": "window.destroy.after-veto-emits-closed today: BrowserWindow has neither close nor destroy",
-      "negative_control": "Today: exporting a BrowserWindow with destroy fails the mapped case. After GH-450 inverts it: a destroy() after a vetoed close that never emits closed fails it."
+      "test_name": "window.destroy.after-veto-emits-closed: public Destroy requires a Host-created window",
+      "negative_control": "Removing close or destroy fails. A combined native veto-then-Destroy case is still needed before compatibility can be scored."
     }
   ]
 }

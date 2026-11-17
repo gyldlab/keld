@@ -30,13 +30,22 @@ describe("exact unsigned varint encoding", () => {
       [127n, [0x7f]],
       [128n, [0x80, 1]],
       [300n, [0xac, 2]],
-      [9_007_199_254_740_993n, [0x81, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x10]],
-      [18_446_744_073_709_551_615n, [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 1]],
+      [
+        9_007_199_254_740_993n,
+        [0x81, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x10],
+      ],
+      [
+        18_446_744_073_709_551_615n,
+        [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 1],
+      ],
     ];
     for (const [value, expected] of cases) {
       const bytes = encodeU64(value);
       expect(bytes).toEqual(new Uint8Array(expected));
-      expect(transport.decodeU64Varint(bytes, 0)).toEqual([value, expected.length]);
+      expect(transport.decodeU64Varint(bytes, 0)).toEqual([
+        value,
+        expected.length,
+      ]);
     }
   });
 
@@ -49,8 +58,19 @@ describe("exact unsigned varint encoding", () => {
       },
     };
     for (const value of [
-      -1n, 18_446_744_073_709_551_616n, 0, 1, 0.5, Number.NaN,
-      Number.POSITIVE_INFINITY, "1", true, null, undefined, Symbol("invalid"), object,
+      -1n,
+      18_446_744_073_709_551_616n,
+      0,
+      1,
+      0.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      "1",
+      true,
+      null,
+      undefined,
+      Symbol("invalid"),
+      object,
     ]) {
       expectCodecError(() => encodeU64(value as bigint));
     }
@@ -66,7 +86,9 @@ describe("exact unsigned varint encoding", () => {
       },
     };
     for (const value of [Symbol("invalid"), object]) {
-      expectCodecError(() => transport.encodeVarint(value as unknown as number));
+      expectCodecError(() =>
+        transport.encodeVarint(value as unknown as number),
+      );
     }
     expect(coerced).toBe(false);
   });

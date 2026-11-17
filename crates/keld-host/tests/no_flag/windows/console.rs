@@ -246,8 +246,8 @@ pub(crate) fn run_console_ctrl_c_case() {
         .expect("console CLI");
     let observation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let host_pid =
-            wait_for_child_process(cli.id(), "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
-        let sentinel_pid = wait_for_cleanup_sentinel(cli.id(), Instant::now() + PRODUCT_DEADLINE);
+            wait_for_child_process(&mut cli, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
+        let sentinel_pid = wait_for_cleanup_sentinel(&mut cli, Instant::now() + PRODUCT_DEADLINE);
         let (reader, _writer, bun_pid, _, descendant_pid) =
             accept_ready_generation_with_descendant(&control, &mut cli);
         expect_renderer_beacon(beacon, "console rendered state");

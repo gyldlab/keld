@@ -1,11 +1,12 @@
 //! Control handshakes, bounded reads and terminal host diagnostics.
 
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader};
 use std::net::{TcpListener, TcpStream};
 use std::process::Child;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::support::process::exited_child_output;
 use crate::{CONTROL_LINE_LIMIT, PRODUCT_DEADLINE, startup_kill_switch};
 
 /// The kill switches of one generation's control handshake.
@@ -40,6 +41,35 @@ pub(crate) fn accept_ready_generation(
         accept_ready_generation_inner(listener, child, false, HandshakeKillSwitches::product());
     assert!(lease_handle.is_none(), "unexpected lease census disclosure");
     (reader, writer, pid, link)
+}
+
+/// The Bun pid and app link of a generation's `HELLO <pid> <link>` record.
+pub(crate) fn parse_hello(record: &str) -> (u32, String) {
+    let mut fields = record.split_whitespace();
+    assert_eq!(fields.next(), Some("HELLO"), "{record}");
+    let pid = fields
+        .next()
+        .expect("generation pid")
+        .parse::<u32>()
+        .expect("numeric generation pid");
+    let link = fields.next().expect("generation app link").to_owned();
+    assert!(fields.next().is_none(), "{record}");
+    (pid, link)
+}
+
+/// After the host has exited, no further generation connected to this control
+/// listener. The check never waits: it switches the listener to nonblocking.
+pub(crate) fn assert_no_control_connection(listener: &TcpListener, context: &str) {
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking control listener");
+    assert!(
+        matches!(
+            listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ),
+        "{context}"
+    );
 }
 
 pub(crate) fn parse_descendant_pid(record: &str) -> u32 {
@@ -119,15 +149,7 @@ fn accept_ready_generation_inner(
         "CONTROL_CONNECTED",
         kill_switches.record,
     );
-    let mut fields = hello.split_whitespace();
-    assert_eq!(fields.next(), Some("HELLO"), "{hello}");
-    let pid = fields
-        .next()
-        .expect("generation pid")
-        .parse::<u32>()
-        .expect("numeric generation pid");
-    let link = fields.next().expect("generation app link").to_owned();
-    assert!(fields.next().is_none(), "{hello}");
+    let (pid, link) = parse_hello(&hello);
     let descendant_record = read_control_line_or_host_failure_after_phase(
         &mut reader,
         child,
@@ -222,22 +244,9 @@ pub(crate) fn accept_control_until(
         if let Some(child) = child.as_mut()
             && let Some(status) = child.try_wait().expect("observe early host exit")
         {
-            let mut stdout = String::new();
-            let mut stderr = String::new();
-            child
-                .stdout
-                .take()
-                .expect("captured host stdout")
-                .read_to_string(&mut stdout)
-                .expect("read host stdout");
-            child
-                .stderr
-                .take()
-                .expect("captured host stderr")
-                .read_to_string(&mut stderr)
-                .expect("read host stderr");
             panic!(
-                "host exited before control bind: {status}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+                "host exited before control bind: {status}\n{}",
+                exited_child_output(child)
             );
         }
         assert!(
@@ -343,23 +352,10 @@ fn read_control_line_or_host_failure_after_phase(
             let deadline = Instant::now() + Duration::from_secs(2);
             loop {
                 if let Some(status) = child.try_wait().expect("observe failed host") {
-                    let mut stdout = String::new();
-                    let mut stderr = String::new();
-                    child
-                        .stdout
-                        .take()
-                        .expect("captured failed host stdout")
-                        .read_to_string(&mut stdout)
-                        .expect("read failed host stdout");
-                    child
-                        .stderr
-                        .take()
-                        .expect("captured failed host stderr")
-                        .read_to_string(&mut stderr)
-                        .expect("read failed host stderr");
                     panic!(
-                        "host exited while awaiting {label}: {status}; last valid phase={last_valid_phase}; child pid={}; read={result:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+                        "host exited while awaiting {label}: {status}; last valid phase={last_valid_phase}; child pid={}; read={result:?}\n{}",
                         child.id(),
+                        exited_child_output(child),
                     );
                 }
                 assert!(

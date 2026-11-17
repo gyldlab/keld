@@ -47,18 +47,20 @@ describe("@keld/api channels", () => {
       message: "keld",
       count: 7,
     });
-    expect(decodeEcho(echoChannel.encodeResponse({ message: "ok", count: 8 }))).toEqual({
+    expect(
+      decodeEcho(echoChannel.encodeResponse({ message: "ok", count: 8 })),
+    ).toEqual({
       message: "ok",
       count: 8,
     });
   });
   test("rejects reserved and caller-constructed descriptors", () => {
-    expect(() => channels.handle(fakeChannel(LIFECYCLE_CHANNEL), (request) => request)).toThrow(
-      "KELD-API-001",
-    );
-    expect(() => channels.handle(fakeChannel(ECHO_CHANNEL), (request) => request)).toThrow(
-      "KELD-API-001",
-    );
+    expect(() =>
+      channels.handle(fakeChannel(LIFECYCLE_CHANNEL), (request) => request),
+    ).toThrow("KELD-API-001");
+    expect(() =>
+      channels.handle(fakeChannel(ECHO_CHANNEL), (request) => request),
+    ).toThrow("KELD-API-001");
   });
 
   test("rejects duplicate registration and unsubscribe is idempotent", () => {
@@ -76,9 +78,9 @@ describe("@keld/api channels", () => {
   });
 
   test("missing handler rejects before any app effect", async () => {
-    await expect(dispatchApplicationCall(ECHO_CHANNEL, encodeEcho("none", 0))).rejects.toThrow(
-      "KELD-API-001",
-    );
+    await expect(
+      dispatchApplicationCall(ECHO_CHANNEL, encodeEcho("none", 0)),
+    ).rejects.toThrow("KELD-API-001");
   });
   test("dispatch decodes once, invokes once, and encodes the typed response", async () => {
     let calls = 0;
@@ -87,7 +89,10 @@ describe("@keld/api channels", () => {
       return { message: request.message + "-reply", count: request.count + 1 };
     });
     try {
-      const reply = await dispatchApplicationCall(ECHO_CHANNEL, encodeEcho("hello", 4));
+      const reply = await dispatchApplicationCall(
+        ECHO_CHANNEL,
+        encodeEcho("hello", 4),
+      );
       expect(decodeEcho(reply)).toEqual({ message: "hello-reply", count: 5 });
       expect(calls).toBe(1);
     } finally {

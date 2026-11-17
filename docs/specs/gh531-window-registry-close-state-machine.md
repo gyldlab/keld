@@ -27,8 +27,10 @@ Sections 4.a to 4.h map to the ticket's sections (a) to (h).
 
 Non-goals:
 
-- Windows and Linux (F02-T12, parked). Window-channel calls on those hosts fail with a
-  typed error.
+- Linux (F02-T12, parked). Window-channel calls on that host fail with a typed error.
+- Windows, which `docs/specs/gh1188-windows-window-adapter.md` owns. A product build
+  refuses a schema-2 boot until that spec's T2, and a window `Create` answers
+  `KELD-CORE-042` until its T3.
 - Multiple views per window, `BrowserView`, `WebContentsView` (Tier 3).
 - Window-bound roles (KEL-75/T4). This spec only keeps the close transition at which
   KEL-75's `WindowClosing(w)` tombstone is linearized.
@@ -264,6 +266,25 @@ fail. "Owner" is the implementing ticket.
     assertion. Owner: F02-T2, coordinated with F01-T2's public readiness adapter.
     F06-T5 reuses the admission rule, not this window-specific replay barrier, for
     display and theme facts.
+
+    **No unbounded rendererless Init (GH446 AC15/20, 2026-10-25):** A
+    schema-two macOS boot creates no initial native application window.
+    The coordinator has a 15-second absolute bound from entry into Tao's
+    application loop until the genuine `HostInitialized` first-Init event.
+    It cannot rely on Tao proxy commands before `applicationDidFinishLaunching`.
+    On expiry it reports `KELD-CORE-037` with the typed detail "the UI loop did
+    not deliver its first turn within 15 s", refuses Ready/recovery, stops
+    further worker admissions and invokes bounded UI-independent Guardian/role
+    cleanup. It then calls the shipping binary's borrowed
+    `fn(&HostAppError) -> !` terminal exactly once. The blocked main thread
+    retains its `!Send` AppKit, presentation and profile owners until process
+    exit, and an unproved dev stage is not deleted; process exit alone is not
+    evidence of physical cleanup. An actual first Init disarms the deadline,
+    so a healthy windowless app may keep running beyond 15 seconds. A
+    debug-only real Host/Guardian/Bun child test withholds pre-Init, checks
+    one typed terminal entry and no Ready, Bun retirement, a failed Host exit,
+    and retained stage. This separate first-milestone bound does not change
+    the legacy renderer navigation deadline. See approved GH446 D6 / AC15–20.
 
 ### (e) Close state machine (the #419 rules plus PANEL-D19)
 
@@ -685,7 +706,7 @@ registers each code in `docs/engineering/keld-error-codes.md` with a fix sentenc
 | `KELD-CORE-039` | a registry counter is exhausted (`WindowId`, `WindowGeneration` or `close_seq`; the detail names it) | F02-T2 |
 | `KELD-CORE-040` | registry not ready | F02-T2 |
 | `KELD-CORE-041` | native create failed (names the failed stage; the keld-wv `WvError` text goes to the host log) | F02-T2 |
-| `KELD-CORE-042` | window calls unsupported on this platform (Windows/Linux, F02-T12) | F02-T2 |
+| `KELD-CORE-042` | window calls unsupported on this platform (Linux, F02-T12; Windows until gh1188 T3) | F02-T2 |
 | `KELD-CORE-043` | window not owned by the calling RoleInstance generation | F02-T2 (T1 carries admission check 2; amended by #657) |
 | `KELD-CORE-045` | `window` CALL on a link not subscribed to `window` | F02-T2 (amended by #657) |
  The facade's own
@@ -789,6 +810,27 @@ This permits physical heap storage outside the ring for derived facts. Pending a
 in-flight helper-held facts correspond one-for-one to still-retained same-channel
 event records; their aggregate count is no greater than the matching retained event
 count. Storage metadata and consumed slots do not grow independently of this bound.
+The helper uses private, preinitialized null-prototype own slots with wrapped
+head/count indices. Its capacity is the canonical Worker's normalized
+`min(ringRecords, floor(ringBytes / HEADER_LEN))`, an upper bound already imposed
+by ring admission, rather than an additional quota. Consumed slots are cleared
+before dispatch; neither append/shift history nor inherited numeric setters can
+grow its storage or retain consumed facts. The canonical transport owns the captured
+operations used by the synchronous decode/apply/wake-drain/copy path, including
+failure construction and diagnostics. Private Source maps and iterators stay behind
+that owner during public snapshot copying and terminal clearing. This bounded phase
+is GH527 §4.6; §4.5 liveness still invokes Worker termination synchronously, without
+an arbitrary Worker-prototype immunity guarantee. The macOS guarded primary preloads that same staged
+sidecar before the original entry. On every generation, Core's validated boot kind
+supplies a strict private Guardian argument; Host supplies Bun's literal runtime
+define for the canonical mode expression, so later environment edits and separately
+resolved unchanged package copies cannot select a different facade policy. Host
+rejects staged root runtime configs on both sidecar and direct-entry launches and
+removes inherited `BUN_OPTIONS` before executing Bun, preserving qualified preload
+ordering. An absent sidecar retains direct-entry startup, including raw schema-two
+roles; the mode define does not require subscription or grant window authority.
+This is a bounded bug fix to the approved boot-selection invariant. It does not
+qualify late package copies' intrinsic captures after application mutation.
 After the transport's earlier-record drain, the helper holds no values at terminal
 finalization. Ordinary consumption may establish this; any additional residual
 clearing needs a reachable lifetime proof. The helper does not retain released payload copies or add an
@@ -823,8 +865,55 @@ channel) and `dispatch` on the same channel's event delivery. The contract:
    `EVENT` arrives (#449). So `isMaximized()` immediately after `maximize()` may still
    be false. Inside the `'maximize'` listener it is true.
 
-The window mirror entry keeps the host facts (`WindowState`, live or host-destroyed,
-pending `close_seq`). The Electron-facing tombstones are separate (§4.e).
+**Q5/Q6 CloseReply settlement is not a speculative setter.** The pending `close_seq`
+bookkeeping is retired only after the one correlated, authenticated Host
+`REPLY ReplyApplied` to the exact `CloseReply(window id, incarnation, seq,
+verdict)` call. A successful Q5/Veto response proves the Host has already moved
+the window from `ClosePending(seq)` to `Open`; Q6/Allow proves it moved to
+`Closing` but **does not** yet prove physical release or `Destroyed`. Do not wait
+for a new, unallocated
+wire `EVENT` to clear the previous pending sequence. The API snapshots the
+primitive window pair, sequence and verdict *before encoding/sending* so a
+mutable caller cannot redirect a delayed acknowledgement. The source clears
+only an exact still-pending pair/sequence; a newer pending close is never
+cleared by an old Q5 reply. The dispatched-fact receipt ledger holds one
+monotonic per-incarnation acknowledged sequence watermark so a pre-applied but
+**not yet dispatched** Created/CloseRequested fact cannot resurrect a settled
+old sequence after the correlated Host reply. Denied/stale/lost replies and
+unrelated setter responses do not clear anything. The next unacknowledged
+`CloseRequested(seq + 1)` still requires its own `'close'`/verdict; neither
+mirror may invent an Allow. This is a bounded client interpretation of the
+existing Q5/Q6 Host reply, not an additional Host authority, second transport,
+new wire event or promise of draw.io Quit compatibility.
+
+**Settled Source amendment approved — 2026-10-27:** [GH-1149's public approval
+and scoped claim receipt](https://github.com/gyldlab/keld/issues/1149#issuecomment-6426874535)
+binds the [stage-one Source amendment](gh1149-settled-source-reclamation.md),
+independently admitted technical draft SHA-256
+`b9a0e5cf186cd4435b09a4f05da74ff8e2e9305fc745ddb00d9d7b3c2927468d`
+against source `fab00474c045f5b5b303e7f8752c2004af5ea10f`. Design admission
+leaves source/consumer qualification and production acceptance gates open.
+
+The window Source keeps full host facts (`WindowState`, pending `close_seq`,
+host-destroyed state) through the matching `Destroyed` dispatch callback. The
+blocking Destroy continuation can still read the pre-applied terminal snapshot.
+After that callback, including a throw, `finally` replaces only the exact matching
+host-destroyed snapshot in the existing map with a shared scalar marker. `get`
+and `all` omit retired snapshots; caller-held immutable snapshots remain caller-owned.
+`Map.has(id)` and unchanged map size preserve exact historical ID rejection,
+sparse IDs and the cumulative1024 guard. Compact history remains history-dependent.
+The Electron-facing tombstones are separate (§4.e); no terminal-wrapper registry is added.
+
+Explicit LifecycleLink close stops calls immediately and lets WorkerLink drain
+earlier facts before the existing `onEnd` disposes Source. Subscription-failure
+cleanup uses that same close path. Source owns nonthrowing close-reply eligibility:
+failed, absent and terminal pairs do not mutate Source or receipt bookkeeping, so a
+later Source failure cannot replace an earlier correlated `ReplyApplied`. Live
+exact pairs still advance the receipt watermark when a newer close is pending;
+only the matching sequence clears Source pending state. First-cause and earlier
+answer/fact drain rules above remain unchanged. Host storage, native mapping,
+pending64 and cumulative1024 are unchanged; native and physical-byte qualification
+remain separate gates.
 
 ### 4.e Close state machine
 
@@ -946,7 +1035,7 @@ test enumerates every pair and asserts its row.
 | C5 | `Closing` | `Reply current` | — | impossible: no request pending in `Closing`; classified as `Reply stale` |
 | C6 | `Closing` | `Reply stale` | `Closing` | `REPLY ReplyStale`, one host diagnostic (T7) |
 | C7 | `Closing` | `Setter` | `Closing` | ERR 038 |
-| C8 | `Closing` | `Destroy` | `Closing` | one more deferred `REPLY Destroyed`, written at the `Released` row |
+| C8 | `Closing` | `Destroy` | `Closing` | If fewer than 64 pending Destroy correlations exist for this window, admit one more deferred `REPLY Destroyed`, written at `Released`; at the 64-call Host capacity, refuse this new correlation immediately with correlated nonterminal `ERR KELD-CORE-046`, without appending or changing native state |
 | C9 | `Closing` | `Released` | `Destroyed` | T11 below |
 | C10 | `Closing` | `Role loss` | `Closing` | nothing; already closing (an earlier `Destroy` reply is not written, because the owner link is retired) |
 | C11 | `Closing` | `Session end` | `Closing` | nothing; already closing |
@@ -977,7 +1066,17 @@ when a request is pending and the sequence matches, so in every other state it i
 **T11 (row C9).** In one step on the owner link's single writer, and only while that
 link is live and not retired (after a `Role loss` row nothing is written): `Destroyed`, if a
 `Created` was written for this window; then `LastWindowClosed`, if no live window
-remains and the step is outside a session end; then every deferred `REPLY Destroyed`.
+remains and the step is outside a session end; then every **admitted** deferred
+`REPLY Destroyed`, in correlation/admission order. The new bounded Host admission
+budget is **64 outstanding Destroy correlations per window** while `Closing`;
+attempt 65 receives immediate `ERR KELD-CORE-046` on its own correlation (no
+window effects and no reply from `Released`). The fixed number is the
+[accepted per-window admission policy](https://github.com/gyldlab/keld/pull/1181#discussion_r4371478951)
+on PR #1181, distinct from Worker abandonment and Auth quotas. This supersedes
+the original unlimited C8 assumption for a stalled AppKit Release. Acceptance of
+this numeric policy alone establishes neither an application-wide resource/CPU
+budget nor a physical heap/RSS bound, and does not replace cumulative-admission
+or Source-memory qualification.
 *Live* means `Opening`, `Open`, `ClosePending` or `Closing`. An `Opening` window counts
 because its `Create` was admitted before this step, as an Electron constructor returns
 before any later close completes; so the session cannot quit before it opens.
@@ -1277,9 +1376,15 @@ export interface CloseEvent { preventDefault(): void; readonly defaultPrevented:
 export interface BrowserWindowEventMap {
   close: [event: CloseEvent];
   closed: [];
+  /** Native Bounds changed x or y (not a resize-only fact). */
+  move: [];
   maximize: [];
   unmaximize: [];
   resize: [];
+  focus: [];
+  blur: [];
+  'enter-full-screen': [];
+  'leave-full-screen': [];
 }
 export interface WebContentsEventMap { destroyed: [] }
 
@@ -1382,8 +1487,11 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
   (`window_delegate.rs:326-331`, FACT). The veto primitive exists; the change is host
   policy. tao registers no `applicationShouldTerminate:` (FACT, #419 packet), which is
   F01-T3's concern.
-- Windows and Linux: window `CALL`s answer the unsupported-platform `ERR`. Backends
-  never receive the new commands. F02-T12 owns these platforms.
+- Linux: window `CALL`s answer the unsupported-platform `ERR`. The backend never
+  receives the new commands. F02-T12 owns this platform.
+- Windows: `docs/specs/gh1188-windows-window-adapter.md` owns this platform. Until its
+  T3 the same `ERR` answers window `CALL`s, the backend receives none of the new
+  commands, and a test-admitted facade session answers `Subscribe`.
 
 ### Runtime seam
 

@@ -1,9 +1,15 @@
 //! `keld doctor` — environment checks (KEL-29 / KEL-42 `--json`).
 
-use std::path::{Component, Path, PathBuf};
+use std::fs;
+use std::io::ErrorKind;
+use std::path::{Component, Path};
 use std::process::Command;
 
-use keld_core::{DEFAULT_RENDERER, read_config_renderer};
+use keld_core::{
+    DEFAULT_ENTRY, DEFAULT_RENDERER, initial_window_from_config_ts, read_config_entry,
+    read_config_renderer,
+};
+use keld_runtime::primary::strip_verbatim_prefix;
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -24,6 +30,25 @@ pub const RENDERER_LOAD_CODE: &str = "KELD-CLI-035";
 /// Registry `fix` for [`RENDERER_LOAD_CODE`] (also `keld dev` `DevError::Renderer`).
 pub const RENDERER_LOAD_FIX: &str = "Set `renderer` in keld.config.ts to a project-relative HTML file \
      (no `..` or absolute paths) and create it.";
+
+const BOOT_CONFIG_CODE: &str = "KELD-CLI-047";
+const BOOT_CONFIG_FIX: &str = "Use a literal exported root with initialWindow: 'none' and no renderer or auth, or remove initialWindow for renderer boots.";
+
+/// The same Core static selector used by the boot compiler. No TS executes.
+/// Missing config remains a project-layout finding rather than a new mode.
+pub(crate) fn facade_mode_for_project(root: &Path) -> Result<bool, String> {
+    let config = match fs::read_to_string(root.join("keld.config.ts")) {
+        Ok(config) => config,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "{BOOT_CONFIG_CODE}: cannot read project config — {error}. {BOOT_CONFIG_FIX}"
+            ));
+        }
+    };
+    initial_window_from_config_ts(&config)
+        .map_err(|error| format!("{BOOT_CONFIG_CODE}: {error} {BOOT_CONFIG_FIX}"))
+}
 
 /// One doctor check result (human-oriented CLI form).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,26 +121,9 @@ pub fn renderer_path_problem(renderer: &str) -> Option<&'static str> {
     }
 }
 
-/// Strips a Windows verbatim prefix so displayed paths match `current_dir`.
-///
-/// `fs::canonicalize` on Windows yields `\\?\C:\...` (and `\\?\UNC\server\share`
-/// for UNC). MCP may pass that as `project_root`; CLI `doctor --json` from cwd
+/// MCP may pass a verbatim `project_root` (`\\?\C:\...`); CLI `doctor --json` from cwd
 /// does not. Doctor JSON is a human/`current_dir` path (`C:\...`), not the NT
 /// namespace prefix.
-#[must_use]
-fn strip_verbatim_prefix(path: &Path) -> PathBuf {
-    let Some(s) = path.to_str() else {
-        return path.to_path_buf();
-    };
-    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-        PathBuf::from(format!(r"\\{rest}"))
-    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
-        PathBuf::from(rest)
-    } else {
-        path.to_path_buf()
-    }
-}
-
 #[must_use]
 fn display_project_path(path: &Path) -> String {
     strip_verbatim_prefix(path).display().to_string()
@@ -200,7 +208,10 @@ fn check_project_layout(project_root: Option<&Path>) -> Check {
         };
     };
     let has_config = root.join("keld.config.ts").is_file();
-    let has_main = root.join("src/main.ts").is_file();
+    // Match the boot compiler's entry resolver, not a hard-coded template
+    // location. Real facade apps often have no src/main.ts or index.html.
+    let entry = read_config_entry(root).unwrap_or_else(|| DEFAULT_ENTRY.to_owned());
+    let has_main = renderer_path_problem(&entry).is_none() && root.join(&entry).is_file();
     let shown = display_project_path(root);
     if has_config && has_main {
         Check {
@@ -210,11 +221,11 @@ fn check_project_layout(project_root: Option<&Path>) -> Check {
             error: None,
         }
     } else {
-        let fix = "missing keld.config.ts or src/main.ts — run `keld create <name>` first";
+        let fix = format!("missing keld.config.ts or {entry} — run `keld create <name>` first");
         Check {
             label: "project",
             ok: false,
-            detail: fix.to_owned(),
+            detail: fix.clone(),
             error: Some(
                 KeldErrorObject::new(
                     PROJECT_LAYOUT_CODE,
@@ -228,6 +239,52 @@ fn check_project_layout(project_root: Option<&Path>) -> Check {
 }
 
 fn check_renderer(root: &Path) -> Check {
+    match facade_mode_for_project(root) {
+        Ok(true) => {
+            #[cfg(not(target_os = "macos"))]
+            {
+                let detail = String::from(
+                    "KELD-CLI-047: initialWindow: 'none' requires macOS facade boot support. Remove initialWindow for renderer boots on this platform.",
+                );
+                return Check {
+                    label: "renderer",
+                    ok: false,
+                    detail: detail.clone(),
+                    error: Some(
+                        KeldErrorObject::new(
+                            BOOT_CONFIG_CODE,
+                            "facade boot is unsupported on this platform",
+                            "Remove initialWindow from keld.config.ts to use renderer boot.",
+                        )
+                        .with_cause(detail),
+                    ),
+                };
+            }
+            #[cfg(target_os = "macos")]
+            return Check {
+                label: "renderer",
+                ok: true,
+                detail: String::from("facade boot: no initial renderer required"),
+                error: None,
+            };
+        }
+        Ok(false) => {}
+        Err(detail) => {
+            return Check {
+                label: "renderer",
+                ok: false,
+                error: Some(
+                    KeldErrorObject::new(
+                        BOOT_CONFIG_CODE,
+                        "invalid project boot configuration",
+                        BOOT_CONFIG_FIX,
+                    )
+                    .with_cause(detail.clone()),
+                ),
+                detail,
+            };
+        }
+    }
     let renderer = read_config_renderer(root).unwrap_or_else(|| DEFAULT_RENDERER.to_owned());
     let rel = renderer.trim();
     let reason = renderer_path_problem(&renderer).or_else(|| {
@@ -444,6 +501,82 @@ mod tests {
     }
 
     #[test]
+    fn facade_root_does_not_require_renderer_and_invalid_root_fails_preflight() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("src")).expect("src");
+        fs::write(dir.path().join("src/main.ts"), "export {};\n").expect("main");
+        fs::write(
+            dir.path().join("keld.config.ts"),
+            "export default { initialWindow: 'none', entry: 'src/main.ts' } as const;",
+        )
+        .expect("facade config");
+        let facade = renderer_check(dir.path());
+        #[cfg(target_os = "macos")]
+        {
+            assert!(
+                facade.ok,
+                "valid facade with no index.html must pass: {facade:?}"
+            );
+            assert!(facade.detail.contains("no initial renderer"), "{facade:?}");
+            let renderer = run_findings(Some(dir.path()))
+                .into_iter()
+                .find(|finding| finding.label == "renderer")
+                .expect("serialized renderer finding");
+            assert!(renderer.ok, "{renderer:?}");
+            assert!(renderer.error.is_none());
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(
+                !facade.ok,
+                "unsupported facade target must fail: {facade:?}"
+            );
+            assert!(facade.detail.contains("macOS"), "{facade:?}");
+            assert_eq!(
+                facade.error.as_ref().map(|error| error.code.as_str()),
+                Some(BOOT_CONFIG_CODE)
+            );
+        }
+        fs::write(
+            dir.path().join("keld.config.ts"),
+            "export default { initialWindow: 'none', ...{ renderer: 'index.html' } } as const;",
+        )
+        .expect("ambiguous config");
+        let ambiguous = renderer_check(dir.path());
+        assert!(
+            !ambiguous.ok,
+            "ambiguous facade root must fail doctor: {ambiguous:?}"
+        );
+        assert!(ambiguous.detail.contains("initialWindow"), "{ambiguous:?}");
+        assert_eq!(
+            ambiguous.error.as_ref().map(|error| error.code.as_str()),
+            Some(BOOT_CONFIG_CODE)
+        );
+        assert!(!ambiguous.detail.contains("file is missing"));
+    }
+
+    #[test]
+    fn facade_custom_entry_passes_layout_without_template_main_or_renderer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("keld.config.ts"),
+            "export default {\n  initialWindow: 'none',\n  entry: \"app/main.ts\",\n} as const;",
+        )
+        .expect("facade config");
+        fs::create_dir_all(dir.path().join("app")).expect("app");
+        fs::write(dir.path().join("app/main.ts"), "export {};\n").expect("entry");
+        assert!(!dir.path().join("src/main.ts").exists());
+        assert!(!dir.path().join("index.html").exists());
+        let project = project_check(Some(dir.path()));
+        assert!(project.ok, "{project:?}");
+        let renderer = renderer_check(dir.path());
+        #[cfg(target_os = "macos")]
+        assert!(renderer.ok, "{renderer:?}");
+        #[cfg(not(target_os = "macos"))]
+        assert!(!renderer.ok, "non-macOS facade unsupported: {renderer:?}");
+    }
+
+    #[test]
     fn renderer_follows_config_path_and_rejects_traversal() {
         let dir = tempfile::tempdir().expect("tempdir");
         fs::write(
@@ -491,18 +624,10 @@ mod tests {
         );
     }
 
+    /// The prefix rules themselves are tested beside their owner, keld-runtime
+    /// `strip_verbatim_prefix`; this cell pins doctor's display of a verbatim root.
     #[test]
-    fn strip_verbatim_prefix_disk_and_unc() {
-        assert_eq!(
-            strip_verbatim_prefix(Path::new(r"\\?\C:\foo")),
-            PathBuf::from(r"C:\foo")
-        );
-        assert_eq!(
-            strip_verbatim_prefix(Path::new(r"\\?\UNC\server\share")),
-            PathBuf::from(r"\\server\share")
-        );
-        let ordinary = Path::new("/var/tmp/app");
-        assert_eq!(strip_verbatim_prefix(ordinary), ordinary);
+    fn display_project_path_drops_the_verbatim_prefix() {
         assert_eq!(
             display_project_path(Path::new(r"\\?\C:\Users\runneradmin\app")),
             r"C:\Users\runneradmin\app"

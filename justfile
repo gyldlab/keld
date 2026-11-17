@@ -25,28 +25,27 @@ ci:
 
 # Executable inventory; direct invocation runs every declared gate.
 [private]
-ci-inventory: ci-policy typescript fmt-check clippy test doc deny
+ci-inventory: ci-policy js-fmt-check typescript fmt-check clippy test doc deny
 
 # Full assurance mode explicitly validates every tracked Mermaid block.
 ci-full:
     {{python_command}} -B tools/ci_local.py ci-full-inventory
 
 [private]
-ci-full-inventory: ci-policy-full typescript fmt-check clippy test doc deny
+ci-full-inventory: ci-policy-full js-fmt-check typescript fmt-check clippy test doc deny
 
 # Reuse Just's configured platform shell when the Python executor asks for a plan.
 [private]
 ci-route:
     tools/ci_changes.sh local
 
-# Hosted CI runs every ci-policy gate (#650) except two that need the real
-# `just` executable, which hosted runners do not install; hosting either needs a
-# pinned `just` in CI (dependency-gate decision, not taken):
+# Hosted CI runs every ci-policy gate (#650) except hooks-test, which needs the
+# hook runner's incoming recipe. The macOS Rust-check matrix installs pinned Just
+# and runs ci-router-test with stock system Bash for the portability contract below.
 # - hooks-test: the hooks under test execute `just` (its negative control runs
 #   the incoming branch's recipe through it); it fails, never skips, without just.
-# - the test_ci_local.py ExecutorTests in ci-router-test, which drive real
-#   recipes (tools/ci_local.py inventory/execute). SelectionTests and the rest
-#   of test_ci_local.py run hosted through tools/ci_changes_test.sh.
+# SelectionTests and the remaining hosted Python contracts run through
+# tools/ci_changes_test.sh; ci-router-test additionally drives real Just recipes.
 # agent-context's workspace.py check also runs hosted, but only a developer
 # checkout has task records for it to validate.
 # cache-check-test also runs hosted, unchanged, as two steps of the clippy + test
@@ -55,10 +54,10 @@ ci-route:
 # (tools/cache_tool_provenance_test.sh). Its cfg(windows) and cfg(unix) paths each
 # compile only on their own OS.
 [parallel]
-ci-policy: agents-md atomic-protocol agent-context-test agent-context cache-check-test ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-ci product-status-test product-status-check llms-test llms-check hygiene
+ci-policy: agents-md atomic-protocol agent-context-test agent-context cache-check-test ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check spec-structure-test spec-structure mermaid-ci product-status-test product-status-check llms-test llms-check hygiene
 
 [parallel]
-ci-policy-full: agents-md atomic-protocol agent-context-test agent-context cache-check-test ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-full product-status-test product-status-check llms-test llms-check hygiene
+ci-policy-full: agents-md atomic-protocol agent-context-test agent-context cache-check-test ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check spec-structure-test spec-structure mermaid-full product-status-test product-status-check llms-test llms-check hygiene
 
 mermaid-ci:
     #!/usr/bin/env bash
@@ -262,6 +261,18 @@ doc-placeholders-test:
     rustc --edition=2024 -D warnings --test tools/doc_placeholders.rs -o target/doc-placeholders/doc-placeholders-test
     target/doc-placeholders/doc-placeholders-test
 
+# CI gate: spec size, layout, stable IDs, links and pin citations (#1321; .agents/specs.md).
+spec-structure:
+    mkdir -p target/spec-structure
+    rustc --edition=2024 -D warnings tools/spec_structure.rs -o target/spec-structure/spec-structure
+    target/spec-structure/spec-structure check .
+
+# Contract tests: one single-fault mutant per rule, plus the ratchet bypasses.
+spec-structure-test:
+    mkdir -p target/spec-structure
+    rustc --edition=2024 -D warnings --test tools/spec_structure.rs -o target/spec-structure/spec-structure-test
+    target/spec-structure/spec-structure-test
+
 # Validate Mermaid fences, accessibility metadata, stable types, and semantic palette.
 mermaid-check:
     #!/usr/bin/env bash
@@ -287,6 +298,7 @@ mermaid-render-check:
 hygiene:
     bun --no-install test tools/ci_workflow_security.test.ts
     {{python_command}} -B tools/test_hello_command.py
+    {{python_command}} -B tools/test_ci_attempt_metrics.py
     mkdir -p target/ci-hygiene
     rustc --edition=2024 -D warnings --test tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene-test
     target/ci-hygiene/ci-hygiene-test
@@ -308,12 +320,24 @@ hooks-test:
 fmt:
     cargo fmt --all
     tools/fmt_included.sh
+    just js-fmt
 
 # CI gate: formatting, including `include!`d and macro-body `#[path]` files (#834, #1055).
-fmt-check:
+fmt-check: js-fmt-check
     cargo fmt --all --check
     tools/fmt_included.sh test
     tools/fmt_included.sh --check
+
+# Native Bun formatting; generated bytes/stamps remain owned by echo-codegen.
+js-fmt:
+    bun packages/@keld/kipc/scripts/echo-codegen.ts generate
+    bun fmt --no-script "**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}"
+    bun packages/@keld/kipc/scripts/echo-codegen.ts generate
+    bun packages/@keld/kipc/scripts/echo-codegen.ts check
+
+js-fmt-check:
+    bun packages/@keld/kipc/scripts/echo-codegen.ts check
+    bun fmt --no-script --check "**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}"
 
 # CI gate: lints (warnings are errors, matching CI).
 clippy:

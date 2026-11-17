@@ -147,13 +147,10 @@ fn read_frames_until_eof(client: &mut BootstrapStream) -> Vec<(keld_ipc::FrameHe
 /// in its FS drain, are both pending; an echo call is answered at once and
 /// never gets an ERR.
 ///
-/// Windows states today's behaviour (#528 T5, finding W2 in gh527 §10).
-/// The host's close there is `DisconnectNamedPipe`, which discards a
-/// pipe's unread data. This client has no read pending until
-/// `retire_generation` has returned, because the test thread is its only
-/// reader. So both `KELD-IPC-023` answers are written, then discarded,
-/// and the client reads only the close. The W2 fix flips this to the
-/// Unix expectation.
+/// This client has no read pending until `retire_generation` has returned,
+/// because the test thread is its only reader. On Windows the answers
+/// therefore survive only if the host's close keeps unread pipe data, which
+/// `DisconnectNamedPipe` does not (#1073 W2, gh527 §10).
 #[test]
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn retire_answers_pending_fs_and_quit_calls_with_023_before_close() {
@@ -179,25 +176,20 @@ fn retire_answers_pending_fs_and_quit_calls_with_023_before_close() {
             (header.kind, header.channel, header.corr, error.code)
         })
         .collect();
-    let expected = if cfg!(windows) {
-        // W2: the answers were written and then discarded by the close.
-        Vec::new()
-    } else {
-        vec![
-            (
-                FrameKind::Err,
-                FS_CHANNEL,
-                CorrelationId(11),
-                "KELD-IPC-023".to_owned(),
-            ),
-            (
-                FrameKind::Err,
-                LIFECYCLE_CHANNEL,
-                CorrelationId(12),
-                "KELD-IPC-023".to_owned(),
-            ),
-        ]
-    };
+    let expected = vec![
+        (
+            FrameKind::Err,
+            FS_CHANNEL,
+            CorrelationId(11),
+            "KELD-IPC-023".to_owned(),
+        ),
+        (
+            FrameKind::Err,
+            LIFECYCLE_CHANNEL,
+            CorrelationId(12),
+            "KELD-IPC-023".to_owned(),
+        ),
+    ];
     assert_eq!(
         answers, expected,
         "exactly the two pending calls are answered, then the link closes"
@@ -220,10 +212,8 @@ fn retire_answers_pending_fs_and_quit_calls_with_023_before_close() {
 /// itself a time limit; the margin is one budget plus a poll (under 0.5 s)
 /// against the 5 s `APP_LINK_IO_DEADLINE` that an unbounded write would
 /// wait.
-/// Unix only (#528 T5): Windows has no post-Quit drain, so criterion 7
-/// does not hold there today (gh527 §10, T5 finding).
 #[test]
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn quit_drain_answers_are_bounded_when_the_peer_stops_reading() {
     let (t, client) = guarded_test_router();
     let mut writer = client.try_clone().expect("flooding writer");
@@ -288,21 +278,18 @@ fn quit_drain_answers_are_bounded_when_the_peer_stops_reading() {
 ///
 /// The client reads nothing until the guardian's `Shutdown`, which the
 /// Quit tail sends only after it has closed the link. So what it reads
-/// depends only on what the close keeps.
+/// depends only on what the close keeps. The drain ends at its idle
+/// backstop (`QuitDrainEnd::IdleBackstop`), because that client never closes.
 ///
-/// Windows states today's behaviour (#528 T5, findings W1 and W2 in gh527
-/// §10):
-/// - W1: Windows has no post-Quit drain. Its tail reads the buffered FS
-///   CALL as a fault and closes, so no `KELD-IPC-024` is written.
-/// - W2: its close is `DisconnectNamedPipe`, which also discards the unread
-///   Quit REPLY.
-///
-/// So the client reads only the close. The FS CALL still never runs. The
-/// W1/W2 fix flips this to the Unix expectation.
+/// Every OS expects the same frames: Windows runs the same post-Quit drain
+/// since the W1 fix (#1073, gh527 §10), and its close keeps the unread
+/// frames (#1073 W2).
 #[test]
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn quit_drain_answers_received_calls_with_024_and_runs_none() {
     let (t, mut client) = guarded_test_router();
+    let (end_tx, drain_end) = mpsc::sync_channel(1);
+    t.router.handle().observe_next_quit_drain_end(end_tx);
     let target = t.allowed.join("after-quit.txt");
     // All three frames are buffered before the host can finish the Quit:
     // its REPLY waits on the shutdown attribution acknowledged below.
@@ -340,6 +327,14 @@ fn quit_drain_answers_received_calls_with_024_and_runs_none() {
     shutdown
         .send(Ok(()))
         .expect("acknowledge guardian shutdown");
+    // The client neither writes nor closes until the guardian's Shutdown, so
+    // the drain can only end at its idle backstop, not at the hard deadline.
+    assert_eq!(
+        drain_end
+            .recv_timeout(Duration::from_secs(5))
+            .expect("drain end"),
+        QuitDrainEnd::IdleBackstop
+    );
     let frames: Vec<(FrameKind, keld_ipc::ChannelId, CorrelationId, String)> =
         read_frames_until_eof(&mut client)
             .iter()
@@ -356,25 +351,21 @@ fn quit_drain_answers_received_calls_with_024_and_runs_none() {
                 (header.kind, header.channel, header.corr, body)
             })
             .collect();
-    let expected = if cfg!(windows) {
-        // W1 wrote no 024; W2 discarded the unread REPLY at the close.
-        Vec::new()
-    } else {
-        vec![
-            (
-                FrameKind::Reply,
-                LIFECYCLE_CHANNEL,
-                CorrelationId(20),
-                String::from("Quit"),
-            ),
-            (
-                FrameKind::Err,
-                FS_CHANNEL,
-                CorrelationId(21),
-                String::from("KELD-IPC-024"),
-            ),
-        ]
-    };
+    let quit_reply = (
+        FrameKind::Reply,
+        LIFECYCLE_CHANNEL,
+        CorrelationId(20),
+        String::from("Quit"),
+    );
+    let expected = vec![
+        quit_reply,
+        (
+            FrameKind::Err,
+            FS_CHANNEL,
+            CorrelationId(21),
+            String::from("KELD-IPC-024"),
+        ),
+    ];
     assert_eq!(
         frames, expected,
         "the Quit REPLY, then only the FS CALL is answered"
@@ -389,28 +380,12 @@ fn quit_drain_answers_received_calls_with_024_and_runs_none() {
     assert_router_shutdown_after_quit_with_trailing_call(t.router);
 }
 
-/// Joins a router whose role wrote a CALL after its accepted Quit. Unix
-/// drains that CALL and shuts down cleanly. Windows states today's behaviour
-/// (#528 T5, finding W1 in gh527 §10): its Quit tail
-/// (`await_windows_quit_peer_close_until`) treats any byte after the Quit
-/// REPLY as a fault, so the router's join reports `KELD-CORE-037`. The UI
-/// still quits. The W1 fix, tracked by #1073, flips this to the Unix
-/// expectation.
+/// Joins a router whose role wrote a CALL after its accepted Quit. The
+/// post-Quit drain answers that CALL, so the router shuts down cleanly on
+/// every OS (Windows since the W1 fix, #1073, gh527 §10).
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn assert_router_shutdown_after_quit_with_trailing_call(router: PrimaryRouter) {
-    let shutdown = router.shutdown();
-    if cfg!(windows) {
-        let error = shutdown.expect_err("W1: the Windows Quit tail faults on a trailing CALL");
-        assert_eq!(error.code(), "KELD-CORE-037", "{error:?}");
-        assert!(
-            error
-                .to_string()
-                .contains("app sent bytes after the terminal Quit reply"),
-            "{error}"
-        );
-    } else {
-        shutdown.expect("router shutdown after Quit");
-    }
+    router.shutdown().expect("router shutdown after Quit");
 }
 
 /// GH-528 T2 (gate review of #636): the post-Quit drain ends on the peer's
@@ -422,9 +397,8 @@ fn assert_router_shutdown_after_quit_with_trailing_call(router: PrimaryRouter) {
 /// order, and none runs. *Negative control:* checking the idle deadline
 /// before every read (as the earlier timer-window drain did) answers none
 /// of them.
-/// Unix only (#528 T5): Windows has no post-Quit drain (gh527 §10, T5
-/// finding), and this case also half-closes the client, which a named
-/// pipe cannot do.
+/// Unix only by OS fact (#528 T5): the role half-closes the link, which a
+/// named pipe cannot do, because closing a pipe handle ends both directions.
 #[test]
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn quit_drain_answers_every_buffered_call_after_a_host_stall_then_eof() {

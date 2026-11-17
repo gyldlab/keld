@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
-use objc2_app_kit::NSWindowStyleMask;
+use objc2::MainThreadMarker;
+use objc2_app_kit::{NSScreen, NSWindowStyleMask};
 use objc2_foundation::NSRect;
 use tao::dpi::{LogicalPosition, PhysicalPosition, PhysicalSize};
 use tao::event_loop::EventLoopWindowTarget;
@@ -217,26 +218,12 @@ fn configure_registry_frame(
         view.webview.webview().window().ok_or_else(|| {
             WvError::Window(String::from("the built webview has no native window"))
         })?;
-    let primary_top = if y.is_some() {
-        let monitor = view.window.primary_monitor().ok_or_else(|| {
-            WvError::Window(String::from(
-                "the primary monitor is unavailable for window placement",
-            ))
-        })?;
-        let scale = monitor.scale_factor();
-        if !scale.is_normal() || scale <= 0.0 {
-            return Err(WvError::Window(String::from(
-                "the primary monitor scale factor is invalid",
-            )));
-        }
-        // Match the coordinate reference of tao 0.35.3's window_position and
-        // bottom_left_to_top_left. Its macOS MonitorHandle::size first scales
-        // CGDisplay::pixels_high, so undo that scale before the conversion.
-        Some(monitor.size().to_logical::<f64>(scale).height)
+    let primary_frame = if x.is_some() || y.is_some() {
+        Some(primary_appkit_screen_frame()?)
     } else {
         None
     };
-    let frame = registry_frame(native.frame(), width, height, x, y, primary_top)?;
+    let frame = registry_frame(native.frame(), width, height, x, y, primary_frame)?;
     // BrowserWindow's default useContentSize=false means OUTER size. The
     // existing renderer builder remains inner-sized. Tao's setters enqueue
     // even on the UI thread; this existing safe native primitive applies the
@@ -245,23 +232,53 @@ fn configure_registry_frame(
     Ok(())
 }
 
+/// Read the actual primary screen's `AppKit` *point-space* frame on the UI
+/// thread. Tao 0.35.3's physical monitor size scales `CGDisplay` pixel height a
+/// second time, so undoing scale does NOT yield `NSScreen` frame points on a 2x
+/// Retina display. Never use that self-consistent but offscreen coordinate.
+fn primary_appkit_screen_frame() -> Result<NSRect, WvError> {
+    let mtm = MainThreadMarker::new().ok_or_else(|| {
+        WvError::Window(String::from(
+            "native window placement requires the AppKit main thread",
+        ))
+    })?;
+    let screens = NSScreen::screens(mtm);
+    let primary = screens
+        .firstObject()
+        .ok_or_else(|| WvError::Window(String::from("AppKit primary NSScreen is unavailable")))?;
+    Ok(primary.frame())
+}
+
 fn registry_frame(
     mut frame: NSRect,
     width: u32,
     height: u32,
     x: Option<i32>,
     y: Option<i32>,
-    primary_top: Option<f64>,
+    primary_frame: Option<NSRect>,
 ) -> Result<NSRect, WvError> {
-    frame.origin.x = x.map_or(frame.origin.x, f64::from);
+    frame.origin.x = match x {
+        Some(x) => {
+            primary_frame
+                .ok_or_else(|| {
+                    WvError::Window(String::from(
+                        "the AppKit primary x reference is unavailable",
+                    ))
+                })?
+                .origin
+                .x
+                + f64::from(x)
+        }
+        None => frame.origin.x,
+    };
     frame.origin.y = match y {
         Some(y) => {
-            primary_top.ok_or_else(|| {
+            let primary = primary_frame.ok_or_else(|| {
                 WvError::Window(String::from(
-                    "the primary coordinate reference is unavailable",
+                    "the AppKit primary coordinate reference is unavailable",
                 ))
-            })? - f64::from(y)
-                - f64::from(height)
+            })?;
+            primary.origin.y + primary.size.height - f64::from(y) - f64::from(height)
         }
         None => frame.origin.y + frame.size.height - f64::from(height),
     };
@@ -281,6 +298,37 @@ fn registry_frame(
         )));
     }
     Ok(frame)
+}
+
+fn appkit_registry_bounds(frame: NSRect, primary: NSRect) -> Result<(i32, i32, u32, u32), WvError> {
+    // AppKit NSWindow.frame and NSScreen.frame are both point-space values.
+    // The native frame (not Tao.outer_position) owns the registry's observed
+    // result so a Retina-specific Tao conversion cannot conceal offscreen Y.
+    let values = [
+        frame.origin.x - primary.origin.x,
+        primary.origin.y + primary.size.height - frame.origin.y - frame.size.height,
+        frame.size.width,
+        frame.size.height,
+    ];
+    if !values.iter().all(|v| v.is_finite())
+        || values[2] <= 0.0
+        || values[3] <= 0.0
+        || values[0] < f64::from(i32::MIN)
+        || values[0] > f64::from(i32::MAX)
+        || values[1] < f64::from(i32::MIN)
+        || values[1] > f64::from(i32::MAX)
+        || values[2] > f64::from(u32::MAX)
+        || values[3] > f64::from(u32::MAX)
+    {
+        return Err(WvError::Window(String::from(
+            "the AppKit native window frame cannot be represented",
+        )));
+    }
+    // The same audited `dpi::cast` rounding used in checked_logical_bounds,
+    // but only after finite/sign/range checks have succeeded above.
+    let position: LogicalPosition<i32> = LogicalPosition::new(values[0], values[1]).cast();
+    let size: tao::dpi::LogicalSize<u32> = tao::dpi::LogicalSize::new(values[2], values[3]).cast();
+    Ok((position.x, position.y, size.width, size.height))
 }
 
 pub(super) fn next_view_id(next: &mut u32) -> Result<WebviewId, WvError> {
@@ -335,16 +383,24 @@ fn logical_bounds(
 }
 
 pub(super) fn snapshot(view: &View) -> Result<WindowSnapshot, WvError> {
-    let (position, size) = logical_bounds(&view.window)?;
     let native =
         view.webview.webview().window().ok_or_else(|| {
             WvError::Window(String::from("the built webview has no native window"))
         })?;
+    let (x, y, width, height) = if view.registry_managed {
+        // Read actual AppKit point-space frame instead of Tao's CoreGraphics
+        // pixel-height based outer_position() conversion. The latter can be
+        // self-consistent with a wrong placement and mask a 2x Retina defect.
+        appkit_registry_bounds(native.frame(), primary_appkit_screen_frame()?)?
+    } else {
+        let (position, size) = logical_bounds(&view.window)?;
+        (position.x, position.y, size.width, size.height)
+    };
     Ok(WindowSnapshot {
-        x: position.x,
-        y: position.y,
-        width: size.width,
-        height: size.height,
+        x,
+        y,
+        width,
+        height,
         focused: native.isKeyWindow(),
         maximized: native.isZoomed(),
         // Tao's fullscreen() returns requested shared state. AppKit's observed
@@ -436,7 +492,7 @@ pub(super) fn release_all(
 
 #[cfg(test)]
 mod tests {
-    use super::{checked_logical_bounds, next_view_id, registry_frame};
+    use super::{appkit_registry_bounds, checked_logical_bounds, next_view_id, registry_frame};
     use objc2_foundation::{NSPoint, NSRect, NSSize};
     use tao::dpi::{PhysicalPosition, PhysicalSize};
 
@@ -490,12 +546,41 @@ mod tests {
         assert_eq!(frame.origin.y.to_bits(), 0.0_f64.to_bits());
         assert_eq!(frame.size.width.to_bits(), 800.0_f64.to_bits());
         assert_eq!(frame.size.height.to_bits(), 600.0_f64.to_bits());
-        let frame = registry_frame(initial, 800, 600, Some(37), Some(91), Some(1200.0))
+        let primary = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1920.0, 1200.0));
+        let frame = registry_frame(initial, 800, 600, Some(37), Some(91), Some(primary))
             .expect("primary top-left coordinates");
         assert_eq!(frame.origin.x.to_bits(), 37.0_f64.to_bits());
         assert_eq!(frame.origin.y.to_bits(), 509.0_f64.to_bits());
         assert!(registry_frame(initial, 800, 600, None, Some(91), None).is_err());
-        assert!(registry_frame(initial, 800, 600, None, Some(91), Some(f64::NAN)).is_err());
+        let invalid_primary = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1000.0, f64::NAN));
+        assert!(registry_frame(initial, 800, 600, None, Some(91), Some(invalid_primary)).is_err());
+    }
+
+    #[test]
+    fn retina_and_offset_primary_place_native_frame_in_appkit_points_not_display_pixels()
+    -> Result<(), super::WvError> {
+        // Independent arithmetic discriminator: the physical CG display may
+        // report 1800 pixels while NSScreen is only 900 AppKit points high.
+        // The wrong height yields bottom 1109, entirely offscreen; point-space
+        // coordinates yield bottom 209 and a visible frame intersection.
+        let retina = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1440.0, 900.0));
+        let initial = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(700.0, 500.0));
+        let frame = registry_frame(initial, 800, 600, Some(37), Some(91), Some(retina))?;
+        assert_eq!((frame.origin.x, frame.origin.y), (37.0, 209.0));
+        assert!(frame.origin.y >= retina.origin.y);
+        assert!(frame.origin.y + frame.size.height <= retina.origin.y + retina.size.height);
+        assert_eq!(appkit_registry_bounds(frame, retina)?, (37, 91, 800, 600));
+        let pixel_height = 1800.0;
+        assert_eq!(pixel_height - 91.0 - 600.0, 1109.0);
+        assert!(1109.0 > retina.origin.y + retina.size.height);
+
+        // Primary screens need not have zero global AppKit origin when the
+        // desktop arrangement includes monitors to the left or below them.
+        let shifted = NSRect::new(NSPoint::new(-1920.0, 120.0), NSSize::new(1440.0, 900.0));
+        let frame = registry_frame(initial, 800, 600, Some(37), Some(91), Some(shifted))?;
+        assert_eq!((frame.origin.x, frame.origin.y), (-1883.0, 329.0));
+        assert_eq!(appkit_registry_bounds(frame, shifted)?, (37, 91, 800, 600));
+        Ok(())
     }
 
     #[test]
