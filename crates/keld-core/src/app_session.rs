@@ -17,6 +17,8 @@ use self::boot_contract::decode_digest;
 use self::boot_contract::{InitialWindow, boot_error, parse_boot_bytes, target_error};
 
 #[cfg(target_os = "macos")]
+mod macos_dev_stage;
+#[cfg(target_os = "macos")]
 mod macos_profile_selection;
 #[cfg(all(test, target_os = "macos"))]
 use self::macos_profile_selection::MacValidatedAppIdentity;
@@ -29,6 +31,8 @@ use self::macos_profile_selection::verified_macos_app_identity;
     any(test, all(feature = "profile-test-hooks", debug_assertions))
 ))]
 use self::macos_profile_selection::{macos_identity_error, select_macos_profile_mode_with};
+#[cfg(target_os = "macos")]
+pub use macos_dev_stage::{validate_macos_dev_stage_ancestry, validate_macos_dev_stage_directory};
 
 #[cfg(target_os = "macos")]
 mod auth_router;
@@ -1394,6 +1398,9 @@ fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppErro
             "Restore the generated owner-private stage directory.",
         )
     })?;
+    #[cfg(target_os = "macos")]
+    validate_macos_dev_stage_ancestry(&root)
+        .map_err(|source| target_error("macOS dev-stage ancestry", source.to_string()))?;
     let root_fd = open_root(&root)?;
     let root_stat =
         fstat(&root_fd).map_err(|source| target_error("app root", source.to_string()))?;
