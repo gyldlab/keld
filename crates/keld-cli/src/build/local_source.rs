@@ -1779,6 +1779,8 @@ pub(super) fn run(args: &[String]) -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use keld_runtime::windows_job::WindowsLifecycleQueryWitness;
+
     fn entry(mode: &str, path: &str) -> Vec<u8> {
         format!(":000000 {mode} 0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 A\0{path}\0").into_bytes()
     }
@@ -1786,26 +1788,11 @@ mod tests {
     fn descendant_process_fixture(
         temporary: &Path,
         system_root: &Path,
-        powershell: &Path,
     ) -> (Vec<OsString>, Vec<(OsString, OsString)>, PathBuf) {
         let system32 = system_root.join("System32");
-        let parent_script = temporary.join("parent.ps1");
-        let child_script = temporary.join("descendant.ps1");
         let parent_started = temporary.join("parent-started.marker");
+        let parent_spawned = temporary.join("parent-spawned.marker");
         let started = temporary.join("descendant-started.marker");
-
-        fs::write(
-            &child_script,
-            b"try {\n$process = [System.Diagnostics.Process]::GetCurrentProcess()\n[System.IO.File]::WriteAllText($env:KELD_TEST_DESCENDANT_STARTED, ('{0}:{1}' -f $PID, $process.StartTime.ToUniversalTime().Ticks))\nStart-Sleep -Seconds 60\n} catch {\n[System.IO.File]::WriteAllText($env:KELD_TEST_DESCENDANT_ERROR, $_.Exception.ToString())\nexit 43\n}\n"
-        )
-        .expect("write controlled descendant fixture");
-        // .NET Process.Start gives this fixture a direct child-start witness.
-        // The child inherits the capture handles until the Job kills the family.
-        fs::write(
-            &parent_script,
-            b"[System.IO.File]::WriteAllText($env:KELD_TEST_PARENT_STARTED, 'started')\ntry {\n$startInfo = New-Object System.Diagnostics.ProcessStartInfo\n$startInfo.FileName = $env:KELD_TEST_POWERSHELL\n$startInfo.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"' + $env:KELD_TEST_DESCENDANT_SCRIPT + '\"'\n$startInfo.UseShellExecute = $false\n$startInfo.CreateNoWindow = $true\n$child = [System.Diagnostics.Process]::Start($startInfo)\nif ($null -eq $child) { throw 'Process.Start returned no child process' }\n[System.IO.File]::WriteAllText($env:KELD_TEST_PARENT_SPAWNED, ('{0}' -f $child.Id))\n$child.Dispose()\nStart-Sleep -Seconds 60\n} catch {\n[System.IO.File]::WriteAllText($env:KELD_TEST_PARENT_ERROR, $_.Exception.ToString())\nexit 42\n}\n"
-        )
-        .expect("write controlled Job-parent fixture");
         let environment = vec![
             ("SystemRoot".into(), system_root.as_os_str().to_owned()),
             ("WINDIR".into(), system_root.as_os_str().to_owned()),
@@ -1816,35 +1803,14 @@ mod tests {
             ("USERPROFILE".into(), temporary.as_os_str().to_owned()),
             ("APPDATA".into(), temporary.as_os_str().to_owned()),
             ("LOCALAPPDATA".into(), temporary.as_os_str().to_owned()),
-            (
-                "KELD_TEST_POWERSHELL".into(),
-                powershell.as_os_str().to_owned(),
-            ),
-            (
-                "KELD_TEST_DESCENDANT_SCRIPT".into(),
-                child_script.as_os_str().to_owned(),
-            ),
+            ("KELD_TEST_DESCENDANT_PARENT".into(), OsString::from("1")),
             (
                 "KELD_TEST_PARENT_STARTED".into(),
                 parent_started.as_os_str().to_owned(),
             ),
             (
                 "KELD_TEST_PARENT_SPAWNED".into(),
-                temporary
-                    .join("parent-spawned.marker")
-                    .as_os_str()
-                    .to_owned(),
-            ),
-            (
-                "KELD_TEST_PARENT_ERROR".into(),
-                temporary.join("parent-error.txt").as_os_str().to_owned(),
-            ),
-            (
-                "KELD_TEST_DESCENDANT_ERROR".into(),
-                temporary
-                    .join("descendant-error.txt")
-                    .as_os_str()
-                    .to_owned(),
+                parent_spawned.as_os_str().to_owned(),
             ),
             (
                 "KELD_TEST_DESCENDANT_STARTED".into(),
@@ -1852,54 +1818,69 @@ mod tests {
             ),
         ];
         let args = vec![
-            OsString::from("-NoProfile"),
-            OsString::from("-NonInteractive"),
-            OsString::from("-WindowStyle"),
-            OsString::from("Hidden"),
-            OsString::from("-ExecutionPolicy"),
-            OsString::from("Bypass"),
-            OsString::from("-File"),
-            parent_script.as_os_str().to_owned(),
+            OsString::from("--ignored"),
+            OsString::from("--exact"),
+            OsString::from("build::local_source::tests::descendant_parent_fixture"),
+            OsString::from("--nocapture"),
+            OsString::from("--test-threads=1"),
         ];
         (args, environment, started)
     }
 
-    fn assert_descendant_reaped(powershell: &Path, started: &Path) {
-        let process_identity = fs::read_to_string(started).expect("descendant identity marker");
-        let (pid, creation_ticks) = process_identity
-            .trim()
-            .split_once(':')
-            .expect("descendant marker contains PID and creation time");
-        let pid = pid.parse::<u32>().expect("descendant PID");
-        let creation_ticks = creation_ticks
-            .parse::<u64>()
-            .expect("descendant creation time");
-        let probe = format!(
-            "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); $p = Get-Process -Id {pid} -ErrorAction SilentlyContinue; if ($null -eq $p -or $p.HasExited) {{ 'EXITED' }} elseif ($p.StartTime.ToUniversalTime().Ticks -eq {creation_ticks}) {{ $p.Kill(); 'ALIVE' }} else {{ 'PID_REUSED' }}"
+    #[test]
+    #[ignore = "subprocess fixture used only by the bounded descendant capture regression"]
+    fn descendant_parent_fixture() {
+        if std::env::var_os("KELD_TEST_DESCENDANT_PARENT").is_none() {
+            return;
+        }
+        let parent_started = PathBuf::from(
+            std::env::var_os("KELD_TEST_PARENT_STARTED").expect("parent start marker path"),
         );
-        let output = std::process::Command::new(powershell)
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-WindowStyle",
-                "Hidden",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-            ])
-            .arg(&probe)
-            .output()
-            .expect("query descendant process after Job retirement");
-        assert!(
-            output.status.success(),
-            "descendant liveness query failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+        let parent_spawned = PathBuf::from(
+            std::env::var_os("KELD_TEST_PARENT_SPAWNED").expect("parent child marker path"),
         );
-        let process_state = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        assert!(
-            process_state == "EXITED" || process_state == "PID_REUSED",
-            "descendant process remained live after Job retirement: {process_state}"
+        let child_started = PathBuf::from(
+            std::env::var_os("KELD_TEST_DESCENDANT_STARTED").expect("child start marker path"),
         );
+        fs::write(&parent_started, "started").expect("write parent start witness");
+        let child = std::process::Command::new(
+            std::env::current_exe().expect("current pinned test executable"),
+        )
+        .args([
+            "--ignored",
+            "--exact",
+            "build::local_source::tests::descendant_child_fixture",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env_remove("KELD_TEST_DESCENDANT_PARENT")
+        .env("KELD_TEST_DESCENDANT_CHILD", "1")
+        .spawn()
+        .expect("spawn Rust descendant fixture");
+        fs::write(&parent_spawned, child.id().to_string()).expect("write spawned child PID");
+        drop(child);
+        let startup_deadline = Instant::now() + Duration::from_secs(10);
+        while !child_started.exists() {
+            assert!(
+                Instant::now() < startup_deadline,
+                "descendant fixture did not publish its own start witness"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        std::thread::sleep(Duration::from_secs(60));
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture used only by the bounded descendant capture regression"]
+    fn descendant_child_fixture() {
+        if std::env::var_os("KELD_TEST_DESCENDANT_CHILD").is_none() {
+            return;
+        }
+        let started = PathBuf::from(
+            std::env::var_os("KELD_TEST_DESCENDANT_STARTED").expect("child start marker path"),
+        );
+        fs::write(&started, std::process::id().to_string()).expect("write child start witness");
+        std::thread::sleep(Duration::from_secs(60));
     }
     #[test]
     fn full_tree_listing_preserves_blob_identity_and_mode() {
@@ -2194,26 +2175,19 @@ mod tests {
     fn capture_deadline_terminates_and_reaps_descendant_processes() {
         let system_root =
             PathBuf::from(std::env::var_os("SystemRoot").expect("Windows system root"));
-        let powershell = system_root
-            .join("System32")
-            .join("WindowsPowerShell")
-            .join("v1.0")
-            .join("powershell.exe");
-        let tool = pin_file(&powershell, MAX_IMAGE).expect("system PowerShell fixture");
+        let test_binary = std::env::current_exe().expect("Windows Rust test binary");
+        let tool = pin_file(&test_binary, MAX_IMAGE).expect("pinned Rust test binary fixture");
         let temporary = tempfile::tempdir().expect("owned descendant fixture");
         let (args, environment, started) =
-            descendant_process_fixture(temporary.path(), &system_root, &powershell);
+            descendant_process_fixture(temporary.path(), &system_root);
         let parent_started = temporary.path().join("parent-started.marker");
         let parent_spawned = temporary.path().join("parent-spawned.marker");
-        let parent_error = temporary.path().join("parent-error.txt");
-        let descendant_error = temporary.path().join("descendant-error.txt");
 
         let input = File::open("NUL").expect("null input");
         let mut stderr = tempfile::tempfile().expect("private descendant stderr");
         let start = Instant::now();
-        // Retain a second Job handle across the capture call. Otherwise Windows'
-        // kill-on-last-handle-close policy could hide a missing explicit family
-        // termination when the capture owner drops its Job.
+        // Keep a non-inheritable least-rights Job handle after the capture
+        // owner returns; the query witness below attenuates it to QUERY only.
         let job_observer = std::sync::Mutex::new(None);
         let result = run_captured_with_output_and_job_observer(
             &tool,
@@ -2229,7 +2203,7 @@ mod tests {
             },
             |job| {
                 let handle = job
-                    .duplicate_cleanup_observer_handle()
+                    .duplicate_lifecycle_keeper_handle()
                     .map_err(|error| failure("source capture test Job observer", error))?;
                 *job_observer.lock().map_err(|_| {
                     failure("source capture test Job observer", "observer lock poisoned")
@@ -2250,42 +2224,38 @@ mod tests {
         assert!(
             error.to_string().contains("tool deadline")
                 || error.to_string().contains("tool capture deadline"),
-            "{error}"
+            "{error}; capture stderr: {stderr_detail}"
         );
         assert!(start.elapsed() < Duration::from_secs(45));
-        let _job_observer = job_observer
-            .into_inner()
-            .expect("test Job observer lock")
-            .expect("retained test Job observer handle");
-        let diagnostics = format!(
-            "parent spawned: {}; parent error: {}; descendant error: {}; capture stderr: {stderr_detail}",
-            fs::read_to_string(&parent_spawned).unwrap_or_else(|_| "<not written>".into()),
-            fs::read_to_string(&parent_error).unwrap_or_else(|_| "<not written>".into()),
-            fs::read_to_string(&descendant_error).unwrap_or_else(|_| "<not written>".into()),
-        );
         assert!(
             parent_started.exists(),
-            "the parent PowerShell must start before timeout; {diagnostics}"
+            "the parent fixture must start before timeout; stderr: {stderr_detail}"
         );
         assert!(
             started.exists(),
-            "the descendant script must write its own start identity before timeout; {diagnostics}"
+            "the descendant must write its own start identity before timeout; stderr: {stderr_detail}"
         );
         let parent_child_pid =
             fs::read_to_string(&parent_spawned).expect("parent child PID marker");
-        let identity = fs::read_to_string(&started).expect("descendant identity marker");
-        let (descendant_pid, _) = identity
-            .trim()
-            .split_once(':')
-            .expect("descendant marker contains PID and creation time");
+        let descendant_pid = fs::read_to_string(&started).expect("descendant PID marker");
         assert_eq!(
-            descendant_pid,
+            descendant_pid.trim(),
             parent_child_pid.trim(),
-            "the child marker must belong to the process created by the parent; {diagnostics}"
+            "the child marker must belong to the process created by the parent; stderr: {stderr_detail}"
         );
-        assert_descendant_reaped(&powershell, &started);
-    }
 
+        let observer = job_observer
+            .into_inner()
+            .expect("test Job observer lock")
+            .expect("retained test Job observer handle");
+        let job = WindowsLifecycleQueryWitness::adopt_transferred(observer)
+            .expect("adopt retained query-only Job observer");
+        assert_eq!(
+            job.active_processes().expect("query Job after deadline"),
+            0,
+            "the exact capture Job must have no live parent or descendant after the deadline"
+        );
+    }
     #[test]
     fn private_stderr_is_retained_without_echoing_into_build_errors() {
         let root = PathBuf::from(std::env::var_os("SystemRoot").expect("Windows system root"));
