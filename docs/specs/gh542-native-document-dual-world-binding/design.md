@@ -216,7 +216,7 @@ wrapper admission remain #467/#484's separate owner, followed by #552 literal Gu
 
 No page-world script-message handler is added by this spec. A direct page-native endpoint remains prohibited under A1. The alternative A2 (untrusted page-native
 data carrier with same per-call Guard/source gates) requires its own explicit GH-484/KEL-142 and security approvals; this draft neither selects it nor weakens
-AC-17. If A1 cannot establish a supported page→app route, report BLOCKED rather than substitute BroadcastChannel provenance or a hidden raw native handler.
+#1155 AC-17. If A1 cannot establish a supported page→app route, report BLOCKED rather than substitute BroadcastChannel provenance or a hidden raw native handler.
 
 ### 4.7 Platform and trust limits
 
