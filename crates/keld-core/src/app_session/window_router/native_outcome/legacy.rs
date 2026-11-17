@@ -107,46 +107,7 @@ impl PrimaryRouterHandle {
             }
             #[cfg(any(target_os = "macos", windows))]
             NativeOutcome::Committed(committed) => {
-                if subscribed == Some(committed.owner)
-                    && let Some(active) = active_owner(current, committed.owner)
-                {
-                    let native_url = session
-                        .registry
-                        .committed_native_url(
-                            committed.owner,
-                            committed.window,
-                            committed.document_generation,
-                        )
-                        .ok_or_else(|| {
-                            app_detail(
-                                "original native commit",
-                                "the same guarded Registry URL disappeared before publication",
-                            )
-                        })?;
-                    navigation_committed_event(
-                        active,
-                        committed.window,
-                        committed.document_generation,
-                        native_url.as_str(),
-                        &mut session.navigation_payload,
-                        failed,
-                    )?;
-                    let caller = PrimaryCallerContext {
-                        identity: active.identity,
-                        attempt: active.attempt,
-                        reader_stop: std::sync::Arc::clone(&active.reader_stop),
-                    };
-                    session.registry.for_each_registered_renderer_route(
-                        committed.owner,
-                        |route| {
-                            if route.window == committed.window {
-                                self.compat_registered_route_ready_locked(&caller, active, route)?;
-                            }
-                            Ok(())
-                        },
-                    )?;
-                }
-                Ok(())
+                self.publish_original_committed_locked(session, current, committed, failed)
             }
             #[cfg(any(target_os = "macos", windows))]
             NativeOutcome::Finished(completed) => {
@@ -164,5 +125,56 @@ impl PrimaryRouterHandle {
                 original_native_failure(current, subscribed, (call, code, detail), failed)
             }
         }
+    }
+
+    /// Preserve the exact guarded Registry URL and route publication in one
+    /// owning turn; splitting this arm adds no new admission or native fact.
+    #[cfg(any(target_os = "macos", windows))]
+    fn publish_original_committed_locked(
+        &self,
+        session: &mut WindowSession,
+        current: &mut Option<ActivePrimaryGeneration>,
+        committed: crate::app_session::window_registry::CommittedOriginalLoad,
+        failed: &mut Option<u32>,
+    ) -> Result<(), HostAppError> {
+        if session.subscribed == Some(committed.owner)
+            && let Some(active) = active_owner(current, committed.owner)
+        {
+            let native_url = session
+                .registry
+                .committed_native_url(
+                    committed.owner,
+                    committed.window,
+                    committed.document_generation,
+                )
+                .ok_or_else(|| {
+                    app_detail(
+                        "original native commit",
+                        "the same guarded Registry URL disappeared before publication",
+                    )
+                })?;
+            navigation_committed_event(
+                active,
+                committed.window,
+                committed.document_generation,
+                native_url.as_str(),
+                &mut session.navigation_payload,
+                failed,
+            )?;
+            let caller = PrimaryCallerContext {
+                identity: active.identity,
+                attempt: active.attempt,
+                reader_stop: std::sync::Arc::clone(&active.reader_stop),
+            };
+            session
+                .registry
+                .for_each_registered_renderer_route(committed.owner, |route| {
+                    if route.window == committed.window {
+                        self.compat_registered_route_ready_locked(&caller, active, route)?;
+                    }
+                    Ok(())
+                })?;
+        }
+        Ok(())
     }
 }

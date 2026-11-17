@@ -5575,87 +5575,8 @@ fn start_renderer_dispatch(
                         return Err(error);
                     }
                 };
-                let webview = request.webview();
-                let navigation = request.navigation();
-                let local_request = request.request();
-                // Reserve the terminal outcome before retaining any diagnostic or
-                // beginning the existing numeric call. This is the captured role's
-                // same session ledger, never a new native counter/current lookup.
-                #[cfg(windows)]
-                let control = request
-                    .role_witness()
-                    .and_then(|role| role.try_reserve_native_control(1, 4096 + 1024))
-                    .ok_or_else(|| {
-                        app_detail(
-                            "renderer numeric terminal",
-                            "captured role CONTROL custody is unavailable",
-                        )
-                    })?;
-                if request.channel() != keld_ipc::channel_table::ECHO.wire_id() {
-                    if outcomes
-                        .send(RendererBridgeOutcome::Error {
-                            webview,
-                            navigation,
-                            request: local_request,
-                            code: String::from("KELD-WV-011"),
-                            detail: String::from("renderer channel is not declared by this build"),
-                            #[cfg(windows)]
-                            control: Some(control),
-                        })
-                        .is_err()
-                    {
-                        return Ok(());
-                    }
-                    continue;
-                }
-
-                #[cfg(windows)]
-                let call =
-                    router.begin_echo_call_for_role(request.payload(), request.role_witness());
-                #[cfg(not(windows))]
-                let call = router.begin_echo_call(request.payload());
-                let Ok(call) = call else {
-                    if outcomes
-                        .send(RendererBridgeOutcome::Error {
-                            webview,
-                            navigation,
-                            request: local_request,
-                            code: String::from("KELD-WV-011"),
-                            detail: String::from(
-                                "application call is unavailable or already pending",
-                            ),
-                            #[cfg(windows)]
-                            control: Some(control),
-                        })
-                        .is_err()
-                    {
-                        return Ok(());
-                    }
-                    continue;
-                };
-                if std::env::var_os("KELD_KEL142_ACCEPTANCE_REPORT").is_some() {
-                    eprintln!(
-                        "KELD_KEL142_KIPC_CALL webview={} navigation={} request={} corr={}",
-                        webview.0, navigation, local_request, call.correlation.0
-                    );
-                }
-
-                let Some(outcome) = wait_renderer_echo_outcome(
-                    &call,
-                    &stop_for_thread,
-                    webview,
-                    navigation,
-                    local_request,
-                    #[cfg(windows)]
-                    control,
-                ) else {
-                    if !stop_for_thread.load(Ordering::Acquire) {
-                        let _ = router.window_commands.send(AppWindowCommand::Fatal);
-                        return Err(app_detail(
-                            "renderer numeric terminal",
-                            "original terminal CONTROL storage could not be retained",
-                        ));
-                    }
+                let Some(outcome) = renderer_echo_result(&router, &stop_for_thread, &request)?
+                else {
                     return Ok(());
                 };
                 if outcomes.send(outcome).is_err() {
@@ -5665,6 +5586,54 @@ fn start_renderer_dispatch(
         })
         .map_err(|source| app_io("renderer dispatch thread", &source))?;
     Ok(RendererDispatch { stop, handle })
+}
+
+/// One Mac request's existing numeric result. None means an actual stop
+/// retired its pending call, not an accepted or fabricated terminal reply.
+#[cfg(target_os = "macos")]
+fn renderer_echo_result(
+    router: &PrimaryRouterHandle,
+    stop: &AtomicBool,
+    request: &RendererBridgeRequest,
+) -> Result<Option<RendererBridgeOutcome>, HostAppError> {
+    let webview = request.webview();
+    let navigation = request.navigation();
+    let local_request = request.request();
+    if request.channel() != keld_ipc::channel_table::ECHO.wire_id() {
+        return Ok(Some(RendererBridgeOutcome::Error {
+            webview,
+            navigation,
+            request: local_request,
+            code: String::from("KELD-WV-011"),
+            detail: String::from("renderer channel is not declared by this build"),
+        }));
+    }
+
+    let Ok(call) = router.begin_echo_call(request.payload()) else {
+        return Ok(Some(RendererBridgeOutcome::Error {
+            webview,
+            navigation,
+            request: local_request,
+            code: String::from("KELD-WV-011"),
+            detail: String::from("application call is unavailable or already pending"),
+        }));
+    };
+    if std::env::var_os("KELD_KEL142_ACCEPTANCE_REPORT").is_some() {
+        eprintln!(
+            "KELD_KEL142_KIPC_CALL webview={} navigation={} request={} corr={}",
+            webview.0, navigation, local_request, call.correlation.0
+        );
+    }
+
+    let outcome = wait_renderer_echo_outcome(&call, stop, webview, navigation, local_request);
+    if outcome.is_none() && !stop.load(Ordering::Acquire) {
+        let _ = router.window_commands.send(AppWindowCommand::Fatal);
+        return Err(app_detail(
+            "renderer numeric terminal",
+            "original terminal CONTROL storage could not be retained",
+        ));
+    }
+    Ok(outcome)
 }
 
 #[cfg(target_os = "macos")]
@@ -8869,6 +8838,28 @@ impl PrimaryRouterHandle {
             "application call retired by accepted lifecycle Quit",
         )?;
         self.guardian.prepare_accepted_shutdown()?;
+        if !self.accept_quit_reply_and_end_windows_guarded(correlation, reply)? {
+            return Ok(());
+        }
+        #[cfg(target_os = "macos")]
+        let auth_retirement = self.retire_auth_for_quit(attempt);
+        #[cfg(not(target_os = "macos"))]
+        let auth_retirement = Ok(());
+        if let Err(fs_error) = self.quiesce_and_drain_fs() {
+            return collapse_app_results([auth_retirement, Err(fs_error)]);
+        }
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+        self.answer_calls_after_quit(attempt, reader);
+        self.finish_quit_link_and_tail(auth_retirement)
+    }
+
+    /// Keep the accepted reply, native shutdown and their error ordering
+    /// within the same transition hold. A refusal is not an accepted Quit.
+    fn accept_quit_reply_and_end_windows_guarded(
+        &self,
+        correlation: CorrelationId,
+        reply: &[u8],
+    ) -> Result<bool, HostAppError> {
         let (quit_reply, window_end) = {
             let _transition = self.shutdown.transition_guard();
             if !self
@@ -8876,7 +8867,7 @@ impl PrimaryRouterHandle {
                 .accept_reserved_guarded(SESSION_LIFECYCLE_QUIT)
                 || !self.shutdown.begin_tail()
             {
-                return Ok(());
+                return Ok(false);
             }
             // Attempt the owed reply before native commands, then always end
             // managed windows. This hold prevents native receipts interleaving
@@ -8891,16 +8882,7 @@ impl PrimaryRouterHandle {
             return Err(append_app_cleanup(primary, [window_end]));
         }
         window_end?;
-        #[cfg(target_os = "macos")]
-        let auth_retirement = self.retire_auth_for_quit(attempt);
-        #[cfg(not(target_os = "macos"))]
-        let auth_retirement = Ok(());
-        if let Err(fs_error) = self.quiesce_and_drain_fs() {
-            return collapse_app_results([auth_retirement, Err(fs_error)]);
-        }
-        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-        self.answer_calls_after_quit(attempt, reader);
-        self.finish_quit_link_and_tail(auth_retirement)
+        Ok(true)
     }
 
     fn finish_quit_link_and_tail(

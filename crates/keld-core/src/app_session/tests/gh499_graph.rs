@@ -76,29 +76,9 @@ fn write(root: &Path, relative: &str, bytes: &[u8]) {
     fs::write(path, bytes).expect("write exact inert fixture bytes");
 }
 
-/// Exercise the real sealed-graph + resolved policy constructor selected by
-/// both current menu and window-router quit-component tests. Returning the
-/// `TempDir` keeps every graph descriptor and manifest path in its live scope.
-#[cfg(target_os = "macos")]
-pub(in crate::app_session) fn original_quit_selection() -> (tempfile::TempDir, OriginalLoadSelection)
-{
-    original_selection_with_versions(BTreeMap::new())
-}
-
-/// Supply explicit inert process facts when a component test builds the preload.
-#[cfg_attr(
-    windows,
-    expect(
-        clippy::too_many_lines,
-        reason = "Keep the independently pinned graph/provider fixtures and same retained source construction together."
-    )
-)]
-pub(in crate::app_session) fn original_selection_with_versions(
-    versions: BTreeMap<String, String>,
-) -> (tempfile::TempDir, OriginalLoadSelection) {
-    let owned = tempfile::tempdir().expect("private selected-source fixture");
-    let root = owned.path().join("app");
-    fs::create_dir(&root).expect("separate copied app root");
+/// Write the independently pinned inert fixture bytes without changing their
+/// paths or content before the actual retained-root graph admission.
+fn write_inert_graph_fixture(root: &Path) {
     for (path, bytes) in [
         ("src/main/electron.js", MAIN.as_bytes()),
         (
@@ -125,8 +105,27 @@ pub(in crate::app_session) fn original_selection_with_versions(
         ("package.json", ROOT_PACKAGE.as_bytes()),
         ("package-lock.json", ROOT_LOCK.as_bytes()),
     ] {
-        write(&root, path, bytes);
+        write(root, path, bytes);
     }
+}
+
+/// Exercise the real sealed-graph + resolved policy constructor selected by
+/// both current menu and window-router quit-component tests. Returning the
+/// `TempDir` keeps every graph descriptor and manifest path in its live scope.
+#[cfg(target_os = "macos")]
+pub(in crate::app_session) fn original_quit_selection() -> (tempfile::TempDir, OriginalLoadSelection)
+{
+    original_selection_with_versions(BTreeMap::new())
+}
+
+/// Supply explicit inert process facts when a component test builds the preload.
+pub(in crate::app_session) fn original_selection_with_versions(
+    versions: BTreeMap<String, String>,
+) -> (tempfile::TempDir, OriginalLoadSelection) {
+    let owned = tempfile::tempdir().expect("private selected-source fixture");
+    let root = owned.path().join("app");
+    fs::create_dir(&root).expect("separate copied app root");
+    write_inert_graph_fixture(&root);
 
     let expected = ApprovedGraphCaptureInput {
         expected_package_sha256: sha(PIN_ROOT),

@@ -1,11 +1,15 @@
 //! Actual Core socket/subscription regressions and pure policy/receipt contracts.
 //! Fixture callers do not qualify Runtime authentication or native registration.
 
+#![allow(
+    clippy::expect_used,
+    reason = "Only test fixtures use expect to fail immediately on missing real socket/owner prerequisites."
+)]
+
 use super::{
-    CallError, CompatSession, ConsumerDisposition, CorrelationId, FrameKind, PrimaryCallerContext,
-    PrimaryRouterHandle, Principal, RendererBridgeOutcome, RendererChannelQuery,
-    WvConsumerDisposition, consumer, dispatch_privileged_query, encode, preflight_privileged_query,
-    write_frame,
+    CallError, ConsumerDisposition, CorrelationId, FrameKind, PrimaryCallerContext,
+    PrimaryRouterHandle, Principal, RendererChannelQuery, WvConsumerDisposition, consumer,
+    dispatch_privileged_query, encode, preflight_privileged_query, write_frame,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
