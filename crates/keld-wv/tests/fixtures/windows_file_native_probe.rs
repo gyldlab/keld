@@ -297,6 +297,8 @@ fn verify_native_same_uri_overlap(
         // the native IsSuccess status must be present and boolean either way.
         && frame_completed["data"]["success"].as_bool().is_some()
         && held["data"]["real_deferral"] == true
+        // The held native request must independently observe no Host nonce.
+        && held["data"]["header"] == json!({"state":"absent"})
         && held["data"]["uri"] == receipt["uri"]
         && held["data"]["source_kind"] == 1
         && held["data"]["resource_context"] == 1
@@ -581,7 +583,7 @@ mod ac06_overlap_receipt_tests {
         let frame = json!({"phase":"race-child","kind":"frame-navigation-starting","seq":15,
             "data":{"uri":uri,"navigation_id":5,"header":{"state":"absent"}}});
         let held = json!({"phase":"race-child","kind":"race-child-held","seq":16,
-            "data":{"uri":uri,"resource_context":1,"source_kind":1,"real_deferral":true}});
+            "data":{"uri":uri,"resource_context":1,"source_kind":1,"real_deferral":true,"header":{"state":"absent"}}});
         let child = json!({"phase":"race-child","kind":"resource-request","seq":17,
             "data":{"uri":uri,"resource_context":1,"source_kind":1,
                 "header":{"state":"absent"},"held_iframe":true}});
@@ -661,6 +663,29 @@ mod ac06_overlap_receipt_tests {
             "nonboolean iframe completion status accepted"
         );
 
+        // A held same-URI iframe resource must have an actual native absent
+        // Host nonce; the subsequent child request cannot substitute for it.
+        let mut held_header_with_nonce = good.clone();
+        held_header_with_nonce[1]["data"]["header"] = json!({"state":"present","value":nonce});
+        assert!(
+            check(&held_header_with_nonce).is_err(),
+            "held iframe with a native Host nonce accepted"
+        );
+        let mut contradictory_held_header = good.clone();
+        contradictory_held_header[1]["data"]["header"]["value"] = json!(nonce);
+        assert!(
+            check(&contradictory_held_header).is_err(),
+            "held iframe with absent state but a Host nonce value accepted"
+        );
+        let mut missing_held_header = good.clone();
+        missing_held_header[1]["data"]
+            .as_object_mut()
+            .expect("sample held iframe")
+            .remove("header");
+        assert!(
+            check(&missing_held_header).is_err(),
+            "held iframe without a native header observation accepted"
+        );
         let mut delayed_completion = good.clone();
         delayed_completion[6]["seq"] = json!(25);
         assert!(
