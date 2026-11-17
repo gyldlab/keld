@@ -508,7 +508,7 @@ fn observe_recovery_actions(
     );
     // Until every independent census above passes, fallback cleanup retains
     // only the already-attributed G1 group. Ordinary HTTP data grants no custody.
-    cleanup.bun_group = Some(successor_boot.pid);
+    cleanup.record_bun_group(successor_boot.pid, first.guardian);
     assert_retired_credentials(&first_boot.app_link, &successor_boot.app_link, prepared);
     observer.send_recovery_command(RecoveryCommand::Admit(successor_boot.pid));
     let ready = observer
@@ -524,6 +524,7 @@ fn observe_recovery_actions(
     };
     assert_eq!(first.guardian, successor.guardian, "persistent guardian");
     assert_app_identity(&ready, successor, host_pid, prepared);
+    cleanup.record_bun_member(successor.descendant);
     evidence.reports.push(ready);
     evidence.retired_family = Some(first);
     evidence.family = Some(successor);
@@ -548,6 +549,15 @@ fn observe_recovery_actions(
         prepared,
     );
     assert_recovery_replacement_files(prepared, retired_root.as_deref());
+    assert_recovery_document_reused(host_pid, evidence);
+    observer.send_recovery_command(RecoveryCommand::Quit(successor.bun));
+    eprintln!(
+        "KELD_KEL140_RECOVERY_CONSUMER host={host_pid} window={:?} first_bun={} second_bun={} input_actions=0 completed_witness=[1,2] interrupted_effect_acceptance=false blocked_syscall_acceptance=false full_kel143_acceptance=false",
+        evidence.window, first.bun, successor.bun,
+    );
+}
+
+fn assert_recovery_document_reused(host_pid: u32, evidence: &LaunchEvidence) {
     assert_eq!(
         await_same_native_windows(host_pid, TITLE, &evidence.window),
         evidence.window
@@ -560,11 +570,6 @@ fn observe_recovery_actions(
             .count(),
         1,
         "same document; no second initial-page observation"
-    );
-    observer.send_recovery_command(RecoveryCommand::Quit(successor.bun));
-    eprintln!(
-        "KELD_KEL140_RECOVERY_CONSUMER host={host_pid} window={:?} first_bun={} second_bun={} input_actions=0 completed_witness=[1,2] interrupted_effect_acceptance=false blocked_syscall_acceptance=false full_kel143_acceptance=false",
-        evidence.window, first.bun, successor.bun,
     );
 }
 
@@ -996,7 +1001,8 @@ fn await_ready(
             assert_app_identity(&report, family, host_pid, prepared);
             // Ordinary app data gains fallback custody only after the
             // independent live host/guardian/group/image/link census passes.
-            cleanup.bun_group = Some(bun);
+            cleanup.record_bun_group(bun, guardian);
+            cleanup.record_bun_member(descendant);
             evidence.family = Some(family);
         }
         assert!(
