@@ -160,6 +160,13 @@ impl<P> OriginalCallQueue<P> {
             numeric: None,
         })
     }
+    #[cfg_attr(
+        not(windows),
+        expect(
+            clippy::unused_self,
+            reason = "the numeric result owner exists only on Windows; this shared queue predicate is false on other targets"
+        )
+    )]
     fn numeric_occupied(&self) -> bool {
         #[cfg(windows)]
         {
@@ -198,21 +205,21 @@ impl<P> OriginalCallQueue<P> {
         self.active_call.is_some()
     }
     #[cfg(any(
-        test,
+        all(test, windows),
         all(target_os = "macos", feature = "profile-test-hooks", debug_assertions)
     ))]
     pub(crate) fn local_len(&self) -> usize {
         self.local_calls.len()
     }
     #[cfg(any(
-        test,
+        all(test, windows),
         all(target_os = "macos", feature = "profile-test-hooks", debug_assertions)
     ))]
     pub(crate) fn retained_records(&self) -> usize {
         self.local_budget.retained_records()
     }
     #[cfg(any(
-        test,
+        all(test, windows),
         all(target_os = "macos", feature = "profile-test-hooks", debug_assertions)
     ))]
     pub(crate) fn retained_bytes(&self) -> usize {
@@ -242,7 +249,7 @@ impl<P> OriginalCallQueue<P> {
         }
     }
     #[cfg(any(
-        test,
+        all(test, windows),
         all(target_os = "macos", feature = "profile-test-hooks", debug_assertions)
     ))]
     pub(crate) fn pending_observation(

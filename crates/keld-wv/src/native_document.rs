@@ -126,10 +126,6 @@ pub(crate) struct NativeDocumentOwner {
 }
 
 impl NativeDocumentOwner {
-    pub(crate) const fn view(&self) -> WebviewId {
-        self.view
-    }
-
     pub(crate) fn lease_for(&self, expected: NativeCommittedStamp) -> Option<NativeDocumentLease> {
         if self.current_stamp() != Some(expected) {
             return None;

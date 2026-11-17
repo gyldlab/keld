@@ -154,21 +154,21 @@ impl PendingOriginalEvent {
     }
 
     #[cfg(any(
-        test,
+        all(test, windows),
         all(target_os = "macos", feature = "profile-test-hooks", debug_assertions)
     ))]
     pub(crate) const fn consumed_sent(&self) -> bool {
         self.consumed_sent
     }
     #[cfg(any(
-        test,
+        all(test, windows),
         all(target_os = "macos", feature = "profile-test-hooks", debug_assertions)
     ))]
     pub(crate) const fn native_quiescence(&self) -> Option<bool> {
         self.quiesced
     }
     #[cfg(any(
-        test,
+        all(test, windows),
         all(target_os = "macos", feature = "profile-test-hooks", debug_assertions)
     ))]
     pub(crate) const fn quiescence_sent(&self) -> bool {

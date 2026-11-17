@@ -79,7 +79,8 @@ pub use macos_bridge::{
     RendererRoleWitness,
 };
 use macos_bridge::{BridgeNavigationHandle, MacRendererBridge};
-use macos_document::{NativeAttempt, NativeCommittedStamp};
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+use macos_document::NativeCommittedStamp;
 use macos_navigation_owner::KeldNavigationOwner;
 use macos_resource_native::{KeldAppSchemeHandler, ReaderTerminated, ResourceCompleted};
 pub use macos_resource_source::{
