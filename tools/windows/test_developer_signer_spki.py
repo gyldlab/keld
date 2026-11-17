@@ -2,7 +2,9 @@
 import hashlib
 import unittest
 
-from developer_signer_spki import DOMAIN, publisher_scope
+from developer_signer_spki import publisher_scope
+
+EXPECTED_PUBLISHER_SCOPE_DOMAIN = b"keld.publisher.windows/v1\x00"
 
 
 def der(tag: int, content: bytes) -> bytes:
@@ -30,7 +32,7 @@ class PublisherScopeTests(unittest.TestCase):
         spki = der(0x30, der(0x30, der(0x06, b"\x2b\x65\x70")) + der(0x03, b"\x00\x01\x02"))
         self.assertEqual(
             publisher_scope(certificate(spki)),
-            hashlib.sha256(DOMAIN + spki).hexdigest(),
+            hashlib.sha256(EXPECTED_PUBLISHER_SCOPE_DOMAIN + spki).hexdigest(),
         )
         self.assertNotEqual(publisher_scope(certificate(spki)), hashlib.sha256(spki).hexdigest())
 
