@@ -72,6 +72,8 @@ FACT: [Zettlr proof owner #1354](https://github.com/gyldlab/keld/issues/1354) se
 - **When:** Unsubscribe one live ID and an unknown ID. Release the first event. Replace the generation, then release the second event.
 - **Then:** Only the surviving registration receives the first event. Neither old registration nor the successor receives the second event.
   In a separate run, subscribe A, unsubscribe A, subscribe C, then repeat cleanup with A's ID. C retains its distinct ID and receives the next transition.
+  In another run, retain A's ID and unsubscribe method, replace the generation, then subscribe C.
+  Call both the retired and current methods with A's ID. C has a different ID and receives the next transition.
 - **Negative control:**
   - **Single fault:** Leave a removed ID eligible during dispatch.
   - **At-risk precondition:** Schedule removal before dispatch reaches that still-referenced callback.
@@ -115,8 +117,11 @@ specifically to escape a forced override. If #481/#558 expose only the effective
 
 Keep one role-local table keyed by an opaque integer. Registration records a callback and a supported/inert selector. An identical callback subscribed twice gets two
 entries. Subscribe/unsubscribe issue zero host calls. Use the existing facade lifecycle to retire registrations on disconnect and prevent ID collision within the
-same live generation. Allocate monotonically increasing safe integer IDs. Never reuse an ID within that generation, even after removal.
+same live generation. Allocate monotonically increasing safe integer IDs. Never reuse an ID during the JavaScript runtime lifetime, including after removal or generation replacement.
+Keep the numeric allocator outside the generation registry. Generation replacement must not reset the allocator.
 Repeated unsubscribe of a removed ID is a no-op. It cannot remove a later registration.
+Bind internal registrations and captured unsubscribe methods to their generation. A retired method cannot access the successor registry.
+Keep the public handle numeric. Passing an old numeric handle to the current method is harmless because IDs never repeat.
 Refuse allocation before numeric exhaustion or precision loss. Do not wrap, reuse an ID, or mutate existing registrations.
 Q-1 approval must set the finite ID ceiling and typed exhaustion diagnostic.
 Dispatch snapshots retain registration identity, not only the numeric ID.
@@ -182,9 +187,16 @@ Attach one projection to the approved #481/#558 apply path. Run AC-8 and its unc
 
 Test dispatch identity separately with a test-only table replacement that bypasses allocation.
 A numeric-membership-only mutant must wrongly invoke the replacement and fail. Production allocation must never permit that ID reuse.
-Reach the Q-1 approved ID ceiling through subscription and removal cycles. Keep active entries below the approved retention limit.
+Separately inject matching numeric IDs into retired and successor registries through a test-only seam.
+Invoke the retired generation-bound method. The successor must remain active. A method redirected to the current registry must fail this control.
+Also test production generation replacement without injection. A reset-counter mutant must fail the distinct-ID assertion in AC-5.
+Keep one named supported survivor live, with an ID different from the wrapped target.
+The approved active budget must permit this survivor and one additional registration.
+Use a test-only seam to position the allocator at the last available ID before the Q-1 approved ceiling.
+The seam changes only allocator position, never production capacity checks, allocation, refusal, or diagnostics. Exclude the seam from production builds.
+Allocate and remove that final ID through normal methods. Keep active entries below the approved retention limit.
 Leave the wrapped ID unused. Attempt another subscription and assert the typed exhaustion diagnostic without table mutation.
-A wrapping allocator mutant must allocate instead and fail this assertion. Existing subscriptions must still receive the next transition.
+A wrapping allocator mutant must allocate instead and fail this assertion. Assert the survivor retains its exact registration identity and receives the next transition exactly once.
 These are implementation acceptance controls, not evidence of executed native behavior.
 
 For AC-8, retain the observed registration, OS-transition, capture, baseline-apply and callback order.
