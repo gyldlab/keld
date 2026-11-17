@@ -86,7 +86,10 @@ impl LocalSigner {
             .parent()
             .ok_or_else(|| refuse("local signer", "tool parent missing"))?;
         let directory_pins = windows_inputs::pin_input_root(parent)?;
-        let tool = local_source::pin_file(tool, MAX_IMAGE_BYTES)?;
+        let tool = local_source::pin_file(
+            &windows_inputs::stable_file_at_parent(tool, &directory_pins)?,
+            MAX_IMAGE_BYTES,
+        )?;
         if tool.sha256 != hex::<32>(expected_tool)? {
             return Err(refuse(
                 "local signer",
@@ -298,8 +301,11 @@ pub(super) fn prepare_request(
     let key_parent = key_path
         .parent()
         .ok_or_else(|| refuse("update public key", "parent missing"))?;
-    let _key_directories = windows_inputs::pin_input_root(key_parent)?;
-    let key = local_source::pin_file(key_path, 32)?;
+    let key_directories = windows_inputs::pin_input_root(key_parent)?;
+    let key = local_source::pin_file(
+        &windows_inputs::stable_file_at_parent(key_path, &key_directories)?,
+        32,
+    )?;
     let key_bytes: [u8; 32] = read_exact_image(&key.file, 32)?.try_into().map_err(|_| {
         refuse(
             "update public key",

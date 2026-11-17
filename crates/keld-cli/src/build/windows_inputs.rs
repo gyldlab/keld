@@ -28,6 +28,25 @@ pub(super) fn stable_local_path(pins: &[File]) -> Result<PathBuf, BuildError> {
         .map_err(|error| BuildError::input("Windows local volume", error))
 }
 
+/// Turn a caller's leaf into a path beneath the already pinned parent.
+/// Never use the original drive-letter alias for the later file open.
+pub(super) fn stable_file_at_parent(path: &Path, parents: &[File]) -> Result<PathBuf, BuildError> {
+    let Some(Component::Normal(leaf)) = path.components().next_back() else {
+        return Err(BuildError::input(
+            "Windows local file",
+            "regular file leaf required",
+        ));
+    };
+    let bytes = leaf.as_encoded_bytes();
+    if matches!(bytes.last(), Some(b'.' | b' ')) {
+        return Err(BuildError::input(
+            "Windows local file",
+            "ambiguous trailing dot/space leaf",
+        ));
+    }
+    Ok(stable_local_path(parents)?.join(leaf))
+}
+
 /// Resolve a directory that may be created later from its nearest existing,
 /// retained fixed-local ancestor. The returned path no longer depends on a
 /// mapped drive alias and the pins keep the selected namespace alive.
@@ -519,6 +538,7 @@ fn require_windows_authoring_paths(entry: &str, renderer: Option<&str>) -> Resul
 #[cfg(test)]
 mod windows_local_volume_tests {
     use super::*;
+    use sha2::Digest as _;
     use std::process::{Command, ExitStatus};
     use std::sync::Mutex;
 
@@ -548,6 +568,59 @@ mod windows_local_volume_tests {
         assert_eq!(stable, stable_root.join("new-install").join("updates"));
         assert!(!stable.exists());
         assert!(stable_local_target_path(&owned.path().join("..").join("escape")).is_err());
+    }
+
+    // Failure-first falsifier for a caller that pins a directory but opens
+    // its file through the original mutable DOS alias after an A-to-B rebind.
+    #[test]
+    #[ignore = "requires an unused Z: SUBST letter"]
+    fn pinned_parent_does_not_secure_a_later_raw_drive_alias_file_open() {
+        let _lock = Z_MAPPING_TEST_LOCK.lock().expect("shared Z: lock");
+        let original = tempfile::tempdir().expect("original root");
+        let replacement = tempfile::tempdir().expect("replacement root");
+        std::fs::write(original.path().join("release.key"), [0x11_u8; 32]).unwrap();
+        std::fs::write(replacement.path().join("release.key"), [0x22_u8; 32]).unwrap();
+        assert!(!Path::new(r"Z:\").exists(), "unused Z: required");
+        assert!(!net_use(&["use", "Z:"]).unwrap().success());
+        let mut mapping = TemporaryMappedDrive {
+            kind: MappingKind::None,
+        };
+        assert!(
+            subst(&["Z:", original.path().to_str().unwrap()])
+                .unwrap()
+                .success()
+        );
+        mapping.kind = MappingKind::Subst;
+        let old_parent = pin_input_root(Path::new(r"Z:\")).expect("original fixed local root");
+        let stable_original = stable_local_path(&old_parent).expect("original retained path");
+        assert!(subst(&["Z:", "/D"]).unwrap().success());
+        mapping.kind = MappingKind::None;
+        assert!(
+            subst(&["Z:", replacement.path().to_str().unwrap()])
+                .unwrap()
+                .success()
+        );
+        mapping.kind = MappingKind::Subst;
+        assert_eq!(
+            std::fs::read(stable_original.join("release.key")).unwrap(),
+            [0x11_u8; 32]
+        );
+        let raw = super::super::local_source::pin_file(Path::new(r"Z:\release.key"), 32)
+            .expect("fixed-local replacement file remains admissible");
+        let expected: [u8; 32] = sha2::Sha256::digest([0x11_u8; 32]).into();
+        assert_ne!(
+            raw.sha256, expected,
+            "negative control must witness B, not A"
+        );
+        let stable_file = stable_file_at_parent(Path::new(r"Z:\release.key"), &old_parent)
+            .expect("original fixed-local file locator");
+        let pinned = super::super::local_source::pin_file(&stable_file, 32)
+            .expect("rebound drive must not redirect retained parent selection");
+        assert_eq!(
+            pinned.sha256, expected,
+            "retained parent must select original A"
+        );
+        assert!(stable_file_at_parent(Path::new(r"Z:\release.key."), &old_parent).is_err());
     }
 
     /// The exact authoring-owner path forwarded to the direct image/archive

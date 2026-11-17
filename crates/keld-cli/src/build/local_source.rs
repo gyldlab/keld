@@ -864,7 +864,10 @@ fn pin_native_msvc_linker(root: &Path) -> Result<(PinnedFile, Vec<File>), BuildE
         .parent()
         .ok_or_else(|| failure("native MSVC linker", "linker parent missing"))?;
     let directories = pin_directories(parent)?;
-    let linker = pin_file(&image, MAX_IMAGE)?;
+    let linker = pin_file(
+        &super::windows_inputs::stable_file_at_parent(&image, &directories)?,
+        MAX_IMAGE,
+    )?;
     Ok((linker, directories))
 }
 
@@ -1137,12 +1140,15 @@ pub(super) fn prepare(
     // Git can recursively follow an unmeasured external object store through
     // objects/info/alternates even with one explicit alternate in the child.
     reject_recursive_object_alternates(&request.source.join(".git/objects"))?;
-    for tool in [&request.git, &request.cargo, &request.rustc] {
+    for tool in [&mut request.git, &mut request.cargo, &mut request.rustc] {
         budget.check()?;
         let parent = tool
             .parent()
             .ok_or_else(|| failure("local source tool", "tool parent missing"))?;
-        directory_pins.extend(pin_directories(parent)?);
+        let pins = pin_directories(parent)?;
+        let stable = super::windows_inputs::stable_file_at_parent(tool, &pins)?;
+        directory_pins.extend(pins);
+        *tool = stable;
     }
     let git = pin_file_with_budget(&request.git, MAX_IMAGE, Some(&budget))?;
     let cargo = pin_file_with_budget(&request.cargo, MAX_IMAGE, Some(&budget))?;
