@@ -90,7 +90,7 @@ async function launch(
       : []),
     ...(installed?.bootstrap ? [] : ["--preload", wrapper]),
     ...(installed?.bootstrap
-      ? ["run", installed.bootstrap, installed.entry]
+      ? ["run", installed.bootstrap]
       : [
           installed?.entry ??
             join(import.meta.dir, "runtime-preload-entry.fixture.mjs"),

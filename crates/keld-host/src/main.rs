@@ -551,27 +551,40 @@ fn local_guardian_bun_command(
         runtime_preload.as_deref(),
         runtime_entry.as_deref(),
     )?;
-    command.arg("run");
-    if let Some(bootstrap) = selected_bootstrap {
-        // This exact source leaf was compiled into the Host, copied by Pack,
-        // verified by Core and rechecked by Guardian for this generation.
-        // The original entry remains the separately pinned boot/graph member.
-        command.arg(bootstrap);
-    }
+    append_installed_main(
+        &mut command,
+        facts.app_root(),
+        facts.entry_relative(),
+        selected_bootstrap,
+    );
     command
-        .arg(facts.app_root().join(facts.entry_relative()))
         .current_dir(facts.app_root())
         .env("KELD_APP_LINK", app_link)
         .stdin(Stdio::null());
     Ok(command)
 }
 
+/// The sealed bootstrap imports its selected original. Appending the original
+/// as another Bun argument would expose a private source path as user input.
+/// The direct-entry path remains unchanged for non-graph installed apps.
+#[cfg(target_os = "macos")]
+fn append_installed_main(
+    command: &mut Command,
+    root: &Path,
+    entry_relative: &Path,
+    bootstrap: Option<PathBuf>,
+) {
+    command
+        .arg("run")
+        .arg(bootstrap.unwrap_or_else(|| root.join(entry_relative)));
+}
+
 /// Selects only admitted installed source roles. Immutable launch-facts preload
 /// is already first. An original graph must have both its independently
 /// verified provider wrapper AND the fixed Core-compiled app-root bootstrap.
 /// Bun then runs the bootstrap as its main entry, not an isolated API CLI
-/// preload, followed by the retained original entry. Non-graph roles preserve
-/// their established sidecar and direct-entry behavior.
+/// preload. The original is imported from the sealed literal, never appended
+/// as a user argument. Non-graph roles keep their direct-entry behavior.
 ///
 /// The original entry now observes different import.meta.main/Bun.main/argv.
 /// This source path is NOT release-ready until exact native original-app
@@ -1070,10 +1083,12 @@ mod tests {
         )
         .expect("both independently admitted graph members");
         assert_eq!(selected, Some(bootstrap.clone()));
-        command
-            .arg("run")
-            .arg(bootstrap.clone())
-            .arg(root.join("main.js"));
+        super::append_installed_main(
+            &mut command,
+            root,
+            std::path::Path::new("main.js"),
+            selected,
+        );
         let observed = command
             .get_args()
             .map(|value| value.to_string_lossy().into_owned())
@@ -1086,8 +1101,16 @@ mod tests {
                 "--define=__KELD_RUNTIME_PROCESS_FACTS__:true".to_owned(),
                 "run".to_owned(),
                 bootstrap.display().to_string(),
-                root.join("main.js").display().to_string(),
             ]
+        );
+        let mut ordinary = std::process::Command::new("/verified/bun");
+        super::append_installed_main(&mut ordinary, root, std::path::Path::new("main.js"), None);
+        assert_eq!(
+            ordinary
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["run".to_owned(), root.join("main.js").display().to_string()]
         );
         for (facade, wrapper, bootstrap) in [
             (false, Some(wrapper.as_path()), Some(bootstrap.as_path())),
