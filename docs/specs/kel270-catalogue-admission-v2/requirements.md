@@ -148,6 +148,12 @@ exclusive blob, after removal of the orphan generation, and after intent
 removal. Only an authenticated pre-deletion intent may treat an absent
 listed blob as retired. A missing unlisted or still-reachable object MUST
 refuse without deleting another object.
+Also cut after zero, one, and several ordinary blob readbacks before N+1 generation publication.
+With N+1 absent, require a complete owner census and durable D-23 `ordinary-blob-only` intent before deletion.
+After verified cleanup, a different authenticated N+1 successor MUST remain writable.
+As separate faults, omit the intent, alter blob bytes or owner, add a live reference, or introduce a pending pointer.
+Each fault MUST refuse deletion and new publication. Cut after intent readback, every deletion, and intent removal.
+Run actual Windows process-death and physical power-loss cases separately; synthetic cuts do not qualify either.
 
 ### AC-22: Established state cannot become first use through partial loss
 

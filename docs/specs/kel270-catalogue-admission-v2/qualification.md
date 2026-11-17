@@ -161,6 +161,13 @@ Use a separate negative with a foreign, corrupted or wrong-epoch
 orphan. It MUST refuse before publishing a recovery journal or pointer.
 Cut during ordinary orphan retirement and show that only the matching
 D-24 intent may resume. Never interpret it as a D-65 recovery intent.
+Also cut ordinary refresh after zero, one, and many blob writes, before
+N+1 publication. The blob-only case MUST create its own authenticated
+D-23 intent before deletion. Check the retained current, all owner references,
+pointer absence, exact blob inventory, and N+1 absence on every restart.
+Mutate one blob, owner ACL, intent field, live reference, or pending pointer
+independently. Each MUST refuse deletion. Cut after intent publication,
+each listed deletion, and intent removal. Prove a new valid N+1 remains writable.
 For R2, also cut before retirement-intent publication and after its journal digest readback.
 Cut after every exclusive blob deletion and after orphan-generation deletion.
 Also cut after durable completion-digest readback, after intent removal,
@@ -250,7 +257,7 @@ Measure the approved native path against the same signed baseline. Apply the exi
 ## 9. Perf impact: Metadata
 
 No performance improvement is claimed. The metadata profile bounds each object, refresh, request, and retained state operation. Reuse immutable blobs to avoid copying every role on each root transition. Garbage collection cannot delete the current generation, its referenced blobs, or pending recovery evidence.
-Keep at most three generation files: current, its immediate predecessor, and one prepared successor. Retain every blob referenced by those files. A root-reset intent stays in current until completion. Delete only unreferenced objects after successful readback, under the store lease.
+Keep at most three generation files: current, its immediate predecessor, and one prepared successor. Retain every blob referenced by those files. A root-reset intent stays in current until completion. Delete only proven exclusive unreferenced objects under D-24's matching durable retirement intent and store lease.
 Ordinary orphan retirement requires every D-24 proof and an absent D-68
 pending pointer. Manual recovery cleanup requires an authenticated terminal
 `aborted` record under its still-matching pointer. Do not substitute one
@@ -402,12 +409,19 @@ No design approval or release approval is recorded by this draft.
   failure mutants pass locally. They cannot become a hosted required
   CI gate through this normal specification PR. CI provenance prohibits
   edits to `.github/workflows/ci.yml`, `justfile` and CI executors.
+  Its 15 published SHA-256 values come from a receipt in the incoming
+  branch. They prove source and receipt consistency, not independent
+  security-owner authorization. A coordinated source and receipt update
+  can pass these checks without an approved reviewed-source anchor.
   A former draft added an immutable but unapproved upload action.
   The workflow-security gate rejected it, correctly. The action was
   removed without changing the allowlist.
 - **Check:** Separately review and land a trusted-base CI policy change
   that runs `verify_spec_evidence.py --check` from the canonical
   documentation job with its qualified test-only Python dependency.
+  Bind any claimed approved source to an independent trusted-base
+  source SHA or receipt digest, with a security-owner publication decision.
+  Protect that authority against coordinated source/receipt repinning.
   Verify all required native workflow-security tests and protected
   CI provenance at the new base. Keep this PR `do-not-merge` until
   the owner records that authorization and its exact check evidence.
