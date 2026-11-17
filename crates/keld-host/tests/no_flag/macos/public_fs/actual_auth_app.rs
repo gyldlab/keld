@@ -325,6 +325,31 @@ fn observation_time_left(
     Ok(deadline.saturating_duration_since(now))
 }
 
+// Emit only the case and required-phase presence flags on a failed gate.
+// The original phase journal stays on disk; no bearer values, endpoint URLs,
+// provider payloads, or free-form observer reports enter hosted CI output.
+fn phase_gate_diagnostic(
+    case: &Case,
+    status: &str,
+    present: [bool; 3],
+    report_count: usize,
+) -> String {
+    format!(
+        "KELD_KEL89_PHASE_GATE case={} status={} appReady={} pageReady={} appResult={} reports={}",
+        case.name, status, present[0], present[1], present[2], report_count
+    )
+}
+
+#[test]
+fn public_auth_phase_gate_diagnostic_identifies_missing_event() {
+    let message = phase_gate_diagnostic(&CASES[0], "timed-out", [true, false, true], 2);
+    assert_eq!(
+        message,
+        "KELD_KEL89_PHASE_GATE case=default-deny status=timed-out appReady=true pageReady=false appResult=true reports=2"
+    );
+    assert!(!message.contains("auth.token"));
+}
+
 fn await_phases(
     observation: &Observation,
     project: &Path,
@@ -348,6 +373,15 @@ fn await_phases(
                     std::sync::mpsc::RecvTimeoutError::Disconnected => "observer-disconnected",
                 };
                 persist_phase_status(project, status, &diagnostic_phases)?;
+                eprintln!(
+                    "{}",
+                    phase_gate_diagnostic(
+                        case,
+                        status,
+                        [app_ready.is_some(), page_ready.is_some(), result.is_some()],
+                        diagnostic_phases.len(),
+                    )
+                );
                 return Err(error.into());
             }
         };

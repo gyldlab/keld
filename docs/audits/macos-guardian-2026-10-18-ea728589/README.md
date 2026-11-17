@@ -12,8 +12,8 @@
 
 The two branches are not the same tree. The inventory deliberately compares
 their Git blobs without implying a merge or completed merged-tree acceptance.
-It continues the earlier [1,014-path source census](../source-census-2026-10-15/README.md);
-it does **not** replace that manifest or recount unrelated source as reviewed.
+This inventory covers only the Guardian paths listed below. It does not
+count unrelated source as reviewed.
 
 Included: the production module `crates/keld-runtime/src/macos_guardian.rs`, every
 tracked file under `crates/keld-runtime/src/macos_guardian/`, and the directly
@@ -155,8 +155,12 @@ An independent second read-only review of the *pre-owner generic*
 legitimate KGR1 constructor refusal. In `registered_guardian.rs:24-70`,
 failed birth re-observation, liveness-FD validation or child inspection enter
 `reject_proven_registration` (`:366-379`): it closes the only host liveness
-writer, performs bounded exact-Guardian child wait and uses only
-birth-attested group termination. `bootstrap.rs:193-214` sends the
+writer, polls the exact Guardian child for up to five seconds, and uses only
+birth-attested group termination. In `reap_pending_guardian`
+(`process_group.rs:449-500`), a polling timeout or `try_wait` error leads to a
+kill attempt followed by synchronous `Child::wait()`. The five-second deadline
+bounds only polling; the subsequent kill/wait has no enforced end-to-end bound.
+`bootstrap.rs:193-214` sends the
 `HOST_GROUP_RETAINED_ACK` **after** successful host owner construction.
 `registration_ack.rs:21-85` and `spawn_admission.rs:73-134` refuse Bun
 exec if the ACK/permit is missing or malformed. A failed cleanup signal
@@ -178,7 +182,7 @@ barrier-controlled test for the exact `registered_guardian.rs:51-52`
 an explicit test-coverage gap, **not** a demonstrated security defect.
 The distinct **post-construction ACK-write error** at
 `bootstrap.rs:201-212` also returns a typed error and invokes the already
-constructed owner's bounded shutdown; it does not return a successful
+constructed owner's shutdown; it does not return a successful
 `HostGuardian`. The real pre-exec Bun permit still requires that ACK. An
 independently controlled EPIPE/error cut before the ACK write is not
 demonstrated by the existing retained-ACK host-death test; record that native
@@ -207,3 +211,15 @@ corresponding pinned-main entry. Recount status and category columns without
 substituting PR diff size for architecture coverage. Add an independent
 reviewer and update this ledger only in a separate, correctly owned draft PR
 as the next scoped decisions are actually proved. Do **not** merge.
+
+## Errata (2026-11-17)
+
+- Removed the unsupported relative predecessor-census reference. This correction
+  does not change this report's scope, source pins, counts or historical receipts.
+- Corrected the rejected-registration cleanup description against pinned
+  `ea728589d0143df134c0f21fe5cf335240018d6a`,
+  `process_group.rs:449-500`: five seconds bounds polling only. Timeout and
+  inspection-error paths attempt a kill and then wait synchronously; no hard
+  end-to-end cleanup bound is established. No hang was reproduced for this
+  documentation correction. The separate post-ACK shutdown is not described as
+  end-to-end bounded either.
