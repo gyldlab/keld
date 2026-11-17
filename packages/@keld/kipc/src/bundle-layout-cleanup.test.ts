@@ -714,10 +714,10 @@ describe("layout resource ownership on failure", () => {
         async write(dir) {
           root = dir;
           const grandchild =
-            'import { writeFileSync, existsSync } from "node:fs";' +
+            'import { writeFileSync, renameSync, existsSync } from "node:fs";' +
             "writeFileSync(" +
             JSON.stringify(readyPath) +
-            ', "alive");' +
+            ", String(process.pid));" +
             "for (let i = 0; i < 3_000 && !existsSync(" +
             JSON.stringify(releasePath) +
             "); i++) await Bun.sleep(10);" +
@@ -725,8 +725,13 @@ describe("layout resource ownership on failure", () => {
             JSON.stringify(releasePath) +
             ')) throw new Error("descendant release gate not opened");' +
             "writeFileSync(" +
+            JSON.stringify(completedPath + ".pending") +
+            ', "released");' +
+            "renameSync(" +
+            JSON.stringify(completedPath + ".pending") +
+            ", " +
             JSON.stringify(completedPath) +
-            ', "released");';
+            ");";
           const parent = `import { existsSync } from "node:fs"; Bun.spawn([process.execPath, "-e", ${JSON.stringify(grandchild)}], { stdin: "ignore", stdout: "ignore", stderr: "inherit" }); for (let i = 0; i < 400 && !existsSync(${JSON.stringify(readyPath)}); i++) await Bun.sleep(10); if (!existsSync(${JSON.stringify(readyPath)})) throw new Error("descendant did not start"); console.log("direct child exited"); process.exit(0);`;
           await Bun.write(join(dir, "inherit-stderr.ts"), parent);
           return "inherit-stderr.ts";
@@ -768,16 +773,30 @@ describe("layout resource ownership on failure", () => {
           ? failure.retainedLayout
           : undefined;
       await finishLayoutTestOperation(operation, previousOwner);
-      // Joining the direct child does not join its detached descendant.
-      // Keep the release gate intact until the descendant acknowledges it.
-      for (let i = 0; i < 1_000 && !existsSync(completedPath); i++)
-        await Bun.sleep(10);
-      if (!existsSync(completedPath))
+      // On Unix, the live descendant must acknowledge the release. Windows
+      // can instead reap it with the direct parent; read-only PID observation
+      // and an outcome recheck distinguish that from a successful writer.
+      // Publish acknowledgement atomically before removing its release gate.
+      let acknowledgement:
+        Awaited<ReturnType<typeof observeNativeWriter>> | undefined;
+      try {
+        acknowledgement = await observeNativeWriter(readyPath, completedPath);
+      } catch (error) {
         throw Object.assign(
-          new Error("descendant did not acknowledge its release gate"),
+          new AggregateError(
+            [failure, error].filter((item) => item !== undefined),
+            "descendant release remains unverified",
+            { cause: failure ?? error },
+          ),
           { layoutOperation: operation, retainedAudit: audit },
         );
-      expect(readFileSync(completedPath, "utf8")).toBe("released");
+      }
+      if (acknowledgement.kind === "reaped") {
+        expect(process.platform).toBe("win32");
+        expectExited(acknowledgement.pid);
+      } else {
+        expect(acknowledgement.result).toBe("released");
+      }
       rmSync(audit, { recursive: true, force: true });
     }
   }, 25_000);
