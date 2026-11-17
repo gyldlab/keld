@@ -30,8 +30,21 @@ def exact_census(root: Path) -> list[dict[str, object]]:
     for pid, ppid, started, command in smoke.process_rows():
         if "keld-host" not in command and "bun" not in command:
             continue
-        executable = smoke.executable_of(pid)
-        if executable and Path(executable).is_relative_to(root):
+        try:
+            executable = smoke.executable_of(pid)
+        except OSError:
+            executable = None
+        if not executable:
+            try:
+                if smoke.definitely_exited(pid):
+                    continue
+            except OSError:
+                pass  # Failed observation is not proof that the candidate exited.
+            # Keep uncertainty in the census so both the cleanup check and its
+            # failure report fail closed without claiming this PID is owned.
+            result.append({"pid": pid, "ppid": ppid, "started": started,
+                           "executable": None, "identity": "unknown"})
+        elif Path(executable).is_relative_to(root):
             result.append({"pid": pid, "ppid": ppid, "started": started,
                            "executable": executable})
     return result
@@ -146,7 +159,7 @@ def refusal(evidence: smoke.Evidence, app: Path, kind: str, hostile_path: Path) 
                           "installed dev-lease refusal changed inherited pipe status flags")
             evidence.record(step=kind + "-unchanged-pipe", before=before_flags, after=actual_flags)
         observed = exact_census(app)
-        smoke.require(not observed, f"{kind}: owned executable survived rejection: {observed}")
+        smoke.require(not observed, f"{kind}: executable survived or candidate identity is unverified: {observed}")
         return {"case": kind, "pass": True, "exit_code": status, "stderr": stderr,
                 "owned_processes_after": observed}
     finally:
