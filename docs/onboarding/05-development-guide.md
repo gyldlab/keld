@@ -675,41 +675,58 @@ Agent Skills are portable instruction/skill formats, not a common lifecycle-hook
 contract. Cursor's optional Claude-hook compatibility does not establish equivalent
 Codex/Claude/Cursor identity, loading or stopping behavior.
 
-Generate registration with the Python interpreter from the prerequisites, from this
-reviewed checkout:
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:5d5f25f06d15c44a35615a87a67e08eb723dd7a25f0ea5823ecb495447f26788 -->
+
+Generate registration from this reviewed checkout with a trusted absolute Git executable
+path outside the checkout. Review that executable and its installation before use;
+registration binds its path, not its binary contents. For example, on Linux:
 
 ```text
-python -B tools/session_closeout_hook.py --print-config --harness claude
-python -B tools/session_closeout_hook.py --print-config --harness cursor
+python3 -B tools/session_closeout_hook.py --print-config --harness codex --git-executable /usr/bin/git
+python3 -B tools/session_closeout_hook.py --print-config --harness claude --git-executable /usr/bin/git
+python3 -B tools/session_closeout_hook.py --print-config --harness cursor --git-executable /usr/bin/git
 ```
 
-Use `python3` instead of `python` on macOS/Linux. The generator selects the running
-OS; `--platform windows` or `--platform posix` selects another target explicitly.
+On Windows, use the prerequisite Python interpreter and the absolute path of your trusted
+Git installation. Generate on the machine that will run the hook. The generator selects
+the running OS; `--platform windows` or `--platform posix` selects command syntax only.
 It prints JSON without changing settings. Save UTF-8 output and merge its `hooks`
 entries into the project configuration below, preserving existing settings/hooks.
 Review commands before enabling them. Do not install these project handlers globally.
 
 | Client | Project registration | Native identity | Completion behavior |
 |---|---|---|---|
-| Codex | tracked `.codex/hooks.json` | session_id / turn_id | block once; repeated failure terminates with explicit handoff |
+| Codex | `.codex/hooks.json` | session_id / turn_id | block once; repeated failure terminates with explicit handoff |
 | Claude Code >=2.1.196 | `.claude/settings.local.json` | session_id / prompt_id | block once; repeated failure terminates with explicit handoff |
 | Cursor | `.cursor/hooks.json` | conversation_id / generation_id | bounded repair follow-up; no terminal admission guarantee |
 
-Claude/Cursor registration is generated locally for the OS. Their documented schemas
-have no Codex `commandWindows` override. Keep machine-specific registration out of
-commits; regenerate when changing OS or reviewed source. Codex's checked-in registration
-contains both native command variants. No additional Python packages are required.
-All registrations pin exact validator/adapter source hashes: changed bytes require
-review and regeneration, followed by the client's normal trust/loading check.
+All clients require locally generated registration. Keep machine-specific registration
+out of commits. The checked-in Codex registration is a disabled template: without
+`--git-executable`, the bootstrap fails closed and requests local generation before
+running Git or loading checkout modules. Replace existing registrations to receive
+this protection. All bootstrap and helper Git calls use the selected absolute path.
+No additional Python packages are required. All registrations pin exact source hashes:
+changed bytes require review and regeneration, followed by the client's normal trust/loading
+check. Regenerate when changing OS or Git installation.
 
-Claude uses exact argument execution; Cursor uses its native command string. Cursor
+
+
+<!-- /coderabbit-ai-generated:v1 -->Claude uses exact argument execution; Cursor uses its native command string. Cursor
 receives a session-start pointer and refreshes a small `current.json` before each prompt
 under the Git common directory's session namespace. It contains IDs and receipt
 instructions, never prompts or transcripts, and does not activate a task by itself.
 Codex and Claude prompt hooks additionally emit the verified primary
 `.keld-work/sessions/<session-id>/` pointer without creating it. The hash-bound hook
 registration includes the workspace resolver, so a changed resolver refuses until the
-tracked Codex configuration is regenerated and reviewed. Historical closeout baselines
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:4ec121ca7bf9bd58703ac755ce889084269fca0fcfba6975c33f3ebc304c7dc7 -->
+
+local configuration is regenerated and reviewed.
+
+<!-- /coderabbit-ai-generated:v1 --> Historical closeout baselines
 and receipts remain under the Git common directory in this slice.
 The adapter rejects ambiguous/foreign workspace roots. The validator remains read-only.
 The adapter requests repair only when the native `loop_count` is zero and configures

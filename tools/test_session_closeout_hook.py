@@ -42,6 +42,52 @@ class HookTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
+    def test_registration_rejects_checkout_git(self):
+        local_git = Path(hook.__file__).parent / 'fake-git'
+        local_git.write_bytes(b'not an executable')
+        self.addCleanup(local_git.unlink)
+        with self.assertRaisesRegex(ValueError, 'outside the checkout'):
+            hook.configuration(git_executable=str(local_git.resolve()))
+        with self.assertRaisesRegex(ValueError, 'absolute'):
+            hook.configuration(git_executable='git')
+
+    def test_unconfigured_registration_fails_closed(self):
+        handler = hook.configuration('claude')['hooks']['Stop'][0]['hooks'][0]
+        result = subprocess.run([sys.executable, *handler['args']], cwd=self.repo,
+                                input='{}', capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        answer = json.loads(result.stdout)
+        self.assertIs(answer['continue'], False)
+        self.assertIn('--git-executable', answer['stopReason'])
+
+    def test_registered_git_survives_hostile_path_for_all_helpers(self):
+        source_root = Path(hook.__file__).resolve().parent.parent
+        (self.repo / 'tools').mkdir()
+        for name in ('session_closeout', 'workspace', 'session_closeout_hook'):
+            shutil.copyfile(source_root / 'tools' / (name + '.py'),
+                            self.repo / 'tools' / (name + '.py'))
+        trusted_git = str(Path(shutil.which('git')).resolve())
+        config = hook.configuration('claude', git_executable=trusted_git)
+        handler = config['hooks']['Stop'][0]['hooks'][0]
+        # A real child process must validate an activated receipt, exercising
+        # bootstrap, adapter, workspace resolver and closeout validator Git calls.
+        self.publish('claude-native', 'p')
+        hostile = self.repo / 'git'
+        hostile.write_text('#!/bin/sh\necho SUBSTITUTED_GIT >&2\nexit 73\n')
+        hostile.chmod(0o755)
+        if os.name == 'nt':
+            # A native executable is necessary to exercise Windows CreateProcess.
+            shutil.copyfile(sys.executable, self.repo / 'git.exe')
+        (self.repo / '.git/info/exclude').write_text('tools/\ngit\ngit.exe\n')
+        payload = dict(self.payload, session_id='native', prompt_id='p')
+        result = subprocess.run([sys.executable, *handler['args']], cwd=self.repo,
+                                env=dict(os.environ, PATH=str(self.repo)),
+                                input=json.dumps(payload), capture_output=True,
+                                text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Local closeout evidence accepted', json.loads(result.stdout).get('systemMessage', result.stdout))
+        self.assertNotIn('SUBSTITUTED_GIT', result.stdout + result.stderr)
+
     def test_registered_commands_execute_and_reject_changed_sources(self):
         import hashlib
         import base64
@@ -57,6 +103,7 @@ class HookTests(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
         config = json.loads((root / '.codex/hooks.json').read_text(encoding='utf-8'))
         self.assertEqual(config, hook.configuration())
+        config = hook.configuration(git_executable=str(Path(shutil.which('git')).resolve()))
         self.assertEqual(set(config['hooks']), {'UserPromptSubmit', 'Stop'})
         handlers = [config['hooks'][event][0]['hooks'][0] for event in config['hooks']]
         self.assertEqual(handlers[0], handlers[1])
@@ -303,7 +350,7 @@ class HookTests(unittest.TestCase):
                 for name in ('session_closeout', 'workspace', 'session_closeout_hook'):
                     shutil.copyfile(source_root / 'tools' / (name + '.py'),
                                     self.repo / 'tools' / (name + '.py'))
-                config = hook.configuration(harness)
+                config = hook.configuration(harness, git_executable=str(Path(shutil.which("git")).resolve()))
                 if harness == 'claude':
                     handler = config['hooks']['Stop'][0]['hooks'][0]
                     command = [handler['command'], *handler['args']]

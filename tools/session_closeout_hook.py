@@ -103,7 +103,7 @@ def claude_response(payload):
 
 
 def git_context(root):
-    result = subprocess.run(["git", "-C", str(session_closeout.absolute(root)), "rev-parse", "--path-format=absolute",
+    result = subprocess.run([session_closeout.GIT_EXECUTABLE, "-C", str(session_closeout.absolute(root)), "rev-parse", "--path-format=absolute",
                              "--git-common-dir", "--show-toplevel"], check=True, capture_output=True,
                             text=True, encoding="utf-8", timeout=30)
     lines = result.stdout.splitlines()
@@ -198,7 +198,7 @@ def cursor_response(payload):
         return {"continue": False, "user_message": "Closeout hook failed: " + str(error)}
 
 
-def configuration(harness="codex", platform=None):
+def configuration(harness="codex", platform=None, git_executable=None):
     """Print project registration for the selected client and OS, without installing.
 
     Both source modules are pinned before execution. Base64 transports Python through
@@ -207,11 +207,22 @@ def configuration(harness="codex", platform=None):
     session_closeout.require(harness in {"codex", "claude", "cursor"}, "unsupported harness")
     session_closeout.require(platform in {None, "windows", "posix"}, "unsupported platform")
     selected = platform or ("windows" if os.name == "nt" else "posix")
+    if git_executable is not None:
+        candidate = session_closeout.absolute(git_executable).resolve(strict=True)
+        checkout = Path(__file__).resolve().parent.parent
+        session_closeout.require(not candidate.is_relative_to(checkout),
+                                 "Git executable must be outside the checkout")
+        session_closeout.require(candidate.is_file() and os.access(candidate, os.X_OK),
+                                 "Git executable must be an executable file")
+        git_executable = str(candidate)
     specs = [(name, hashlib.sha256(Path(__file__).with_name(name + ".py").read_bytes()).hexdigest())
              for name in ("session_closeout", "workspace", "session_closeout_hook")]
     bootstrap = """import hashlib,json,pathlib,subprocess,sys,types
 try:
- root=pathlib.Path(subprocess.check_output(['git','rev-parse','--show-toplevel'],text=True,encoding='utf-8').strip())
+ git=GIT_PATH
+ if git is None:
+  raise ValueError('Generate local registration with --git-executable and a trusted absolute Git path outside the checkout')
+ root=pathlib.Path(subprocess.check_output([git,'rev-parse','--show-toplevel'],text=True,encoding='utf-8',timeout=30).strip())
  specs=SPECS
  blobs=[(name,(root/'tools'/(name+'.py')).read_bytes(),digest) for name,digest in specs]
  if any(hashlib.sha256(blob).hexdigest()!=digest for name,blob,digest in blobs):
@@ -221,6 +232,8 @@ try:
   module.__file__=str(root/'tools'/(name+'.py'))
   sys.modules[name]=module
   exec(compile(blob,module.__file__,'exec'),module.__dict__)
+  if name=='session_closeout':
+   module.GIT_EXECUTABLE=git
  sys.argv=['session_closeout_hook.py','--harness',HARNESS]
  sys.exit(sys.modules['session_closeout_hook'].main())
 except Exception as error:
@@ -229,7 +242,7 @@ except Exception as error:
   print('HANDOFF REQUIRED: repair trusted closeout registration. '+str(error),file=sys.stderr)
   sys.exit(1)
  print(json.dumps(failure))
-""".replace("SPECS", repr(specs)).replace("HARNESS", repr(harness))
+""".replace("SPECS", repr(specs)).replace("HARNESS", repr(harness)).replace("GIT_PATH", repr(git_executable))
     code = "import base64;exec(base64.b64decode('" + base64.b64encode(bootstrap.encode()).decode() + "'))"
     posix, windows = "python3 -I -B -c \"" + code + "\"", "python -I -B -c \"" + code + "\""
     if harness == "claude":
@@ -250,11 +263,12 @@ except Exception as error:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--print-config", action="store_true")
+    parser.add_argument("--git-executable", help="Trusted absolute Git path outside this checkout; omitted emits a disabled template")
     parser.add_argument("--harness", choices=("codex", "claude", "cursor"), default="codex")
     parser.add_argument("--platform", choices=("windows", "posix"))
     args = parser.parse_args()
     if args.print_config:
-        print(json.dumps(configuration(args.harness, args.platform), indent=2))
+        print(json.dumps(configuration(args.harness, args.platform, args.git_executable), indent=2))
         return 0
     try:
         # Cursor's Windows CLI can prefix two UTF-8 BOMs. Strip only leading

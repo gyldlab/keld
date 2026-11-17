@@ -72,7 +72,7 @@ def task_name(value):
 
 
 def git(cwd, *args, check=True):
-    result = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, timeout=30)
+    result = subprocess.run([session_closeout.GIT_EXECUTABLE, "-C", str(cwd), *args], capture_output=True, timeout=30)
     if check and result.returncode:
         raise WorkspaceError("Git " + args[0] + " failed. Inspect repository state before retrying: " +
                              result.stderr.decode("utf-8", errors="replace").strip())
