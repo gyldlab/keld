@@ -67,3 +67,71 @@ fn a_same_volume_subdirectory_is_not_a_drive_anchor() {
         .expect("actual drive root");
     require_volume_root_handle(&root).expect("actual volume root positive control");
 }
+
+/// Reopening a bare DOS path must never resolve to a different file than the
+/// retained verbatim handle. The ordinary sibling remains a positive control.
+#[test]
+fn fixed_local_dos_path_rejects_verbatim_trailing_dot_component() {
+    let fixture = tempfile::tempdir().expect("private fixed-local fixture");
+    let normal = fixture.path().join("receipt");
+    std::fs::write(&normal, b"ordinary-file").expect("normal sibling");
+    let verbatim = fixture
+        .path()
+        .canonicalize()
+        .expect("Win32 verbatim directory")
+        .join("receipt.");
+    let special = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&verbatim)
+        .expect("create literal trailing-dot NTFS filename");
+    let admitted = super::super::fixed_local_dos_path(&special);
+    assert!(
+        admitted.is_err(),
+        "a normalized DOS path would reopen the sibling instead of the retained file: {admitted:?}"
+    );
+    let spaced = fixture
+        .path()
+        .canonicalize()
+        .expect("verbatim directory")
+        .join("spaced ");
+    let space_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&spaced)
+        .expect("create trailing-space NTFS filename");
+    assert!(
+        super::super::fixed_local_dos_path(&space_file).is_err(),
+        "a trailing-space component must fail closed"
+    );
+
+    let odd_parent = fixture
+        .path()
+        .canonicalize()
+        .expect("verbatim directory")
+        .join("parent.");
+    std::fs::create_dir(&odd_parent).expect("create verbatim trailing-dot directory");
+    let child = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(odd_parent.join("child"))
+        .expect("create child under unusual parent");
+    assert!(
+        super::super::fixed_local_dos_path(&child).is_err(),
+        "a nonfinal trailing-dot directory component must fail closed"
+    );
+
+    let ordinary = OpenOptions::new()
+        .read(true)
+        .open(&normal)
+        .expect("open ordinary sibling");
+    let stable = super::super::fixed_local_dos_path(&ordinary)
+        .expect("ordinary fixed-local path still allowed");
+    assert_eq!(
+        std::fs::read(stable).expect("reopen ordinary retained file"),
+        b"ordinary-file"
+    );
+}

@@ -84,7 +84,23 @@ pub(crate) fn fixed_local_dos_path(handle: &File) -> io::Result<PathBuf> {
             "retained handle is not on a fixed local volume",
         ));
     }
-    Ok(PathBuf::from(OsString::from_wide(&path[offset..])))
+    // Dropping the verbatim prefix is safe only if ordinary Win32 parsing
+    // cannot trim a trailing dot/space from any component. Otherwise later
+    // path-based opens could select a different object than this retained handle.
+    let stable = &path[offset..];
+    let ends_with_dot_or_space = |unit: u16| unit == u16::from(b'.') || unit == u16::from(b' ');
+    if stable
+        .last()
+        .is_some_and(|&unit| ends_with_dot_or_space(unit))
+        || stable
+            .windows(2)
+            .any(|pair| ends_with_dot_or_space(pair[0]) && pair[1] == u16::from(b'\\'))
+    {
+        return Err(unsupported(
+            "retained handle path has a component that ordinary Windows path parsing changes",
+        ));
+    }
+    Ok(PathBuf::from(OsString::from_wide(stable)))
 }
 
 fn normalized_dos_path(handle: &File) -> io::Result<Vec<u16>> {

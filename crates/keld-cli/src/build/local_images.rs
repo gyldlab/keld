@@ -291,6 +291,8 @@ pub(super) fn prepare_request(
 ) -> Result<PreparedLocalPair, BuildError> {
     let app_root = request.app_root.as_path();
     let authoring = windows_inputs::CapturedInputs::open(app_root)?.capture(app_root)?;
+    // The archive must reopen the same admitted project, not a rebound alias.
+    let stable_app_root = authoring.stable_root().to_owned();
     let app = &authoring.app;
     let key_path = request.release_public_key.as_path();
     let key_parent = key_path
@@ -315,8 +317,9 @@ pub(super) fn prepare_request(
         &request.certificate_thumbprint,
         &request.publisher_scope,
     )?;
-    let session = request.source.session.clone();
     let source = local_source::prepare(request.source, initial_install)?;
+    // Never reuse the caller's mutable drive alias after the source owner pins it.
+    let session = source.session.clone();
     let images = session.join("local-test-images");
     boot::create_windows_stage_root(&images)
         .map_err(|error| refuse("local images directory", error))?;
@@ -362,7 +365,7 @@ pub(super) fn prepare_request(
         helper,
         source,
         session,
-        app_root: app_root.to_owned(),
+        app_root: stable_app_root,
         _image_directories: image_directories,
     })
 }

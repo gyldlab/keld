@@ -173,7 +173,7 @@ impl CapturedInputs {
             config_source: source.to_owned(),
             permissions: policy,
             app,
-            _inputs: self,
+            inputs: self,
         })
     }
 }
@@ -185,10 +185,15 @@ pub(super) struct CapturedAuthoring {
     pub(super) app: config::AppConfig,
     config_source: String,
     permissions: Vec<u8>,
-    _inputs: CapturedInputs,
+    inputs: CapturedInputs,
 }
 
 impl CapturedAuthoring {
+    /// The authoring input owner retains the handles behind this fixed-local path.
+    pub(super) fn stable_root(&self) -> &Path {
+        &self.inputs.root
+    }
+
     /// Stage only the two framework-owned authoring outputs. The caller must
     /// separately supply and admit the complete module/Bun/image inventory.
     pub(super) fn archive_members(
@@ -515,6 +520,10 @@ fn require_windows_authoring_paths(entry: &str, renderer: Option<&str>) -> Resul
 mod windows_local_volume_tests {
     use super::*;
     use std::process::{Command, ExitStatus};
+    use std::sync::Mutex;
+
+    // Never allow two native fixture lifecycles to share the test-only Z: alias.
+    static Z_MAPPING_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn retained_local_directory_returns_a_stable_fixed_dos_path() {
@@ -538,6 +547,75 @@ mod windows_local_volume_tests {
         assert_eq!(stable, stable_root.join("new-install").join("updates"));
         assert!(!stable.exists());
         assert!(stable_local_target_path(&owned.path().join("..").join("escape")).is_err());
+    }
+
+    /// The exact authoring-owner path forwarded to the direct image/archive
+    /// compiler must not change identity after a SUBST alias becomes SMB.
+    /// This tests the native custody boundary, not a signed image build.
+    #[test]
+    #[ignore = "requires a controlled SMB share and a free Z: drive letter"]
+    fn captured_authoring_root_survives_subst_to_smb_rebind() {
+        let _mapping_guard = Z_MAPPING_TEST_LOCK.lock().expect("Z: fixture lock");
+        let remote_share =
+            std::env::var("KELD_TEST_REBIND_SHARE").expect("controlled SMB rebind share");
+        let owned = tempfile::tempdir().expect("private local authoring fixture");
+        let config = "export default {name:'Input check',id:'com.example.check',version:'1.0.0',entry:'main.js',renderer:'index.html'};";
+        std::fs::write(owned.path().join("keld.config.ts"), config).expect("config fixture");
+        std::fs::write(
+            owned.path().join("keld.permissions.jsonc"),
+            br#"{"profile":"strict"}"#,
+        )
+        .expect("policy fixture");
+        assert!(!Path::new(r"Z:\").exists(), "Z: must be unused");
+        assert!(
+            !net_use(&["use", "Z:"]).expect("net use query").success(),
+            "Z: must have no existing network connection"
+        );
+        let mut mapping = TemporaryMappedDrive {
+            kind: MappingKind::None,
+        };
+        assert!(
+            subst(&["Z:", owned.path().to_str().expect("local Unicode fixture")])
+                .expect("subst executable")
+                .success(),
+            "create one-use local alias"
+        );
+        mapping.kind = MappingKind::Subst;
+        let captured = CapturedInputs::open(Path::new(r"Z:\"))
+            .expect("local project admission")
+            .capture(Path::new(r"Z:\"))
+            .expect("retained authoring input");
+        let stable = captured.stable_root().to_owned();
+        assert!(
+            !stable.starts_with(r"Z:\"),
+            "must not retain mutable DOS alias"
+        );
+        assert_eq!(
+            stable.canonicalize().expect("stable captured project"),
+            owned.path().canonicalize().expect("original project")
+        );
+        assert!(
+            subst(&["Z:", "/D"]).expect("subst removal").success(),
+            "remove alias with original project handles retained"
+        );
+        mapping.kind = MappingKind::None;
+        assert!(
+            net_use(&["use", "Z:", remote_share.as_str(), "/persistent:no"])
+                .expect("net use rebind")
+                .success(),
+            "rebind same drive letter to SMB"
+        );
+        mapping.kind = MappingKind::Smb;
+        assert!(
+            pin_input_root(Path::new(r"Z:\")).is_err(),
+            "remote alias must now fail closed"
+        );
+        assert_eq!(captured.stable_root(), stable.as_path());
+        assert_eq!(
+            std::fs::read_to_string(stable.join("keld.config.ts")).expect("original bytes"),
+            config,
+            "archive/compile continuation must use the original captured project"
+        );
     }
 
     fn system32_command(executable: &str, arguments: &[&str]) -> std::io::Result<ExitStatus> {
@@ -589,6 +667,7 @@ mod windows_local_volume_tests {
     #[test]
     #[ignore = "requires a controlled SMB share and a free Z: drive letter"]
     fn mapped_smb_and_rebound_drive_handles_fail_closed() {
+        let _mapping_guard = Z_MAPPING_TEST_LOCK.lock().expect("Z: fixture lock");
         let remote_share = std::env::var("KELD_TEST_SMB_SHARE").expect("mapped SMB share fixture");
         let rebound_share =
             std::env::var("KELD_TEST_REBIND_SHARE").expect("second SMB share fixture");
@@ -661,6 +740,7 @@ mod windows_local_volume_tests {
     #[test]
     #[ignore = "requires a local D: fixture, a controlled SMB share and a free Z: drive letter"]
     fn local_alias_rebind_keeps_the_retained_object_on_its_fixed_volume() {
+        let _mapping_guard = Z_MAPPING_TEST_LOCK.lock().expect("Z: fixture lock");
         let local_directory =
             std::env::var("KELD_TEST_LOCAL_DIRECTORY").expect("local directory fixture");
         let remote_share =

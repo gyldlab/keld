@@ -667,6 +667,8 @@ fn run_captured_with_options(
 /// This private value cannot be deserialized or converted to release/Strict authority.
 pub(super) struct LocalSourceBuildObservation {
     source_root: PathBuf,
+    // The retained source-owner pins own this stable output namespace.
+    pub(super) session: PathBuf,
     pub(super) source_commit: String,
     pub(super) source_sha256: [u8; 32],
     cargo_lock_sha256: [u8; 32],
@@ -1554,6 +1556,7 @@ pub(super) fn prepare(
     budget.check()?;
     Ok(LocalSourceBuildObservation {
         source_root: source,
+        session: request.session,
         source_commit: request.commit,
         source_sha256: source_digest.finalize().into(),
         cargo_lock_sha256: cargo_lock,
