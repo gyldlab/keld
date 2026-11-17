@@ -352,11 +352,13 @@ fn verify_native_same_uri_overlap(
         && child["data"]["source_kind"] == 1
         && child["data"]["header"] == json!({"state":"absent"})
         && child["data"]["held_iframe"] == true
+        && child["data"]["owned_fixture"] == true
         && host_start["data"]["uri"] == receipt["uri"]
         && host_start["data"]["header"]["state"] == "present"
         && host_resource["data"]["uri"] == receipt["uri"]
         && host_resource["data"]["resource_context"] == 1
         && host_resource["data"]["source_kind"] == 1
+        && host_resource["data"]["owned_fixture"] == true
         && host_resource["data"]["header"]["state"] == "present"
         && host_resource["data"]["header"]["value"].as_str() == Some(attempt)
         && host_start["data"]["header"]["value"].as_str() == Some(attempt)
@@ -634,13 +636,13 @@ mod ac06_overlap_receipt_tests {
             "data":{"uri":uri,"resource_context":1,"source_kind":1,"real_deferral":true,"header":{"state":"absent"}}});
         let child = json!({"phase":"race-child","kind":"resource-request","seq":17,
             "data":{"uri":uri,"resource_context":1,"source_kind":1,
-                "header":{"state":"absent"},"held_iframe":true}});
+                "header":{"state":"absent"},"held_iframe":true,"owned_fixture":true}});
         let top = json!({"phase":"race-host","kind":"navigation-starting","seq":18,
             "data":{"uri":uri,"navigation_id":6,
                 "header":{"state":"present","value":nonce}}});
         let resource = json!({"phase":"race-host","kind":"resource-request","seq":19,
             "data":{"uri":uri,"resource_context":1,"source_kind":1,
-                "header":{"state":"present","value":nonce}}});
+                "header":{"state":"present","value":nonce},"owned_fixture":true}});
         let released = json!({"phase":"race-host","kind":"race-child-released","seq":20,
             "data":{"completed":true}});
         let frame_done = json!({"phase":"race-host","kind":"frame-navigation-completed","seq":21,
@@ -1076,6 +1078,40 @@ mod ac06_overlap_receipt_tests {
             check(&foreign_host_nonce).is_err(),
             "stale Host resource nonce accepted"
         );
+    }
+
+    #[test]
+    fn reject_native_response_not_routed_to_owned_fixture() {
+        let mut good = good_receipt_events();
+        for index in [2, 4] {
+            good[index]["data"]["owned_fixture"] = json!(true);
+        }
+        assert!(
+            check(&good).is_ok(),
+            "owned native DOCUMENT response was refused"
+        );
+
+        // The callback records whether the actual native responder selected
+        // the owned 200 response rather than the denied 403 response. A matching
+        // URI/header alone must not substitute for this response-route witness.
+        for (label, index) in [("iframe", 2), ("Host", 4)] {
+            let mut refused = good.clone();
+            refused[index]["data"]["owned_fixture"] = json!(false);
+            assert!(
+                check(&refused).is_err(),
+                "{label} 403/foreign responder was accepted as an owned response"
+            );
+
+            let mut missing = good.clone();
+            missing[index]["data"]
+                .as_object_mut()
+                .expect("sample request")
+                .remove("owned_fixture");
+            assert!(
+                check(&missing).is_err(),
+                "{label} response without a native owned-route witness was accepted"
+            );
+        }
     }
 
     #[test]
