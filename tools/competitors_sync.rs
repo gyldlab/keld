@@ -464,6 +464,7 @@ mod tests {
         fs::create_dir(&origin).expect("origin directory");
         fs::create_dir(&dest).expect("checkout directory");
         git(&origin, &["init", "--initial-branch=main"]);
+        git(&origin, &["config", "maintenance.auto", "false"]);
         git(
             &origin,
             &[
@@ -479,6 +480,7 @@ mod tests {
         );
         let sha = git(&origin, &["rev-parse", "HEAD"]).trim().to_string();
         git(&dest, &["init"]);
+        git(&dest, &["config", "maintenance.auto", "false"]);
         git(
             &dest,
             &["remote", "add", "origin", origin.to_str().expect("path")],
