@@ -265,14 +265,14 @@ graph and the protected owner census under the existing leases. The bounded
 canonical list contains only new exclusively owned `{sha256,length}` objects.
 Existing shared or live-referenced blobs MUST NOT appear in the list.
 Before sealing this plan or publishing a new recovery journal, inspect
-the old protected `current`, pending-operation pointer, ordinary D-23
-retirement intent and `generations/<oldSequence+1>.json` under the
+the old protected `current`, pending-operation pointer, both ordinary D-23
+retirement modes, unreferenced blobs, and `generations/<oldSequence+1>.json` under the
 repository lease. A foreign pending pointer refuses new recovery.
-If an earlier ordinary refresh left an uncommitted N+1 generation
-or its retirement intent, finish only D-24's ordinary retirement.
+If an earlier ordinary refresh left an uncommitted N+1 generation,
+blob-only objects, or its retirement intent, finish only D-24's applicable retirement.
 Require D-24's exact old state, owner, digest, previous-generation
 link, normal epoch, blob unreachability and durable intent evidence.
-Verify N+1 and the ordinary intent absent before recovery preparation.
+Verify N+1, all unreferenced blobs and the ordinary intent absent before recovery preparation.
 An ambiguous, foreign or invalid orphan MUST halt without creating
 the recovery journal or pointer. Never adopt it as recovery's successor.
 After this cleanup, repeat the protected owner census and derive the
@@ -403,8 +403,8 @@ Reject a stale directive or a changed replacement without changing the establish
 
 | Last durable state | Next permitted action |
 |---|---|
-| No journal and no pointer | Established state remains authoritative. Discard only authenticated unreferenced owned preparation objects. |
-| Before manual journal, no pointer, ordinary N+1 orphan or intent | Finish exact D-24 ordinary retirement under the repository lease. Require verified N+1 and intent absence before writing the recovery journal. Ambiguous state halts. |
+| No journal, no pointer, no ordinary orphan or intent, and no unreferenced blobs | Established state remains authoritative. No retirement is needed. |
+| Before manual journal, no pointer, ordinary N+1 orphan, blob-only residue or either ordinary intent | Finish exact D-24 retirement under the repository lease. Verify N+1, D-23 intent, and unreferenced blobs absent before writing the recovery journal. Ambiguous state halts without deletion. |
 | `prepared`, old metadata current, directive valid | Reverify the original authorization and all source/policy bindings, then commit or refuse. |
 | `prepared`, old metadata current, directive expired | Verify no trust or application effect. Durably mark `aborted`. Retire only present exact planned preparation under a D-23 intent. Clear the pointer after old-state verification. |
 | `prepared`, new metadata current | Match the recorded destination generation. Advance the journal without repeating the epoch change. |
