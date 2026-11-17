@@ -1199,7 +1199,6 @@ impl std::error::Error for WindowsClaimantRefusal {
 }
 
 mod claimant_identity;
-#[cfg(test)]
 use claimant_identity::same_kernel_object;
 use claimant_identity::{
     ProcessObservation, bind_observed_claimant, process_creation_time, process_in_job,
@@ -2032,7 +2031,9 @@ impl WindowsProcessJob {
     ///
     /// The Job handle stays open throughout termination and observation. Waiting on
     /// the host alone is insufficient because descendants may outlive it; the final
-    /// OS accounting read must report zero active processes.
+    /// OS accounting read must report zero active processes. The borrowed host
+    /// handle must name the retained process object even after that object exits:
+    /// matching its numeric PID alone is not an ownership proof.
     ///
     /// # Errors
     ///
@@ -2066,6 +2067,18 @@ impl WindowsProcessJob {
                 "the admitted host process handle is absent",
             ));
         };
+        let same_host = same_kernel_object(retained_host, direct_host.raw()).map_err(|source| {
+            WindowsHostJobError {
+                phase: "attempt Job direct-host object comparison",
+                source,
+            }
+        })?;
+        if !same_host {
+            return Err(WindowsHostJobError::contract(
+                "attempt Job termination",
+                "direct-host process object differs from the exact host admitted to this Job",
+            ));
+        }
         // SAFETY: the Job owner retains the exact admitted host process handle.
         match unsafe { WaitForSingleObject(retained_host, 0) } {
             WAIT_OBJECT_0 => {

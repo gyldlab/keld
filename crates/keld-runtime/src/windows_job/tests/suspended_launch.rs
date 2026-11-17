@@ -4,10 +4,11 @@
 
 use std::ffi::OsString;
 use std::path::Path;
+use std::time::Duration;
 
 use super::{
-    WindowsJobMembership, WindowsLaunchedProcess, WindowsProcessJob, WindowsSuspendedChild,
-    system32,
+    WindowsJobMembership, WindowsJobProcess, WindowsLaunchedProcess, WindowsProcessJob,
+    WindowsSuspendedChild, system32,
 };
 
 /// A same-token `cmd.exe /d /c exit 7`, created suspended and not recorded.
@@ -69,6 +70,43 @@ fn a_membership_proof_must_name_both_the_process_id_and_the_creation_time() {
         .resume(&membership)
         .expect("the real proof resumes the launch");
     assert_eq!(launched.wait(10_000).expect("the launch exits"), 7);
+}
+
+#[test]
+fn a_retired_host_cannot_be_replaced_by_a_foreign_process_handle_with_its_id() {
+    let mut attempt = WindowsProcessJob::create().expect("create an attempt Job");
+    let mut host =
+        WindowsLaunchedProcess::record(same_token_exit_command()).expect("record the host");
+    let membership = attempt
+        .assign_child(host.child())
+        .expect("assign the exact host before resume");
+    host.resume(&membership).expect("resume the host");
+    assert_eq!(host.wait(10_000).expect("the original host exits"), 7);
+
+    // Keep the original process object pinned while the foreign object is live.
+    // This seam models a future caller incorrectly carrying the old PID together
+    // with an unrelated process handle, even when the original host has exited.
+    let foreign =
+        WindowsLaunchedProcess::record(same_token_exit_command()).expect("record the outsider");
+    let borrowed = WindowsJobProcess {
+        process: foreign.child().process_handle(),
+        process_id: host.child().id(),
+    };
+    let error = attempt
+        .terminate_and_wait(borrowed, Duration::from_secs(10))
+        .expect_err("an old host PID never authenticates an unrelated process object");
+    assert!(
+        error
+            .to_string()
+            .contains("direct-host process object differs"),
+        "{error}"
+    );
+    assert!(
+        !foreign
+            .has_exited()
+            .expect("query the unrelated suspended process"),
+        "refusing the foreign handle must not terminate that process"
+    );
 }
 
 #[test]
