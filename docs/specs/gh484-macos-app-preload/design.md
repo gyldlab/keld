@@ -105,20 +105,57 @@ An admitted JS top-level exception logs Electron's exact prefix and error, then 
 original trusted script requests a bind with a native receipt that can be asynchronous; first-inline eligibility is unproved. **Owner gate:** KEL-142 currently accepts one trusted nonce and rejects a repeated bind; #540/#542 must approve **two independently minted, non-reused per-world credentials under one document generation**, with explicit native
 handler/controller/realm registration and revoke/rebind ownership, or reapprove a changed v2 envelope. **Initial** app/trusted bind is authenticated by native world/frame/qualified document and mints only its own credential once; later effect-bearing messages require both a live stored binding **and** supplied matching credential. The app/page never gets the
 trusted nonce or mints generation; until an approved app-role bind exists, refuse app v2 dispatch.
-3. **Install Option A page shape and run real preload in app world (candidate only):** a fixed `AtDocumentStart` **page-world** `WKUserScript` could predeclare exactly four callable names and copied/frozen canonical `process` facts **before the first inline script**, but the **page→app ingress is NOT yet authorized**: the F0 raw page-native handler conflicts
-with current AC-17. GH484/KEL-142 must approve Q-1 A1 (a different supported route that preserves AC-17) or explicitly review A2 (data-only untrusted ingress with an AC-17 amendment). Until then, **no production effect-bearing bridge is allowed**. Independently execute the **unmodified** admitted preload in the separate app world, record its actual
-`contextBridge.exposeInMainWorld('electron', actualMethods)` registration and prove its applicable adaptive-colors `localStorage` mutation **also completed before first inline**, despite native script ordering. Wrapper visibility cannot confer app-function identity: calls to unregistered/renamed/stale functions must fail closed without native/Bun effect. A
-sentinel/late fill, fabricated result or `evaluateJavaScript` completion callback is not first-inline evidence. **Arbitrary dynamic contextBridge publication remains deferred.**
+3. **Install Option A page shape and run real preload in app world (candidate only):**
+   a fixed `AtDocumentStart` **page-world** `WKUserScript` could predeclare
+   exactly four callable names and copied/frozen canonical `process` facts
+   **before the first inline script**, but the **page→app ingress is NOT yet
+   authorized**: the F0 raw page-native handler conflicts with current AC-17.
+   The GH484 owner has selected Q-1 A2 as the carrier direction; A1 is not
+   selected. This direction does not amend AC-17. GH484/KEL-142 must formally
+   approve the narrow A2 data-only untrusted-ingress amendment and qualify
+   the native receiver before it can be installed. Until then, **no production
+   page-world endpoint or effect-bearing bridge is allowed**. Independently
+   execute the **unmodified** admitted preload in the separate app world,
+   record its actual
+   `contextBridge.exposeInMainWorld('electron', actualMethods)` registration
+   and prove its applicable adaptive-colors `localStorage` mutation **also
+   completed before first inline**, despite native script ordering. Wrapper
+   visibility cannot confer app-function identity: calls to
+   unregistered/renamed/stale functions must fail closed without native/Bun
+   effect. A sentinel/late fill, fabricated result or
+   `evaluateJavaScript` completion callback is not first-inline evidence.
+   **Arbitrary dynamic contextBridge publication remains deferred.**
 4. **Early calls:** a callable page API may exist while host document bind is pending. Consume #467's selected **zero-queue early refusal**: public void method returns undefined, native rejects before reservation/dispatch, emits a bounded private typed diagnostic and retains **no** work for a future document or Bun role. If required draw.io startup traffic
 occurs before eligibility, application acceptance stays BLOCKED until earlier safe bind/order is proved or #540/#542 approve an amended policy. No silent queue or successor replay.
 5. **After bind:** app-world requests pass view/world/frame/generation checks, then parser and per-window grants. Navigation and destroy invalidate old requests before any new document can dispatch. Recovery cannot reset a surviving renderer.
 
-**BLOCKED production publication and app-method binding proof:** the independent [Mac fixed-wrapper experiment](https://github.com/gyldlab/keld/issues/467#issuecomment-6388049733) observed a predeclared page method at first inline in **3/3** runs and absence when omitted in **2/2**, using the actual pinned preload under **synthetic IPC**. **Its page-native
-ingress conflicts with AC-17**; it cannot be adopted on this evidence. Earlier 16/16 registration-order and 6/6 nested callback fixtures used **page-forgeable shared DOM** and simulated IPC. None proves the original method's current-document identity or final Host grant. The [native two-realm
-fixture](https://github.com/gyldlab/keld/issues/467#issuecomment-6383445584) supports realm feasibility but is not #542/#552. Owner [Q-1 A1 vs A2](https://github.com/gyldlab/keld/issues/484#issuecomment-6390973710) requires **a secure WebKit page→app ingress choice** before production: retain AC-17 and prove a different route, or formally approve a strictly
-untrusted data-only page handler with independent amended AC-17/KEL-142/architecture-05 review. Then prove fixed document-start wrapper plus real admitted app-world registration, no shared-DOM authority, correct bind and teardown; GH-467 proves mutable copies and nested callbacks through genuine app methods. Native/Host/Bun witnesses must show two real
-separately released granted requests and zero **forbidden** unexposed/wrong-world/stale/source/denied-grant effects. A direct page message to an already exposed method cannot be privileged compared with the normal wrapper; eliminating only the allowlist or final Host guard must yield RED. If unproven, **do not ship**. GH441's separate-world choice remains
-CLOSED; no fabricated result, self-derived source hash or bypass.
+**BLOCKED production publication and app-method binding proof:** the
+independent [Mac fixed-wrapper experiment](https://github.com/gyldlab/keld/issues/467#issuecomment-6388049733)
+observed a predeclared page method at first inline in **3/3** runs and
+absence when omitted in **2/2**, using the actual pinned preload under
+**synthetic IPC**. **Its page-native ingress conflicts with AC-17**; it
+cannot be adopted on this evidence. Earlier 16/16 registration-order and
+6/6 nested callback fixtures used **page-forgeable shared DOM** and simulated
+IPC. None proves the original method's current-document identity or final
+Host grant. The [native two-realm fixture](https://github.com/gyldlab/keld/issues/467#issuecomment-6383445584)
+supports realm feasibility but is not #542/#552.
+
+The owner has selected **A2** in the [GH484 decision](https://github.com/gyldlab/keld/issues/484#issuecomment-6560086477)
+and [correction handoff](https://github.com/gyldlab/keld/issues/484#issuecomment-6560285327);
+A1 is not selected. This resolves the carrier-direction choice, not the
+formal AC-17/architecture-05 amendment or native qualification. Before
+production, GH484/KEL-142 must approve the narrowly scoped untrusted
+data-only page handler; until then the existing AC-17 prohibition remains
+in force. Then prove fixed document-start wrapper plus real admitted
+app-world registration, no shared-DOM authority, correct bind and teardown;
+GH-467 proves mutable copies and nested callbacks through genuine app methods.
+Native/Host/Bun witnesses must show two real separately released granted
+requests and zero **forbidden** unexposed/wrong-world/stale/source/denied-grant
+effects. A direct page message to an already exposed method cannot be
+privileged compared with the normal wrapper; eliminating only the allowlist
+or final Host guard must yield RED. If unproven, **do not ship**. GH441's
+separate-world choice remains CLOSED; no fabricated result, self-derived
+source hash or bypass.
 
 **Native F0 chronology and limits (not KEL-142 AC-2):** [direct app-world assignment](https://github.com/gyldlab/keld/issues/484#issuecomment-6382021064) was invisible to first inline; [the follow-up with the unmodified draw.io preload](https://github.com/gyldlab/keld/issues/484#issuecomment-6382401714) saw nondeterministic app/page script order under naive
 registration, then **16/16** correct first-inline callable API shapes with an order-independent test-only handshake and separate missing-exposure/`AtDocumentEnd` RED controls. [The 6/6 local proxy fixture with nested callback RED](https://github.com/gyldlab/keld/issues/467#issuecomment-6382468009) proved the *actual preload's* top-level and nested callback

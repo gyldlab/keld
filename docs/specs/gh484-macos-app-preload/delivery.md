@@ -196,10 +196,10 @@ observe WebKit/host/Bun independently of implementation self-report, execute eac
 ### f07.native_dom_silence
 
 - **AC coverage:** AC-13
-- **Independent oracle:** Under current **AC-17/A1**, prove the approved alternative page→app route without any exposed page native endpoint and reject the old F0 path. **Only if Q-1 A2 is formally approved**, the raw page handler may exist as untrusted request-data ingress: a permitted direct call cannot be distinguished or categorically denied solely by
+- **Independent oracle:** Until the selected A2 amendment is formally approved, the existing AC-17 prohibition remains in force: no page-world native endpoint is installed and the old F0 path is rejected. After an approved narrow A2 amendment, the raw page handler may exist only as untrusted request-data ingress: a permitted direct call cannot be distinguished or categorically denied solely by
   wrapper provenance, so it must receive exactly the same private method/current-document/Host checks as the normal wrapper. Unexposed, stale and ungranted calls yield zero forbidden native/Bun effects.
 
-- **Individual RED mutation:** Under A1, accidentally installing a page-native endpoint must fail; under approved A2, treating raw page metadata as app principal/registration, dispatching an unexposed method or omitting final grant makes the independent forbidden-effect observer go RED. Neither arm qualifies without owner choice and integrated Host/native
+- **Individual RED mutation:** Before the A2 amendment, accidentally installing a page-world endpoint must fail. After approval, treating raw page metadata as app principal/registration, dispatching an unexposed method or omitting final grant makes the independent forbidden-effect observer go RED. Neither phase qualifies without the amendment and integrated Host/native
   proof.
 
 ### f07.metric_registry
@@ -229,13 +229,37 @@ provenance; **diagnostic only**, no target, no performance pass/fail and no publ
 **Status remains DRAFT/BLOCKED.** The source and runtime policies below are
 proposed contracts for independent approval, **not** production capability.
 
-### Q-1 — Option A product direction selected; page ingress security decision UNRESOLVED (#484/#467/KEL-142)
+### Q-1 — A2 data-only ingress selected; AC-17 amendment and native qualification BLOCKED (#484/#467/KEL-142)
 
-the [GH467 first-proof scope](https://github.com/gyldlab/keld/issues/467#issuecomment-6390880361) selects only four predeclared pinned draw.io methods and copied/frozen process facts, **not** general dynamic `contextBridge` parity. This product
-scope is **not** an authorized WebKit transport. As independently challenged in the [Q-1 A1/A2 packet](https://github.com/gyldlab/keld/issues/484#issuecomment-6390973710), the existing F0 page-native carrier contradicts **AC-17**. The native/KEL-142 security owners must select **A1** (keep no-page-handler, prove a different real cross-world route) or
-formally approve and review **A2** (explicit AC-17/architecture amendment for page-visible **data-only untrusted** ingress, never app/trusted principal). Then GH-484 must prove admitted unmodified preload functions and conditional `.configuration` seed before first inline; GH-467 must prove four current method/callback bindings. Two genuine Host/Bun
-requests, per-call release, missing-registry/unexposed/wrong-world/stale/missing-grant mutants remain mandatory. Existing static 3/3, 2/2 omission, F0 16/16, 6/6 and 33-receipt fixtures are **test-only**. General dynamic graph stays deferred and no cell is scored PASS. GH441 separate-world choice stays CLOSED. No production code or approval until all these
-named gates pass.
+The [GH467 first-proof scope](https://github.com/gyldlab/keld/issues/467#issuecomment-6390880361)
+selects only four predeclared pinned draw.io methods and copied/frozen process
+facts, **not** general dynamic `contextBridge` parity. The carrier direction is
+also selected: the GH484 owner chose **A2**, a page-visible **data-only untrusted
+request ingress**, in the [A2 retention decision](https://github.com/gyldlab/keld/issues/484#issuecomment-6560086477)
+and [correction handoff](https://github.com/gyldlab/keld/issues/484#issuecomment-6560285327).
+**A1 is not selected.**
+
+This resolves the carrier-direction choice only. It is **not** a formal
+amendment to GH484 AC-17, a security/public-API approval, implementation
+authority or native qualification. The existing AC-17 prohibition remains
+in force until GH484/KEL-142 owners formally approve a narrow
+AC-17/architecture-05 amendment for A2. The old F0 page-native handler
+contradicts the current AC-17 and must not be reused. Any approved A2 handler
+is a separate untrusted-data ingress, never an app/trusted handler, principal,
+credential, bind hook, private method registry or grant. Every request must
+receive the same private-method allowlist, current-document and final GH552
+Host Guard checks as the visible wrapper. Unexposed, stale, wrong-world,
+missing-credential and ungranted requests produce zero forbidden effects.
+
+After the amendment, GH-484 must prove admitted unmodified preload functions
+and conditional `.configuration` seed before first inline; GH-467 must prove
+four current method/callback bindings. Two genuine Host/Bun requests, per-call
+release, missing-registry/unexposed/wrong-world/stale/missing-grant mutants
+remain mandatory. Existing static 3/3, 2/2 omission, F0 16/16, 6/6 and
+33-receipt fixtures are **test-only**. General dynamic graph stays deferred
+and no cell is scored PASS. GH441 separate-world choice stays CLOSED.
+No production code or approval until the amendment and all named native
+gates pass.
 ### Q-2 — absolute preload root, proposed mapping, BLOCKED (package boot/#484)
 
 first produce an independently admitted stage-root/manifest authority, then prove the unmodified absolute draw.io path selects one exact relative entry with retained descriptor, no page `file://` root or CWD, and no path replacement or alias escape. A source rewrite is a
@@ -273,8 +297,8 @@ swapped/replayed/missing tokens with zero Host/Bun writes are mandatory.
 
 - **Status:** open
 - **Owner:** GH484, GH467 and KEL-142 native/security owners
-- **Impact:** No production page-to-app ingress or app-world method binding may ship; A1/A2 remains unresolved.
-- **Check:** Approve one secure ingress decision and prove the unmodified preload's actual four methods and conditional seed before first inline on real WKWebView with independent Host/Bun witnesses.
+- **Impact:** No production page-to-app ingress or app-world method binding may ship. A2 is the selected data-only direction, but its narrow AC-17/architecture-05 amendment and real native first-inline proof remain open; A1 is not selected.
+- **Check:** Record formal owner approval of the narrow A2 amendment, then prove the unmodified preload's actual four methods and conditional seed before first inline on real WKWebView with independent Host/Bun witnesses.
 
 ### B-2 ? independent package-image authority and same-UID source custody
 

@@ -230,21 +230,34 @@ Owns: section 3
 
 ### AC-13 ? No DOM authority
 
-- **Given:** The four predeclared page methods are bound to actual private app-preload registrations, with the Q-1 A1/A2 owner decision explicit.
+- **Given:** The four predeclared page methods are bound to actual private app-preload registrations, with the owner-selected A2 data-only carrier direction recorded and its formal AC-17 amendment/native qualification still pending.
 
 - **When:** A page call enters the selected page-to-app route and reaches the same current-document, private-method and Host grant checks.
 
 - **Trigger:** GH-467's four predeclared methods route to actual app-private registrations and the app-native handler transmits admitted requests/results
 
-- **Then:** **Current AC-17 forbids any page-world native endpoint**; the test-only static F0 raw page handler is not an authorized transport. GH484/KEL-142 must approve either [Q-1 A1 or A2](https://github.com/gyldlab/keld/issues/484#issuecomment-6390973710) before effect-bearing production routing. Under a future expressly approved A2 untrusted page-data
-  carrier, even a direct call naming a permitted method is **not** a registry, credential, principal, role or grant; all permitted calls get identical private-method/current-document/final Host checks whether or not they used the visible wrapper. Unexposed/unguarded requests have zero forbidden effects. Neither `window.postMessage` nor page-forgeable DOM
-  events/descriptors can authenticate a method; the original F0 DOM handshake remains forbidden in production.
+- **Then:** **Current AC-17 still forbids any page-world native endpoint**;
+  the test-only static F0 raw page handler is not an authorized transport.
+  The owner-selected A2 direction is recorded in the
+  [GH484 decision](https://github.com/gyldlab/keld/issues/484#issuecomment-6560086477)
+  and [correction handoff](https://github.com/gyldlab/keld/issues/484#issuecomment-6560285327);
+  **A1 is not selected**. Before effect-bearing production routing,
+  GH484/KEL-142 must formally approve the narrow AC-17/architecture-05
+  amendment and qualify the native receiver. Until then, no A2 page handler
+  is installed. Under a future expressly approved A2 untrusted page-data
+  carrier, even a direct call naming a permitted method is **not** a registry,
+  credential, principal, role or grant; all permitted calls get identical
+  private-method/current-document/final Host checks whether or not they used
+  the visible wrapper. Unexposed/unguarded requests have zero forbidden
+  effects. Neither `window.postMessage` nor page-forgeable DOM
+  events/descriptors can authenticate a method; the original F0 DOM
+  handshake remains forbidden in production.
 
 - **Negative control:** The single-fault mutation below must fail the independent test row f07.native_dom_silence before its restored positive control passes.
 
-- **Single fault:** Treat page-visible DOM metadata as app identity, or expose a page-native handler under A1 without the approved A2 amendment.
+- **Single fault:** Treat page-visible DOM metadata as app identity, or install the A2 page handler before its formal AC-17 amendment.
 
-- **At-risk precondition:** No page data is privileged; under A1 no page-native endpoint exists, and under approved A2 the page carrier remains untrusted data only.
+- **At-risk precondition:** No page data is privileged; before the approved A2 amendment no page-native endpoint exists, and after approval the page carrier remains untrusted data only.
 
 - **Expected RED:** The independent native/Bun observer must detect a forbidden effect from an unexposed, stale, wrong-world or ungranted page request.
 
@@ -311,7 +324,7 @@ Owns: section 3
 
 - **Trigger:** No preload/grant or unsupported engine
 
-- **Then:** KEL-142 existing `window.keld` behavior unchanged; no ambient Node resolver, secondary wire channel, **page-world native endpoint under the current unamended contract**, or Windows/Linux acceptance. Q-1 A2's proposed data-only ingress is **not admitted by this draft** and requires an explicit independently reviewed native/KEL-142/architecture-05
+- **Then:** KEL-142 existing `window.keld` behavior unchanged; no ambient Node resolver, secondary wire channel, **page-world native endpoint under the current unamended contract**, or Windows/Linux acceptance. The owner-selected Q-1 A2 data-only ingress is **not admitted by this draft** and requires an explicit independently reviewed native/KEL-142/architecture-05
   security amendment; never silently weaken this prohibition based on the static F0 probe.
 
 - **Negative control:** The single-fault mutation below must fail the independent test row f07.native_dom_silence and f07.world_and_k142_isolation before its restored positive control passes.
