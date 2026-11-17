@@ -1293,10 +1293,10 @@ mod native_message_text_tests {
     }
     #[test]
     fn native_utf8_bound_is_checked_without_repair_or_clipping() {
-        assert!(bounded_native_message_text(&NSString::from_str("Ã©"), 1).is_err());
+        assert!(bounded_native_message_text(&NSString::from_str("é"), 1).is_err());
         assert_eq!(
-            bounded_native_message_text(&NSString::from_str("Ã©"), 2).expect("exact UTF8"),
-            "Ã©"
+            bounded_native_message_text(&NSString::from_str("é"), 2).expect("exact UTF8"),
+            "é"
         );
         assert!(bounded_native_message_text(&NSString::from_str("ab"), 1).is_err());
     }
