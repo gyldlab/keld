@@ -7,11 +7,13 @@
  */
 import { expect, test } from "bun:test";
 import {
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -369,7 +371,8 @@ async function provePackedHandshake(
           ]),
       ...(verifiedOriginalEntry === undefined ? [] : ["run"]),
       entry,
-      ...(verifiedOriginalEntry === undefined ? [] : [verifiedOriginalEntry]),
+      // The original source is sealed in the generated bootstrap and may
+      // never be reinterpreted as a user file argument.
     ],
     {
       ...(inheritCwd ? {} : { cwd: stage }),
@@ -494,17 +497,16 @@ async function provePackedHandshake(
     const entered = await withIoDeadline(Promise.resolve(next()));
     expect(entered.kind).toBe("entry");
     expect(entered.before).toEqual(captured.versions);
-    // The source change deliberately alters *observable* original-entry
-    // semantics. Prove both contracts, do not secretly emulate Bun.main or
-    // argv with a global. Native original-app review must explicitly accept
-    // the imported-entry contract before signed release.
+    // The signed bootstrap is Bun main. Its compiled original is imported
+    // after Init ACK, with no app-private path visible as a user argument.
+    // Preserve truthful Bun.main and import.meta.main without global spoofing.
     expect(entered.entryIdentity?.bunMainMatchesArgv1).toBe(true);
     if (verifiedOriginalEntry) {
       expect(entered.entryIdentity).toEqual({
         importMetaMain: false,
         bunMainMatchesArgv1: true,
-        originalMatchesArgv2: true,
-        argc: 3,
+        originalMatchesArgv2: false,
+        argc: 2,
       });
     } else if (singleGraphBootstrap) {
       expect(entered.entryIdentity).toEqual({
@@ -1084,8 +1086,8 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
       entry,
     );
 
-    // No runtime-selected alternative may override the pre-signed literal,
-    // even when a different original file physically exists inside the app.
+    // Extra argv cannot select another original, even when a different file
+    // physically exists inside the app. The literal is the only selector.
     const specialEntry = join(stage, "original#percent%.mjs");
     writeFileSync(specialEntry, readFileSync(entry));
 
@@ -1098,12 +1100,16 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
     writeFileSync(encodedEntry, readFileSync(entry));
 
     // Bun 1.4.4 cannot import a physical '?' filename on Unix (and Windows
-    // forbids the name). Refuse it with a typed error before touching Host IPC,
-    // rather than silently resolving a URL query to a different original.
+    // forbids the name). Even a corrupted generated literal must refuse it
+    // before Host IPC, rather than treating it as an import URL query.
     const unsupportedEntry = join(stage, "original?query.mjs");
     if (process.platform !== "win32") {
       writeFileSync(unsupportedEntry, readFileSync(entry));
     }
+    writeFileSync(
+      installedBootstrap,
+      ownerTemplate.replaceAll(marker, "original?query.mjs"),
+    );
     const refusedQuestion = Bun.spawnSync(
       [
         process.execPath,
@@ -1112,7 +1118,6 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
         "--define=__KELD_RUNTIME_PROCESS_FACTS__:true",
         "run",
         installedBootstrap,
-        unsupportedEntry,
       ],
       {
         cwd: stage,
@@ -1129,16 +1134,86 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
     expect(refusedQuestion.exitCode).toBe(1);
     expect(refusedQuestion.stdout.toString()).toBe("");
     expect(refusedQuestion.stderr.toString()).toContain("KELD-IPC-005");
+    writeFileSync(
+      installedBootstrap,
+      ownerTemplate.replaceAll(marker, selectedOriginal),
+    );
+
+    // A valid-arity Host bootstrap must fail before importing its original
+    // when a signed source leaf is absent, a directory, a self-alias or an
+    // escaping symlink. These check the actual compiled literal, not only
+    // rejected extra command-line arguments.
+    const signedDirectory = join(stage, "signed-directory");
+    mkdirSync(signedDirectory);
+    const hardlinkSelf = join(stage, "hardlink-bootstrap.mjs");
+    linkSync(installedBootstrap, hardlinkSelf);
+    const outsideDirectory = mkdtempSync(join(tmpdir(), "krp-signed-outside-"));
+    try {
+      const outsideEntry = join(outsideDirectory, "outside.mjs");
+      writeFileSync(outsideEntry, 'console.log("UNAUTHORIZED_ORIGINAL");\n');
+      const escapedEntry = join(stage, "symlink-escaped-original.mjs");
+      if (process.platform !== "win32") symlinkSync(outsideEntry, escapedEntry);
+      const signedLiteralNegatives = [
+        ["missing", "missing-original.mjs"],
+        ["directory", "signed-directory"],
+        ["self", "keld-installed-runtime-entry.mjs"],
+        ["hardlink-self", "hardlink-bootstrap.mjs"],
+        ["parent-traversal", "../outside.mjs"],
+        ["encoded-parent", "%2e%2e/literal-original.mjs"],
+        ...(process.platform === "win32"
+          ? []
+          : [["symlink-outside-root", "symlink-escaped-original.mjs"]]),
+      ];
+      for (const [name, literal] of signedLiteralNegatives) {
+        writeFileSync(
+          installedBootstrap,
+          ownerTemplate.replaceAll(marker, literal),
+        );
+        const denied = Bun.spawnSync(
+          [
+            process.execPath,
+            "--no-env-file",
+            "--no-install",
+            "--define=__KELD_RUNTIME_PROCESS_FACTS__:true",
+            "run",
+            installedBootstrap,
+          ],
+          {
+            cwd: stage,
+            env: {
+              ...process.env,
+              KELD_APP_LINK: "not-a-qualified-host-link",
+              KELD_NATIVE_WINDOW_FACADE: "1",
+            },
+            stdout: "pipe",
+            stderr: "pipe",
+            timeout: 9_000,
+          },
+        );
+        expect(
+          denied.exitCode,
+          `${name}: ${denied.stdout.toString()} ${denied.stderr.toString()}`,
+        ).toBe(1);
+        expect(denied.stdout.toString(), name).toBe("");
+        expect(denied.stderr.toString(), name).toContain("KELD-IPC-005");
+      }
+    } finally {
+      rmSync(outsideDirectory, { recursive: true, force: true });
+    }
+    writeFileSync(
+      installedBootstrap,
+      ownerTemplate.replaceAll(marker, selectedOriginal),
+    );
 
     // An unselected or malformed invocation of the exact generated module
     // must not load arbitrary original code or start an app-link handshake.
     const outsideRoot = join(tmpdir(), "not-host-admitted.mjs");
     for (const [name, hasHostSelector, selected, extra] of [
       ["without-host-selector", false, entry, []],
-      ["relative-original", true, "./real-user-entry.mjs", []],
-      ["outside-app-root", true, outsideRoot, []],
-      ["different-in-root", true, specialEntry, []],
-      ["encoded-parent-directory", true, encodedEntry, []],
+      ["unexpected-relative-user-argument", true, "./real-user-entry.mjs", []],
+      ["unexpected-absolute-user-argument", true, outsideRoot, []],
+      ["unexpected-alternate-user-argument", true, specialEntry, []],
+      ["unexpected-encoded-user-argument", true, encodedEntry, []],
       ["extra-argument", true, entry, ["another-app.mjs"]],
     ] as const) {
       const denied = Bun.spawnSync(
