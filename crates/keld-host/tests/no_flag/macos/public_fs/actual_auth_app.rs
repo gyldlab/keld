@@ -478,8 +478,16 @@ fn assert_product_cleanup(
         "stock CLI left dev-stage root after public Quit",
     )?;
     require(
-        !session_dir.exists() && session_dirs_for(host).is_empty(),
-        "public Quit left owned app-link locator/session",
+        !session_dir.exists(),
+        "public Quit left the authenticated app-link session directory",
+    )?;
+    let other_session_dirs = session_dirs_for(host);
+    require(
+        other_session_dirs.is_empty(),
+        format!(
+            "public Quit left {} Host-owned app-link session directories",
+            other_session_dirs.len()
+        ),
     )?;
     Ok(())
 }
@@ -570,6 +578,20 @@ fn observed_auth_family(app_ready: &Value, cli_pid: u32) -> SmokeResult<[u32; 4]
     Ok([host, guardian, bun, descendant])
 }
 
+fn verify_completed_auth_quit(output: &std::process::Output, project: &Path) -> SmokeResult<()> {
+    require(
+        output.status.success(),
+        format!(
+            "shipping CLI public Quit failed; exit code {:?}",
+            output.status.code()
+        ),
+    )?;
+    require(
+        quit_diagnostics::completed_quit_checkpoints_visible(project),
+        "successful auth Quit did not expose fixed HTTP and correlated lifecycle checkpoints",
+    )
+}
+
 fn write_launch_status(project_root: &Path, status: &Value) -> SmokeResult<()> {
     fs::write(
         project_root.join("launch-status.json"),
@@ -630,6 +652,11 @@ fn run_case(
         .ok_or("missing app endpoint parent")?
         .to_path_buf();
     assert_application_link_provenance(host, bun, &app_ready)?;
+    eprintln!(
+        "KELD_KEL89_APP_LINK_PREQUIT case={} original_session_dir_visible={}",
+        case.name,
+        session_dir.exists()
+    );
     require(
         page_ready["marker"] == "KEL89_AUTH_SMOKE_WINDOW",
         "actual configured document marker missing",
@@ -650,13 +677,7 @@ fn run_case(
         case,
         [host, guardian, bun, descendant],
     );
-    require(
-        output.status.success(),
-        format!(
-            "shipping CLI public Quit failed; exit code {:?}",
-            output.status.code()
-        ),
-    )?;
+    verify_completed_auth_quit(&output, &project.root)?;
     let exits = [
         host_exit.wait(),
         guardian_exit.wait(),

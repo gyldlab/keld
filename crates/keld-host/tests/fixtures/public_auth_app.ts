@@ -57,10 +57,24 @@ if (smokeCase === "active-begin-quit") {
   }))];
 }
 if (pendingBegin === undefined) await report("app-result", { outcomes });
-const quit = await fetch(observation + "/quit");
-if (!quit.ok || await quit.text() !== "quit") throw new Error("invalid ordinary fixture Quit command");
+// These fixed test-only markers distinguish receipt of the native observer's
+// HTTP response headers/body from a later correlated public app.quit reply.
+// Never log the private app link, response headers, body, or auth inputs.
+let quit: Response;
+let quitBody: string;
+try {
+  quit = await fetch(observation + "/quit");
+  console.error("KELD_KEL89_QUIT_HTTP_HEADERS " + smokeCase);
+  quitBody = await quit.text();
+  console.error("KELD_KEL89_QUIT_HTTP_BODY " + smokeCase);
+} catch (error) {
+  console.error("KELD_KEL89_QUIT_HTTP_FAILURE " + smokeCase);
+  throw error;
+}
+if (!quit.ok || quitBody !== "quit") throw new Error("invalid ordinary fixture Quit command");
 console.error("KELD_KEL89_PUBLIC_QUIT_REQUEST " + smokeCase);
 await app.quit();
+console.error("KELD_KEL89_QUIT_API_ACK " + smokeCase);
 if (pendingBegin !== undefined) {
   const ended = await pendingBegin;
   if (ended.ok !== false || (ended.code !== "KELD-IPC-022" && ended.code !== "KELD-IPC-023")) {
