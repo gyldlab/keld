@@ -296,7 +296,9 @@ export class WindowSource implements MirrorSource<WindowEvent> {
         case "DocumentRecovered":
         case "NavigationCommitted":
           if (
-            !Number.isInteger(fact.document_generation) ||
+            // Primitive-only validation cannot invoke application-replaced globals.
+            typeof fact.document_generation !== "number" ||
+            fact.document_generation % 1 !== 0 ||
             fact.document_generation <= 0 ||
             fact.document_generation > 0xffffffff
           )
