@@ -298,7 +298,7 @@ Keep previous accepted metadata during failed refreshes. Do not use that metadat
 
 PROPOSED: Timestamp loading returns `Advanced`, `Unchanged`, or a typed failure. Authenticate incoming metadata under the current root before comparing versions. Preserve D-20 historical floors independently.
 
-For equal versions, authenticate the stored timestamp under the current root, including its current threshold. Refuse if that authentication fails. Keep the stored envelope as a historical floor only. Do not select snapshot or targets bytes from that envelope.
+For equal versions, authenticate the stored timestamp under the current root, including its current threshold. If that authentication fails, refuse and retain its version as a historical floor only. That invalid cached envelope MUST NOT select snapshot or targets. Even a valid cached envelope grants no authority until D-25's signed-content equality and complete downstream checks pass.
 
 If both envelopes authenticate, compare their complete canonical signed content. Refuse any difference, including expiry or snapshot description. Only identical signed content permits `Unchanged`.
 Discard the replacement bytes and retain the stored envelope. Signature ordering or additional valid signatures do not change signed content. Do not replace the stored expiry, snapshot description, or signatures.

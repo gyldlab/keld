@@ -403,8 +403,8 @@ Reject a stale directive or a changed replacement without changing the establish
 
 | Last durable state | Next permitted action |
 |---|---|
-| No journal and no pointer | Established state remains authoritative. Discard only authenticated unreferenced owned preparation objects. |
-| Before manual journal, no pointer, ordinary N+1 orphan or intent | Finish exact D-24 ordinary retirement under the repository lease. Require verified N+1 and intent absence before writing the recovery journal. Ambiguous state halts. |
+| No journal, no pointer, no ordinary orphan or intent, and no unreferenced blobs | Established state remains authoritative. No retirement is needed. |
+| Before manual journal, no pointer, ordinary N+1 orphan, blob-only residue or either ordinary intent | Finish exact D-24 retirement under the repository lease. Verify N+1, D-23 intent, and unreferenced blobs absent before writing the recovery journal. Ambiguous state halts without deletion. |
 | `prepared`, old metadata current, directive valid | Reverify the original authorization and all source/policy bindings, then commit or refuse. |
 | `prepared`, old metadata current, directive expired | Verify no trust or application effect. Durably mark `aborted`. Retire only present exact planned preparation under a D-23 intent. Clear the pointer after old-state verification. |
 | `prepared`, new metadata current | Match the recorded destination generation. Advance the journal without repeating the epoch change. |
