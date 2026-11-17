@@ -248,6 +248,18 @@ fn reject_unexpected_top_level_child_callbacks(observed: &[Value]) -> Result<(),
     }) {
         return Err("AC06 iframe phase unexpectedly navigated the top-level document".into());
     }
+    // A second iframe start in the Host phase could carry the Host nonce,
+    // despite the expected child and top-level callbacks being correct.
+    // Likewise, a child completing before release contradicts a held deferral.
+    // This controlled fixture creates only one iframe and releases it once.
+    if observed.iter().any(|event| {
+        (event["phase"] == "race-host" && event["kind"] == "frame-navigation-starting")
+            || (event["phase"] == "race-child" && event["kind"] == "frame-navigation-completed")
+    }) {
+        return Err(
+            "AC06 unexpected iframe callback contradicts the held single-child race".into(),
+        );
+    }
     Ok(())
 }
 
@@ -787,6 +799,48 @@ mod ac06_overlap_receipt_tests {
                 "{label}: an absent header with Host nonce value was accepted"
             );
         }
+    }
+
+    #[test]
+    fn reject_cross_phase_iframe_callbacks_that_contradict_held_deferral() {
+        let good = good_receipt_events();
+        assert!(check(&good).is_ok(), "valid native overlap was refused");
+
+        // A second iframe start after the Host takeover can carry a Host nonce,
+        // even when the expected old iframe start and Host resource remain valid.
+        // The fixed document does not create any new iframe in the Host phase.
+        for (label, header) in [
+            (
+                "host nonce inherited by unexpected iframe",
+                json!({"state":"present","value":NONCE}),
+            ),
+            (
+                "unexpected extra iframe navigation",
+                json!({"state":"absent"}),
+            ),
+        ] {
+            let mut extra_start = good.clone();
+            extra_start.push(json!({
+                "phase":"race-host","kind":"frame-navigation-starting","seq":25,
+                "data":{"uri":URI,"navigation_id":7,"header":header}
+            }));
+            assert!(
+                check(&extra_start).is_err(),
+                "{label}: an extra Host-phase frame start was accepted"
+            );
+        }
+
+        // A held COM deferral cannot have completed the same iframe before
+        // the Host request and explicit release, even with a later valid finish.
+        let mut premature_completion = good.clone();
+        premature_completion.push(json!({
+            "phase":"race-child","kind":"frame-navigation-completed","seq":17,
+            "data":{"navigation_id":5,"success":true}
+        }));
+        assert!(
+            check(&premature_completion).is_err(),
+            "an iframe completion during its held deferral was accepted"
+        );
     }
 
     #[test]
