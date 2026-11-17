@@ -13,7 +13,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const NATIVE_CUT: Duration = Duration::from_millis(850);
-const ENTRY_LIMIT: Duration = Duration::from_millis(600);
 const RESCUE_LIMIT: Duration = Duration::from_secs(2);
 const HELLO: &[u8] = b"HELLO 54321 /tmp/owned-fixture.sock#test-only\n";
 const DESCENDANT: &[u8] = b"DESCENDANT 65432\n";
@@ -39,7 +38,7 @@ fn native_accept_completing_after_original_clock_is_rejected_at_accept() {
     let (released_tx, released_rx) = mpsc::sync_channel(1);
     let (accepted_tx, accepted_rx) = mpsc::sync_channel(1);
     let controller = thread::spawn(move || {
-        let entered = entered_rx.recv_timeout(ENTRY_LIMIT);
+        let entered = entered_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()));
         while Instant::now() < deadline {
             thread::yield_now();
         }
@@ -117,7 +116,7 @@ fn late_native_lf_refusal(line: u8) {
         }
         peer.write_all(prefix)
             .expect("write real native record prefix");
-        let entered = before_rx.recv_timeout(ENTRY_LIMIT);
+        let entered = before_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()));
         while Instant::now() < deadline {
             thread::yield_now();
         }
