@@ -285,7 +285,7 @@ fn verify_native_same_uri_overlap(
     reject_unexpected_top_level_child_callbacks(observed)?;
     let top_id = host_start["data"]["navigation_id"].as_u64();
     let correct = frame_start["data"]["uri"] == receipt["uri"]
-        && frame_start["data"]["header"]["state"] == "absent"
+        && frame_start["data"]["header"] == json!({"state":"absent"})
         && frame_start["data"]["navigation_id"]
             .as_u64()
             .is_some_and(|id| {
@@ -305,7 +305,7 @@ fn verify_native_same_uri_overlap(
         && child["data"]["uri"] == receipt["uri"]
         && child["data"]["resource_context"] == 1
         && child["data"]["source_kind"] == 1
-        && child["data"]["header"]["state"] == "absent"
+        && child["data"]["header"] == json!({"state":"absent"})
         && child["data"]["held_iframe"] == true
         && host_start["data"]["uri"] == receipt["uri"]
         && host_start["data"]["header"]["state"] == "present"
@@ -736,6 +736,17 @@ mod ac06_overlap_receipt_tests {
             check(&wrong_header).is_err(),
             "Host nonce on iframe navigation accepted"
         );
+
+        // An absent state paired with a nonce value is contradictory native
+        // evidence, even when other callbacks correctly report absence.
+        for (label, index) in [("iframe start", 0), ("iframe resource", 2)] {
+            let mut contradictory_absent = good.clone();
+            contradictory_absent[index]["data"]["header"]["value"] = json!(nonce);
+            assert!(
+                check(&contradictory_absent).is_err(),
+                "{label}: an absent header with Host nonce value was accepted"
+            );
+        }
     }
 
     #[test]
