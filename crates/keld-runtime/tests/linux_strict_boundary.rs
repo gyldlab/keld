@@ -227,12 +227,7 @@ fn strict_profile_rejects_role_without_private_ancestor() {
 
 #[test]
 fn strict_profile_rejects_untrusted_inputs_and_setup_failure_runs_no_target() {
-    let root = tempfile::tempdir().expect("negative root");
-    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700))
-        .expect("private negative fixture parent");
-    let role = root.path().join("role");
-    fs::create_dir(&role).expect("negative role");
-    fs::set_permissions(&role, fs::Permissions::from_mode(0o700)).expect("negative role mode");
+    let (root, role) = negative_role_fixture();
     let link = root.path().join("bwrap-link");
     symlink("/usr/bin/bwrap", &link).expect("bwrap symlink");
     let error = LinuxStrictProfile::new(&link, strict_launcher(), &role)
@@ -859,6 +854,16 @@ fn worker_link_role_missing_its_transport_file_at_open_is_refused_before_the_wor
         output.stdout,
         output.stderr
     );
+}
+
+fn negative_role_fixture() -> (tempfile::TempDir, PathBuf) {
+    let root = tempfile::tempdir().expect("negative root");
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700))
+        .expect("private negative fixture parent");
+    let role = root.path().join("role");
+    fs::create_dir(&role).expect("negative role");
+    fs::set_permissions(&role, fs::Permissions::from_mode(0o700)).expect("negative role mode");
+    (root, role)
 }
 
 struct OwnerPrivateTempDir {
