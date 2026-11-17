@@ -15,7 +15,8 @@ use super::super::super::process_group::{
     GroupIdentity, TestGroupSignalPoint, install_test_group_signal_hook, observe_group_identity,
 };
 use super::super::super::{
-    GuardedPrimary, RecoveryState, RegisteredPrimaryGeneration, RuntimeError, lock_generation,
+    GuardedPrimary, GuardianCleanupCauses, RecoveryState, RegisteredPrimaryGeneration,
+    RuntimeError, lock_generation,
 };
 use super::super::test_support::{
     NativeChildOwner, await_held_zombie_group, reap_owned_child_with_deadline,
@@ -296,6 +297,43 @@ fn externally_reaped_registered_primary(
     (primary, current_generation)
 }
 
+fn assert_original_typed_echild_and_held_absence(error: &RuntimeError) {
+    // The existing Lifecycle outer error retains every typed cause inside
+    // GuardianCleanupCauses. The original ECHILD is not merely text now.
+    let RuntimeError::Lifecycle { phase, source } = error else {
+        panic!("combined cleanup must retain the Lifecycle outer error: {error}");
+    };
+    assert_eq!(*phase, "macOS guardian cleanup");
+    let causes = source
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<GuardianCleanupCauses>())
+        .expect("combined cleanup must preserve typed original causes");
+    assert!(
+        matches!(&causes.failures()[0], RuntimeError::Lifecycle { phase, source }
+        if *phase == "macOS guardian generation shutdown wait"
+            && source.raw_os_error() == Some(nix::libc::ECHILD))
+    );
+    assert!(
+        causes.failures().len() >= 2,
+        "absence is a separate failure"
+    );
+    assert!(
+        matches!(&causes.failures()[1], RuntimeError::Lifecycle { phase, source }
+        if *phase == "macOS guardian generation clear group absence"
+            && source.kind() == io::ErrorKind::TimedOut)
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("macOS guardian generation shutdown wait")
+            && message.contains(&io::Error::from_raw_os_error(nix::libc::ECHILD).to_string()),
+        "the fatal result retains the original ECHILD cause: {message}"
+    );
+    assert!(
+        message.contains("absence remains unproven"),
+        "the held original member must prevent absent-group success: {message}"
+    );
+}
+
 #[test]
 fn externally_reaped_guardian_shutdown_keeps_held_member_until_exact_reap() {
     let (leader, held, identity) = enrolled_test_owned_group();
@@ -320,19 +358,8 @@ fn externally_reaped_guardian_shutdown_keeps_held_member_until_exact_reap() {
     let error = primary
         .shutdown()
         .expect_err("ECHILD plus unreaped group member is terminal and fatal");
-    // Multiple RuntimeError causes are currently flattened by
-    // collapse_failures. This asserts diagnostic ECHILD preservation, not
-    // structured original-cause preservation (a separate owner decision).
-    let message = error.to_string();
-    assert!(
-        message.contains("macOS guardian generation shutdown wait")
-            && message.contains(&io::Error::from_raw_os_error(nix::libc::ECHILD).to_string()),
-        "the fatal result retains the original ECHILD cause: {message}"
-    );
-    assert!(
-        message.contains("absence remains unproven"),
-        "the held original member must prevent absent-group success: {message}"
-    );
+    assert_original_typed_echild_and_held_absence(&error);
+    assert_original_typed_echild_and_held_absence(&error.clone());
     assert!(primary.shutdown_failed, "original failure stays sticky");
     assert!(
         primary.liveness_writer.is_none(),

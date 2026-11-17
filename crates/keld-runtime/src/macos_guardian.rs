@@ -12,6 +12,7 @@ pub use self::guarded_primary::{GuardedPrimary, GuardedPrimaryUpdate};
 use self::guarded_primary::{RegisteredPrimaryGeneration, lock_generation};
 
 mod error;
+pub use self::error::GuardianCleanupCauses;
 use self::error::{collapse_failures, lifecycle_error, nix_io_error};
 
 mod recovery_state;
