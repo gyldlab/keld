@@ -3,6 +3,7 @@
 //! could only reach processes that joined later or a recycled PGID. Custody
 //! is kept (fail closed) until absence is proven; nothing is re-signalled.
 use std::cell::Cell;
+use std::io;
 use std::os::unix::process::CommandExt as _;
 use std::os::unix::process::ExitStatusExt as _;
 use std::process::{Command, Stdio};
@@ -18,7 +19,8 @@ use super::super::super::super::process_group::{
     TestGroupSignalPoint, install_test_group_signal_hook, require_attested_group_absence,
 };
 use super::super::super::super::{
-    GuardedPrimary, RecoveryState, RegisteredPrimaryGeneration, RuntimeError, lock_generation,
+    GuardedPrimary, GuardianCleanupCauses, RecoveryState, RegisteredPrimaryGeneration,
+    RuntimeError, lock_generation,
 };
 use super::super::super::test_support::{
     NativeChildOwner, await_held_zombie_group, test_group_identity,
@@ -68,6 +70,27 @@ fn failed_clear_absence_after_delivered_signal_never_resignals_the_group() {
     assert_not_resignalled(joiner, "fail-safe after failed CLEAR");
 }
 
+fn assert_typed_terminal_group_absence(error: &RuntimeError) {
+    let RuntimeError::GuardianExited {
+        cleanup_error: Some(cleanup),
+        ..
+    } = error
+    else {
+        panic!("fatal Guardian report must carry the native cleanup failure: {error}");
+    };
+    let causes = cleanup
+        .get_ref()
+        .and_then(|cause| cause.downcast_ref::<GuardianCleanupCauses>())
+        .expect("GuardianExited cleanup retains the original typed cause");
+    assert_eq!(causes.failures().len(), 1, "one native absence failure");
+    assert!(
+        matches!(&causes.failures()[0], RuntimeError::Lifecycle { phase, source }
+            if *phase == "macOS guardian generation clear group absence"
+                && source.kind() == io::ErrorKind::TimedOut),
+        "native absence failure must retain its original phase and timeout"
+    );
+}
+
 // A successful group SIGKILL is merely signal delivery. Terminal host cleanup
 // cannot forget the original group birth while a second, test-owned member
 // remains an unreaped zombie. This test exercises the first armed call, not
@@ -104,6 +127,8 @@ fn terminal_first_signal_retains_birth_until_held_member_reaped() {
             if error.to_string().contains("absence remains unproven")),
         "terminal Guardian failure must retain unproven group custody: {result}"
     );
+    assert_typed_terminal_group_absence(&result);
+    assert_typed_terminal_group_absence(&result.clone());
     {
         let owner = lock_generation(&primary.current_generation);
         let retained = owner

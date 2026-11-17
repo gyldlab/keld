@@ -8,10 +8,10 @@ use std::io;
 /// Original typed failures from one macOS Guardian cleanup transaction.
 ///
 /// A Guardian can fail both its exact Child wait (for example ECHILD) and
-/// its attested process-group absence proof. The public outer error stays a
-/// `RuntimeError::Lifecycle` with the existing cleanup phase and diagnostics,
-/// but callers can downcast that Lifecycle's `io::Error::get_ref()` to this
-/// type and inspect every original typed cause, including its OS errno.
+/// its attested process-group absence proof. The public outer error keeps its
+/// original variant and diagnostics. Callers can downcast the Lifecycle or
+/// GuardianExited cleanup `io::Error::get_ref()` to this type to inspect every
+/// original typed cause, including its OS errno.
 /// Standard `Error::source()` chains are linear and expose only the first
 /// cause. `failures()` is the authoritative complete collection.
 #[derive(Debug, Clone)]
@@ -51,6 +51,14 @@ pub(super) fn nix_io_error(source: Errno) -> io::Error {
 
 pub(super) fn lifecycle_error(phase: &'static str, source: io::Error) -> RuntimeError {
     RuntimeError::Lifecycle { phase, source }
+}
+
+/// Preserve a terminal Guardian's single typed cleanup cause in the same
+/// clone-aware collection used by multi-error lifecycle cleanup.
+pub(super) fn typed_cleanup_io_error(failure: RuntimeError) -> io::Error {
+    io::Error::other(GuardianCleanupCauses {
+        failures: vec![failure],
+    })
 }
 
 pub(super) fn collapse_failures(mut failures: Vec<RuntimeError>) -> RuntimeError {
