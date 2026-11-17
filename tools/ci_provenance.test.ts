@@ -802,6 +802,10 @@ const trustedKEL270ReceiptPath =
   "docs/engineering/evidence/kel270-catalogue-admission-v2/review-receipt.json";
 const trustedKEL270ReceiptSha256 =
   "0a3f4074226cca88e01bba748d5e17d61a77b64492c291a9725de45405b9d4ce";
+const trustedKEL270VerifierPath =
+  "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py";
+const trustedKEL270VerifierSha256 =
+  "eff04319abf7df5aa4b384f611f067c0538ee6535b8e1de26b14e47c38003bbe";
 const safePythonEnvironment = [
   'for variable in "${!PYTHON@}"; do',
   '  unset "$variable"',
@@ -809,6 +813,22 @@ const safePythonEnvironment = [
   "export PYTHONNOUSERSITE=1",
   "export PYTHONSAFEPATH=1",
 ].join("\n");
+const approvedKEL270VerifierIntegrityCheck = String.raw`# The receipt is pinned above, so its verifier digest is an independent
+# trust anchor. Authenticate the verifier before executing candidate code.
+verifier_path=${trustedKEL270VerifierPath}
+python3 -I -S -c '
+import hashlib, json, re, sys
+receipt_path, verifier_path = sys.argv[1:]
+with open(receipt_path, encoding="utf-8") as source:
+    receipt = json.load(source)
+expected = receipt["published_file_sha256"].get(verifier_path)
+if not isinstance(expected, str) or re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+    raise SystemExit("invalid verifier digest in trusted receipt")
+with open(verifier_path, "rb") as source:
+    actual = hashlib.sha256(source.read()).hexdigest()
+if actual != expected:
+    raise SystemExit("KEL-270 B-82 verifier SHA-256 mismatch")
+' "$receipt_path" "$verifier_path"`;
 const approvedKEL270EvidenceRun = String.raw`set -euo pipefail
 # The receipt supplies all 15 source hashes. Pin its reviewed bytes in
 # protected CI so a candidate cannot repin both a source and its manifest.
@@ -824,6 +844,7 @@ fi
 # Clear runner-provided Python startup controls before the verifier and
 # its child processes; re-enable only safe-path and no-user-site flags.
 ${safePythonEnvironment}
+${approvedKEL270VerifierIntegrityCheck}
 python3.12 -I -m venv "$RUNNER_TEMP/kel270-evidence-python"
 cat > "$RUNNER_TEMP/kel270-evidence-requirements.txt" <<'REQ'
 cryptography==50.0.2 \
@@ -860,6 +881,9 @@ function assertEvidenceBeforeCandidateCode(steps: Record<string, any>[]) {
   expect(steps[2].run).toContain('for variable in "${!PYTHON@}"; do');
   expect(steps[2].run).toContain("export PYTHONNOUSERSITE=1");
   expect(steps[2].run).toContain("export PYTHONSAFEPATH=1");
+  expect(steps[2].run).toContain("python3 -I -S -c");
+  expect(steps[2].run).toContain(trustedKEL270VerifierPath);
+  expect(steps[2].run).toContain("verifier SHA-256 mismatch");
   expect(steps[2].run).toContain("python3.12 -I -m venv");
   expect(steps[2].run).toContain("verify_spec_evidence.py --check");
   expect(steps[2].run).toBe(approvedKEL270EvidenceRun);
@@ -901,6 +925,7 @@ test("KEL-270 evidence rejects in-step untrusted execution and failure masking",
   for (const mutated of [
     original.replace(trustedKEL270ReceiptSha256, "0".repeat(64)),
     original.replace(safePythonEnvironment, ""),
+    original.replace(approvedKEL270VerifierIntegrityCheck, ""),
     original.replace(
       "sha256sum --check --status",
       "sha256sum --check --status || true",
@@ -923,6 +948,60 @@ test("KEL-270 evidence rejects in-step untrusted execution and failure masking",
         ...steps.slice(3),
       ]),
     ).toThrow();
+  }
+});
+
+test("KEL-270 gate authenticates the verifier before executing candidate code", () => {
+  if (process.platform === "win32") return;
+
+  const receiptBytes = readFileSync(trustedKEL270ReceiptPath);
+  const receipt = JSON.parse(receiptBytes.toString("utf8")) as {
+    published_file_sha256: Record<string, string>;
+  };
+  expect(receipt.published_file_sha256[trustedKEL270VerifierPath]).toBe(
+    trustedKEL270VerifierSha256,
+  );
+
+  const temporary = mkdtempSync(join(tmpdir(), "keld270-verifier-pin-"));
+  const evidenceDirectory = join(temporary, dirname(trustedKEL270VerifierPath));
+  const receiptTarget = join(temporary, trustedKEL270ReceiptPath);
+  const verifierTarget = join(temporary, trustedKEL270VerifierPath);
+  const identityTarget = join(
+    temporary,
+    "docs/specs/kel270-catalogue-admission-v2/identity.md",
+  );
+  try {
+    mkdirSync(evidenceDirectory, { recursive: true });
+    mkdirSync(dirname(identityTarget), { recursive: true });
+    writeFileSync(receiptTarget, receiptBytes);
+    writeFileSync(verifierTarget, readFileSync(trustedKEL270VerifierPath));
+    writeFileSync(identityTarget, "original reviewed specification\n");
+
+    const check = [
+      "set -euo pipefail",
+      `receipt_path=${trustedKEL270ReceiptPath}`,
+      approvedKEL270VerifierIntegrityCheck,
+    ].join("\n");
+    const valid = Bun.spawnSync(["bash", "-c", check], { cwd: temporary });
+    expect(valid.exitCode).toBe(0);
+
+    // Reproduce the CodeRabbit attack: keep the pinned receipt unchanged,
+    // mutate a source and replace the verifier with a successful no-op.
+    writeFileSync(identityTarget, "attacker-modified specification\n");
+    writeFileSync(
+      verifierTarget,
+      '#!/usr/bin/env python3\nprint("NOOP VERIFIER: PASS")\n',
+    );
+    const mutant = Bun.spawnSync(["bash", "-c", check], { cwd: temporary });
+    expect(mutant.exitCode).not.toBe(0);
+    expect(new TextDecoder().decode(mutant.stderr)).toContain(
+      "KEL-270 B-82 verifier SHA-256 mismatch",
+    );
+    expect(
+      createHash("sha256").update(readFileSync(receiptTarget)).digest("hex"),
+    ).toBe(trustedKEL270ReceiptSha256);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
   }
 });
 

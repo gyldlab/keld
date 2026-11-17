@@ -935,6 +935,22 @@ jobs:
           done
           export PYTHONNOUSERSITE=1
           export PYTHONSAFEPATH=1
+          # The receipt is pinned above, so its verifier digest is an independent
+          # trust anchor. Authenticate the verifier before executing candidate code.
+          verifier_path=docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py
+          python3 -I -S -c '
+          import hashlib, json, re, sys
+          receipt_path, verifier_path = sys.argv[1:]
+          with open(receipt_path, encoding="utf-8") as source:
+              receipt = json.load(source)
+          expected = receipt["published_file_sha256"].get(verifier_path)
+          if not isinstance(expected, str) or re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+              raise SystemExit("invalid verifier digest in trusted receipt")
+          with open(verifier_path, "rb") as source:
+              actual = hashlib.sha256(source.read()).hexdigest()
+          if actual != expected:
+              raise SystemExit("KEL-270 B-82 verifier SHA-256 mismatch")
+          ' "$receipt_path" "$verifier_path"
           python3.12 -I -m venv "$RUNNER_TEMP/kel270-evidence-python"
           cat > "$RUNNER_TEMP/kel270-evidence-requirements.txt" <<'REQ'
           cryptography==50.0.2 \
