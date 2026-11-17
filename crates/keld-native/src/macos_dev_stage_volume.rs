@@ -1,6 +1,10 @@
 //! Native macOS filesystem flags required for owner-private dev-stage paths.
+#![allow(unsafe_code)] // GH-1563: exact descriptor ACL inspection sanctioned by crate AGENTS.md.
+#![deny(unsafe_op_in_unsafe_fn)]
 
+use std::ffi::{c_int, c_void};
 use std::io;
+use std::os::fd::AsRawFd as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
@@ -11,6 +15,148 @@ use rustix::fs::{Mode, OFlags, fstatfs, open};
 const MNT_LOCAL: u32 = 0x0000_1000;
 const MNT_REMOVABLE: u32 = 0x0000_0200;
 const MNT_IGNORE_OWNERSHIP: u32 = 0x0020_0000;
+
+// macOS SDK sys/acl.h. These calls only inspect an already opened directory.
+// acl_get_fd_np returns a null ACL with ENOENT when no extended ACL exists.
+const ACL_TYPE_EXTENDED: c_int = 0x100;
+const ACL_FIRST_ENTRY: c_int = 0;
+const ACL_NEXT_ENTRY: c_int = -1;
+const ACL_EXTENDED_ALLOW: c_int = 1;
+const ACL_EXTENDED_DENY: c_int = 2;
+const ACL_FLAG_DEFER_INHERIT: c_int = 1;
+const ACL_ENTRY_FILE_INHERIT: c_int = 1 << 5;
+const ACL_ENTRY_DIRECTORY_INHERIT: c_int = 1 << 6;
+const ACL_ENTRY_ONLY_INHERIT: c_int = 1 << 8;
+const ENOENT: i32 = 2;
+const EINVAL: i32 = 22;
+
+// Read/list, search, read attributes, read extended attributes, read security
+// and synchronize cannot mutate a directory entry or its ownership. Unknown
+// permission bits fail closed. These masks follow Darwin sys/acl.h.
+const ACL_READ_ONLY_PERMISSIONS: u64 =
+    (1 << 1) | (1 << 3) | (1 << 7) | (1 << 9) | (1 << 11) | (1 << 20);
+
+unsafe extern "C" {
+    fn acl_get_fd_np(fd: c_int, acl_type: c_int) -> *mut c_void;
+    fn acl_free(acl: *mut c_void) -> c_int;
+    fn acl_valid(acl: *mut c_void) -> c_int;
+    fn acl_get_entry(acl: *mut c_void, entry_id: c_int, entry: *mut *mut c_void) -> c_int;
+    fn acl_get_tag_type(entry: *mut c_void, tag_type: *mut c_int) -> c_int;
+    fn acl_get_permset_mask_np(entry: *mut c_void, mask: *mut u64) -> c_int;
+    fn acl_get_flagset_np(entry: *mut c_void, flags: *mut *mut c_void) -> c_int;
+    fn acl_get_flag_np(flags: *mut c_void, flag: c_int) -> c_int;
+}
+
+struct OwnedAcl(*mut c_void);
+
+impl Drop for OwnedAcl {
+    fn drop(&mut self) {
+        // SAFETY: acl_get_fd_np returned this nonnull ACL pointer and this is its
+        // only owner. Entries are only borrowed while this object is alive.
+        let _ = unsafe { acl_free(self.0) };
+    }
+}
+
+fn validate_open_directory_acl(directory: &std::fs::File) -> io::Result<()> {
+    // SAFETY: directory is an open, live O_DIRECTORY fd. The library borrows it
+    // only for this call; a returned ACL is separately freed by OwnedAcl.
+    let acl = unsafe { acl_get_fd_np(directory.as_raw_fd(), ACL_TYPE_EXTENDED) };
+    if acl.is_null() {
+        let error = io::Error::last_os_error();
+        return if error.raw_os_error() == Some(ENOENT) {
+            Ok(())
+        } else {
+            Err(error)
+        };
+    }
+    let acl = OwnedAcl(acl);
+    // SAFETY: the ACL is a valid owned pointer for the duration of this call.
+    if unsafe { acl_valid(acl.0) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut next = ACL_FIRST_ENTRY;
+    loop {
+        let mut entry = std::ptr::null_mut();
+        // SAFETY: the ACL remains owned throughout the loop, and the entry
+        // out-pointer is valid. Darwin returns 0 for an entry; after the last
+        // entry ACL_NEXT_ENTRY returns -1/EINVAL (acl_get_entry(3)).
+        match unsafe { acl_get_entry(acl.0, next, &raw mut entry) } {
+            0 if !entry.is_null() => {}
+            0 => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "null macOS ACL entry",
+                ));
+            }
+            _ if next == ACL_NEXT_ENTRY
+                && io::Error::last_os_error().raw_os_error() == Some(EINVAL) =>
+            {
+                return Ok(());
+            }
+            _ => return Err(io::Error::last_os_error()),
+        }
+        next = ACL_NEXT_ENTRY;
+        let mut tag = 0;
+        // SAFETY: entry borrows from the live ACL, and tag is writable.
+        if unsafe { acl_get_tag_type(entry, &raw mut tag) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        match tag {
+            ACL_EXTENDED_DENY => {}
+            ACL_EXTENDED_ALLOW => {
+                let mut mask = 0_u64;
+                // SAFETY: entry borrows from the live ACL; mask is writable.
+                if unsafe { acl_get_permset_mask_np(entry, &raw mut mask) } != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if mask & !ACL_READ_ONLY_PERMISSIONS != 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "macOS ACL grants directory mutation or unsupported rights",
+                    ));
+                }
+                // Directory-only read grants can be safe on an ancestor,
+                // but file_inherit and directory_inherit propagate them to
+                // new 0400 staged files and 0700 children. On a file, LIST
+                // means READ and SEARCH means EXECUTE. Reject propagation.
+                let mut flags = std::ptr::null_mut();
+                // SAFETY: entry borrows from the live ACL; flags is writable,
+                // and the returned flag set remains borrowed from that ACL.
+                if unsafe { acl_get_flagset_np(entry, &raw mut flags) } != 0 || flags.is_null() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "macOS ACL flag set is unavailable",
+                    ));
+                }
+                for flag in [
+                    ACL_FLAG_DEFER_INHERIT,
+                    ACL_ENTRY_FILE_INHERIT,
+                    ACL_ENTRY_DIRECTORY_INHERIT,
+                    ACL_ENTRY_ONLY_INHERIT,
+                ] {
+                    // SAFETY: flags borrows from the live ACL and flag names a
+                    // Darwin sys/acl.h bit. The API returns 0, 1, or -1.
+                    match unsafe { acl_get_flag_np(flags, flag) } {
+                        0 => {}
+                        1 => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::PermissionDenied,
+                                "macOS ACL can propagate read access into private stage files",
+                            ));
+                        }
+                        _ => return Err(io::Error::last_os_error()),
+                    }
+                }
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unknown macOS ACL tag",
+                ));
+            }
+        }
+    }
+}
 
 fn owner_enforcing_local_volume(filesystem: &[u8], flags: u32, mount_owner: u32, uid: u32) -> bool {
     matches!(filesystem, b"apfs" | b"hfs")
@@ -64,6 +210,9 @@ pub fn validate_macos_dev_stage_volume(path: &Path, uid: u32) -> io::Result<()> 
             ),
         ));
     }
+    // ACLs can grant namespace mutation even with POSIX mode 0700. Inspect the
+    // same opened inode without launching a child during boot preflight.
+    validate_open_directory_acl(&opened)?;
     Ok(())
 }
 

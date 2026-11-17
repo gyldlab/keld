@@ -965,4 +965,76 @@ mod tests {
             "{error}"
         );
     }
+
+    #[test]
+    fn guardian_rejects_sticky_ancestor_bun_dependency_and_keeps_private_import_working() {
+        let temp = canonical_tempdir();
+        let root = temp
+            .path()
+            .join("project/.keld/dev/0123456789abcdef0123456789abcdef");
+        fs::create_dir_all(root.join("src")).expect("private stage src");
+        let entry = root.join("src/main.ts");
+        fs::write(
+            &entry,
+            "import 'gh1563_stage_dependency'; console.log('STAGE_ENTRY_OK');\n",
+        )
+        .expect("private stage entry");
+        let foreign = temp.path().join("node_modules/gh1563_stage_dependency");
+        fs::create_dir_all(&foreign).expect("foreign module directory");
+        fs::write(
+            foreign.join("index.js"),
+            "console.log('FOREIGN_EXECUTED');\n",
+        )
+        .expect("foreign package fixture");
+        let metadata = fs::metadata(&entry).expect("entry identity");
+
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o1777))
+            .expect("make only ancestor sticky and writable");
+        let error = guardian_bun_command(
+            &Ok(root.clone()),
+            &root,
+            std::path::Path::new("src/main.ts"),
+            metadata.dev(),
+            metadata.ino(),
+            true,
+            "/tmp/link#token",
+        )
+        .expect_err("Guardian must refuse an ancestor that another UID can populate");
+        assert!(
+            error.to_string().contains("namespace write access"),
+            "{error}"
+        );
+
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))
+            .expect("restore private ancestor");
+        let private = root.join("node_modules/gh1563_stage_dependency");
+        fs::create_dir_all(&private).expect("private dependency directory");
+        fs::write(
+            private.join("index.js"),
+            "console.log('PRIVATE_EXECUTED');\n",
+        )
+        .expect("private module fixture");
+        let output = guardian_bun_command(
+            &Ok(root.clone()),
+            &root,
+            std::path::Path::new("src/main.ts"),
+            metadata.dev(),
+            metadata.ino(),
+            true,
+            "/tmp/link#token",
+        )
+        .expect("private namespace admission")
+        .output()
+        .expect("run actual Bun entry using private package");
+        assert!(
+            output.status.success(),
+            "private module run failed: {output:?}"
+        );
+        let stdout = String::from_utf8(output.stdout).expect("Bun stdout UTF-8");
+        assert!(
+            stdout.contains("PRIVATE_EXECUTED\nSTAGE_ENTRY_OK"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("FOREIGN_EXECUTED"), "{stdout}");
+    }
 }

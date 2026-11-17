@@ -662,7 +662,9 @@ fn actual_public_auth_negative_smoke_and_public_quit() -> SmokeResult<()> {
     )?;
     let root = tempfile::Builder::new()
         .prefix("kel89-auth-smoke-")
-        .tempdir_in("/tmp")?
+        // Use the OS per-user private temporary namespace for projects.
+        // A shared sticky parent permits foreign Bun package creation.
+        .tempdir()?
         .keep();
     eprintln!("KELD_KEL89_SMOKE_PROJECTS {}", root.display()); // durable Root-owned artifacts, not deleted by test
     let census = compile_native_window_census(&root);
@@ -693,7 +695,7 @@ fn actual_public_auth_pending_begin_public_quit() -> SmokeResult<()> {
     )?;
     let root = tempfile::Builder::new()
         .prefix("kel89-active-begin-quit-")
-        .tempdir_in("/tmp")?
+        .tempdir()?
         .keep();
     eprintln!("KELD_KEL89_ACTIVE_BEGIN_QUIT_PROJECT {}", root.display());
     let census = compile_native_window_census(&root);
@@ -724,7 +726,7 @@ fn consecutive_actual_public_auth_negative_quits_reap_real_hosts_without_graphic
     )?;
     let owned = tempfile::Builder::new()
         .prefix("kel89-quit-no-graphics-")
-        .tempdir_in("/tmp")?;
+        .tempdir()?;
     // Preserve the original four-case order. In hosted failure evidence, the
     // first case retires and the second timed out; the same observer/CLI path
     // must stay reusable for the two later negative cases as well.

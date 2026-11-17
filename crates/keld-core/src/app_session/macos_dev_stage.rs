@@ -5,7 +5,6 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
-use std::process::Command;
 
 fn unsafe_namespace(path: &Path, detail: &str) -> io::Error {
     io::Error::new(
@@ -37,43 +36,19 @@ pub fn validate_macos_dev_stage_directory(path: &Path) -> io::Result<()> {
         ));
     }
     let mode = metadata.permissions().mode();
-    // A sticky directory protects another user's entry from rename by a
-    // third party, but only if that party does not own the directory.
-    if mode & 0o022 != 0 && mode & 0o1000 == 0 {
+    // A sticky directory prevents some renames, but other UIDs may create
+    // node_modules there. Bun searches upward for packages when resolving a
+    // staged app's bare imports, so even a sticky ancestor is unsafe.
+    if mode & 0o022 != 0 {
         return Err(unsafe_namespace(
             path,
             "grants another principal namespace write access",
         ));
     }
 
-    // A mode-0700 directory may still grant delete_child or add_file using a
-    // macOS extended ACL. Use the installed read-only inspector because this
-    // crate does not own permission to introduce unsafe ACL FFI. Output that
-    // cannot be validated is refusal, not authority. No shell is involved.
-    let output = Command::new("/bin/ls")
-        .args(["-ldeq", "--"])
-        .arg(path)
-        .env("LC_ALL", "C")
-        .output()?;
-    let report = std::str::from_utf8(&output.stdout)
-        .map_err(|error| unsafe_namespace(path, &format!("unreadable ACL: {error}")))?;
-    let mut lines = report.lines();
-    if !output.status.success() || lines.next().is_none() {
-        return Err(unsafe_namespace(path, "unreadable macOS directory ACL"));
-    }
-    for entry in lines {
-        let Some((index, text)) = entry.trim_start().split_once(':') else {
-            return Err(unsafe_namespace(path, "unrecognized macOS ACL entry"));
-        };
-        let fields = text.split_ascii_whitespace().collect::<Vec<_>>();
-        if index.is_empty()
-            || !index.bytes().all(|byte| byte.is_ascii_digit())
-            || !fields.contains(&"deny")
-            || fields.contains(&"allow")
-        {
-            return Err(unsafe_namespace(path, "unsafe or unrecognized macOS ACL"));
-        }
-    }
+    // The native mount validator also inspects the ACL on its retained
+    // O_NOFOLLOW directory descriptor. This remains process-free before boot
+    // and guard preflight. Read-only allow entries are safe; write grants fail.
     let after = fs::symlink_metadata(path)?;
     if after.dev() != metadata.dev() || after.ino() != metadata.ino() {
         return Err(unsafe_namespace(

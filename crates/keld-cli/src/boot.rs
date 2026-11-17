@@ -1429,6 +1429,24 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn macos_stage_refuses_sticky_writable_ancestor_that_can_supply_bun_packages() {
+        let (temp, project, host) = fixture();
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o1777))
+            .expect("sticky writable ancestor fixture");
+        let error = stage_dev_boot(&project, &host)
+            .expect_err("sticky bit cannot prevent foreign node_modules creation");
+        assert!(
+            error.to_string().contains("namespace write access"),
+            "{error}"
+        );
+        assert!(
+            !project.join(".keld").exists(),
+            "rejection must precede stage creation"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn macos_private_stage_executes_the_copied_host_by_path() {
         use std::process::Command;
 
@@ -1474,6 +1492,69 @@ mod tests {
         assert!(
             !project.join(".keld").exists(),
             "refusal must precede staging"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_stage_accepts_read_only_acl_allow_without_changing_project_mode() {
+        use std::process::Command;
+
+        let (_temp, project, host) = fixture();
+        fs::set_permissions(&project, fs::Permissions::from_mode(0o700))
+            .expect("owner-private fixture mode");
+        let status = Command::new("/bin/chmod")
+            .args([
+                "+a",
+                "everyone allow list,search,readattr,readextattr,readsecurity",
+            ])
+            .arg(&project)
+            .status()
+            .expect("native read-only ACL fixture");
+        assert!(status.success(), "macOS read-only ACL must be installed");
+        let stage = stage_dev_boot(&project, &host)
+            .expect("read-only extended ACL grants no namespace mutation rights");
+        assert!(
+            stage.host().is_file(),
+            "private staged Host must still exist"
+        );
+        assert_eq!(
+            fs::metadata(&project)
+                .expect("project metadata after staging")
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o700,
+            "the producer must preserve the original project permissions"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_stage_refuses_inherited_read_only_grants_that_expose_stage_files() {
+        use std::process::Command;
+
+        let (_temp, project, host) = fixture();
+        fs::set_permissions(&project, fs::Permissions::from_mode(0o700))
+            .expect("private project mode");
+        let status = Command::new("/bin/chmod")
+            .args([
+                "+a",
+                "everyone allow list,search,readattr,readextattr,readsecurity,file_inherit,directory_inherit",
+            ])
+            .arg(&project)
+            .status()
+            .expect("native inheritable ACL fixture");
+        assert!(
+            status.success(),
+            "macOS inheritable ACL fixture must be installed"
+        );
+        let error = stage_dev_boot(&project, &host)
+            .expect_err("staged files must not inherit cross-account read grants");
+        assert!(error.to_string().contains("ACL"), "{error}");
+        assert!(
+            !project.join(".keld").exists(),
+            "refusal must precede private stage creation"
         );
     }
 
