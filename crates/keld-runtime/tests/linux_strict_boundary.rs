@@ -189,9 +189,7 @@ fn linux_strict_host_helper() {
 
 #[test]
 fn strict_profile_constructs_only_from_an_unprivileged_launcher_and_private_root() {
-    let role = tempfile::tempdir().expect("role-private root");
-    fs::set_permissions(role.path(), fs::Permissions::from_mode(0o700))
-        .expect("owner-private role mode");
+    let role = owner_private_tempdir();
     let profile = strict_profile(role.path());
     let _command = profile
         .command(
@@ -200,6 +198,31 @@ fn strict_profile_constructs_only_from_an_unprivileged_launcher_and_private_root
             &[],
         )
         .expect("strict command");
+}
+
+#[test]
+fn strict_profile_rejects_writable_descendant_of_private_ancestor() {
+    let parent = tempfile::tempdir_in("/tmp").expect("private stage ancestor");
+    fs::set_permissions(parent.path(), fs::Permissions::from_mode(0o700)).expect("private mode");
+    let mutable = parent.path().join("mutable");
+    fs::create_dir(&mutable).expect("mutable ancestor");
+    fs::set_permissions(&mutable, fs::Permissions::from_mode(0o770)).expect("mutable mode");
+    let role = mutable.join("role");
+    fs::create_dir(&role).expect("role");
+    fs::set_permissions(&role, fs::Permissions::from_mode(0o700)).expect("role mode");
+    let error = LinuxStrictProfile::new(Path::new("/usr/bin/bwrap"), strict_launcher(), &role)
+        .expect_err("private ancestor must not conceal later replacement authority");
+    assert!(error.to_string().contains("ancestor permits replacement"));
+}
+
+#[test]
+fn strict_profile_rejects_role_without_private_ancestor() {
+    let role = tempfile::tempdir_in("/tmp").expect("shared temporary directory");
+    fs::set_permissions(role.path(), fs::Permissions::from_mode(0o700)).expect("role mode");
+    let error =
+        LinuxStrictProfile::new(Path::new("/usr/bin/bwrap"), strict_launcher(), role.path())
+            .expect_err("sticky-only ancestry must not admit a writable role");
+    assert!(error.to_string().contains("owner-private parent"));
 }
 
 #[test]
@@ -632,8 +655,8 @@ process.exit(0);
 /// `/code/main.ts` and the canonical transport as `/code/kipc-transport.ts`:
 /// exactly the files production binds (arch 06).
 fn start_worker_link_role(
-    role: &tempfile::TempDir,
-    staged: &tempfile::TempDir,
+    role: &OwnerPrivateTempDir,
+    staged: &OwnerPrivateTempDir,
     entry: &str,
     test_hooks: bool,
 ) -> keld_runtime::primary::PrimaryRoleSupervisor {
@@ -836,11 +859,28 @@ fn worker_link_role_missing_its_transport_file_at_open_is_refused_before_the_wor
     );
 }
 
-fn owner_private_tempdir() -> tempfile::TempDir {
-    let role = tempfile::tempdir().expect("role-private root");
+struct OwnerPrivateTempDir {
+    role: tempfile::TempDir,
+    _parent: tempfile::TempDir,
+}
+
+impl OwnerPrivateTempDir {
+    fn path(&self) -> &Path {
+        self.role.path()
+    }
+}
+
+fn owner_private_tempdir() -> OwnerPrivateTempDir {
+    let parent = tempfile::tempdir().expect("private stage ancestor");
+    fs::set_permissions(parent.path(), fs::Permissions::from_mode(0o700))
+        .expect("private ancestor mode");
+    let role = tempfile::tempdir_in(parent.path()).expect("role-private root");
     fs::set_permissions(role.path(), fs::Permissions::from_mode(0o700))
         .expect("owner-private role mode");
-    role
+    OwnerPrivateTempDir {
+        role,
+        _parent: parent,
+    }
 }
 
 fn strict_profile(role_root: &Path) -> LinuxStrictProfile {
@@ -899,7 +939,7 @@ fn runtime_dependencies(program: &Path) -> Vec<(std::path::PathBuf, std::path::P
 }
 
 fn strict_launcher() -> &'static Path {
-    static FIXTURE: OnceLock<(tempfile::TempDir, PathBuf)> = OnceLock::new();
+    static FIXTURE: OnceLock<(OwnerPrivateTempDir, PathBuf)> = OnceLock::new();
     let (_, launcher) = FIXTURE.get_or_init(|| {
         let root = owner_private_tempdir();
         let launcher = root.path().join("keld-linux-strict-launcher");
@@ -917,8 +957,8 @@ fn strict_launcher() -> &'static Path {
 
 fn assert_mutable_launcher_ancestor_rejected(role: &Path) {
     // This negative control needs a publicly reachable ancestor. Inherited TMPDIR
-    // may be behind the managed runner's owner-private barrier, which correctly
-    // makes a mutable descendant safe. TempDir still owns this native fixture.
+    // may be behind the managed runner's owner-private barrier. A barrier does not
+    // make later writable descendants safe. TempDir owns this native fixture.
     let shared = Path::new("/tmp");
     let metadata = fs::symlink_metadata(shared).expect("native shared temp metadata");
     assert!(
@@ -1158,7 +1198,7 @@ fn forwarded_strict_environment(mode: &str) -> Vec<(OsString, OsString)> {
 }
 
 fn run_strict_probe(
-    role: &tempfile::TempDir,
+    role: &OwnerPrivateTempDir,
     host_only: &tempfile::TempDir,
 ) -> std::process::Output {
     let abstract_name = format!("keld-relaunch-{}", std::process::id());

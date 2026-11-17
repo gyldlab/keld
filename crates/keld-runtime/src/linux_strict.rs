@@ -109,7 +109,8 @@ impl LinuxStrictProfile {
     /// Keld launcher must be root- or current-user-owned and immutable to other
     /// principals. Both are regular non-symlink executables. The role root is
     /// a real current-user-owned directory with exact mode `0o700`, admitted
-    /// through replacement-safe, non-symlink ancestors and retained until mounting
+    /// beneath an owner-private parent, through replacement-safe, non-symlink
+    /// ancestors and retained until mounting
     /// with Bubblewrap `--bind-fd` (unsupported versions fail closed).
     ///
     /// # Errors
@@ -928,7 +929,7 @@ fn open_trusted_parent(
     path: &Path,
     current_uid: u32,
     phase: &'static str,
-) -> Result<File, LinuxStrictError> {
+) -> Result<(File, bool), LinuxStrictError> {
     use rustix::fs::{Mode, OFlags, open, openat};
     if !path.is_absolute() {
         return Err(LinuxStrictError::new(phase, "expected absolute path"));
@@ -939,7 +940,7 @@ fn open_trusted_parent(
     let parent = path
         .parent()
         .ok_or_else(|| LinuxStrictError::new(phase, "missing parent"))?;
-    let mut private_barrier = false;
+    let mut private_parent = false;
     for component in std::iter::once(Component::RootDir).chain(parent.components().skip(1)) {
         if let Component::Normal(name) = component {
             directory = File::from(openat(&directory, name, flags, Mode::empty()).map_err(error)?);
@@ -954,16 +955,18 @@ fn open_trusted_parent(
             .map_err(|source| LinuxStrictError::new(phase, source.to_string()))?;
         let mode = metadata.permissions().mode() & 0o7777;
         if (metadata.uid() != 0 && metadata.uid() != current_uid)
-            || (!private_barrier && mode & 0o022 != 0 && mode & 0o1000 == 0)
+            || (mode & 0o022 != 0 && mode & 0o1000 == 0)
         {
             return Err(LinuxStrictError::new(
                 phase,
                 "ancestor permits replacement by another principal",
             ));
         }
-        private_barrier |= mode.trailing_zeros() >= 6;
+        // Privacy does not revoke directory FDs acquired before an ancestor chmod.
+        // Every later component must independently pass the replacement check.
+        private_parent = mode & 0o077 == 0;
     }
-    Ok(directory)
+    Ok((directory, private_parent))
 }
 
 fn reject_file_capabilities(path: &Path, phase: &'static str) -> Result<(), LinuxStrictError> {
@@ -993,7 +996,17 @@ fn validate_role_root(path: &Path) -> Result<Arc<File>, LinuxStrictError> {
         .file_name()
         .ok_or_else(|| LinuxStrictError::new("role root path", "missing directory name"))?;
     let current_uid = current_effective_uid()?;
-    let parent = open_trusted_parent(&absolute, current_uid, "role root ancestor")?;
+    let (parent, private_parent) =
+        open_trusted_parent(&absolute, current_uid, "role root ancestor")?;
+    // A retained FD to a searchable descendant bypasses an earlier private ancestor.
+    // The immediate parent must itself deny other principals search access, even if
+    // the sandbox target later widens its writable role root.
+    if !private_parent {
+        return Err(LinuxStrictError::new(
+            "role root ancestor",
+            "writable role root requires an owner-private parent",
+        ));
+    }
     let directory = File::from(
         openat(
             &parent,
@@ -1231,16 +1244,64 @@ mod role_root_tests {
         assert!(validate_role_root(&role).is_err());
     }
     #[test]
-    fn role_root_accepts_mutable_ancestor_behind_private_barrier() {
+    fn role_root_rejects_mutable_ancestor_behind_private_parent() {
         let private = tempfile::tempdir_in("/tmp").expect("private barrier");
         fs::set_permissions(private.path(), fs::Permissions::from_mode(0o700)).expect("mode");
         let nested = private.path().join("nested");
         fs::create_dir(&nested).expect("nested directory");
         fs::set_permissions(&nested, fs::Permissions::from_mode(0o770)).expect("mode");
-        let role = nested.join("role");
+        let final_parent = nested.join("private-parent");
+        fs::create_dir(&final_parent).expect("final private parent");
+        fs::set_permissions(&final_parent, fs::Permissions::from_mode(0o700)).expect("mode");
+        let role = final_parent.join("role");
+        fs::create_dir(&role).expect("role");
+        fs::set_permissions(&role, fs::Permissions::from_mode(0o700)).expect("mode");
+        assert!(validate_role_root(&role).is_err());
+    }
+
+    #[test]
+    fn role_root_rejects_sticky_only_ancestry() {
+        let role = tempfile::tempdir_in("/tmp").expect("shared temporary directory");
+        fs::set_permissions(role.path(), fs::Permissions::from_mode(0o700)).expect("mode");
+        let error = validate_role_root(role.path()).expect_err("missing private parent");
+        assert!(error.to_string().contains("owner-private parent"));
+    }
+
+    #[test]
+    fn role_root_rejects_searchable_parent_below_private_ancestor() {
+        let ancestor = tempfile::tempdir_in("/tmp").expect("private ancestor");
+        fs::set_permissions(ancestor.path(), fs::Permissions::from_mode(0o700)).expect("mode");
+        for mode in [0o755, 0o1777] {
+            let parent = ancestor.path().join(format!("parent-{mode:o}"));
+            fs::create_dir(&parent).expect("parent");
+            fs::set_permissions(&parent, fs::Permissions::from_mode(mode)).expect("mode");
+            let role = parent.join("role");
+            fs::create_dir(&role).expect("role");
+            fs::set_permissions(&role, fs::Permissions::from_mode(0o700)).expect("mode");
+            let error = validate_role_root(&role).expect_err("searchable parent");
+            assert!(error.to_string().contains("owner-private parent"));
+        }
+    }
+
+    #[test]
+    fn role_root_accepts_private_chain_and_public_executable_ancestry() {
+        let parent = tempfile::tempdir_in("/tmp").expect("private ancestor");
+        fs::set_permissions(parent.path(), fs::Permissions::from_mode(0o700)).expect("mode");
+        let role = parent.path().join("role");
         fs::create_dir(&role).expect("role");
         fs::set_permissions(&role, fs::Permissions::from_mode(0o700)).expect("mode");
         assert!(validate_role_root(&role).is_ok());
+        // The private-barrier requirement belongs to writable role roots, not binaries.
+        let public_parent = tempfile::tempdir_in("/tmp").expect("public executable parent");
+        fs::set_permissions(public_parent.path(), fs::Permissions::from_mode(0o755)).expect("mode");
+        assert!(
+            validate_trusted_ancestors(
+                &public_parent.path().join("executable"),
+                current_effective_uid().expect("uid"),
+                "executable ancestor",
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1257,6 +1318,7 @@ mod role_root_tests {
     #[test]
     fn role_root_retains_admitted_identity_after_path_replacement() {
         let parent = tempfile::tempdir().expect("private parent");
+        fs::set_permissions(parent.path(), fs::Permissions::from_mode(0o700)).expect("mode");
         let role = parent.path().join("role");
         fs::create_dir(&role).expect("role");
         fs::set_permissions(&role, fs::Permissions::from_mode(0o700)).expect("mode");
