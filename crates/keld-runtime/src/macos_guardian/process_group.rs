@@ -704,6 +704,13 @@ pub(super) fn retire_own_child_group(
     let reap_deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
     let reap = reap_own_child(reap_deadline);
     let retired = match decision {
+        // Accepted SIGKILL proves delivery, not retirement of the entire
+        // group: another member may still be an unreaped zombie. The owned
+        // leader must first be reaped, then the same budget must prove dual
+        // ESRCH without issuing another signal or refreshing the deadline.
+        Decision::Done(Ok(())) if reap.is_ok() => {
+            require_attested_group_absence(group, reap_deadline)
+        }
         Decision::Done(result) => result,
         Decision::Denied(denied) if reap.is_ok() => {
             reconcile_denied_signal_after_reap(group, denied, reap_deadline)
