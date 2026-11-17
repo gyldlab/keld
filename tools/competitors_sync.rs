@@ -434,11 +434,11 @@ mod tests {
     // Quote a path for the shell Git uses to launch its upload-pack command.
     // Git for Windows uses forward-slash paths with the same POSIX quoting.
     fn shell_quote_path(path: &Path) -> String {
-        let path = path.to_string_lossy();
+        let path = path.to_str().expect("test marker path must be UTF-8");
         #[cfg(windows)]
         let path = path.replace('\\', "/");
         #[cfg(not(windows))]
-        let path = path.into_owned();
+        let path = path.to_owned();
         format!("'{}'", path.replace('\'', "'\\''"))
     }
 
@@ -500,6 +500,20 @@ mod tests {
             "--upload-pack=git --version > {}",
             shell_quote_path(&marker)
         );
+        // Prove this exact Git transport and shell quoting can execute the
+        // harmless marker command. Otherwise the rejection test could pass
+        // because its negative oracle is incapable of seeing execution.
+        let positive = Command::new("git")
+            .current_dir(&dest)
+            .args(["fetch", "--depth", "1", &malicious, "origin", "main"])
+            .output()
+            .expect("Git must run the positive-control probe");
+        assert!(
+            marker.is_file(),
+            "positive upload-pack probe did not create marker: {positive:?}"
+        );
+        fs::remove_file(&marker).expect("clear positive-control marker");
+
         let result = if pinned {
             fetch_reset_sha(&dest, &malicious, true)
         } else {
