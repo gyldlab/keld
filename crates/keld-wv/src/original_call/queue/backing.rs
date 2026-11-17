@@ -78,7 +78,7 @@ impl<P> PreparingOriginalInvocation<P> {
         &self.identity
     }
     #[cfg(any(
-        test,
+        all(test, windows),
         all(target_os = "macos", feature = "profile-test-hooks", debug_assertions)
     ))]
     pub(crate) const fn kind(&self) -> OriginalInvocationKind {

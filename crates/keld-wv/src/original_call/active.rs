@@ -74,18 +74,24 @@ impl ActiveOriginalCall {
         self.local_bytes
     }
     #[cfg(any(target_os = "macos", test))]
-    #[cfg(any(test, all(feature = "profile-test-hooks", debug_assertions)))]
+    #[cfg(any(
+        all(test, windows),
+        all(target_os = "macos", feature = "profile-test-hooks", debug_assertions)
+    ))]
     pub(crate) const fn send_forwarded(&self) -> bool {
         self.send_forwarded
     }
     #[cfg(any(
-        test,
+        all(test, windows),
         all(target_os = "macos", feature = "profile-test-hooks", debug_assertions)
     ))]
     pub(crate) const fn function_finished(&self) -> bool {
         self.function_finished
     }
-    #[cfg(any(windows, test, all(feature = "profile-test-hooks", debug_assertions)))]
+    #[cfg(any(
+        windows,
+        all(target_os = "macos", feature = "profile-test-hooks", debug_assertions)
+    ))]
     pub(crate) const fn native_finished(&self) -> bool {
         self.native_finished
     }
@@ -188,7 +194,7 @@ impl PendingOriginalSend {
         Self { id, lease }
     }
     #[cfg(any(
-        test,
+        all(test, windows),
         all(target_os = "macos", feature = "profile-test-hooks", debug_assertions)
     ))]
     pub(crate) const fn id(&self) -> u32 {

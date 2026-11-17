@@ -20,6 +20,13 @@ import {
 } from "@keld/kipc";
 import { decodeRuntimeProcessInit } from "@keld/kipc/runtime-process-facts";
 
+// This allowance covers process startup in the packed integration test only.
+// Frame assembly and production WorkerLink deadlines remain at 5 seconds.
+const TEST_STARTUP_ALLOWANCE_MS = 15_000;
+function withTestIoDeadline<T>(promise: Promise<T>): Promise<T> {
+  return withIoDeadline(promise, TEST_STARTUP_ALLOWANCE_MS);
+}
+
 import { freshWin32AppLinkPipe } from "../../kipc/test/app-link-host.ts";
 
 type Message = {
@@ -31,7 +38,7 @@ type Message = {
 async function launch(
   observer: boolean,
   mutant = false,
-  installed?: { wrapper: string; entry: string },
+  installed?: { wrapper: string; entry: string; runAsMainGraph?: boolean },
 ) {
   const dir = mkdtempSync(join(tmpdir(), "krp-"));
   const endpoint =
@@ -88,8 +95,9 @@ async function launch(
           join(import.meta.dir, "runtime-preload-observer.fixture.mjs"),
         ]
       : []),
-    "--preload",
-    wrapper,
+    // Windows packaged startup uses one Bun main ESM graph for wrapper and app.
+    // Keep the separate preload route for the other existing fixture cases.
+    ...(installed?.runAsMainGraph ? [] : ["--preload", wrapper]),
     installed?.entry ??
       join(import.meta.dir, "runtime-preload-entry.fixture.mjs"),
   ];
@@ -109,19 +117,60 @@ async function launch(
       } else messages.push(message);
     },
   });
-  async function message(): Promise<Message> {
-    return (
+  const childExit = proc.exited.then(async (code) => {
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    return { code, stdout, stderr };
+  });
+  let socket: Bun.Socket<undefined> | undefined;
+  let hostClosed = false;
+  function closeHost() {
+    if (hostClosed) return;
+    hostClosed = true;
+    socket?.end();
+    server.stop(true);
+  }
+  async function awaitChild<T>(label: string, promise: Promise<T>): Promise<T> {
+    try {
+      return await withTestIoDeadline(
+        Promise.race([
+          promise,
+          childExit.then(({ code, stdout, stderr }) => {
+            throw new Error(
+              `Bun child exited while waiting for ${label} (exit ${code}); stdout=${stdout}; stderr=${stderr}`,
+            );
+          }),
+        ]),
+      );
+    } catch (error) {
+      pending = undefined;
+      if (error instanceof Error && error.message.includes("KELD-IPC-006")) {
+        proc.kill();
+        closeHost();
+        const exited = await withTestIoDeadline(childExit);
+        throw new Error(
+          `Timed out waiting for ${label}; Bun child exit=${exited.code}; stdout=${exited.stdout}; stderr=${exited.stderr}`,
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+  }
+  async function message(label = "runtime event"): Promise<Message> {
+    const next = Promise.resolve(
       messages.shift() ??
-      withIoDeadline(
         new Promise<Message>((resolve) => {
           pending = resolve;
         }),
-      )
     );
+    return awaitChild(label, next);
   }
-  const socket = await withIoDeadline(opened);
-  const writer = new WriteQueue(socket, drain);
-  const hello = await withIoDeadline(reader.readFrame());
+  const connectedSocket = await awaitChild("app-link socket open", opened);
+  socket = connectedSocket;
+  const writer = new WriteQueue(connectedSocket, drain);
+  const hello = await awaitChild("initial Hello frame", reader.readFrame());
   expect(hello.header.kind).toBe(FrameKind.Hello);
   await writer.writeFrame(
     FrameKind.Hello,
@@ -130,7 +179,7 @@ async function launch(
     0,
     new Uint8Array(32).fill(0x72),
   );
-  const init = await withIoDeadline(reader.readFrame());
+  const init = await awaitChild("runtime Init call", reader.readFrame());
   expect(init.header).toMatchObject({
     kind: FrameKind.Call,
     channel: LIFECYCLE_CHANNEL,
@@ -141,6 +190,7 @@ async function launch(
   const saved = init.payload.slice();
   return {
     proc,
+    childExit,
     reader,
     writer,
     captured,
@@ -158,7 +208,10 @@ async function launch(
     },
     async subscribe() {
       for (const channel of [WINDOW_CHANNEL, COMPAT_CONTROL_CHANNEL]) {
-        const call = await withIoDeadline(reader.readFrame());
+        const call = await awaitChild(
+          `subscription request for channel ${channel}`,
+          reader.readFrame(),
+        );
         expect(call.header.kind).toBe(FrameKind.Call);
         expect(call.header.channel).toBe(LIFECYCLE_CHANNEL);
         expect([...call.payload]).toEqual([1, channel]);
@@ -180,11 +233,13 @@ async function launch(
     },
     async dispose() {
       proc.kill();
-      await proc.exited;
-      socket.end();
-      server.stop(true);
-      rmSync(dir, { recursive: true, force: true });
-      if (mutant) rmSync(wrapper, { force: true });
+      closeHost();
+      try {
+        await withTestIoDeadline(childExit);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+        if (mutant) rmSync(wrapper, { force: true });
+      }
     },
   };
 }
@@ -205,7 +260,7 @@ test("one real API preload holds entry through Init ACK then reuses one WorkerLi
   } finally {
     await run.dispose();
   }
-}, 15000);
+}, 20000);
 
 test("independent main-realm probe proves entry cannot run while ACK is held", async () => {
   const run = await launch(true);
@@ -219,7 +274,7 @@ test("independent main-realm probe proves entry cannot run while ACK is held", a
   } finally {
     await run.dispose();
   }
-}, 15000);
+}, 20000);
 
 test("dropping wrapper await is detected by the same main-realm entry probe", async () => {
   const run = await launch(true, true);
@@ -233,7 +288,7 @@ test("dropping wrapper await is detected by the same main-realm entry probe", as
   } finally {
     await run.dispose();
   }
-}, 15000);
+}, 20000);
 
 test("wrong Init acknowledgement closes the link before application entry", async () => {
   const run = await launch(true);
@@ -241,14 +296,15 @@ test("wrong Init acknowledgement closes the link before application entry", asyn
     run.proc.send({ kind: "probe" });
     expect(await run.message()).toEqual({ kind: "probe", entered: false });
     await run.ack(1);
-    expect(await withIoDeadline(run.proc.exited)).not.toBe(0);
-    const stderr = await new Response(run.proc.stderr).text();
+    const exited = await withTestIoDeadline(run.childExit);
+    expect(exited.code).not.toBe(0);
+    const stderr = exited.stderr;
     expect(stderr).toContain("Runtime facts require");
     expect(run.connections()).toBe(1);
   } finally {
     await run.dispose();
   }
-}, 15000);
+}, 20000);
 
 test("actual packed API wrapper captures and ACKs over its same stamped installed transport", async () => {
   const stage = mkdtempSync(join(tmpdir(), "krp-sdk-"));
@@ -299,15 +355,30 @@ test("actual packed API wrapper captures and ACKs over its same stamped installe
     const text = readFileSync(wrapper, "utf8");
     expect(text).toContain('from "@keld/kipc"');
     expect(text).toContain('from "./app.js"');
-    const run = await launch(false, false, { wrapper, entry });
+    // Bun 1.4.4 on Windows can split singleton identity between --preload
+    // and the main module. The actual Windows Host enters one main ESM graph.
+    // Dynamic imports preserve the required wrapper-before-entry ordering.
+    const runAsMainGraph = process.platform === "win32";
+    const mainEntry = join(stage, "packed-main-graph.mjs");
+    if (runAsMainGraph) {
+      writeFileSync(
+        mainEntry,
+        'await import("./node_modules/@keld/api/runtime-preload.js");\nawait import("./entry.mjs");\n',
+      );
+    }
+    const run = await launch(false, false, {
+      wrapper,
+      entry: runAsMainGraph ? mainEntry : entry,
+      runAsMainGraph,
+    });
     try {
       await run.ack();
       await run.subscribe();
-      const entered = await run.message();
+      const entered = await run.message("packed API entry after Init ACK");
       expect(entered.kind).toBe("entry");
       expect(run.captured.versions).toEqual(entered.before!);
       expect(run.captured.versions.__keld_late).toBeUndefined();
-      expect((await run.message()).kind).toBe("ready");
+      expect((await run.message("packed API Ready event")).kind).toBe("ready");
       expect(run.connections()).toBe(1);
     } finally {
       await run.dispose();
@@ -315,4 +386,4 @@ test("actual packed API wrapper captures and ACKs over its same stamped installe
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
-}, 15000);
+}, 30000);
