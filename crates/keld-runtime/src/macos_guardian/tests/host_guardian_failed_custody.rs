@@ -1,5 +1,6 @@
 //! `HostGuardian`'s legacy fatal owner must not discard a group birth witness
 //! when the kernel denies a native signal. A native error is not group absence.
+use std::io;
 use std::os::unix::process::CommandExt as _;
 use std::process::{Command, Stdio};
 use std::time::Instant;
@@ -7,7 +8,7 @@ use std::time::Instant;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::{Pid, getpgid, getpgrp};
 
-use super::super::{GUARDIAN_SHUTDOWN_DEADLINE, HostGuardian, RuntimeError};
+use super::super::{GUARDIAN_SHUTDOWN_DEADLINE, GuardianCleanupCauses, HostGuardian, RuntimeError};
 use super::test_support::{NativeChildOwner, test_group_identity};
 
 fn make_owned_group_and_guardian(
@@ -80,19 +81,30 @@ fn kill_known_guardian(guardian: &HostGuardian) {
     kill(pid, Signal::SIGKILL).expect("stop the exact owned live Guardian child");
 }
 
-fn assert_fatal_has_native_cleanup_error(error: RuntimeError, expected_group: u32) {
+fn assert_fatal_has_native_cleanup_error(error: &RuntimeError, expected_group: u32) {
     match error {
         RuntimeError::GuardianExited {
             group_pid,
             cleanup_error: Some(error),
             ..
         } => {
-            assert_eq!(group_pid, expected_group);
+            assert_eq!(*group_pid, expected_group);
             assert!(
                 error
                     .to_string()
                     .contains("process-group leader PID was reused"),
                 "must report the actual native group birth mismatch: {error}"
+            );
+            let causes = error
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<GuardianCleanupCauses>())
+                .expect("legacy GuardianExited preserves original typed cleanup cause");
+            assert_eq!(causes.failures().len(), 1, "one native signal refusal");
+            assert!(
+                matches!(&causes.failures()[0], RuntimeError::Lifecycle { phase, source }
+                    if *phase == "macOS guardian registered group identity changed"
+                        && source.kind() == io::ErrorKind::PermissionDenied),
+                "original native birth mismatch remains a typed lifecycle permission denial"
             );
         }
         other => {
@@ -117,7 +129,8 @@ fn legacy_poll_fatal_retains_enrollment_after_refused_native_signal() {
         );
         std::thread::yield_now();
     };
-    assert_fatal_has_native_cleanup_error(error, expected.pid);
+    assert_fatal_has_native_cleanup_error(&error, expected.pid);
+    assert_fatal_has_native_cleanup_error(&error.clone(), expected.pid);
     assert_retained_after_native_failure(&guardian, &mut group, expected);
 }
 
@@ -129,7 +142,8 @@ fn legacy_wait_fatal_retains_enrollment_after_refused_native_signal() {
     let error = guardian
         .wait_fatal()
         .expect_err("unexpected Guardian exit must be fatal and birth-checked");
-    assert_fatal_has_native_cleanup_error(error, expected.pid);
+    assert_fatal_has_native_cleanup_error(&error, expected.pid);
+    assert_fatal_has_native_cleanup_error(&error.clone(), expected.pid);
     assert_retained_after_native_failure(&guardian, &mut group, expected);
 }
 

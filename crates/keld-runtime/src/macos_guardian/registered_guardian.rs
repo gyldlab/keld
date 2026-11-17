@@ -1,4 +1,5 @@
 //! Registered guardian host-side lifecycle and owned shutdown handling.
+use super::error::typed_cleanup_io_error;
 use super::process_group::{GroupIdentity, observe_group_identity, terminate_attested_group};
 use super::{
     Child, ChildStdin, ChildStdout, ExitStatus, GUARDIAN_SHUTDOWN_DEADLINE, GuardianReport,
@@ -281,7 +282,7 @@ impl HostGuardian {
         let cleanup_error = self
             .terminate_owned_group()
             .err()
-            .map(|error| io::Error::other(error.to_string()));
+            .map(typed_cleanup_io_error);
         RuntimeError::GuardianExited {
             group_pid,
             exit_code: status.code(),
@@ -349,7 +350,7 @@ impl GuardianReport {
 fn unexpected_guardian_exit(group: GroupIdentity, status: ExitStatus) -> RuntimeError {
     let cleanup_error = terminate_attested_group(group)
         .err()
-        .map(|error| io::Error::other(error.to_string()));
+        .map(typed_cleanup_io_error);
     RuntimeError::GuardianExited {
         group_pid: group.pid,
         exit_code: status.code(),
@@ -392,6 +393,8 @@ mod externally_reaped_tests {
     use std::os::unix::process::CommandExt as _;
     use std::process::{Child, Command, Stdio};
 
+    use super::super::GuardianCleanupCauses;
+
     struct NativeChildOwner(Child);
 
     impl Drop for NativeChildOwner {
@@ -401,6 +404,57 @@ mod externally_reaped_tests {
             }
             let _ = self.0.wait();
         }
+    }
+
+    #[test]
+    fn registration_time_guardian_exit_keeps_native_cause_direct_and_cloned() {
+        let mut leader = NativeChildOwner(
+            Command::new("/bin/sleep")
+                .arg("30")
+                .process_group(0)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("own independent native group"),
+        );
+        let original = observe_group_identity(leader.0.id()).expect("live exact native leader");
+        let wrong_birth = original.altered_birth_for_test();
+        let status = Command::new("/usr/bin/true")
+            .status()
+            .expect("observe exact owned Guardian exit status");
+        let failure = unexpected_guardian_exit(wrong_birth, status);
+        let cloned = failure.clone();
+        for returned in [&failure, &cloned] {
+            let RuntimeError::GuardianExited {
+                group_pid,
+                cleanup_error: Some(cleanup),
+                ..
+            } = returned
+            else {
+                panic!("registration exit must carry native failure: {returned}");
+            };
+            assert_eq!(*group_pid, original.pid);
+            let causes = cleanup
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<GuardianCleanupCauses>())
+                .expect("registration failure retains the original typed native cause");
+            assert_eq!(causes.failures().len(), 1);
+            assert!(
+                matches!(&causes.failures()[0], RuntimeError::Lifecycle { phase, source }
+                    if *phase == "macOS guardian registered group identity changed"
+                        && source.kind() == io::ErrorKind::PermissionDenied),
+                "mismatched enrollment must retain the original typed denial"
+            );
+        }
+        assert!(
+            leader
+                .0
+                .try_wait()
+                .expect("inspect exact native group")
+                .is_none(),
+            "an altered birth may not signal another test-owned group"
+        );
     }
 
     #[test]

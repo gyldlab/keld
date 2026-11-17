@@ -323,10 +323,40 @@ fn deadline_path_guardian_exit_reports_the_earlier_failure_without_a_second_call
         shutdown_sent: None,
         shutdown_denial_fence: None,
     };
-    let error = primary
+    let failure = primary
         .shutdown()
-        .expect_err("unresponsive Guardian and refused group signal")
-        .to_string();
+        .expect_err("unresponsive Guardian and refused group signal");
+    // The false branch of fatal_group_cleanup_status carries only the
+    // diagnostic that native cleanup was already attempted. Its original
+    // typed failure is retained as a sibling in shutdown_once's aggregate.
+    // Cloning that aggregate must not turn the earlier native failure into
+    // diagnostic text.
+    let copied = failure.clone();
+    for returned in [&failure, &copied] {
+        let RuntimeError::Lifecycle { phase, source } = returned else {
+            panic!("failed shutdown must preserve the typed cleanup aggregate: {returned}");
+        };
+        assert_eq!(*phase, "macOS guardian cleanup");
+        let causes = source
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<GuardianCleanupCauses>())
+            .expect("prior native failure remains a typed aggregate sibling");
+        assert!(
+            causes.failures().iter().any(
+                |cause| matches!(cause, RuntimeError::Lifecycle { phase, source }
+                    if *phase == "macOS guardian registered group identity changed"
+                        && source.kind() == io::ErrorKind::PermissionDenied)
+            ),
+            "native identity mismatch must survive direct and cloned shutdown errors"
+        );
+        assert!(
+            causes.failures().iter().any(|cause|
+                matches!(cause, RuntimeError::GuardianExited { cleanup_error: Some(source), .. }
+                    if source.to_string().contains("failed earlier in this shutdown"))),
+            "the prior-attempt breadcrumb is not a new native cleanup error"
+        );
+    }
+    let error = failure.to_string();
     assert_eq!(
         error.matches(REUSED_LEADER).count(),
         1,
