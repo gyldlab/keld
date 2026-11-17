@@ -2,6 +2,10 @@
 
 #![forbid(unsafe_code)]
 
+mod markdown_paths;
+
+use markdown_paths::is_markdown_path;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -145,8 +149,6 @@ fn changed_mermaid_inputs(root: &Path, base: &str, head: &str) -> Result<bool, S
             base,
             head,
             "--",
-            "*.md",
-            "docs/research",
         ],
     )?;
     let fields: Vec<&[u8]> = diff
@@ -173,8 +175,8 @@ fn changed_mermaid_inputs(root: &Path, base: &str, head: &str) -> Result<bool, S
         if path == "docs/research" {
             return Ok(true);
         }
-        if !path.ends_with(".md") {
-            return Ok(true);
+        if !is_markdown_path(Path::new(path)) {
+            continue;
         }
 
         if status == "T" {
@@ -352,7 +354,7 @@ fn tracked_markdown(root: &Path) -> Result<Vec<PathBuf>, String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["ls-files", "-z", "--", "*.md"])
+        .args(["ls-files", "-z"])
         .output()
         .map_err(|error| {
             format!(
@@ -374,7 +376,7 @@ fn tracked_markdown(root: &Path) -> Result<Vec<PathBuf>, String> {
     })?;
     let mut files: Vec<PathBuf> = stdout
         .split('\0')
-        .filter(|relative| !relative.is_empty())
+        .filter(|relative| !relative.is_empty() && is_markdown_path(Path::new(relative)))
         .map(|relative| root.join(relative))
         .collect();
     files.sort();
@@ -385,14 +387,7 @@ fn untracked_markdown(root: &Path) -> Result<Vec<PathBuf>, String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args([
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-            "-z",
-            "--",
-            "*.md",
-        ])
+        .args(["ls-files", "--others", "--exclude-standard", "-z", "--"])
         .output()
         .map_err(|error| {
             format!(
@@ -412,7 +407,7 @@ fn untracked_markdown(root: &Path) -> Result<Vec<PathBuf>, String> {
     })?;
     Ok(stdout
         .split('\0')
-        .filter(|relative| !relative.is_empty())
+        .filter(|relative| !relative.is_empty() && is_markdown_path(Path::new(relative)))
         .map(|relative| root.join(relative))
         .collect())
 }
@@ -455,16 +450,7 @@ fn check_files(files: Vec<PathBuf>) -> Result<usize, String> {
 fn working_tree_mermaid_inputs(root: &Path, base: &str) -> Result<bool, String> {
     let diff = git_output(
         root,
-        &[
-            "diff",
-            "--no-renames",
-            "--name-status",
-            "-z",
-            base,
-            "--",
-            "*.md",
-            "docs/research",
-        ],
+        &["diff", "--no-renames", "--name-status", "-z", base, "--"],
     )?;
     let fields: Vec<&[u8]> = diff
         .split(|byte| *byte == 0)
@@ -486,8 +472,8 @@ fn working_tree_mermaid_inputs(root: &Path, base: &str) -> Result<bool, String> 
         if path == "docs/research" {
             return Ok(true);
         }
-        if !path.ends_with(".md") {
-            return Ok(true);
+        if !is_markdown_path(Path::new(path)) {
+            continue;
         }
         if status == "T" {
             return Ok(true);
@@ -528,14 +514,7 @@ fn working_tree_mermaid_inputs(root: &Path, base: &str) -> Result<bool, String> 
 
     let untracked = git_output(
         root,
-        &[
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-            "-z",
-            "--",
-            "*.md",
-        ],
+        &["ls-files", "--others", "--exclude-standard", "-z", "--"],
     )?;
     for path in untracked
         .split(|byte| *byte == 0)
@@ -544,6 +523,9 @@ fn working_tree_mermaid_inputs(root: &Path, base: &str) -> Result<bool, String> 
         let path = std::str::from_utf8(path).map_err(|error| {
             format!("KELD-DOCS005: untracked Markdown path is not UTF-8: {error}")
         })?;
+        if !is_markdown_path(Path::new(path)) {
+            continue;
+        }
         let file = root.join(path);
         let metadata = match fs::symlink_metadata(&file) {
             Ok(metadata) => metadata,
@@ -1180,5 +1162,48 @@ flowchart LR
         fs::remove_dir_all(&root).expect("remove isolated fixture");
 
         assert_eq!(result.expect("root and docs fixtures must pass"), 2);
+    }
+
+    #[test]
+    fn all_markdown_extensions_reach_validation_manifest_and_change_detection() {
+        for extension in super::markdown_paths::MARKDOWN_EXTENSIONS {
+            for spelling in [extension.to_owned(), extension.to_ascii_uppercase()] {
+                let root = git_change_fixture();
+                let name = format!("diagram.{spelling}");
+                let path = root.join(&name);
+                fs::write(&path, VALID).expect("write alternate-extension diagram");
+                let base = commit_fixture(&root, "valid diagram");
+                assert_eq!(check(&root).expect("validate discovered diagram"), 1);
+                assert_eq!(
+                    manifest(&root).expect("manifest diagram"),
+                    [(1, name.clone())]
+                );
+
+                let prose = VALID.replace("# Diagram", "# Updated prose");
+                fs::write(&path, &prose).expect("edit only prose");
+                assert!(!super::working_tree_mermaid_inputs(&root, &base).unwrap());
+
+                let invalid = "```mermaid\nflowchart LR\nA --> B\n```\n";
+                fs::write(&path, invalid).expect("write missing accessibility fields");
+                assert!(check(&root).unwrap_err().contains("accTitle"));
+                assert!(manifest(&root).unwrap_err().contains("accTitle"));
+                assert!(super::working_tree_mermaid_inputs(&root, &base).unwrap());
+                let head = commit_fixture(&root, "invalid diagram");
+                assert!(changed_mermaid_inputs(&root, &base, &head).unwrap());
+
+                fs::write(&path, VALID).expect("restore valid diagram");
+                let restored = commit_fixture(&root, "restore valid diagram");
+                let untracked = format!("untracked.{spelling}");
+                fs::write(root.join(&untracked), VALID).expect("write untracked diagram");
+                assert_eq!(check(&root).expect("tracked inventory unchanged"), 1);
+                assert_eq!(manifest(&root).expect("include untracked diagram").len(), 2);
+                assert!(super::working_tree_mermaid_inputs(&root, &restored).unwrap());
+                let current = commit_fixture(&root, "track second diagram");
+                fs::write(root.join("ignored.txt"), invalid).expect("write non-Markdown control");
+                assert!(!super::working_tree_mermaid_inputs(&root, &current).unwrap());
+                assert_eq!(manifest(&root).expect("ignore non-Markdown").len(), 2);
+                fs::remove_dir_all(root).expect("remove extension fixture");
+            }
+        }
     }
 }
