@@ -801,7 +801,7 @@ test("tree census rechecks a 300-file count after enumeration", async () => {
 const trustedKEL270ReceiptPath =
   "docs/engineering/evidence/kel270-catalogue-admission-v2/review-receipt.json";
 const trustedKEL270ReceiptSha256 =
-  "0a3f4074226cca88e01bba748d5e17d61a77b64492c291a9725de45405b9d4ce";
+  "c0c4ffb4c738d0d5d8b26e199a2d7593a0d8d5685f672b8af8e5737d17d7c1c9";
 const trustedKEL270VerifierPath =
   "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py";
 const trustedKEL270VerifierSha256 =
