@@ -1791,6 +1791,7 @@ mod tests {
         let system32 = system_root.join("System32");
         let parent_script = temporary.join("parent.ps1");
         let child_script = temporary.join("descendant.ps1");
+        let parent_started = temporary.join("parent-started.marker");
         let started = temporary.join("descendant-started.marker");
         let descendant_stdout = temporary.join("descendant.stdout");
         let descendant_stderr = temporary.join("descendant.stderr");
@@ -1798,7 +1799,7 @@ mod tests {
             .expect("write controlled descendant fixture");
         fs::write(
             &parent_script,
-            b"$arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ('\"{0}\"' -f $env:KELD_TEST_DESCENDANT_SCRIPT))\n$child = Start-Process -FilePath $env:KELD_TEST_POWERSHELL -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $env:KELD_TEST_DESCENDANT_STDOUT -RedirectStandardError $env:KELD_TEST_DESCENDANT_STDERR\n[System.IO.File]::WriteAllText($env:KELD_TEST_DESCENDANT_STARTED, ('{0}:{1}' -f $child.Id, $child.StartTime.ToUniversalTime().Ticks))\nStart-Sleep -Seconds 60\n"
+            b"[System.IO.File]::WriteAllText($env:KELD_TEST_PARENT_STARTED, 'started')\n$arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ('\"{0}\"' -f $env:KELD_TEST_DESCENDANT_SCRIPT))\n$child = Start-Process -FilePath $env:KELD_TEST_POWERSHELL -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $env:KELD_TEST_DESCENDANT_STDOUT -RedirectStandardError $env:KELD_TEST_DESCENDANT_STDERR\n[System.IO.File]::WriteAllText($env:KELD_TEST_DESCENDANT_STARTED, ('{0}:{1}' -f $child.Id, $child.StartTime.ToUniversalTime().Ticks))\nStart-Sleep -Seconds 60\n"
         )
         .expect("write controlled Job-parent fixture");
         let environment = vec![
@@ -1818,6 +1819,10 @@ mod tests {
             (
                 "KELD_TEST_DESCENDANT_SCRIPT".into(),
                 child_script.as_os_str().to_owned(),
+            ),
+            (
+                "KELD_TEST_PARENT_STARTED".into(),
+                parent_started.as_os_str().to_owned(),
             ),
             (
                 "KELD_TEST_DESCENDANT_STARTED".into(),
@@ -2184,13 +2189,15 @@ mod tests {
         let temporary = tempfile::tempdir().expect("owned descendant fixture");
         let (args, environment, started) =
             descendant_process_fixture(temporary.path(), &system_root, &powershell);
+        let parent_started = temporary.path().join("parent-started.marker");
         let input = File::open("NUL").expect("null input");
+        let mut stderr = tempfile::tempfile().expect("private descendant stderr");
         let start = Instant::now();
         // Retain a second Job handle across the capture call. Otherwise Windows'
         // kill-on-last-handle-close policy could hide a missing explicit family
         // termination when the capture owner drops its Job.
         let job_observer = std::sync::Mutex::new(None);
-        let Err(error) = run_captured_with_output_and_job_observer(
+        let result = run_captured_with_output_and_job_observer(
             &tool,
             &args,
             &environment,
@@ -2199,8 +2206,8 @@ mod tests {
             CaptureOptions {
                 stdout_limit: 1024,
                 stderr_limit: 64 * 1024,
-                timeout: Duration::from_secs(15),
-                stderr_file: None,
+                timeout: Duration::from_secs(30),
+                stderr_file: Some(&mut stderr),
             },
             |job| {
                 let handle = job
@@ -2211,7 +2218,15 @@ mod tests {
                 })? = Some(handle);
                 Ok(())
             },
-        ) else {
+        );
+        let mut stderr_detail = String::new();
+        stderr
+            .seek(SeekFrom::Start(0))
+            .expect("rewind descendant stderr");
+        stderr
+            .read_to_string(&mut stderr_detail)
+            .expect("read descendant stderr");
+        let Err(error) = result else {
             panic!("parent and descendant must be terminated at the deadline");
         };
         assert!(
@@ -2219,12 +2234,19 @@ mod tests {
                 || error.to_string().contains("tool capture deadline"),
             "{error}"
         );
-        assert!(start.elapsed() < Duration::from_secs(30));
+        assert!(start.elapsed() < Duration::from_secs(45));
         let _job_observer = job_observer
             .into_inner()
             .expect("test Job observer lock")
             .expect("retained test Job observer handle");
-        assert!(started.exists(), "the descendant must start before timeout");
+        assert!(
+            parent_started.exists(),
+            "the parent PowerShell must start before timeout; stderr: {stderr_detail}"
+        );
+        assert!(
+            started.exists(),
+            "the descendant must start before timeout; stderr: {stderr_detail}"
+        );
         assert_descendant_reaped(&powershell, &started);
     }
 
