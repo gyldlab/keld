@@ -268,6 +268,20 @@ fn verify_native_same_uri_overlap(
     observed: &[Value],
     attempt: &str,
 ) -> Result<(), String> {
+    // Trace::record assigns one strictly increasing global sequence to each
+    // native callback as it is appended. A reordered, lost or duplicated
+    // receipt row must not be reconstructed into an apparently valid race.
+    let mut previous_sequence: Option<u64> = None;
+    for event in observed {
+        let sequence = event["seq"]
+            .as_u64()
+            .filter(|seq| *seq > 0)
+            .ok_or("AC06 native callback has no valid sequence")?;
+        if previous_sequence.is_some_and(|previous| previous.checked_add(1) != Some(sequence)) {
+            return Err("AC06 native callback log is reordered, incomplete or duplicated".into());
+        }
+        previous_sequence = Some(sequence);
+    }
     let single = |phase: &str, kind: &str| single_overlap_event(observed, phase, kind);
     let frame_start = single("race-child", "frame-navigation-starting")?;
     let held = single("race-child", "race-child-held")?;
@@ -660,6 +674,28 @@ mod ac06_overlap_receipt_tests {
             events,
             NONCE,
         )
+    }
+
+    #[test]
+    fn reject_reordered_or_reused_native_callback_sequence() {
+        let good = good_receipt_events();
+        assert!(check(&good).is_ok(), "valid native callback trace refused");
+
+        // Trace::record writes a new seq at the point each callback is stored.
+        // A sorted subset cannot stand in for the actual ordered native log.
+        let mut reordered = good.clone();
+        reordered.swap(1, 2);
+        assert!(
+            check(&reordered).is_err(),
+            "native callback array order disagreed with seq but was accepted"
+        );
+
+        let mut reused = good.clone();
+        reused[2]["seq"] = reused[1]["seq"].clone();
+        assert!(
+            check(&reused).is_err(),
+            "two distinct native callbacks reused one sequence but were accepted"
+        );
     }
 
     #[test]
