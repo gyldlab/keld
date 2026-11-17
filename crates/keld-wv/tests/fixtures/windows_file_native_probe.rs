@@ -260,6 +260,15 @@ fn reject_unexpected_top_level_child_callbacks(observed: &[Value]) -> Result<(),
             "AC06 unexpected iframe callback contradicts the held single-child race".into(),
         );
     }
+    // This native event is emitted only by the failure-path Drop guard when
+    // the acquired iframe deferral was completed instead of transferred to
+    // Session. A successful held-then-released race cannot contain it.
+    if observed.iter().any(|event| {
+        (event["phase"] == "race-child" || event["phase"] == "race-host")
+            && event["kind"] == "race-child-abort-complete"
+    }) {
+        return Err("AC06 native iframe deferral aborted during successful overlap".into());
+    }
     Ok(())
 }
 
@@ -676,6 +685,30 @@ mod ac06_overlap_receipt_tests {
             events,
             NONCE,
         )
+    }
+
+    #[test]
+    fn reject_abort_completion_during_successful_native_overlap() {
+        let mut observed = good_receipt_events();
+        // Native Drop emits this only when an acquired iframe deferral is
+        // completed on a failed response path, never on the successful hold.
+        // Preserve a contiguous Trace::record sequence so this checks the
+        // contradictory event, not the generic sequence validator.
+        for event in observed.iter_mut().skip(3) {
+            let seq = event["seq"].as_u64().expect("fixture callback sequence");
+            event["seq"] = json!(seq + 1);
+        }
+        observed.insert(
+            3,
+            json!({
+                "phase":"race-child", "kind":"race-child-abort-complete", "seq":18,
+                "data":{"completed":true, "error":null}
+            }),
+        );
+        assert!(
+            check(&observed).is_err(),
+            "native iframe deferral abort contradicted held success but was accepted"
+        );
     }
 
     #[test]
