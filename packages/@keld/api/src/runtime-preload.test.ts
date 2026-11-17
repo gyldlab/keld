@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  existsSync,
   mkdtempSync,
   rmSync,
   readFileSync,
@@ -23,8 +24,12 @@ import { decodeRuntimeProcessInit } from "@keld/kipc/runtime-process-facts";
 // This allowance covers process startup in the packed integration test only.
 // Frame assembly and production WorkerLink deadlines remain at 5 seconds.
 const TEST_STARTUP_ALLOWANCE_MS = 15_000;
-function withTestIoDeadline<T>(promise: Promise<T>): Promise<T> {
-  return withIoDeadline(promise, TEST_STARTUP_ALLOWANCE_MS);
+const TEST_CLEANUP_ALLOWANCE_MS = 5_000;
+function withTestIoDeadline<T>(
+  promise: Promise<T>,
+  allowanceMs = TEST_STARTUP_ALLOWANCE_MS,
+): Promise<T> {
+  return withIoDeadline(promise, allowanceMs);
 }
 
 import { freshWin32AppLinkPipe } from "../../kipc/test/app-link-host.ts";
@@ -38,7 +43,12 @@ type Message = {
 async function launch(
   observer: boolean,
   mutant = false,
-  installed?: { wrapper: string; entry: string; runAsMainGraph?: boolean },
+  installed?: {
+    wrapper: string;
+    entry: string;
+    runAsMainGraph?: boolean;
+    startupAllowanceMs?: number;
+  },
 ) {
   const dir = mkdtempSync(join(tmpdir(), "krp-"));
   const endpoint =
@@ -129,8 +139,33 @@ async function launch(
   function closeHost() {
     if (hostClosed) return;
     hostClosed = true;
-    socket?.end();
-    server.stop(true);
+    try {
+      socket?.end();
+    } finally {
+      server.stop(true);
+    }
+  }
+  let disposePromise: Promise<void> | undefined;
+  function disposeChild(): Promise<void> {
+    if (disposePromise) return disposePromise;
+    disposePromise = (async () => {
+      try {
+        closeHost();
+      } finally {
+        if (proc.exitCode === null) proc.kill();
+      }
+      try {
+        await withIoDeadline(childExit, TEST_CLEANUP_ALLOWANCE_MS);
+      } catch (error) {
+        throw new Error(
+          `Bun child did not exit during test cleanup; fixture retained at ${dir}`,
+          { cause: error },
+        );
+      }
+      rmSync(dir, { recursive: true, force: true });
+      if (mutant) rmSync(wrapper, { force: true });
+    })();
+    return disposePromise;
   }
   async function awaitChild<T>(label: string, promise: Promise<T>): Promise<T> {
     try {
@@ -139,19 +174,19 @@ async function launch(
           promise,
           childExit.then(({ code, stdout, stderr }) => {
             throw new Error(
-              `Bun child exited while waiting for ${label} (exit ${code}); stdout=${stdout}; stderr=${stderr}`,
+              `Bun child exited while waiting for ${label} (exit ${code}); fixture=${JSON.stringify(dir)}; stdout=${stdout}; stderr=${stderr}`,
             );
           }),
         ]),
+        installed?.startupAllowanceMs,
       );
     } catch (error) {
       pending = undefined;
       if (error instanceof Error && error.message.includes("KELD-IPC-006")) {
-        proc.kill();
-        closeHost();
-        const exited = await withTestIoDeadline(childExit);
+        await disposeChild();
+        const exited = await childExit;
         throw new Error(
-          `Timed out waiting for ${label}; Bun child exit=${exited.code}; stdout=${exited.stdout}; stderr=${exited.stderr}`,
+          `Timed out waiting for ${label}; Bun child exit=${exited.code}; fixture=${JSON.stringify(dir)}; stdout=${exited.stdout}; stderr=${exited.stderr}`,
           { cause: error },
         );
       }
@@ -167,81 +202,79 @@ async function launch(
     );
     return awaitChild(label, next);
   }
-  const connectedSocket = await awaitChild("app-link socket open", opened);
-  socket = connectedSocket;
-  const writer = new WriteQueue(connectedSocket, drain);
-  const hello = await awaitChild("initial Hello frame", reader.readFrame());
-  expect(hello.header.kind).toBe(FrameKind.Hello);
-  await writer.writeFrame(
-    FrameKind.Hello,
-    0,
-    0,
-    0,
-    new Uint8Array(32).fill(0x72),
-  );
-  const init = await awaitChild("runtime Init call", reader.readFrame());
-  expect(init.header).toMatchObject({
-    kind: FrameKind.Call,
-    channel: LIFECYCLE_CHANNEL,
-    corr: 1,
-    flags: 0,
-  });
-  const captured = decodeRuntimeProcessInit(init.payload);
-  const saved = init.payload.slice();
-  return {
-    proc,
-    childExit,
-    reader,
-    writer,
-    captured,
-    saved,
-    message,
-    connections: () => connections,
-    async ack(value = 3) {
-      await writer.writeFrame(
-        FrameKind.Reply,
-        0,
-        LIFECYCLE_CHANNEL,
-        1,
-        Uint8Array.of(value),
-      );
-    },
-    async subscribe() {
-      for (const channel of [WINDOW_CHANNEL, COMPAT_CONTROL_CHANNEL]) {
-        const call = await awaitChild(
-          `subscription request for channel ${channel}`,
-          reader.readFrame(),
-        );
-        expect(call.header.kind).toBe(FrameKind.Call);
-        expect(call.header.channel).toBe(LIFECYCLE_CHANNEL);
-        expect([...call.payload]).toEqual([1, channel]);
+  try {
+    const connectedSocket = await awaitChild("app-link socket open", opened);
+    socket = connectedSocket;
+    const writer = new WriteQueue(connectedSocket, drain);
+    const hello = await awaitChild("initial Hello frame", reader.readFrame());
+    expect(hello.header.kind).toBe(FrameKind.Hello);
+    await writer.writeFrame(
+      FrameKind.Hello,
+      0,
+      0,
+      0,
+      new Uint8Array(32).fill(0x72),
+    );
+    const init = await awaitChild("runtime Init call", reader.readFrame());
+    expect(init.header).toMatchObject({
+      kind: FrameKind.Call,
+      channel: LIFECYCLE_CHANNEL,
+      corr: 1,
+      flags: 0,
+    });
+    const captured = decodeRuntimeProcessInit(init.payload);
+    const saved = init.payload.slice();
+    return {
+      proc,
+      childExit,
+      reader,
+      writer,
+      captured,
+      saved,
+      message,
+      connections: () => connections,
+      async ack(value = 3) {
         await writer.writeFrame(
           FrameKind.Reply,
           0,
           LIFECYCLE_CHANNEL,
-          call.header.corr,
-          Uint8Array.of(1),
+          1,
+          Uint8Array.of(value),
         );
-      }
-      await writer.writeFrame(
-        FrameKind.Event,
-        0,
-        LIFECYCLE_CHANNEL,
-        0,
-        Uint8Array.of(0),
-      );
-    },
-    async dispose() {
-      proc.kill();
-      closeHost();
-      try {
-        await withTestIoDeadline(childExit);
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-        if (mutant) rmSync(wrapper, { force: true });
-      }
-    },
-  };
+      },
+      async subscribe() {
+        for (const channel of [WINDOW_CHANNEL, COMPAT_CONTROL_CHANNEL]) {
+          const call = await awaitChild(
+            `subscription request for channel ${channel}`,
+            reader.readFrame(),
+          );
+          expect(call.header.kind).toBe(FrameKind.Call);
+          expect(call.header.channel).toBe(LIFECYCLE_CHANNEL);
+          expect([...call.payload]).toEqual([1, channel]);
+          await writer.writeFrame(
+            FrameKind.Reply,
+            0,
+            LIFECYCLE_CHANNEL,
+            call.header.corr,
+            Uint8Array.of(1),
+          );
+        }
+        await writer.writeFrame(
+          FrameKind.Event,
+          0,
+          LIFECYCLE_CHANNEL,
+          0,
+          Uint8Array.of(0),
+        );
+      },
+      async dispose() {
+        await disposeChild();
+      },
+    };
+  } catch (error) {
+    await disposeChild();
+    throw error;
+  }
 }
 
 test("one real API preload holds entry through Init ACK then reuses one WorkerLink", async () => {
@@ -305,6 +338,54 @@ test("wrong Init acknowledgement closes the link before application entry", asyn
     await run.dispose();
   }
 }, 20000);
+
+test("startup failures reap the Bun child and remove the listener fixture", async () => {
+  async function expectFixtureRemoved(error: unknown) {
+    expect(error).toBeInstanceOf(Error);
+    const match = (error as Error).message.match(/fixture=("(?:\\.|[^"\\])*")/);
+    expect(match).not.toBeNull();
+    expect(existsSync(JSON.parse(match![1]!))).toBe(false);
+  }
+
+  let earlyExit: unknown;
+  try {
+    await launch(false, false, {
+      wrapper: join(tmpdir(), `krp-missing-${process.pid}-${Date.now()}.mjs`),
+      entry: join(import.meta.dir, "runtime-preload-entry.fixture.mjs"),
+    });
+  } catch (error) {
+    earlyExit = error;
+  }
+  expect(earlyExit).toBeInstanceOf(Error);
+  expect((earlyExit as Error).message).toContain(
+    "Bun child exited while waiting for app-link socket open",
+  );
+  await expectFixtureRemoved(earlyExit);
+
+  const stallRoot = mkdtempSync(join(tmpdir(), "krp-stall-"));
+  const stallWrapper = join(stallRoot, "stall.mjs");
+  writeFileSync(
+    stallWrapper,
+    "setInterval(() => {}, 60_000);\nawait new Promise(() => {});\n",
+  );
+  let startupTimeout: unknown;
+  try {
+    await launch(false, false, {
+      wrapper: stallWrapper,
+      entry: join(import.meta.dir, "runtime-preload-entry.fixture.mjs"),
+      startupAllowanceMs: 250,
+    });
+  } catch (error) {
+    startupTimeout = error;
+  } finally {
+    rmSync(stallRoot, { recursive: true, force: true });
+  }
+  expect(startupTimeout).toBeInstanceOf(Error);
+  expect((startupTimeout as Error).message).toContain(
+    "Timed out waiting for app-link socket open",
+  );
+  await expectFixtureRemoved(startupTimeout);
+}, 10000);
 
 test("actual packed API wrapper captures and ACKs over its same stamped installed transport", async () => {
   const stage = mkdtempSync(join(tmpdir(), "krp-sdk-"));
