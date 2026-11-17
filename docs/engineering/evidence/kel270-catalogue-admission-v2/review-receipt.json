@@ -92,9 +92,9 @@
     "docs/specs/kel270-catalogue-admission-v2/implementation.md": "01aa9b7df3c79273acb6ff82e26ea167a8479924798e7e784cb2b8e292b7534e",
     "docs/specs/kel270-catalogue-admission-v2/index.md": "32d6293dd15c6804f00e0754597a0d5ad974196e8e6199a5857cfc8fce3a16d7",
     "docs/specs/kel270-catalogue-admission-v2/integration.md": "10ea8844e3baa1a9799f2a7b4d76f2d394da6d23564bc9769aa038ab285b3a0d",
-    "docs/specs/kel270-catalogue-admission-v2/metadata.md": "5a0e96727cd7a38b0e5372dbad87cab4e930b7a345e6d6c0fda23f3f2360fd93",
+    "docs/specs/kel270-catalogue-admission-v2/metadata.md": "1df72cd380a935f26b57788894fd325cd9a67c7c803337a4b3eea40d737605f8",
     "docs/specs/kel270-catalogue-admission-v2/qualification.md": "fe8288a18594d5771ee69067ad5d8810a5770e74091982246ab0301de14ffea3",
-    "docs/specs/kel270-catalogue-admission-v2/recovery.md": "09ca913c6844538c5fb46e620c1e2f8cadbd02d075447630b4059240dd33985c",
+    "docs/specs/kel270-catalogue-admission-v2/recovery.md": "6b92340c7b3069b0ef34d3c28b035fd9483f3288f2df87d78d7e919fb89ed4fa",
     "docs/specs/kel270-catalogue-admission-v2/requirements.md": "b127d3c7dacf2e7521ea91a707a3729188937abef8103d2a8b91bcaec50ac165",
     "docs/specs/kel270-catalogue-admission-v2/windows.md": "4bf869fb42468b7bdaa07c75367177f192df65495fd068119f7819b3b52748dc"
   },
