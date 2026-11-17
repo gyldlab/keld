@@ -2,25 +2,28 @@
 //! release the generation also spends the authority: a second group-wide kill
 //! could only reach processes that joined later or a recycled PGID. Custody
 //! is kept (fail closed) until absence is proven; nothing is re-signalled.
+use std::cell::Cell;
 use std::os::unix::process::CommandExt as _;
 use std::os::unix::process::ExitStatusExt as _;
 use std::process::{Command, Stdio};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill};
-use nix::unistd::Pid;
+use nix::unistd::{Pid, getpgid};
 
 use super::super::super::super::process_group::{
     TestGroupSignalPoint, install_test_group_signal_hook, require_attested_group_absence,
 };
 use super::super::super::super::{
-    GuardedPrimary, RecoveryState, RegisteredPrimaryGeneration, lock_generation,
+    GuardedPrimary, RecoveryState, RegisteredPrimaryGeneration, RuntimeError, lock_generation,
 };
 use super::super::super::test_support::{
     NativeChildOwner, await_held_zombie_group, test_group_identity,
 };
-use super::{REUSED_LEADER, owned_sleep, primary_with_dead_guardian};
+use super::{REUSED_LEADER, first_poll_fatal_error, owned_sleep, primary_with_dead_guardian};
 
 /// A process that joins the original group only AFTER the first signal.
 fn late_joiner(raw: i32) -> NativeChildOwner {
@@ -63,6 +66,98 @@ fn failed_clear_absence_after_delivered_signal_never_resignals_the_group() {
     let later = generation.terminate();
     assert!(later.is_err(), "the group is not proven absent: {later:?}");
     assert_not_resignalled(joiner, "fail-safe after failed CLEAR");
+}
+
+// A successful group SIGKILL is merely signal delivery. Terminal host cleanup
+// cannot forget the original group birth while a second, test-owned member
+// remains an unreaped zombie. This test exercises the first armed call, not
+// only the already-spent CLEAR retry tested above.
+#[test]
+fn terminal_first_signal_retains_birth_until_held_member_reaped() {
+    let mut leader = owned_sleep(0);
+    let raw = i32::try_from(leader.id()).expect("test-owned group PID fits");
+    let group = Pid::from_raw(raw);
+    let mut held = owned_sleep(raw);
+    assert_eq!(
+        getpgid(Some(Pid::from_raw(
+            i32::try_from(held.id()).expect("held member PID fits")
+        ))),
+        Ok(group),
+        "held member is in the enrolled leader's group"
+    );
+    let registered =
+        RegisteredPrimaryGeneration::authenticated(1, test_group_identity(leader.id()));
+    let mut primary = primary_with_dead_guardian(registered, 17, true);
+    let count = Rc::new(Cell::new(0_usize));
+    let observed = Rc::clone(&count);
+    let _signal_hook = install_test_group_signal_hook(
+        leader.id(),
+        Box::new(move |point| {
+            assert_eq!(point, TestGroupSignalPoint::BeforeSignal);
+            observed.set(observed.get() + 1);
+        }),
+    );
+
+    let result = first_poll_fatal_error(&mut primary);
+    assert!(
+        matches!(&result, RuntimeError::GuardianExited { cleanup_error: Some(error), .. }
+            if error.to_string().contains("absence remains unproven")),
+        "terminal Guardian failure must retain unproven group custody: {result}"
+    );
+    {
+        let owner = lock_generation(&primary.current_generation);
+        let retained = owner
+            .as_ref()
+            .expect("terminal failure retains original group birth");
+        assert_eq!(retained.group_identity, registered.group_identity);
+        assert!(matches!(
+            retained.native_signal,
+            super::super::super::super::guarded_primary::NativeSignalAuthority::Delivered { .. }
+        ));
+    }
+    assert_eq!(count.get(), 1, "only the first armed call may signal");
+    assert_eq!(
+        leader
+            .wait()
+            .expect("reap exact test-owned leader")
+            .signal(),
+        Some(Signal::SIGKILL as i32)
+    );
+    await_held_zombie_group(group);
+    assert_eq!(
+        getpgid(Some(group)),
+        Err(Errno::ESRCH),
+        "original leader has been reaped"
+    );
+    assert_eq!(
+        kill(Pid::from_raw(-raw), None),
+        Err(Errno::EPERM),
+        "unreaped second member keeps original group present"
+    );
+
+    assert!(
+        lock_generation(&primary.current_generation)
+            .as_mut()
+            .expect("original enrollment")
+            .terminate()
+            .is_err(),
+        "a later probe cannot release a held original member"
+    );
+    primary
+        .fail_current_generation(1)
+        .expect("repeated failure report spends no more signal authority");
+    assert_eq!(count.get(), 1, "later cleanup cannot re-signal");
+    assert_eq!(
+        held.wait().expect("reap exact test-owned member").signal(),
+        Some(Signal::SIGKILL as i32)
+    );
+    assert_eq!(kill(Pid::from_raw(-raw), None), Err(Errno::ESRCH));
+    lock_generation(&primary.current_generation)
+        .as_mut()
+        .expect("same original enrollment")
+        .terminate()
+        .expect("read-only dual ESRCH now permits retirement");
+    assert_eq!(count.get(), 1, "absence proof never signals");
 }
 
 // GH-824 trigger: the leader passes its birth check, then exits into a

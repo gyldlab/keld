@@ -196,12 +196,21 @@ fn terminate_unwitnessed_generation(group_pid: u32) -> Result<(), RuntimeError> 
 // One native fail-safe owner for every terminal path. Hold the generation
 // mutex across the birth-attested signal, just like fail_current_generation
 // and KGC1 CLEAR. A failed signal cannot consume the original group witness;
-// only successful termination or proven absence releases this enrollment.
+// only full group absence releases this terminal enrollment. A successful
+// group signal is not proof that another member has exited or been reaped.
+// Do not apply this terminal rule to pre-exec SPAWNED refusal: that separate
+// host flow must first allow the Guardian to reap its exact withheld child.
 fn terminate_and_release_generation(
     registered: &mut Option<RegisteredPrimaryGeneration>,
 ) -> Result<(), RuntimeError> {
     if let Some(generation) = registered.as_mut() {
         generation.terminate()?;
+        if let (Some(identity), Some(deadline)) = (
+            generation.group_identity,
+            generation.native_signal.probe_deadline(),
+        ) {
+            require_attested_group_absence(identity, deadline)?;
+        }
         *registered = None;
     }
     Ok(())

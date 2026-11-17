@@ -5,7 +5,6 @@ use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Instant;
 
 use nix::errno::Errno;
 use nix::sys::signal::kill;
@@ -16,10 +15,9 @@ use super::super::super::process_group::{
     GroupIdentity, TestGroupSignalPoint, install_test_group_signal_hook, observe_group_identity,
 };
 use super::super::super::{
-    GUARDIAN_SHUTDOWN_DEADLINE, GuardedPrimary, RecoveryState, RegisteredPrimaryGeneration,
-    RuntimeError, lock_generation,
+    GuardedPrimary, RecoveryState, RegisteredPrimaryGeneration, RuntimeError, lock_generation,
 };
-use super::super::test_support::NativeChildOwner;
+use super::super::test_support::{NativeChildOwner, reap_owned_child_with_deadline};
 
 #[test]
 fn externally_reaped_guardian_shutdown_never_kills_stale_pid() {
@@ -163,7 +161,7 @@ fn externally_reaped_owned_guardian() -> (Child, ChildStdin, ChildStdout) {
 // authorized, but the Guardian's now-stale raw PID never is.
 #[test]
 fn externally_reaped_guardian_shutdown_retires_enrolled_group_once() {
-    let (mut leader, mut member, identity) = enrolled_test_owned_group();
+    let (leader, member, identity) = enrolled_test_owned_group();
     let group_pid = leader.id();
     let raw_group = i32::try_from(group_pid).expect("group PID fits i32");
     let group = Pid::from_raw(raw_group);
@@ -199,6 +197,10 @@ fn externally_reaped_guardian_shutdown_retires_enrolled_group_once() {
             counted.set(counted.get() + 1);
         }),
     );
+    // Concurrent exact-child waits model the real Guardian reaper, not a
+    // second host signal or permission to abandon an unreaped zombie group.
+    let leader_reaper = reap_owned_child_with_deadline(leader);
+    let member_reaper = reap_owned_child_with_deadline(member);
     let _stale_pid_trap = trap_shutdown_error_kill_for_test();
     let error = primary
         .shutdown()
@@ -241,22 +243,16 @@ fn externally_reaped_guardian_shutdown_retires_enrolled_group_once() {
         "repeat operations never signal the group again"
     );
 
-    // Observe the real kernel effect on the two exact test-owned children.
-    // The bounded loop is only a failure kill switch; Drop rescues own children
-    // after any failed assertion, without touching another principal's PID.
-    for child in [&mut leader, &mut member] {
-        let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
-        let status = loop {
-            if let Some(status) = child.try_wait().expect("inspect exact owned child") {
-                break status;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "own group member was not retired"
-            );
-            std::thread::yield_now();
-        };
-        assert_eq!(status.signal(), Some(nix::libc::SIGKILL));
+    // Both test-owned exact children were reaped during the host absence
+    // window; the Host never waited on or signalled a stale numeric PID.
+    for reaper in [leader_reaper, member_reaper] {
+        assert_eq!(
+            reaper
+                .join()
+                .expect("exact owned child reaper completed")
+                .signal(),
+            Some(nix::libc::SIGKILL)
+        );
     }
     assert_eq!(getpgid(Some(group)), Err(Errno::ESRCH));
     assert_eq!(kill(Pid::from_raw(-raw_group), None), Err(Errno::ESRCH));

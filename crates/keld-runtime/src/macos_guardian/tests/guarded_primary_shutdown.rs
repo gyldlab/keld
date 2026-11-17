@@ -13,7 +13,7 @@ use super::super::{
     GuardianBootstrap, RecoveryState, RegisteredPrimaryGeneration, RoleEvent, RuntimeError,
     SUPERVISED_GUARDIAN_ARG, lifecycle_error, lock_generation, lock_recovery,
 };
-use super::test_support::NativeChildOwner;
+use super::test_support::{NativeChildOwner, reap_owned_child_with_deadline};
 
 mod echild_custody;
 
@@ -323,7 +323,7 @@ fn poll_fatal_rejects_owned_guardian_zero_even_after_shutdown_attribution() {
 
 #[test]
 fn shutdown_worker_error_reaps_registered_group_after_zero_guardian_exit() {
-    let mut group = NativeChildOwner::new(
+    let group = NativeChildOwner::new(
         Command::new("/bin/sleep")
             .arg("30")
             .process_group(0)
@@ -379,32 +379,24 @@ fn shutdown_worker_error_reaps_registered_group_after_zero_guardian_exit() {
         shutdown_denial_fence: None,
     };
 
+    let group_reaper = reap_owned_child_with_deadline(group);
     let error = primary.shutdown().expect_err("worker failure stays fatal");
     let guardian_status = primary
         .child
         .try_wait()
         .expect("owned guardian reaped")
         .expect("guardian exited");
-    let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
-    let mut group_status = group.try_wait().expect("inspect owned group");
-    while group_status.is_none() && Instant::now() < deadline {
-        thread::yield_now();
-        group_status = group.try_wait().expect("observe group retirement");
-    }
-    let fail_safe_reaped = group_status.is_some();
-    if !fail_safe_reaped {
-        // This fixture has only one test-owned /bin/sleep group member.
-        // Rescue the exact unreaped Child, never a possibly recycled PGID.
-        group.kill().expect("kill exact retained test-owned child");
-        group.wait().expect("reap exact retained test-owned child");
-    }
+    assert_eq!(
+        group_reaper
+            .join()
+            .expect("exact group-child reaper completed")
+            .signal(),
+        Some(nix::libc::SIGKILL),
+        "terminal cleanup must signal the original registered group"
+    );
     assert!(
         guardian_status.success(),
         "test requires zero guardian exit"
-    );
-    assert!(
-        fail_safe_reaped,
-        "worker failure left a registered Bun process group alive: {error}"
     );
     assert!(
         lock_generation(&current_generation).is_none(),
