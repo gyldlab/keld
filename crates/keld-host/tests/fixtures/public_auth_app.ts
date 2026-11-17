@@ -106,7 +106,8 @@ try {
   console.error("KELD_KEL89_QUIT_HTTP_FAILURE " + smokeCase);
   throw error;
 }
-if (!quit.ok || quitBody !== "quit") throw new Error("invalid ordinary fixture Quit command");
+if (!quit.ok || quitBody !== "quit")
+  throw new Error("invalid ordinary fixture Quit command");
 console.error("KELD_KEL89_PUBLIC_QUIT_REQUEST " + smokeCase);
 await app.quit();
 console.error("KELD_KEL89_QUIT_API_ACK " + smokeCase);
