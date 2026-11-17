@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { expect, test } from "bun:test";
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -796,12 +798,32 @@ test("tree census rechecks a 300-file count after enumeration", async () => {
 // installer is allowed between credential-free checkout and this gate.
 // Keep the B-82 shell program pinned independently of the workflow YAML.
 // Otherwise an in-step command injection or `|| true` could pass a substring-only check.
+const trustedKEL270ReceiptPath =
+  "docs/engineering/evidence/kel270-catalogue-admission-v2/review-receipt.json";
+const trustedKEL270ReceiptSha256 =
+  "0a3f4074226cca88e01bba748d5e17d61a77b64492c291a9725de45405b9d4ce";
+const safePythonEnvironment = [
+  'for variable in "${!PYTHON@}"; do',
+  '  unset "$variable"',
+  "done",
+  "export PYTHONNOUSERSITE=1",
+  "export PYTHONSAFEPATH=1",
+].join("\n");
 const approvedKEL270EvidenceRun = String.raw`set -euo pipefail
+# The receipt supplies all 15 source hashes. Pin its reviewed bytes in
+# protected CI so a candidate cannot repin both a source and its manifest.
+receipt_path=${trustedKEL270ReceiptPath}
+if ! printf '%s  %s\n' \
+  '${trustedKEL270ReceiptSha256}' \
+  "$receipt_path" | sha256sum --check --status; then
+  echo "KEL-270 B-82 trusted receipt SHA-256 mismatch" >&2
+  exit 1
+fi
 # A pull request can add sourceless imports (for example argparse.pyc)
 # beside the verifier. -B alone prevents writes, not importing them.
-# Keep the unsafe checkout/script directory off sys.path, including
-# all Python subprocesses launched by verify_spec_evidence.py.
-export PYTHONSAFEPATH=1
+# Clear runner-provided Python startup controls before the verifier and
+# its child processes; re-enable only safe-path and no-user-site flags.
+${safePythonEnvironment}
 python3.12 -I -m venv "$RUNNER_TEMP/kel270-evidence-python"
 cat > "$RUNNER_TEMP/kel270-evidence-requirements.txt" <<'REQ'
 cryptography==50.0.2 \
@@ -833,6 +855,10 @@ function assertEvidenceBeforeCandidateCode(steps: Record<string, any>[]) {
   expect(steps[2].shell).toBe("bash");
   expect(steps[2].if).toBeUndefined();
   expect(steps[2]["continue-on-error"]).toBeUndefined();
+  expect(steps[2].run).toContain(trustedKEL270ReceiptSha256);
+  expect(steps[2].run).toContain("sha256sum --check --status");
+  expect(steps[2].run).toContain('for variable in "${!PYTHON@}"; do');
+  expect(steps[2].run).toContain("export PYTHONNOUSERSITE=1");
   expect(steps[2].run).toContain("export PYTHONSAFEPATH=1");
   expect(steps[2].run).toContain("python3.12 -I -m venv");
   expect(steps[2].run).toContain("verify_spec_evidence.py --check");
@@ -873,6 +899,12 @@ test("KEL-270 evidence rejects in-step untrusted execution and failure masking",
   const steps = ci.jobs.hygiene.steps as Record<string, any>[];
   const original = steps[2].run as string;
   for (const mutated of [
+    original.replace(trustedKEL270ReceiptSha256, "0".repeat(64)),
+    original.replace(safePythonEnvironment, ""),
+    original.replace(
+      "sha256sum --check --status",
+      "sha256sum --check --status || true",
+    ),
     original.replace(
       "export PYTHONSAFEPATH=1",
       "bash tools/untrusted.sh\nexport PYTHONSAFEPATH=1",
@@ -891,5 +923,67 @@ test("KEL-270 evidence rejects in-step untrusted execution and failure masking",
         ...steps.slice(3),
       ]),
     ).toThrow();
+  }
+});
+
+test("KEL-270 trusted receipt pin rejects candidate-rewritten source hashes", () => {
+  const receiptBytes = readFileSync(trustedKEL270ReceiptPath);
+  expect(createHash("sha256").update(receiptBytes).digest("hex")).toBe(
+    trustedKEL270ReceiptSha256,
+  );
+
+  // Model the reproduced attack without changing the checked-out source tree:
+  // mutate identity.md, then repin that inner digest in the candidate receipt.
+  const receipt = JSON.parse(receiptBytes.toString("utf8")) as {
+    published_file_sha256: Record<string, string>;
+  };
+  const sourcePath = "docs/specs/kel270-catalogue-admission-v2/identity.md";
+  const mutatedSource = Buffer.concat([
+    readFileSync(sourcePath),
+    Buffer.from("\n<!-- adversarial source mutation -->\n"),
+  ]);
+  receipt.published_file_sha256[sourcePath] = createHash("sha256")
+    .update(mutatedSource)
+    .digest("hex");
+  const candidateReceipt = Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`);
+  expect(createHash("sha256").update(candidateReceipt).digest("hex")).not.toBe(
+    trustedKEL270ReceiptSha256,
+  );
+});
+
+test("KEL-270 verifier children cannot import sitecustomize from inherited PYTHONPATH", () => {
+  // GitHub Actions runs this verifier on Ubuntu. Keep the bash/Python startup
+  // regression off Windows jobs, where the required shell is not installed.
+  if (process.platform === "win32") return;
+
+  const temporary = mkdtempSync(join(tmpdir(), "keld270-python-path-"));
+  try {
+    const marker = join(temporary, "sitecustomize-ran");
+    writeFileSync(
+      join(temporary, "sitecustomize.py"),
+      `from pathlib import Path\nPath(${JSON.stringify(marker)}).write_text("executed")\n`,
+    );
+    const pythonEnvironment = {
+      ...process.env,
+      PYTHONPATH: temporary,
+      PYTHONSAFEPATH: "1",
+    };
+    delete pythonEnvironment.PYTHONHOME;
+
+    const vulnerable = Bun.spawnSync(["python3", "-B", "-c", "pass"], {
+      env: pythonEnvironment,
+    });
+    expect(vulnerable.exitCode).toBe(0);
+    expect(existsSync(marker)).toBe(true);
+    rmSync(marker, { force: true });
+
+    const isolated = Bun.spawnSync(
+      ["bash", "-c", `${safePythonEnvironment}\npython3 -B -c 'pass'`],
+      { env: pythonEnvironment },
+    );
+    expect(isolated.exitCode).toBe(0);
+    expect(existsSync(marker)).toBe(false);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
   }
 });
