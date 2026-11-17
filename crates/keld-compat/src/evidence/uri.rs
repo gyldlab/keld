@@ -21,7 +21,24 @@ pub(super) fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
         return Ok(trimmed.to_owned());
     }
     if let Some(rest) = trimmed.strip_prefix("https://") {
-        let (host, path) = parse_https_host_and_path(rest, trimmed)?;
+        // Preserve strict authority syntax (including empty userinfo/ports) before
+        // WHATWG parsing, which otherwise repairs some malformed inputs.
+        parse_https_host_and_path(rest, trimmed)?;
+        if trimmed.bytes().any(|b| b.is_ascii_control() || b == b'\\') {
+            return Err(EvidenceError::NonNormativeEvidence {
+                detail: format!("`{trimmed}` contains ambiguous URL characters"),
+            });
+        }
+        let url = url::Url::parse(trimmed).map_err(|_| EvidenceError::NonNormativeEvidence {
+            detail: format!("`{trimmed}` is not a public https location"),
+        })?;
+        let host = match url.host() {
+            Some(url::Host::Domain(host)) => host.to_owned(),
+            Some(url::Host::Ipv4(host)) => host.to_string(),
+            Some(url::Host::Ipv6(host)) => host.to_string(),
+            None => String::new(),
+        };
+        let path = decoded_policy_path(url.path(), trimmed)?;
         // Trailing FQDN dots are the same host (RFC 1034); compare once.
         let host = host.trim_end_matches('.').to_ascii_lowercase();
         if host_is_forbidden(&host) {
@@ -58,11 +75,35 @@ pub(super) fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
                 ),
             });
         }
-        return Ok(trimmed.to_owned());
+        return Ok(url.into());
     }
     Err(EvidenceError::NonNormativeEvidence {
         detail: format!("`{trimmed}` is not https:// or sha256:"),
     })
+}
+
+/// Decode each segment once for policy checks without allowing new segment
+/// boundaries, dot navigation, or nested escapes to acquire another meaning.
+fn decoded_policy_path(path: &str, original: &str) -> Result<String, EvidenceError> {
+    let mut segments = Vec::new();
+    for segment in path.split('/') {
+        let decoded = percent_encoding::percent_decode_str(segment)
+            .decode_utf8()
+            .map_err(|_| EvidenceError::NonNormativeEvidence {
+                detail: format!("`{original}` has an invalid encoded path"),
+            })?;
+        if matches!(decoded.as_ref(), "." | "..")
+            || decoded
+                .bytes()
+                .any(|b| matches!(b, b'/' | b'\\' | b'%' | b'?' | b'#') || b.is_ascii_control())
+        {
+            return Err(EvidenceError::NonNormativeEvidence {
+                detail: format!("`{original}` has an ambiguous encoded path"),
+            });
+        }
+        segments.push(decoded.into_owned());
+    }
+    Ok(segments.join("/"))
 }
 
 /// Turn citations and local temp *paths*. Not a substring search on https URLs.
@@ -182,9 +223,8 @@ fn https_port_is_valid(port: &str) -> bool {
 
 fn host_is_forbidden(host: &str) -> bool {
     // Browsers treat a trailing FQDN dot as the same host; `Ipv4Addr` does not.
-    // Literal authority only: no DNS, and no abbreviated-IPv4 parser
-    // (`127.1`, `010.0.0.1`, `1.1`) — those plus DNS-to-private (`nip.io`)
-    // are T1 residuals (easy to mis-classify a public address).
+    // URL parsing has already canonicalized literal IP addresses. No DNS
+    // lookup is performed; DNS-to-private hosts remain a residual risk.
     let h = host.to_ascii_lowercase();
     let h = h.trim_end_matches('.');
     if h.is_empty() || h == "localhost" || h.ends_with(".localhost") {

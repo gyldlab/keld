@@ -195,3 +195,44 @@ fn score_rejects_constructed_loopback_and_blob_main_uris() {
         assert_eq!(err.code(), "KELD-COMPAT-007", "{uri}");
     }
 }
+
+#[test]
+fn rejects_normalization_bypasses_at_parse_and_score() {
+    let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
+    let original = format!("https://github.com/gyldlab/keld/commit/{sha}");
+    let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denominator");
+    for uri in [
+        format!("https://example.com/{sha}/../main"),
+        format!("https://example.com/{sha}/%2e%2e/main"),
+        format!("https://%31%32%37.0.0.1/commit/{sha}"),
+        format!("https://%6cocalhost./commit/{sha}"),
+        format!("https://github.com/org/repo/%62lob/main/{sha}"),
+        format!("https://raw%2egithubusercontent.com/org/repo/main/{sha}"),
+        format!("https://example.com/{sha}%2f../main"),
+        format!("https://example.com/{sha}/%252e%252e/main"),
+        format!("https://example.com/{sha}/..\\main"),
+        format!("https://127.1/commit/{sha}"),
+    ] {
+        let json = valid_evidence_json().replace(&original, &uri.replace('\\', "\\\\"));
+        let err = parse_evidence(json.as_bytes()).expect_err(&uri);
+        assert_eq!(err.code(), "KELD-COMPAT-007", "{uri}");
+        let mut record = parse_ok();
+        record.evidence_uri = uri.clone();
+        let err = score(&denom, &[record], AS_OF).expect_err(&uri);
+        assert_eq!(err.code(), "KELD-COMPAT-007", "{uri}");
+    }
+}
+
+#[test]
+fn returns_normalized_public_pinned_url() {
+    let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
+    let original = format!("https://github.com/gyldlab/keld/commit/{sha}");
+    let uri =
+        format!("https://GITHUB.COM:443/unused/../gyldlab/keld/blob/{sha}/a%20b?download=1#L1");
+    let json = valid_evidence_json().replace(&original, &uri);
+    let record = parse_evidence(json.as_bytes()).expect("normalized public pin");
+    assert_eq!(
+        record.evidence_uri(),
+        format!("https://github.com/gyldlab/keld/blob/{sha}/a%20b?download=1#L1")
+    );
+}
