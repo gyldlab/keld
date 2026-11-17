@@ -45,11 +45,12 @@ protocol or application-recovery work.
 4. **Native error-code allocation:** consume GH478's existing
    `KELD-NATIVE-009` through `KELD-NATIVE-016` outcomes. They are registered
    in `docs/engineering/keld-error-codes.md` at the owning PR1306 source
-   `16e519091992d551853b6d0434b85000499a3d3c`. The inspected integrating
-   tree has those native source outcomes but lacks these eight registry
-   sections. Its designated root owner must reconcile the existing rows
-   before claiming code/spec consistency; this consumer allocates no code
-   and this amendment does not edit that separately owned registry.
+   `16e519091992d551853b6d0434b85000499a3d3c`. The current integrating
+   tree contains all eight registry sections; the earlier missing-row
+   blocker no longer applies. Registry presence alone does not establish
+   code/spec consistency or native behavior. Independent owner review and
+   full-target native acceptance remain required. This consumer allocates
+   no code and does not edit the separately owned registry.
 5. **Effect-unknown application recovery:** the **source-backed first
    proof limitation is explicit**: pinned draw.io's app-owned
    `modifiedModalOpen` can remain true after a thrown dialog failure,

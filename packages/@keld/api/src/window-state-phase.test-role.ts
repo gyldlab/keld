@@ -51,6 +51,71 @@ let decodedError: { code: string; message: string } | undefined;
 const failing = mode.startsWith("failure-");
 if (failing) bytes[0] = 0xff;
 let hits = 0;
+if (mode === "integer") {
+  for (const variant of ["NavigationCommitted", "DocumentRecovered"] as const) {
+    const current = new WindowSource(() => {});
+    attachMirror(link, current);
+    const document = encodeWindowEvent({
+      variant,
+      window: { id: 7, incarnation: 300n },
+      document_generation: 5,
+      native_url: "keld-resource://0123456789abcdef0123456789abcdef/index.html",
+    });
+    const original = Number.isInteger;
+    Number.isInteger = (value: unknown) => {
+      hits += 1;
+      return original(value);
+    };
+    try {
+      state(bytes);
+      state(document);
+    } finally {
+      Number.isInteger = original;
+    }
+    const observed = current.get({ id: 7, incarnation: 300n })?.document;
+    if (
+      hits !== 0 ||
+      observed?.generation !== 5 ||
+      observed.current !== true ||
+      observed.finished !== (variant === "DocumentRecovered")
+    )
+      throw new Error(JSON.stringify({ mode, variant, hits, observed }));
+    dispatch();
+    dispatch();
+    for (const generation of [0, -1, 1.5, NaN, Infinity, 0x1_0000_0000]) {
+      const invalid = new WindowSource(() => {});
+      invalid.apply(invalid.decode(bytes));
+      let refused: unknown;
+      Number.isInteger = () => {
+        hits += 1;
+        return true;
+      };
+      try {
+        invalid.apply({
+          variant,
+          window: { id: 7, incarnation: 300n },
+          document_generation: generation,
+          native_url:
+            "keld-resource://0123456789abcdef0123456789abcdef/index.html",
+        });
+      } catch (error) {
+        refused = error;
+      } finally {
+        Number.isInteger = original;
+      }
+      if (
+        hits !== 0 ||
+        !(refused instanceof Error) ||
+        !refused.message.startsWith("KELD-IPC-005:")
+      )
+        throw new Error(
+          `invalid generation admitted or invoked app: ${generation}`,
+        );
+    }
+  }
+  console.log(JSON.stringify({ mode, hits, variant: "Created" }));
+  process.exit(0);
+}
 if (mode === "lifecycle-length") {
   const { mock } = await import("bun:test");
   const canonical = await import("@keld/kipc");
