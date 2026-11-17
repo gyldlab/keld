@@ -17,7 +17,9 @@ use super::super::super::process_group::{
 use super::super::super::{
     GuardedPrimary, RecoveryState, RegisteredPrimaryGeneration, RuntimeError, lock_generation,
 };
-use super::super::test_support::{NativeChildOwner, reap_owned_child_with_deadline};
+use super::super::test_support::{
+    NativeChildOwner, await_held_zombie_group, reap_owned_child_with_deadline,
+};
 
 #[test]
 fn externally_reaped_guardian_shutdown_never_kills_stale_pid() {
@@ -256,4 +258,150 @@ fn externally_reaped_guardian_shutdown_retires_enrolled_group_once() {
     }
     assert_eq!(getpgid(Some(group)), Err(Errno::ESRCH));
     assert_eq!(kill(Pid::from_raw(-raw_group), None), Err(Errno::ESRCH));
+}
+
+// The earlier enrolled ECHILD test reaps both members concurrently and thus
+// proves only the successful absence cut. Here the Guardian has already been
+// reaped by an exact external waiter, but one group member is deliberately
+// held in test-owned zombie custody throughout shipping shutdown().
+// Terminal enrollment must survive that failed transaction until a later
+// shipping read-only probe sees actual absence; the stale Guardian PID must
+// never be killed or waited again, and the original group cannot be signaled
+// for a second time.
+fn externally_reaped_registered_primary(
+    identity: GroupIdentity,
+) -> (
+    GuardedPrimary,
+    Arc<Mutex<Option<RegisteredPrimaryGeneration>>>,
+) {
+    let (guardian, writer, ack) = externally_reaped_owned_guardian();
+    let current_generation = Arc::new(Mutex::new(Some(
+        RegisteredPrimaryGeneration::authenticated(1, identity),
+    )));
+    let (_tx, updates_rx) = mpsc::channel();
+    let primary = GuardedPrimary {
+        child: guardian,
+        liveness_writer: Some(writer),
+        quit_ack_reader: ack,
+        current_generation: Arc::clone(&current_generation),
+        recovery_decision: Arc::new(Mutex::new(RecoveryState::new())),
+        updates_rx,
+        worker: None,
+        shutdown_attributed: true,
+        shutdown_failed: false,
+        orderly_acknowledged: false,
+        shutdown_sent: None,
+        shutdown_denial_fence: None,
+    };
+    (primary, current_generation)
+}
+
+#[test]
+fn externally_reaped_guardian_shutdown_keeps_held_member_until_exact_reap() {
+    let (leader, held, identity) = enrolled_test_owned_group();
+    let group_pid = leader.id();
+    let raw_group = i32::try_from(group_pid).expect("group PID fits i32");
+    let group = Pid::from_raw(raw_group);
+    let (mut primary, current_generation) = externally_reaped_registered_primary(identity);
+    let signals = Rc::new(Cell::new(0_u8));
+    let counted = Rc::clone(&signals);
+    let _signal_hook = install_test_group_signal_hook(
+        group_pid,
+        Box::new(move |point| {
+            assert_eq!(point, TestGroupSignalPoint::BeforeSignal);
+            counted.set(counted.get() + 1);
+        }),
+    );
+
+    // Reap only the exact leader. The second child stays owned and unreaped
+    // across shutdown and its native absence deadline.
+    let leader_reaper = reap_owned_child_with_deadline(leader);
+    let _stale_guardian_pid_trap = trap_shutdown_error_kill_for_test();
+    let error = primary
+        .shutdown()
+        .expect_err("ECHILD plus unreaped group member is terminal and fatal");
+    // Multiple RuntimeError causes are currently flattened by
+    // collapse_failures. This asserts diagnostic ECHILD preservation, not
+    // structured original-cause preservation (a separate owner decision).
+    let message = error.to_string();
+    assert!(
+        message.contains("macOS guardian generation shutdown wait")
+            && message.contains(&io::Error::from_raw_os_error(nix::libc::ECHILD).to_string()),
+        "the fatal result retains the original ECHILD cause: {message}"
+    );
+    assert!(
+        message.contains("absence remains unproven"),
+        "the held original member must prevent absent-group success: {message}"
+    );
+    assert!(primary.shutdown_failed, "original failure stays sticky");
+    assert!(
+        primary.liveness_writer.is_none(),
+        "sole writer was released"
+    );
+    assert_eq!(signals.get(), 1, "one attested group signal only");
+    assert_eq!(
+        leader_reaper
+            .join()
+            .expect("exact group leader reaper")
+            .signal(),
+        Some(nix::libc::SIGKILL)
+    );
+    await_held_zombie_group(group);
+    assert_eq!(getpgid(Some(group)), Err(Errno::ESRCH));
+    assert_eq!(kill(Pid::from_raw(-raw_group), None), Err(Errno::EPERM));
+    {
+        let retained = lock_generation(&current_generation);
+        let original = retained
+            .as_ref()
+            .expect("held member preserves the registered generation");
+        assert_eq!(original.group_identity, Some(identity));
+        assert!(
+            matches!(
+                original.native_signal,
+                super::super::super::guarded_primary::NativeSignalAuthority::Delivered { .. }
+            ),
+            "the accepted signal has spent the generation authority"
+        );
+    }
+    assert!(
+        matches!(primary.shutdown(), Err(RuntimeError::Lifecycle { source, .. })
+            if source.kind() == io::ErrorKind::NotConnected),
+        "a retry cannot mask the ECHILD failure"
+    );
+    assert_eq!(signals.get(), 1, "failed shutdown never re-signals");
+
+    assert_eq!(
+        reap_owned_child_with_deadline(held)
+            .join()
+            .expect("bounded exact test-owned member reaper")
+            .signal(),
+        Some(nix::libc::SIGKILL)
+    );
+    assert_eq!(getpgid(Some(group)), Err(Errno::ESRCH));
+    assert_eq!(kill(Pid::from_raw(-raw_group), None), Err(Errno::ESRCH));
+
+    // A shipping terminal owner entry point may now release custody with a
+    // read-only absence probe. It must still report ECHILD, not success.
+    let final_error = primary
+        .poll_fatal()
+        .expect_err("externally reaped Guardian is never healthy");
+    assert!(
+        matches!(final_error, RuntimeError::Lifecycle { phase, source }
+            if phase == "macOS guardian generation process inspection"
+                && source.raw_os_error() == Some(nix::libc::ECHILD)),
+        "terminal owner must retain the original typed inspection failure"
+    );
+    assert!(
+        lock_generation(&current_generation).is_none(),
+        "shipping terminal owner releases birth only after the exact member was reaped"
+    );
+    primary
+        .fail_current_generation(1)
+        .expect("retired group has no new signal authority");
+    assert_eq!(signals.get(), 1, "no later signal was emitted");
+    assert!(
+        matches!(primary.shutdown(), Err(RuntimeError::Lifecycle { source, .. })
+            if source.kind() == io::ErrorKind::NotConnected),
+        "absence never rewrites the earlier fatal shutdown outcome"
+    );
 }
