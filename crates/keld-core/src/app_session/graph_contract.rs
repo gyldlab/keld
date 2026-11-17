@@ -26,8 +26,6 @@ use super::graph_document::{
     MAX_SELECTED_PRELOAD_BYTES, excluded, parse_sha, validate_graph_files, validate_graph_shape,
     verify_selected_rows,
 };
-#[cfg(target_os = "macos")]
-pub(super) use super::graph_selection::validate_graph_relative_path;
 use super::graph_selection::{
     MAX_COMPONENTS, MAX_PATH_BYTES, SelectedRendererSource, relative_path,
 };
@@ -1141,7 +1139,7 @@ fn root_identity(path: &Path, opened: &RetainedRoot) -> Result<(u64, u64), HostA
 #[cfg(target_os = "macos")]
 fn borrow_retained_root(path: &Path, retained: &File) -> Result<RetainedRoot, HostAppError> {
     if !path.is_absolute()
-        || !file_metadata(&retained)
+        || !file_metadata(retained)
             .map_err(|source| graph_error("retained root", source))?
             .is_dir()
     {
