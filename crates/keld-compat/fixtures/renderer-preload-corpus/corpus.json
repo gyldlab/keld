@@ -1,7 +1,7 @@
 {
   "schema": "keld.compat.corpus/v1",
   "corpus_id": "electron-renderer-preload-v1",
-  "scope": "GH-567 F07-T4 initial macOS showcase: unimplemented preload/runtime cells blocked by the missing BrowserWindow constructor; native WKWebView fidelity not established",
+  "scope": "GH-567 F07-T4 staged macOS pending cells: BrowserWindow exists, but the current facade sends only geometry Create and no preload/argv admission frame; native WKWebView fidelity not established",
   "panel": "showcase",
   "kind": "primary_workflow",
   "artifact_digest": "manifest_bytes",
@@ -30,8 +30,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/renderer-preload.test.ts",
-      "test_name": "renderer.preload.before-first-inline today: no window can launch a preload",
-      "negative_control": "Today: making BrowserWindow available causes this entrypoint-blocker assertion to fail. GH-484 must replace it with a native first-inline-script witness before flipping PASS."
+      "test_name": "renderer.preload.before-first-inline facade sends no preload admission frame",
+      "negative_control": "Today the authenticated Host receives only the Rust-golden WindowRequest::Create geometry payload; no preload admission frame is sent. A one-fault extra Host frame after Create (representing preload admission) makes the mapped test RED; an extended Create payload also breaks the Rust-golden byte assertion. GH-484 still requires a native first-inline-script witness before this cell can flip PASS."
     },
     {
       "operation_id": "renderer.preload.absolute-file-path",
@@ -47,8 +47,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/renderer-preload.test.ts",
-      "test_name": "renderer.preload.absolute-file-path today: no window can receive an absolute preload",
-      "negative_control": "Today: making BrowserWindow available causes this blocker assertion to fail. GH-484 must probe successful in-root absolute path admission and rejected outside-root bytes before flipping PASS."
+      "test_name": "renderer.preload.absolute-file-path facade does not forward the absolute path",
+      "negative_control": "Today an absolute preload path is not forwarded across the authenticated Host boundary. A one-fault Host path-admission frame or extended Create payload makes the mapped test RED. PASS still requires native in-root success, outside-root rejection and byte-custody evidence from GH-484."
     },
     {
       "operation_id": "renderer.additional-arguments.argv",
@@ -64,8 +64,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/renderer-preload.test.ts",
-      "test_name": "renderer.additional-arguments.argv today: no renderer can receive additionalArguments",
-      "negative_control": "Today: making BrowserWindow available causes this blocker assertion to fail. GH-484 must compare renderer process.argv bytes for ordered literal arguments before flipping PASS."
+      "test_name": "renderer.additional-arguments.argv facade does not forward ordered arguments",
+      "negative_control": "Today ordered additionalArguments are not forwarded across the authenticated Host boundary. A one-fault Host argv-admission frame or extended Create payload makes the mapped test RED. PASS still requires the native renderer process.argv to match the ordered literal arguments under GH-484."
     }
   ]
 }

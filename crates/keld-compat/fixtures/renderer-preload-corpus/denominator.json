@@ -2,7 +2,7 @@
   "schema": "keld.compat.denominator/v1",
   "panel": "showcase",
   "corpus_id": "electron-renderer-preload-v1",
-  "corpus_sha256": "sha256:940fe0d7574f2997c1df0b5be2c292b1f6baac9bdd3bd29ad0c70733a25400bf",
+  "corpus_sha256": "sha256:498a4a245dfb6586d4c405cb5d46804ea9c608c3ec8698e7cb7ecf8cb1461201",
   "kind": "primary_workflow",
   "cells": [
     {
