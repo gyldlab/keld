@@ -3,7 +3,7 @@
 - Status: draft
 - Tracker: GH-1356
 - Owner: @0monish
-- Updated: 2026-11-16
+- Updated: 2026-11-17
 - Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
 
 ## 1. Goal & non-goals
@@ -71,6 +71,7 @@ FACT: [Zettlr proof owner #1354](https://github.com/gyldlab/keld/issues/1354) se
 - **Given:** Two subscriptions and two queued old-generation deliveries exist.
 - **When:** Unsubscribe one live ID and an unknown ID. Release the first event. Replace the generation, then release the second event.
 - **Then:** Only the surviving registration receives the first event. Neither old registration nor the successor receives the second event.
+  In a separate run, subscribe A, unsubscribe A, subscribe C, then repeat cleanup with A's ID. C retains its distinct ID and receives the next transition.
 - **Negative control:**
   - **Single fault:** Leave a removed ID eligible during dispatch.
   - **At-risk precondition:** Schedule removal before dispatch reaches that still-referenced callback.
@@ -114,7 +115,11 @@ specifically to escape a forced override. If #481/#558 expose only the effective
 
 Keep one role-local table keyed by an opaque integer. Registration records a callback and a supported/inert selector. An identical callback subscribed twice gets two
 entries. Subscribe/unsubscribe issue zero host calls. Use the existing facade lifecycle to retire registrations on disconnect and prevent ID collision within the
-same live generation. Dispatch snapshots retain registration identity, not only its reusable numeric ID.
+same live generation. Allocate monotonically increasing safe integer IDs. Never reuse an ID within that generation, even after removal.
+Repeated unsubscribe of a removed ID is a no-op. It cannot remove a later registration.
+Refuse allocation before numeric exhaustion or precision loss. Do not wrap, reuse an ID, or mutate existing registrations.
+Q-1 approval must set the finite ID ceiling and typed exhaustion diagnostic.
+Dispatch snapshots retain registration identity, not only the numeric ID.
 Before invocation, require the table entry to be that exact registration. A replacement sharing an old numeric ID is ineligible.
 Validate before allocation. Bound active entries with the facade's approved retention policy; exact budget and exhaustion diagnostic belong in
 approval.
@@ -171,9 +176,16 @@ Attach one projection to the approved #481/#558 apply path. Run AC-8 and its unc
 |---|---|
 | 1, 2 | Count host observer creation and app-link messages before and after two subscriptions. Count callbacks at seed time. Registering a second native observer or firing on seed must fail. |
 | 3, 4 | Drive OS changes and app overrides separately while the other stays fixed. A test listening to effective dark mode alone must miss the forced-light case or spuriously fire on an override. |
-| 5 | A removes B and registers C during dispatch. Force C to reuse B's numeric ID; C waits for the next transition. A numeric-membership-only mutant wrongly invokes C and must fail. Deliver an old queued callback after role replacement. |
+| 5 | A removes B and registers C during dispatch. C gets a fresh ID and waits for the next transition. Repeat cleanup with B's stale ID before the next transition. C must survive. An ID-reuse mutant must fail this assertion. Then replace the generation and deliver an old queued callback. No retired registration fires. |
 | 6 | Register a distinct name and null. Inject a verified OS transition and an unrelated native notification. Assert the supported control fires and census shows zero arbitrary platform observers. |
 | 7 | Run original getSystemColors with a transparent spy around the real getter. Record and rethrow its unchanged error; assert the typed diagnostic and exact helper fallback. Do not synthesize failure in the spy. A hardcoded-color mutant must fail the diagnostic assertion. |
+
+Test dispatch identity separately with a test-only table replacement that bypasses allocation.
+A numeric-membership-only mutant must wrongly invoke the replacement and fail. Production allocation must never permit that ID reuse.
+Reach the Q-1 approved ID ceiling through subscription and removal cycles. Keep active entries below the approved retention limit.
+Leave the wrapped ID unused. Attempt another subscription and assert the typed exhaustion diagnostic without table mutation.
+A wrapping allocator mutant must allocate instead and fail this assertion. Existing subscriptions must still receive the next transition.
+These are implementation acceptance controls, not evidence of executed native behavior.
 
 For AC-8, retain the observed registration, OS-transition, capture, baseline-apply and callback order.
 Also run registration without an OS change, change after capture, two opposite changes before seed, and unsubscribe before delivery.
