@@ -41,7 +41,7 @@ def sha256(data: bytes) -> str:
 
 
 def run_script(name: str, mode: str, directory: pathlib.Path | None = None) -> subprocess.CompletedProcess[str]:
-    args = [sys.executable, "-B", str((directory or HERE) / name), "--check"]
+    args = [sys.executable, "-I", "-B", str((directory or HERE) / name), "--check"]
     return subprocess.run(args, capture_output=True, text=True, check=False)
 
 

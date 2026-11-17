@@ -28,7 +28,7 @@ FACT: The prior storage-and-clock-only proposal is insufficient. The following c
 | Targets cap | `lib.rs:1222-1244` similarly uses signed length | Enforce the independent targets cap in the transport. |
 | Target authority | `lib.rs:448-458` exposes bytes before checksum completion | Buffer bounded bytes privately. Require successful EOF before parsing. |
 
-The expiry rule follows S2 sections 5.3.10, 5.4.4, 5.5.6, and 5.6.5. The equal-version rule follows S2 section 5.4.3.1. The root transport rule is the stricter KELD availability policy. Do not describe every profile difference as an upstream security vulnerability. These source findings are not executed exploit evidence.
+The expiry rule follows S2 sections 5.3.10, 5.4.4, 5.5.6, and 5.6.5. The root transport rule is the stricter KELD availability policy. D-25's equal-version continuation is an explicit KELD profile deviation from S2 section 5.4.3.1, which aborts that update cycle. Do not describe every profile difference as an upstream security vulnerability. These source findings are not executed exploit evidence.
 
 FACT: The historical-floor conditions affect timestamp, snapshot, and referenced targets comparisons. A threshold-only change can invalidate an old envelope under the new threshold without rotating its keys. D-24 does not reset floors for that change.
 
@@ -116,8 +116,9 @@ Its canonical ASCII JSON record has a 65,536-byte cap. Ordered fields:
 `schema`, `repositoryId`, `ownerSid`, `oldSequence`,
 `oldGenerationSha256`, `orphanSequence`, `orphanGenerationSha256`,
 `mode`, `attemptId`, `exclusiveBlobs`.
-`schema` is `keld.metadata-retirement/v1`; `mode` is `ordinary` or `recovery`.
-`attemptId` is null only for ordinary mode. `orphanSequence` MUST be the
+`schema` is `keld.metadata-retirement/v1`; `mode` is `ordinary`,
+`ordinary-blob-only`, or `recovery`. `attemptId` is null in both
+ordinary modes and non-null for recovery. `orphanSequence` MUST be the
 checked successor of `oldSequence`. `exclusiveBlobs` is a sorted,
 duplicate-free, bounded list of canonical `{sha256,length}` references to
 preparation blobs proved unreachable from every other protected owner.
@@ -125,6 +126,10 @@ Empty is valid. The intent pins the exact authenticated old/current state,
 expected orphan digest and complete exclusive blob inventory. An existing
 intent is never overwritten with different bytes. Ordinary retirement requires
 the complete orphan and its references before intent publication.
+`ordinary-blob-only` requires an absent N+1 generation and a null
+`orphanGenerationSha256`. The other modes require its exact expected SHA-256.
+The blob-only list MUST be nonempty and cover every unreferenced blob from
+the protected store census. The intent cannot invent a missing generation.
 Recovery retirement may include a not-yet-written successor or blob only when
 D-65's protected prewrite plan and terminal aborted journal name it.
 An absent planned object never authorizes deletion of another object.
@@ -203,13 +208,36 @@ An absent orphan without a matching durable intent cannot authorize blob
 deletions. The KEL-53 operator recovery owner investigates ambiguous state.
 There is no caller-provided cleanup flag or empty-store fallback.
 
+After resolving any ordinary generation-retirement intent, new blobs may remain
+from a crash before generation publication. Before any new ordinary mutation,
+enumerate all blob objects under the retained store parent and exclusive lease.
+Authenticate current N, enrollment, owner SID, protection, every referenced
+generation, LKG, previous LKG, pending operation, and other protected owners.
+Refuse a pending pointer, present N+1, or another retirement mode's intent.
+If a blob-only intent exists, resume it even when all listed blobs are absent.
+Without an intent, if every blob is referenced, proceed without cleanup.
+Otherwise create a D-23 `ordinary-blob-only` intent for the complete
+unreferenced inventory. Refuse malformed, unprotected, foreign, newly
+referenced, or unaccounted objects. Refuse an inventory over the D-23 cap.
+Do not delete by generic GC. Under the lease, durably publish, flush and
+reread the complete blob-only intent before deleting an exact listed blob.
+An existing intent MUST match the old state, absent N+1, and full original
+inventory. Every still-present unreferenced blob MUST appear in that intent.
+Verify each present listed blob's exact bytes, length, owner and unreachability.
+An absent listed blob counts as retired only under the same intact intent,
+unchanged protected state, and absent N+1. A changed state or unexpected
+object MUST halt without deletion or successor publication.
+After all listed blobs are absent, reread unchanged current and all owners.
+Durably remove the intent and verify its path absent before publishing N+1.
+An interrupted deletion or intent removal MUST resume these exact checks.
+
 When `current` already names N+1, the successor is committed and MUST
 NOT be retired. Manual recovery with a pending pointer uses only
 D-65's explicit terminal-`aborted` path, not ordinary orphan cleanup.
 Before D-65 publishes a fresh manual-recovery journal or D-68 pointer,
-the same lease-protected owner MUST finish any pending ordinary N+1
-retirement by these D-24 rules. Confirm both the ordinary intent
-and N+1 absent before sealing a new recovery prewrite inventory.
+the same lease-protected owner MUST finish either ordinary retirement
+mode by these D-24 rules. Confirm the ordinary intent, N+1, and all
+unreferenced blob objects absent before sealing a new recovery prewrite inventory.
 If source identity, generation epoch or ownership is ambiguous,
 refuse recovery without creating its journal or pending pointer.
 
@@ -276,6 +304,11 @@ If both envelopes authenticate, compare their complete canonical signed content.
 Discard the replacement bytes and retain the stored envelope. Signature ordering or additional valid signatures do not change signed content. Do not replace the stored expiry, snapshot description, or signatures.
 
 Then continue snapshot and targets verification against the retained timestamp. Use matching cached objects or fetch their exact authenticated versions and hashes. Recheck their signatures, rollback rules, and expiry against this refresh's fixed time. This can complete a previous interrupted refresh without trusting changed same-version metadata.
+This continuation intentionally differs from S2 section 5.4.3.1's equal-version cycle abort.
+The pinned S6 implementation also continues downstream loading after equality.
+KELD MUST complete fresh online authentication, current thresholds, signed-content equality,
+all role hashes, version floors, and expiry checks before granting admission.
+The retained timestamp cannot add a new snapshot description or extend its expiry.
 
 FACT: S6 uses the refresh/load/discard-equality sequence in [refresh lines 174–177](https://github.com/theupdateframework/python-tuf/blob/e897eec93e37843884d0f37e37d40aa45393e1bb/tuf/ngclient/updater.py#L174-L177).
 Its [timestamp loader](https://github.com/theupdateframework/python-tuf/blob/e897eec93e37843884d0f37e37d40aa45393e1bb/tuf/ngclient/updater.py#L427-L467) discards equality.
