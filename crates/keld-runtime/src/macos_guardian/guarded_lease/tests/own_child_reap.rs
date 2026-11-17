@@ -17,8 +17,8 @@ use nix::sys::signal::{Signal, kill, killpg};
 use nix::unistd::Pid;
 
 use super::super::super::process_group::{
-    LocalGroupWitness, TestGroupSignalPoint, install_test_group_signal_hook,
-    retire_own_child_group, validate_guardian_child_group,
+    GroupIdentity, LocalGroupWitness, TestGroupSignalPoint, install_test_group_signal_hook,
+    reconcile_denied_signal_after_reap, retire_own_child_group, validate_guardian_child_group,
 };
 use super::super::super::{GUARDIAN_SHUTDOWN_DEADLINE, RuntimeError};
 use super::{
@@ -181,19 +181,150 @@ fn guardian_revoke_never_clears_a_group_held_by_a_zombie_it_does_not_reap() {
     assert_eq!(kill(Pid::from_raw(-group), None), Err(Errno::ESRCH));
 }
 
-/// The denied-signal path's error contract: the one signal's typed
-/// signal-phase EPERM.
-fn assert_signal_phase_eperm(error: &RuntimeError) {
+/// The Guardian's own SIGKILL succeeds, and it reaps its original direct
+/// Child. Another test-owned member of the same attested group remains an
+/// unreaped zombie. Signal delivery and the leader's reap cannot certify
+/// group absence; the real Guardian lease must report the remaining group.
+#[test]
+fn guardian_accepted_signal_cannot_clear_with_unreaped_group_member() {
+    let mut leader = sleeper(0);
+    let group = raw(leader.0.id());
+    let mut held_member = sleeper(group);
+    let witness = enrolled(&leader);
+    let signal_count: Arc<Mutex<usize>> = Arc::default();
+    let counted = Arc::clone(&signal_count);
+    let _hook = install_test_group_signal_hook(
+        leader.0.id(),
+        Box::new(move |point| {
+            if point == TestGroupSignalPoint::BeforeSignal {
+                *counted.lock().expect("owned signal count") += 1;
+            }
+        }),
+    );
+
+    let error = locally_enrolled_lease(leader.0.id(), witness)
+        .revoke_with_child(RevocationCause::Shutdown, &mut leader.0)
+        .expect_err("a delivered group SIGKILL and leader reap are insufficient");
+
+    assert!(
+        error.to_string().contains("group absence"),
+        "the real Guardian caller must retain the unproven group fault: {error}"
+    );
+    assert_eq!(
+        *signal_count.lock().expect("owned signal count"),
+        1,
+        "the original attested group has exactly one signal decision"
+    );
+    assert_eq!(
+        leader
+            .0
+            .try_wait()
+            .expect("leader reap inspection")
+            .map(|status| status.signal()),
+        Some(Some(9)),
+        "the Guardian reaped its original direct child"
+    );
+    assert_eq!(
+        nix::unistd::getpgid(Some(Pid::from_raw(group))),
+        Err(Errno::ESRCH),
+        "the original leader has gone"
+    );
+    await_zombie_only(group);
+    assert_eq!(
+        kill(Pid::from_raw(-group), None),
+        Err(Errno::EPERM),
+        "the unreaped second member still holds the native group"
+    );
+    assert_eq!(
+        held_member.0.wait().expect("reap held member").signal(),
+        Some(9)
+    );
+    assert_eq!(
+        kill(Pid::from_raw(-group), None),
+        Err(Errno::ESRCH),
+        "only the independent test owner's reap finally clears the group"
+    );
+
+    let mut healthy = sleeper(0);
+    let healthy_group = raw(healthy.0.id());
+    let healthy_witness = enrolled(&healthy);
+    locally_enrolled_lease(healthy.0.id(), healthy_witness)
+        .revoke_with_child(RevocationCause::Shutdown, &mut healthy.0)
+        .expect("healthy subsequent Guardian lease still retires its group");
+    assert_eq!(kill(Pid::from_raw(-healthy_group), None), Err(Errno::ESRCH));
+}
+
+/// Positive control: both native members have been reaped by their own
+/// parent before the group decision returns, so dual ESRCH is legitimate.
+#[test]
+fn guardian_accepted_signal_clears_after_both_native_members_are_reaped() {
+    let mut leader = sleeper(0);
+    let group = raw(leader.0.id());
+    let mut member = sleeper(group);
+    let identity = validate_guardian_child_group(leader.0.id(), std::process::id())
+        .expect("original native leader is the attested direct child");
+
+    let (retired, reaped) = retire_own_child_group(identity, |deadline| {
+        assert_eq!(
+            leader.0.wait().expect("Guardian leader reap").signal(),
+            Some(9)
+        );
+        assert_eq!(
+            member.0.wait().expect("independent member reap").signal(),
+            Some(9)
+        );
+        assert!(
+            Instant::now() < deadline,
+            "both native reaps used one budget"
+        );
+        Ok(())
+    });
+    reaped.expect("the original owned leader was reaped");
+    retired.expect("the whole group is now proven absent");
+    assert_eq!(
+        nix::unistd::getpgid(Some(Pid::from_raw(group))),
+        Err(Errno::ESRCH)
+    );
+    assert_eq!(kill(Pid::from_raw(-group), None), Err(Errno::ESRCH));
+}
+
+/// The denied-signal path's error contract (the stack's form, D3): the one
+/// signal's typed signal-phase EPERM, carrying the absence owner's reason as
+/// context. The wrapper hides `raw_os_error()`, so the exact denial is
+/// asserted through the one classifier: once the group is really gone,
+/// `reconcile_denied_signal_after_reap` must accept this very error.
+pub(super) fn assert_signal_phase_eperm(error: &RuntimeError) {
     assert!(
         matches!(
             error,
             RuntimeError::Lifecycle {
                 phase: "macOS guardian process-group signal",
                 source,
-            } if source.raw_os_error() == Some(nix::libc::EPERM)
+            } if source.kind() == std::io::ErrorKind::PermissionDenied
         ),
         "typed signal-phase EPERM: {error:?}"
     );
+    let text = error.to_string();
+    assert!(
+        text.contains("Operation not permitted"),
+        "the kernel's denial stays visible: {text}"
+    );
+    assert!(
+        text.contains("original group absence remains unproven after the shutdown budget"),
+        "the absence owner's reason is kept as context: {text}"
+    );
+}
+
+/// After the group is proven gone, the one classifier still recognises the
+/// returned error as the exact signal-phase denial (and nothing else would
+/// be reconciled into success).
+pub(super) fn assert_classified_as_denied_signal(identity: GroupIdentity, error: RuntimeError) {
+    reconcile_denied_signal_after_reap(
+        identity,
+        error,
+        Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE,
+    )
+    .expect("the returned error is the exact signal-phase EPERM");
 }
 
 /// Negative control for the DENIED path: the Guardian's own signal is denied
@@ -204,6 +335,8 @@ fn guardian_denied_signal_never_clears_a_group_held_by_a_zombie_it_does_not_reap
     let mut leader = sleeper(0);
     let group = raw(leader.0.id());
     let mut other = sleeper(group);
+    let identity = validate_guardian_child_group(leader.0.id(), std::process::id())
+        .expect("kernel birth of the owned leader");
     let witness = enrolled(&leader);
     let _hook = install_test_group_signal_hook(
         leader.0.id(),
@@ -230,6 +363,7 @@ fn guardian_denied_signal_never_clears_a_group_held_by_a_zombie_it_does_not_reap
         Some(9)
     );
     assert_eq!(kill(Pid::from_raw(-group), None), Err(Errno::ESRCH));
+    assert_classified_as_denied_signal(identity, error);
 }
 
 /// A fresh live process joins the group (kept in existence by a zombie the
@@ -298,6 +432,8 @@ fn assert_no_signal_reaches_a_process_that_joins_during_the_reap(denied: bool) {
     let error = retired.expect_err("a group that turned live after the reap is not ours");
     if denied {
         assert_signal_phase_eperm(&error);
+        assert_eq!(kill(Pid::from_raw(-group), None), Err(Errno::ESRCH));
+        assert_classified_as_denied_signal(identity, error);
     } else {
         assert!(
             error

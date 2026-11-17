@@ -38,5 +38,8 @@ tempfile = { workspace = true }
 # optional dependencies: no new crate and no Cargo.lock change.
 windows-sys = { workspace = true, features = ["Win32_UI_WindowsAndMessaging"] }
 
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+nix = { workspace = true }
+
 [lints]
 workspace = true
