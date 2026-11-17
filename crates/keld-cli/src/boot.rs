@@ -427,8 +427,7 @@ where
 
     let dev_root = project_root.join(".keld/dev");
     #[cfg(target_os = "macos")]
-    fs::create_dir_all(&dev_root)
-        .map_err(|source| BootCompileError::new("dev root", source.to_string()))?;
+    prepare_macos_dev_root(&project_root, &dev_root)?;
     #[cfg(target_os = "linux")]
     prepare_linux_dev_root(&project_root, &dev_root)?;
     #[cfg(windows)]
@@ -575,6 +574,8 @@ where
             ));
         }
     }
+    #[cfg(target_os = "macos")]
+    verify_macos_stage_ancestry(&root)?;
     #[cfg(windows)]
     {
         verify_windows_stage_acl(&root)?;
@@ -595,6 +596,124 @@ where
         #[cfg(windows)]
         launch_guards,
     })
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_macos_dev_root(project_root: &Path, dev_root: &Path) -> Result<(), BootCompileError> {
+    use std::os::unix::fs::DirBuilderExt as _;
+
+    let uid = rustix::process::geteuid().as_raw();
+    // The staged Host is executed by pathname. Qualify the entire selected
+    // namespace from the immutable filesystem root before creating entries.
+    // Checking only the 0700 nonce cannot prevent replacement of an ancestor.
+    for ancestor in project_root
+        .ancestors()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
+        verify_macos_stage_directory(ancestor, uid)?;
+    }
+    for directory in [project_root.join(".keld"), dev_root.to_owned()] {
+        match fs::symlink_metadata(&directory) {
+            Ok(_) => {}
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                let mut builder = fs::DirBuilder::new();
+                builder.mode(0o700);
+                builder
+                    .create(&directory)
+                    .map_err(|source| BootCompileError::new("dev root", source.to_string()))?;
+            }
+            Err(source) => return Err(BootCompileError::new("dev root", source.to_string())),
+        }
+        // Refuse an unsafe existing parent; do not chmod another selected object.
+        verify_macos_stage_directory(&directory, uid)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn verify_macos_stage_ancestry(root: &Path) -> Result<(), BootCompileError> {
+    let uid = rustix::process::geteuid().as_raw();
+    for ancestor in root.ancestors().collect::<Vec<_>>().into_iter().rev() {
+        verify_macos_stage_directory(ancestor, uid)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn verify_macos_stage_directory(path: &Path, uid: u32) -> Result<(), BootCompileError> {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    use std::process::Command;
+
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|source| BootCompileError::new("dev root", source.to_string()))?;
+    if !metadata.is_dir() || (metadata.uid() != uid && metadata.uid() != 0) {
+        return Err(BootCompileError::new(
+            "dev root",
+            format!("{} is not a trusted non-symlink directory", path.display()),
+        ));
+    }
+    let mode = metadata.permissions().mode();
+    // The sticky bit stops a different UID from unlinking our owned child.
+    // Without it, either group or other write permits ancestor replacement.
+    if mode & 0o022 != 0 && mode & 0o1000 == 0 {
+        return Err(BootCompileError::new(
+            "dev root",
+            format!(
+                "{} grants another principal namespace write access",
+                path.display()
+            ),
+        ));
+    }
+
+    // macOS extended allow ACLs can grant delete_child or add_file while the
+    // POSIX mode remains 0700. BSD ls -e is the installed read-only ACL
+    // inspector; its -q flag renders path control characters as '?' and it is
+    // invoked by absolute path without a shell. Unrecognized output refuses.
+    let output = Command::new("/bin/ls")
+        .args(["-ldeq", "--"])
+        .arg(path)
+        .env("LC_ALL", "C")
+        .output()
+        .map_err(|source| BootCompileError::new("dev root", source.to_string()))?;
+    let report = std::str::from_utf8(&output.stdout)
+        .map_err(|source| BootCompileError::new("dev root", source.to_string()))?;
+    let mut lines = report.lines();
+    if !output.status.success() || lines.next().is_none() {
+        return Err(BootCompileError::new(
+            "dev root",
+            format!("{} has an unreadable macOS directory ACL", path.display()),
+        ));
+    }
+    for entry in lines {
+        let Some((index, text)) = entry.trim_start().split_once(':') else {
+            return Err(BootCompileError::new(
+                "dev root",
+                "unrecognized macOS ACL entry",
+            ));
+        };
+        let fields = text.split_ascii_whitespace().collect::<Vec<_>>();
+        if index.is_empty()
+            || !index.bytes().all(|byte| byte.is_ascii_digit())
+            || !fields.contains(&"deny")
+            || fields.contains(&"allow")
+        {
+            return Err(BootCompileError::new(
+                "dev root",
+                format!("{} has an unsafe or unrecognized macOS ACL", path.display()),
+            ));
+        }
+    }
+    let after = fs::symlink_metadata(path)
+        .map_err(|source| BootCompileError::new("dev root", source.to_string()))?;
+    if after.dev() != metadata.dev() || after.ino() != metadata.ino() {
+        return Err(BootCompileError::new(
+            "dev root",
+            format!("{} changed while validating its namespace", path.display()),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -1365,6 +1484,109 @@ mod tests {
         let first = stage_dev_boot(&project, &source_host).expect("first");
         let second = stage_dev_boot(&project, &source_host).expect("second");
         assert_ne!(first.root(), second.root());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_stage_refuses_writable_ancestor_without_side_effects() {
+        let (_temp, project, host) = fixture();
+        fs::set_permissions(&project, fs::Permissions::from_mode(0o770))
+            .expect("fixture permits a second principal to replace children");
+        let error = stage_dev_boot(&project, &host)
+            .expect_err("writable project ancestor cannot protect a path-launched host");
+        assert!(error.to_string().contains("dev root"), "{error}");
+        assert!(
+            !project.join(".keld").exists(),
+            "refusal must precede staging"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_stage_refuses_writable_project_parent_without_side_effects() {
+        let (temp, project, host) = fixture();
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o770))
+            .expect("fixture permits a second principal to rename the project directory");
+        let error = stage_dev_boot(&project, &host)
+            .expect_err("the project parent must be checked before staging");
+        assert!(error.to_string().contains("dev root"), "{error}");
+        assert!(
+            !project.join(".keld").exists(),
+            "refusal must precede staging"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_private_stage_executes_the_copied_host_by_path() {
+        use std::process::Command;
+
+        let (_temp, project, host) = fixture();
+        let source = b"#!/bin/sh\nprintf 'copied-host-executed\\n'\n";
+        fs::write(&host, source).expect("source script");
+        let stage = stage_dev_boot(&project, &host).expect("qualified stage");
+        assert_eq!(fs::read(stage.host()).expect("staged image"), source);
+        let result = Command::new(stage.host())
+            .current_dir(stage.root())
+            .output()
+            .expect("real native staged path launch");
+        assert!(result.status.success(), "{result:?}");
+        assert_eq!(result.stdout, b"copied-host-executed\n");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_stage_refuses_extended_acl_allow_even_with_private_mode() {
+        use std::process::Command;
+
+        let (_temp, project, host) = fixture();
+        fs::set_permissions(&project, fs::Permissions::from_mode(0o700))
+            .expect("private fixture mode");
+        let status = Command::new("/bin/chmod")
+            .args(["+a", "everyone allow add_file,delete_child"])
+            .arg(&project)
+            .status()
+            .expect("native chmod ACL probe");
+        assert!(status.success(), "macOS ACL fixture must be installed");
+        assert_eq!(
+            fs::metadata(&project)
+                .expect("ACL mode readback")
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o700,
+            "an extended ACL must not require changing Unix mode bits"
+        );
+        let error = stage_dev_boot(&project, &host)
+            .expect_err("macOS ACL must not give another account stage-parent rights");
+        assert!(error.to_string().contains("dev root"), "{error}");
+        assert!(
+            !project.join(".keld").exists(),
+            "refusal must precede staging"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_stage_refuses_symlinked_existing_parent_without_touching_target() {
+        use std::os::unix::fs::symlink;
+
+        let (temp, project, host) = fixture();
+        let outside = temp.path().join("outside-stage");
+        fs::create_dir(&outside).expect("outside root");
+        fs::write(outside.join("sentinel"), b"preserve").expect("outside marker");
+        symlink(&outside, project.join(".keld")).expect("linked stage parent");
+        let error =
+            stage_dev_boot(&project, &host).expect_err("linked stage parent must not be admitted");
+        assert!(error.to_string().contains("dev root"), "{error}");
+        assert!(
+            !outside.join("dev").exists(),
+            "must not create outside stage"
+        );
+        assert_eq!(
+            fs::read(outside.join("sentinel")).expect("marker"),
+            b"preserve"
+        );
     }
 
     #[cfg(target_os = "linux")]
