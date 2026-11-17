@@ -3052,10 +3052,18 @@ test("existing Rust CLI invokes semantic admission and preserves its refusal", (
     ]);
     expect(compilation.exitCode).toBe(0);
     // The CLI must use the same verified Bun executable as this test process.
+    const inheritedPath =
+      Object.entries(process.env).find(
+        ([key]) => key.toLowerCase() === "path",
+      )?.[1] ?? "";
     const runtimeEnv = {
-      ...process.env,
+      ...Object.fromEntries(
+        Object.entries(process.env).filter(
+          ([key]) => key.toLowerCase() !== "path",
+        ),
+      ),
       KELD_CI_BASE_REF: "HEAD",
-      PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}`,
+      PATH: `${dirname(process.execPath)}${delimiter}${inheritedPath}`,
     };
     const run = (yaml: string, env = runtimeEnv) => {
       phase = `semantic CLI invocation ${++cliInvocations}`;
