@@ -7,6 +7,7 @@ import {
   openSync,
   readFileSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,7 +57,255 @@ function expectExited(pid: number): void {
   expect(alive).toBe(false);
 }
 
+/** Check a native writer after its parent exited. Windows can reap that
+ * descendant before it can write; a still-live silent writer is always a fail.
+ * Numeric PIDs are read-only observations, never termination authority. */
+async function observeNativeWriter(
+  readyPath: string,
+  outcomePath: string,
+  maxChecks = 1_000,
+): Promise<
+  { kind: "writer"; result: string } | { kind: "reaped"; pid: number }
+> {
+  const pid = Number(readFileSync(readyPath, "utf8"));
+  expect(Number.isSafeInteger(pid) && pid > 0).toBe(true);
+  for (let i = 0; i < maxChecks; i++) {
+    if (existsSync(outcomePath))
+      return { kind: "writer", result: readFileSync(outcomePath, "utf8") };
+    if (process.platform === "win32") {
+      try {
+        const alive = process.kill(pid, 0);
+        if (!alive) {
+          // The descendant may have written and exited after our first check.
+          if (existsSync(outcomePath))
+            return {
+              kind: "writer",
+              result: readFileSync(outcomePath, "utf8"),
+            };
+          return { kind: "reaped", pid };
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+          if (existsSync(outcomePath))
+            return {
+              kind: "writer",
+              result: readFileSync(outcomePath, "utf8"),
+            };
+          return { kind: "reaped", pid };
+        }
+        throw error;
+      }
+    }
+    await Bun.sleep(10);
+  }
+  throw new Error("native writer stayed alive but produced no outcome");
+}
+
+/** Always finish the native writer probe even when its observation fails.
+ * Preserve the primary or observation failure together with cleanup faults. */
+async function cleanupNativeWriterProbe(
+  audit: string,
+  readyPath: string,
+  gatePath: string,
+  outcomePath: string,
+  operation?: ReturnType<typeof runLayout>,
+  primary?: unknown,
+  joinDeadlineMs = 10_000,
+  writerChecks = 1_000,
+): Promise<void> {
+  const cleanupErrors: unknown[] = [];
+  let retainedOperation = false;
+  let unfinishedWriter = false;
+  let writerObserved = false;
+  let retainedOwner: RetainedLayout | undefined;
+  try {
+    if (!existsSync(gatePath)) await Bun.write(gatePath, "write");
+    if (existsSync(readyPath)) {
+      await observeNativeWriter(readyPath, outcomePath, writerChecks);
+      writerObserved = true;
+    }
+  } catch (error) {
+    cleanupErrors.push(error);
+    // An observation failure cannot establish writer completion, even when
+    // the layout operation itself has already settled.
+    unfinishedWriter = existsSync(readyPath);
+  }
+  try {
+    if (operation !== undefined) {
+      // Distinguish a still-pending operation from one that settled with an
+      // expected primary error. A deadline race must not discard its owner.
+      const settled = await withIoDeadline(
+        operation.then(
+          () => ({ kind: "fulfilled" as const }),
+          (error: unknown) => ({ kind: "rejected" as const, error }),
+        ),
+        joinDeadlineMs,
+      );
+      if (
+        settled.kind === "rejected" &&
+        (settled.error instanceof LayoutCleanupError ||
+          settled.error instanceof LayoutDisposalError) &&
+        settled.error.retainedLayout !== undefined &&
+        !settled.error.retainedLayout.disposed
+      ) {
+        retainedOwner = settled.error.retainedLayout;
+        await withIoDeadline(retainedOwner.dispose(), 5_000);
+      }
+    }
+  } catch (error) {
+    cleanupErrors.push(error);
+    retainedOperation = operation !== undefined;
+  }
+  // A descendant can publish readiness while the layout operation joins.
+  // Recheck after disposal before treating the audit directory as unowned.
+  if (!writerObserved && !unfinishedWriter && existsSync(readyPath)) {
+    try {
+      await observeNativeWriter(readyPath, outcomePath, writerChecks);
+      writerObserved = true;
+    } catch (error) {
+      cleanupErrors.push(error);
+      unfinishedWriter = true;
+    }
+  }
+  // If the operation, retained owner, or native writer is still pending,
+  // preserve the audit directory for explicit recovery.
+  if (!retainedOperation && !unfinishedWriter) {
+    try {
+      rmSync(audit, { recursive: true, force: true });
+    } catch (error) {
+      cleanupErrors.push(error);
+      retainedOperation = true;
+    }
+  }
+  if (cleanupErrors.length === 0) return;
+  const original = primary ?? cleanupErrors[0];
+  throw Object.assign(
+    new AggregateError(
+      primary === undefined ? cleanupErrors : [primary, ...cleanupErrors],
+      "native writer observation and recovery failed",
+      { cause: original },
+    ),
+    retainedOperation || unfinishedWriter
+      ? {
+          layoutOperation: operation,
+          retainedLayout: retainedOwner,
+          retainedAudit: audit,
+          unfinishedWriter,
+        }
+      : {},
+  );
+}
+
 describe("layout resource ownership on failure", () => {
+  test("timed-out writer recovery retains its original operation and audit root", async () => {
+    const audit = mkdtempSync(join(tmpdir(), "keld-layout-recovery-custody-"));
+    const operation = new Promise<Awaited<ReturnType<typeof runLayout>>>(
+      () => {},
+    );
+    try {
+      const error = await rejected(
+        cleanupNativeWriterProbe(
+          audit,
+          join(audit, "not-ready"),
+          join(audit, "writer-gate"),
+          join(audit, "not-observed"),
+          operation,
+          undefined,
+          20,
+        ),
+      );
+      expect(error).toBeInstanceOf(AggregateError);
+      expect(error).toHaveProperty("layoutOperation", operation);
+      expect(error).toHaveProperty("retainedAudit", audit);
+      expect(existsSync(audit)).toBe(true);
+      expect((error as AggregateError).errors).toHaveLength(1);
+    } finally {
+      // The fixture owns no process or descriptor. Real pending operations
+      // must stay owned by their recorded caller, not be silently discarded.
+      rmSync(audit, { recursive: true, force: true });
+    }
+  });
+
+  test("a live unobserved writer retains its audit after the layout settles", async () => {
+    const audit = mkdtempSync(join(tmpdir(), "keld-writer-audit-retained-"));
+    const ready = join(audit, "writer-ready");
+    const gate = join(audit, "writer-gate");
+    const outcome = join(audit, "writer-outcome");
+    const settled = Promise.resolve(
+      {} as Awaited<ReturnType<typeof runLayout>>,
+    );
+    // The current process is a known-live observation only. The test does
+    // not signal it and has no child process to clean up.
+    writeFileSync(ready, String(process.pid));
+    try {
+      const error = await rejected(
+        cleanupNativeWriterProbe(
+          audit,
+          ready,
+          gate,
+          outcome,
+          settled,
+          undefined,
+          20,
+          2,
+        ),
+      );
+      expect(error).toBeInstanceOf(AggregateError);
+      expect(error).toHaveProperty("layoutOperation", settled);
+      expect(error).toHaveProperty("retainedAudit", audit);
+      expect(error).toHaveProperty("unfinishedWriter", true);
+      expect(existsSync(audit)).toBe(true);
+    } finally {
+      rmSync(audit, { recursive: true, force: true });
+    }
+  });
+
+  test("writer readiness appearing during operation join still retains its audit", async () => {
+    const audit = mkdtempSync(join(tmpdir(), "keld-late-writer-ready-"));
+    const ready = join(audit, "writer-ready");
+    const gate = join(audit, "writer-gate");
+    const outcome = join(audit, "writer-outcome");
+    const settled = Promise.resolve(
+      {} as Awaited<ReturnType<typeof runLayout>>,
+    );
+    const nativeThen = settled.then.bind(settled);
+    let publishedDuringJoin = false;
+    // Publish readiness at the exact Promise join, after the helper's first
+    // readiness check. The current process is a live read-only PID probe.
+    Object.defineProperty(settled, "then", {
+      value: (
+        onFulfilled: (value: Awaited<ReturnType<typeof runLayout>>) => unknown,
+        onRejected: (reason: unknown) => unknown,
+      ) => {
+        writeFileSync(ready, String(process.pid));
+        publishedDuringJoin = true;
+        return nativeThen(onFulfilled, onRejected);
+      },
+    });
+    try {
+      const error = await rejected(
+        cleanupNativeWriterProbe(
+          audit,
+          ready,
+          gate,
+          outcome,
+          settled,
+          undefined,
+          100,
+          2,
+        ),
+      );
+      expect(publishedDuringJoin).toBe(true);
+      expect(error).toBeInstanceOf(AggregateError);
+      expect(error).toHaveProperty("layoutOperation", settled);
+      expect(error).toHaveProperty("retainedAudit", audit);
+      expect(error).toHaveProperty("unfinishedWriter", true);
+      expect(existsSync(audit)).toBe(true);
+    } finally {
+      rmSync(audit, { recursive: true, force: true });
+    }
+  });
+
   test("early readiness cancels its still-open real stream before releasing ownership", async () => {
     let cancellations = 0;
     const stream = new ReadableStream<Uint8Array>({
@@ -368,17 +617,29 @@ describe("layout resource ownership on failure", () => {
   test("a direct child exiting with inherited descendant stderr permits bounded disposal", async () => {
     const audit = mkdtempSync(join(tmpdir(), "keld-layout-stderr-audit-"));
     const readyPath = join(audit, "descendant-ready");
+    const releasePath = join(audit, "descendant-release");
+    let operation: ReturnType<typeof runLayout> | undefined;
     let root = "";
     let failure: unknown;
     let success: Awaited<ReturnType<typeof runLayout>> | undefined;
     try {
-      const operation = runLayout({
+      operation = runLayout({
         deadlineMs: 1_500,
         ready: () => false,
         waitForExit: true,
         async write(dir) {
           root = dir;
-          const grandchild = `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(readyPath)}, "alive"); setTimeout(() => {}, 9_000);`;
+          const grandchild =
+            'import { writeFileSync, existsSync } from "node:fs";' +
+            "writeFileSync(" +
+            JSON.stringify(readyPath) +
+            ', "alive");' +
+            "for (let i = 0; i < 3_000 && !existsSync(" +
+            JSON.stringify(releasePath) +
+            "); i++) await Bun.sleep(10);" +
+            "if (!existsSync(" +
+            JSON.stringify(releasePath) +
+            ')) throw new Error("descendant release gate not opened");';
           const parent = `import { existsSync } from "node:fs"; Bun.spawn([process.execPath, "-e", ${JSON.stringify(grandchild)}], { stdin: "ignore", stdout: "ignore", stderr: "inherit" }); for (let i = 0; i < 400 && !existsSync(${JSON.stringify(readyPath)}); i++) await Bun.sleep(10); if (!existsSync(${JSON.stringify(readyPath)})) throw new Error("descendant did not start"); console.log("direct child exited"); process.exit(0);`;
           await Bun.write(join(dir, "inherit-stderr.ts"), parent);
           return "inherit-stderr.ts";
@@ -389,7 +650,7 @@ describe("layout resource ownership on failure", () => {
           (result) => ({ result, error: undefined }),
           (error: unknown) => ({ result: undefined, error }),
         ),
-        12_000,
+        5_000,
       );
       success = observed.result;
       failure = observed.error;
@@ -409,16 +670,28 @@ describe("layout resource ownership on failure", () => {
       }
       expect(existsSync(root)).toBe(false);
     } finally {
-      // The descendant exits on its own timer. No numeric PID is cleanup authority.
+      // The writer remains alive past the test deadline. Release it only after
+      // the verdict, then join the original operation and disposal owner.
+      // No numeric PID is ever cleanup authority.
+      await Bun.write(releasePath, "release");
+      const settled =
+        operation === undefined
+          ? undefined
+          : await withIoDeadline(
+              operation.then(
+                (result) => ({ result, error: undefined }),
+                (error: unknown) => ({ result: undefined, error }),
+              ),
+              15_000,
+            );
+      const incomplete = settled?.error ?? failure;
       if (
-        (failure instanceof LayoutCleanupError ||
-          failure instanceof LayoutDisposalError) &&
-        failure.retainedLayout !== undefined &&
-        !failure.retainedLayout.disposed
+        (incomplete instanceof LayoutCleanupError ||
+          incomplete instanceof LayoutDisposalError) &&
+        incomplete.retainedLayout !== undefined &&
+        !incomplete.retainedLayout.disposed
       ) {
-        if (failure.retainedLayout.stderr !== undefined)
-          await withIoDeadline(failure.retainedLayout.stderr.promise, 13_000);
-        await withIoDeadline(failure.retainedLayout.dispose(), 5_000);
+        await withIoDeadline(incomplete.retainedLayout.dispose(), 5_000);
       }
       rmSync(audit, { recursive: true, force: true });
     }
@@ -494,6 +767,172 @@ describe("layout resource ownership on failure", () => {
       release();
       if (owner !== undefined && !owner.disposed)
         await withIoDeadline(owner.dispose(), 5_000);
+    }
+  }, 20_000);
+
+  test("pending stderr cancellation is released by its owned source finalizer", async () => {
+    const audit = mkdtempSync(join(tmpdir(), "keld-pending-stderr-owner-"));
+    const fd = openSync(join(audit, "source"), "w+");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let root = "";
+    let cancellationEntered = false;
+    let finalizations = 0;
+    let finalized = false;
+    let owner: RetainedLayout | undefined;
+    try {
+      const error = await rejected(
+        withIoDeadline(
+          runLayout(
+            {
+              deadlineMs: 800,
+              ready: (stdout) => stdout.includes("ready"),
+              async write(dir) {
+                root = dir;
+                await Bun.write(
+                  join(dir, "pending-stderr.ts"),
+                  'console.log("ready"); setInterval(() => {}, 60_000);',
+                );
+                return "pending-stderr.ts";
+              },
+            },
+            {
+              stderrOwner(stream) {
+                const reader = stream.getReader();
+                type ReadResult = Awaited<ReturnType<typeof reader.read>>;
+                let finishRead!: (chunk: ReadResult) => void;
+                const read = new Promise<ReadResult>((resolve) => {
+                  finishRead = resolve;
+                });
+                return {
+                  reader: {
+                    read: () => read,
+                    async cancel() {
+                      cancellationEntered = true;
+                      // The read settles before the native source finalization.
+                      finishRead({ done: true, value: undefined });
+                      await gate;
+                      await stream.cancel();
+                    },
+                    releaseLock: () => reader.releaseLock(),
+                  },
+                  async finalizeSource() {
+                    finalizations++;
+                    await stream.cancel();
+                    closeSync(fd);
+                    finalized = true;
+                    release();
+                  },
+                };
+              },
+            },
+          ),
+          10_000,
+        ),
+      );
+      expect(error).toBeInstanceOf(LayoutCleanupError);
+      if (!(error instanceof LayoutCleanupError))
+        throw new Error("missing retained stderr cancellation outcome");
+      owner = error.retainedLayout;
+      expect(cancellationEntered).toBe(true);
+      expect(finalizations).toBe(1);
+      expect(finalized).toBe(true);
+      expect(() => fstatSync(fd)).toThrow();
+      // Fully disposed runners can return the primary cleanup error without
+      // transferring a retained owner. If returned, that owner is disposed.
+      expect(owner === undefined || owner.disposed).toBe(true);
+      expect(existsSync(root)).toBe(false);
+      await owner?.dispose();
+      expect(finalizations).toBe(1);
+    } finally {
+      release();
+      if (owner !== undefined && !owner.disposed)
+        await rejected(withIoDeadline(owner.dispose(), 5_000));
+      if (!finalized) closeSync(fd);
+      rmSync(audit, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test("a locked pending stderr read is released before the source finalizer", async () => {
+    const heldSource = new ReadableStream<Uint8Array>();
+    const audit = mkdtempSync(join(tmpdir(), "keld-stderr-locked-"));
+    const fd = openSync(join(audit, "owned-source"), "w+");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let root = "";
+    let cancellationEntered = false;
+    let finalized = false;
+    let finalizationCalls = 0;
+    let owner: RetainedLayout | undefined;
+    try {
+      const error = await rejected(
+        withIoDeadline(
+          runLayout(
+            {
+              deadlineMs: 800,
+              ready: (stdout) => stdout.includes("ready"),
+              async write(dir) {
+                root = dir;
+                await Bun.write(
+                  join(dir, "locked-stderr.ts"),
+                  'console.log("ready"); setInterval(() => {}, 60_000);',
+                );
+                return "locked-stderr.ts";
+              },
+            },
+            {
+              stderrOwner(stream) {
+                const reader = heldSource.getReader();
+                return {
+                  reader: {
+                    read: () => reader.read(),
+                    async cancel() {
+                      cancellationEntered = true;
+                      // Do not close the pending reader. The source finalizer
+                      // must first acquire the stream after releaseLock().
+                      await gate;
+                    },
+                    releaseLock: () => reader.releaseLock(),
+                  },
+                  async finalizeSource() {
+                    finalizationCalls++;
+                    expect(heldSource.locked).toBe(false);
+                    await heldSource.cancel();
+                    await stream.cancel();
+                    closeSync(fd);
+                    finalized = true;
+                    release();
+                  },
+                };
+              },
+            },
+          ),
+          10_000,
+        ),
+      );
+      expect(error).toBeInstanceOf(LayoutCleanupError);
+      if (!(error instanceof LayoutCleanupError))
+        throw new Error("missing pending stderr cleanup error");
+      owner = error.retainedLayout;
+      expect(cancellationEntered).toBe(true);
+      expect(finalizationCalls).toBe(1);
+      expect(finalized).toBe(true);
+      expect(heldSource.locked).toBe(false);
+      expect(() => fstatSync(fd)).toThrow();
+      expect(owner === undefined || owner.disposed).toBe(true);
+      expect(existsSync(root)).toBe(false);
+      await owner?.dispose();
+      expect(finalizationCalls).toBe(1);
+    } finally {
+      release();
+      if (owner !== undefined && !owner.disposed)
+        await rejected(withIoDeadline(owner.dispose(), 5_000));
+      if (!finalized) closeSync(fd);
+      rmSync(audit, { recursive: true, force: true });
     }
   }, 20_000);
 
@@ -694,34 +1133,77 @@ describe("layout resource ownership on failure", () => {
     }
   }, 20_000);
 
-  test("a stderr read error without an external finalizer closes the owned native pipe", async () => {
+  test("a stderr read failure closes the inherited native stderr pipe", async () => {
+    const audit = mkdtempSync(join(tmpdir(), "keld-layout-native-stderr-"));
+    const readyPath = join(audit, "ready");
+    const gatePath = join(audit, "writer-gate");
+    const outcomePath = join(audit, "writer-result");
     const readError = new Error(
       "intentional native stderr read-wrapper failure",
     );
     let root = "";
-    const failure = await rejected(
-      runLayout(
+    const grandchild = [
+      'import { existsSync, writeFileSync, writeSync, renameSync } from "node:fs";',
+      "writeFileSync(" + JSON.stringify(readyPath) + ", String(process.pid));",
+      "for (let i = 0; i < 800 && !existsSync(" +
+        JSON.stringify(gatePath) +
+        "); i++) await Bun.sleep(10);",
+      "if (!existsSync(" +
+        JSON.stringify(gatePath) +
+        ')) throw new Error("stderr writer gate not opened");',
+      'let writerOutcome = "wrote";',
+      'try { writeSync(2, "POST_PARENT_STDERR\\n"); }',
+      "catch (error) { writerOutcome = error instanceof Error ? ((error as NodeJS.ErrnoException).code ?? error.message) : String(error); }",
+      "writeFileSync(" +
+        JSON.stringify(outcomePath + ".pending") +
+        ", writerOutcome);",
+      "renameSync(" +
+        JSON.stringify(outcomePath + ".pending") +
+        ", " +
+        JSON.stringify(outcomePath) +
+        ");",
+    ].join("\n");
+    const parent = [
+      'import { existsSync } from "node:fs";',
+      'Bun.spawn([process.execPath, "-e", ' +
+        JSON.stringify(grandchild) +
+        '], { stdin: "ignore", stdout: "ignore", stderr: "inherit" });',
+      "for (let i = 0; i < 500 && !existsSync(" +
+        JSON.stringify(readyPath) +
+        "); i++) await Bun.sleep(10);",
+      "if (!existsSync(" +
+        JSON.stringify(readyPath) +
+        ')) throw new Error("descendant did not start");',
+      "process.exit(0);",
+    ].join("\n");
+    let operation: ReturnType<typeof runLayout> | undefined;
+    let testFailure: unknown;
+    try {
+      operation = runLayout(
         {
-          deadlineMs: 1_000,
+          deadlineMs: 1_500,
           waitForExit: true,
           ready: () => false,
           async write(dir) {
             root = dir;
-            await Bun.write(
-              join(dir, "failed-native-stderr.ts"),
-              'console.log("ready"); setInterval(() => {}, 60_000);',
-            );
+            await Bun.write(join(dir, "failed-native-stderr.ts"), parent);
             return "failed-native-stderr.ts";
           },
         },
         {
           stderrOwner() {
+            // The descendant must own its inherited stderr writer before the
+            // read fault causes runner disposal.
+            for (let i = 0; i < 500 && !existsSync(readyPath); i++)
+              Bun.sleepSync(10);
+            if (!existsSync(readyPath))
+              throw new Error("descendant did not start before the read fault");
             return {
               reader: {
                 read: () => Promise.reject(readError),
                 async cancel() {
                   throw new Error(
-                    "reader cancellation must not replace a read failure",
+                    "reader cancellation must not replace the read failure",
                   );
                 },
                 releaseLock() {},
@@ -729,18 +1211,44 @@ describe("layout resource ownership on failure", () => {
             };
           },
         },
-      ),
-    );
-    expect(failure).toBeInstanceOf(LayoutCleanupError);
-    if (!(failure instanceof LayoutCleanupError))
-      throw new Error("lost stderr read failure");
-    expect(failure.cause).toBe(readError);
-    expect(failure.errors).toContain(readError);
-    expect(root).not.toBe("");
-    expect(existsSync(root)).toBe(false);
-    if (failure.retainedLayout !== undefined)
-      expect(failure.retainedLayout.disposed).toBe(true);
-  }, 10_000);
+      );
+      const failure = await rejected(withIoDeadline(operation, 5_000));
+      expect(failure).toBeInstanceOf(LayoutCleanupError);
+      if (!(failure instanceof LayoutCleanupError))
+        throw new Error("lost stderr read failure");
+      expect(failure.cause).toBe(readError);
+      expect(failure.errors).toContain(readError);
+      expect(existsSync(readyPath)).toBe(true);
+      expect(root).not.toBe("");
+      expect(existsSync(root)).toBe(false);
+      if (failure.retainedLayout !== undefined)
+        expect(failure.retainedLayout.disposed).toBe(true);
+
+      // Independent OS writer proves the native stderr read end is closed.
+      await Bun.write(gatePath, "write");
+      const observation = await observeNativeWriter(readyPath, outcomePath);
+      if (observation.kind === "reaped") {
+        expect(process.platform).toBe("win32");
+        expectExited(observation.pid);
+      } else {
+        expect(observation.result).not.toBe("wrote");
+        if (process.platform !== "win32")
+          expect(observation.result).toBe("EPIPE");
+      }
+    } catch (error) {
+      testFailure = error;
+      throw error;
+    } finally {
+      await cleanupNativeWriterProbe(
+        audit,
+        readyPath,
+        gatePath,
+        outcomePath,
+        operation,
+        testFailure,
+      );
+    }
+  }, 25_000);
 
   test("natural exit drains complete stderr before removing its layout root", async () => {
     const result = await runLayout({
@@ -774,9 +1282,13 @@ describe("layout resource ownership on failure", () => {
           "intentional " + failedOwner + " owner acquisition failure",
         );
         let root = "";
+        let operation: ReturnType<typeof runLayout> | undefined;
+        let testFailure: unknown;
         const grandchild = [
           'import { existsSync, writeFileSync, writeSync, renameSync } from "node:fs";',
-          "writeFileSync(" + JSON.stringify(readyPath) + ', "ready");',
+          "writeFileSync(" +
+            JSON.stringify(readyPath) +
+            ", String(process.pid));",
           "for (let i = 0; i < 800 && !existsSync(" +
             JSON.stringify(gatePath) +
             "); i++) await Bun.sleep(10);",
@@ -808,58 +1320,61 @@ describe("layout resource ownership on failure", () => {
             ')) throw new Error("descendant did not start");',
           "process.exit(0);",
         ].join("\n");
-        const waitFor = async (path: string) => {
-          for (let i = 0; i < 1_000 && !existsSync(path); i++)
-            await Bun.sleep(10);
-          if (!existsSync(path))
-            throw new Error("missing native writer observation at " + path);
-        };
         try {
-          const error = await rejected(
-            withIoDeadline(
-              runLayout(
-                {
-                  deadlineMs: 1_500,
-                  ready: () => false,
-                  waitForExit: true,
-                  async write(dir) {
-                    root = dir;
-                    await Bun.write(join(dir, "orphan-stdout.ts"), parent);
-                    return "orphan-stdout.ts";
-                  },
-                },
-                {
-                  stderrOwner(stream) {
-                    // Observe the actual descendant before injecting the failure.
-                    for (let i = 0; i < 500 && !existsSync(readyPath); i++)
-                      Bun.sleepSync(10);
-                    if (!existsSync(readyPath))
-                      throw new Error("descendant failed to start");
-                    if (failedOwner === "stderr") throw primary;
-                    return { reader: stream.getReader() };
-                  },
-                  outputOwner(stream) {
-                    if (failedOwner === "stdout") throw primary;
-                    return { reader: stream.getReader() };
-                  },
-                },
-              ),
-              12_000,
-            ),
+          operation = runLayout(
+            {
+              deadlineMs: 1_500,
+              ready: () => false,
+              waitForExit: true,
+              async write(dir) {
+                root = dir;
+                await Bun.write(join(dir, "orphan-stdout.ts"), parent);
+                return "orphan-stdout.ts";
+              },
+            },
+            {
+              stderrOwner(stream) {
+                // Observe the actual descendant before injecting the failure.
+                for (let i = 0; i < 500 && !existsSync(readyPath); i++)
+                  Bun.sleepSync(10);
+                if (!existsSync(readyPath))
+                  throw new Error("descendant failed to start");
+                if (failedOwner === "stderr") throw primary;
+                return { reader: stream.getReader() };
+              },
+              outputOwner(stream) {
+                if (failedOwner === "stdout") throw primary;
+                return { reader: stream.getReader() };
+              },
+            },
           );
+          const error = await rejected(withIoDeadline(operation, 12_000));
           expect(error).toBe(primary);
           expect(existsSync(readyPath)).toBe(true);
           expect(existsSync(root)).toBe(false);
           // Write only after the runner has returned and released its root.
           await Bun.write(gatePath, "write");
-          await waitFor(outcomePath);
-          const writerOutcome = readFileSync(outcomePath, "utf8");
-          expect(writerOutcome).not.toBe("wrote");
-          if (process.platform !== "win32") expect(writerOutcome).toBe("EPIPE");
+          const observation = await observeNativeWriter(readyPath, outcomePath);
+          if (observation.kind === "reaped") {
+            expect(process.platform).toBe("win32");
+            expectExited(observation.pid);
+          } else {
+            expect(observation.result).not.toBe("wrote");
+            if (process.platform !== "win32")
+              expect(observation.result).toBe("EPIPE");
+          }
+        } catch (error) {
+          testFailure = error;
+          throw error;
         } finally {
-          if (!existsSync(gatePath)) await Bun.write(gatePath, "write");
-          if (existsSync(readyPath)) await waitFor(outcomePath);
-          rmSync(audit, { recursive: true, force: true });
+          await cleanupNativeWriterProbe(
+            audit,
+            readyPath,
+            gatePath,
+            outcomePath,
+            operation,
+            testFailure,
+          );
         }
       },
       25_000,

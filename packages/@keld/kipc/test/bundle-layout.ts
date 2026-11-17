@@ -386,7 +386,26 @@ export async function runLayout(
         }
         await finalizeStderr();
       } else {
-        await bound(stderrCancellation.promise);
+        try {
+          await bound(stderrCancellation.promise);
+        } catch (error) {
+          if (
+            stderrCancellation.state !== "pending" ||
+            stderrFinalizeSource === undefined
+          )
+            throw error;
+          // A pending native read holds a stream lock. Release that lock
+          // before the resource owner calls stream.cancel() to finalize it.
+          // Releasing a pending read rejects it with an observed TypeError.
+          if (stderrTask.state === "pending") {
+            stderrLockReleasedForFinalization = true;
+            stderrReader?.releaseLock();
+          }
+          // The source owner can need its finalizer to settle a pending cancel.
+          // Finalization is bounded and shared; do not replay the source cancel.
+          await finalizeStderr();
+          await bound(stderrCancellation.promise);
+        }
       }
     }
     // A failed read is not a native EOF. Finalize the exact stderr source
