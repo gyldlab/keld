@@ -289,7 +289,16 @@ fn verify_native_same_uri_overlap(
     // A native successful navigation is not enough to prove the committed
     // page remained the claimed same-URI file document after redirects.
     let committed = &receipt["pages"]["race-host"];
-    let correct = committed["href"] == receipt["uri"]
+    // A top-level callback alone cannot prove that the native Host actually
+    // created and submitted the requested nonce-bearing request object.
+    let native_host_request = &receipt["race_host_request"];
+    let correct = native_host_request["uri"] == receipt["uri"]
+        && native_host_request["header_name"] == "X-Keld-Host-Attempt"
+        && native_host_request["sent_value"].as_str() == Some(attempt)
+        && native_host_request["create_hresult"] == "S_OK"
+        && native_host_request["input_header"] == json!({"state":"present","value":attempt})
+        && native_host_request["navigate_hresult"] == "S_OK"
+        && committed["href"] == receipt["uri"]
         && committed["origin"] == "file://"
         && committed["protocol"] == "file:"
         && committed["host"] == ""
@@ -621,12 +630,21 @@ mod ac06_overlap_receipt_tests {
         ]
     }
 
+    fn good_race_host_request() -> Value {
+        json!({
+            "uri": URI, "header_name": "X-Keld-Host-Attempt",
+            "sent_value": NONCE, "create_hresult": "S_OK",
+            "input_header": {"state": "present", "value": NONCE},
+            "navigate_hresult": "S_OK"
+        })
+    }
+
     fn check(events: &[Value]) -> Result<(), String> {
         verify_native_same_uri_overlap(
             &mut json!({"uri":URI, "pages": {"race-host": {
                 "href": URI, "origin":"file://", "protocol":"file:",
                 "host":"", "port":""
-            }}}),
+            }}, "race_host_request": good_race_host_request()}),
             events,
             NONCE,
         )
@@ -846,6 +864,48 @@ mod ac06_overlap_receipt_tests {
     }
 
     #[test]
+    fn reject_missing_or_forged_native_race_host_request_object() {
+        let events = good_receipt_events();
+        let valid = json!({
+            "uri": URI,
+            "pages": {"race-host": {
+                "href": URI, "origin": "file://", "protocol": "file:",
+                "host": "", "port": ""
+            }},
+            "race_host_request": good_race_host_request()
+        });
+        assert!(
+            verify_native_same_uri_overlap(&mut valid.clone(), &events, NONCE).is_ok(),
+            "valid native Host request-object proof refused"
+        );
+
+        let mut missing = valid.clone();
+        missing
+            .as_object_mut()
+            .expect("sample receipt")
+            .remove("race_host_request");
+        assert!(
+            verify_native_same_uri_overlap(&mut missing, &events, NONCE).is_err(),
+            "native Host request-object witness missing but race accepted"
+        );
+        for (field, wrong) in [
+            ("uri", json!("file:///D:/foreign.html")),
+            ("header_name", json!("X-Foreign-Nonce")),
+            ("sent_value", json!("stale-nonce")),
+            ("create_hresult", json!("E_FAIL")),
+            ("input_header", json!({"state":"absent"})),
+            ("navigate_hresult", json!("E_FAIL")),
+        ] {
+            let mut forged = valid.clone();
+            forged["race_host_request"][field] = wrong;
+            assert!(
+                verify_native_same_uri_overlap(&mut forged, &events, NONCE).is_err(),
+                "forged native Host request {field} accepted"
+            );
+        }
+    }
+
+    #[test]
     fn reject_race_host_final_page_that_disagrees_with_native_same_uri() {
         let good = good_receipt_events();
         let good_page = json!({
@@ -853,7 +913,8 @@ mod ac06_overlap_receipt_tests {
             "host": "", "port": ""
         });
         let good_receipt = json!({
-            "uri": URI, "pages": {"race-host": good_page}
+            "uri": URI, "pages": {"race-host": good_page},
+            "race_host_request": good_race_host_request()
         });
         assert!(
             verify_native_same_uri_overlap(&mut good_receipt.clone(), &good, NONCE).is_ok(),
