@@ -18,6 +18,7 @@ use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _}
 use std::os::unix::process::CommandExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -95,7 +96,7 @@ pub enum LinuxLandlockStatus {
 pub struct LinuxStrictProfile {
     bubblewrap: PathBuf,
     launcher: PathBuf,
-    role_root: PathBuf,
+    role_root: Arc<File>,
     runtime_mounts: Vec<LinuxReadonlyMount>,
     #[cfg(debug_assertions)]
     debug_sockets: Vec<LinuxSocketMount>,
@@ -107,7 +108,9 @@ impl LinuxStrictProfile {
     /// Bubblewrap must be root-owned with no privilege bit/capability. The
     /// Keld launcher must be root- or current-user-owned and immutable to other
     /// principals. Both are regular non-symlink executables. The role root is
-    /// a real current-user-owned directory with exact mode `0o700`.
+    /// a real current-user-owned directory with exact mode `0o700`, admitted
+    /// through replacement-safe, non-symlink ancestors and retained until mounting
+    /// with Bubblewrap `--bind-fd` (unsupported versions fail closed).
     ///
     /// # Errors
     ///
@@ -253,13 +256,13 @@ impl LinuxStrictProfile {
             first.as_raw_fd(),
             second.as_raw_fd(),
             readiness_writer.as_raw_fd(),
+            self.role_root.as_raw_fd(),
         ];
         let mut command = Command::new(&self.bubblewrap);
         append_bubblewrap_mounts(
             &mut command,
             &program,
             &self.launcher,
-            &self.role_root,
             &self.runtime_mounts,
             sockets,
         );
@@ -278,7 +281,7 @@ impl LinuxStrictProfile {
         // async-signal-safe dup3 and close_range syscalls. It allocates
         // nothing, touches no shared Rust state, and returns the OS error
         // through Command's existing exec-error channel. The captured array
-        // is Copy data naming the two live memfds and readiness writer retained
+        // is Copy data naming the two live memfds, readiness writer and role directory retained
         // below.
         unsafe {
             command.pre_exec(move || isolate_pre_exec_fds(source_fds));
@@ -288,6 +291,7 @@ impl LinuxStrictProfile {
             seccomp,
             readiness,
             readiness_writer,
+            role_root: Arc::clone(&self.role_root),
         })
     }
 }
@@ -296,7 +300,6 @@ fn append_bubblewrap_mounts(
     command: &mut Command,
     program: &Path,
     launcher: &Path,
-    role_root: &Path,
     runtime_mounts: &[LinuxReadonlyMount],
     sockets: &[LinuxSocketMount],
 ) {
@@ -364,7 +367,7 @@ fn append_bubblewrap_mounts(
             .arg(&socket.source)
             .arg(&socket.destination);
     }
-    command.arg("--bind").arg(role_root).arg(SANDBOX_ROLE_ROOT);
+    command.args(["--bind-fd", "6", SANDBOX_ROLE_ROOT]);
 }
 
 fn append_strict_launch(
@@ -519,21 +522,21 @@ fn validate_runtime_destination(destination: &Path) -> Result<(), LinuxStrictErr
     Ok(())
 }
 
-fn isolate_pre_exec_fds(source_fds: [std::os::fd::RawFd; 3]) -> std::io::Result<()> {
+fn isolate_pre_exec_fds(source_fds: [std::os::fd::RawFd; 4]) -> std::io::Result<()> {
     use nix::libc;
 
-    let mut relocated = [-1_i32; 3];
+    let mut relocated = [-1_i32; 4];
     for (index, source) in source_fds.into_iter().enumerate() {
         // SAFETY: fcntl duplicates one child-local live descriptor at or
-        // above 5. Relocating every source first prevents a fixed-target dup3
-        // from overwriting another source when it occupied FD 3, 4, or 5.
-        let duplicate = unsafe { libc::fcntl(source, libc::F_DUPFD, 6) };
+        // above 6. Relocating every source first prevents a fixed-target dup3
+        // from overwriting another source when it occupied FD 3, 4, 5, or 6.
+        let duplicate = unsafe { libc::fcntl(source, libc::F_DUPFD, 7) };
         if duplicate == -1 {
             return Err(std::io::Error::last_os_error());
         }
         relocated[index] = duplicate;
     }
-    for (source, target) in relocated.into_iter().zip([3, 4, LAUNCHER_READY_FD]) {
+    for (source, target) in relocated.into_iter().zip([3, 4, LAUNCHER_READY_FD, 6]) {
         // SAFETY: both numbers name child-local descriptors after fork;
         // `target` is replaced atomically and flags=0 leaves it inheritable
         // for the immediate Bubblewrap exec only.
@@ -542,13 +545,13 @@ fn isolate_pre_exec_fds(source_fds: [std::os::fd::RawFd; 3]) -> std::io::Result<
         }
     }
     // SAFETY: close_range with CLOEXEC mutates only the child process's FD
-    // table. 0..=5 are stdio, the seccomp pair, and the launcher-only
-    // readiness writer; every higher
+    // table. 0..=6 are stdio, the seccomp pair, the launcher-only
+    // readiness writer, and the role mount; every higher
     // descriptor is closed automatically at the immediate Bubblewrap exec.
     if unsafe {
         libc::syscall(
             libc::SYS_close_range,
-            6_u32,
+            7_u32,
             u32::MAX,
             libc::CLOSE_RANGE_CLOEXEC,
         )
@@ -566,6 +569,7 @@ pub struct LinuxStrictCommand {
     seccomp: Vec<File>,
     readiness: File,
     readiness_writer: File,
+    role_root: Arc<File>,
 }
 
 /// A running strict child paired with its observed Landlock layer.
@@ -603,10 +607,12 @@ impl LinuxStrictCommand {
             seccomp,
             mut readiness,
             readiness_writer,
+            role_root,
         } = self;
         let mut child = command
             .spawn()
             .map_err(|source| LinuxStrictError::new("Bubblewrap spawn", source.to_string()))?;
+        drop(role_root);
         drop(seccomp);
         drop(readiness_writer);
         let landlock = wait_for_launcher_ready(&mut child, &mut readiness)?;
@@ -906,43 +912,58 @@ pub(crate) fn validate_trusted_ancestors(
     current_uid: u32,
     phase: &'static str,
 ) -> Result<(), LinuxStrictError> {
-    let mut replaceable = None;
-    for ancestor in path.ancestors().skip(1) {
-        let metadata = fs::symlink_metadata(ancestor)
-            .map_err(|source| LinuxStrictError::new(phase, source.to_string()))?;
-        let mode = metadata.permissions().mode() & 0o7777;
-        let trusted_owner = metadata.uid() == 0 || metadata.uid() == current_uid;
-        let writable_by_other_principal = mode & 0o022 != 0;
-        let sticky_entry_protection = mode & 0o1000 != 0;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() || !trusted_owner {
+    let absolute = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()
+            .map_err(|source| LinuxStrictError::new(phase, source.to_string()))?
+            .join(path)
+    };
+    open_trusted_parent(&absolute, current_uid, phase).map(drop)
+}
+
+// Walk from the root using retained parent FDs: an ancestor cannot be swapped
+// between its policy check and the lookup of the next component.
+fn open_trusted_parent(
+    path: &Path,
+    current_uid: u32,
+    phase: &'static str,
+) -> Result<File, LinuxStrictError> {
+    use rustix::fs::{Mode, OFlags, open, openat};
+    if !path.is_absolute() {
+        return Err(LinuxStrictError::new(phase, "expected absolute path"));
+    }
+    let flags = OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let error = |source: rustix::io::Errno| LinuxStrictError::new(phase, source.to_string());
+    let mut directory = File::from(open("/", flags, Mode::empty()).map_err(error)?);
+    let parent = path
+        .parent()
+        .ok_or_else(|| LinuxStrictError::new(phase, "missing parent"))?;
+    let mut private_barrier = false;
+    for component in std::iter::once(Component::RootDir).chain(parent.components().skip(1)) {
+        if let Component::Normal(name) = component {
+            directory = File::from(openat(&directory, name, flags, Mode::empty()).map_err(error)?);
+        } else if component != Component::RootDir {
             return Err(LinuxStrictError::new(
                 phase,
-                format!(
-                    "{} must be a root/current-user-owned non-symlink directory; uid={} expected_uid={current_uid} mode=0o{mode:o}",
-                    ancestor.display(),
-                    metadata.uid()
-                ),
+                "expected canonical absolute path",
             ));
         }
-        let owner_private_barrier = mode.trailing_zeros() >= 6;
-        if owner_private_barrier {
-            replaceable = None;
-            continue;
+        let metadata = directory
+            .metadata()
+            .map_err(|source| LinuxStrictError::new(phase, source.to_string()))?;
+        let mode = metadata.permissions().mode() & 0o7777;
+        if (metadata.uid() != 0 && metadata.uid() != current_uid)
+            || (!private_barrier && mode & 0o022 != 0 && mode & 0o1000 == 0)
+        {
+            return Err(LinuxStrictError::new(
+                phase,
+                "ancestor permits replacement by another principal",
+            ));
         }
-        if writable_by_other_principal && !sticky_entry_protection && replaceable.is_none() {
-            replaceable = Some((ancestor.to_owned(), metadata.uid(), mode));
-        }
+        private_barrier |= mode.trailing_zeros() >= 6;
     }
-    if let Some((ancestor, uid, mode)) = replaceable {
-        return Err(LinuxStrictError::new(
-            phase,
-            format!(
-                "{} lets another principal replace descendant entries before any owner-private barrier; uid={uid} expected_uid={current_uid} mode=0o{mode:o}",
-                ancestor.display()
-            ),
-        ));
-    }
-    Ok(())
+    Ok(directory)
 }
 
 fn reject_file_capabilities(path: &Path, phase: &'static str) -> Result<(), LinuxStrictError> {
@@ -957,11 +978,35 @@ fn reject_file_capabilities(path: &Path, phase: &'static str) -> Result<(), Linu
     }
 }
 
-fn validate_role_root(path: &Path) -> Result<PathBuf, LinuxStrictError> {
-    let metadata = fs::symlink_metadata(path)
+fn validate_role_root(path: &Path) -> Result<Arc<File>, LinuxStrictError> {
+    use rustix::fs::{Mode, OFlags, openat};
+    // Do not canonicalize an untrusted ancestor chain before securing it:
+    // a replaced ancestor could redirect that lookup to another private root.
+    let absolute = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()
+            .map_err(|source| LinuxStrictError::new("role root path", source.to_string()))?
+            .join(path)
+    };
+    let name = absolute
+        .file_name()
+        .ok_or_else(|| LinuxStrictError::new("role root path", "missing directory name"))?;
+    let current_uid = current_effective_uid()?;
+    let parent = open_trusted_parent(&absolute, current_uid, "role root ancestor")?;
+    let directory = File::from(
+        openat(
+            &parent,
+            name,
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|source| LinuxStrictError::new("role root metadata", source.to_string()))?,
+    );
+    let metadata = directory
+        .metadata()
         .map_err(|source| LinuxStrictError::new("role root metadata", source.to_string()))?;
     let mode = metadata.permissions().mode() & 0o7777;
-    let current_uid = current_effective_uid()?;
     if metadata.file_type().is_symlink()
         || !metadata.is_dir()
         || metadata.uid() != current_uid
@@ -975,8 +1020,7 @@ fn validate_role_root(path: &Path) -> Result<PathBuf, LinuxStrictError> {
             ),
         ));
     }
-    path.canonicalize()
-        .map_err(|source| LinuxStrictError::new("role root path", source.to_string()))
+    Ok(Arc::new(directory))
 }
 
 pub(crate) fn current_effective_uid() -> Result<u32, LinuxStrictError> {
@@ -1170,5 +1214,63 @@ mod readiness_tests {
         ] {
             assert!(parse_launcher_ready(record).is_err(), "record={record:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod role_root_tests {
+    use super::*;
+
+    #[test]
+    fn role_root_rejects_replaceable_ancestor() {
+        let parent = tempfile::tempdir_in("/tmp").expect("shared temporary directory");
+        fs::set_permissions(parent.path(), fs::Permissions::from_mode(0o770)).expect("mode");
+        let role = parent.path().join("role");
+        fs::create_dir(&role).expect("role directory");
+        fs::set_permissions(&role, fs::Permissions::from_mode(0o700)).expect("mode");
+        assert!(validate_role_root(&role).is_err());
+    }
+    #[test]
+    fn role_root_accepts_mutable_ancestor_behind_private_barrier() {
+        let private = tempfile::tempdir_in("/tmp").expect("private barrier");
+        fs::set_permissions(private.path(), fs::Permissions::from_mode(0o700)).expect("mode");
+        let nested = private.path().join("nested");
+        fs::create_dir(&nested).expect("nested directory");
+        fs::set_permissions(&nested, fs::Permissions::from_mode(0o770)).expect("mode");
+        let role = nested.join("role");
+        fs::create_dir(&role).expect("role");
+        fs::set_permissions(&role, fs::Permissions::from_mode(0o700)).expect("mode");
+        assert!(validate_role_root(&role).is_ok());
+    }
+
+    #[test]
+    fn role_root_rejects_symlinked_ancestor() {
+        let parent = tempfile::tempdir().expect("private parent");
+        let role = parent.path().join("role");
+        fs::create_dir(&role).expect("role");
+        fs::set_permissions(&role, fs::Permissions::from_mode(0o700)).expect("mode");
+        let alias = parent.path().join("alias");
+        std::os::unix::fs::symlink(parent.path(), &alias).expect("ancestor alias");
+        assert!(validate_role_root(&alias.join("role")).is_err());
+    }
+
+    #[test]
+    fn role_root_retains_admitted_identity_after_path_replacement() {
+        let parent = tempfile::tempdir().expect("private parent");
+        let role = parent.path().join("role");
+        fs::create_dir(&role).expect("role");
+        fs::set_permissions(&role, fs::Permissions::from_mode(0o700)).expect("mode");
+        fs::write(role.join("identity"), b"admitted").expect("original marker");
+        let admitted = validate_role_root(&role).expect("admit");
+        let clone = Arc::clone(&admitted);
+        drop(admitted);
+        fs::rename(&role, parent.path().join("moved")).expect("rename admitted directory");
+        fs::create_dir(&role).expect("replacement");
+        fs::write(role.join("identity"), b"replacement").expect("replacement marker");
+        let retained = PathBuf::from(format!("/proc/self/fd/{}", clone.as_raw_fd()));
+        assert_eq!(
+            fs::read(retained.join("identity")).expect("retained marker"),
+            b"admitted"
+        );
     }
 }

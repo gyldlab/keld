@@ -59,6 +59,7 @@ fn linux_strict_probe_helper() {
         }
     }
     if mode == "nested-marker" {
+        assert_runtime_fds_are_closed();
         fs::write("/app/nested-target-ran", b"unexpected\n").expect("write nested target marker");
         return;
     }
@@ -1285,4 +1286,39 @@ fn wait_process_identity_gone(process: &ProcessIdentity, deadline: Instant) {
         );
         std::thread::park_timeout(Duration::from_millis(10));
     }
+}
+
+#[test]
+fn strict_role_mount_keeps_identity_after_profile_and_command_path_replacement() {
+    let root = tempfile::tempdir().expect("private parent");
+    let role = root.path().join("role");
+    fs::create_dir(&role).expect("role");
+    fs::set_permissions(&role, fs::Permissions::from_mode(0o700)).expect("role mode");
+    let profile = strict_profile(&role);
+    let moved = root.path().join("moved");
+    fs::rename(&role, &moved).expect("move admitted directory");
+    fs::create_dir(&role).expect("replacement");
+    let command = profile
+        .command(
+            &std::env::current_exe().expect("probe program"),
+            &[
+                OsString::from("--exact"),
+                OsString::from("linux_strict_probe_helper"),
+                OsString::from("--nocapture"),
+            ],
+            &[(
+                OsString::from("KELD_LINUX_STRICT_PROBE"),
+                OsString::from("nested-marker"),
+            )],
+        )
+        .expect("prepare command");
+    drop(profile);
+    fs::rename(&moved, root.path().join("retained")).expect("move after command creation");
+    let mut child = command
+        .spawn()
+        .expect("descriptor-backed mount")
+        .into_child();
+    assert!(child.wait().expect("probe exit").success());
+    assert!(root.path().join("retained/nested-target-ran").exists());
+    assert!(!role.join("nested-target-ran").exists());
 }
