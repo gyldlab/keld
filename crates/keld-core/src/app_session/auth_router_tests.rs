@@ -806,6 +806,145 @@ fn accepted_quit_auth_poison_still_quiesces_fs_and_reaches_guardian_tail() -> Fi
 }
 
 #[test]
+fn accepted_quit_late_auth_tail_failure_wakes_exactly_one_ui_fatal() -> FixtureResult<()> {
+    use super::super::AppWindowCommand;
+
+    let mut fixture = Fixture::new("{}", AuthConfiguration::new())?;
+    let session = Arc::clone(
+        fixture
+            .router
+            .handle
+            .auth
+            .as_ref()
+            .expect("actual host-owned Auth session"),
+    );
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    *session
+        .tail_exit_test_gate
+        .lock()
+        .expect("test-only Auth worker tail barrier") = Some((entered_tx, release_rx));
+
+    // Use the real primary UnixStream and its correlated Quit reply, not a
+    // fabricated worker outcome. Retire the generation BEFORE poisoning Auth:
+    // the reader's earlier pre-retirement failure path must not send Fatal.
+    write_frame(
+        &mut fixture.client,
+        FrameKind::Call,
+        0,
+        keld_ipc::LIFECYCLE_CHANNEL,
+        CorrelationId(171),
+        &encode(&keld_ipc::LifecycleRequest::Quit)?,
+    )?;
+    fixture.acknowledge_prepare()?;
+    let (reply, payload) = read_frame(&mut fixture.client)?;
+    assert_eq!(
+        (reply.kind, reply.channel, reply.corr),
+        (
+            FrameKind::Reply,
+            keld_ipc::LIFECYCLE_CHANNEL,
+            CorrelationId(171)
+        ),
+        "actual primary IPC Quit must receive its original correlated reply"
+    );
+    assert!(
+        matches!(
+            decode::<keld_ipc::LifecycleResponse>(&payload)?,
+            keld_ipc::LifecycleResponse::Quit
+        ),
+        "the correlated native frame must contain a valid lifecycle Quit reply"
+    );
+    fixture.client.shutdown(std::net::Shutdown::Write)?;
+    assert!(
+        fixture.acknowledge_tail_if_reached()?,
+        "actual Guardian shutdown must still be reached"
+    );
+    entered_rx.recv_timeout(Duration::from_secs(5))?;
+    fixture
+        .take_reader(1)?
+        .join()
+        .expect("join original primary reader")
+        .expect("clean pre-poison Quit reader retains no error");
+    let generation_removed = fixture
+        .router
+        .handle
+        .current
+        .lock()
+        .map_err(|_| "current generation lock poisoned")?
+        .is_none();
+    assert!(
+        generation_removed,
+        "the accepted Quit must retire its generation before the injected tail fault"
+    );
+    let completion = *session
+        .completion
+        .lock()
+        .map_err(|_| "auth completion lock poisoned")?;
+    assert_eq!(
+        completion,
+        (false, true),
+        "the worker's physical drain has not yet completed, but Quit was accepted"
+    );
+    assert!(
+        fixture.window.try_recv().is_err(),
+        "no reader, Guardian or upstream Auth failure may preemptively mask the worker's missing terminal wake"
+    );
+    poison_auth_pending(&session, || {
+        panic!("poison only after accepted Quit and original generation retirement");
+    })?;
+    release_tx.send(())?;
+
+    let terminal = fixture.window.recv_timeout(Duration::from_secs(5));
+    assert!(
+        matches!(terminal, Ok(AppWindowCommand::Fatal)),
+        "actual failed Auth worker must wake the original UI with Fatal; observed={terminal:?}"
+    );
+    let error = fixture
+        .finish()
+        .expect_err("failed terminal Auth cleanup must remain a typed error");
+    assert_eq!(error.code(), "KELD-CORE-037");
+    assert_eq!(error.phase, "auth tail");
+    assert_eq!(error.detail, "caller lock poisoned");
+    assert!(
+        fixture.window.try_recv().is_err(),
+        "late worker error may not emit duplicate Fatal or a false successful Quit"
+    );
+    Ok(())
+}
+
+#[test]
+fn previously_reported_auth_failure_does_not_emit_second_terminal_fatal() -> FixtureResult<()> {
+    use super::super::AppWindowCommand;
+
+    let mut fixture = Fixture::new("{}", AuthConfiguration::new())?;
+    let session = fixture
+        .router
+        .handle
+        .auth
+        .as_ref()
+        .expect("actual host-owned Auth worker");
+    // The existing record_failure path publishes the first Fatal when a
+    // native ownership invariant fails, then continues draining the worker.
+    // Its final Err must not publish a second independent terminal command.
+    session.ownership_fault.store(true, Ordering::Release);
+    let terminal = fixture.window.recv_timeout(Duration::from_secs(5));
+    assert!(
+        matches!(terminal, Ok(AppWindowCommand::Fatal)),
+        "the existing Auth owner fault must wake the UI once; observed={terminal:?}"
+    );
+    let error = fixture
+        .finish()
+        .expect_err("the original typed Auth owner failure must remain fatal");
+    assert_eq!(error.code(), "KELD-CORE-037");
+    assert_eq!(error.phase, "auth ownership");
+    assert!(
+        fixture.window.try_recv().is_err(),
+        "previously reported worker error must not add duplicate Fatal or a false Quit"
+    );
+    Ok(())
+}
+
+#[test]
 fn cli_loss_auth_poison_preserves_echo_error_link_close_and_guardian_tail() -> FixtureResult<()> {
     use super::super::AppWindowCommand;
     use std::io::Read as _;
