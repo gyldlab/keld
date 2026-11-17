@@ -43,7 +43,7 @@ unsafe extern "C" {
     fn acl_get_entry(acl: *mut c_void, entry_id: c_int, entry: *mut *mut c_void) -> c_int;
     fn acl_get_tag_type(entry: *mut c_void, tag_type: *mut c_int) -> c_int;
     fn acl_get_permset_mask_np(entry: *mut c_void, mask: *mut u64) -> c_int;
-    fn acl_get_flagset_np(entry: *mut c_void, flags: *mut *mut c_void) -> c_int;
+    fn acl_get_flagset_np(object: *mut c_void, flags: *mut *mut c_void) -> c_int;
     fn acl_get_flag_np(flags: *mut c_void, flag: c_int) -> c_int;
 }
 
@@ -73,6 +73,27 @@ fn validate_open_directory_acl(directory: &std::fs::File) -> io::Result<()> {
     // SAFETY: the ACL is a valid owned pointer for the duration of this call.
     if unsafe { acl_valid(acl.0) } != 0 {
         return Err(io::Error::last_os_error());
+    }
+    // DEFER_INHERIT belongs to the ACL object, not an individual entry.
+    // Refuse any deferred propagation state before examining its ACEs.
+    let mut acl_flags = std::ptr::null_mut();
+    // SAFETY: acl remains owned for the call and the flag set is borrowed from it.
+    if unsafe { acl_get_flagset_np(acl.0, &raw mut acl_flags) } != 0 || acl_flags.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "macOS ACL object flags are unavailable",
+        ));
+    }
+    // SAFETY: acl_flags borrows from the live ACL; this is a Darwin sys/acl.h bit.
+    match unsafe { acl_get_flag_np(acl_flags, ACL_FLAG_DEFER_INHERIT) } {
+        0 => {}
+        1 => {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "macOS ACL has deferred inheritance state",
+            ));
+        }
+        _ => return Err(io::Error::last_os_error()),
     }
     let mut next = ACL_FIRST_ENTRY;
     loop {
@@ -129,7 +150,6 @@ fn validate_open_directory_acl(directory: &std::fs::File) -> io::Result<()> {
                     ));
                 }
                 for flag in [
-                    ACL_FLAG_DEFER_INHERIT,
                     ACL_ENTRY_FILE_INHERIT,
                     ACL_ENTRY_DIRECTORY_INHERIT,
                     ACL_ENTRY_ONLY_INHERIT,
