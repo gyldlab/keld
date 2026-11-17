@@ -417,11 +417,13 @@ Reject a stale directive or a changed replacement without changing the establish
 | `prepared`, old metadata current, directive valid | Reverify the original authorization and all source/policy bindings, then commit or refuse. |
 | `prepared`, old metadata current, directive expired | Verify no trust or application effect. Durably mark `aborted`. Retire present exact-or-partial planned preparation only with expected owner/DACL, regular non-reparse type and no protected references under a D-23 intent. Clear the pointer after old-state verification. |
 | `prepared`, new metadata current | Match the recorded destination generation. Advance the journal without repeating the epoch change. |
-| `aborted`, old metadata current, intent present, journal intent digest null | Verify the sealed prewrite plan, matching attempt, protected old state, pending pointer, and every listed object's owner, DACL, type and unreachability. Bind and reread the exact intent digest before deletion. |
-| `aborted`, old metadata current, intent present, journal intent digest non-null | Require exact intent digest, sealed plan and old-state equality. Retire only verified listed objects. Persist matching completion digest, verify intent removal, then clear the pointer. |
+| `aborted`, old metadata current, intent present, both journal digests null | Verify the sealed prewrite plan, matching attempt, protected old state, pending pointer, and every listed object's owner, DACL, type and unreachability. Bind and reread the exact intent digest before deletion. |
+| `aborted`, old metadata current, intent present, intent digest non-null, completion null | Require exact intent digest, sealed plan, old state, attempt and pointer equality. Resume only D-65's guarded retirement. Persist matching completion before intent removal and pointer cleanup. |
+| `aborted`, old metadata current, intent present, equal non-null digests | Match the exact intent, plan, attempt, pointer and old state. Verify every planned object absent. Remove and verify the intent absent before pointer-only cleanup. |
 | `aborted`, old metadata current, intent absent, both digests null | Verify the sealed plan and each present exact-or-partial unreferenced preparation object with expected owner/DACL and retained-handle identity. Permit planned objects not written. Publish the initial D-23 intent before deletion. |
-| `aborted`, old metadata current, intent absent, both digests non-null | Require equal journal digests, old state, matching attempt and absence of every planned object. Clear only the pointer. |
-| `aborted`, mixed digests or mismatched plan or unlisted object | Halt. Do not delete or remove the pointer. |
+| `aborted`, old metadata current, intent absent, equal non-null digests | Require old state, matching attempt and absence of every planned object. Clear only the pointer. |
+| `aborted`, intent absent with mixed digests, or null intent digest with non-null completion, or unequal non-null digests | Halt. Do not delete or remove the pointer. |
+| `aborted`, mismatched plan or unlisted object | Halt. Do not delete or remove the pointer. |
 | `trust-committed` | Complete the exact activation binding. Refuse all unrelated selection until that binding exists. |
 | `activation-bound` | Resume only the corresponding KEL-53 activation phase. |
 | `complete` | Use the coherent new view or its finite LKG view. |
