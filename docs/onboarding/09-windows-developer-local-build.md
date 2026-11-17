@@ -1,6 +1,6 @@
 # Windows developer-local signed application build (KEL-96)
 
-This is a **developer-local** procedure for `keld build --target windows-x64`, not Microsoft Store distribution, general installer qualification, installed-host admission, or a publicly trusted release. A self-issued certificate is acceptable for a local test when it is an existing, explicitly selected code-signing certificate. The build **must not** create/import/export certificates or private keys, modify trust, or bypass KEL-135/KEL-53 admission.
+This is a **developer-local** procedure for `keld build --target windows-x64`, not Microsoft Store distribution, general installer qualification, installed-host admission, or a publicly trusted release. A self-issued certificate is acceptable for a local test only when it is an existing, explicitly selected code-signing certificate whose chain the developer machine already trusts for Authenticode verification. The build **must not** create/import/export certificates or private keys, modify trust, or bypass KEL-135/KEL-53 admission.
 
 ## Required existing inputs
 
