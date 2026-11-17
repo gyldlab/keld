@@ -265,6 +265,7 @@ fn verify_native_same_uri_overlap(
     let release = single("race-host", "race-child-released")?;
     let frame_completed = single("race-host", "frame-navigation-completed")?;
     let top_content = single("race-host", "content-loading")?;
+    let top_dom = single("race-host", "dom-content-loaded")?;
     let top_completed = single("race-host", "navigation-completed")?;
     let seq = |event: &Value| event["seq"].as_u64().unwrap_or(0);
     if !(seq(frame_start) > 0
@@ -276,7 +277,8 @@ fn verify_native_same_uri_overlap(
         && seq(release) < seq(frame_completed)
         && seq(frame_completed) < seq(top_completed)
         && seq(host_resource) < seq(top_content)
-        && seq(top_content) < seq(top_completed))
+        && seq(top_content) < seq(top_dom)
+        && seq(top_dom) < seq(top_completed))
     {
         return Err(format!(
             "AC06 native race callback ordering mismatch: {observed:?}"
@@ -328,6 +330,7 @@ fn verify_native_same_uri_overlap(
             .is_some_and(|id| {
                 id != 0
                     && top_content["data"]["navigation_id"].as_u64() == Some(id)
+                    && top_dom["data"]["navigation_id"].as_u64() == Some(id)
                     && top_completed["data"]["navigation_id"].as_u64() == Some(id)
             })
         && top_content["data"]["is_error_page"] == false
@@ -347,12 +350,14 @@ fn verify_native_same_uri_overlap(
         "host_top_document_response_and_navigation_id_while_frame_held": true,
         "host_nonce_at_top_start_and_resource": true,
         "same_top_navigation_id_at_content_and_completion": true,
+        "same_top_navigation_id_at_dom_content_loaded": true,
         "child_deferral_completed": true,
         "order": {
             "frame_start": seq(frame_start), "child_held": seq(held),
             "child_request": seq(child), "top_start": seq(host_start),
             "top_response": seq(host_resource), "child_release": seq(release),
-            "frame_completed": seq(frame_completed), "top_completion": seq(top_completed)
+            "frame_completed": seq(frame_completed), "top_dom": seq(top_dom),
+            "top_completion": seq(top_completed)
         },
         "scope": "raw native SDK race only; not production Core admission or signed installed Host"
     });
@@ -607,10 +612,12 @@ mod ac06_overlap_receipt_tests {
             "data":{"navigation_id":5,"success":false}});
         let content = json!({"phase":"race-host","kind":"content-loading","seq":22,
             "data":{"navigation_id":6,"is_error_page":false}});
+        let dom_loaded = json!({"phase":"race-host","kind":"dom-content-loaded","seq":23,
+            "data":{"navigation_id":6}});
         let top_done = json!({"phase":"race-host","kind":"navigation-completed","seq":24,
             "data":{"navigation_id":6,"success":true}});
         vec![
-            frame, held, child, top, resource, released, frame_done, content, top_done,
+            frame, held, child, top, resource, released, frame_done, content, dom_loaded, top_done,
         ]
     }
 
@@ -800,6 +807,42 @@ mod ac06_overlap_receipt_tests {
                 "top-level {kind} in iframe phase was accepted"
             );
         }
+    }
+
+    #[test]
+    fn reject_missing_or_forged_native_top_dom_commit_witness() {
+        let good = good_receipt_events();
+        assert!(check(&good).is_ok(), "valid DOM-loaded witness refused");
+
+        // Native ContentLoading alone cannot substitute for DOMContentLoaded
+        // on the same top-level NavigationId, in the exact callback order.
+        let mut missing = good.clone();
+        missing.remove(8);
+        assert!(
+            check(&missing).is_err(),
+            "missing native DOMContentLoaded accepted"
+        );
+
+        let mut foreign_id = good.clone();
+        foreign_id[8]["data"]["navigation_id"] = json!(7);
+        assert!(
+            check(&foreign_id).is_err(),
+            "foreign DOMContentLoaded navigation accepted"
+        );
+
+        let mut late = good.clone();
+        late[8]["seq"] = json!(25);
+        assert!(
+            check(&late).is_err(),
+            "DOMContentLoaded after completion accepted"
+        );
+
+        let mut duplicate = good.clone();
+        duplicate.push(good[8].clone());
+        assert!(
+            check(&duplicate).is_err(),
+            "duplicate native DOMContentLoaded accepted"
+        );
     }
 
     #[test]
