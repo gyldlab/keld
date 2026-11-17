@@ -109,6 +109,20 @@ def check_mutations() -> None:
         capacity_mutant = run_script(SCRIPTS[1], "--check", isolated)
         if capacity_mutant.returncode == 0 or "generated capacity report differs" not in capacity_mutant.stderr:
             raise ValueError("capacity-report digest mutation did not fail")
+        # A false acceptance with a null result preserves the pinned report
+        # bytes. This negative must still fail when Python removes assertions.
+        receipt_path.write_bytes((HERE / "review-receipt.json").read_bytes())
+        capacity_path = isolated / SCRIPTS[1]
+        source = capacity_path.read_text(encoding="utf-8")
+        fault = 'raise ValueError("signature length")'
+        if source.count(fault) != 1:
+            raise ValueError("capacity signature-length mutation anchor changed")
+        capacity_path.write_text(source.replace(fault, "return None", 1), encoding="utf-8")
+        optimized_mutant = subprocess.run(
+            [sys.executable, "-I", "-O", "-B", str(capacity_path), "--check"],
+            capture_output=True, text=True, check=False)
+        if optimized_mutant.returncode == 0 or "unexpected bad length on signature-u2 refuses" not in optimized_mutant.stderr:
+            raise ValueError("optimized capacity signature-refusal mutation survived")
 
 
 def check() -> None:
@@ -129,7 +143,7 @@ def check() -> None:
         "identity_checks": receipt["definition_reports"]["identity"]["passed"],
         "capacity_checks": receipt["definition_reports"]["capacity"]["passed"],
         "published_hashes": len(receipt["published_file_sha256"]),
-        "isolated_mutants": 2,
+        "isolated_mutants": 3,
         "native_product_cases": "NOT_RUN",
     }))
 

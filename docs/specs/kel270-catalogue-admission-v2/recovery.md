@@ -202,7 +202,7 @@ The record is canonical JSON with a 32,768-byte cap and these ordered fields:
 | `manifestSha256`, `packageContentBlake3`, `packageTransportBlake3` | Exact complete package selection |
 | `destinationIdentity`, `destinationRootIdentity` | Native root derivation and retained ancestor identity |
 | `sourceIdentity` | Native retained archive volume/file identity |
-| `phase` | `admitted`, `bootstrap-owned`, `provenance-published`, or `complete` |
+| `phase` | `admitted`, `creation-armed`, `bootstrap-owned`, `provenance-published`, `complete`, or `aborted` |
 
 `destinationIdentity` uses the complete v3 `WireIdentity` from D-8.
 `destinationRootIdentity` uses D-48's destination binding. `sourceIdentity` uses D-48's object observation.
@@ -215,15 +215,22 @@ Before that record, publish and reread D-9's complete seven-reference policy set
 It includes the separately commissioned recovery publisher and issuer policies.
 Retain those objects while admission or committed provenance references them. Never search arbitrary attempts to reconstruct missing policy bytes.
 Publish D-68's pending pointer before installation creation.
+Flush and reread `creation-armed` before any installation-specific parent, scaffold, bootstrap-lock, or activation effect.
 Only then create installation parents, scaffold, and KEL-53's exclusive bootstrap lock.
 Installation parents here exclude only D-44's explicitly authorized shared acquisition ancestors.
 Recheck destination ownership under that lock. Persist `bootstrap-owned` before releasing the metadata lease.
 The existing initializer owns subsequent provenance, baseline, and current publication.
 Advance the admission phase only after the corresponding native durable operation succeeds.
 
-A restart requires the same authenticated inputs, effective user, admitted root, and exact package.
-Before `bootstrap-owned`, recovery reacquires a fresh metadata admission for the same exact target.
-Withdrawal or changed bytes refuses. Do not create a substitute installation.
+A restart of a nonterminal effectful phase requires the same authenticated inputs, user, root, and exact package.
+Before `bootstrap-owned`, recovery reacquires fresh admission for the exact target. Withdrawal or changed bytes refuses substitution.
+When `admitted` is the last durable phase, the owner MAY instead complete a terminal no-effect abort.
+It MUST authenticate the journal and pointer, prove the `creation-armed` fence never committed, and census every derived installation object through retained parents.
+It MUST prove no scaffold, lock, activated selection or other installation effect exists and that application state and provenance remain unchanged.
+The metadata store may retain separately authenticated refresh advances and floors; abort MUST NOT roll them back.
+Only then durably write, flush and reread `aborted`. D-68 owns exact pointer removal and retained diagnostic evidence.
+If `creation-armed` exists, an effect is present or any creation history is ambiguous, refuse automatic abort and require named KEL-53 operator disposition.
+Absence of a scaffold alone is not proof of no effect. Never silently enroll another target.
 After `bootstrap-owned`, the journal owns commit or refusal using the recorded admitted inputs.
 Metadata expiry cannot substitute new bytes midway through that accepted transaction.
 An absent or invalid record beside an incomplete scaffold refuses normal initialization.
@@ -260,37 +267,21 @@ Its canonical record has a 65,536-byte cap and these ordered fields:
 | `retirementCompletionSha256` | Null until full cleanup readback; then the same intent digest |
 | `phase` | `prepared`, `aborted`, `trust-committed`, `activation-bound`, or `complete` |
 
-Derive `exclusivePreparationBlobs` from the complete verified replacement
-graph and the protected owner census under the existing leases. The bounded
-canonical list contains only new exclusively owned `{sha256,length}` objects.
-Existing shared or live-referenced blobs MUST NOT appear in the list.
-Before sealing this plan or publishing a new recovery journal, inspect
-the old protected `current`, pending-operation pointer, both ordinary D-23
-retirement modes, unreferenced blobs, and `generations/<oldSequence+1>.json` under the
-repository lease. A foreign pending pointer refuses new recovery.
-If an earlier ordinary refresh left an uncommitted N+1 generation,
-blob-only objects, or its retirement intent, finish only D-24's applicable retirement.
-Require D-24's exact old state, owner, digest, previous-generation
-link, normal epoch, blob unreachability and durable intent evidence.
-Verify N+1, all unreferenced blobs and the ordinary intent absent before recovery preparation.
-An ambiguous, foreign or invalid orphan MUST halt without creating
-the recovery journal or pointer. Never adopt it as recovery's successor.
-After this cleanup, repeat the protected owner census and derive the
-final exclusive blob inventory. Never seal a plan calculated before
-ordinary orphan retirement.
-Keep the repository lease while sealing the recovery plan and publishing
-its journal and pointer. No ordinary writer may publish N+1 between
-this retirement check and the D-68 pending pointer. Before sealing, prove
-the successor path and every new exclusive-blob path absent under the complete
-protected-owner census. Exclude existing authenticated shared blobs.
-Bind the exact planned successor generation digest and exclusive list before
-writing any preparation object. A caller cannot supply or amend this plan.
-Both retirement fields are null in `prepared`. The recovery owner sets each
-field only at its specified step below. Each field changes from null once,
-under the protected journal writer. An `aborted` journal retains both
-fields after pending-pointer removal. Neither field grants deletion authority.
-Terminal `aborted` forbids trust commit. It permits only these two bounded,
-write-once cleanup-field updates under the original attempt and leases.
+Derive `exclusivePreparationBlobs` from the complete verified replacement graph and the protected owner census under the existing leases. The bounded
+canonical list contains only new exclusively owned `{sha256,length}` objects. Existing shared or live-referenced blobs MUST NOT appear in the list.
+Before sealing this plan or publishing a new recovery journal, inspect the old protected `current`, pending-operation pointer, all three ordinary D-23
+retirement modes, unreferenced blobs, and `generations/<oldSequence+1>.json` under the repository lease. A foreign pending pointer refuses new recovery.
+If an earlier ordinary refresh left an uncommitted N+1 generation, blob-only objects, or its retirement intent, finish only D-24's applicable retirement.
+Require D-24's exact old state, owner, digest, previous-generation link, normal epoch, blob unreachability and durable intent evidence.
+Verify N+1, all unreferenced blobs and all ordinary intents absent before recovery preparation. An ambiguous, foreign or invalid orphan MUST halt without creating
+the recovery journal or pointer. Never adopt it as recovery's successor. After this cleanup, repeat the protected owner census and derive the
+final exclusive blob inventory. Never seal a plan calculated before ordinary orphan retirement. Keep the repository lease while sealing the recovery plan and publishing
+its journal and pointer. No ordinary writer may publish N+1 between this retirement check and the D-68 pending pointer. Before sealing, prove
+the successor path and every new exclusive-blob path absent under the complete protected-owner census. Exclude existing authenticated shared blobs.
+Bind the exact planned successor generation digest and exclusive list before writing any preparation object. A caller cannot supply or amend this plan.
+Both retirement fields are null in `prepared`. The recovery owner sets each field only at its specified step below. Each field changes from null once,
+under the protected journal writer. An `aborted` journal retains both fields after pending-pointer removal. Neither field grants deletion authority.
+Terminal `aborted` forbids trust commit. It permits only these two bounded, write-once cleanup-field updates under the original attempt and leases.
 
 Persist `prepared` before either store changes.
 Flush and reread the complete record at `recoveries/<attemptId>.json`.
@@ -420,11 +411,14 @@ Reject a stale directive or a changed replacement without changing the establish
 | Last durable state | Next permitted action |
 |---|---|
 | No journal, no pointer, no ordinary orphan or intent, and no unreferenced blobs | Established state remains authoritative. No retirement is needed. |
-| Before manual journal, no pointer, ordinary N+1 orphan, blob-only residue or either ordinary intent | Finish exact D-24 retirement under the repository lease. Verify N+1, D-23 intent, and unreferenced blobs absent before writing the recovery journal. Ambiguous state halts without deletion. |
+| Before manual journal, no pointer, ordinary N+1 orphan, blob-only residue or any ordinary intent | Finish exact D-24 retirement under the repository lease. Verify N+1, D-23 intents, and unreferenced blobs absent before writing the recovery journal. Ambiguous state halts without deletion. |
+| Initial `admitted`, pointer present, target withdrawn | Require D-64's durable no-effect fence and independent complete installation census. Reread terminal `aborted`, then clear that pointer only. |
+| Initial `creation-armed` or ambiguous scaffold | Preserve the pointer and journal for KEL-53 operator disposition. Never infer no-effect from apparent absence. |
 | `prepared`, old metadata current, directive valid | Reverify the original authorization and all source/policy bindings, then commit or refuse. |
 | `prepared`, old metadata current, directive expired | Verify no trust or application effect. Durably mark `aborted`. Retire present exact-or-partial planned preparation only with expected owner/DACL, regular non-reparse type and no protected references under a D-23 intent. Clear the pointer after old-state verification. |
 | `prepared`, new metadata current | Match the recorded destination generation. Advance the journal without repeating the epoch change. |
-| `aborted`, old metadata current, intent present | Match the journal-bound intent digest, finish only its listed retirement, persist exact completion digest, verify intent removal, then clear the pointer. |
+| `aborted`, old metadata current, intent present, journal intent digest null | Verify the sealed prewrite plan, matching attempt, protected old state, pending pointer, and every listed object's owner, DACL, type and unreachability. Bind and reread the exact intent digest before deletion. |
+| `aborted`, old metadata current, intent present, journal intent digest non-null | Require exact intent digest, sealed plan and old-state equality. Retire only verified listed objects. Persist matching completion digest, verify intent removal, then clear the pointer. |
 | `aborted`, old metadata current, intent absent, both digests null | Verify the sealed plan and each present exact-or-partial unreferenced preparation object with expected owner/DACL and retained-handle identity. Permit planned objects not written. Publish the initial D-23 intent before deletion. |
 | `aborted`, old metadata current, intent absent, both digests non-null | Require equal journal digests, old state, matching attempt and absence of every planned object. Clear only the pointer. |
 | `aborted`, mixed digests or mismatched plan or unlisted object | Halt. Do not delete or remove the pointer. |
@@ -487,8 +481,9 @@ It must update the admission revision before discarding any superseded evidence.
 
 Keep every generation and object needed by the pending operation. Refuse a new mutation if the retention cap cannot hold them.
 Clear the pointer only after protected readback proves `complete` or `aborted` and coherent current application state.
-For `aborted`, the old metadata generation, epoch, provenance, and application state MUST all remain unchanged,
-and no abandoned prepared successor at the required next sequence may remain.
+For manual `aborted`, the old metadata generation, epoch, provenance, and application state MUST remain unchanged.
+For initial `aborted`, enforce D-64's no-effect proof. Preserve any independently authenticated metadata advance and all floors.
+No abandoned prepared successor at the required next sequence may remain.
 Keep current/LKG evidence after pointer removal. Do not garbage-collect reachable policy objects.
 An unreferenced prepared journal cannot have caused installation or trust effects under the required order.
 Clean only such owned preparation records under the lease before creating another journal. Refuse ambiguous orphan state.

@@ -87,6 +87,7 @@ All rows below are NOT_RUN. Source inspection is not native test evidence. Each 
 | Enrollment crash | Kill after every anchor/generation publication boundary | Pending or matching established state, never false first use |
 | Stale permit | Advance generation before admission lock succeeds | Old permit cannot create any installation-specific parent |
 | Expiry wait | Hold lease past monotonic deadline | Refusal before first creation |
+| Role expiry within deadline | Advance OS UTC past a signed role expiry while its lease wait remains within 120 seconds | Fresh role-expiry refusal before creation, despite an open monotonic deadline |
 | Source replacement | Attempt rename, hardlink, reparse, or writable competing open | OS refusal or identity refusal, original object consumed |
 | Archive path reopen | Replace the path after validation with equal-sized foreign bytes | Retained verified handle supplies every copied byte |
 | Ancestor swap | Replace any retained destination ancestor | OS refusal or identity refusal, no foreign write |
@@ -182,7 +183,9 @@ journal-digest readback. Cut after every exclusive-blob deletion and after
 orphan-generation deletion. Also cut after durable completion-digest
 readback, after intent removal, and before pending-pointer removal. With the
 intent present, restart MUST finish only its listed cleanup. With the intent
-absent, restart MUST publish the first intent for both null journal digests,
+present but a null journal intent digest, first authenticate the sealed
+plan and bind that digest before deletion. Reject a mismatched digest.
+With the intent absent, restart MUST publish the first intent for both null journal digests,
 or verify equal non-null digests and all planned-object paths absent before
 pointer-only removal.
 Remove or mismatch the completion digest as separate single-fault controls.
@@ -191,6 +194,18 @@ attempt-owned or newly referenced objects MUST halt without deletion.
 For R3, independently mutate recovery digest, recovery signer, catalogue keys, metadata/targets URLs, discovery digest, publisher digest, and root version.
 Keep Windows signature validity, source-state integrity, and unrelated checks valid in each negative control.
 The review addenda are new planned coverage, not retroactive passes for any of the 110 product cases.
+For initial admission, cut after `admitted` plus pointer, before the
+durable `creation-armed` fence. Withdraw the target, prove no native
+installation effect, abort and clear the pointer, then admit a different
+valid target. As a refusal control, create one scaffold before its durable
+receipt. Restart MUST keep the pointer and refuse to delete that object.
+For root catch-up, accept at least three consecutive signed successors.
+At every publish and committed-history retirement crash cut, prove no more
+than three generation files, protected references remain live and another
+valid refresh succeeds. Remove the retirement intent as a negative fault.
+For the D-27 admission codec, read back one canonical receipt and mutate
+each target, policy, generation and expiry binding independently. Each
+MUST refuse before the consuming transition journal is written.
 
 ## 7. Test plan & evidence: Integration
 
@@ -252,9 +267,10 @@ Prove a 25th distinct object and over-limit aggregate bytes refuse
 before journal publication. No synthetic count can qualify the native
 retained-handle and filesystem acceptance.
 The definition-only helper
-`python3 -B docs/engineering/evidence/kel270-catalogue-admission-v2/verify_evidence_capacity.py --check`
+`python3 -I -B docs/engineering/evidence/kel270-catalogue-admission-v2/verify_evidence_capacity.py --check`
 checks 20 required distinct objects, byte caps, duplicate references and
-over-limit mutants. Regenerate detailed output locally with `--output-dir`
+over-limit mutants. Its proof checks MUST also refuse under `python3 -O`.
+Regenerate detailed output locally with `--output-dir`
 in a scratch directory. Hosted regeneration requires B-82 approval.
 The research archive pins the earlier nine-case output.
 

@@ -306,11 +306,21 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
 
 - **Given:** A fresh destination and a valid, leased metadata revision.
 - **When:** The admitting process terminates at each persisted boundary.
-- **Then:** The next admitted worker completes the exact attempt or refuses without selecting unrelated bytes.
+- **Then:** The next admitted worker completes the exact attempt or refuses unrelated bytes.
+  A durable `admitted` record with no `creation-armed` fence permits terminal
+  `aborted` only after independent no-effect proof. A changed or withdrawn
+  target must not strand that proven no-effect pointer. Ambiguous effects
+  retain the pointer for the KEL-53 operator.
 - **Negative control:**
   - **Single fault:** Create the installation scaffold before the admission record becomes durable.
   - **At-risk precondition:** Termination occurs immediately after the first scaffold creation.
   - **Expected RED:** The next worker observes an installation effect without an authenticated attempt record.
+
+The independent positive cut stops after `admitted` and pointer readback,
+withdraws the exact target before `creation-armed`, and requires finite
+terminal abort, pointer removal and a healthy fresh admissible attempt.
+The adverse cut creates a scaffold without a durable creation receipt.
+Automatic abort MUST refuse and leave every unknown object untouched.
 
 ### AC-61: A missing key cannot authorize its own replacement
 

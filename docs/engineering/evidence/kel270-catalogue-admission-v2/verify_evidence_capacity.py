@@ -66,7 +66,8 @@ def assert_case(name: str, work, expected: bool) -> dict:
     except ValueError:
         result = None
         accepted = False
-    assert accepted == expected, f"unexpected {name}: {accepted}"
+    if accepted != expected:
+        raise ValueError(f"unexpected {name}: accepted={accepted}, expected={expected}")
     return {"name": name, "expected": "accept" if expected else "refuse",
             "result": "PASS", "observation": result}
 
@@ -75,7 +76,8 @@ def run(output_dir: Path | None = None) -> None:
     old = policies("before")
     new = policies("after")
     # Distinct application and recovery issuers in each policy cohort.
-    assert len({x["sha256"] for x in old + new}) == 14
+    if len({x["sha256"] for x in old + new}) != 14:
+        raise ValueError("policy cohorts must contain 14 distinct objects")
     non_policy = [
         record("provenance", "before-provenance"),
         record("provenance", "after-provenance"),
@@ -85,8 +87,10 @@ def run(output_dir: Path | None = None) -> None:
         record("metadata-admission", "exact current revision"),
     ]
     transition = old + new + non_policy
-    assert len(transition) == 20
-    assert sum(v["bytes"] for v in transition) == 1_179_776
+    if len(transition) != 20:
+        raise ValueError("transition must contain 20 required objects")
+    if sum(v["bytes"] for v in transition) != 1_179_776:
+        raise ValueError("transition reference-byte total changed")
     cases = [
         assert_case("current seven-reference cohort",
                     lambda: (len(old), len({x["sha256"] for x in old})),
@@ -122,7 +126,8 @@ def run(output_dir: Path | None = None) -> None:
                                    transition[-1]]),
                     False),
     ]
-    assert len(old) == CURRENT_POLICY_LIMIT
+    if len(old) != CURRENT_POLICY_LIMIT:
+        raise ValueError("current policy cohort reference count changed")
     report = {
         "schema": "keld.evidence-capacity-definition/v1",
         "qualification": "synthetic accounting only; all native/product evidence remains NOT_RUN",

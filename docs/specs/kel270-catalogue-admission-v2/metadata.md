@@ -141,6 +141,16 @@ protected aborted journal before deletion. A matching durable completion
 digest MUST precede intent removal. Keep both journal digests through
 verified pending-pointer absence.
 
+Committed history uses a separate D-23 retirement intent at
+`retirements/committed-<currentSequence>.json`, never the N+1 orphan intent.
+Its closed `keld.metadata-committed-retirement/v1` ASCII JSON record has
+ordered fields `schema,repositoryId,ownerSid,currentSequence,currentGenerationSha256,predecessorSequence,predecessorGenerationSha256,retiredSequence,retiredGenerationSha256,exclusiveBlobs`.
+Apply the same 65,536-byte cap, canonical encoder, retained-parent ownership
+and immutable-intent readback. `exclusiveBlobs` has D-23's exact sorted
+`{sha256,length}` codec, but describes only the retired generation's
+unshared objects. This intent grants no authority over current, predecessor,
+pending successors, anchor trust or objects held by other protected owners.
+
 Use only these validated components with retained-parent operations. Existing content-addressed objects require exact-byte and protection readback. Never overwrite an existing blob or generation with different bytes.
 
 Role blobs preserve the exact downloaded bytes. Do not reconstruct signed role bytes from parsed fields. Before client loading, verify every reference, bound, digest, parse result, and role identity. A malformed established role cannot become an absent cache entry.
@@ -238,11 +248,37 @@ When `current` already names N+1, the successor is committed and MUST
 NOT be retired. Manual recovery with a pending pointer uses only
 D-65's explicit terminal-`aborted` path, not ordinary orphan cleanup.
 Before D-65 publishes a fresh manual-recovery journal or D-68 pointer,
-the same lease-protected owner MUST finish either ordinary retirement
-mode by these D-24 rules. Confirm the ordinary intent, N+1, and all
+the same lease-protected owner MUST finish every ordinary retirement
+mode by these D-24 rules. Confirm the ordinary intents, N+1, and all
 unreferenced blob objects absent before sealing a new recovery prewrite inventory.
 If source identity, generation epoch or ownership is ambiguous,
 refuse recovery without creating its journal or pending pointer.
+
+Before creating an ordinary N+1 successor, make capacity for that successor
+while holding the exclusive metadata lease. At current N, protect N and its
+immediate predecessor N-1. If a third committed N-2 exists, retire it first.
+An unexpected fourth generation MUST halt without deletion.
+Authenticate N, N-1, N-2, the anchor and every protected reference. Confirm
+that N-2 is not current, predecessor, pending, selected LKG, or held by
+another owner. A historical digest in N-1 or the anchor is not by itself
+a live request to reopen N-2. Refuse when a consumer still requires its bytes.
+Refuse any D-68 pointer, outstanding intent, prepared N+1 or foreign file.
+
+Compute the exact N-2 generation digest and every blob exclusive to N-2.
+Publish, flush and reread D-23's committed-history intent before deletion.
+Keep N, N-1 and their blobs pinned through retained handles. For each listed
+object, recheck bytes, regular non-reparse type, owner SID, DACL, and full
+unreachability from N, N-1, anchor, LKG, previous LKG and other protected
+owners. Delete through the verified retained parent only. An absent listed
+object counts as previously retired only under the unchanged durable intent.
+Recheck current N, N-1, anchor and all owners after each crash or deletion.
+Never retire N-2 without the matching intent; never delete an unlisted object.
+Once N-2 and its exclusive blobs are absent, remove and verify the intent.
+Only then may ordinary publication prepare N+1. Resume a retained intent
+before accepting any new root or role. An ambiguous record or reference halts.
+Before retirement the three slots can hold N-2, N-1 and N. After
+retirement they can hold N-1, N and one prepared N+1. Root catch-up
+MUST perform this retirement before each advancing root transition.
 
 For D-65 manual recovery only, a verified expired `prepared` journal,
 matching D-68 pending pointer, protected old `current` and terminal
@@ -355,6 +391,9 @@ Before the first installation effect, acquire leases in this order:
 3. Browser profile.
 
 After every wait, check the monotonic deadline and all role expiry values. Check the store sequence and selected catalogue again under the metadata lease. Keep that lease across comparison and the first installation effect. The native owner consumes the one-shot permit on the admitted worker.
+For the final effect check, observe fresh OS UTC separately from the fixed
+protocol refresh timestamp. Refuse if a signed role has expired during the
+lease wait, even when the monotonic admission deadline remains open.
 
 A fresh install has no existing bootstrap lock. Consume the private one-shot permit when entering the effectful operation. Hold the metadata lease. Next, persist and read back the admission record outside the installation tree. Then create the scaffold and exclusive bootstrap lock. Recheck ownership.
 Keep the metadata lease until the durable record and exclusive bootstrap ownership exist. The recovery part owns the admission record. No installation-tree creation precedes its durable readback.
@@ -392,6 +431,35 @@ Ordinary metadata verification types have private constructors inside the pinned
 VerifiedRecoveryGraph contains the complete verified root, timestamp, snapshot, and targets graph. It also binds the authorized catalogue target and bytes. The private adapter enforces the existing profile and complete-stream checks. Graph verification alone cannot authorize replacement of established trust.
 Store state types are non-cloneable. ReadyRevision binds repository, enrollment digest, recovery epoch, generation, role digests, target, expiry, and clock deadline. It also binds the current policy digest. The metadata lease borrows the store.
 The native owner derives the final consumed installation permit. The store never accepts an installation path.
+
+D-9's `metadata-admission` evidence object has the closed
+`keld.metadata-admission/v1` schema. Encode compact ASCII JSON with
+these exact ordered fields:
+`schema,repositoryId,appId,ownerSid,attemptId,enrollmentGenerationSha256,metadataSequence,metadataGenerationSha256,recoveryEpoch,repositoryPolicySha256,rootSha256,timestampSha256,snapshotSha256,targetsSha256`,
+followed by
+`catalogueTargetPath,catalogueSha256,manifestSha256,packageContentBlake3,packageTransportBlake3,rootExpiresUtcMillis,timestampExpiresUtcMillis,snapshotExpiresUtcMillis,targetsExpiresUtcMillis,observedUtcMillis,admissionWindowMillis`.
+Use D-23's strict canonical decoder, byte roundtrip, ownership and
+retained readback. Limit this object to 4,096 bytes; require all fields.
+`repositoryId`, `attemptId`, every SHA-256, and both BLAKE3 digests
+are 64 lowercase hex bytes. `appId`, `ownerSid` and catalogue path use
+D-2, D-42 and D-7's established closed grammars. Require exact
+`catalogues/<appId>/<channel>/windows-x64/current.json` with a validated
+installed channel; no arbitrary path component is accepted.
+`metadataSequence` is positive u64; `recoveryEpoch` is nonnegative u64.
+Expiry and UTC fields are nonnegative supported Unix milliseconds.
+`admissionWindowMillis` is exactly 120000; it is not a reboot-stable
+monotonic deadline or a new source of time authority.
+The metadata owner seals the exact current signed role-byte digests,
+authenticated target, expiry, generation, policy and admitted package tuple
+under its lease. The KEL-53 writer supplies the already authenticated
+SID and attempt. Verify each field against the held source objects before
+publishing this object and its consuming transition journal.
+The decoder MUST reject any changed target, policy, generation or expiry
+before journal publication. A stored receipt is historical evidence only:
+it cannot refresh an expired role, revive a deadline or mint a new permit.
+Retain it while current, pending or retained transition/recovery records
+reference it. Remove it only after the complete protected-owner census
+proves no such reference. D-9's kind/digest binding selects this one codec.
 
 Errors distinguish corrupt state, incomplete enrollment, rollback, expiry, changed revision, unavailable target, resource limit, and failed durability. Each error states the required corrective action. Retrying a deterministic refusal is not a corrective action.
 

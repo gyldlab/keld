@@ -308,6 +308,8 @@ Each evidence reference is a closed object with ordered fields `kind`, `sha256`,
 `sha256` uses `h32`. `bytes` is an integer from 1 through 65,536.
 The closed kinds are `provenance`, `transition`, `signature-u1`, `signature-u2`, `metadata-admission`, `repository-policy`, `recovery-policy`, `publisher-policy`, `issuer-policy`, `discovery-policy`, and `recovery-directive`.
 The kind selects one decoder and its stated schema. Signature kinds contain exactly 64 raw bytes.
+`metadata-admission` uses D-27's canonical `keld.metadata-admission/v1`
+codec, not a private in-memory ReadyRevision or a self-signed permission.
 Store each object at `evidence/objects/<kind>/<sha256>` beneath the protected repository store.
 The exact kind and digest determine its location. No attempt ID or discovery search participates in lookup.
 All path components derive from validated typed fields. No reference contains an arbitrary path.
