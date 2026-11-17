@@ -1,7 +1,6 @@
 use crate::support::PROCESS_DEADLINE;
 use crate::support::control::wait_child_output;
 use crate::support::dev_cycle::ShippingLaunchCleanup;
-use nix::libc;
 use std::fs;
 use std::io::BufReader;
 use std::io::{BufRead, Read, Write};
@@ -18,6 +17,79 @@ use std::time::{Duration, Instant};
 unsafe extern "C" {
     #[link_name = "kill"]
     fn kill_process(pid: i32, signal: i32) -> i32;
+}
+
+// Independent native test observer: mirror the exact macOS SDK
+// sys/proc_info.h `struct proc_bsdinfo` rather than using production
+// Guardian's identity helper. An independent kernel read is essential to
+// catch a broken production birth/parent/group admission oracle.
+// The layout is pinned below to the current Apple SDK ABI (136 bytes,
+// 8-byte alignment). Compile-time assertions detect edits to this mirror;
+// a new SDK must be checked independently. Any short kernel read fails closed.
+#[repr(C)]
+#[derive(Default)]
+struct DarwinProcBsdInfo {
+    pbi_flags: u32,
+    pbi_status: u32,
+    pbi_xstatus: u32,
+    pbi_pid: u32,
+    pbi_ppid: u32,
+    pbi_uid: u32,
+    pbi_gid: u32,
+    pbi_ruid: u32,
+    pbi_rgid: u32,
+    pbi_svuid: u32,
+    pbi_svgid: u32,
+    rfu_1: u32,
+    pbi_comm: [u8; 16],
+    pbi_name: [u8; 32],
+    pbi_nfiles: u32,
+    pbi_pgid: u32,
+    pbi_pjobc: u32,
+    e_tdev: u32,
+    e_tpgid: u32,
+    pbi_nice: i32,
+    pbi_start_tvsec: u64,
+    pbi_start_tvusec: u64,
+}
+
+const _: () = {
+    assert!(std::mem::size_of::<DarwinProcBsdInfo>() == 136);
+    assert!(std::mem::align_of::<DarwinProcBsdInfo>() == 8);
+    assert!(std::mem::offset_of!(DarwinProcBsdInfo, pbi_pid) == 12);
+    assert!(std::mem::offset_of!(DarwinProcBsdInfo, pbi_ppid) == 16);
+    assert!(std::mem::offset_of!(DarwinProcBsdInfo, pbi_ruid) == 28);
+    assert!(std::mem::offset_of!(DarwinProcBsdInfo, pbi_pgid) == 100);
+    assert!(std::mem::offset_of!(DarwinProcBsdInfo, pbi_start_tvsec) == 120);
+    assert!(std::mem::offset_of!(DarwinProcBsdInfo, pbi_start_tvusec) == 128);
+};
+
+#[link(name = "proc")]
+unsafe extern "C" {
+    // sys/libproc.h: proc_pidinfo(pid_t, int, uint64_t, void*, int)
+    fn proc_pidinfo(
+        pid: i32,
+        flavor: i32,
+        arg: u64,
+        buffer: *mut std::ffi::c_void,
+        buffer_size: i32,
+    ) -> i32;
+}
+
+#[allow(unsafe_code)] // fixed-size, read-only XNU process observation
+fn read_darwin_proc_bsdinfo(pid: u32) -> Option<DarwinProcBsdInfo> {
+    let raw = i32::try_from(pid).ok()?;
+    if raw <= 1 {
+        return None;
+    }
+    // SAFETY: repr(C) structure is value-only and zero-initialized. The
+    // kernel writes at most the supplied exact size and retains no pointer.
+    let mut info = DarwinProcBsdInfo::default();
+    let size = i32::try_from(std::mem::size_of::<DarwinProcBsdInfo>()).ok()?;
+    // SAFETY: checked positive PID, read-only PROC_PIDTBSDINFO flavor (3),
+    // exact-size aligned writable output and no signal or wait side effects.
+    let count = unsafe { proc_pidinfo(raw, 3, 0, (&raw mut info).cast(), size) };
+    (count == size && info.pbi_pid == pid).then_some(info)
 }
 
 /// Read-only native liveness observation for bounded macOS test diagnostics.
@@ -44,7 +116,7 @@ pub(crate) fn process_exists_native(pid: u32) -> bool {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct NativeGroupBirth {
     group: u32,
-    real_uid: libc::uid_t,
+    real_uid: u32,
     start_sec: u64,
     start_usec: u64,
 }
@@ -55,7 +127,7 @@ pub(crate) struct NativeGroupBirth {
 pub(crate) struct NativeMemberBirth {
     pid: u32,
     group: u32,
-    real_uid: libc::uid_t,
+    real_uid: u32,
     start_sec: u64,
     start_usec: u64,
 }
@@ -66,20 +138,9 @@ impl NativeGroupBirth {
     }
 }
 
-#[allow(unsafe_code)] // test-only fixed-size read-only Darwin process observation
 fn native_group_birth(group: u32) -> Option<(NativeGroupBirth, u32)> {
-    let raw = i32::try_from(group).ok()?;
-    if raw <= 1 {
-        return None;
-    }
-    // SAFETY: Darwin proc_bsdinfo has only value fields, the kernel retains no
-    // Rust pointer, and the output buffer has precisely the requested size.
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let size = i32::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
-    // SAFETY: read-only process query fills the exact-size writable buffer.
-    let count =
-        unsafe { libc::proc_pidinfo(raw, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
-    if count != size || info.pbi_pid != group || info.pbi_pgid != group {
+    let info = read_darwin_proc_bsdinfo(group)?;
+    if info.pbi_pgid != group {
         return None;
     }
     Some((
@@ -93,22 +154,8 @@ fn native_group_birth(group: u32) -> Option<(NativeGroupBirth, u32)> {
     ))
 }
 
-#[allow(unsafe_code)] // test-only fixed-size read-only Darwin process observation
 fn native_member_birth(pid: u32) -> Option<(NativeMemberBirth, u32)> {
-    let raw = i32::try_from(pid).ok()?;
-    if raw <= 1 {
-        return None;
-    }
-    // SAFETY: Darwin fills exactly the value-only proc_bsdinfo buffer; no
-    // reference to Rust memory is retained by the kernel.
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let size = i32::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
-    // SAFETY: read-only process query writes at most the declared buffer size.
-    let count =
-        unsafe { libc::proc_pidinfo(raw, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
-    if count != size || info.pbi_pid != pid {
-        return None;
-    }
+    let info = read_darwin_proc_bsdinfo(pid)?;
     Some((
         NativeMemberBirth {
             pid,
