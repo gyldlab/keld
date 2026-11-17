@@ -35,13 +35,13 @@ try { await app.whenReady(); } catch (error) {
 const win = new BrowserWindow({ width: 640, height: 480 });
 report(`CREATED ${process.pid} ${win.id}`);
 for await (const command of createInterface({ input: control })) {
-  if (command === "SHOW" || command === "SHOW_CHECKED") {
-    const checkbox = command === "SHOW_CHECKED";
+  if (command === "SHOW" || command === "SHOW_CHECKED" || command === "SHOW_UNCHECKED") {
+    const checkbox = command !== "SHOW";
     const pending = dialog.showMessageBox(win, {
       message: "Unsaved changes", type: "question", title: "Confirm",
       buttons: ["Save", "Cancel", "Discard Changes"],
       defaultId: 0, cancelId: 1, noLink: true, normalizeAccessKeys: true,
-      ...(checkbox ? { checkboxLabel: "Remember", checkboxChecked: true } : {}),
+      ...(checkbox ? { checkboxLabel: "Remember", checkboxChecked: command === "SHOW_CHECKED" } : {}),
     });
     void pending.then(result => report(`SELECTED ${result.response} ${result.checkboxChecked}`),
       error => report(`ERR ${error?.code ?? String(error)}`));
@@ -330,27 +330,55 @@ fn run_real_message_cycles(cycles: usize, checkbox: bool) {
     for index in 0..cycles {
         let selection = index % buttons.len();
         let label = buttons[selection];
+        let initial_checkbox = if checkbox && index < 2 {
+            Some(index == 0)
+        } else {
+            None
+        };
         writer
-            .write_all(if checkbox && index == 0 {
-                b"SHOW_CHECKED\n"
-            } else {
-                b"SHOW\n"
+            .write_all(match initial_checkbox {
+                Some(true) => b"SHOW_CHECKED\n",
+                Some(false) => b"SHOW_UNCHECKED\n",
+                None => b"SHOW\n",
             })
             .expect("request actual native Message");
         assert_eq!(read_control_line(&mut reader), "SUBMITTED");
-        let click = Command::new(&clicker)
-            .arg(host_pid.to_string())
-            .arg(label)
+        let mut click_command = Command::new(&clicker);
+        click_command.arg(host_pid.to_string()).arg(label);
+        if let Some(initial) = initial_checkbox {
+            click_command.arg(if initial {
+                "--toggle-checked"
+            } else {
+                "--toggle-unchecked"
+            });
+        }
+        let click = click_command
             .output()
             .expect("OS accessibility one-button click");
         assert!(
             click.status.success(),
             "{label} button not pressed: {click:?}"
         );
+        if let Some(initial) = initial_checkbox {
+            let receipt = format!(
+                "REAL_HOST_AX_CHECKBOX_TOGGLED initial={} final={}",
+                u8::from(initial),
+                u8::from(!initial)
+            );
+            assert!(
+                String::from_utf8_lossy(&click.stdout)
+                    .lines()
+                    .any(|line| line == receipt),
+                "missing native state-change receipt: {click:?}"
+            );
+        }
         let result = read_control_line(&mut reader);
         assert_eq!(
             result,
-            format!("SELECTED {selection} {}", checkbox && index == 0),
+            format!(
+                "SELECTED {selection} {}",
+                initial_checkbox.is_some_and(|initial| !initial)
+            ),
             "{result}"
         );
         let until = Instant::now() + EVENT_DEADLINE;
@@ -388,7 +416,7 @@ fn real_host_257_message_cycles_keep_one_link_and_a_healthy_next_request() {
 
 #[test]
 fn real_host_message_reads_the_actual_native_checkbox_state() {
-    run_real_message_cycles(1, true);
+    run_real_message_cycles(3, true);
 }
 
 fn launch_cancel_host(
