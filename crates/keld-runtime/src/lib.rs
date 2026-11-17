@@ -729,6 +729,11 @@ pub(crate) trait ChildPreparer: Send + 'static {
     ) -> Result<bool, RuntimeError> {
         Ok(true)
     }
+
+    // Unit-test synchronization after a real successor spawn and before
+    // shutdown admission; not present in the production build.
+    #[cfg(test)]
+    fn after_successor_spawn(&mut self) {}
 }
 
 struct NoLease;
@@ -1054,8 +1059,7 @@ impl Supervisor {
                     };
                     if startup_tx.send(Ok(())).is_err() {
                         let _ = lease.revoke_with_child(RevocationCause::Shutdown, &mut child);
-                        let _ = child.kill();
-                        let _ = child.wait();
+                        let _ = stop_supervisor_child(&mut child);
                         return;
                     }
                     supervise(
@@ -1352,6 +1356,54 @@ fn cleanup_error_by_priority(
     revocation_error.or(capture_error).or(primary_error)
 }
 
+// All Supervisor direct-child kill paths share this boundary. The test-only
+// trap detects a numeric PID kill after the test externally reaps its child.
+#[cfg(all(test, target_os = "macos"))]
+thread_local! {
+    static SUPERVISOR_STALE_CHILD_KILL_TRAP: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+    static SUPERVISOR_REAP_AT_SHUTDOWN_RECHECK: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+fn stop_supervisor_child(child: &mut Child) -> std::io::Result<std::process::ExitStatus> {
+    stop_supervisor_child_with(child, Child::kill)
+}
+
+fn stop_supervisor_child_with<F>(
+    child: &mut Child,
+    kill: F,
+) -> std::io::Result<std::process::ExitStatus>
+where
+    F: FnOnce(&mut Child) -> std::io::Result<()>,
+{
+    // An observed ECHILD means the OS no longer reserves this numeric PID
+    // for our Child. Stop before any further direct signal OR wait: both
+    // would use that potentially recycled numeric PID. A fresh Ok(None) alone is
+    // NOT an atomic PID-identity guarantee against competing OS reapers;
+    // exclusive same-parent wait ownership remains an architecture gate.
+    if let Some(status) = child.try_wait()? {
+        return Ok(status);
+    }
+    #[cfg(all(test, target_os = "macos"))]
+    assert!(
+        !SUPERVISOR_STALE_CHILD_KILL_TRAP.with(std::cell::Cell::get),
+        "attempted Supervisor numeric-PID kill after external reap"
+    );
+    // A child can finish naturally between the first observation and kill.
+    // If kill fails, one read-only Child reinspection may recover the exact
+    // exit status and reap its zombie. Never issue a second numeric signal or
+    // a blocking wait when the OS reports ECHILD/ambiguous ownership.
+    if let Err(kill_error) = kill(child) {
+        return match child.try_wait() {
+            Ok(Some(status)) => Ok(status),
+            Ok(None) => Err(kill_error),
+            Err(error) => Err(error),
+        };
+    }
+    child.wait()
+}
+
 #[allow(clippy::too_many_arguments)] // internal worker; grouping into a struct would not reduce coupling
 #[allow(clippy::too_many_lines)] // one lifecycle state machine keeps lease/child ownership transitions contiguous
 fn supervise<P>(
@@ -1381,8 +1433,7 @@ fn supervise<P>(
                     Ok(()) => error,
                     Err(revocation_error) => revocation_error,
                 };
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = stop_supervisor_child(&mut child);
             *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
             *terminal_error
                 .lock()
@@ -1406,8 +1457,7 @@ fn supervise<P>(
                 let revocation_error = lease
                     .revoke_with_child(RevocationCause::CaptureFailed, &mut child)
                     .err();
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = stop_supervisor_child(&mut child);
                 let capture_error =
                     capture_finish_error(finish_capture_threads_after_direct_child(error.threads))
                         .or(injected_capture_error);
@@ -1436,8 +1486,7 @@ fn supervise<P>(
                     let revocation_error = lease
                         .revoke_with_child(RevocationCause::WaitFailed, &mut child)
                         .err();
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    let _ = stop_supervisor_child(&mut child);
                     let capture_error = capture_finish_error(
                         finish_capture_threads_after_direct_child(capture_threads),
                     )
@@ -1463,8 +1512,7 @@ fn supervise<P>(
             let revocation_error = lease
                 .revoke_with_child(RevocationCause::AdmissionFailed, &mut child)
                 .err();
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = stop_supervisor_child(&mut child);
             let capture_error =
                 capture_finish_error(finish_capture_threads_after_direct_child(capture_threads))
                     .or(injected_capture_error);
@@ -1491,11 +1539,13 @@ fn supervise<P>(
             let revocation_error = lease
                 .revoke_with_child(RevocationCause::Shutdown, &mut child)
                 .err();
-            let _ = child.kill();
-            let wait_error = child.wait().err().map(|source| RuntimeError::Lifecycle {
-                phase: "child shutdown wait",
-                source,
-            });
+            let wait_error =
+                stop_supervisor_child(&mut child)
+                    .err()
+                    .map(|source| RuntimeError::Lifecycle {
+                        phase: "child shutdown wait",
+                        source,
+                    });
             let capture_error =
                 capture_finish_error(finish_capture_threads_after_direct_child(capture_threads))
                     .or(injected_capture_error);
@@ -1536,11 +1586,13 @@ fn supervise<P>(
                 #[cfg(not(test))]
                 let injected_capture_error = None;
                 let revocation_error = lease.revoke_with_child(restart_cause, &mut child).err();
-                let _ = child.kill();
-                let wait_error = child.wait().err().map(|source| RuntimeError::Lifecycle {
-                    phase: "child restart wait",
-                    source,
-                });
+                let wait_error =
+                    stop_supervisor_child(&mut child)
+                        .err()
+                        .map(|source| RuntimeError::Lifecycle {
+                            phase: "child restart wait",
+                            source,
+                        });
                 let capture_error = capture_finish_error(
                     finish_capture_threads_after_direct_child(capture_threads),
                 )
@@ -1675,20 +1727,28 @@ fn supervise<P>(
             }
             Ok(next_prepared_child) => match spawn_prepared(next_prepared_child) {
                 Ok((next_child, next_lease)) => {
+                    #[cfg(test)]
+                    preparer.after_successor_spawn();
                     if stop_was_requested(shutdown, accepted_shutdown) {
                         let mut next_child = next_child;
-                        if let Err(error) =
-                            next_lease.revoke_with_child(RevocationCause::Shutdown, &mut next_child)
-                        {
+                        let revoke_error = next_lease
+                            .revoke_with_child(RevocationCause::Shutdown, &mut next_child)
+                            .err();
+                        let stop_error =
+                            stop_supervisor_child(&mut next_child).err().map(|source| {
+                                RuntimeError::Lifecycle {
+                                    phase: "child successor shutdown wait",
+                                    source,
+                                }
+                            });
+                        if let Some(error) = revoke_error.or(stop_error) {
+                            // A late successor cannot report Stopped when
+                            // revocation OR exact child retirement failed.
                             *terminal_error
                                 .lock()
                                 .unwrap_or_else(PoisonError::into_inner) = Some(error);
-                            let _ = next_child.kill();
-                            let _ = next_child.wait();
                             let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                         } else {
-                            let _ = next_child.kill();
-                            let _ = next_child.wait();
                             let _ = events_tx.send(SupervisorEvent::Stopped);
                         }
                         return;
@@ -2142,9 +2202,12 @@ where
                     // no longer says who died first. Routing it back to
                     // `Exited` reuses the one self-termination accounting path
                     // rather than adding a second.
+                    #[cfg(all(test, target_os = "macos"))]
+                    tests::reap_test_child_at_shutdown_recheck(child);
                     return match child.try_wait() {
                         Ok(Some(status)) => Ok(WaitResult::Exited(status)),
-                        _ => Ok(WaitResult::ShutdownRequested),
+                        Ok(None) => Ok(WaitResult::ShutdownRequested),
+                        Err(error) => Err(error),
                     };
                 }
                 if take_restart_for_attempt(restart_attempt, attempt) {
@@ -2502,6 +2565,248 @@ fn wait_backoff_or_stop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    pub(super) fn reap_test_child_at_shutdown_recheck(child: &mut Child) {
+        if !SUPERVISOR_REAP_AT_SHUTDOWN_RECHECK.with(|armed| armed.replace(false)) {
+            return;
+        }
+        // The first try_wait returned Ok(None). Kill ONLY the live test-owned
+        // child; another waiter then consumes the exact exit status.
+        child.kill().expect("kill only the live test-owned child");
+        let exact_child = rustix::process::Pid::from_raw(
+            i32::try_from(child.id()).expect("test child's pid fits i32"),
+        );
+        rustix::process::waitpid(exact_child, rustix::process::WaitOptions::empty())
+            .expect("externally reap exact test-owned child");
+        SUPERVISOR_STALE_CHILD_KILL_TRAP.with(|trap| trap.set(true));
+    }
+
+    #[cfg(target_os = "macos")]
+    struct ExternallyReapedSupervisorPreparer;
+
+    #[cfg(target_os = "macos")]
+    struct ExternallyReapedSupervisorLease;
+
+    #[cfg(target_os = "macos")]
+    impl ChildPreparer for ExternallyReapedSupervisorPreparer {
+        type Lease = ExternallyReapedSupervisorLease;
+
+        fn prepare(&mut self, attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError> {
+            assert_eq!(attempt, 1, "an externally reaped child must not restart");
+            Ok(PreparedChild {
+                command: Command::new("/usr/bin/true").into(),
+                lease: ExternallyReapedSupervisorLease,
+            })
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl GenerationLease for ExternallyReapedSupervisorLease {
+        fn child_spawned(&mut self, pid: u32, _attempt: u32) -> Result<(), RuntimeError> {
+            let exact_child = rustix::process::Pid::from_raw(
+                i32::try_from(pid).expect("test child's process id fits i32"),
+            );
+            rustix::process::waitpid(exact_child, rustix::process::WaitOptions::empty())
+                .expect("externally reap only this test-owned Supervisor child");
+            SUPERVISOR_STALE_CHILD_KILL_TRAP.with(|trap| trap.set(true));
+            Ok(())
+        }
+
+        fn revoke(self, _cause: RevocationCause) -> Result<(), RuntimeError> {
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn supervisor_externally_reaped_child_never_signals_stale_pid() {
+        let supervisor = Supervisor::start_prepared(
+            RestartPolicy::default(),
+            ExternallyReapedSupervisorPreparer,
+        )
+        .expect("spawn one test-owned Supervisor child");
+        match supervisor.wait_for_outcome() {
+            SupervisorOutcome::Failed(RuntimeError::Lifecycle {
+                phase: "child wait",
+                source,
+            }) => assert_eq!(source.raw_os_error(), Some(nix::libc::ECHILD)),
+            other => panic!("external child reap must fail closed with original ECHILD: {other:?}"),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    struct ReapedAtShutdownReinspectionPreparer;
+
+    #[cfg(target_os = "macos")]
+    struct ReapedAtShutdownReinspectionLease;
+
+    #[cfg(target_os = "macos")]
+    impl ChildPreparer for ReapedAtShutdownReinspectionPreparer {
+        type Lease = ReapedAtShutdownReinspectionLease;
+
+        fn prepare(&mut self, attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError> {
+            assert_eq!(
+                attempt, 1,
+                "a lost child wait owner cannot authorize a successor"
+            );
+            Ok(PreparedChild {
+                command: long_running_command().into(),
+                lease: ReapedAtShutdownReinspectionLease,
+            })
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl GenerationLease for ReapedAtShutdownReinspectionLease {
+        fn child_spawned(&mut self, _pid: u32, _attempt: u32) -> Result<(), RuntimeError> {
+            SUPERVISOR_REAP_AT_SHUTDOWN_RECHECK.with(|armed| armed.set(true));
+            Ok(())
+        }
+
+        fn revoke(self, _cause: RevocationCause) -> Result<(), RuntimeError> {
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn supervisor_shutdown_reinspection_propagates_externally_reaped_child() {
+        let supervisor = Supervisor::start_prepared(
+            RestartPolicy::default(),
+            ReapedAtShutdownReinspectionPreparer,
+        )
+        .expect("spawn one test-owned live Supervisor child");
+        assert!(matches!(
+            supervisor.recv_event(Duration::from_secs(5)),
+            Some(SupervisorEvent::Started { attempt: 1, .. })
+        ));
+        supervisor.shutdown();
+        match supervisor.wait_for_outcome() {
+            SupervisorOutcome::Failed(RuntimeError::Lifecycle {
+                phase: "child wait",
+                source,
+            }) => assert_eq!(source.raw_os_error(), Some(nix::libc::ECHILD)),
+            other => panic!("shutdown reinspection must preserve real ECHILD: {other:?}"),
+        }
+    }
+    #[cfg(target_os = "macos")]
+    struct ReapedSuccessorPreparer {
+        spawned: mpsc::SyncSender<()>,
+        release: mpsc::Receiver<()>,
+    }
+
+    #[cfg(target_os = "macos")]
+    struct ReapedSuccessorLease {
+        attempt: u32,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl ChildPreparer for ReapedSuccessorPreparer {
+        type Lease = ReapedSuccessorLease;
+
+        fn prepare(&mut self, attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError> {
+            assert!(attempt <= 2, "reaped successor must not restart again");
+            let command = if attempt == 1 {
+                shell_command("exit 11")
+            } else {
+                long_running_command()
+            };
+            Ok(PreparedChild {
+                command: command.into(),
+                lease: ReapedSuccessorLease { attempt },
+            })
+        }
+
+        fn after_successor_spawn(&mut self) {
+            self.spawned
+                .send(())
+                .expect("notify test of successor spawn");
+            self.release
+                .recv_timeout(Duration::from_secs(5))
+                .expect("test must release successor shutdown boundary");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl GenerationLease for ReapedSuccessorLease {
+        fn revoke(self, _cause: RevocationCause) -> Result<(), RuntimeError> {
+            Ok(())
+        }
+
+        fn revoke_with_child(
+            self,
+            cause: RevocationCause,
+            child: &mut Child,
+        ) -> Result<(), RuntimeError> {
+            if self.attempt == 2 && matches!(cause, RevocationCause::Shutdown) {
+                child.kill().expect("kill only test-owned live successor");
+                let pid = rustix::process::Pid::from_raw(
+                    i32::try_from(child.id()).expect("test successor PID fits i32"),
+                );
+                rustix::process::waitpid(pid, rustix::process::WaitOptions::empty())
+                    .expect("externally reap exact test-owned successor");
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn supervisor_reaped_successor_shutdown_fails_closed() {
+        let (spawned_tx, spawned_rx) = mpsc::sync_channel(0);
+        let (release_tx, release_rx) = mpsc::sync_channel(0);
+        let supervisor = Supervisor::start_prepared(
+            RestartPolicy::default(),
+            ReapedSuccessorPreparer {
+                spawned: spawned_tx,
+                release: release_rx,
+            },
+        )
+        .expect("spawn test-owned initial child");
+        spawned_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("successor should reach post-spawn boundary");
+        supervisor.shutdown();
+        release_tx.send(()).expect("release successor shutdown");
+        match supervisor.wait_for_outcome() {
+            SupervisorOutcome::Failed(RuntimeError::Lifecycle {
+                phase: "child successor shutdown wait",
+                source,
+            }) => assert_eq!(source.raw_os_error(), Some(nix::libc::ECHILD)),
+            other => panic!("externally reaped successor must never report Stopped: {other:?}"),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn supervisor_synthetic_kill_error_recovers_exact_cached_exit() {
+        // The injected ESRCH is synthetic; the child exit and wait are real.
+        // This tests the read-only fallback, not a claim that macOS produces
+        // ESRCH for this exact scheduling sequence.
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn only the test-owned child");
+        let owned_pid = child.id();
+        let result = stop_supervisor_child_with(&mut child, |child| {
+            assert_eq!(child.id(), owned_pid);
+            child.kill().expect("kill only the test-owned child");
+            child.wait().expect("reap and cache exact child status");
+            Err(std::io::Error::from_raw_os_error(nix::libc::ESRCH))
+        });
+        let cached = child.try_wait().expect("inspect test-owned cached status");
+        if cached.is_none() {
+            // Protect test hygiene even if a negative mutation skips cleanup.
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(cached.is_some(), "exact child must remain reaped");
+        assert!(
+            matches!(result, Ok(status) if !status.success()),
+            "read-only reinspection must recover exact cached child status"
+        );
+    }
+
     #[cfg(windows)]
     use std::io::Write as _;
     #[cfg(windows)]
