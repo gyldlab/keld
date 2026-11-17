@@ -320,7 +320,10 @@ Cross-bind old window/document callback to second window → other-window payloa
 
 **ACs:** C08, C11, C13, C23.
 
-**Fault and expected failure:** Suppress request preflight, request-ID registration or terminal `mainResp`. Also test duplicate terminal events and callback throws. Repeated failures must not retain `reqInfo`, leave `requestSync` pending or deliver to a successor.
+**Fault and expected failure:** Suppress only post-bind preflight for a locally forbidden action. Fail on any `reqInfo` creation or `rendererReq` frame, even if final Host denial cleans it up.
+Separately suppress request-ID registration or terminal `mainResp`. Test duplicate terminal events and callback throws. Require no retained `reqInfo`, pending `requestSync` or successor delivery.
+Retire the role between `reqInfo` storage and registration, then reverse the ordering. Require one terminal rejection and no forwarding after retirement.
+Suppress settled-record removal. Repeated successful and failed requests must release pending-ID records and permit a healthy request without budget exhaustion.
 
 #### BRG027_bun_loss_before_mainResp
 
@@ -488,7 +491,7 @@ hide ordering, or infer speed from a small 4 KiB fixture.
 - **Status:** open
 - **Owner:** GH-484, GH-542, GH-543, GH-540 and GH-1095 owners
 - **Impact:** A Bun role loss can leave `requestSync` pending and `reqInfo` retained in a surviving document.
-- **Check:** Approve trusted post-assignment request-ID capture, bounded document registration and one private GH-543 terminal `mainResp`. Prove same-document rejection, cleanup, no successor delivery, no replay and GH-540 quiescence.
+- **Check:** Approve trusted request-ID capture, registration/retirement ordering, settled-record release and one private GH-543 terminal `mainResp`. Prove same-document rejection, bounded cleanup, no successor delivery, no replay and separate GH-540 quiescence.
 **Disposition:** changes above are reviewable draft contracts. Full
 security-qualified publication, #540/#542 world binding, registered
 errors, source-image authenticity, real Host/Bun effects and independent

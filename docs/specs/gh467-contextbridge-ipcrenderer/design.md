@@ -340,12 +340,13 @@ The original preload calls its error callback and deletes `reqInfo`.
 The GH-540 link retirement alone does not clear the original preload's `reqInfo`.
 GH-484 must expose the post-assigned `reqId` from the original app-world send seam.
 It registers `(document stamp, role generation, reqId)` with the GH-542 document owner before forwarding.
+GH-542 serializes registration with the role-retirement sweep. An earlier registration enters that sweep. Never forward to a retired role.
+If retirement wins, refuse forwarding and send the same private terminal `mainResp` to the original surviving document.
+Settlement releases the pending-ID record exactly once on success or terminal error. Callback exceptions cannot prevent release.
 The Host never reads page-supplied IDs or decodes opaque endpoint bytes.
-This document-scoped record uses existing GH-467 callback/retained-byte limits; it adds no app-link field, channel, parser, queue or ledger.
-
+This document-scoped record uses existing GH-467 callback/retained-byte limits. It adds no app-link field, channel, parser, queue or ledger.
 On authenticated GH-540 role retirement, GH-543 sends one private terminal `mainResp` to that original document.
-It uses the exact registered request ID and the sanitized terminal error.
-The original preload calls its error callback, deletes `reqInfo`, and rejects `requestSync`.
+It uses the exact registered request ID and sanitized terminal error. The preload calls its error callback, deletes `reqInfo`, and rejects `requestSync`.
 GH-1095 maps proved no-dispatch to `KELD-WV-011`; attempted or ambiguous dispatch uses `KELD-WV-013`.
 Never replay or retarget the request. The terminal event is not physical release.
 GH-540 retains charges until native/ring work is quiescent.

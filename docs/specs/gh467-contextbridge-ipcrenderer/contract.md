@@ -259,6 +259,7 @@ A final Host denial or Bun-loss event sends one private `mainResp` to the same d
 Set `error: true` and use sanitized `msg` and `e` values.
 The original preload calls its error callback, deletes `reqInfo`, and rejects `requestSync`.
 GH-484/542 register the post-assigned `reqId` at the trusted app-world send seam.
+Apply §4.5.3 registration/retirement ordering and exactly-once pending-ID release on settlement.
 GH-543 owns the terminal event on GH-540 role retirement; GH-1095 owns typed error mapping.
 Use `KELD-WV-011` only for proved no-dispatch and `KELD-WV-013` for attempted or ambiguous dispatch.
 GH-540 charges remain until native/ring quiescence; the event is not a release receipt.
@@ -268,7 +269,9 @@ Direct `ipcRenderer.send` keeps its `undefined` return and no-retroactive-error 
 **Cleanup oracle:**
 - **Fault:** Suppress preflight, request-ID registration or terminal `mainResp`; duplicate it; or bypass cleanup on callback throw.
 - **At-risk:** The pinned preload stores `reqInfo[reqId]` before sending `rendererReq` and deletes it only after `mainResp`.
-- **Expected failure:** Bun loss leaves `requestSync` pending, repeats callbacks, retains `reqInfo` or delivers to a successor.
+- **Expected failure:** A preflight mutant creates `reqInfo` or sends a forbidden frame, even if later cleanup succeeds.
+  Registration/retirement races must not strand requests. Settlement must not retain pending-ID records or exhaust the request budget.
+  Bun loss must not leave `requestSync` pending, repeat callbacks, retain `reqInfo` or deliver to a successor.
 
 The real-KELD pass for C01/C12/C13/C14/C15/C21 is on **macOS
 WKWebView** only, with exact build, source hash and native outcome. A mock,
