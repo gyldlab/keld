@@ -12,13 +12,6 @@ use super::super::{
 use super::NativeOutcome;
 
 impl PrimaryRouterHandle {
-    #[cfg_attr(
-        windows,
-        expect(
-            clippy::too_many_lines,
-            reason = "Preserve the complete existing legacy native-outcome dispatch and its owned success/failure carriers."
-        )
-    )]
     pub(in crate::app_session::window_router) fn publish_window_native_locked(
         &self,
         session: &mut WindowSession,
