@@ -4,7 +4,6 @@ use super::{
     LaunchEvidence, observer::Observation, outcomes::assert_component_outcomes, run_launch,
 };
 use crate::support::EVENT_DEADLINE;
-use crate::support::control::wait_child_output;
 use serde_json::{Value, json};
 use std::fs;
 use std::net::TcpStream;
@@ -148,13 +147,32 @@ fn run_launch_without_window_census(
             .expect("release real Bun app-result acknowledgement");
     }
     observer.quit.send(()).expect("release real public Quit");
-    let output = wait_child_output(
+    // Observation assertions above succeeded before this route reaches Quit.
+    // Share the ordinary route's live-only sample and fixed-label diagnostic.
+    let output = super::wait_retirement_host_with_phase(
         cleanup.cli.take().expect("retained real shipping host"),
-        EVENT_DEADLINE,
+        &observer,
+        // Keep the silent peer through the wait, then release it before any
+        // wait failure is rethrown and the fixture observer can Drop/join.
+        || drop(idle),
     );
-    // Hold the independently accepted silent peer until the shipping host
-    // actually exits, then release it before fixture observer Drop/join.
-    drop(idle);
+    if hold_silent_observer_peer {
+        // Require phase evidence from the real Bun stdout/stderr relay, not a
+        // forged test-side status. A successful Host cannot silently skip
+        // either the app-result headers or the actual /quit body receipt.
+        let stderr = std::str::from_utf8(&output.stderr).expect("native phase markers UTF-8");
+        for marker in [
+            "KELD_KEL140_APP_RESULT_HTTP_OK",
+            "KELD_KEL140_QUIT_HTTP_HEADERS_OK",
+            "KELD_KEL140_QUIT_HTTP_BODY_OK",
+        ] {
+            assert_eq!(
+                stderr.lines().filter(|line| *line == marker).count(),
+                1,
+                "one real Bun fixture phase receipt required: {marker}"
+            );
+        }
+    }
     super::assert_product_quit(&output, &evidence, stage.root(), host_pid, exercise);
     if exercise == Exercise::PublicAppRetirement {
         assert_after_quit(&output, &evidence, &prepared.target);

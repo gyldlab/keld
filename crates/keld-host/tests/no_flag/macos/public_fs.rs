@@ -1,8 +1,9 @@
 //! KEL-140 stock producer/public API proof. Native execution belongs to ROOT.
 //! No authority boundary change; no pending native-effect or cancellation claim.
 use crate::support::EVENT_DEADLINE;
-use crate::support::control::wait_child_output;
+use crate::support::control::{wait_child_output, wait_child_output_observing};
 use crate::support::dev_cycle::ShippingLaunchCleanup;
+use crate::support::guardian_exit::GuardianExitWitness;
 use crate::support::native_window::{
     NativeWindowObserver, await_same_native_windows, native_windows,
 };
@@ -37,6 +38,10 @@ mod preclick;
 mod process_image;
 #[path = "public_fs/project.rs"]
 mod project;
+#[path = "public_fs/quit_body_receipt.rs"]
+mod quit_body_receipt;
+#[path = "public_fs/quit_phase.rs"]
+mod quit_phase;
 #[path = "public_fs/retirement.rs"]
 mod retirement;
 use application_link::assert_single_application_link;
@@ -50,6 +55,7 @@ use project::{
     CONTENT, Exercise, Policy, PreparedLaunch, PublicFsProject, RECOVERY_AFTER_CONTENT, SENTINEL,
     TITLE,
 };
+use quit_body_receipt::QuitBodyReceipt;
 
 #[derive(Clone, Copy, Debug)]
 struct ProcessFamily {
@@ -120,7 +126,10 @@ fn renderer_public_fs_recovers_same_document_after_real_bun_loss() {
 fn renderer_pending_public_fs_call_rejects_once_and_rebinds_replaced_root() {
     let fixture = PublicFsProject::new(Policy::Narrow);
     let recovered = run_launch(&fixture, 0, Exercise::RendererPendingRecovery);
-    let relaunched = run_launch(&fixture, 1, Exercise::PublicAppComponent);
+    // Bind before shipping Host spawn; only the second ordinary app is armed.
+    let mut receipt = QuitBodyReceipt::arm();
+    let relaunched =
+        run_launch_with_quit_body_receipt(&fixture, 1, Exercise::PublicAppComponent, &mut receipt);
     let document = |evidence: &LaunchEvidence| {
         evidence
             .reports
@@ -151,11 +160,196 @@ fn run_launch(fixture: &PublicFsProject, launch: usize, exercise: Exercise) -> L
     run_launch_with_descendant_quit(fixture, launch, exercise, None)
 }
 
+fn wait_public_host_with_phase(
+    child: std::process::Child,
+    observer: &Observation,
+    observation_succeeded: bool,
+    body_receipt: Option<&mut QuitBodyReceipt>,
+    guardian_exit: Option<&mut GuardianExitWitness>,
+) -> Output {
+    // One conservative clock starts before the unchanged Host Child wait.
+    // Test-only native observations never authorize process-group cleanup.
+    let deadline = Instant::now() + EVENT_DEADLINE;
+    match (body_receipt, guardian_exit) {
+        (Some(receipt), Some(exit)) => {
+            public_host_wait(child, observer).public_with_joint_poll(observation_succeeded, || {
+                receipt.poll(deadline);
+                // The Guardian event is ordered after body verification
+                // only if an empty post-verification native read fences it.
+                if receipt.is_verified() {
+                    exit.note_body_receipt_verified();
+                }
+                exit.poll(deadline);
+                (receipt.stage(), exit.marker())
+            })
+        }
+        (Some(receipt), None) => {
+            public_host_wait(child, observer).public_with_poll(observation_succeeded, || {
+                receipt.poll(deadline);
+                receipt.stage()
+            })
+        }
+        (None, None) => public_host_wait(child, observer).public(observation_succeeded),
+        (None, Some(_)) => panic!("Guardian exit witness requires a native Bun body receipt"),
+    }
+}
+
+fn wait_retirement_host_with_phase(
+    child: std::process::Child,
+    observer: &Observation,
+    after_wait: impl FnOnce(),
+) -> Output {
+    public_host_wait(child, observer).retirement(after_wait)
+}
+
+// The unchanged process wait owns custody, the 20s deadline and live-only callbacks.
+fn public_host_wait(
+    child: std::process::Child,
+    observer: &Observation,
+) -> quit_phase::Wait<'_, impl FnOnce(&mut dyn FnMut()) -> Output, impl FnMut(&str)> {
+    quit_phase::Wait::new(
+        &observer.quit_progress,
+        move |observe: &mut dyn FnMut()| {
+            wait_child_output_observing(child, EVENT_DEADLINE, observe)
+        },
+        |line: &str| eprintln!("{line}"),
+    )
+}
+
 fn run_launch_with_descendant_quit(
     fixture: &PublicFsProject,
     launch: usize,
     exercise: Exercise,
+    descendant: Option<&mut descendant_quit::DescendantQuit>,
+) -> LaunchEvidence {
+    run_launch_with_causal_receipt(fixture, launch, exercise, descendant, None)
+}
+
+fn run_launch_with_quit_body_receipt(
+    fixture: &PublicFsProject,
+    launch: usize,
+    exercise: Exercise,
+    receipt: &mut QuitBodyReceipt,
+) -> LaunchEvidence {
+    run_launch_with_causal_receipt(fixture, launch, exercise, None, Some(receipt))
+}
+
+fn assert_public_quit_body_evidence(observer: &Observation, receipt: Option<&QuitBodyReceipt>) {
+    // Both independently owned receipts must hold; Bun's ACK alone can be
+    // minted by a constructed Response without any observer /quit GET.
+    if let Some(receipt) = receipt {
+        receipt.assert_verified();
+        assert_eq!(
+            observer
+                .quit_progress
+                .load(std::sync::atomic::Ordering::Acquire),
+            2,
+            "missing independent real HTTP /quit request and response receipt"
+        );
+    }
+}
+
+/// Select the original test application for each exercise. Only an
+/// explicitly armed component launch receives a test-only native receipt.
+fn prepare_public_fs_exercise(
+    fixture: &PublicFsProject,
+    launch: usize,
+    exercise: Exercise,
+    port: u16,
+    body_receipt: Option<&QuitBodyReceipt>,
+) -> PreparedLaunch {
+    match exercise {
+        Exercise::RendererPointer => fixture.prepare(launch, port),
+        Exercise::RendererRecovery => fixture.prepare_recovery(launch, port),
+        Exercise::RendererPendingRecovery => fixture.prepare_pending_recovery(launch, port),
+        Exercise::PublicAppComponent => {
+            if let Some(receipt) = body_receipt.as_ref() {
+                fixture.prepare_component_with_quit_body_receipt(
+                    launch,
+                    port,
+                    receipt.port(),
+                    receipt.token(),
+                )
+            } else {
+                fixture.prepare_component(launch, port)
+            }
+        }
+        Exercise::PublicAppNaturalCases => fixture.prepare_natural(launch, port),
+        Exercise::PublicAppRetirement => fixture.prepare_retirement(launch, port),
+        Exercise::RendererNativeJoint => fixture.prepare_native_joint(launch, port),
+    }
+}
+
+fn report_public_launch_witness(
+    fixture: &PublicFsProject,
+    launch: usize,
+    evidence: &LaunchEvidence,
+    exercise: Exercise,
+) {
+    eprintln!(
+        "{}",
+        public_launch_witness_summary(fixture.policy, launch, &evidence.reports, exercise)
+    );
+}
+
+fn public_launch_witness_summary(
+    policy: Policy,
+    launch: usize,
+    reports: &[Value],
+    exercise: Exercise,
+) -> String {
+    format!(
+        "KELD_KEL140_PUBLIC_WITNESS policy={policy:?} launch={launch} report_count={} exercise={exercise:?}",
+        reports.len()
+    )
+}
+
+#[test]
+fn public_launch_diagnostics_never_serialize_private_observer_reports() {
+    let private =
+        json!({"path":"/private/home/sentinel-internal-path","token":"sentinel-secret-token"});
+    let diagnostic =
+        public_launch_witness_summary(Policy::Narrow, 7, &[private], Exercise::RendererPointer);
+    assert_eq!(
+        diagnostic,
+        "KELD_KEL140_PUBLIC_WITNESS policy=Narrow launch=7 report_count=1 exercise=RendererPointer"
+    );
+    assert!(!diagnostic.contains("sentinel"));
+}
+
+fn register_selected_original_guardian(
+    receipt_armed: bool,
+    family: Option<ProcessFamily>,
+) -> Option<GuardianExitWitness> {
+    receipt_armed.then(|| {
+        GuardianExitWitness::register_with_body_receipt_fence(
+            family
+                .expect("independently attested original Guardian before Quit")
+                .guardian,
+        )
+    })
+}
+
+fn report_selected_guardian_exit(guardian_exit: Option<&GuardianExitWitness>) {
+    if let Some(exit) = guardian_exit {
+        // Fixed kernel-event class only, never a PID or event payload.
+        eprintln!("KELD_KEL140_GUARDIAN_EXIT_STAGE stage={}", exit.marker());
+    }
+}
+
+fn release_public_quit(observer: &Observation) {
+    observer
+        .quit
+        .send(())
+        .expect("release public app Quit after observations");
+}
+
+fn run_launch_with_causal_receipt(
+    fixture: &PublicFsProject,
+    launch: usize,
+    exercise: Exercise,
     mut descendant: Option<&mut descendant_quit::DescendantQuit>,
+    mut body_receipt: Option<&mut QuitBodyReceipt>,
 ) -> LaunchEvidence {
     let observer = if matches!(
         exercise,
@@ -165,17 +359,13 @@ fn run_launch_with_descendant_quit(
     } else {
         Observation::bind()
     };
-    let prepared = match exercise {
-        Exercise::RendererPointer => fixture.prepare(launch, observer.port),
-        Exercise::RendererRecovery => fixture.prepare_recovery(launch, observer.port),
-        Exercise::RendererPendingRecovery => {
-            fixture.prepare_pending_recovery(launch, observer.port)
-        }
-        Exercise::PublicAppComponent => fixture.prepare_component(launch, observer.port),
-        Exercise::PublicAppNaturalCases => fixture.prepare_natural(launch, observer.port),
-        Exercise::PublicAppRetirement => fixture.prepare_retirement(launch, observer.port),
-        Exercise::RendererNativeJoint => fixture.prepare_native_joint(launch, observer.port),
-    };
+    let prepared = prepare_public_fs_exercise(
+        fixture,
+        launch,
+        exercise,
+        observer.port,
+        body_receipt.as_deref(),
+    );
     let stage = &prepared.stage;
     if exercise != Exercise::RendererPointer {
         assert!(
@@ -207,24 +397,22 @@ fn run_launch_with_descendant_quit(
                     .expect("independently attributed product family"),
             );
         }
-        eprintln!(
-            "KELD_KEL140_PUBLIC_WITNESS policy={:?} launch={launch} host={host_pid} window={:?} identities={:?} policy_sha256={} host_sha256={} reports={:?} exercise={exercise:?}",
-            fixture.policy,
-            evidence.window,
-            evidence.family,
-            prepared.digest,
-            prepared.host_digest,
-            evidence.reports,
-        );
+        report_public_launch_witness(fixture, launch, &evidence, exercise);
     }));
+    let mut guardian_exit = None;
     if observation_result.is_err() {
         // Capture pipes even if the host exited first. Fallback is never success.
         let _ = cleanup.cli.as_mut().expect("retained failed host").kill();
     } else {
-        observer
-            .quit
-            .send(())
-            .expect("release public app Quit after observations");
+        // Register only the source-attested original Guardian, then seal it
+        // with one read immediately before releasing Quit: an exit queued by
+        // then is classified as pre-Quit, never as a post-Quit observation.
+        guardian_exit =
+            register_selected_original_guardian(body_receipt.is_some(), evidence.family);
+        if let Some(exit) = guardian_exit.as_mut() {
+            exit.seal_before_quit_release();
+        }
+        release_public_quit(&observer);
     }
     // Keep the existing launch/group custody and collect host output even when
     // a post-Quit kernel/descendant assertion fails under the production mutation.
@@ -235,13 +423,18 @@ fn run_launch_with_descendant_quit(
             descendant.observe_cooperative_exit_and_guardian_reap();
         }
     }));
-    let output = wait_child_output(
+    let output = wait_public_host_with_phase(
         cleanup.cli.take().expect("capture host before unwind"),
-        EVENT_DEADLINE,
+        &observer,
+        observation_result.is_ok(),
+        body_receipt.as_deref_mut(),
+        guardian_exit.as_mut(),
     );
+    // CI diagnostics must never serialize private observer reports or Host output.
     eprintln!(
-        "KELD_KEL140_PUBLIC_DIAGNOSTICS policy={:?} launch={launch} click={:?} reports={:?} host_output={output:?}",
-        fixture.policy, evidence.click, evidence.reports,
+        "KELD_KEL140_PUBLIC_DIAGNOSTICS launch={launch} report_count={} host_exit_success={}",
+        evidence.reports.len(),
+        output.status.success(),
     );
     if let Err(failure) = observation_result {
         resume_unwind(failure);
@@ -249,6 +442,10 @@ fn run_launch_with_descendant_quit(
     if let Err(failure) = descendant_result {
         resume_unwind(failure);
     }
+    // Keep both independent Bun /quit witnesses before reporting the
+    // original prearmed Guardian kernel-exit phase.
+    assert_public_quit_body_evidence(&observer, body_receipt.as_deref());
+    report_selected_guardian_exit(guardian_exit.as_ref());
     assert_product_quit(&output, &evidence, stage.root(), host_pid, exercise);
     if exercise == Exercise::PublicAppRetirement {
         retirement::assert_after_quit(&output, &evidence, &prepared.target);
