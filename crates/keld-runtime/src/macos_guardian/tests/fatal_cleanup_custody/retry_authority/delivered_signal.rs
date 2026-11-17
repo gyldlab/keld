@@ -152,11 +152,27 @@ fn terminal_first_signal_retains_birth_until_held_member_reaped() {
         Some(Signal::SIGKILL as i32)
     );
     assert_eq!(kill(Pid::from_raw(-raw), None), Err(Errno::ESRCH));
-    lock_generation(&primary.current_generation)
-        .as_mut()
-        .expect("same original enrollment")
-        .terminate()
-        .expect("read-only dual ESRCH now permits retirement");
+    // Re-enter the *shipping terminal owner*, not just the lower-level
+    // generation probe: only after the test reaps its exact held member may
+    // terminal cleanup remove the retained enrollment, without re-signalling.
+    let retired = first_poll_fatal_error(&mut primary);
+    assert!(
+        matches!(
+            &retired,
+            RuntimeError::GuardianExited {
+                cleanup_error: None,
+                ..
+            }
+        ),
+        "terminal owner must release only after real group absence: {retired}"
+    );
+    assert!(
+        lock_generation(&primary.current_generation).is_none(),
+        "terminal owner released original birth only after dual ESRCH"
+    );
+    primary
+        .fail_current_generation(1)
+        .expect("released enrollment cannot signal again");
     assert_eq!(count.get(), 1, "absence proof never signals");
 }
 
