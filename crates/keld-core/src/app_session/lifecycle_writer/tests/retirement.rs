@@ -28,12 +28,22 @@ fn successor_stream() -> (BootstrapStream, BootstrapStream) {
 fn wait_for_original_revocation(router: &PrimaryRouterHandle) {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        if router.current.lock().expect("canonical current").is_none() {
+        // The transition guard is declared before the current guard in the
+        // retirement path, so Rust drops current first. Observe both locks
+        // independently to avoid treating that tiny drop-order window as a
+        // failure while still requiring transition to be free before the
+        // blocked physical write can complete.
+        let current_revoked = router
+            .current
+            .try_lock()
+            .is_ok_and(|current| current.is_none());
+        let transition_released = router.shutdown.transition.try_lock().is_ok();
+        if current_revoked && transition_released {
             return;
         }
         assert!(
             Instant::now() < deadline,
-            "old A must revoke without holding its writer wait"
+            "old A must revoke and release both canonical guards without holding its writer wait"
         );
         thread::yield_now();
     }
@@ -103,8 +113,6 @@ fn blocked_original_write_outlives_terminal_deadline_then_closes_only_original_l
     let retiring = router.clone();
     let retiring = thread::spawn(move || retiring.retire_generation(1));
     wait_for_original_revocation(&router);
-    assert!(router.shutdown.transition.try_lock().is_ok());
-    assert!(router.current.try_lock().is_ok());
     assert!(caller.reader_stop.load(Ordering::Acquire));
     // This is the actual same-number generation installation method, using the same single
     // writer owner. A's already-admitted packets still retain their old link.
