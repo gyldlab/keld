@@ -163,23 +163,17 @@ budgets.
 
 ### Q-1: GH531 global snapshot event owner
 
-Explicitly approve the global `WindowEvent::DesktopSnapshot` appended variant and initial snapshot
-   before window-entity replay/`Subscribed`; currently GH531 describes
-   per-window event ownership. Its owner must sign the narrow exception
-   and test the old discriminants and subscribed-only recipient rule.
+Owner decision [#6959317402](https://github.com/gyldlab/keld/issues/481#issuecomment-6959317402) selects an append-only `WindowEvent::DesktopSnapshot` tag 7 on the existing window channel, before window-entity replay/`Subscribed`.
+Use GH531's same single writer and state applier. Implementation must preserve all old discriminants and prove the authenticated current-primary-only recipient rule.
+No second channel, writer, state store or app-link is authorized.
 ### Q-2: GH446 facade barrier composition
 
-Approve/reject B's **one bounded pending authenticated Subscribe(c)** before first native sample, and add
-   the first **applied** desktop snapshot to its existing `raw Ready +
-   accepted Subscribe + full replay + same-correlation Subscribed` gate.
-   Explicitly bind (a) first sample finalized no later than native Init,
-   (b) the bounded path to UI-loop entry for an early Subscribe and a finite
-   caller reply deadline covering the entire 15-second Init window plus
-   replay/transport, and (c) typed terminal settlement for no sample,
-   malformed sample, Init timeout and role death. If sampling may legitimately
-   follow Init, instead decide the *additional* finite observation deadline.
-   The GH531 owner must separately approve this pending/ordering amendment;
-   no second Ready source or delayed-entry assumption is permitted.
+Owner decision [#6959317402](https://github.com/gyldlab/keld/issues/481#issuecomment-6959317402) selects B: one bounded pending authenticated Subscribe(c) before first native sample.
+Correction [#6959370922](https://github.com/gyldlab/keld/issues/481#issuecomment-6959370922) keeps the caller reply deadline separate from the 15-second native Init bound.
+There is no subscriber bit, EVENT, Subscribed reply or public Ready before sample. The first **applied** desktop snapshot joins the existing `raw Ready + accepted Subscribe + full replay + same-correlation Subscribed` public Ready gate.
+Still decide (a) a finite absolute caller reply deadline covering the complete 15-second Init window plus replay/transport, (b) a bounded UI-loop-entry path for early Subscribe, and (c) typed terminal settlement and stable error ownership for no/malformed sample, Init timeout and role death.
+The 5-second frame-I/O deadline is not the caller deadline. Recommendation: 30 seconds from first Subscribe admission, with no reset; the GH446 owner must confirm or replace this value.
+No second Ready source or delayed-entry assumption is permitted.
 ### Q-3: Snapshot limits, transaction and epoch
 
 Approve/revise proposed max **32** displays, max **32 KiB** encoded bytes, monotonic Core-writer
@@ -205,15 +199,19 @@ Obtain the GH531/GH446 and error-registry owners' approval for *definitive Init-
 
 - **Status:** open
 - **Owner:** GH531 window-mirror contract owner
-- **Impact:** The global DesktopSnapshot event and its single-applier/replay semantics are not approved by the existing per-window event contract.
-- **Check:** Approve the append-only event discriminant, authenticated primary-only recipient rule and one ordered writer/state applier.
+- **Impact:** Owner decision [#6959317402](https://github.com/gyldlab/keld/issues/481#issuecomment-6959317402) selects append-only `WindowEvent::DesktopSnapshot` tag 7 on the existing window channel and the existing single Core writer/state applier. No production event or source implementation is approved by this specification alone.
+- **Check:** Implement tag 7 without changing old discriminants; prove authenticated current-primary-only delivery, one writer/applier, ordered snapshot-before-Created*/Subscribed replay and old-code golden vectors.
 
 ### B-2: GH446 readiness and pending Subscribe composition
 
 - **Status:** open
 - **Owner:** GH446 facade readiness owner and GH531 subscription owner
-- **Impact:** A healthy early Subscribe cannot be admitted until the first native sample without an approved pending-correlation and finite caller-deadline contract.
-- **Check:** Approve both Ready-first/Ready-last orderings, the 15-second Init terminal, the full caller deadline and sticky Ready failure semantics.
+- **Impact:** Owner decision [#6959317402](https://github.com/gyldlab/keld/issues/481#issuecomment-6959317402) selects one bounded pending authenticated Subscribe(c), zero pre-sample subscriber/EVENT/ACK/public-Ready effects, and ordered replay after the first valid sample.
+  Correction [#6959370922](https://github.com/gyldlab/keld/issues/481#issuecomment-6959370922) confirms the 15-second native Init deadline is distinct from the caller reply deadline.
+- **Check:** Approve a finite absolute caller deadline that covers the full 15-second Init window plus replay/transport.
+  It must not reuse the 5-second per-frame I/O deadline or reset on Subscribe/retry.
+  Also bound UI-loop entry, define the stable typed error owner for no/malformed sample, and prove both Ready-first/Ready-last orderings plus sticky failure.
+  Recommendation: 30 seconds from the first Subscribe admission, with the existing 15-second Init terminal unchanged and no deadline reset.
 
 ### B-3: Paired native macOS display and appearance evidence
 

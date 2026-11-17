@@ -19,7 +19,11 @@ Owns: section 3
 
 - **Given:** A facade boot has an authenticated current-primary Subscribe(c). Native sampling and raw Host Ready may occur later.
 - **When:** The native UI Init produces a valid snapshot, in either Ready-first or Ready-last order.
-- **Then:** Keep one pending correlation before the first sample. Do not set subscriber state. Do not publish a desktop/window EVENT, send Subscribed(c) or resolve public Ready. After validation, enqueue DesktopSnapshot(e), Created* and Subscribed(c). Public Ready waits for raw Ready, the applied snapshot, full replay and the accepted same-correlation reply.
+- **Then:** Owner decision [#6959317402](https://github.com/gyldlab/keld/issues/481#issuecomment-6959317402) selects B: keep one pending correlation for the authenticated current-primary Subscribe(c) before the first sample.
+  Do not set subscriber state. Do not publish a desktop/window EVENT, send Subscribed(c) or resolve public Ready.
+  Append `WindowEvent::DesktopSnapshot` as tag 7 on the existing window channel, using GH531's single Core writer and same state applier.
+  After validation, enqueue DesktopSnapshot(e), Created* and Subscribed(c). Public Ready waits for raw Ready, the applied snapshot, full replay and the accepted same-correlation reply.
+  The 15-second native Init bound is not the caller reply deadline; see owner correction [#6959370922](https://github.com/gyldlab/keld/issues/481#issuecomment-6959370922). That separate finite deadline remains an owner decision.
   A missing or malformed sample at completed Init settles one same-correlation typed ERR. It publishes zero replay or subscriber state and rejects all whenReady waiters. isReady stays false; no ready event is emitted. A missed 15-second Init uses GH446 KELD-CORE-037. Role/link death uses the GH527 terminal path. Only a successor may retry.
 - **Negative control:**
   - **Single fault:** Return an immediate ERR when Subscribe arrives before Init and no sample exists yet.
