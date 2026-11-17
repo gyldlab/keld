@@ -913,6 +913,13 @@ class ProductionConsumerTests(unittest.TestCase):
             self.assertFalse(selected["input_all"])
             self.assertTrue(selected["local_hygiene"])
             self.assertTrue(selected["input_hygiene"])
+            self.assertFalse(selected["local_js-fmt-check"])
+            consumers = {item["owner"]: item for item in ci_inputs.load(root)["consumers"]}
+            self.assertTrue(
+                set(consumers["Native JavaScript formatting"]["inputs"])
+                <= set(consumers["Repository hygiene"]["inputs"]),
+                "hosted hygiene must keep coverage for every native formatter input",
+            )
 
     def test_nested_template_ignore_changes_select_native_formatter(self):
         source = Path(__file__).resolve().parent.parent
