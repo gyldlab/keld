@@ -284,7 +284,15 @@ fn verify_native_same_uri_overlap(
     }
     reject_unexpected_top_level_child_callbacks(observed)?;
     let top_id = host_start["data"]["navigation_id"].as_u64();
-    let correct = frame_start["data"]["uri"] == receipt["uri"]
+    // A native successful navigation is not enough to prove the committed
+    // page remained the claimed same-URI file document after redirects.
+    let committed = &receipt["pages"]["race-host"];
+    let correct = committed["href"] == receipt["uri"]
+        && committed["origin"] == "file://"
+        && committed["protocol"] == "file:"
+        && committed["host"] == ""
+        && committed["port"] == ""
+        && frame_start["data"]["uri"] == receipt["uri"]
         && frame_start["data"]["header"] == json!({"state":"absent"})
         && frame_start["data"]["navigation_id"]
             .as_u64()
@@ -607,7 +615,14 @@ mod ac06_overlap_receipt_tests {
     }
 
     fn check(events: &[Value]) -> Result<(), String> {
-        verify_native_same_uri_overlap(&mut json!({"uri":URI}), events, NONCE)
+        verify_native_same_uri_overlap(
+            &mut json!({"uri":URI, "pages": {"race-host": {
+                "href": URI, "origin":"file://", "protocol":"file:",
+                "host":"", "port":""
+            }}}),
+            events,
+            NONCE,
+        )
     }
 
     #[test]
@@ -785,6 +800,47 @@ mod ac06_overlap_receipt_tests {
                 "top-level {kind} in iframe phase was accepted"
             );
         }
+    }
+
+    #[test]
+    fn reject_race_host_final_page_that_disagrees_with_native_same_uri() {
+        let good = good_receipt_events();
+        let good_page = json!({
+            "href": URI, "origin": "file://", "protocol": "file:",
+            "host": "", "port": ""
+        });
+        let good_receipt = json!({
+            "uri": URI, "pages": {"race-host": good_page}
+        });
+        assert!(
+            verify_native_same_uri_overlap(&mut good_receipt.clone(), &good, NONCE).is_ok(),
+            "valid native Host page refused"
+        );
+        for (name, field, forged) in [
+            (
+                "foreign final URL",
+                "href",
+                json!("file:///D:/foreign.html"),
+            ),
+            (
+                "foreign final origin",
+                "origin",
+                json!("https://foreign.invalid"),
+            ),
+            ("wrong final protocol", "protocol", json!("https:")),
+        ] {
+            let mut receipt = good_receipt.clone();
+            receipt["pages"]["race-host"][field] = forged;
+            assert!(
+                verify_native_same_uri_overlap(&mut receipt, &good, NONCE).is_err(),
+                "{name}: a mismatched committed page was accepted as same-URI"
+            );
+        }
+        let mut missing_final_page = json!({"uri": URI});
+        assert!(
+            verify_native_same_uri_overlap(&mut missing_final_page, &good, NONCE).is_err(),
+            "missing committed Host document was accepted as same-URI"
+        );
     }
 
     #[test]
