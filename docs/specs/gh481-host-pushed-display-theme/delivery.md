@@ -82,8 +82,25 @@ GH446 final implementation integration is a dependent review, not a license for 
 
 - **Positive:** Test both Ready-first and Ready-last orderings. Ready-first is raw Ready, Subscribe(7), then valid native Init snapshot(1). Ready-last is Subscribe(7), valid native Init snapshot(1), then raw Ready.
 - **Positive:** Before the first sample, retain one bounded pending correlation only: no subscriber bit, EVENT, Subscribed(7) or public Ready. After the sample, require DesktopSnapshot(1), Created replay and Subscribed(7) in that order; public Ready follows application of the complete snapshot/replay and acceptance of that same-correlation reply.
-- **Terminal controls:** A sample-first ordering is accepted. No sample or malformed first sample at completed Init, whether Subscribe arrived before or after, produces one same-correlation typed ERR, zero replay and sticky rejected Ready. A missed 15-second Init uses GH446 KELD-CORE-037. Role death uses the GH527 terminal path. Unauthorized or second Subscribe cannot consume the pending slot.
-- **Negative control:** Mutate pending admission to the original immediate ERR on a pre-Init missing sample. Both healthy Ready-first and Ready-last orderings fail. Removing terminal settlement hangs whenReady; admitting a second correlation or partial replay creates a ghost subscription.
+- **Deadline controls:** With an injected monotonic clock, an early Subscribe
+  must enter the UI loop within 10s, complete Init within the existing 15s from
+  loop entry, and settle the entire replay/Subscribed batch within 5s. The
+  absolute caller bound is 30s from first admission. A duplicate Subscribe or
+  replay progress cannot reset any clock. The 5s aggregate replay clock is
+  separate from the per-frame I/O timeout.
+- **Terminal controls:** A sample-first ordering is accepted. No sample or
+  malformed first sample at completed Init, whether Subscribe arrived before
+  or after, produces one same-correlation KELD-CORE-049 ERR, zero replay and
+  sticky rejected Ready. A missed 10s loop-entry or 15s Init bound uses GH446
+  KELD-CORE-037 and forbids late HostInitialized/Ready. Replay-batch timeout or
+  role/link death uses the GH527 terminal path. Unauthorized or second Subscribe
+  cannot consume the pending slot.
+- **Negative control:** Mutate pending admission to the original immediate ERR
+  on a pre-Init missing sample. Both healthy Ready-first and Ready-last orderings
+  fail. Reset any deadline on a duplicate/retry, start the caller clock only at
+  UI-loop entry, or reset the aggregate replay clock per frame; the boundary/no-
+  late-success oracle fails. Removing terminal settlement hangs whenReady;
+  admitting a second correlation or partial replay creates a ghost subscription.
 
 ### Test D3: real primary and all-displays shape
 
@@ -171,8 +188,16 @@ No second channel, writer, state store or app-link is authorized.
 Owner decision [#6959317402](https://github.com/gyldlab/keld/issues/481#issuecomment-6959317402) selects B: one bounded pending authenticated Subscribe(c) before first native sample.
 Correction [#6959370922](https://github.com/gyldlab/keld/issues/481#issuecomment-6959370922) keeps the caller reply deadline separate from the 15-second native Init bound.
 There is no subscriber bit, EVENT, Subscribed reply or public Ready before sample. The first **applied** desktop snapshot joins the existing `raw Ready + accepted Subscribe + full replay + same-correlation Subscribed` public Ready gate.
-Still decide (a) a finite absolute caller reply deadline covering the complete 15-second Init window plus replay/transport, (b) a bounded UI-loop-entry path for early Subscribe, and (c) typed terminal settlement and stable error ownership for no/malformed sample, Init timeout and role death.
-The 5-second frame-I/O deadline is not the caller deadline. Recommendation: 30 seconds from first Subscribe admission, with no reset; the GH446 owner must confirm or replace this value.
+Owner decision [#6962777320](https://github.com/gyldlab/keld/issues/446#issuecomment-6962777320)
+selects one absolute 30-second caller deadline from first admitted Subscribe(c),
+with no reset: 10 seconds to enter the UI loop when Subscribe precedes loop
+entry, the existing 15-second Init deadline from actual loop entry, and one
+5-second aggregate snapshot/replay/Subscribe settlement deadline. The aggregate
+deadline does not reset per frame; the 5-second frame-I/O deadline remains a
+lower-level guard. GH446 KELD-CORE-037 owns UI-loop-entry/Init failure, reserved
+GH531/Core KELD-CORE-049 owns completed-Init missing/malformed snapshot, and
+GH527 owns role/link/replay terminal failure. Implementation and deterministic
+boundary tests remain required.
 No second Ready source or delayed-entry assumption is permitted.
 ### Q-3: Snapshot limits, transaction and epoch
 
@@ -188,9 +213,11 @@ Choose the exact pinned OS display/appearance API and conversion only after a sa
    coordinates and a convenience appearance flag do not prove parity.
 ### Q-5: Pre-Ready/terminal getter and native-snapshot failure
 
-Obtain the GH531/GH446 and error-registry owners' approval for *definitive Init-time*
-   correlated lifecycle CallError ERR `DesktopSnapshotUnavailable` (no numeric
-   code allocated), atomic zero-replay settlement, sticky public-ready
+Owner decision [#6962777320](https://github.com/gyldlab/keld/issues/446#issuecomment-6962777320)
+   reserves `KELD-CORE-049` for definitive Init-time
+   `DesktopSnapshotUnavailable`. The GH531/Core error-registry owner must add
+   its canonical message/fix before implementation. Preserve correlated
+   lifecycle CallError ERR, atomic zero-replay settlement, sticky public-ready
    failure and typed unavailable getters. An early healthy Subscribe is
    **pending**, not erroneous; absent/malformed final sample is terminal,
    never an empty headless display or light-mode false. Waiters must settle.
@@ -199,19 +226,30 @@ Obtain the GH531/GH446 and error-registry owners' approval for *definitive Init-
 
 - **Status:** open
 - **Owner:** GH531 window-mirror contract owner
-- **Impact:** Owner decision [#6959317402](https://github.com/gyldlab/keld/issues/481#issuecomment-6959317402) selects append-only `WindowEvent::DesktopSnapshot` tag 7 on the existing window channel and the existing single Core writer/state applier. No production event or source implementation is approved by this specification alone.
-- **Check:** Implement tag 7 without changing old discriminants; prove authenticated current-primary-only delivery, one writer/applier, ordered snapshot-before-Created*/Subscribed replay and old-code golden vectors.
+- **Impact:** Owner decision [#6959317402](https://github.com/gyldlab/keld/issues/481#issuecomment-6959317402)
+  selects append-only `WindowEvent::DesktopSnapshot` tag 7 on the existing window
+  channel and the existing single Core writer/state applier. No production event
+  or source implementation is approved by this specification alone.
+- **Check:** Implement tag 7 without changing old discriminants; prove authenticated
+  current-primary-only delivery, one writer/applier, ordered snapshot-before-
+  Created*/Subscribed replay and old-code golden vectors.
 
 ### B-2: GH446 readiness and pending Subscribe composition
 
 - **Status:** open
 - **Owner:** GH446 facade readiness owner and GH531 subscription owner
-- **Impact:** Owner decision [#6959317402](https://github.com/gyldlab/keld/issues/481#issuecomment-6959317402) selects one bounded pending authenticated Subscribe(c), zero pre-sample subscriber/EVENT/ACK/public-Ready effects, and ordered replay after the first valid sample.
-  Correction [#6959370922](https://github.com/gyldlab/keld/issues/481#issuecomment-6959370922) confirms the 15-second native Init deadline is distinct from the caller reply deadline.
-- **Check:** Approve a finite absolute caller deadline that covers the full 15-second Init window plus replay/transport.
-  It must not reuse the 5-second per-frame I/O deadline or reset on Subscribe/retry.
-  Also bound UI-loop entry, define the stable typed error owner for no/malformed sample, and prove both Ready-first/Ready-last orderings plus sticky failure.
-  Recommendation: 30 seconds from the first Subscribe admission, with the existing 15-second Init terminal unchanged and no deadline reset.
+- **Impact:** Owner decision [#6959317402](https://github.com/gyldlab/keld/issues/481#issuecomment-6959317402)
+  selects one bounded pending authenticated Subscribe(c), zero pre-sample
+  subscriber/EVENT/ACK/public-Ready effects, and ordered replay after the first
+  valid sample. Owner decision [#6962777320](https://github.com/gyldlab/keld/issues/446#issuecomment-6962777320)
+  sets the absolute 30-second caller deadline as 10s UI-loop entry + existing
+  15s Init + 5s aggregate replay settlement.
+- **Check:** Implement the three absolute clocks without reset. Retain the
+  5-second per-frame I/O guard as a lower-level limit. Use KELD-CORE-037 for
+  UI-loop-entry/Init failure, reserved KELD-CORE-049 for completed-Init
+  missing/malformed sample, and GH527 terminal handling for replay/role/link
+  failure. Prove exact boundary, duplicate/no-reset, Ready-first/Ready-last,
+  sticky failure and no-late-success controls.
 
 ### B-3: Paired native macOS display and appearance evidence
 
@@ -224,8 +262,8 @@ Obtain the GH531/GH446 and error-registry owners' approval for *definitive Init-
 
 - **Status:** open
 - **Owner:** GH531/Core wire owner and KELD error-registry owner
-- **Impact:** The proposed 32-display/32-KiB bounds, writer transaction, epoch/deduplication and DesktopSnapshotUnavailable mapping are not approved.
-- **Check:** Approve limits and ordering, validate hostile frames/golden vectors and allocate the canonical typed error before implementation.
+- **Impact:** The proposed 32-display/32-KiB bounds, writer transaction and epoch/deduplication remain unapproved. Owner decision [#6962777320](https://github.com/gyldlab/keld/issues/446#issuecomment-6962777320) reserves KELD-CORE-049 for DesktopSnapshotUnavailable; the canonical registry entry is still required.
+- **Check:** Approve limits and ordering, validate hostile frames/golden vectors, and add the canonical KELD-CORE-049 message/fix before implementation.
 
 ### B-5: GH477/GH566 conformance and product acceptance
 

@@ -95,21 +95,28 @@ Core writer checks existing channel/role/generation admission
   ALLOWED + validated sample already retained: capture latest epoch e
   ALLOWED + no validated sample: reserve at most one pending Subscribe(c)
     no subscribed bit, desktop/window EVENT, Subscribed(c) or public Ready
-Mac UI Init reports first valid native desktop state (within 15-second bound)
+If Subscribe(c) is admitted before native UI-loop entry, require loop entry
+  within 10 seconds of that first admission; expiry is terminal KELD-CORE-037
+Mac UI Init reports first valid native desktop state within 15 seconds of
+  actual UI-loop entry; expiry is terminal KELD-CORE-037
   Core writer validates and retains latest e, resumes pending c if present
   For validated sample + eligible c: one uninterruptible ordered enqueue batch
     DesktopSnapshot(e) EVENT on existing window channel
     all surviving-window Created replay EVENTs
     correlated Subscribed(c) REPLY on lifecycle
     commit eligibility and last-sent-epoch=e only after queued barrier
+  The batch has one absolute 5-second settlement deadline from validated e
+  through acceptance of Subscribed(c); per-frame I/O deadlines do not reset it
+  Caller deadline is 30 seconds from first admitted c: 10s loop + 15s Init
+    + 5s batch, absolute and never reset by retry, duplicate or progress
   Init complete, definitive no sample or malformed sample + pending c:
-    exactly one ERR(c, CallError DesktopSnapshotUnavailable); zero replay/bits
+    exactly one ERR(c, KELD-CORE-049 DesktopSnapshotUnavailable); zero replay/bits
   Eligible Subscribe(c) after that terminal Init outcome: same-correlation
-    ERR(c, DesktopSnapshotUnavailable) immediately; no pending or replay
-  Init 15-second milestone missed: GH446 KELD-CORE-037 terminal startup
-  Role death/link loss: GH527 typed terminal, fence pending c, no late ERR
+    ERR(c, KELD-CORE-049) immediately; no pending or replay
+  Role death/link loss or replay-batch timeout: GH527 typed terminal,
+    fence pending c, no late ERR or successful Subscribed
   Duplicate Subscribe while c pending: reject under existing lifecycle policy
-    without replacing c, reserving a second pending call or replaying state
+    without replacing c, reserving a second pending call or resetting deadlines
 Next queued observer update e+1 → enqueue DesktopSnapshot(e+1) AFTER Subscribed
 Existing GH527 applier applies snapshot + window replay, no user listeners
 Facade public Ready opens only after raw Ready + desktop/window applied +
@@ -122,11 +129,13 @@ GH508's `SubscribeRefusal` remains a closed enum for channel/role checks,
 without any invented `DesktopUnavailable` reason. The existing GH527
 `lifecycleReplyWaiter` admits an authenticated lifecycle `ERR` encoded as a
 `CallError` for the **same correlation `c`**, so no new frame/channel is
-needed. The error-code owner must allocate a stable `KELD-CORE-*`
-**DesktopSnapshotUnavailable** code/fix before implementation; this draft
-reserves no number. An absent *pre-Init* snapshot is an ordinary pending
-state and cannot fail a healthy early Subscribe. Completed Init with a
-definitively missing or malformed first sample instead emits one typed ERR,
+needed. Owner decision [#6962777320](https://github.com/gyldlab/keld/issues/446#issuecomment-6962777320)
+reserves `KELD-CORE-049` for **DesktopSnapshotUnavailable**, consistent with
+the owner-approved Windows S1 scope. The GH531/Core error-registry owner must
+add its canonical message and fix before implementation consumes the code.
+An absent *pre-Init* snapshot is an ordinary pending state and cannot fail a
+healthy early Subscribe. Completed Init with a definitively missing or
+malformed first sample instead emits one same-correlation KELD-CORE-049 ERR,
 zero replay records and no successful `Subscribed`; the same-generation
 pending correlation is consumed once. The failed-Init state is sticky even
 if no Subscribe was pending at the moment of failure: a later eligible
@@ -135,20 +144,21 @@ or a late unvalidated snapshot. If any replay frame is partially
 written or the link dies, GH527 transport teardown is terminal: no replay
 retry or fake successful `Subscribed` may follow.
 
-**Deadline ownership:** GH446's existing 15-second `INITIAL_MILESTONE_DEADLINE`
-is measured from macOS UI-loop entry through successful Init, not from an
-arbitrary pre-Init Subscribe. That clock is the outer native-Init outcome
-bound for pending `c`, **conditional on a bounded path to UI-loop entry**.
-The GH446 caller/adapter owner must ensure its *overall* lifecycle Subscribe
-reply deadline outlives `(Init deadline - eligible Subscribe time) + bounded
-writer/replay/transport time` for every admitted early Subscribe, including
-the pre-UI-loop interval; a 5-second per-frame APP_LINK_IO_DEADLINE does
-not meet this. Until that start anchor and finite reply bound are approved,
-this remains a non-implementable proposal, not permission to extend any
-existing clock. If native sampling can occur only *after* completed Init,
-owners must specify a separate finite observation bound and caller clock
-before replacing this proposal's Init-time terminal rule. No indefinite
-pending correlation is permitted.
+**Deadline ownership:** Owner decision [#6962777320](https://github.com/gyldlab/keld/issues/446#issuecomment-6962777320)
+sets one absolute 30-second caller deadline from first admitted Subscribe(c),
+with no reset. If Subscribe precedes native UI-loop entry, that loop must
+enter within 10 seconds of the same admission; expiry fails the current
+authenticated app session with KELD-CORE-037 and no late HostInitialized/Ready.
+The existing 15-second `INITIAL_MILESTONE_DEADLINE` remains anchored to actual
+macOS UI-loop entry through successful Init; expiry also uses KELD-CORE-037.
+After the first valid sample, one absolute 5-second aggregate settlement
+deadline covers the complete DesktopSnapshot/Created*/Subscribed batch through
+acceptance of the same-correlation reply. It is distinct from the existing
+5-second per-frame APP_LINK_IO_DEADLINE and cannot reset per frame or progress.
+The 10 + 15 + 5 second subdeadlines compose the 30-second caller bound.
+Completed Init with no/malformed sample uses reserved KELD-CORE-049;
+role/link death or replay-batch expiry uses GH527's terminal path. No partial
+subscriber state, late ERR or late successful Ready is permitted.
 
 The Bun singleton consumes a definitive Init-time `ERR` as rejection of
 the *current Subscribe* attempt. It rejects **all** public `whenReady()`
@@ -186,8 +196,9 @@ the gate also require the **first applied** `DesktopSnapshot`, complete
 Created replay and processed same-correlation `Subscribed(c)`, in either
 Ready-first or Ready-last order. It must not create a second App Ready
 source, resolve a waiter for a merely *pending* c, or set `isReady()`
-from a fabricated default. GH446/GH531 owners must explicitly approve
-this extension and the finite caller-clock coordination before adoption.
+from a fabricated default. The pending-Subscribe ordering and caller-clock
+coordination are owner-decided in [#6962777320](https://github.com/gyldlab/keld/issues/446#issuecomment-6962777320);
+implementation must enforce the exact subdeadlines and terminal ownership above.
 
 ### 4.4 Actual display and appearance conversion
 

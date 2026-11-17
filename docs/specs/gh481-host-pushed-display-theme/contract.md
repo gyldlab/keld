@@ -23,8 +23,26 @@ Owns: section 3
   Do not set subscriber state. Do not publish a desktop/window EVENT, send Subscribed(c) or resolve public Ready.
   Append `WindowEvent::DesktopSnapshot` as tag 7 on the existing window channel, using GH531's single Core writer and same state applier.
   After validation, enqueue DesktopSnapshot(e), Created* and Subscribed(c). Public Ready waits for raw Ready, the applied snapshot, full replay and the accepted same-correlation reply.
-  The 15-second native Init bound is not the caller reply deadline; see owner correction [#6959370922](https://github.com/gyldlab/keld/issues/481#issuecomment-6959370922). That separate finite deadline remains an owner decision.
-  A missing or malformed sample at completed Init settles one same-correlation typed ERR. It publishes zero replay or subscriber state and rejects all whenReady waiters. isReady stays false; no ready event is emitted. A missed 15-second Init uses GH446 KELD-CORE-037. Role/link death uses the GH527 terminal path. Only a successor may retry.
+  Owner decision [#6962777320](https://github.com/gyldlab/keld/issues/446#issuecomment-6962777320)
+  sets one absolute 30-second caller deadline from the first admitted Subscribe(c),
+  with no reset. If Subscribe precedes native UI-loop entry, that loop must enter
+  within 10 seconds. The existing 15-second native Init deadline then runs from
+  actual UI-loop entry. After the first valid sample, one absolute 5-second
+  aggregate deadline covers the complete ordered replay batch through acceptance
+  of the same-correlation Subscribed(c) reply. The aggregate deadline is separate
+  from, and never reset by, the 5-second per-frame APP_LINK_IO_DEADLINE. The 10 +
+  15 + 5 second subdeadlines compose the 30-second caller bound.
+  A missed 10-second UI-loop-entry bound or 15-second Init uses GH446
+  KELD-CORE-037 and terminally fails the current app session; no late
+  HostInitialized or Ready may revive it. A missing or malformed sample at
+  completed Init settles one same-correlation KELD-CORE-049
+  DesktopSnapshotUnavailable ERR (reserved by the owner decision; its canonical
+  error-registry entry is required before implementation). It publishes zero
+  replay or subscriber state and rejects all whenReady waiters. isReady stays
+  false; no ready event is emitted. A replay-batch deadline or role/link death
+  uses the GH527 terminal path; no partial Subscribed or late ERR is allowed.
+  A duplicate/second Subscribe cannot replace the pending correlation or reset
+  any deadline. Only a successor may retry.
 - **Negative control:**
   - **Single fault:** Return an immediate ERR when Subscribe arrives before Init and no sample exists yet.
   - **At-risk precondition:** A valid sample will arrive within the approved Init bound.
