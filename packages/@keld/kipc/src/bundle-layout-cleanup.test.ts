@@ -268,6 +268,27 @@ describe("layout resource ownership on failure", () => {
     }
   });
 
+  test("cleanup failure preserves the primary assertion error and retained owner", async () => {
+    const primary = new Error("primary assertion failed");
+    const cleanup = new Error("owned disposal failed");
+    const owner = {
+      disposed: false,
+      async dispose() {
+        throw cleanup;
+      },
+    };
+    const failure = await rejected(
+      finishLayoutTestOperation(undefined, owner, primary),
+    );
+    expect(failure).toBeInstanceOf(AggregateError);
+    if (!(failure instanceof AggregateError))
+      throw new Error("missing combined primary and teardown failure");
+    expect(failure.cause).toBe(primary);
+    expect(failure.errors).toEqual([primary, cleanup]);
+    expect(failure).toHaveProperty("retainedLayout", owner);
+    expect(owner.disposed).toBe(false);
+  });
+
   test("an outer assertion deadline cannot discard a pending layout operation", async () => {
     const operation = new Promise<Awaited<ReturnType<typeof runLayout>>>(
       () => {},
@@ -703,6 +724,7 @@ describe("layout resource ownership on failure", () => {
     const releasePath = join(audit, "descendant-release");
     const completedPath = join(audit, "descendant-released");
     let operation: ReturnType<typeof runLayout> | undefined;
+    let testFailure: unknown;
     let root = "";
     let failure: unknown;
     let success: Awaited<ReturnType<typeof runLayout>> | undefined;
@@ -762,6 +784,9 @@ describe("layout resource ownership on failure", () => {
       }
       expect(existsSync(root)).toBe(false);
       expect(existsSync(completedPath)).toBe(false);
+    } catch (error) {
+      testFailure = error;
+      throw error;
     } finally {
       // The writer remains alive past the test deadline. Release it only after
       // the verdict, then join the original operation and disposal owner.
@@ -772,7 +797,7 @@ describe("layout resource ownership on failure", () => {
         failure instanceof LayoutDisposalError
           ? failure.retainedLayout
           : undefined;
-      await finishLayoutTestOperation(operation, previousOwner);
+      await finishLayoutTestOperation(operation, previousOwner, testFailure);
       // On Unix, the live descendant must acknowledge the release. Windows
       // can instead reap it with the direct parent; read-only PID observation
       // and an outcome recheck distinguish that from a successful writer.
@@ -887,6 +912,7 @@ describe("layout resource ownership on failure", () => {
     let finalized = false;
     let owner: RetainedLayout | undefined;
     let operation: ReturnType<typeof runLayout> | undefined;
+    let testFailure: unknown;
     try {
       const error = await rejected(
         withIoDeadline(
@@ -951,11 +977,14 @@ describe("layout resource ownership on failure", () => {
       expect(existsSync(root)).toBe(false);
       await owner?.dispose();
       expect(finalizations).toBe(1);
+    } catch (error) {
+      testFailure = error;
+      throw error;
     } finally {
       release();
       // The outer deadline does not cancel a pending runLayout operation.
       // Join it before closing the file descriptor or removing its audit root.
-      await finishLayoutTestOperation(operation, owner);
+      await finishLayoutTestOperation(operation, owner, testFailure);
       if (!finalized) closeSync(fd);
       rmSync(audit, { recursive: true, force: true });
     }
@@ -975,6 +1004,7 @@ describe("layout resource ownership on failure", () => {
     let finalizationCalls = 0;
     let owner: RetainedLayout | undefined;
     let operation: ReturnType<typeof runLayout> | undefined;
+    let testFailure: unknown;
     try {
       const error = await rejected(
         withIoDeadline(
@@ -1034,11 +1064,14 @@ describe("layout resource ownership on failure", () => {
       expect(existsSync(root)).toBe(false);
       await owner?.dispose();
       expect(finalizationCalls).toBe(1);
+    } catch (error) {
+      testFailure = error;
+      throw error;
     } finally {
       release();
       // The outer deadline does not cancel a pending runLayout operation.
       // Join it before closing the file descriptor or removing its audit root.
-      await finishLayoutTestOperation(operation, owner);
+      await finishLayoutTestOperation(operation, owner, testFailure);
       if (!finalized) closeSync(fd);
       rmSync(audit, { recursive: true, force: true });
     }
@@ -1498,6 +1531,7 @@ describe("layout resource ownership on failure", () => {
     let root = "";
     let owned: RetainedFailure | undefined;
     let operation: ReturnType<typeof runLayout> | undefined;
+    let testFailure: unknown;
     try {
       const error = await rejected(
         withIoDeadline(
@@ -1550,11 +1584,18 @@ describe("layout resource ownership on failure", () => {
       expect(next.stderr).toBe("");
       expect(next.exitCode).toBe(0);
       expect(existsSync(next.root)).toBe(false);
+    } catch (error) {
+      testFailure = error;
+      throw error;
     } finally {
       release();
       // An outer deadline never cancels a live layout. Join the original
       // promise and its eventual owner before touching its temporary root.
-      await finishLayoutTestOperation(operation, owned?.retainedLayout);
+      await finishLayoutTestOperation(
+        operation,
+        owned?.retainedLayout,
+        testFailure,
+      );
       if (root !== "") rmSync(root, { recursive: true, force: true });
     }
   }, 15_000);
