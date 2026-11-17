@@ -524,6 +524,7 @@ mod windows_local_volume_tests {
 
     // Never allow two native fixture lifecycles to share the test-only Z: alias.
     static Z_MAPPING_TEST_LOCK: Mutex<()> = Mutex::new(());
+    const LOCAL_CAPTURE_MARKER: &[u8] = b"R208_CAPTURED_LOCAL_ORIGIN_ONLY";
 
     #[test]
     fn retained_local_directory_returns_a_stable_fixed_dos_path() {
@@ -566,6 +567,15 @@ mod windows_local_volume_tests {
             br#"{"profile":"strict"}"#,
         )
         .expect("policy fixture");
+        // The archive's actual module-capture sink must retain these local
+        // bytes after the caller's Z: alias points to a remote share.
+        std::fs::write(owned.path().join("main.js"), LOCAL_CAPTURE_MARKER)
+            .expect("original entry fixture");
+        std::fs::write(
+            owned.path().join("index.html"),
+            b"<main>Original local</main>",
+        )
+        .expect("original renderer fixture");
         assert!(!Path::new(r"Z:\").exists(), "Z: must be unused");
         assert!(
             !net_use(&["use", "Z:"]).expect("net use query").success(),
@@ -610,11 +620,64 @@ mod windows_local_volume_tests {
             pin_input_root(Path::new(r"Z:\")).is_err(),
             "remote alias must now fail closed"
         );
-        assert_eq!(captured.stable_root(), stable.as_path());
+        assert_original_archive_module_capture_after_rebind(
+            &captured,
+            &stable,
+            owned.path(),
+            config,
+        );
+    }
+
+    fn assert_original_archive_module_capture_after_rebind(
+        captured: &CapturedAuthoring,
+        stable: &Path,
+        original: &Path,
+        config: &str,
+    ) {
+        assert_eq!(captured.stable_root(), stable);
         assert_eq!(
             std::fs::read_to_string(stable.join("keld.config.ts")).expect("original bytes"),
             config,
             "archive/compile continuation must use the original captured project"
+        );
+        assert_eq!(
+            captured
+                .archive_members()
+                .expect("archive's retained authoring members")
+                .len(),
+            2,
+            "the same original authoring owner must emit both framework members"
+        );
+        let names = vec![captured.app.entry.clone()];
+        let modules = super::super::windows_compiler::CapturedModules::open_js_fixture(
+            stable,
+            &names,
+            &captured.app.entry,
+            &captured.app.name,
+        )
+        .expect("archive's real native module capture from the retained local root");
+        let sink_path = original.join("captured-compiler-request.bin");
+        let mut sink = std::fs::File::create(&sink_path).expect("private request sink");
+        modules
+            .write_request(&mut sink)
+            .expect("archive module capture must retain original bytes");
+        drop(sink);
+        let captured_bytes = std::fs::read(&sink_path).expect("read emitted compiler request");
+        assert!(
+            captured_bytes
+                .windows(LOCAL_CAPTURE_MARKER.len())
+                .any(|bytes| bytes == LOCAL_CAPTURE_MARKER),
+            "actual compiler request must contain the original local entry"
+        );
+        assert!(
+            super::super::windows_compiler::CapturedModules::open_js_fixture(
+                Path::new(r"Z:\"),
+                &names,
+                &captured.app.entry,
+                &captured.app.name,
+            )
+            .is_err(),
+            "the rebound remote alias must be rejected at the same module-capture sink"
         );
     }
 

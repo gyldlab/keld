@@ -74,16 +74,43 @@ pub(super) struct CapturedModules {
     _directories: Vec<File>,
 }
 impl CapturedModules {
-    #[expect(
-        clippy::case_sensitive_file_extension_comparisons,
-        reason = "Captured module names require exact canonical lowercase suffixes."
-    )]
     pub(super) fn open(
         root: &Path,
         names: &[String],
         entry: &str,
         app_name: &str,
         sources: &local_source::ObservedCompilerSources<'_>,
+    ) -> Result<Self, BuildError> {
+        Self::open_with_transport(root, names, entry, app_name, || {
+            sources.canonical_transport()
+        })
+    }
+
+    // A JS-only input lets a native alias-rebind regression exercise the real
+    // module-capture sink without a separate signed image/source-build session.
+    // A test that unexpectedly asks for a scaffold transport fails closed.
+    #[cfg(test)]
+    pub(super) fn open_js_fixture(
+        root: &Path,
+        names: &[String],
+        entry: &str,
+        app_name: &str,
+    ) -> Result<Self, BuildError> {
+        Self::open_with_transport(root, names, entry, app_name, || {
+            Err(refusal("test JS module requested a source scaffold"))
+        })
+    }
+
+    #[expect(
+        clippy::case_sensitive_file_extension_comparisons,
+        reason = "Captured module names require exact canonical lowercase suffixes."
+    )]
+    fn open_with_transport<'a>(
+        root: &Path,
+        names: &[String],
+        entry: &str,
+        app_name: &str,
+        canonical_transport: impl FnOnce() -> Result<&'a local_source::PinnedFile, BuildError>,
     ) -> Result<Self, BuildError> {
         if names.is_empty() || names.len() > 4096 || !names.iter().any(|n| n == entry) {
             return Err(refusal(
@@ -123,7 +150,7 @@ impl CapturedModules {
                 .to_owned();
             directories.extend(windows_inputs::pin_input_root(&parent)?);
             let actual = local_source::pin_file(&parent.join("kipc-transport.ts"), MAX_FILE)?;
-            let canonical = sources.canonical_transport()?;
+            let canonical = canonical_transport()?;
             verify_scaffold_transport(&actual, canonical, app_name)?;
             Some(actual)
         } else {
