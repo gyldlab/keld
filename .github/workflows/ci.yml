@@ -917,10 +917,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The receipt supplies all 15 source hashes. Pin its reviewed bytes in
+          # protected CI so a candidate cannot repin both a source and its manifest.
+          receipt_path=docs/engineering/evidence/kel270-catalogue-admission-v2/review-receipt.json
+          if ! printf '%s  %s\n' \
+            '0a3f4074226cca88e01bba748d5e17d61a77b64492c291a9725de45405b9d4ce' \
+            "$receipt_path" | sha256sum --check --status; then
+            echo "KEL-270 B-82 trusted receipt SHA-256 mismatch" >&2
+            exit 1
+          fi
           # A pull request can add sourceless imports (for example argparse.pyc)
           # beside the verifier. -B alone prevents writes, not importing them.
-          # Keep the unsafe checkout/script directory off sys.path, including
-          # all Python subprocesses launched by verify_spec_evidence.py.
+          # Clear runner-provided Python startup controls before the verifier and
+          # its child processes; re-enable only safe-path and no-user-site flags.
+          for variable in "${!PYTHON@}"; do
+            unset "$variable"
+          done
+          export PYTHONNOUSERSITE=1
           export PYTHONSAFEPATH=1
           python3.12 -I -m venv "$RUNNER_TEMP/kel270-evidence-python"
           cat > "$RUNNER_TEMP/kel270-evidence-requirements.txt" <<'REQ'
