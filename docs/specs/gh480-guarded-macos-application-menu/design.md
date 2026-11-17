@@ -302,7 +302,7 @@ those functions work.
 - **Single observable diagnostic path for the first proof:** reuse
   the existing process stderr exposed by `keld-host` and forwarded
   through `keld dev`'s inherited stderr, observed as a captured
-  **Host menu diagnostic record** in the native acceptance harness.
+  **Host menu diagnostic JSONL record** in the native acceptance harness.
   This is a **proposed contract on an existing output path**, not a
   claim that a structured async menu collector already ships.
   **FACT at Pin:** keld-cli dev launches the staged keld-host with inherited
@@ -311,33 +311,47 @@ those functions work.
   Core separately forwards captured primary-process stderr and its bounded
   elision notice (`crates/keld-core/src/app_session.rs:5867-5874`).
   This is a terminal-observable stream, not a subscriber API or durable store.
-  The native harness captures the actual keld dev parent stderr. It asserts
-  one Host-owned record per terminal outcome; a mock logger does not qualify.
-  Each record contains the registry-owned stable `KELD-*` code,
-  machine-readable phase (`install` or `activation`), result
-  (`denied`, `native-failed`, `effect-unknown` or `unsupported`),
-  correlation, current role/menu generation when valid, implementing
-  ticket for an unsupported item, and one actionable `fix`. No raw
-  labels, paths, user text, OS selectors, identity secrets or native
-  pointers are logged. The existing
-  [error-code registry](../../engineering/keld-error-codes.md) is the
-  sole code/fix allocation owner; new codes are reserved/reviewed with
-  the implementing source, never guessed here.
-- **Outcome observation and exactly one owner:** Host writes one
-  terminal stderr diagnostic for a received/refused install, late
-  native failure, effect-unknown completion, held Quit or unsupported
-  custom click. Successful installation yields a correlated
-  `MenuInstallReceipt` internally (not an error log or public getter).
-  Once a CALL may have reached Host, Bun does **not** invent a second
-  duplicate diagnostic or assume not-sent; a disappeared/ambiguous
-  completion remains **effect-unknown**. A definitely pre-send
-  Bun-local failure (missing link, invalid local projection) is
-  synchronously typed or emits the same canonical code/fix to Bun's
-  inherited stderr, with a distinct pre-send phase and zero Host frame.
-  Tests capture actual output from each owner rather than relying on
-  mocked log arrays. This path does **not** expose a new Electron
-  callback, PubSub subscriber, menu channel EVENT or private JS
-  diagnostic API.
+  The native harness captures the actual `keld dev` parent stderr. A mock
+  logger or a Bun-only test does not qualify this observation path.
+  Each terminal record is one JSON object on one line with this exact
+  proposed field contract:
+
+  | Field | Type and rule |
+  | --- | --- |
+  | `code` | Registry-assigned stable `KELD-COMPAT-*` code. The next free `KELD-COMPAT-013` is only a candidate; it is not allocated by this spec. |
+  | `phase` | `pre-send`, `install` or `activation`. |
+  | `result` | `denied`, `native-failed`, `effect-unknown` or `unsupported`. |
+  | `correlation` | CALL correlation for install; Host-owned operation correlation for an activation; JSON `null` only for a definitely pre-send failure. |
+  | `role_generation` | Optional authenticated role generation; omit when unavailable. |
+  | `menu_generation` | Optional Host-assigned menu generation; omit when unavailable. |
+  | `ticket` | Owning ticket, such as `GH480`, `GH556` or `GH563`. |
+  | `fix` | Static actionable fix text from the error-code registry. |
+
+  The record is proposed as JSONL, not free-form stderr prose. The registry
+  owns the exact code and fix; this spec does not allocate `KELD-COMPAT-013`
+  or any replacement. Never log menu labels, paths, user text, OS selectors,
+  identity secrets or native pointers. The existing
+  [error-code registry](../../engineering/keld-error-codes.md) is the sole
+  code/fix allocation owner; its owner must approve the record grammar and
+  allocate the code before implementation.
+- **Outcome observation and exactly one owner:** A definitely pre-send
+  Bun-local failure (missing link or invalid local projection) may emit one
+  `phase=pre-send` JSONL record with `correlation=null` and zero Host frames.
+  Once a CALL may have reached Host, only Host owns the terminal record:
+  `phase=install` covers the guarded install outcome and late native failure;
+  `phase=activation` covers a Host-native unsupported click or held Quit.
+  Host emits exactly one terminal record for denial, native failure,
+  effect-unknown or unsupported behavior. Bun must not emit a duplicate
+  record or claim not-sent after admission may have occurred. A disappeared
+  or ambiguous post-send completion is `effect-unknown`, never automatic
+  replay. Successful installation yields a correlated `MenuInstallReceipt`
+  internally (not an error log or public getter).
+  Tests launch the actual `keld dev`, capture its parent stderr, inject each
+  terminal outcome, assert exactly one Host-owned JSONL record after admission,
+  assert no duplicate Bun-side record, and prove zero app-link/Bun effects
+  for denied or unsupported cases. A mock logger does not qualify.
+  This path does **not** expose a new Electron callback, PubSub subscriber,
+  menu channel EVENT or private JS diagnostic API.
 - **Void-return safety:** `@keld/api` schedules exactly one bounded
   authenticated install CALL for a valid snapshot; its internal
   continuation observes both REPLY and ERR, accounts for
