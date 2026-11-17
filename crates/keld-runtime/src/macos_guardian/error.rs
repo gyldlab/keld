@@ -10,7 +10,7 @@ use std::io;
 /// A Guardian can fail both its exact Child wait (for example ECHILD) and
 /// its attested process-group absence proof. The public outer error keeps its
 /// original variant and diagnostics. Callers can downcast the Lifecycle or
-/// GuardianExited cleanup `io::Error::get_ref()` to this type to inspect every
+/// `GuardianExited` cleanup `io::Error::get_ref()` to this type to inspect every
 /// original typed cause, including its OS errno.
 /// Standard `Error::source()` chains are linear and expose only the first
 /// cause. `failures()` is the authoritative complete collection.
