@@ -228,6 +228,8 @@ fn strict_profile_rejects_role_without_private_ancestor() {
 #[test]
 fn strict_profile_rejects_untrusted_inputs_and_setup_failure_runs_no_target() {
     let root = tempfile::tempdir().expect("negative root");
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700))
+        .expect("private negative fixture parent");
     let role = root.path().join("role");
     fs::create_dir(&role).expect("negative role");
     fs::set_permissions(&role, fs::Permissions::from_mode(0o700)).expect("negative role mode");
@@ -1331,6 +1333,8 @@ fn wait_process_identity_gone(process: &ProcessIdentity, deadline: Instant) {
 #[test]
 fn strict_role_mount_keeps_identity_after_profile_and_command_path_replacement() {
     let root = tempfile::tempdir().expect("private parent");
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700))
+        .expect("private identity fixture parent");
     let role = root.path().join("role");
     fs::create_dir(&role).expect("role");
     fs::set_permissions(&role, fs::Permissions::from_mode(0o700)).expect("role mode");
