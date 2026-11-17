@@ -126,7 +126,8 @@ export function checkInstalledDeclarations(
     readFileSync(platformManifestPath, "utf8"),
   );
   assert.equal(platformManifest.version, compilerManifest.version);
-  const compilerLib = join(dirname(platformManifestPath), "lib");
+  const compilerLib = realpathSync(join(dirname(platformManifestPath), "lib"));
+  const installedConsumer = realpathSync(consumer);
   const files = compiled.stdout
     .split(/\r?\n/)
     .filter((line) => isAbsolute(line));
@@ -137,7 +138,8 @@ export function checkInstalledDeclarations(
   for (const file of files) {
     const path = realpathSync(file);
     assert(
-      path.startsWith(consumer + sep) || path.startsWith(compilerLib + sep),
+      path.startsWith(installedConsumer + sep) ||
+        path.startsWith(compilerLib + sep),
       "Compiler escaped the installed graph: " + path,
     );
     assert(!path.includes("/bun-types/") && !path.includes("/@types/bun/"));

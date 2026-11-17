@@ -22,7 +22,7 @@ import { decodeRuntimeProcessInit } from "@keld/kipc/runtime-process-facts";
 
 // This allowance covers process startup in the packed integration test only.
 // Frame assembly and production WorkerLink deadlines remain at 5 seconds.
-const TEST_STARTUP_ALLOWANCE_MS = 60_000;
+const TEST_STARTUP_ALLOWANCE_MS = 15_000;
 function withTestIoDeadline<T>(promise: Promise<T>): Promise<T> {
   return withIoDeadline(promise, TEST_STARTUP_ALLOWANCE_MS);
 }
@@ -124,6 +124,14 @@ async function launch(
     ]);
     return { code, stdout, stderr };
   });
+  let socket: Bun.Socket<undefined> | undefined;
+  let hostClosed = false;
+  function closeHost() {
+    if (hostClosed) return;
+    hostClosed = true;
+    socket?.end();
+    server.stop(true);
+  }
   async function awaitChild<T>(label: string, promise: Promise<T>): Promise<T> {
     try {
       return await withTestIoDeadline(
@@ -140,7 +148,8 @@ async function launch(
       pending = undefined;
       if (error instanceof Error && error.message.includes("KELD-IPC-006")) {
         proc.kill();
-        const exited = await childExit;
+        closeHost();
+        const exited = await withTestIoDeadline(childExit);
         throw new Error(
           `Timed out waiting for ${label}; Bun child exit=${exited.code}; stdout=${exited.stdout}; stderr=${exited.stderr}`,
           { cause: error },
@@ -152,14 +161,15 @@ async function launch(
   async function message(label = "runtime event"): Promise<Message> {
     const next = Promise.resolve(
       messages.shift() ??
-      new Promise<Message>((resolve) => {
-        pending = resolve;
-      }),
+        new Promise<Message>((resolve) => {
+          pending = resolve;
+        }),
     );
     return awaitChild(label, next);
   }
-  const socket = await awaitChild("app-link socket open", opened);
-  const writer = new WriteQueue(socket, drain);
+  const connectedSocket = await awaitChild("app-link socket open", opened);
+  socket = connectedSocket;
+  const writer = new WriteQueue(connectedSocket, drain);
   const hello = await awaitChild("initial Hello frame", reader.readFrame());
   expect(hello.header.kind).toBe(FrameKind.Hello);
   await writer.writeFrame(
@@ -223,11 +233,13 @@ async function launch(
     },
     async dispose() {
       proc.kill();
-      await proc.exited;
-      socket.end();
-      server.stop(true);
-      rmSync(dir, { recursive: true, force: true });
-      if (mutant) rmSync(wrapper, { force: true });
+      closeHost();
+      try {
+        await withTestIoDeadline(childExit);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+        if (mutant) rmSync(wrapper, { force: true });
+      }
     },
   };
 }
@@ -248,7 +260,7 @@ test("one real API preload holds entry through Init ACK then reuses one WorkerLi
   } finally {
     await run.dispose();
   }
-}, 15000);
+}, 20000);
 
 test("independent main-realm probe proves entry cannot run while ACK is held", async () => {
   const run = await launch(true);
@@ -262,7 +274,7 @@ test("independent main-realm probe proves entry cannot run while ACK is held", a
   } finally {
     await run.dispose();
   }
-}, 15000);
+}, 20000);
 
 test("dropping wrapper await is detected by the same main-realm entry probe", async () => {
   const run = await launch(true, true);
@@ -276,7 +288,7 @@ test("dropping wrapper await is detected by the same main-realm entry probe", as
   } finally {
     await run.dispose();
   }
-}, 15000);
+}, 20000);
 
 test("wrong Init acknowledgement closes the link before application entry", async () => {
   const run = await launch(true);
@@ -292,7 +304,7 @@ test("wrong Init acknowledgement closes the link before application entry", asyn
   } finally {
     await run.dispose();
   }
-}, 15000);
+}, 20000);
 
 test("actual packed API wrapper captures and ACKs over its same stamped installed transport", async () => {
   const stage = mkdtempSync(join(tmpdir(), "krp-sdk-"));
@@ -374,4 +386,4 @@ test("actual packed API wrapper captures and ACKs over its same stamped installe
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
-}, 75000);
+}, 30000);

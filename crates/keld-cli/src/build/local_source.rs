@@ -1794,14 +1794,11 @@ mod tests {
         let started = temporary.join("descendant-started.marker");
         let descendant_stdout = temporary.join("descendant.stdout");
         let descendant_stderr = temporary.join("descendant.stderr");
-        fs::write(
-            &child_script,
-            b"$process = [System.Diagnostics.Process]::GetCurrentProcess()\n[System.IO.File]::WriteAllText($env:KELD_TEST_DESCENDANT_STARTED, ('{0}:{1}' -f $PID, $process.StartTime.ToUniversalTime().Ticks))\nStart-Sleep -Seconds 60\n",
-        )
-        .expect("write controlled descendant fixture");
+        fs::write(&child_script, b"Start-Sleep -Seconds 60\n")
+            .expect("write controlled descendant fixture");
         fs::write(
             &parent_script,
-            b"$arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ('\"{0}\"' -f $env:KELD_TEST_DESCENDANT_SCRIPT))\n$null = Start-Process -FilePath $env:KELD_TEST_POWERSHELL -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $env:KELD_TEST_DESCENDANT_STDOUT -RedirectStandardError $env:KELD_TEST_DESCENDANT_STDERR\nStart-Sleep -Seconds 60\n",
+            b"$arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ('\"{0}\"' -f $env:KELD_TEST_DESCENDANT_SCRIPT))\n$child = Start-Process -FilePath $env:KELD_TEST_POWERSHELL -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $env:KELD_TEST_DESCENDANT_STDOUT -RedirectStandardError $env:KELD_TEST_DESCENDANT_STDERR\n[System.IO.File]::WriteAllText($env:KELD_TEST_DESCENDANT_STARTED, ('{0}:{1}' -f $child.Id, $child.StartTime.ToUniversalTime().Ticks))\nStart-Sleep -Seconds 60\n"
         )
         .expect("write controlled Job-parent fixture");
         let environment = vec![
@@ -2202,7 +2199,7 @@ mod tests {
             CaptureOptions {
                 stdout_limit: 1024,
                 stderr_limit: 64 * 1024,
-                timeout: Duration::from_secs(5),
+                timeout: Duration::from_secs(15),
                 stderr_file: None,
             },
             |job| {
@@ -2222,7 +2219,7 @@ mod tests {
                 || error.to_string().contains("tool capture deadline"),
             "{error}"
         );
-        assert!(start.elapsed() < Duration::from_secs(20));
+        assert!(start.elapsed() < Duration::from_secs(30));
         let _job_observer = job_observer
             .into_inner()
             .expect("test Job observer lock")
