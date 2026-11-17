@@ -303,9 +303,13 @@ those functions work.
   the existing process stderr exposed by `keld-host` and forwarded
   through `keld dev`'s inherited stderr, observed as a captured
   **Host menu diagnostic JSONL record** in the native acceptance harness.
-  This is a **proposed contract on an existing output path**, not a
-  claim that a structured async menu collector already ships.
-  **FACT at Pin:** keld-cli dev launches the staged keld-host with inherited
+  Owner decision [#6959223617](https://github.com/gyldlab/keld/issues/480#issuecomment-6959223617)
+  accepts this existing inherited process-stderr route for first-proof
+  diagnostics. It approves the observation location only; it does not
+  allocate a code/fix, approve implementation or prove native capture.
+  The JSONL record grammar below remains a proposed contract, not a claim
+  that a structured async menu collector ships. **FACT at Pin:** keld-cli dev
+  launches the staged keld-host with inherited
   stderr (`crates/keld-cli/src/dev.rs:385-391`). keld-host writes and flushes
   HostRunFailure to stderr (`crates/keld-host/src/main.rs:118-125`).
   Core separately forwards captured primary-process stderr and its bounded

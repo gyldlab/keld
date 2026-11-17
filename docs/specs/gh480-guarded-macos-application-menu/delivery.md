@@ -261,17 +261,20 @@ raise Host20/Guardian/KIPC clocks or turn into an unbounded Bun worker.
    GH508 channel only at the winning source head.
 ### Q-2 - Void diagnostics observation
 
- accept or revise §4.5's
-   **existing Host stderr** observation proposal, including one
-   correlated typed record with code/fix for rejection, native failure,
-   unknown effect and unsupported activation, separate from the internal
-   successful native-install receipt. Verify the chosen owner can emit
-   late callback diagnostics in `keld-host` and that `keld dev`/native
-   acceptance really captures them. No approved standalone async
-   diagnostics subscriber exists today; this must **not** be asserted
-   as shipped. Confirm the `@keld/api` internal continuation consumes
-   every REPLY/ERR without unhandled JS rejection, a Promise return or
-   retry, and allocate code/fix only with error-registry review.
+**Owner decision:** [GH480 #6959223617](https://github.com/gyldlab/keld/issues/480#issuecomment-6959223617)
+accepts the existing inherited `keld dev` process-stderr route for
+first-proof diagnostics. No new subscriber, PubSub stream, JS callback,
+menu EVENT or durable store is approved.
+
+**Still open:** the error-registry owner must allocate the exact stable
+code/fix and approve the JSONL record grammar. The real native acceptance
+harness must capture the actual `keld dev` parent stderr, prove one
+Host-owned terminal record after CALL admission, one separate definitely
+pre-send Bun record with zero Host frames, no duplicate Bun record after
+admission, zero forbidden effects, and no sensitive menu/path/user/OS data.
+The `@keld/api` internal continuation must consume every REPLY/ERR without
+an unhandled JS rejection, Promise return or retry. `KELD-COMPAT-013` remains
+only a candidate until the registry owner allocates it.
 ### Q-3 - Single role table and checked-state admission
 
  approve the
@@ -314,8 +317,8 @@ Check: Record one shared resource-less system-literal evaluator and exact owner 
 ### B-2 - Host stderr diagnostic contract
 Status: open
 Owner: Host and error-registry owners
-Impact: Denial, late native failure and effect-unknown have no approved menu record grammar.
-Check: Approve the exact stderr record, registry code/fix allocation and real keld dev capture test.
+Impact: The observation channel is approved, but the record grammar, stable code/fix allocation and real native capture are not complete.
+Check: The registry owner allocates the exact code/fix; Host emits one JSONL record per terminal outcome; the native `keld dev` harness proves pre-send versus Host post-admission ownership, no duplicate Bun record, zero forbidden effects and no sensitive fields.
 
 ### B-3 - Role registry and checked-state API
 Status: open
