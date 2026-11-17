@@ -347,33 +347,44 @@ hide ordering, or infer speed from a small 4 KiB fixture.
 
 ## 10. Open questions, blockers & unknowns
 
-1. **Q1 — Option A product first-proof scope selected; security BLOCKED:**
+1. **Q1 — Option A product scope and A2 carrier selected; production security BLOCKED:**
    For the pinned draw.io only, use the document-start **predeclared
-   four-function** page facade, with source-backed actual app-preload
-   registry and copied frozen `process` facts (GH467 owner packet
-   [selection](https://github.com/gyldlab/keld/issues/467#issuecomment-6390880361)).
+   four-function** page facade, with the source-backed original app-preload
+   registry and copied frozen `process` facts. The four-function scope
+   remains the GH467 owner selection
+   ([selection](https://github.com/gyldlab/keld/issues/467#issuecomment-6390880361)).
+   The user selected the A2 data-only page carrier and superseded the
+   earlier A2 write hold ([A2 override](https://github.com/gyldlab/keld/issues/484#issuecomment-6560086477),
+   [source correction handoff](https://github.com/gyldlab/keld/issues/484#issuecomment-6560285327)).
+   A1 direct cross-world callable publication is not selected.
+   A2 page-world messages are untrusted data only. They are not sender
+   authentication, principals, realm credentials, method registrations
+   or grants. The native receiver must be installed in the named app
+   `WKContentWorld` on the same per-view `WKUserContentController`.
+   It binds only to the current committed document under GH-542. It
+   validates the original app-world method registry, exact method/action
+   allowlists and final GH-552 Host grant before any effect. Page event
+   source, origin, DOM token or payload cannot establish identity.
+   The static page facade must exist synchronously before first inline.
+   The app-world native receiver must be installed before page execution.
+   If this production A2 route cannot be proven, the first-proof is a
+   feasibility NO-GO; do not fall back to F0, A1 or a test-only proxy.
    This deliberately does **not** implement full general dynamic
    `contextBridge`/C06 and is not a native Electron-parity PASS; GH-464
-   must preserve the unproved generic cells. GH-484 must prove real
-   document-start injection, exact authentic unmodified preload source,
-   app-world handler and lifetime. **Separately, GH484/KEL-142 must
-   resolve [Q1 A1 vs A2](https://github.com/gyldlab/keld/issues/484#issuecomment-6390973710):
-   retain its existing no-page-world-native-endpoint rule and prove
-   another WebKit transport, or explicitly amend that rule for a
-   data-only untrusted page carrier with independent native/security
-   review. Neither is currently approved.** GH-467 must prove that all four
-   exposed methods invoke the current original app-registered methods
-   and never derive authority from forgeable page messages. Independent
-   WKWebView/Host/Bun positive, hostile-page, no-wrapper, no-bind,
-   stale-document, absent-grant and one-fault allowlist controls remain
-   mandatory. Existing fixed-wrapper 3/3 and 2/2 omission, F0 16/16
-   and 6/6 nested-callback probes are **test-only** and do not approve
-   shipping. **Alternative Option B:** full dynamic graph publication
-   stays P0 blocked pending separately approved secure platform primitive
-   and complete C06/score qualification. GH441's separate-world
-   placement is CLOSED and unchanged. Named security/native/compat
-   reviewers must still approve this narrowed first-proof contract
-   before any production bridge code or conformance PASS.
+   must preserve the unproved generic cells. GH-484 must prove exact
+   authentic unmodified preload source, app-world handler and lifetime.
+   GH-467 must prove all four exposed methods invoke current original
+   app-registered methods and never derive authority from page events.
+   Independent WKWebView/Host/Bun positive, hostile-page, no-wrapper,
+   no-bind, stale-document, absent-grant and one-fault allowlist controls
+   remain mandatory. Existing fixed-wrapper 3/3 and 2/2 omission, F0
+   16/16 and 6/6 nested-callback probes are **test-only** and do not
+   approve shipping. **Alternative Option B:** full dynamic graph
+   publication stays P0 blocked pending a separately approved secure
+   platform primitive and complete C06/score qualification. GH441's
+   separate-world placement is CLOSED and unchanged. Named security,
+   native and compatibility reviewers must still approve this narrowed
+   A2 first-proof contract before production bridge code or conformance PASS.
 2. **Q2 — Symbol oracle, UNKNOWN:** pinned Electron v44.4.5 documentation
    and native source disagree on Symbols. The executable pinned oracle
    or an explicitly approved compatibility divergence is required
@@ -386,13 +397,17 @@ hide ordering, or infer speed from a small 4 KiB fixture.
    a distinct `KELD-COMPAT` over-limit code. Independent 0/max/max+1,
    alias/cycle, Proxy-trap, error-copy and measured-retention tests
    must fail the individual mutations before implementation qualifies.
-4. **Q4 — pre-bind work, selected fail-closed:** zero queued early work;
-   void caller sees `undefined`, the Host logs a bounded private typed
-   refusal, and no later document/Bun role can replay it. Required
-   pre-bind draw.io startup traffic would leave the first-proof C14
-   **BLOCKED** until real startup order changes safely or #540/#542
-   separately approve a revised policy. GH-540/#542 must approve two
-   distinct native App/Trusted credentials under one checked-u32
+4. **Q4 — pre-bind local registration and no retained send work, selected A2 policy:**
+   Original `ipcRenderer.on/once` setup and page-visible listener registration
+   may occur before bind as bounded document-local state. This creates no
+   native subscription, Host call, Bun send, queued event or replay.
+   Pre-bind page-carrier requests/sends retain no work. Local action/codec
+   preflight rejects before the original preload creates `reqInfo`.
+   Direct void callers retain `undefined`; request callers receive the
+   bounded typed refusal. No later document or Bun role may replay it.
+   After bind, actual sends and deliveries still require current document
+   identity, role, topic, credit and final Guard admission.
+   GH-540/GH-542 must qualify the document-correlated Bind and checked-u32
    navigation owner. The [33-receipt physical native fixture](https://github.com/gyldlab/keld/issues/467#issuecomment-6383445584)
    supports that proposal, but does not prove KELD binding or grants.
 5. **Q5 — multi-fire callback lifetime, proposed policy (§4.3):**
@@ -411,19 +426,19 @@ hide ordering, or infer speed from a small 4 KiB fixture.
    manifest/digest and absolute path gates. Source presence alone is
    not proof of runtime execution.
 
-### B-1: Secure cross-world publication decision
+### B-1: Selected A2 data-only carrier and first-inline native proof
 
 - **Status:** open
 - **Owner:** GH-484 and KEL-142 native owners
-- **Impact:** No production callable facade or page-to-app native endpoint may ship.
-- **Check:** Approve A1 or A2 at exact content and pass the real first-inline hostile-page native proof.
+- **Impact:** No production A2 facade or page-to-app native endpoint may ship.
+- **Check:** Qualify the world-scoped app receiver, committed-document binding, exact original method registry and hostile-page first-inline zero-effect proof. The page carrier itself is never identity or authority.
 
-### B-2: Document-correlated dual-world Bind
+### B-2: Document-correlated current-document Bind
 
 - **Status:** open
 - **Owner:** GH-540 and GH-542 owners
-- **Impact:** No app-world credential, bound-document signal or app v2 named send is enabled.
-- **Check:** Approve the document-correlated Bind handshake and qualify two distinct realm credentials against the current committed document.
+- **Impact:** No A2 carrier send, app-world credential or bound-document signal is enabled without a qualified current-document binding.
+- **Check:** Approve document-correlated Bind and current-document liveness. Prove tokenless Bind cannot mint realm credentials or emit `bound.document`.
 
 ### B-3: Final Host action and channel authorization
 

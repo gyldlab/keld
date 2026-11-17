@@ -347,7 +347,19 @@ loses the table.
 
 The startup control registers the pinned `EditorUi.init` listeners before bind. It then binds the same document and delivers one
 later allowlisted event. The callback must run once. No early native frame is allowed. If the pinned application requires replay
-of an event that arrived before bind, the first-proof row stays BLOCKED until its owner approves a separate bounded rule.### 4.6 Transport integration and real application witness
+of an event that arrived before bind, the first-proof row stays BLOCKED until its owner approves a separate bounded rule.#### 4.5.5 Selected A2 data-only page carrier and native authority boundary
+
+A2 is the selected carrier direction recorded by the owner in [GH-484 decision](https://github.com/gyldlab/keld/issues/484#issuecomment-6560086477) and [A2 correction handoff](https://github.com/gyldlab/keld/issues/484#issuecomment-6560285327). A1 direct cross-world callable publication is not selected.
+
+The page-world carrier transports untrusted data only. Its event source, origin, DOM token, payload or claimed method cannot authenticate a sender, create a principal, mint a realm credential, register a privileged method or widen a grant. Treat every carrier event as hostile input, including events produced by the real page.
+
+The original app-world preload and its native receiver are installed in the named `WKContentWorld` on the same per-view `WKUserContentController`. The receiver accepts only the current main-frame committed document qualified by GH-542. It uses the native world/frame/document facts, not page event fields. It resolves the method only through the original app-world registry, checks the exact method/action allowlist, then enters the single GH-552 Host Guard. A page event cannot create or mutate that registry. The Host rechecks current document, role, exact channel, action and grant immediately before the effect.
+
+A2 does not use tokenless Bind to mint either new dual-world credential or emit `bound.document`. The current-document stamp and document-correlated Bind remain GH-540/GH-542 owner gates. The static page facade is visible before first inline, but it has no authority of its own. If the native app-world receiver cannot be installed and tied to the committed document before first inline, A2 is a feasibility NO-GO. Do not fall back to F0, page-world authentication, or A1.
+
+This is the selected design direction, not native proof. The first-inline hostile-page test, actual original-method invocation, zero forged Bun effects and independent custody receipt remain mandatory.
+
+### 4.6 Transport integration and real application witness
 
 Outbound app-world `ipcRenderer.send(channel,...args)`:
 1. Before async yielding, GH-544 snapshots supported argument values

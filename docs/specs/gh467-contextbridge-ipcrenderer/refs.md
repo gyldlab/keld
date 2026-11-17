@@ -66,6 +66,8 @@ listeners](https://github.com/jgraph/drawio/blob/24b76c2cbd55d88e354042e8d329a2e
 The pinned preload registers `mainResp` and `fileChanged` internally. Its `request` stores `reqInfo[reqId]` before sending
 `rendererReq`. Its `mainResp` handler calls the success/error callback, then deletes that key. See [pinned preload lines
 61–123](https://github.com/jgraph/drawio-desktop/blob/2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e/src/main/electron-preload.js#L61-L123).
+Owner decision: the GH-484 issue owner selected A2 as the data-only page carrier and superseded the earlier A2 write hold. See [A2 override](https://github.com/gyldlab/keld/issues/484#issuecomment-6560086477) and [A2 correction handoff](https://github.com/gyldlab/keld/issues/484#issuecomment-6560285327). This selects a design direction only; it does not claim native qualification or production approval.
+
 Working baseline: KELD origin/main
 `ec29b7ce2b155a8c98f96036cbb9c54488b5c302`, 2026-11-17.
 `packages/@keld/electron/src/index.ts` currently exports the
