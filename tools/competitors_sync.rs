@@ -4,7 +4,7 @@
 //! `rustc --edition=2024 -D warnings tools/competitors_sync.rs`
 //!
 //! Usage:
-//!   competitors-sync [--dry-run] [--force] [REPO_ROOT]
+//!   competitors-sync [--dry-run] [--force] [`REPO_ROOT`]
 //!
 //! Paths are gitignored; this tool never stages into the Keld repo.
 //! Error text states the fix. Codes are not `KELD-*` (same as `ci_hygiene.rs`)
@@ -38,8 +38,7 @@ fn main() -> ExitCode {
     args.retain(|a| a != "--dry-run" && a != "--force");
     let root = args
         .first()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
+        .map_or_else(|| PathBuf::from("."), PathBuf::from);
 
     match run(&root, dry_run, force) {
         Ok(()) => ExitCode::SUCCESS,
@@ -432,8 +431,18 @@ fn unquote(value: &str, line_no: usize) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    // Quote a path for the shell Git uses to launch its upload-pack command.
+    // Git for Windows uses forward-slash paths with the same POSIX quoting.
+    fn shell_quote_path(path: &Path) -> String {
+        let path = path.to_string_lossy();
+        #[cfg(windows)]
+        let path = path.replace('\\', "/");
+        #[cfg(not(windows))]
+        let path = path.into_owned();
+        format!("'{}'", path.replace('\'', "'\\''"))
+    }
+
     // Exercise real Git's option parser and local transport, not a command mock.
-    #[cfg(unix)]
     fn check_fetch_reference_is_data(pinned: bool) {
         struct TempDir(PathBuf);
         impl Drop for TempDir {
@@ -456,7 +465,7 @@ mod tests {
                 .args(args)
                 .output()
                 .expect("git installed");
-            assert!(output.status.success(), "{:?}: {:?}", args, output);
+            assert!(output.status.success(), "{args:?}: {output:?}");
             String::from_utf8(output.stdout).expect("git output")
         };
         let origin = temp.0.join("origin");
@@ -486,17 +495,21 @@ mod tests {
             &["remote", "add", "origin", origin.to_str().expect("path")],
         );
         let mut repo = sample_repos().remove(0);
-        let malicious = "--upload-pack=touch injected";
+        let marker = temp.0.join("upload-pack-executed");
+        let malicious = format!(
+            "--upload-pack=git --version > {}",
+            shell_quote_path(&marker)
+        );
         let result = if pinned {
-            fetch_reset_sha(&dest, malicious, true)
+            fetch_reset_sha(&dest, &malicious, true)
         } else {
-            repo.branch = malicious.into();
+            repo.branch = malicious;
             update_existing(&repo, &dest, true)
         };
         assert!(result.is_err(), "invalid reference must fail");
         assert!(
-            !dest.join("injected").exists(),
-            "reference executed a command"
+            !marker.exists(),
+            "reference executed the upload-pack command"
         );
 
         // Both legitimate paths must still fetch and reset to the upstream commit.
@@ -510,13 +523,11 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn pinned_fetch_does_not_execute_reference() {
         check_fetch_reference_is_data(true);
     }
 
     #[test]
-    #[cfg(unix)]
     fn branch_fetch_does_not_execute_reference() {
         check_fetch_reference_is_data(false);
     }
@@ -628,8 +639,14 @@ branch = "dev"
 
     #[test]
     fn committed_lockfile_lists_bun_wry_tao() {
-        let text = fs::read_to_string("competitors.lock.toml")
-            .expect("run parser tests from the repo root so competitors.lock.toml is readable");
+        let current = env::current_dir().expect("current directory");
+        let root = current
+            .ancestors()
+            .find(|candidate| candidate.join("competitors.lock.toml").is_file())
+            .map(Path::to_path_buf)
+            .expect("run parser tests from within a Keld checkout");
+        let text = fs::read_to_string(root.join("competitors.lock.toml"))
+            .expect("read the checkout's competitors.lock.toml");
         let repos = parse_lockfile(&text).expect("committed lock parses");
         let names: Vec<&str> = repos.iter().map(|repo| repo.name.as_str()).collect();
         for required in ["bun", "wry", "tao"] {
@@ -670,7 +687,7 @@ branch = "dev"
         repo.path_override = Some("competitors/../.git".into());
         let err = resolve_path(Path::new("/tmp/keld"), &repo).expect_err("path");
         assert!(
-            err.contains(".") || err.contains("escapes") || err.contains("normalized"),
+            err.contains('.') || err.contains("escapes") || err.contains("normalized"),
             "{err}"
         );
     }
@@ -678,7 +695,7 @@ branch = "dev"
     #[test]
     fn rejects_absolute_path_override() {
         let mut repo = sample_repos().remove(0);
-        repo.path_override = Some("/tmp/evil".into());
+        repo.path_override = Some(env::temp_dir().join("evil").to_string_lossy().into_owned());
         let err = resolve_path(Path::new("/tmp/keld"), &repo).expect_err("abs");
         assert!(err.contains("absolute"), "{err}");
     }
