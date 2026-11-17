@@ -964,7 +964,7 @@ fn open_trusted_parent(
         }
         // Privacy does not revoke directory FDs acquired before an ancestor chmod.
         // Every later component must independently pass the replacement check.
-        private_parent = mode & 0o077 == 0;
+        private_parent = mode.trailing_zeros() >= 6;
     }
     Ok((directory, private_parent))
 }
