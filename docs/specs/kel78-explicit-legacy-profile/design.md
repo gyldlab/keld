@@ -71,7 +71,7 @@ Reserve the security-profile property at the known alternate policy locations `/
 The boot producer rejects a literal root security-profile declaration in its supported app-config syntax with guidance to move it to the permissions manifest. It must reuse the existing root-property scanning owner rather than execute TypeScript or add line-prefix security parsing. Dynamic/unsupported config syntax cannot become another profile source.
 
 The existing 64 KiB manifest limit, JSONC comment handling, recursive decoded-key uniqueness, UTF-8 rules, and unrelated unknown-key behavior remain intact. The document must be a JSON object; positional array deserialization is not another manifest syntax. An implementation must distinguish missing from explicit null; a naive optional-enum
-decoder that treats null as missing violates this contract. [S5][S14]
+decoder that treats null as missing violates this contract. [S5], [S14]
 
 Required type shape, owned by `keld-guard`:
 
@@ -133,7 +133,7 @@ Supporting readers retain the exact parsed version through verified-policy prefl
 - A recognized shape is not proof that its platform, window mode or role is implemented. Refuse unsupported combinations before resources. Reuse the boot-schema error for unsupported versions/mismatches and the owning unsupported-platform error for a valid but unavailable mode.
 
 The current schema-1-only reader already rejects `schema != 1` with `KELD-CORE-035`. A Ready-only reader supporting exactly 1/2 must likewise reject 3/4. Thus a profile-bearing facade cannot silently run under an old Ready implementation that ignores unknown manifest keys. Tests must bind both reader capability sets, with an actual previous
-artifact where available; a hypothetical 1/2 reader model is a compatibility contract test, not an executed historical artifact. [S15][S21]
+artifact where available; a hypothetical 1/2 reader model is a compatibility contract test, not an executed historical artifact. [S15], [S21]
 
 **Partial rollout:** #588 may prepare and qualify the renderer/profile row 3 before GH #446 implements facade startup. That producer emits only supported rows and must refuse a requested facade/profile combination; it must never manufacture a renderer or emit 3 for it. Neither 2 nor 4 is executable until the complete GH #446
 Ready/window-ownership consumer exists. The later facade/profile integration emits and consumes 4 atomically with profile preflight, mandatory disclosure and GH #446's unchanged Ready/recovery/custody rules. Reserving 4 is not permission to add an accepting stub or to claim draw.io activation. Removing a profile from a fresh, fully supported
@@ -223,7 +223,7 @@ Keld-mediated privileged calls remain authenticated and permission-checked.
 The Bun role is not admitted under Keld's strict OS-containment profile.
 ```
 
-Do not turn the forfeit into a blanket “security disabled” message. Do not call legacy sandboxed because the renderer is sandboxed. [S1][S13]
+Do not turn the forfeit into a blanket “security disabled” message. Do not call legacy sandboxed because the renderer is sandboxed. [S1], [S13]
 
 ### 4.7 Reporting contract
 
@@ -259,7 +259,7 @@ Scoring rules remain:
 - The empty committed-product list currently prevents product percentages. A profile declaration does not register a corpus.
 - Preserve the separately governed conformance-harness legacy label; it is not proof of a declared product launch.
 
-A shared formatter test is not proof that the reserved build command works. Keep its existing error until the real build implementation consumes this contract. Never return success from a profile-only build stub. [S3][S9][S10][S11]
+A shared formatter test is not proof that the reserved build command works. Keep its existing error until the real build implementation consumes this contract. Never return success from a profile-only build stub. [S3], [S9], [S10], [S11]
 
 ### 4.8 Migration and user acceptance
 
@@ -305,4 +305,21 @@ The independent legacy-primary fixture may proceed before the renderer bridge ex
 
 Remaining observed integration risks include sender-URL matching against the application's expected file origin, synchronous screen/theme/locale/window getters, and an experiment that did not itself validate real Electron 44 equivalence. Profile selection does not solve these.
 
-Doctor currently assumes `src/main.ts` for project layout. The draw.io entry is different. Route a focused configured-entry fix through the migration/config owner; a green profile finding must not hide that failure. [S10][S17]
+Doctor currently assumes `src/main.ts` for project layout. The draw.io entry is different. Route a focused configured-entry fix through the migration/config owner; a green profile finding must not hide that failure. [S10], [S17]
+
+[S1]: https://github.com/gyldlab/keld/blob/3503a8aa383427dcf50ccbf6653c4298e7fb8aad/docs/specs/kel78-strict-profile-sandbox.md
+[S3]: https://github.com/gyldlab/keld/blob/3503a8aa383427dcf50ccbf6653c4298e7fb8aad/docs/specs/gh532-first-proof-evidence-rules.md
+[S5]: https://github.com/gyldlab/keld/blob/3503a8aa383427dcf50ccbf6653c4298e7fb8aad/crates/keld-guard/src/lib.rs
+[S6]: https://github.com/gyldlab/keld/blob/3503a8aa383427dcf50ccbf6653c4298e7fb8aad/crates/keld-guard/src/admit.rs
+[S9]: https://github.com/gyldlab/keld/blob/3503a8aa383427dcf50ccbf6653c4298e7fb8aad/crates/keld-cli/src/verb.rs
+[S10]: https://github.com/gyldlab/keld/blob/3503a8aa383427dcf50ccbf6653c4298e7fb8aad/crates/keld-cli/src/doctor.rs
+[S11]: https://github.com/gyldlab/keld/blob/3503a8aa383427dcf50ccbf6653c4298e7fb8aad/docs/engineering/compat-scoreboard.md
+[S13]: https://github.com/gyldlab/keld/blob/3503a8aa383427dcf50ccbf6653c4298e7fb8aad/docs/architecture/03-security.md
+[S14]: https://github.com/gyldlab/keld/blob/3503a8aa383427dcf50ccbf6653c4298e7fb8aad/crates/keld-guard/src/verified_manifest.rs
+[S15]: https://github.com/gyldlab/keld/blob/3503a8aa383427dcf50ccbf6653c4298e7fb8aad/crates/keld-core/src/app_session/boot_contract.rs
+[S16]: https://github.com/gyldlab/keld/blob/3503a8aa383427dcf50ccbf6653c4298e7fb8aad/crates/keld-core/src/app_session.rs#L1846-L1888
+[S17]: https://github.com/gyldlab/keld/issues/420#issuecomment-6034980014
+[S18]: https://github.com/gyldlab/keld/issues/497#issuecomment-6026217139
+[S20]: https://github.com/gyldlab/keld/issues/420#issuecomment-6022061800
+[S21]: https://github.com/gyldlab/keld/blob/bb43e474577297f0792740676994aa153e5df1dd/docs/specs/gh446-facade-boot-ready.md
+[S23]: https://github.com/gyldlab/keld/issues/587#issuecomment-6371500644

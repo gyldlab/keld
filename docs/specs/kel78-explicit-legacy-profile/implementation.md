@@ -165,3 +165,5 @@ native Strict launch followed by proof invalidation/restart is a platform-owner 
 Use table-driven parser tests, real temporary-file/digest integration, isolated real macOS process tests, and existing shared corpus/scorer tests. Timing tests use existing event/deadline observers, not sleeps. Prove denied side effects and process absence independently of log text. Replay each mutation against its named test and retain the observed red result.
 
 No product/native tests or mutation experiments were run while drafting this specification. The tables are the required implementation acceptance plan, not executed results.
+
+[S19]: https://github.com/gyldlab/keld/issues/589

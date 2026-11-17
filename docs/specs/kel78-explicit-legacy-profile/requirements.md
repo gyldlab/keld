@@ -12,7 +12,7 @@ committed content and independent review evidence are recorded on KEL-78 and the
 
 R1 revision: the previous approval binds `eba60d2215a7fa2543b3673e20cd90fa7dbde555`, not these revised bytes. Cross-contract reconciliation against approved Ready PR #657 at `bb43e474577297f0792740676994aa153e5df1dd` found that both specifications assigned incompatible meanings to schema 2. R1 preserves Ready's version and separates the
 profile-bearing combinations in §4.4. The narrow uncontained-admission and receipt-dependency clarifications preserve the decisions already recorded on KEL-78. Under the continuing owner delegation, R1's technical content was independently reviewed through the permission-model, public-API and compiled-contract lenses with no surviving blocker;
-its exact committed bytes and review receipts are recorded on #1120/KEL-78. This is a new design approval, not inherited approval of changed bytes, runtime implementation or native proof. Current main `f19c8847787aaf0e9a14e07c0af008fc5a4c2a1f` still implements only schema 1. The PR remains draft and do-not-merge. [S21][S22]
+its exact committed bytes and review receipts are recorded on #1120/KEL-78. This is a new design approval, not inherited approval of changed bytes, runtime implementation or native proof. Current main `f19c8847787aaf0e9a14e07c0af008fc5a4c2a1f` still implements only schema 1. The PR remains draft and do-not-merge. [S21], [S22]
 
 | Concern | Governing owner and source | This amendment changes |
 |---|---|---|
@@ -25,7 +25,7 @@ its exact committed bytes and review receipts are recorded on #1120/KEL-78. This
 | Product receipts and first proof | GH #587, #500, #589 | Consume runtime provenance; no inferred legacy |
 
 This specification PR updates the existing KEL-78 “future key” paragraph and links this amendment. Architecture 03's manifest ownership, Architecture 06's compiled descriptor contract, and Architecture 04's migration file-owner table point to this single definition. Historical blanket statements that all platforms are unverified must not
-override later platform-specific evidence; the specific macOS T2c strict qualification remains open. [S1][S13]
+override later platform-specific evidence; the specific macOS T2c strict qualification remains open. [S1], [S13]
 
 ## 3. Acceptance criteria
 
@@ -59,3 +59,8 @@ Each criterion has a falsifier in section 7.
 - **Single fault:** Replace legacy with strict while leaving qualified strict proof unavailable.
 - **At-risk precondition:** Static configuration is valid but runtime strict admission has not been observed.
 - **Expected RED:** The admission/report test refuses the unqualified strict claim and never emits a strict-verified result.
+
+[S1]: https://github.com/gyldlab/keld/blob/3503a8aa383427dcf50ccbf6653c4298e7fb8aad/docs/specs/kel78-strict-profile-sandbox.md
+[S13]: https://github.com/gyldlab/keld/blob/3503a8aa383427dcf50ccbf6653c4298e7fb8aad/docs/architecture/03-security.md
+[S21]: https://github.com/gyldlab/keld/blob/bb43e474577297f0792740676994aa153e5df1dd/docs/specs/gh446-facade-boot-ready.md
+[S22]: https://github.com/gyldlab/keld/compare/3503a8aa383427dcf50ccbf6653c4298e7fb8aad...f19c8847787aaf0e9a14e07c0af008fc5a4c2a1f
