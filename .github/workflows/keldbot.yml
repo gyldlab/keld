@@ -115,7 +115,13 @@ jobs:
               { name: "size/XL", max: 1999 },
               { name: "size/2XL", max: 3999 },
               { name: "size/3XL", max: 7999 },
-              { name: "size/4XL", max: Infinity },
+              { name: "size/4XL", max: 15999 },
+              { name: "size/5XL", max: 31999 },
+              { name: "size/6XL", max: 63999 },
+              { name: "size/7XL", max: 127999 },
+              { name: "size/8XL", max: 255999 },
+              { name: "size/9XL", max: 511999 },
+              { name: "size/10XL", max: Infinity },
             ];
             const ALL_SIZE_LABELS = SIZE_TIERS.map((t) => t.name);
 
@@ -125,7 +131,7 @@ jobs:
 
             const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: issue_number });
             const changed = pr.additions + pr.deletions;
-            const tier = SIZE_TIERS.find((t) => changed <= t.max); // XL ka max Infinity hai, hamesha koi na koi tier milega
+            const tier = SIZE_TIERS.find((t) => changed <= t.max); // 10XL ka max Infinity hai, hamesha koi na koi tier milega
 
             const currentLabels = pr.labels.map((l) => l.name);
             const stale = ALL_SIZE_LABELS.filter((n) => currentLabels.includes(n) && n !== tier.name);

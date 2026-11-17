@@ -78,23 +78,19 @@ Non-goals:
 
 ## 2. Spec refs
 
-- `docs/specs/kel142-macos-renderer-bridge-api.md` §4.1 (no automatic replay),
-  §4.2 (terminal outcomes), §6 (ordering, one terminal), §7 (errors). This
-  revision replaces §7 and refines §4.2's "missing handler" bullet. Every other
-  KEL-142 rule is unchanged.
+- KEL-142 `design-api.md` §4.1 (no replay), §4.2 (terminal outcomes),
+  [Ordering](kel142-macos-renderer-bridge-api/design-bridge.md#6-ordering-backpressure-disconnect):
+  one terminal; [Errors](kel142-macos-renderer-bridge-api/design-bridge.md#7-errors).
+  Replaces Errors; refines the §4.2 missing-handler bullet; other rules stay.
 - `docs/specs/gh527-worker-owned-blocking-call-transport.md` §4.4 (`WorkerLink`
-  terminal codes) and §4.6 (`@keld/api` ERR answers). Consumed. Per owner
-  decision Q3 (§10), T0 corrects only the three passages where it says that a
-  call pending at a Quit-close "neither ran" (§4.5).
-- `docs/architecture/02-ipc.md`: KIPC frames and the `CallError` payload. Not
-  changed.
+  terminal codes), §4.6 (`@keld/api` ERR answers): consumed. Per Q3 (§10), T0 corrects
+  only its three pending-at-Quit-close “neither ran” passages (§4.5).
+- `docs/architecture/02-ipc.md`: KIPC frames and `CallError`; unchanged.
 - `docs/architecture/07-agent-experience.md` §2 and
-  `docs/engineering/keld-error-codes.md`: registry rules (a heading lands only
-  with its first emitter).
-- KEL-143 acceptance: "prove recovery never silently replays an operation whose
-  outcome is ambiguous".
+  `docs/engineering/keld-error-codes.md`: registry headings land only with their first emitter.
+- KEL-143: prove recovery never silently replays an operation whose outcome is ambiguous.
 
-The design deviates from no architecture section.
+No architecture deviation.
 
 ## 3. Acceptance criteria (binary, each becomes a test; §7 maps them)
 
