@@ -50,6 +50,10 @@ import {
   encodeRuntimeProcessInit,
   snapshotRuntimeProcessFacts,
 } from "@keld/kipc/runtime-process-facts";
+// The Host-selected preload evaluates this module before any application code.
+// Do not consult a replaceable global when committing public Ready after the
+// remaining authenticated WorkerLink records in the current task.
+const intrinsicQueueMicrotask = queueMicrotask;
 let runtimeInitPayload: Uint8Array | undefined;
 /** Internal cold preload entry: captures before any link attempt or user entry. */
 export function preloadRuntimeProcessFacts(versions: unknown): Promise<void> {
@@ -156,17 +160,13 @@ export function sendCurrentWindowEvent(
 }
 
 /**
- * GH481 S1 is currently the qualified macOS *development* facade slice.
- * Only Core's macOS admitted dev lease produces the existing immutable
- * hostLaunchFacts captured in the canonical preload. Windows/Linux facade
- * roles receive the normal window subscription but no such record; their
- * previously usable Ready must not depend on an unimplemented desktop source.
- * Missing launch facts are not inferred from mutable process.env or from a
- * guessed display value. Installed/non-dev macOS remains outside S1 until its
- * own Host-owned selector and native proof are provided.
+ * Development S1 requires the captured Host-authenticated development kind.
+ * Installed schemas 6/7 are not development desktop admission, and absent
+ * launch facts cannot mint eligibility. The historical Guardian development
+ * path emits no launch facts; this selector does not qualify that producer.
  */
 const desktopS1Selected =
-  nativeFacadeBootSelected && hostLaunchFacts !== undefined;
+  nativeFacadeBootSelected && hostLaunchFacts?.kind === "development";
 
 /** Shared scope for the facade's first-read refusal and public Ready commit. */
 export function isDesktopS1Selected(): boolean {
@@ -248,7 +248,7 @@ function onHostReady(): void {
   // cannot flush a recovered close before application whenReady continuations.
   // WindowSource applies every record in-order in the existing bounded ring;
   // no extra fact queue, timer/polling, or second dispatch authority is added.
-  queueMicrotask(() => {
+  intrinsicQueueMicrotask(() => {
     nativeReadyQueued = false;
     if (hostReady || linkDead) return;
     if (desktopS1Selected) {
