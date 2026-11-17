@@ -8718,20 +8718,6 @@ impl PrimaryRouterHandle {
         })
     }
 
-    #[cfg_attr(
-        windows,
-        expect(
-            clippy::too_many_lines,
-            reason = "Keep the complete ordered Quit admission, filesystem drain and original writer settlement together."
-        )
-    )]
-    #[cfg_attr(
-        target_os = "linux",
-        expect(
-            clippy::too_many_lines,
-            reason = "Keep the ordered Quit admission, filesystem drain and terminal reply ownership in one lifecycle operation."
-        )
-    )]
     fn lifecycle_quit(
         &self,
         attempt: u32,
