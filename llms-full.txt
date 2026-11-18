@@ -6416,6 +6416,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: A second owner defined a conflicting or incompatible main-role process fact before the canonical installer
 - fix: Remove the competing definition and use the process-facts owner through the Host-selected preload or facade import. A conflict refuses the complete set before writing another property.
 
+## KELD-COMPAT-015
+
+- crate: keld-core
+- message: Host-owned guarded macOS application-menu terminal diagnostic for an admitted install or native activation
+- fix: Inspect the Host menu diagnostic phase, result and cause code; correct the verified permission or native failure before a fresh deliberate install. Never replay an unknown effect.
+
 ## KELD-COMPAT-040
 
 - crate: @keld/electron

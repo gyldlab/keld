@@ -182,7 +182,7 @@ test("GH480 setter is void and consumes a real missing-link failure instead of c
       "--no-install",
       "--no-env-file",
       "-e",
-      `delete process.env.KELD_APP_LINK; Object.defineProperty(Error.prototype,"origin",{value:"peer",configurable:true}); import { Menu } from ${JSON.stringify(fileURLToPath(new URL("./menu.ts", import.meta.url)))}; process.on('unhandledRejection',()=>{console.log('UNHANDLED');process.exitCode=4;}); console.log('RETURN='+String(Menu.setApplicationMenu(Menu.buildFromTemplate([{label:'Explicit'}])))); await new Promise(resolve=>setImmediate(resolve));`,
+      `delete process.env.KELD_APP_LINK; Object.defineProperty(Error.prototype,"origin",{value:"peer",configurable:true}); import { Menu } from ${JSON.stringify(fileURLToPath(new URL("./menu.ts", import.meta.url)))}; process.on('unhandledRejection',()=>{console.log('UNHANDLED');process.exitCode=4;}); console.log('RETURN='+String(Menu.setApplicationMenu(Menu.buildFromTemplate([{label:'PRIVATE-MENU-LABEL-MUST-NOT-LOG'}])))); await new Promise(resolve=>setImmediate(resolve));`,
     ],
     stdout: "pipe",
     stderr: "pipe",
@@ -190,8 +190,19 @@ test("GH480 setter is void and consumes a real missing-link failure instead of c
   });
   expect(child.exitCode).toBe(0);
   expect(child.stdout.toString()).toBe("RETURN=undefined\n");
-  expect(child.stderr.toString()).toContain('"code":"KELD-IPC-007"');
-  expect(child.stderr.toString()).toContain('"result":"not-sent"');
+  const lines = child.stderr.toString().trim().split("\n");
+  expect(lines).toHaveLength(1);
+  const record = JSON.parse(lines[0]!) as Record<string, unknown>;
+  expect(record).toEqual({
+    code: "KELD-IPC-007",
+    phase: "pre-send",
+    result: "not-sent",
+    correlation: null,
+    fix: "Inspect Host menu admission and link diagnostics; make a fresh deliberate install only after correcting the cause.",
+  });
+  expect(child.stderr.toString()).not.toContain(
+    "PRIVATE-MENU-LABEL-MUST-NOT-LOG",
+  );
 });
 
 test("GH480 keeps unrelated construction and null-removal refusals typed", () => {

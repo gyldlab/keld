@@ -1,4 +1,4 @@
-//! Dedicated debug child for the existing held native-preload Quit regression.
+//! Dedicated debug child for bounded real-WK original-preload fixture cases.
 
 #[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
 fn main() {
@@ -25,8 +25,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     const POLICY: &[u8] =
         br#"{"profile":"legacy","windows":{"fixture":{"web":{"csp":"original-editor-offline"}}}}"#;
     let args: Vec<_> = std::env::args_os().collect();
-    if args.len() != 2 {
-        return Err("expected one new absolute fixture directory".into());
+    if !(2..=3).contains(&args.len()) {
+        return Err("expected one new absolute fixture directory and optional fixed case".into());
+    }
+    let case = if args.len() == 2 {
+        "preload-held-quit"
+    } else {
+        args[2].to_str().ok_or("fixture case is not UTF-8")?
+    };
+    if !matches!(
+        case,
+        "preload-held-quit"
+            | "preload-origin"
+            | "preload-preflight-facts"
+            | "preload-postbind-burst"
+    ) {
+        return Err("unsupported original preload native fixture case".into());
     }
     let root = PathBuf::from(&args[1]);
     if !root.is_absolute() {
@@ -52,7 +66,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }],
         Sha256::digest(b"gh1404-held-native-quit-fixture-v1").into(),
         manifest.resolve_window_csp("fixture")?,
-        "preload-held-quit",
+        case,
     )?;
     println!("{}", serde_json::to_string(&report)?);
     Ok(())
