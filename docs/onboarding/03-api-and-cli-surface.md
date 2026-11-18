@@ -366,22 +366,13 @@ The full target exit-code and machine-readable-output contract is not implemente
 
 ### 1.13 Error codes you will see
 
-Codes are `KELD-<AREA>-<NNN>`, and by convention every message states the fix
-([`AGENTS.md`](../../AGENTS.md) → `docs/architecture/07-agent-experience.md` §2).
-
-| Code | Raised by | Meaning |
-|---|---|---|
-| `KELD-CLI-010` | the template's `src/main.ts` | `KELD_APP_LINK` unset — the app was run with `bun` directly instead of `keld dev` |
-| `KELD-CLI-020/021/022` | `create.rs` | invalid name / directory exists / template write failed |
-| `KELD-CLI-030/031/032` | `dev.rs` | dev I/O error / dev session failed / environment checks failed |
-| `KELD-CLI-040` | `main.rs` | `ipc-client echo` called without `--link` |
-| `KELD-CLI-044` | `flags.rs` | unknown `create` / `dev` / `doctor` / `hello` flag (exit 2); `--template` / `--watch` / `--permissions` are not live |
-| `KELD-CLI-045` | `verb.rs` | reserved verb `build` / `migrate` / `gen` / `ext` is not implemented (exit 2) |
-| `KELD-CLI-046` | `verb.rs` | unknown command (exit 2) |
-| `KELD-CLI-051` | `keld_core::unicode_args` ([`argv.rs`](../../crates/keld-core/src/argv.rs)) | a process argument, including the program path, is not valid Unicode; refused by position without echoing its bytes (exit 2) |
-| `KELD-IPC-001..007` | [`keld-ipc/src/lib.rs`](../../crates/keld-ipc/src/lib.rs) | I/O · bad frame header · codec · payload too large · protocol error · I/O deadline · HELLO session token |
-| `KELD-WV-001..008,010` | [`keld-wv/src/error.rs`](../../crates/keld-wv/src/error.rs) | unsupported platform · window · webview · event loop · navigate · script · unknown webview id · WebView2 runtime · Linux GPU preparation |
-| `KELD-MCP010..014` | `keld mcp` `keld_permissions_explain` | manifest missing · parse · unknown principal · unreadable · `channel` not evaluated in v0 |
+Every `KELD-*` code you can meet — its emitting crate, message, and fix — has exactly
+one home: [`docs/engineering/keld-error-codes.md`](../engineering/keld-error-codes.md).
+`crates/keld-cli/tests/error_registry.rs` keeps that registry in 1:1 agreement with the
+scanned sources, so this page keeps no second table (an earlier copy here drifted from
+the registry). The registry also owns the spelling and allocation rules. By convention
+every message states the fix ([`AGENTS.md`](../../AGENTS.md) →
+`docs/architecture/07-agent-experience.md` §2).
 
 The `KELD-WV-*` messages are covered by a test that asserts both the code and the fix
 hint are present (`error::tests::display_messages_carry_error_codes_and_fix_guidance`) —
