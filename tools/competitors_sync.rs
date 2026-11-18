@@ -65,6 +65,12 @@ fn run(root: &Path, dry_run: bool, force: bool) -> Result<(), String> {
         );
     }
 
+    // Validate the entire lockfile before cloning or resetting any checkout.
+    // Git's "--" ends option parsing, but refspecs can still write local refs.
+    for repo in &repos {
+        validate_reference_inputs(repo)?;
+    }
+
     for repo in &repos {
         let dest = resolve_path(root, repo)?;
         if dry_run {
@@ -87,6 +93,46 @@ fn run(root: &Path, dry_run: bool, force: bool) -> Result<(), String> {
         println!("competitors-sync: dry-run ok ({} repos)", repos.len());
     } else {
         println!("competitors-sync: ok ({} repos)", repos.len());
+    }
+    Ok(())
+}
+
+/// Accept only branch names and full pinned object IDs, never fetch refspecs.
+fn validate_reference_inputs(repo: &Repo) -> Result<(), String> {
+    let branch = &repo.branch;
+    if branch.is_empty() || branch.starts_with('-') || branch.contains("@{") {
+        return Err(format!(
+            "repo `{}`: invalid branch {branch:?}. Set a literal remote branch name.",
+            repo.name
+        ));
+    }
+    // Use Git's own branch-name contract, but reject option-like strings and
+    // previous-checkout shorthand before Git can reinterpret them.
+    let check = Command::new("git")
+        .args(["check-ref-format", "--branch", branch])
+        .output()
+        .map_err(|error| {
+            format!(
+                "repo `{}`: cannot validate branch: {error}. Install git and retry.",
+                repo.name
+            )
+        })?;
+    let reported_branch = String::from_utf8_lossy(&check.stdout);
+    let reported_branch = reported_branch.trim_end_matches(['\r', '\n']);
+    if !check.status.success() || reported_branch != branch {
+        return Err(format!(
+            "repo `{}`: invalid branch {branch:?}. Use a Git branch name, not a refspec or revision expression.",
+            repo.name
+        ));
+    }
+
+    if let Some(sha) = &repo.sha
+        && (!matches!(sha.len(), 40 | 64) || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err(format!(
+            "repo `{}`: invalid sha {sha:?}. Pin a full 40- or 64-character hexadecimal Git object ID.",
+            repo.name
+        ));
     }
     Ok(())
 }
@@ -207,9 +253,7 @@ fn clone_new(repo: &Repo, dest: &Path) -> Result<(), String> {
             )
         })?;
     }
-    let mut cmd = Command::new("git");
-    cmd.args(["clone", "--depth", "1", "--branch", &repo.branch, &repo.url]);
-    cmd.arg(dest);
+    let mut cmd = clone_command(repo, dest);
     run_git(&mut cmd, &format!("clone {}", repo.name))?;
     if let Some(sha) = &repo.sha {
         // Fresh clone is clean; force is irrelevant.
@@ -223,27 +267,37 @@ fn clone_new(repo: &Repo, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn clone_command(repo: &Repo, dest: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.args([
+        "clone",
+        "--depth",
+        "1",
+        "--branch",
+        &repo.branch,
+        "--",
+        &repo.url,
+    ]);
+    cmd.arg(dest);
+    cmd
+}
+
 fn update_existing(repo: &Repo, dest: &Path, force: bool) -> Result<(), String> {
     refuse_dirty_unless_force(dest, force)?;
     if let Some(sha) = &repo.sha {
         fetch_reset_sha(dest, sha, force)?;
     } else {
-        let mut fetch = Command::new("git");
-        fetch.current_dir(dest);
-        fetch.args(["fetch", "--depth", "1", "--", "origin", &repo.branch]);
-        run_git(&mut fetch, &format!("fetch {}", repo.name))?;
+        // A branch can be named like a full object ID. Resolve the remote
+        // branch explicitly instead of allowing Git to prefer the object ID.
+        let branch_ref = format!("refs/heads/{}", repo.branch);
+        fetch_origin_reference(dest, &branch_ref, &format!("fetch {}", repo.name))?;
 
         let mut reset = Command::new("git");
         reset.current_dir(dest);
-        reset.args(["reset", "--hard", &format!("origin/{}", repo.branch)]);
-        // After shallow fetch of a branch, FETCH_HEAD / origin/<branch> may need
-        // the remote-tracking ref; fall back to FETCH_HEAD.
-        if run_git(&mut reset, &format!("reset {}", repo.name)).is_err() {
-            let mut reset_fh = Command::new("git");
-            reset_fh.current_dir(dest);
-            reset_fh.args(["reset", "--hard", "FETCH_HEAD"]);
-            run_git(&mut reset_fh, &format!("reset FETCH_HEAD {}", repo.name))?;
-        }
+        // An earlier remote-tracking ref can still exist but be stale when
+        // the clone's fetch map covers only its original single branch.
+        reset.args(["reset", "--hard", "FETCH_HEAD"]);
+        run_git(&mut reset, &format!("reset FETCH_HEAD {}", repo.name))?;
     }
     println!(
         "competitors-sync: updated {} @ {}",
@@ -286,14 +340,32 @@ fn is_dirty(dest: &Path) -> Result<bool, String> {
 
 fn fetch_reset_sha(dest: &Path, sha: &str, force: bool) -> Result<(), String> {
     refuse_dirty_unless_force(dest, force)?;
-    let mut fetch = Command::new("git");
-    fetch.current_dir(dest);
-    fetch.args(["fetch", "--depth", "1", "--", "origin", sha]);
-    run_git(&mut fetch, &format!("fetch sha {sha}"))?;
+    fetch_origin_reference(dest, sha, &format!("fetch sha {sha}"))?;
+    // A 40/64-hex string can also be a remote ref name. The pinned contract
+    // requires the fetched commit to have the exact requested object ID.
+    let mut verify = Command::new("git");
+    verify.current_dir(dest);
+    verify.args(["rev-parse", "--verify", "FETCH_HEAD^{commit}"]);
+    let output = verify
+        .output()
+        .map_err(|error| format!("verify sha {sha}: failed to spawn git: {error}"))?;
+    let actual = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success() || !actual.trim().eq_ignore_ascii_case(sha) {
+        return Err(format!(
+            "fetched commit does not match pinned sha {sha}; refusing to reset checkout"
+        ));
+    }
     let mut reset = Command::new("git");
     reset.current_dir(dest);
     reset.args(["reset", "--hard", "FETCH_HEAD"]);
     run_git(&mut reset, &format!("reset sha {sha}"))
+}
+
+fn fetch_origin_reference(dest: &Path, reference: &str, label: &str) -> Result<(), String> {
+    let mut fetch = Command::new("git");
+    fetch.current_dir(dest);
+    fetch.args(["fetch", "--depth", "1", "--", "origin", reference]);
+    run_git(&mut fetch, label)
 }
 
 fn run_git(cmd: &mut Command, label: &str) -> Result<(), String> {
@@ -433,6 +505,38 @@ mod tests {
 
     static FETCH_TEMP_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+    struct TempDir(PathBuf);
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn isolated_temp_dir() -> TempDir {
+        let temp_path = env::temp_dir().join(format!(
+            "keld-fetch-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos(),
+            FETCH_TEMP_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        // Reserve the name before assigning cleanup ownership.
+        fs::create_dir(&temp_path).expect("reserve unique temp directory");
+        TempDir(temp_path)
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .expect("git installed");
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8(output.stdout).expect("git output")
+    }
+
     // Quote a path for the shell Git uses to launch its upload-pack command.
     // Git for Windows uses forward-slash paths with the same POSIX quoting.
     fn shell_quote_path(path: &Path) -> String {
@@ -446,34 +550,7 @@ mod tests {
 
     // Exercise real Git's option parser and local transport, not a command mock.
     fn check_fetch_reference_is_data(pinned: bool) {
-        struct TempDir(PathBuf);
-        impl Drop for TempDir {
-            fn drop(&mut self) {
-                let _ = fs::remove_dir_all(&self.0);
-            }
-        }
-        let temp_path = env::temp_dir().join(format!(
-            "keld-fetch-{}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos(),
-            FETCH_TEMP_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        // Reserve before giving Drop ownership. A collision must not erase
-        // another running test's checkout.
-        fs::create_dir(&temp_path).expect("reserve unique temp directory");
-        let temp = TempDir(temp_path);
-        let git = |dir: &Path, args: &[&str]| {
-            let output = Command::new("git")
-                .current_dir(dir)
-                .args(args)
-                .output()
-                .expect("git installed");
-            assert!(output.status.success(), "{args:?}: {output:?}");
-            String::from_utf8(output.stdout).expect("git output")
-        };
+        let temp = isolated_temp_dir();
         let origin = temp.0.join("origin");
         let dest = temp.0.join("checkout");
         fs::create_dir(&origin).expect("origin directory");
@@ -532,6 +609,10 @@ mod tests {
         let result = if pinned {
             fetch_reset_sha(&dest, &malicious, true)
         } else {
+            // Exercise the shared fetch argument builder with a raw hostile
+            // reference. Normal branch updates use a refs/heads/ prefix.
+            // Removing the "--" in this builder must still fail this test.
+            assert!(fetch_origin_reference(&dest, &malicious, "raw branch probe").is_err());
             repo.branch = malicious;
             update_existing(&repo, &dest, true)
         };
@@ -559,6 +640,177 @@ mod tests {
     #[test]
     fn branch_fetch_does_not_execute_reference() {
         check_fetch_reference_is_data(false);
+    }
+
+    #[test]
+    fn accepts_literal_branches_and_full_object_ids() {
+        let mut repo = sample_repos().remove(0);
+        for branch in ["main", "dev", "feature/nested", "release/2026-11"] {
+            repo.branch = branch.into();
+            repo.sha = None;
+            validate_reference_inputs(&repo).expect("literal Git branch");
+        }
+        for sha in ["a".repeat(40), "F".repeat(64)] {
+            repo.branch = "main".into();
+            repo.sha = Some(sha);
+            validate_reference_inputs(&repo).expect("full Git object ID");
+        }
+    }
+
+    #[test]
+    fn refuses_refspecs_and_revision_expressions() {
+        let mut repo = sample_repos().remove(0);
+        repo.sha = None;
+        for branch in [
+            "",
+            "--upload-pack=command",
+            "-side-effect",
+            "main:refs/tags/side-effect",
+            "+main:refs/heads/side-effect",
+            "@{-1}",
+            "HEAD",
+            "main..other",
+            "main^{}",
+        ] {
+            repo.branch = branch.into();
+            assert!(
+                validate_reference_inputs(&repo).is_err(),
+                "should reject branch {branch:?}"
+            );
+        }
+        repo.branch = "main".into();
+        for sha in [
+            "HEAD".to_string(),
+            "deadbeef".to_string(),
+            "main:refs/heads/side-effect".to_string(),
+            "--upload-pack=command".to_string(),
+            "f".repeat(39),
+            "f".repeat(65),
+            "g".repeat(40),
+        ] {
+            repo.sha = Some(sha.clone());
+            assert!(
+                validate_reference_inputs(&repo).is_err(),
+                "should reject sha {sha:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_all_bad_pins_before_any_clone() {
+        let temp = isolated_temp_dir();
+        fs::write(
+            temp.0.join("competitors.lock.toml"),
+            r#"
+[[repo]]
+name = "first"
+kind = "competitor"
+url = "missing-local-origin"
+branch = "main"
+sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[[repo]]
+name = "second"
+kind = "competitor"
+url = "missing-local-origin"
+branch = "main"
+sha = "main:refs/heads/unexpected"
+"#,
+        )
+        .expect("write hostile lockfile");
+        let err = run(&temp.0, false, true).expect_err("invalid pin");
+        assert!(err.contains("invalid sha"), "{err}");
+        assert!(
+            !temp.0.join("competitors").exists(),
+            "reject malformed lockfile before fetching even the first repo"
+        );
+    }
+
+    #[test]
+    fn hex_named_branch_uses_fetched_head_not_an_object_or_stale_ref() {
+        let temp = isolated_temp_dir();
+        let origin = temp.0.join("-origin");
+        let checkout = temp.0.join("checkout");
+        fs::create_dir(&origin).expect("create origin");
+        git(&origin, &["init", "--initial-branch=main"]);
+        git(&origin, &["config", "--local", "commit.gpgSign", "false"]);
+        git(&origin, &["config", "maintenance.auto", "false"]);
+        for label in ["initial", "new branch target"] {
+            git(
+                &origin,
+                &[
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    label,
+                ],
+            );
+            if label == "initial" {
+                let first = git(&origin, &["rev-parse", "HEAD"]).trim().to_owned();
+                git(&origin, &["branch", &first]);
+            }
+        }
+        let first = git(&origin, &["rev-parse", "HEAD^"]).trim().to_owned();
+        let second = git(&origin, &["rev-parse", "HEAD"]).trim().to_owned();
+        git(&origin, &["branch", "--force", &first, "HEAD"]);
+        let mut repo = sample_repos().remove(0);
+        repo.url = "-origin".to_owned();
+        repo.branch = "main".to_owned();
+        repo.sha = None;
+        // Exercise the production clone argument builder with an actual local
+        // path beginning with '-'. Without its '--', Git misparses this URL.
+        let mut clone = clone_command(&repo, &checkout);
+        clone.current_dir(&temp.0);
+        // The test owns this one subprocess; it must not change the machine's
+        // global file-transport policy.
+        clone.env("GIT_CONFIG_COUNT", "1");
+        clone.env("GIT_CONFIG_KEY_0", "protocol.file.allow");
+        clone.env("GIT_CONFIG_VALUE_0", "always");
+        run_git(&mut clone, "clone literal dash-prefixed origin")
+            .expect("clone a literal dash-prefixed origin");
+        git(
+            &checkout,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                origin.to_str().expect("UTF-8 origin"),
+            ],
+        );
+        git(
+            &checkout,
+            &["config", "--local", "protocol.file.allow", "always"],
+        );
+        // Model a shallow checkout that tracks only main but has an old
+        // remote-tracking branch. That ref can be stale and still resolve.
+        git(
+            &checkout,
+            &[
+                "config",
+                "--local",
+                "remote.origin.fetch",
+                "+refs/heads/main:refs/remotes/origin/main",
+            ],
+        );
+        git(
+            &checkout,
+            &["fetch", "--depth", "2", "--", "origin", &first],
+        );
+        let stale_ref = format!("refs/remotes/origin/{first}");
+        git(&checkout, &["update-ref", &stale_ref, &first]);
+        assert_eq!(git(&checkout, &["rev-parse", &stale_ref]).trim(), first);
+        repo.branch = first.clone();
+        validate_reference_inputs(&repo).expect("40-hex branch is a valid name");
+        update_existing(&repo, &checkout, true).expect("update literal hex-named branch");
+        assert_eq!(
+            git(&checkout, &["rev-parse", "HEAD"]).trim(),
+            second,
+            "must use remote branch target, not the same-named object or stale tracking ref"
+        );
     }
 
     fn sample_repos() -> Vec<Repo> {
