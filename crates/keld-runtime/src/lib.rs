@@ -733,7 +733,7 @@ pub(crate) trait ChildPreparer: Send + 'static {
     // Unit-test synchronization after a real successor spawn and before
     // shutdown admission; not present in the production build.
     #[cfg(test)]
-    fn after_successor_spawn(&mut self) {}
+    fn after_successor_spawn(&mut self, _child: &mut Child) {}
 }
 
 struct NoLease;
@@ -1728,7 +1728,9 @@ fn supervise<P>(
             Ok(next_prepared_child) => match spawn_prepared(next_prepared_child) {
                 Ok((next_child, next_lease)) => {
                     #[cfg(test)]
-                    preparer.after_successor_spawn();
+                    let mut next_child = next_child;
+                    #[cfg(test)]
+                    preparer.after_successor_spawn(&mut next_child);
                     if stop_was_requested(shutdown, accepted_shutdown) {
                         let mut next_child = next_child;
                         let revoke_error = next_lease
@@ -2575,9 +2577,13 @@ mod tests {
         child.kill().expect("kill only the live test-owned child");
         let exact_child = rustix::process::Pid::from_raw(
             i32::try_from(child.id()).expect("test child's pid fits i32"),
-        );
-        rustix::process::waitpid(exact_child, rustix::process::WaitOptions::empty())
-            .expect("externally reap exact test-owned child");
+        )
+        .expect("test-owned child PID must be nonzero");
+        let (reaped, _status) =
+            rustix::process::waitpid(Some(exact_child), rustix::process::WaitOptions::empty())
+                .expect("externally reap exact test-owned child")
+                .expect("blocking exact-child wait must produce a status");
+        assert_eq!(reaped, exact_child);
         SUPERVISOR_STALE_CHILD_KILL_TRAP.with(|trap| trap.set(true));
     }
 
@@ -2605,9 +2611,13 @@ mod tests {
         fn child_spawned(&mut self, pid: u32, _attempt: u32) -> Result<(), RuntimeError> {
             let exact_child = rustix::process::Pid::from_raw(
                 i32::try_from(pid).expect("test child's process id fits i32"),
-            );
-            rustix::process::waitpid(exact_child, rustix::process::WaitOptions::empty())
-                .expect("externally reap only this test-owned Supervisor child");
+            )
+            .expect("test-owned Supervisor child PID must be nonzero");
+            let (reaped, _status) =
+                rustix::process::waitpid(Some(exact_child), rustix::process::WaitOptions::empty())
+                    .expect("externally reap only this test-owned Supervisor child")
+                    .expect("blocking exact-child wait must produce a status");
+            assert_eq!(reaped, exact_child);
             SUPERVISOR_STALE_CHILD_KILL_TRAP.with(|trap| trap.set(true));
             Ok(())
         }
@@ -2691,7 +2701,7 @@ mod tests {
     }
     #[cfg(target_os = "macos")]
     struct ReapedSuccessorPreparer {
-        spawned: mpsc::SyncSender<()>,
+        spawned: mpsc::Sender<()>,
         release: mpsc::Receiver<()>,
     }
 
@@ -2717,13 +2727,21 @@ mod tests {
             })
         }
 
-        fn after_successor_spawn(&mut self) {
-            self.spawned
-                .send(())
-                .expect("notify test of successor spawn");
-            self.release
-                .recv_timeout(Duration::from_secs(5))
-                .expect("test must release successor shutdown boundary");
+        fn after_successor_spawn(&mut self, child: &mut Child) {
+            if let Err(error) = self.spawned.send(()) {
+                // If the harness already stopped waiting, retire exactly the
+                // test-owned child before failing the test thread.
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("notify test of successor spawn: {error}");
+            }
+            if let Err(error) = self.release.recv_timeout(Duration::from_secs(5)) {
+                // The native child is ours. A timed-out test must not abandon
+                // a live sleeper or hang the Supervisor join on unwind.
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("test must release successor shutdown boundary: {error}");
+            }
         }
     }
 
@@ -2742,9 +2760,13 @@ mod tests {
                 child.kill().expect("kill only test-owned live successor");
                 let pid = rustix::process::Pid::from_raw(
                     i32::try_from(child.id()).expect("test successor PID fits i32"),
-                );
-                rustix::process::waitpid(pid, rustix::process::WaitOptions::empty())
-                    .expect("externally reap exact test-owned successor");
+                )
+                .expect("test-owned successor PID must be nonzero");
+                let (reaped, _status) =
+                    rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty())
+                        .expect("externally reap exact test-owned successor")
+                        .expect("blocking exact-child wait must produce a status");
+                assert_eq!(reaped, pid);
             }
             Ok(())
         }
@@ -2753,7 +2775,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn supervisor_reaped_successor_shutdown_fails_closed() {
-        let (spawned_tx, spawned_rx) = mpsc::sync_channel(0);
+        // Unbounded spawn notification cannot block its sender forever when
+        // the test times out before receiving; release remains a 0-slot fence.
+        let (spawned_tx, spawned_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::sync_channel(0);
         let supervisor = Supervisor::start_prepared(
             RestartPolicy::default(),
