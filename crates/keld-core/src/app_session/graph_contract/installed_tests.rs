@@ -1,9 +1,13 @@
 //! Independent literal source/provider receipts exercise the retained installed
 //! graph owner. No fixture JavaScript is evaluated or passed off as real draw.io.
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
+use std::io::{Seek as _, SeekFrom, Write as _};
 use std::os::unix::fs::{MetadataExt as _, symlink};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 use sha2::{Digest as _, Sha256};
 
@@ -214,6 +218,127 @@ fn retained_installed_graph_compiles_and_binds_an_unrelated_nested_editor() {
         <[u8; 32]>::from(Sha256::digest(b"<html>different editor</html>\n"))
     );
     assert!(!fixture.root.join("app-ran").exists());
+}
+
+#[test]
+fn same_uid_in_place_preload_edit_revokes_even_restored_graph_bytes() {
+    let fixture = Fixture::new();
+    let graph = fixture.admitted();
+    let selected = fixture.root.join(PRELOAD);
+    let initial = fs::metadata(&selected).expect("selected inode");
+    assert_eq!(
+        graph
+            .read_selected_preload_bytes(&selected)
+            .expect("healthy original"),
+        PRELOAD_BYTES
+    );
+    let mut held = OpenOptions::new()
+        .write(true)
+        .open(&selected)
+        .expect("same-UID writer");
+    let mut poisoned = PRELOAD_BYTES.to_vec();
+    poisoned[0] ^= 1;
+    held.write_all(&poisoned)
+        .expect("in-place corruption without rename");
+    held.flush().expect("flush poison");
+    assert_eq!(fs::read(&selected).expect("poison visible"), poisoned);
+    let changed = held.metadata().expect("same selected inode after write");
+    assert_eq!(
+        (initial.dev(), initial.ino(), initial.len()),
+        (changed.dev(), changed.ino(), changed.len())
+    );
+    assert!(
+        graph.read_selected_preload_bytes(&selected).is_err(),
+        "same-inode altered source must never reach immutable image admission"
+    );
+    held.seek(SeekFrom::Start(0)).expect("seek for restore");
+    held.write_all(PRELOAD_BYTES)
+        .expect("restore original bytes");
+    held.flush().expect("flush restore");
+    assert_eq!(fs::read(&selected).expect("restored source"), PRELOAD_BYTES);
+    assert!(
+        graph.read_selected_preload_bytes(&selected).is_err(),
+        "restoring bytes must not silently restore the previous graph's metadata custody"
+    );
+}
+
+#[test]
+fn racing_same_uid_preload_writer_never_returns_unpinned_bytes() {
+    let fixture = Fixture::new();
+    let graph = fixture.admitted();
+    let selected = fixture.root.join(PRELOAD);
+    let original_identity = fs::metadata(&selected).expect("original identity");
+    let continue_writing = Arc::new(AtomicBool::new(true));
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let writing = Arc::clone(&continue_writing);
+    let path = selected.clone();
+    let writer = std::thread::spawn(move || {
+        let mut held = OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("same-UID open");
+        let mut poison = PRELOAD_BYTES.to_vec();
+        let midpoint = poison.len() / 2;
+        poison[midpoint] ^= 1;
+        for index in 0..4096 {
+            if !writing.load(Ordering::Acquire) {
+                break;
+            }
+            held.seek(SeekFrom::Start(0)).expect("in-place seek");
+            held.write_all(if index % 2 == 0 {
+                poison.as_slice()
+            } else {
+                PRELOAD_BYTES
+            })
+            .expect("same-UID in-place write");
+            if index == 0 {
+                ready_tx.send(()).expect("release native race reader");
+            }
+            std::thread::sleep(Duration::from_micros(100));
+        }
+        held.seek(SeekFrom::Start(0)).expect("restore seek");
+        held.write_all(PRELOAD_BYTES).expect("restore exact image");
+        held.flush().expect("restore flush");
+    });
+    ready_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("writer actually changed original inode");
+    let mut unauthorized = None;
+    for _ in 0..48 {
+        if let Ok(bytes) = graph.read_selected_preload_bytes(&selected)
+            && bytes != PRELOAD_BYTES
+        {
+            unauthorized = Some(bytes);
+            break;
+        }
+    }
+    continue_writing.store(false, Ordering::Release);
+    writer.join().expect("writer restores and releases file");
+    assert!(
+        unauthorized.is_none(),
+        "mutating in-place bytes escaped graph authentication"
+    );
+    let final_identity = fs::metadata(&selected).expect("retained inode after race");
+    assert_eq!(
+        (
+            original_identity.dev(),
+            original_identity.ino(),
+            original_identity.len()
+        ),
+        (
+            final_identity.dev(),
+            final_identity.ino(),
+            final_identity.len()
+        )
+    );
+    assert_eq!(
+        fs::read(&selected).expect("restored original bytes"),
+        PRELOAD_BYTES
+    );
+    assert!(
+        graph.read_selected_preload_bytes(&selected).is_err(),
+        "same-UID writer must irreversibly invalidate old graph custody"
+    );
 }
 
 #[test]
