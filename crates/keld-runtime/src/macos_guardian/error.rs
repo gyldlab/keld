@@ -134,11 +134,12 @@ mod tests {
         let copied = denied.clone();
         assert_original_denial_source(&copied);
         let mut probes = 0;
+        let observed_at = Instant::now();
         reconcile_denied_signal_after_reap_for_test(
             group,
             copied,
-            Instant::now() + Duration::from_secs(1),
-            Instant::now,
+            observed_at + Duration::from_secs(1),
+            || observed_at,
             |raw| {
                 assert_eq!(raw, 7_331);
                 probes += 1;
