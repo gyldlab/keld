@@ -727,6 +727,7 @@ mod tests {
         fs::create_dir(&origin).expect("origin directory");
         fs::create_dir(&checkout).expect("checkout directory");
         git(&origin, &["init", "--initial-branch=main"]);
+        git(&origin, &["config", "maintenance.auto", "false"]);
         git(&origin, &["config", "--local", "commit.gpgSign", "false"]);
         git(&origin, &["config", "--local", "tag.gpgSign", "false"]);
         git(
@@ -775,10 +776,7 @@ mod tests {
         );
         let later = git(&origin, &["rev-parse", "HEAD"]).trim().to_string();
         git(&checkout, &["init"]);
-        git(
-            &checkout,
-            &["config", "--local", "maintenance.auto", "false"],
-        );
+        git(&checkout, &["config", "maintenance.auto", "false"]);
         git(
             &checkout,
             &["config", "--local", "protocol.file.allow", "always"],
