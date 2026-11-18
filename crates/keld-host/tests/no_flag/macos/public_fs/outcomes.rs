@@ -178,13 +178,12 @@ pub(super) fn assert_component_outcomes(
     );
 }
 
-pub(super) fn assert_component_trace(stderr: &str, reports: &[Value]) {
-    const MARKER: &str = "KELD_KEL140_PUBLIC_APP_COMPONENT ";
+pub(super) fn framed_bun_jsonl(stderr: &str, marker: &str) -> Vec<Value> {
     const CONTINUATION: &str = "[bun stderr] ";
     let mut trace = Vec::new();
     let mut partial: Option<String> = None;
     for line in stderr.lines() {
-        if let Some(first) = line.strip_prefix(MARKER) {
+        if let Some(first) = line.strip_prefix(marker) {
             assert!(
                 partial.is_none(),
                 "interleaved incomplete public-main trace"
@@ -204,7 +203,7 @@ pub(super) fn assert_component_trace(stderr: &str, reports: &[Value]) {
         }
         let bytes = partial.as_ref().expect("framed trace started");
         assert!(
-            bytes.len() <= 1024 * 1024,
+            bytes.len() <= 1_048_576,
             "public-main trace exceeds capture bound"
         );
         match serde_json::from_str::<Value>(bytes) {
@@ -217,6 +216,11 @@ pub(super) fn assert_component_trace(stderr: &str, reports: &[Value]) {
         }
     }
     assert!(partial.is_none(), "truncated public-main framed trace");
+    trace
+}
+
+pub(super) fn assert_component_trace(stderr: &str, reports: &[Value]) {
+    let trace = framed_bun_jsonl(stderr, "KELD_KEL140_PUBLIC_APP_COMPONENT ");
     let observed: Vec<_> = reports
         .iter()
         .filter(|report| report["phase"] == "app-result")
