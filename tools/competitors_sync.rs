@@ -431,6 +431,8 @@ fn unquote(value: &str, line_no: usize) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    static FETCH_TEMP_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
     // Quote a path for the shell Git uses to launch its upload-pack command.
     // Git for Windows uses forward-slash paths with the same POSIX quoting.
     fn shell_quote_path(path: &Path) -> String {
@@ -450,15 +452,19 @@ mod tests {
                 let _ = fs::remove_dir_all(&self.0);
             }
         }
-        let temp = TempDir(env::temp_dir().join(format!(
-            "keld-fetch-{}-{}",
+        let temp_path = env::temp_dir().join(format!(
+            "keld-fetch-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock")
-                .as_nanos()
-        )));
-        fs::create_dir_all(&temp.0).expect("temp directory");
+                .as_nanos(),
+            FETCH_TEMP_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        // Reserve before giving Drop ownership. A collision must not erase
+        // another running test's checkout.
+        fs::create_dir(&temp_path).expect("reserve unique temp directory");
+        let temp = TempDir(temp_path);
         let git = |dir: &Path, args: &[&str]| {
             let output = Command::new("git")
                 .current_dir(dir)
