@@ -22,6 +22,8 @@ pub struct HostAppError {
     pub(super) resources: StartupResourceSnapshot,
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     pub(super) manifest_source: Option<Box<ManifestError>>,
+    #[cfg(target_os = "macos")]
+    pub(super) runtime_source: Option<Box<keld_runtime::RuntimeError>>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -46,6 +48,8 @@ impl HostAppError {
             resources: startup_resource_snapshot(),
             #[cfg(any(target_os = "macos", target_os = "linux", windows))]
             manifest_source: None,
+            #[cfg(target_os = "macos")]
+            runtime_source: None,
         }
     }
 
@@ -60,6 +64,8 @@ impl HostAppError {
             fix: "Apply the keld-guard correction above, rebuild the staged boot artifact, and relaunch.",
             resources: startup_resource_snapshot(),
             manifest_source: Some(Box::new(source)),
+            #[cfg(target_os = "macos")]
+            runtime_source: None,
         }
     }
 
@@ -114,6 +120,18 @@ impl fmt::Debug for HostAppError {
             .field("phase", &self.phase)
             .field("detail", &self.detail)
             .field("resources", &self.resources)
+            .field("runtime_source", &{
+                #[cfg(target_os = "macos")]
+                {
+                    self.runtime_source
+                        .as_ref()
+                        .map(std::string::ToString::to_string)
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    Option::<String>::None
+                }
+            })
             .field("manifest_source", &{
                 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
                 {
@@ -135,6 +153,18 @@ impl std::error::Error for HostAppError {
             self.manifest_source
                 .as_ref()
                 .map(|source| source.as_ref() as &(dyn std::error::Error + 'static))
+                .or_else(|| {
+                    #[cfg(target_os = "macos")]
+                    {
+                        self.runtime_source
+                            .as_ref()
+                            .map(|source| source.as_ref() as &(dyn std::error::Error + 'static))
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        None
+                    }
+                })
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         {
