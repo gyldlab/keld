@@ -53,7 +53,9 @@ Run AC-1 and every malformed enum, OID, size, and cross-version case.
 
 - **Blocked by:** T-1, T-23, T-42, T-81
 
-Implement D-3 through D-9 with the existing owners. Run AC-2 through AC-4.
+Implement D-3 through D-9 and integration D-84 through D-87 with the existing owners.
+Include D-89's MVP concurrency/census cases, not its non-gating future mechanisms.
+Run AC-2 through AC-4, including the exact planned-policy repository fence and cross-store cuts.
 Keep the legacy support cell disabled until its bridge and joined recovery evidence pass.
 
 ## 6. Tasks: Metadata

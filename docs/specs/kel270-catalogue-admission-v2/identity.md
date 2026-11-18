@@ -317,6 +317,9 @@ Old process birth, challenge, nonce, or health evidence cannot authorize the new
 
 ### D-9: One transaction and supported migration cells
 
+A changed repository-policy digest additionally requires integration D-84 through D-87.
+Those cuts govern its metadata-policy switch and post-commit finite rollback view.
+
 Keep the existing KEL-53 phase owner. Extend its journal with a separately versioned transition case.
 The journal references complete before/after provenance, exact artifacts, transition bytes, signature evidence, and admitted metadata revision.
 Do not embed those complete records inside the bounded journal.

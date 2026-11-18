@@ -466,7 +466,7 @@ The legacy v1 bridge remains conditional on its own admissible signer and compat
 Absence of that evidence blocks the legacy cell. It does not block independent fresh-v2 qualification.
 No result in fresh-v2 qualification can mark manual recovery, legacy migration, or compromise recovery complete.
 Recovery does not silently change another channel's installed provenance.
-An incompatible other-channel policy remains refused until that channel completes its own authenticated transition.
+An incompatible other channel remains refused; catch-up is unqualified and needs a separately approved cell.
 
 ### D-68: Locate and bound one pending repository operation
 
@@ -474,8 +474,8 @@ PROPOSED: The existing KEL-53 writer owns `pending-operation.json` at the protec
 Its closed canonical JSON fields are `schema,repositoryId,appId,ownerSid,kind,attemptId`.
 The schema is `keld.repository-pending-operation/v1`. Its maximum size is 2,048 bytes.
 Identity fields use the exact established anchor values. The attempt ID uses D-64's random lowercase hexadecimal encoding.
-The kind is exactly `initial-admission` or `manual-recovery`.
-It selects exactly `admissions/<attemptId>.json` or `recoveries/<attemptId>.json`. No pointer contains a caller path.
+The kind is `initial-admission`, `manual-recovery`, or `planned-transition`.
+It selects exactly `admissions/<attemptId>.json`, `recoveries/<attemptId>.json`, or D-85's `transitions/<attemptId>.json`, respectively. No caller path is accepted.
 
 Allow one pending operation per repository. Publish and reread its complete journal before publishing the pointer.
 Publish and reread the pointer before the first installation effect or manual trust switch.
@@ -493,7 +493,7 @@ No abandoned prepared successor at the required next sequence may remain.
 Keep current/LKG evidence after pointer removal. Do not garbage-collect reachable policy objects.
 With no pointer, census the bounded journal ledger before any repository mutation, including ordinary refresh and new admission.
 An unreferenced initial `admitted` journal requires D-64's authenticated no-effect abort. Preserve its D-9 evidence until terminal readback.
-Only a proved zero-effect, unreferenced manual `prepared` journal permits bounded cleanup. Ambiguous state halts.
+Manual zero-effect orphan cleanup uses D-65; planned orphans use D-85/D-86. Ambiguous state halts.
 Keep at most one pending journal and one completed journal for diagnosis per repository.
 If cleanup fails, refuse the next attempt. Do not grow the store through repeated attempts.
 Add process-termination cuts before and after pointer publication, after terminal readback, and during pointer removal.

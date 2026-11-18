@@ -114,6 +114,9 @@ These are required native acceptance cases, not results of the synthetic identit
 
 ### AC-4: Joined migration and recovery preserve one complete state
 
+For changed policy digests, integration D-87 adds mandatory joined crash and rollback controls.
+D-89 adds mandatory MVP concurrency/census cases; its future mechanisms are non-gating.
+
 - **Given:** An admitted predecessor has browser data and a last-known-good artifact.
 - **When:** An authorized identity transition fails after each named durable cut.
 - **Then:** Recovery yields the complete old state, complete new state, or explicit pending recovery. Browser data and the application floor remain intact. Mixed identity fields never permit ordinary launch.

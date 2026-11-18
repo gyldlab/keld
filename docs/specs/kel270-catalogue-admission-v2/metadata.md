@@ -409,6 +409,9 @@ A new refresh can replace expired acquisition evidence before publication. It mu
 
 ### D-27: Freeze the store boundary
 
+Planned policy changes use integration D-84 through D-87 and its distinct private capability.
+They do not call `rebootstrap` or reset metadata trust, epoch or floors.
+
 PROPOSED: The following names are owner-local design types. They are not existing public APIs. The patch must retain the standard client as protocol owner.
 
 ```rust
