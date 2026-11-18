@@ -277,6 +277,11 @@ fn installed_generated_sources(
 ) -> Result<Vec<MacosGeneratedFile>, BuildError> {
     keld_core::app_session::macos_local_launch_bootstrap_sources()
         .into_iter()
+        // Ordinary applications may use this app-root filename themselves.
+        // Only the sealed original-graph route owns the generated fourth leaf.
+        .filter(|(path, _)| {
+            original_graph || *path != keld_core::app_session::MACOS_LOCAL_RUNTIME_ENTRY_PATH
+        })
         .map(|(path, bytes)| {
             let bytes = if original_graph
                 && path == keld_core::app_session::MACOS_LOCAL_RUNTIME_ENTRY_PATH
@@ -403,9 +408,9 @@ mod tests {
         let original = installed_generated_sources("src/main.mjs", true)
             .expect("Host-selected original entry is canonical");
         let ordinary = installed_generated_sources("src/main.mjs", false)
-            .expect("plain installed application keeps an inert template");
+            .expect("plain installed application retains only three generated owners");
         assert_eq!(original.len(), 4);
-        assert_eq!(ordinary.len(), 4);
+        assert_eq!(ordinary.len(), 3);
 
         let selected = keld_core::app_session::MACOS_LOCAL_RUNTIME_ENTRY_PATH;
         for index in 0..3 {
@@ -413,7 +418,7 @@ mod tests {
             assert_eq!(original[index].bytes, ordinary[index].bytes);
         }
         assert_eq!(original[3].path, selected);
-        assert_eq!(ordinary[3].path, selected);
+        assert!(ordinary.iter().all(|source| source.path != selected));
         let selected_source = String::from_utf8(original[3].bytes.clone())
             .expect("rendered original entry is exact UTF-8");
         assert!(
@@ -425,19 +430,24 @@ mod tests {
             "Pack must preserve the sealed original selector and awaited preload before signing"
         );
         assert!(!selected_source.contains("__KELD_SELECTED_ENTRY__"));
+        let space = installed_generated_sources("src/with space.mjs", true)
+            .expect("a graph-approved entry with a space is buildable");
         assert!(
-            String::from_utf8(ordinary[3].bytes.clone())
-                .expect("unchanged inert template")
-                .contains("__KELD_SELECTED_ENTRY__")
+            String::from_utf8(space[3].bytes.clone())
+                .expect("sealed original entry is UTF-8")
+                .contains("const sealedOriginalRelative = \"src/with space.mjs\";"),
+            "space in a signed filesystem path must remain one JS string literal"
         );
-        for invalid in [
-            "src/../other.mjs",
-            "src/malicious?query.mjs",
-            "src/main#fragment.mjs",
-        ] {
+        for valid in ["src/malicious?query.mjs", "src/main#fragment.mjs"] {
+            assert!(
+                installed_generated_sources(valid, true).is_ok(),
+                "a valid graph filename is a filesystem member, not an import URL: {valid}"
+            );
+        }
+        for invalid in ["src/../other.mjs", "src/./main.mjs", "src\\main.mjs"] {
             assert!(
                 installed_generated_sources(invalid, true).is_err(),
-                "producer must reject a runtime-sensitive original path: {invalid}"
+                "producer must preserve the graph path refusal: {invalid}"
             );
         }
     }

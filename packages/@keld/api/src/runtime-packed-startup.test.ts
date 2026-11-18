@@ -33,6 +33,7 @@ import { decodeRuntimeProcessInit } from "@keld/kipc/runtime-process-facts";
 
 type Message = {
   kind: string;
+  entryStarted?: boolean;
   before?: Record<string, string>;
   appReady?: boolean;
   observedHostReady?: boolean;
@@ -258,7 +259,11 @@ async function provePackedHandshake(
   rejectInitAck = false,
   verifiedOriginalEntry?: string,
   signedPreloadMode = false,
+  probeEntryBeforeLastSubscription = false,
 ): Promise<void> {
+  if (probeEntryBeforeLastSubscription) {
+    expect(signedPreloadMode).toBe(true);
+  }
   const socketDir = mkdtempSync(join(tmpdir(), "krp-packed-live-"));
   const endpoint =
     process.platform === "win32"
@@ -356,12 +361,32 @@ async function provePackedHandshake(
   let enteredBeforeAuth = 0;
   let pending: ((message: Message) => void) | undefined;
   let pendingProbe: ((message: Message) => void) | undefined;
+  let pendingEntryProbe: ((message: Message) => void) | undefined;
+  // A separate test-owned preload registers this observer before the signed
+  // preload begins. The original main sets its own flag on first evaluation.
+  // This checks execution *in the child*, rather than when IPC reaches Host.
+  const entryProbe = join(stage, "test-entry-execution-observer.mjs");
+  if (probeEntryBeforeLastSubscription) {
+    writeFileSync(
+      entryProbe,
+      `process.on("message", (message) => {
+  if (message?.kind === "probe-entry-execution") {
+    process.send?.({
+      kind: "entry-execution-observed",
+      entryStarted: globalThis.__keld_test_entry_executed === true,
+    });
+  }
+});
+`,
+    );
+  }
   const child = Bun.spawn(
     [
       process.execPath,
       "--no-env-file",
       "--no-install",
       "--define=__KELD_RUNTIME_PROCESS_FACTS__:true",
+      ...(probeEntryBeforeLastSubscription ? [`--preload=${entryProbe}`] : []),
       ...(signedPreloadMode
         ? [`--preload=${entry}`]
         : singleGraphBootstrap
@@ -393,6 +418,12 @@ async function provePackedHandshake(
         const value = message as Message;
         timeline.push(`child-${value.kind}`);
         if (value.kind === "entry" && !authenticated) enteredBeforeAuth++;
+        if (value.kind === "entry-execution-observed") {
+          const resolve = pendingEntryProbe;
+          pendingEntryProbe = undefined;
+          resolve?.(value);
+          return;
+        }
         if (value.kind === "probe-ready") {
           const resolve = pendingProbe;
           pendingProbe = undefined;
@@ -482,6 +513,24 @@ async function provePackedHandshake(
       expect(call.header.kind).toBe(FrameKind.Call);
       expect(call.header.channel).toBe(LIFECYCLE_CHANNEL);
       expect([...call.payload]).toEqual([1, channel]);
+      if (
+        probeEntryBeforeLastSubscription &&
+        channel === COMPAT_CONTROL_CHANNEL
+      ) {
+        // Hold the LAST subscription reply. The child probe runs on an
+        // independent IPC message path while this Host frame is withheld.
+        // A missing await in the signed preload exposes true here.
+        step = "entry-before-final-subscription-reply";
+        const observation = new Promise<Message>((resolve) => {
+          pendingEntryProbe = resolve;
+        });
+        child.send({ kind: "probe-entry-execution" });
+        const observed = await withIoDeadline(observation, 1_500);
+        expect(observed.kind).toBe("entry-execution-observed");
+        if (observed.entryStarted !== false) {
+          throw new Error("original executed before final subscription reply");
+        }
+      }
       await writer.writeFrame(
         FrameKind.Reply,
         0,
@@ -1069,7 +1118,7 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
     const selectedOriginal = "real-user-entry.mjs";
     writeFileSync(
       installedBootstrap,
-      ownerTemplate.replaceAll(marker, selectedOriginal),
+      ownerTemplate.replaceAll(marker, JSON.stringify(selectedOriginal)),
     );
     expect(readFileSync(installedBootstrap, "utf8")).toContain(
       "await bootHostSelectedEntry(async () => undefined);",
@@ -1079,7 +1128,8 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
       // bootstrap-as-main route makes this original fail before its entry IPC.
       writeFileSync(
         entry,
-        'if (!import.meta.main) throw new Error("original main identity changed");\n' +
+        "globalThis.__keld_test_entry_executed = true;\n" +
+          'if (!import.meta.main) throw new Error("original main identity changed");\n' +
           readFileSync(entry, "utf8"),
       );
       await provePackedHandshake(
@@ -1106,6 +1156,45 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
         entry,
         true,
       );
+      await provePackedHandshake(
+        stage,
+        wrapper,
+        installedBootstrap,
+        false,
+        false,
+        false,
+        true,
+        false,
+        entry,
+        true,
+        true,
+      );
+      const savedBootstrap = readFileSync(installedBootstrap, "utf8");
+      const noAwaitBootstrap = savedBootstrap.replace(
+        "await bootHostSelectedEntry(async () => undefined);",
+        "void bootHostSelectedEntry(async () => undefined);",
+      );
+      expect(noAwaitBootstrap).not.toBe(savedBootstrap);
+      writeFileSync(installedBootstrap, noAwaitBootstrap);
+      try {
+        await expect(
+          provePackedHandshake(
+            stage,
+            wrapper,
+            installedBootstrap,
+            false,
+            false,
+            false,
+            true,
+            false,
+            entry,
+            true,
+            true,
+          ),
+        ).rejects.toThrow("original executed before final subscription reply");
+      } finally {
+        writeFileSync(installedBootstrap, savedBootstrap);
+      }
     }
 
     // Extra argv cannot select another original, even when a different file
@@ -1121,16 +1210,16 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
     const encodedEntry = join(encodedParentLiteral, "literal-original.mjs");
     writeFileSync(encodedEntry, readFileSync(entry));
 
-    // Bun 1.4.4 cannot import a physical '?' filename on Unix (and Windows
-    // forbids the name). Even a corrupted generated literal must refuse it
-    // before Host IPC, rather than treating it as an import URL query.
+    // The '?' name is a valid graph pathname on Unix, not an import URL.
+    // Selecting a different physical main must fail by identity even though
+    // its literal is legal. On Windows the absent filename must fail closed.
     const unsupportedEntry = join(stage, "original?query.mjs");
     if (process.platform !== "win32") {
       writeFileSync(unsupportedEntry, readFileSync(entry));
     }
     writeFileSync(
       installedBootstrap,
-      ownerTemplate.replaceAll(marker, "original?query.mjs"),
+      ownerTemplate.replaceAll(marker, JSON.stringify("original?query.mjs")),
     );
     const refusedQuestion = Bun.spawnSync(
       [
@@ -1159,7 +1248,7 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
     expect(refusedQuestion.stderr.toString()).toContain("KELD-IPC-005");
     writeFileSync(
       installedBootstrap,
-      ownerTemplate.replaceAll(marker, selectedOriginal),
+      ownerTemplate.replaceAll(marker, JSON.stringify(selectedOriginal)),
     );
 
     // A valid-arity Host bootstrap must fail before importing its original
@@ -1190,7 +1279,7 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
       for (const [name, literal] of signedLiteralNegatives) {
         writeFileSync(
           installedBootstrap,
-          ownerTemplate.replaceAll(marker, literal),
+          ownerTemplate.replaceAll(marker, JSON.stringify(literal)),
         );
         const denied = Bun.spawnSync(
           [
@@ -1226,7 +1315,7 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
     }
     writeFileSync(
       installedBootstrap,
-      ownerTemplate.replaceAll(marker, selectedOriginal),
+      ownerTemplate.replaceAll(marker, JSON.stringify(selectedOriginal)),
     );
 
     // An unselected or malformed invocation of the exact generated module

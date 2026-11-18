@@ -24,7 +24,7 @@ const sealedBootstrap = fileURLToPath(import.meta.url);
 // Core compiled this relative path into the signed app-root file. It is the
 // sole original-entry selector; argv[1] is Bun's normal original-main slot.
 // No app-private path may be passed as an additional user argument.
-const sealedOriginalRelative = "__KELD_SELECTED_ENTRY__";
+const sealedOriginalRelative = __KELD_SELECTED_ENTRY__;
 // The Host's fixed launch selector is required *before* filesystem reads.
 // This shape is a secondary check: authority remains the signed boot,
 // retained no-follow graph and Host-minted app-link, not mutable CLI argv.
@@ -49,10 +49,17 @@ if (shapeError) {
 // already enforces this invariant when rendering the sealed literal, and the
 // Guardian validates the corresponding boot/graph member before Bun starts.
 if (
-  !/^[A-Za-z0-9/._-]+$/.test(sealedOriginalRelative) ||
+  typeof sealedOriginalRelative !== "string" ||
+  Buffer.byteLength(sealedOriginalRelative, "utf8") > 4096 ||
+  sealedOriginalRelative.length === 0 ||
+  sealedOriginalRelative.includes("\\") ||
+  sealedOriginalRelative.includes("\0") ||
+  sealedOriginalRelative.includes(":") ||
+  sealedOriginalRelative.split("/").length > 64 ||
   sealedOriginalRelative
-    .split(/[\\/]/)
-    .some((part) => part === "" || part === "." || part === "..")
+    .split("/")
+    .some((part) => part === "" || part === "." || part === "..") ||
+  isAbsolute(sealedOriginalRelative)
 ) {
   throw linkError(
     "KELD-IPC-005",

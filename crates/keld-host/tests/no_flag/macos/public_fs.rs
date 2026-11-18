@@ -49,7 +49,7 @@ use application_link::assert_single_application_link;
 use observer::{Observation, RecoveryCommand, RecoveryPhase};
 use outcomes::{
     assert_component_outcomes, assert_component_trace, assert_handler_attribution,
-    assert_natural_outcomes, assert_page_outcomes,
+    assert_natural_outcomes, assert_page_outcomes, framed_bun_jsonl,
 };
 use process_image::process_image_path;
 use project::{
@@ -1329,16 +1329,8 @@ fn assert_recovery_trace(stderr: &str, evidence: &LaunchEvidence) {
         .iter()
         .find(|report| report["phase"] == "recovery-after")
         .expect("same document's completed G2 calls");
-    let handlers: Vec<Value> = stderr
-        .lines()
-        .filter_map(|line| line.strip_prefix("KELD_KEL140_PUBLIC_HANDLER "))
-        .map(|line| serde_json::from_str(line).expect("actual recovery handler trace"))
-        .collect();
-    let outcomes: Vec<Value> = stderr
-        .lines()
-        .filter_map(|line| line.strip_prefix("KELD_KEL140_PUBLIC_OUTCOME "))
-        .map(|line| serde_json::from_str(line).expect("actual recovery public FS trace"))
-        .collect();
+    let handlers = framed_bun_jsonl(stderr, "KELD_KEL140_PUBLIC_HANDLER ");
+    let outcomes = framed_bun_jsonl(stderr, "KELD_KEL140_PUBLIC_OUTCOME ");
     let pending = result["requests"][2]["action"] == "recovery-pending";
     assert_eq!(
         handlers.len(),

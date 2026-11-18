@@ -8,16 +8,11 @@ use std::fs;
 use std::path::Path;
 
 pub(super) fn assert_handler_attribution(stderr: &str, result: &Value, bun: u32) {
-    let handlers: Vec<Value> = stderr
-        .lines()
-        .filter_map(|line| line.strip_prefix("KELD_KEL140_PUBLIC_HANDLER "))
-        .map(|line| serde_json::from_str(line).expect("actual application handler trace"))
-        .collect();
-    let outcomes: Vec<Value> = stderr
-        .lines()
-        .filter_map(|line| line.strip_prefix("KELD_KEL140_PUBLIC_OUTCOME "))
-        .map(|line| serde_json::from_str(line).expect("actual public FS outcome trace"))
-        .collect();
+    // Host can split one Bun JSONL record across multiple bounded stderr
+    // frames, even for a short outcome if unrelated output arrives first.
+    // Keep exact counts, correlations and failure-on-corruption below.
+    let handlers = framed_bun_jsonl(stderr, "KELD_KEL140_PUBLIC_HANDLER ");
+    let outcomes = framed_bun_jsonl(stderr, "KELD_KEL140_PUBLIC_OUTCOME ");
     assert_eq!(handlers.len(), 3);
     assert_eq!(outcomes.len(), 2);
     for (index, handler) in handlers.iter().enumerate() {
@@ -32,6 +27,76 @@ pub(super) fn assert_handler_attribution(stderr: &str, result: &Value, bun: u32)
             outcome,
             &json!({"call":index + 1,"nonce":result["requests"][index]["nonce"],
             "outcome":result["outcomes"][index]["outcome"]})
+        );
+    }
+}
+
+#[test]
+fn handler_attribution_reconstructs_bounded_frames_and_refuses_forgery() {
+    let actions = [
+        "roundtrip".repeat(60),
+        String::from("deny"),
+        String::from("unknown"),
+    ];
+    let result = json!({
+        "requests": [
+            {"action": actions[0], "nonce": "aa"},
+            {"action": actions[1], "nonce": "bb"},
+            {"action": actions[2], "nonce": "cc"}
+        ],
+        "outcomes": [
+            {"outcome": {"kind": "success", "bytes": 3}},
+            {"outcome": {"kind": "denied", "code": "KELD-API-001"}}
+        ]
+    });
+    let bun = 314_u32;
+    let mut framed = String::new();
+    let mut append = |marker: &str, record: Value| {
+        let source = format!("{marker}{record}");
+        for (index, bytes) in source.as_bytes().chunks(87).enumerate() {
+            if index > 0 {
+                framed.push_str("[bun stderr] ");
+            }
+            framed.push_str(std::str::from_utf8(bytes).expect("ASCII fixture"));
+            framed.push('\n');
+        }
+    };
+    for index in 0..3 {
+        append(
+            "KELD_KEL140_PUBLIC_HANDLER ",
+            json!({"call":index + 1,"pid":bun,
+                "action":result["requests"][index]["action"],
+                "nonce":result["requests"][index]["nonce"]}),
+        );
+    }
+    for index in 0..2 {
+        append(
+            "KELD_KEL140_PUBLIC_OUTCOME ",
+            json!({"call":index + 1,
+                "nonce":result["requests"][index]["nonce"],
+                "outcome":result["outcomes"][index]["outcome"]}),
+        );
+    }
+    assert!(
+        framed.contains("[bun stderr] "),
+        "fixture must exercise framing"
+    );
+    assert_handler_attribution(&framed, &result, bun);
+    let truncated = "KELD_KEL140_PUBLIC_HANDLER {\"call\":1\n";
+    let wrong_source = framed.replacen("[bun stderr] ", "[bun stdout] ", 1);
+    let duplicated = format!("{framed}KELD_KEL140_PUBLIC_HANDLER {{\"call\":4}}\n");
+    let mut forged_result = result.clone();
+    forged_result["outcomes"][0]["outcome"]["bytes"] = json!(99);
+    for (source, observation) in [
+        (truncated, &result),
+        (wrong_source.as_str(), &result),
+        (duplicated.as_str(), &result),
+        (framed.as_str(), &forged_result),
+    ] {
+        assert!(
+            std::panic::catch_unwind(|| assert_handler_attribution(source, observation, bun))
+                .is_err(),
+            "truncated, wrong-source, duplicate or altered trace was accepted"
         );
     }
 }
@@ -178,13 +243,12 @@ pub(super) fn assert_component_outcomes(
     );
 }
 
-pub(super) fn assert_component_trace(stderr: &str, reports: &[Value]) {
-    const MARKER: &str = "KELD_KEL140_PUBLIC_APP_COMPONENT ";
+pub(super) fn framed_bun_jsonl(stderr: &str, marker: &str) -> Vec<Value> {
     const CONTINUATION: &str = "[bun stderr] ";
     let mut trace = Vec::new();
     let mut partial: Option<String> = None;
     for line in stderr.lines() {
-        if let Some(first) = line.strip_prefix(MARKER) {
+        if let Some(first) = line.strip_prefix(marker) {
             assert!(
                 partial.is_none(),
                 "interleaved incomplete public-main trace"
@@ -204,7 +268,7 @@ pub(super) fn assert_component_trace(stderr: &str, reports: &[Value]) {
         }
         let bytes = partial.as_ref().expect("framed trace started");
         assert!(
-            bytes.len() <= 1024 * 1024,
+            bytes.len() <= 1_048_576,
             "public-main trace exceeds capture bound"
         );
         match serde_json::from_str::<Value>(bytes) {
@@ -217,6 +281,11 @@ pub(super) fn assert_component_trace(stderr: &str, reports: &[Value]) {
         }
     }
     assert!(partial.is_none(), "truncated public-main framed trace");
+    trace
+}
+
+pub(super) fn assert_component_trace(stderr: &str, reports: &[Value]) {
+    let trace = framed_bun_jsonl(stderr, "KELD_KEL140_PUBLIC_APP_COMPONENT ");
     let observed: Vec<_> = reports
         .iter()
         .filter(|report| report["phase"] == "app-result")

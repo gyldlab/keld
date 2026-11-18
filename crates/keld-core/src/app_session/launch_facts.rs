@@ -41,23 +41,23 @@ const BOOT_ENTRY_TEMPLATE: &str =
 /// independently binds the original path before either use.
 ///
 /// # Errors
-/// Refuses noncanonical, escaping, or URL-sensitive paths that the pinned
-/// runtime cannot safely resolve as literal ESM module specifiers.
+/// Refuses noncanonical or escaping paths; the selected graph path is a
+/// filesystem path, not an ESM import specifier.
 pub fn macos_local_original_entry_bootstrap_source(
     original_relative: &str,
 ) -> Result<Vec<u8>, HostAppError> {
     super::graph_contract::validate_graph_relative_path(original_relative)?;
-    if !original_relative
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'-' | b'_'))
-    {
-        return Err(HostAppError::new(
+    // The Bun preload resolves a signed *filesystem* path with realpathSync.
+    // Serialize the graph-approved spelling as one JavaScript string literal,
+    // not as an import URL or an unescaped insertion into quoted source.
+    let escaped_relative = serde_json::to_string(original_relative).map_err(|error| {
+        HostAppError::new(
             "KELD-CORE-036",
-            "original entry import",
-            "the pinned Bun runtime requires URL-neutral original main source names",
-            "Choose a URL-neutral original main path before source capture; do not edit signed files.",
-        ));
-    }
+            "original entry literal",
+            error.to_string(),
+            "Rebuild the original graph from reviewed inputs.",
+        )
+    })?;
     if BOOT_ENTRY_TEMPLATE.matches(BOOT_ENTRY_MARKER).count() != 1 {
         return Err(HostAppError::new(
             "KELD-CORE-036",
@@ -67,7 +67,7 @@ pub fn macos_local_original_entry_bootstrap_source(
         ));
     }
     Ok(BOOT_ENTRY_TEMPLATE
-        .replace(BOOT_ENTRY_MARKER, original_relative)
+        .replace(BOOT_ENTRY_MARKER, &escaped_relative)
         .into_bytes())
 }
 
@@ -90,11 +90,11 @@ pub const fn macos_local_launch_bootstrap_sources() -> [(&'static str, &'static 
             MACOS_LOCAL_LAUNCH_PRELOAD_PATH,
             include_bytes!("../../../../packages/@keld/electron/src/installed-launch-preload.ts"),
         ),
-        // Non-graph builds retain exact inert template bytes, preserving the
-        // existing three production owner modules plus the fourth checked
-        // generated leaf. Only an independently admitted original graph
-        // replaces its template slot using the closed boot-selected
-        // relative original path *before* Pack captures and signs the app.
+        // Only original-graph builds stage and admit this fourth owner leaf.
+        // Ordinary bundles keep three generated modules and may include a
+        // user-owned file at the same app-root name without an owner collision.
+        // A graph build replaces the marker using its sealed boot-selected
+        // original before Pack captures and signs the application.
         (
             MACOS_LOCAL_RUNTIME_ENTRY_PATH,
             BOOT_ENTRY_TEMPLATE.as_bytes(),
@@ -699,9 +699,16 @@ mod tests {
             "src/main.ts",
             "src/deep/main.mjs",
             "src/main.cjs",
+            "src/with space.mjs",
+            "src/with\"quote.mjs",
+            "src/entry#fragment.mjs",
+            "src/entry?query.mjs",
+            "src/%2e%2e/not-traversal.mjs",
+            "src/entry\nline.mjs",
+            "src/über.mjs",
         ] {
             let bytes = macos_local_original_entry_bootstrap_source(relative)
-                .expect("URL-neutral main can be rendered");
+                .expect("graph-approved main can be rendered");
             let text = std::str::from_utf8(&bytes).expect("valid generated UTF-8");
             assert_eq!(
                 bytes,
@@ -715,10 +722,12 @@ mod tests {
                 "authenticated preload must finish before Bun evaluates original main"
             );
             assert!(
-                text.contains(&format!("const sealedOriginalRelative = \"{relative}\";"))
-                    && text.contains(
-                        "canonicalEntry = realpathSync(join(canonicalRoot, sealedOriginalRelative));"
-                    ),
+                text.contains(&format!(
+                    "const sealedOriginalRelative = {};",
+                    serde_json::to_string(relative).expect("string literal is encodable")
+                )) && text.contains(
+                    "canonicalEntry = realpathSync(join(canonicalRoot, sealedOriginalRelative));"
+                ),
                 "the compiled literal must drive the canonical original-member check"
             );
             assert!(
@@ -736,18 +745,19 @@ mod tests {
             "src/../other.mjs",
             "src/./entry.js",
             "src\\entry.js",
-            "src/entry#fragment.mjs",
-            "src/entry?query.mjs",
-            "src/%2e%2e/outside.mjs",
-            "src/with space.mjs",
-            "src/\"injected\".mjs",
-            "src/entry\n.js",
+            "src//entry.js",
+            "src/entry:stream.mjs",
+            "src/entry\0.js",
         ] {
             assert!(
                 macos_local_original_entry_bootstrap_source(invalid).is_err(),
-                "unsafe or unsupported import spelling must refuse: {invalid:?}"
+                "the shared graph path contract must refuse: {invalid:?}"
             );
         }
+        assert!(
+            macos_local_original_entry_bootstrap_source(&"a".repeat(4097)).is_err(),
+            "graph path length budget must be preserved"
+        );
     }
 
     fn original() -> serde_json::Value {

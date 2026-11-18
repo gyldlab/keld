@@ -163,9 +163,8 @@ fn open_launch_bootstrap(
     original_graph_entry: Option<&Path>,
 ) -> Result<Vec<(File, FileIdentity)>, HostAppError> {
     // Every generated module is qualified against independently compiled
-    // Host owner bytes. Only an admitted original graph renders the fourth
-    // owner from the *separately parsed sealed boot-selected entry*; plain
-    // installed roles retain the inert exact-byte template instead.
+    // Host owner bytes. Only an admitted original graph owns the fourth leaf;
+    // ordinary apps may independently capture that filename as user content.
     let original_entry_source = original_graph_entry
         .map(|entry| {
             macos_local_original_entry_bootstrap_source(entry.to_str().ok_or_else(|| {
@@ -175,6 +174,9 @@ fn open_launch_bootstrap(
         .transpose()?;
     let mut launch_bootstrap = Vec::new();
     for (path, compiled_expected) in macos_local_launch_bootstrap_sources() {
+        if path == MACOS_LOCAL_RUNTIME_ENTRY_PATH && original_entry_source.is_none() {
+            continue;
+        }
         let expected = if path == MACOS_LOCAL_RUNTIME_ENTRY_PATH {
             original_entry_source
                 .as_deref()
@@ -1086,7 +1088,7 @@ mod tests {
     };
 
     #[test]
-    fn four_generated_leaves_refuse_remove_and_same_size_tamper_in_both_installed_modes() {
+    fn graph_four_and_ordinary_three_leaves_refuse_remove_and_same_size_tamper() {
         use super::{
             MACOS_LOCAL_RUNTIME_ENTRY_PATH, macos_local_launch_bootstrap_sources,
             macos_local_original_entry_bootstrap_source,
@@ -1105,6 +1107,9 @@ mod tests {
 
         for original_graph in [false, true] {
             for (relative, template) in sources {
+                if !original_graph && relative == MACOS_LOCAL_RUNTIME_ENTRY_PATH {
+                    continue;
+                }
                 let source = if original_graph && relative == MACOS_LOCAL_RUNTIME_ENTRY_PATH {
                     macos_local_original_entry_bootstrap_source("src/main.mjs")
                         .expect("sealed original literal template")
@@ -1116,16 +1121,28 @@ mod tests {
                     .expect("create source parent");
                 fs::write(path, source).expect("write original owner bytes");
             }
+            // This filename is ordinary app content outside the graph route.
+            // The signed owner neither stages nor opens it in that mode.
+            if !original_graph {
+                fs::write(
+                    canonical.join(MACOS_LOCAL_RUNTIME_ENTRY_PATH),
+                    b"ordinary app-owned resource, not a generated preload",
+                )
+                .expect("ordinary resource keeps its own filename");
+            }
             let selected = original_graph.then_some(selected_entry);
             assert_eq!(
                 open_launch_bootstrap(&directory, selected)
                     .expect("complete admitted bootstrap")
                     .len(),
-                4,
-                "a complete exact source set must admit in each mode"
+                if original_graph { 4 } else { 3 },
+                "only the graph route requires the fourth leaf"
             );
 
             for (relative, _) in sources {
+                if !original_graph && relative == MACOS_LOCAL_RUNTIME_ENTRY_PATH {
+                    continue;
+                }
                 let path = canonical.join(relative);
                 let original = fs::read(&path).expect("retained original source bytes");
                 for remove in [true, false] {
@@ -1159,7 +1176,7 @@ mod tests {
                     open_launch_bootstrap(&directory, selected)
                         .expect("restored source set")
                         .len(),
-                    4
+                    if original_graph { 4 } else { 3 }
                 );
             }
 
@@ -1167,17 +1184,25 @@ mod tests {
             // admitted owner file. The exact app-root member must open with
             // O_NOFOLLOW, even before comparing its compiled content.
             let bootstrap = canonical.join(MACOS_LOCAL_RUNTIME_ENTRY_PATH);
-            let expected = fs::read(&bootstrap).expect("fourth generated leaf");
-            let outside = tempfile::NamedTempFile::new().expect("external fixture file");
-            fs::write(outside.path(), &expected).expect("matching external source");
-            fs::remove_file(&bootstrap).expect("remove exact leaf before alias");
-            symlink(outside.path(), &bootstrap).expect("install alias");
-            assert!(
-                open_launch_bootstrap(&directory, selected).is_err(),
-                "identical bytes through a symlink cannot replace an exact owner leaf"
-            );
-            fs::remove_file(&bootstrap).expect("remove alias");
-            fs::write(&bootstrap, expected).expect("restore exact source fixture");
+            if original_graph {
+                let expected = fs::read(&bootstrap).expect("fourth generated leaf");
+                let outside = tempfile::NamedTempFile::new().expect("external fixture file");
+                fs::write(outside.path(), &expected).expect("matching external source");
+                fs::remove_file(&bootstrap).expect("remove exact leaf before alias");
+                symlink(outside.path(), &bootstrap).expect("install alias");
+                assert!(
+                    open_launch_bootstrap(&directory, selected).is_err(),
+                    "identical bytes through a symlink cannot replace an exact owner leaf"
+                );
+                fs::remove_file(&bootstrap).expect("remove alias");
+                fs::write(&bootstrap, expected).expect("restore exact source fixture");
+            } else {
+                assert_eq!(
+                    fs::read(&bootstrap).expect("ordinary app-owned resource"),
+                    b"ordinary app-owned resource, not a generated preload",
+                    "ordinary bundle content must not be replaced by Core's inert template"
+                );
+            }
         }
     }
 

@@ -8,6 +8,10 @@ if ! command -v just >/dev/null 2>&1; then
   echo "HOOKS-TEST: the \`just\` executable is not installed. Install just and rerun \`just hooks-test\`; this test is local-only until CI pins a just (dependency-gate decision, not taken)." >&2
   exit 1
 fi
+if ! command -v bun >/dev/null 2>&1; then
+  echo "HOOKS-TEST: Bun is required to exercise the installed pre-commit formatter; no test may be skipped." >&2
+  exit 1
+fi
 fixture="$(mktemp -d "${TMPDIR:-/tmp}/keld-hooks-test.XXXXXX")"
 trap 'rm -rf "$fixture"' EXIT
 
@@ -87,4 +91,43 @@ fi
 
 grep -Fq 'just research-sync' "$fixture/checkout.out"
 grep -Fq 'just competitors-sync' "$fixture/checkout.out"
-echo "hooks checkout trust-boundary test ok"
+
+# Run actual Git commits through the installed hook, not a hand-run script.
+# A no-op pre-commit mutation must fail the staged-unformatted case.
+printf 'const ready = { ok: true };\n' >"$fixture/checked.ts"
+git -C "$fixture" add checked.ts
+git -C "$fixture" commit -qm 'hook: permit formatted staged content'
+if [[ "$(git -C "$fixture" show HEAD:checked.ts)" != 'const ready = { ok: true };' ]]; then
+  echo "error: a formatted staged file did not reach the commit intact" >&2
+  exit 1
+fi
+
+printf 'const broken={ok:true};\n' >"$fixture/checked.ts"
+git -C "$fixture" add checked.ts
+if git -C "$fixture" commit -qm 'hook: must reject unformatted stage' \
+  >"$fixture/deny-unformatted.out" 2>&1; then
+  echo "error: installed pre-commit admitted an unformatted staged blob" >&2
+  exit 1
+fi
+grep -Fq 'needs Bun formatting' "$fixture/deny-unformatted.out"
+
+# A formatted working copy must not hide an unformatted staged blob.
+printf 'const broken = { ok: true };\n' >"$fixture/checked.ts"
+if git -C "$fixture" commit -qm 'hook: must not trust formatted worktree' \
+  >"$fixture/deny-staged.out" 2>&1; then
+  echo "error: installed pre-commit checked the working tree, not the staged blob" >&2
+  exit 1
+fi
+grep -Fq 'needs Bun formatting' "$fixture/deny-staged.out"
+
+# A dirty working copy cannot block a well-formatted staged blob. Only the
+# index content is committed; different worktree bytes stay untouched.
+git -C "$fixture" add checked.ts
+printf 'const dirty={ok:true};\n' >"$fixture/checked.ts"
+git -C "$fixture" commit -qm 'hook: accept formatted stage despite dirty worktree'
+if [[ "$(git -C "$fixture" show HEAD:checked.ts)" != 'const broken = { ok: true };' ]] ||
+  [[ "$(cat "$fixture/checked.ts")" != 'const dirty={ok:true};' ]]; then
+  echo "error: pre-commit changed or selected the wrong source of staged bytes" >&2
+  exit 1
+fi
+echo "hooks checkout and installed staged pre-commit trust-boundary tests ok"
