@@ -1,6 +1,9 @@
 //! Registered guardian host-side lifecycle and owned shutdown handling.
 use super::error::typed_cleanup_io_error;
-use super::process_group::{GroupIdentity, observe_group_identity, terminate_attested_group};
+use super::process_group::{
+    GroupIdentity, observe_group_identity, require_attested_group_absence,
+    terminate_attested_group_until,
+};
 use super::{
     Child, ChildStdin, ChildStdout, ExitStatus, GUARDIAN_SHUTDOWN_DEADLINE, GuardianReport,
     Instant, RuntimeError, SUPERVISED_QUIT_ACCEPTED, Write, collapse_failures, io, lifecycle_error,
@@ -114,14 +117,17 @@ impl HostGuardian {
         let status = match self.child.try_wait() {
             Ok(status) => status,
             Err(source) => {
-                return Err(
-                    self.fail_observation("macOS guardian process-handle inspection", source)
-                );
+                return Err(self.fail_observation(
+                    "macOS guardian process-handle inspection",
+                    source,
+                    Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE / 4,
+                ));
             }
         };
         if let Some(status) = status {
             self.liveness_writer.take();
-            return Err(self.terminal_guardian_exit(status));
+            return Err(self
+                .terminal_guardian_exit(status, Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE / 4));
         }
         Ok(())
     }
@@ -141,11 +147,15 @@ impl HostGuardian {
         let status = match self.child.wait() {
             Ok(status) => status,
             Err(source) => {
-                return Err(self.fail_observation("macOS guardian process-handle wait", source));
+                return Err(self.fail_observation(
+                    "macOS guardian process-handle wait",
+                    source,
+                    Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE / 4,
+                ));
             }
         };
         self.liveness_writer.take();
-        Err(self.terminal_guardian_exit(status))
+        Err(self.terminal_guardian_exit(status, Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE / 4))
     }
 
     /// Records an accepted KEL-96 Quit before its correlated reply can let
@@ -212,7 +222,7 @@ impl HostGuardian {
                             "guardian did not exit before the shutdown deadline",
                         ),
                     )];
-                    if let Err(error) = self.terminate_owned_group() {
+                    if let Err(error) = self.terminate_owned_group_until(deadline) {
                         failures.push(error);
                     }
                     if let Err(source) = self.child.kill()
@@ -232,19 +242,21 @@ impl HostGuardian {
                     return Err(collapse_failures(failures));
                 }
                 Err(source) => {
-                    return Err(
-                        self.fail_observation("macOS guardian orderly-shutdown wait", source)
-                    );
+                    return Err(self.fail_observation(
+                        "macOS guardian orderly-shutdown wait",
+                        source,
+                        deadline,
+                    ));
                 }
             }
         };
         if status.success() {
             // Guardian status zero is not proof of group retirement.
             // Finish the host's fail-safe before reporting clean shutdown.
-            self.terminate_owned_group()?;
+            self.terminate_owned_group_until(deadline)?;
             Ok(status)
         } else {
-            Err(self.terminal_guardian_exit(status))
+            Err(self.terminal_guardian_exit(status, deadline))
         }
     }
 
@@ -269,18 +281,18 @@ impl HostGuardian {
     // One birth-attested fail-safe owner for all terminal paths. Retain the
     // exact enrolled witness if kernel validation or signaling fails. A
     // recycled group number alone never grants permission to signal again.
-    fn terminate_owned_group(&mut self) -> Result<(), RuntimeError> {
+    fn terminate_owned_group_until(&mut self, deadline: Instant) -> Result<(), RuntimeError> {
         if let Some(group) = self.group {
-            terminate_attested_group(group)?;
+            terminate_attested_group_and_prove_absence(group, deadline)?;
             self.group = None;
         }
         Ok(())
     }
 
-    fn terminal_guardian_exit(&mut self, status: ExitStatus) -> RuntimeError {
+    fn terminal_guardian_exit(&mut self, status: ExitStatus, deadline: Instant) -> RuntimeError {
         let group_pid = self.group_pid().unwrap_or(0);
         let cleanup_error = self
-            .terminate_owned_group()
+            .terminate_owned_group_until(deadline)
             .err()
             .map(typed_cleanup_io_error);
         RuntimeError::GuardianExited {
@@ -290,7 +302,12 @@ impl HostGuardian {
         }
     }
 
-    fn fail_observation(&mut self, phase: &'static str, source: io::Error) -> RuntimeError {
+    fn fail_observation(
+        &mut self,
+        phase: &'static str,
+        source: io::Error,
+        deadline: Instant,
+    ) -> RuntimeError {
         // ECHILD means that the kernel no longer recognizes this Child as
         // waitable. Another reaper may already have released its PID, while
         // std::process::Child still has no cached exit status. In that case,
@@ -299,7 +316,7 @@ impl HostGuardian {
         let child_is_reaped = source.raw_os_error() == Some(nix::libc::ECHILD);
         self.liveness_writer.take();
         let mut failures = vec![lifecycle_error(phase, source)];
-        if let Err(error) = self.terminate_owned_group() {
+        if let Err(error) = self.terminate_owned_group_until(deadline) {
             failures.push(error);
         }
         if !child_is_reaped {
@@ -320,6 +337,18 @@ impl HostGuardian {
         }
         collapse_failures(failures)
     }
+}
+
+// A delivered group SIGKILL is one spent authority, not whole-group absence.
+// Use the same absolute budget for the one signal and read-only dual-ESRCH
+// proof. Every legacy caller, including rejected registration, observes
+// unresolved descendants as a typed cleanup failure.
+fn terminate_attested_group_and_prove_absence(
+    group: GroupIdentity,
+    deadline: Instant,
+) -> Result<(), RuntimeError> {
+    terminate_attested_group_until(group, deadline)?;
+    require_attested_group_absence(group, deadline)
 }
 
 impl Drop for HostGuardian {
@@ -348,9 +377,12 @@ impl GuardianReport {
 }
 
 fn unexpected_guardian_exit(group: GroupIdentity, status: ExitStatus) -> RuntimeError {
-    let cleanup_error = terminate_attested_group(group)
-        .err()
-        .map(typed_cleanup_io_error);
+    let cleanup_error = terminate_attested_group_and_prove_absence(
+        group,
+        Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE / 4,
+    )
+    .err()
+    .map(typed_cleanup_io_error);
     RuntimeError::GuardianExited {
         group_pid: group.pid,
         exit_code: status.code(),
@@ -381,7 +413,10 @@ fn reject_proven_registration(
     // Close host authority and wait for Guardian cleanup first. A leftover
     // Bun group is then killed ONLY if its original kernel birth still matches.
     let primary = reject_host_registration(child, liveness_writer, error);
-    match terminate_attested_group(group) {
+    match terminate_attested_group_and_prove_absence(
+        group,
+        Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE / 4,
+    ) {
         Ok(()) => primary,
         Err(cleanup) => collapse_failures(vec![primary, cleanup]),
     }
