@@ -480,6 +480,9 @@ mod tests {
         fs::create_dir(&dest).expect("checkout directory");
         git(&origin, &["init", "--initial-branch=main"]);
         git(&origin, &["config", "maintenance.auto", "false"]);
+        // Do not let the developer's global signing policy prevent the
+        // disposable origin commit from reaching the fetch oracle.
+        git(&origin, &["config", "--local", "commit.gpgSign", "false"]);
         git(
             &origin,
             &[
@@ -496,6 +499,12 @@ mod tests {
         let sha = git(&origin, &["rev-parse", "HEAD"]).trim().to_string();
         git(&dest, &["init"]);
         git(&dest, &["config", "maintenance.auto", "false"]);
+        // This fixture fetches from a local repository on purpose. Keep the
+        // transport override inside this checkout, not in global Git policy.
+        git(
+            &dest,
+            &["config", "--local", "protocol.file.allow", "always"],
+        );
         git(
             &dest,
             &["remote", "add", "origin", origin.to_str().expect("path")],
