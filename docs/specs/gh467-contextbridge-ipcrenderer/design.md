@@ -93,19 +93,18 @@ timing and Host authorization composition. The independent real-Mac
 [static-wrapper native fixture](https://github.com/gyldlab/keld/issues/467#issuecomment-6388049733)
 observed four predeclared methods at first inline (3/3) and absence
 when omitted (2/2), with synthetic IPC; this is *not* a product proof.
-**Missing approved page→app ingress:** the [test-only F0 native path](https://github.com/gyldlab/keld/issues/467#issuecomment-6388049733)
-used a raw page-world native message handler that #484 AC-17 currently
-forbids. GH484/KEL-142 must expressly select and independently approve
-**either A1**, a different secure supported cross-world transport retaining
-the absolute no-page-handler rule, **or A2**, a narrowly amended
-**data-only untrusted page ingress** with no authority, separate from app
-and trusted world handlers. See the owning [Q1 packet](https://github.com/gyldlab/keld/issues/484#issuecomment-6390973710).
-Under a future approved A2, direct page messages would be callable by
-hostile page JS; a permitted method name must take only the same private
-app-method allowlist and final Host grants as the visible wrapper, while
-unexposed or ungranted requests have zero effects. A raw page message
-can never authenticate an app function, mint a world credential or bypass
-the Host's per-call `el:` grant. Neither A1 nor A2 is approved today.
+**Selected A2 carrier; native admission still BLOCKED:** the [test-only F0 native path](https://github.com/gyldlab/keld/issues/467#issuecomment-6388049733)
+used a raw page-world handler forbidden by GH-484 AC-17. The owner
+[selected A2](https://github.com/gyldlab/keld/issues/484#issuecomment-6560086477):
+only untrusted page request data may cross the shared DOM/event carrier.
+A1 direct cross-world callable publication is not selected. The formal
+#484 AC-17 amendment and KEL-142 independent native approval are
+**still missing**; selection does not authorize production ingress. Under approved A2, hostile page JS can send identical events.
+Only the original private app-world method registry, GH-542 current native
+world/frame/controller/document identity, authenticated Bun role and final
+GH-552 exact `el:` Guard grant may authorize an effect. The page event
+cannot register a method, select a window or role, mint a credential,
+claim readiness or bypass the Guard. Unexposed/ungranted effects stay zero.
 GH-484 must own the native installation, loader and teardown; GH-467
 must prove original-document bound method/callback routing and mutable
 argument copies. A hostile first-inline page must cause zero effects

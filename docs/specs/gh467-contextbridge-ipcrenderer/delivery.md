@@ -94,9 +94,8 @@ readiness, unchecked green CI or mock Host counts as native proof.
 
 **Fault and expected failure:** Delay the predeclared four-method page wrapper until after the first page inline script. Removing
 only the wrapper leaves all four methods absent. The unmodified preload's conditional startup seed must also be visible before
-inline. The early API must have zero pre-bind Bun effects. The F0 raw page handler is not an approved route. GH-484 must first
-approve Q1 A1 or A2. Under A2, page-world calls remain untrusted and use the same private registry and final Host grants as
-ordinary wrappers.
+inline. The early API must have zero pre-bind Bun effects. Owner-selected A2 is only an untrusted-data carrier;
+GH-484 must approve the formal #484 AC-17 amendment and prove native first-inline binding, never F0 authority. All page events must pass the original private registry, GH-542 current-document identity and final GH-552 Host Guard.
 
 #### BRG001b_real_registration
 
