@@ -549,19 +549,14 @@ fn local_guardian_bun_command(
     let runtime_entry = facts
         .runtime_entry_bootstrap_path()
         .map_err(|error| guardian_entry_error(error.to_string()))?;
-    let selected_bootstrap = configure_installed_runtime_bootstrap(
+    configure_installed_runtime_bootstrap(
         &mut command,
         facts.app_root(),
         facts.native_facade(),
         runtime_preload.as_deref(),
         runtime_entry.as_deref(),
     )?;
-    append_installed_main(
-        &mut command,
-        facts.app_root(),
-        facts.entry_relative(),
-        selected_bootstrap,
-    );
+    append_installed_main(&mut command, facts.app_root(), facts.entry_relative());
     command
         .current_dir(facts.app_root())
         .env("KELD_APP_LINK", app_link)
@@ -569,31 +564,22 @@ fn local_guardian_bun_command(
     Ok(command)
 }
 
-/// The sealed bootstrap imports its selected original. Appending the original
-/// as another Bun argument would expose a private source path as user input.
-/// The direct-entry path remains unchanged for non-graph installed apps.
+/// The sealed preload finishes authenticated initialization before the
+/// original runs as Bun main. The selected original occupies argv[1] only;
+/// no app-private selector becomes an additional user argument.
+/// Non-graph installed callers retain their direct-entry behavior.
 #[cfg(target_os = "macos")]
-fn append_installed_main(
-    command: &mut Command,
-    root: &Path,
-    entry_relative: &Path,
-    bootstrap: Option<PathBuf>,
-) {
-    command
-        .arg("run")
-        .arg(bootstrap.unwrap_or_else(|| root.join(entry_relative)));
+fn append_installed_main(command: &mut Command, root: &Path, entry_relative: &Path) {
+    command.arg("run").arg(root.join(entry_relative));
 }
 
 /// Selects only admitted installed source roles. Immutable launch-facts preload
 /// is already first. An original graph must have both its independently
 /// verified provider wrapper AND the fixed Core-compiled app-root bootstrap.
-/// Bun then runs the bootstrap as its main entry, not an isolated API CLI
-/// preload. The original is imported from the sealed literal, never appended
-/// as a user argument. Non-graph roles keep their direct-entry behavior.
-///
-/// The original entry now observes different import.meta.main/Bun.main/argv.
-/// This source path is NOT release-ready until exact native original-app
-/// compatibility and CODEOWNERS/security review are completed.
+/// Bun executes the signed bootstrap as a pre-entry preload and the selected
+/// original as its actual main, after authenticated Init ACK/subscriptions.
+/// This Mac route requires a verified shared module instance across preload
+/// and main. The current Windows Bun cache split remains unsupported.
 #[cfg(target_os = "macos")]
 fn configure_installed_runtime_bootstrap(
     command: &mut Command,
@@ -601,7 +587,7 @@ fn configure_installed_runtime_bootstrap(
     native_facade: bool,
     admitted_runtime_preload: Option<&Path>,
     admitted_bootstrap: Option<&Path>,
-) -> Result<Option<PathBuf>, keld_runtime::RuntimeError> {
+) -> Result<(), keld_runtime::RuntimeError> {
     match (admitted_runtime_preload, admitted_bootstrap) {
         (Some(_), Some(bootstrap)) => {
             if !native_facade
@@ -613,8 +599,9 @@ fn configure_installed_runtime_bootstrap(
             }
             command
                 .arg("--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\"")
-                .arg("--define=__KELD_RUNTIME_PROCESS_FACTS__:true");
-            Ok(Some(bootstrap.to_path_buf()))
+                .arg("--define=__KELD_RUNTIME_PROCESS_FACTS__:true")
+                .arg(format!("--preload={}", bootstrap.display()));
+            Ok(())
         }
         (None, None) => {
             // Non-graph installed callers retain their optional sidecar,
@@ -625,7 +612,7 @@ fn configure_installed_runtime_bootstrap(
                     root,
                     native_facade,
                 )?);
-            Ok(None)
+            Ok(())
         }
         _ => Err(guardian_entry_error(
             "original graph wrapper and fixed Host bootstrap must agree",
@@ -1311,14 +1298,14 @@ mod tests {
     }
 
     #[test]
-    fn installed_original_selects_verified_root_bootstrap_before_the_application() {
+    fn installed_original_selects_verified_root_preload_before_true_main() {
         let root = std::path::Path::new("/Applications/Example.app/Contents/Resources/app");
         let wrapper = root.join("node_modules/@keld/api/runtime-preload.js");
         let bootstrap = root.join("keld-installed-runtime-entry.mjs");
         let wrong_same_root = root.join("unverified-same-root.mjs");
         let mut command = std::process::Command::new("/verified/bun");
         command.arg("--preload=/verified/immutable-facts.ts");
-        let selected = super::configure_installed_runtime_bootstrap(
+        super::configure_installed_runtime_bootstrap(
             &mut command,
             root,
             true,
@@ -1326,13 +1313,7 @@ mod tests {
             Some(&bootstrap),
         )
         .expect("both independently admitted graph members");
-        assert_eq!(selected, Some(bootstrap.clone()));
-        super::append_installed_main(
-            &mut command,
-            root,
-            std::path::Path::new("main.js"),
-            selected,
-        );
+        super::append_installed_main(&mut command, root, std::path::Path::new("main.js"));
         let observed = command
             .get_args()
             .map(|value| value.to_string_lossy().into_owned())
@@ -1343,12 +1324,13 @@ mod tests {
                 "--preload=/verified/immutable-facts.ts".to_owned(),
                 "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\"".to_owned(),
                 "--define=__KELD_RUNTIME_PROCESS_FACTS__:true".to_owned(),
+                format!("--preload={}", bootstrap.display()),
                 "run".to_owned(),
-                bootstrap.display().to_string(),
+                root.join("main.js").display().to_string(),
             ]
         );
         let mut ordinary = std::process::Command::new("/verified/bun");
-        super::append_installed_main(&mut ordinary, root, std::path::Path::new("main.js"), None);
+        super::append_installed_main(&mut ordinary, root, std::path::Path::new("main.js"));
         assert_eq!(
             ordinary
                 .get_args()

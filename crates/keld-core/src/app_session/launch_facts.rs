@@ -24,18 +24,17 @@ const ORIGINAL_RESOURCE_POLICY_CONTRACT: &str = "gh473-original-editor-offline/v
 pub const MACOS_LOCAL_LAUNCH_PRELOAD_PATH: &str =
     "keld-launch-facts/electron/src/installed-launch-preload.ts";
 
-/// Fixed app-root ESM bootstrap with Core-compiled, exact-checked bytes.
-/// Its position beside the original entry keeps the installed API and user
-/// entry in one Bun module graph even where CLI preload caches are isolated.
+/// Fixed app-root ESM preload with Core-compiled, exact-checked bytes.
+/// The macOS Host selects it before Bun executes the verified original main.
 pub const MACOS_LOCAL_RUNTIME_ENTRY_PATH: &str = "keld-installed-runtime-entry.mjs";
 const BOOT_ENTRY_MARKER: &str = "__KELD_SELECTED_ENTRY__";
 const BOOT_ENTRY_TEMPLATE: &str =
     include_str!("../../../../packages/@keld/api/src/installed-runtime-entry.mjs");
 
-/// Render the one graph/boot-selected original as a **literal** dynamic import
-/// in a KELD-authored, pre-sign app-root source file. The pinned Bun 1.4.4
-/// Windows loader creates a *different* package module cache for variable
-/// imports, even when they resolve to the same exact original file.
+/// Bind the one graph/boot-selected original to an exact compiled relative
+/// path in the pre-sign app-root preload. The original becomes Bun main only
+/// after the authenticated preload completes. The existing Windows CLI
+/// preload/main cache split is not an approved original-graph launch path.
 ///
 /// This renderer is shared by CLI producer and Core installed admission; a
 /// caller cannot supply new executable source bytes. Boot/graph validation
@@ -59,7 +58,7 @@ pub fn macos_local_original_entry_bootstrap_source(
             "Choose a URL-neutral original main path before source capture; do not edit signed files.",
         ));
     }
-    if BOOT_ENTRY_TEMPLATE.matches(BOOT_ENTRY_MARKER).count() != 2 {
+    if BOOT_ENTRY_TEMPLATE.matches(BOOT_ENTRY_MARKER).count() != 1 {
         return Err(HostAppError::new(
             "KELD-CORE-036",
             "original entry template",
@@ -94,7 +93,7 @@ pub const fn macos_local_launch_bootstrap_sources() -> [(&'static str, &'static 
         // Non-graph builds retain exact inert template bytes, preserving the
         // existing three production owner modules plus the fourth checked
         // generated leaf. Only an independently admitted original graph
-        // replaces its two template slots using the closed boot-selected
+        // replaces its template slot using the closed boot-selected
         // relative original path *before* Pack captures and signs the app.
         (
             MACOS_LOCAL_RUNTIME_ENTRY_PATH,
@@ -712,10 +711,8 @@ mod tests {
             );
             assert!(!text.contains("__KELD_SELECTED_ENTRY__"));
             assert!(
-                text.contains(&format!(
-                    "await bootHostSelectedEntry(() => import(\"./{relative}\"));"
-                )),
-                "the import argument must be a literal in generated source"
+                text.contains("await bootHostSelectedEntry(async () => undefined);"),
+                "authenticated preload must finish before Bun evaluates original main"
             );
             assert!(
                 text.contains(&format!("const sealedOriginalRelative = \"{relative}\";"))
@@ -725,7 +722,10 @@ mod tests {
                 "the compiled literal must drive the canonical original-member check"
             );
             assert!(
-                text.contains("process.argv.length !== 2") && !text.contains("process.argv[2]"),
+                text.contains("process.argv.length !== 2")
+                    && !text.contains("process.argv[2]")
+                    && text.contains("const sealedBootstrap = fileURLToPath(import.meta.url);")
+                    && text.contains("const bunMainIdentity = statSync(Bun.main"),
                 "the compiled original entry must not become a user argument"
             );
         }

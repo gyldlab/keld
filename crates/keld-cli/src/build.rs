@@ -417,9 +417,12 @@ mod tests {
         let selected_source = String::from_utf8(original[3].bytes.clone())
             .expect("rendered original entry is exact UTF-8");
         assert!(
-            selected_source
-                .contains("await bootHostSelectedEntry(() => import(\"./src/main.mjs\"));"),
-            "Pack must preserve the literal original import in its pre-sign copy"
+            selected_source.contains("const sealedOriginalRelative = \"src/main.mjs\";")
+                && selected_source.contains(
+                    "canonicalEntry = realpathSync(join(canonicalRoot, sealedOriginalRelative));"
+                )
+                && selected_source.contains("await bootHostSelectedEntry(async () => undefined);"),
+            "Pack must preserve the sealed original selector and awaited preload before signing"
         );
         assert!(!selected_source.contains("__KELD_SELECTED_ENTRY__"));
         assert!(

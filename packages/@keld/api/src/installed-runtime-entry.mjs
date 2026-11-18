@@ -3,11 +3,13 @@
  *
  * Pack generates this file at the app root from bytes compiled into Core.
  * Installed Host/Guardian verify those bytes against retained no-follow
- * handles before selecting this module as Bun's *one* entry. The original
- * entry path comes only from the independently admitted boot descriptor.
+ * handles before selecting this module as a pre-entry preload. Bun runs the
+ * independently admitted original as its truthful main only after this
+ * authenticated preload completes.
  */
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { realpathSync, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 // Only the fixed installed provider files under the closed, verified graph
 // may supply bootstrap authority. A user package with a matching self-name or
 // an app-root exports map cannot redirect these imports before authentication.
@@ -18,20 +20,22 @@ import {
 } from "./node_modules/@keld/kipc/transport.js";
 
 const selectedMain = process.argv[1];
+const sealedBootstrap = fileURLToPath(import.meta.url);
 // Core compiled this relative path into the signed app-root file. It is the
-// sole original-entry selector; no private path is passed as a user argument.
+// sole original-entry selector; argv[1] is Bun's normal original-main slot.
+// No app-private path may be passed as an additional user argument.
 const sealedOriginalRelative = "__KELD_SELECTED_ENTRY__";
 // The Host's fixed launch selector is required *before* filesystem reads.
 // This shape is a secondary check: authority remains the signed boot,
 // retained no-follow graph and Host-minted app-link, not mutable CLI argv.
 const shapeError =
-  !import.meta.main || !runtimeProcessFactsSelected
-    ? "not-main"
+  import.meta.main || !runtimeProcessFactsSelected
+    ? "not-sealed-preload"
     : process.argv.length !== 2
       ? "unexpected-argv-arity"
       : typeof selectedMain !== "string" ||
           !isAbsolute(selectedMain) ||
-          basename(selectedMain) !== "keld-installed-runtime-entry.mjs"
+          basename(sealedBootstrap) !== "keld-installed-runtime-entry.mjs"
         ? "unexpected-main-path"
         : undefined;
 if (shapeError) {
@@ -64,7 +68,7 @@ if (
 let canonicalRoot;
 let canonicalEntry;
 try {
-  canonicalRoot = dirname(realpathSync(selectedMain));
+  canonicalRoot = dirname(realpathSync(sealedBootstrap));
   canonicalEntry = realpathSync(join(canonicalRoot, sealedOriginalRelative));
 } catch {
   throw linkError("KELD-IPC-005", "Host-admitted entry cannot be resolved.");
@@ -74,14 +78,17 @@ try {
   const rootIdentity = statSync(canonicalRoot, { bigint: true });
   const targetIdentity = statSync(canonicalEntry, { bigint: true });
   const mainIdentity = statSync(selectedMain, { bigint: true });
+  const bunMainIdentity = statSync(Bun.main, { bigint: true });
   if (!targetIdentity.isFile() || rootIdentity.ino === 0n) {
     throw new Error("filesystem cannot establish an original entry identity");
   }
   if (
-    targetIdentity.dev === mainIdentity.dev &&
-    targetIdentity.ino === mainIdentity.ino
+    targetIdentity.dev !== mainIdentity.dev ||
+    targetIdentity.ino !== mainIdentity.ino ||
+    targetIdentity.dev !== bunMainIdentity.dev ||
+    targetIdentity.ino !== bunMainIdentity.ino
   ) {
-    throw new Error("original entry cannot be the runtime bootstrap itself");
+    throw new Error("Bun main is not the sealed original entry");
   }
   let ancestor = dirname(canonicalEntry);
   for (let depth = 0; depth < 64; depth++) {
@@ -109,8 +116,7 @@ if (!withinRoot) {
   );
 }
 
-// This import MUST remain a literal specifier in the generated app-root
-// source. On Windows Bun 1.4.4 a variable import creates a second isolated
-// SDK instance, even when both forms resolve to the same physical file.
-// The original is evaluated only after authentic Init ACK and subscriptions.
-await bootHostSelectedEntry(() => import("./__KELD_SELECTED_ENTRY__"));
+// Only the signed Host selects this preload. Bun evaluates the original entry
+// as its real main AFTER this await, preserving truthful import.meta.main and
+// Bun.main, while keeping the existing one-link Init ACK/subscription gate.
+await bootHostSelectedEntry(async () => undefined);

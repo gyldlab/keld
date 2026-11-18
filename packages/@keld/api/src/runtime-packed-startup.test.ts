@@ -257,6 +257,7 @@ async function provePackedHandshake(
   singleGraphBootstrap = false,
   rejectInitAck = false,
   verifiedOriginalEntry?: string,
+  signedPreloadMode = false,
 ): Promise<void> {
   const socketDir = mkdtempSync(join(tmpdir(), "krp-packed-live-"));
   const endpoint =
@@ -351,6 +352,8 @@ async function provePackedHandshake(
     },
   });
   const messages: Message[] = [];
+  let authenticated = false;
+  let enteredBeforeAuth = 0;
   let pending: ((message: Message) => void) | undefined;
   let pendingProbe: ((message: Message) => void) | undefined;
   const child = Bun.spawn(
@@ -359,20 +362,23 @@ async function provePackedHandshake(
       "--no-env-file",
       "--no-install",
       "--define=__KELD_RUNTIME_PROCESS_FACTS__:true",
-      ...(singleGraphBootstrap
+      ...(signedPreloadMode
+        ? [`--preload=${entry}`]
+        : singleGraphBootstrap
+          ? []
+          : [
+              "--preload",
+              preloadRelative
+                ? "./node_modules/@keld/api/runtime-preload.js"
+                : preloadByAlias
+                  ? "@keld/api/runtime-preload"
+                  : wrapper,
+            ]),
+      ...(verifiedOriginalEntry === undefined || signedPreloadMode
         ? []
-        : [
-            "--preload",
-            preloadRelative
-              ? "./node_modules/@keld/api/runtime-preload.js"
-              : preloadByAlias
-                ? "@keld/api/runtime-preload"
-                : wrapper,
-          ]),
-      ...(verifiedOriginalEntry === undefined ? [] : ["run"]),
-      entry,
-      // The original source is sealed in the generated bootstrap and may
-      // never be reinterpreted as a user file argument.
+        : ["run"]),
+      signedPreloadMode ? verifiedOriginalEntry! : entry,
+      // Bun receives only its verified main at argv[1], with no user tokens.
     ],
     {
       ...(inheritCwd ? {} : { cwd: stage }),
@@ -386,6 +392,7 @@ async function provePackedHandshake(
       ipc(message) {
         const value = message as Message;
         timeline.push(`child-${value.kind}`);
+        if (value.kind === "entry" && !authenticated) enteredBeforeAuth++;
         if (value.kind === "probe-ready") {
           const resolve = pendingProbe;
           pendingProbe = undefined;
@@ -465,6 +472,7 @@ async function provePackedHandshake(
         "Runtime facts require",
       );
       expect(messages.some((value) => value.kind === "entry")).toBe(false);
+      expect(enteredBeforeAuth).toBe(0);
       expect(connections).toBe(1);
       return;
     }
@@ -482,6 +490,7 @@ async function provePackedHandshake(
         Uint8Array.of(1),
       );
     }
+    authenticated = true;
     await writer.writeFrame(
       FrameKind.Event,
       0,
@@ -496,12 +505,19 @@ async function provePackedHandshake(
     step = "entry";
     const entered = await withIoDeadline(Promise.resolve(next()));
     expect(entered.kind).toBe("entry");
+    expect(enteredBeforeAuth).toBe(0);
     expect(entered.before).toEqual(captured.versions);
-    // The signed bootstrap is Bun main. Its compiled original is imported
-    // after Init ACK, with no app-private path visible as a user argument.
-    // Preserve truthful Bun.main and import.meta.main without global spoofing.
+    // One real Bun main must share the authenticated SDK with its preloader.
+    // The signed Mac preload leaves import.meta.main truthful for the original.
     expect(entered.entryIdentity?.bunMainMatchesArgv1).toBe(true);
-    if (verifiedOriginalEntry) {
+    if (signedPreloadMode) {
+      expect(entered.entryIdentity).toEqual({
+        importMetaMain: true,
+        bunMainMatchesArgv1: true,
+        originalMatchesArgv2: false,
+        argc: 2,
+      });
+    } else if (verifiedOriginalEntry) {
       expect(entered.entryIdentity).toEqual({
         importMetaMain: false,
         bunMainMatchesArgv1: true,
@@ -551,7 +567,7 @@ async function provePackedHandshake(
     const stderr = await new Response(child.stderr).text();
     const stdout = await new Response(child.stdout).text();
     throw new Error(
-      `packed app-link mode=${verifiedOriginalEntry === undefined ? (singleGraphBootstrap ? "bootstrap" : "preload") : "root-signed-bootstrap"}, preload=${preloadRelative ? "relative" : preloadByAlias ? "export" : "absolute"}, cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, host_connections=${connections}, order=${timeline.join(">")}, secondary_first=${second}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
+      `packed app-link mode=${signedPreloadMode ? "sealed-preload-true-main" : verifiedOriginalEntry === undefined ? (singleGraphBootstrap ? "bootstrap" : "preload") : "root-signed-bootstrap"}, preload=${preloadRelative ? "relative" : preloadByAlias ? "export" : "absolute"}, cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, host_connections=${connections}, order=${timeline.join(">")}, secondary_first=${second}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
       { cause: error },
     );
   } finally {
@@ -788,21 +804,16 @@ await app.whenReady();`,
     if (process.platform === "win32") {
       // Bun 1.4.4 Windows has a known CLI --preload/main module-cache split.
       // Do NOT treat its dual-phase path as a valid Ready oracle. Instead
-      // execute the exact approved app-root source template as one Bun main,
+      // execute a test-owned one-graph bootstrap as Bun main,
       // with the static sealed original, and enforce the unchanged real
       // HELLO/Init ACK/both subscriptions/Ready/one-link/clean-exit contract
       // under both stage-owned and inherited working-directory conditions.
       // The independent packed test below additionally tests bad Init ACK,
       // unauthorized selector and all malformed original-entry controls.
-      const supported = join(stage, "keld-installed-runtime-entry.mjs");
-      const template = readFileSync(
-        join(import.meta.dir, "installed-runtime-entry.mjs"),
-        "utf8",
-      );
-      expect(template.split("__KELD_SELECTED_ENTRY__")).toHaveLength(3);
+      const supported = join(stage, "test-owned-single-graph-bootstrap.mjs");
       writeFileSync(
         supported,
-        template.replaceAll("__KELD_SELECTED_ENTRY__", "entry.mjs"),
+        'import { bootHostSelectedEntry } from "@keld/api/internal/app";\nawait bootHostSelectedEntry(() => import("./entry.mjs"));\n',
       );
       await provePackedHandshake(
         stage,
@@ -1043,7 +1054,7 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
       true,
       true,
     );
-    // Render the same two compile-time template markers as Core's deterministic
+    // Render the same compile-time template marker as Core's deterministic
     // source producer, from this fixture's boot-selected relative main. The
     // Core unit contract independently checks these exact generated bytes,
     // marker count, and rejects unsafe import names before Pack signs them.
@@ -1054,37 +1065,48 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
       "utf8",
     );
     const marker = "__KELD_SELECTED_ENTRY__";
-    expect(ownerTemplate.split(marker)).toHaveLength(3);
+    expect(ownerTemplate.split(marker)).toHaveLength(2);
     const selectedOriginal = "real-user-entry.mjs";
     writeFileSync(
       installedBootstrap,
       ownerTemplate.replaceAll(marker, selectedOriginal),
     );
     expect(readFileSync(installedBootstrap, "utf8")).toContain(
-      'await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));',
+      "await bootHostSelectedEntry(async () => undefined);",
     );
-    await provePackedHandshake(
-      stage,
-      wrapper,
-      installedBootstrap,
-      false,
-      false,
-      false,
-      true,
-      false,
-      entry,
-    );
-    await provePackedHandshake(
-      stage,
-      wrapper,
-      installedBootstrap,
-      false,
-      false,
-      false,
-      true,
-      true,
-      entry,
-    );
+    if (process.platform === "darwin") {
+      // A main-only original must really execute as Bun's main. The existing
+      // bootstrap-as-main route makes this original fail before its entry IPC.
+      writeFileSync(
+        entry,
+        'if (!import.meta.main) throw new Error("original main identity changed");\n' +
+          readFileSync(entry, "utf8"),
+      );
+      await provePackedHandshake(
+        stage,
+        wrapper,
+        installedBootstrap,
+        false,
+        false,
+        false,
+        true,
+        false,
+        entry,
+        true,
+      );
+      await provePackedHandshake(
+        stage,
+        wrapper,
+        installedBootstrap,
+        false,
+        false,
+        false,
+        true,
+        true,
+        entry,
+        true,
+      );
+    }
 
     // Extra argv cannot select another original, even when a different file
     // physically exists inside the app. The literal is the only selector.
@@ -1116,8 +1138,9 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
         "--no-env-file",
         "--no-install",
         "--define=__KELD_RUNTIME_PROCESS_FACTS__:true",
+        `--preload=${installedBootstrap}`,
         "run",
-        installedBootstrap,
+        entry,
       ],
       {
         cwd: stage,
@@ -1175,8 +1198,9 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
             "--no-env-file",
             "--no-install",
             "--define=__KELD_RUNTIME_PROCESS_FACTS__:true",
+            `--preload=${installedBootstrap}`,
             "run",
-            installedBootstrap,
+            entry,
           ],
           {
             cwd: stage,
@@ -1207,10 +1231,11 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
 
     // An unselected or malformed invocation of the exact generated module
     // must not load arbitrary original code or start an app-link handshake.
-    const outsideRoot = join(tmpdir(), "not-host-admitted.mjs");
+    const outsideRoot = join(stage, "outside-selected.mjs");
+    writeFileSync(outsideRoot, 'console.log("UNAUTHORIZED_ORIGINAL");\n');
     for (const [name, hasHostSelector, selected, extra] of [
       ["without-host-selector", false, entry, []],
-      ["unexpected-relative-user-argument", true, "./real-user-entry.mjs", []],
+      ["unexpected-relative-user-argument", true, "./outside-selected.mjs", []],
       ["unexpected-absolute-user-argument", true, outsideRoot, []],
       ["unexpected-alternate-user-argument", true, specialEntry, []],
       ["unexpected-encoded-user-argument", true, encodedEntry, []],
@@ -1224,8 +1249,8 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
           ...(hasHostSelector
             ? ["--define=__KELD_RUNTIME_PROCESS_FACTS__:true"]
             : []),
+          `--preload=${installedBootstrap}`,
           "run",
-          installedBootstrap,
           selected,
           ...extra,
         ],
