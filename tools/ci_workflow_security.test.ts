@@ -1615,14 +1615,20 @@ test("new Rust test imports require explicit names in normal unprivileged CI", (
   );
 });
 
-test("Windows media runner avoids unused Bun and rustfmt installation", () => {
+test("Windows media runner supplies pinned Bun for executable bootstrap without rustfmt", () => {
   const steps = fixture().jobs["windows-media"]!.steps;
   const bunSetup = steps.filter(
     (candidate) =>
       typeof candidate.uses === "string" &&
       candidate.uses.toLowerCase().startsWith("oven-sh/setup-bun@"),
   );
-  expect(bunSetup).toHaveLength(0);
+  expect(bunSetup).toHaveLength(1);
+  expect(bunSetup[0]!.uses).toBe(
+    "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+  );
+  expect((bunSetup[0]!.with as Step)["no-cache"]).toBe(
+    "${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}",
+  );
   const installers = steps.filter(
     (candidate) =>
       typeof candidate.uses === "string" &&
@@ -2199,7 +2205,7 @@ const b3MainSaveIf =
   "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}";
 const b3BunNoCache =
   "${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}";
-const b3BunJobs = ["check", "bun-test", "hygiene"] as const;
+const b3BunJobs = ["check", "windows-media", "bun-test", "hygiene"] as const;
 
 function b3BunAction(f: Fixture, jobName: string): Step {
   const actions = f.jobs[jobName]!.steps.filter((step) =>
