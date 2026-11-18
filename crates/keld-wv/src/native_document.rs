@@ -126,6 +126,7 @@ pub(crate) struct NativeDocumentOwner {
 }
 
 impl NativeDocumentOwner {
+    #[cfg(windows)]
     pub(crate) const fn view(&self) -> WebviewId {
         self.view
     }

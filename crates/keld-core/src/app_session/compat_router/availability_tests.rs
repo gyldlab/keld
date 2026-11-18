@@ -21,6 +21,10 @@ mod original_recovery;
 // Fixture identities do not prove Runtime admission or native registration.
 use super::test_fixture::availability_session;
 
+#[expect(
+    clippy::expect_used,
+    reason = "This native test fixture requires the original live component and must fail if its test-owned generation lock or reader is absent."
+)]
 fn active_caller(handle: &PrimaryRouterHandle) -> PrimaryCallerContext {
     let current = handle.current.lock().expect("component current");
     let active = current.as_ref().expect("component active link");

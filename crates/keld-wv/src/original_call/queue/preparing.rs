@@ -1,10 +1,12 @@
+#[cfg(windows)]
+use super::RendererRoleWitness;
 use super::{
     ActiveOriginalCall, ActiveOriginalRecord, NativeDocumentOwner, OriginalBinding,
     OriginalCallAdmission, OriginalCallQueue, OriginalControlFault, OriginalInvocationKind,
     OriginalQueueProgress, PendingOriginalCall, PendingOriginalEvent, PendingOriginalSend,
     PreparationDisposition, PreparationPhase, PreparingOriginalIdentity,
     PreparingOriginalInvocation, PreparingRecord, QueuedOriginalCall, Rc, RendererBridgeRequest,
-    RendererRoleWitness, SyncSender, WvError, bridge_error,
+    SyncSender, WvError, bridge_error,
 };
 
 impl<P> OriginalCallQueue<P> {
@@ -217,6 +219,7 @@ impl<P> OriginalCallQueue<P> {
 
     /// Retain only the captured ingress witness for the platform's existing
     /// final fence. This observation cannot acquire a successor role.
+    #[cfg(windows)]
     pub(crate) fn preparation_role(
         &self,
         invocation: &PreparingOriginalInvocation<P>,

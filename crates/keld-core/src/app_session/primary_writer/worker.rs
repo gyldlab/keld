@@ -80,11 +80,29 @@ pub(in crate::app_session) struct PrimaryWriterWorker {
 }
 impl PrimaryWriterWorker {
     pub(in crate::app_session) fn start(
+        router: PrimaryRouterHandle,
+    ) -> Result<(PrimaryWriter, Self), HostAppError> {
+        let writer = PrimaryWriter::new(router.window_commands.clone());
+        Self::start_with_writer(router, writer)
+    }
+
+    // A test can register a real capacity waiter on the same condition before
+    // starting the sole physical worker. Production always constructs its own
+    // writer via `start` and never accepts an injected writer.
+    #[cfg(test)]
+    pub(super) fn start_existing_for_test(
+        router: PrimaryRouterHandle,
+        writer: PrimaryWriter,
+    ) -> Result<(PrimaryWriter, Self), HostAppError> {
+        Self::start_with_writer(router, writer)
+    }
+
+    fn start_with_writer(
         mut router: PrimaryRouterHandle,
+        writer: PrimaryWriter,
     ) -> Result<(PrimaryWriter, Self), HostAppError> {
         #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
         let physical_hold = super::physical_value_hold::PhysicalValueHold::from_env()?;
-        let writer = PrimaryWriter::new(router.window_commands.clone());
         router.primary_writer = Some(writer.clone());
         if let Some(compat) = &router.compat {
             compat
@@ -146,7 +164,7 @@ impl Drop for WorkerEnded<'_> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .worker_ended();
-        self.shared.changed.notify_all();
+        self.shared.notify_all();
         self.shared.wake(wake);
     }
 }
@@ -232,9 +250,12 @@ fn next(shared: &Shared) -> Result<Option<(Position, Packet)>, HostAppError> {
         if state.closed {
             return Ok(None);
         }
+        #[cfg(test)]
+        if let Some(observer) = state.writer_idle_wait_observer.take() {
+            let _ = observer.try_send(());
+        }
         state = shared
-            .changed
-            .wait(state)
+            .wait_worker(state)
             .map_err(|_| WriterRefusal::Poisoned.into_host_error("primary writer idle"))?;
     }
 }
@@ -284,6 +305,24 @@ fn run(
             })?;
         }
         let (outcome, completed_at) = write(&packet);
+        #[cfg(test)]
+        {
+            let hook = shared
+                .state
+                .lock()
+                .ok()
+                .and_then(|mut state| state.after_write_before_completion.take());
+            if let Some(hook) = hook {
+                hook.arrived
+                    .send(())
+                    .map_err(|_| app_detail("writer completion fixture", "observer disappeared"))?;
+                hook.resume
+                    .lock()
+                    .map_err(|_| app_detail("writer completion fixture", "hook poisoned"))?
+                    .recv()
+                    .map_err(|_| app_detail("writer completion fixture", "release disappeared"))?;
+            }
+        }
         #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
         if let Some(observed) = held_packet {
             observed.observe("packet-returned", shared, Some(outcome), Some(&packet));
@@ -316,11 +355,17 @@ fn run(
             .lock()
             .map_err(|_| WriterRefusal::Poisoned.into_host_error("primary writer completion"))?
             .complete_at(position, outcome, completed_at);
-        shared.changed.notify_all();
+        shared.notify_all();
         shared.wake(wake);
         retirement?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(in crate::app_session) struct CompletionHook {
+    pub(in crate::app_session) arrived: std::sync::mpsc::SyncSender<()>,
+    pub(in crate::app_session) resume: Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
 #[cfg(test)]

@@ -44,7 +44,7 @@ fn initial_ready(
     let owner_receipt = std::thread::spawn(move || -> Result<_, &'static str> {
         let command = guardian
             .recv_timeout(Duration::from_secs(3))
-            .map_err(|_| "actual initial arm request")?;
+            .map_err(|_| "actual initial arm request missing")?;
         let crate::app_session::GuardianOwnerCommand::ArmRecovery(
             crate::app_session::RecoveryArm::Initial(1),
             receipt,
@@ -56,7 +56,7 @@ fn initial_ready(
         assert!(ready.load(std::sync::atomic::Ordering::Acquire));
         receipt
             .send(Ok(()))
-            .map_err(|_| "actual owner receipt channel disconnected")?;
+            .map_err(|_| "actual owner receipt channel ended")?;
         drop(transition);
         Ok(guardian)
     });

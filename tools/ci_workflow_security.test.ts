@@ -1615,14 +1615,20 @@ test("new Rust test imports require explicit names in normal unprivileged CI", (
   );
 });
 
-test("Windows media runner avoids unused Bun and rustfmt installation", () => {
+test("Windows media runner supplies pinned Bun for executable bootstrap without rustfmt", () => {
   const steps = fixture().jobs["windows-media"]!.steps;
   const bunSetup = steps.filter(
     (candidate) =>
       typeof candidate.uses === "string" &&
       candidate.uses.toLowerCase().startsWith("oven-sh/setup-bun@"),
   );
-  expect(bunSetup).toHaveLength(0);
+  expect(bunSetup).toHaveLength(1);
+  expect(bunSetup[0]!.uses).toBe(
+    "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+  );
+  expect((bunSetup[0]!.with as Step)["no-cache"]).toBe(
+    "${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}",
+  );
   const installers = steps.filter(
     (candidate) =>
       typeof candidate.uses === "string" &&
@@ -2136,7 +2142,7 @@ for (const [job, name] of aptSteps) {
       aptStepTimeoutMinutes - 1,
       aptStepTimeoutMinutes + 1,
       "${{ inputs.minutes }}",
-      "15m",
+      "25m",
     ]) {
       const f = fixture();
       const selected = step(f, job, name);
@@ -2150,7 +2156,7 @@ for (const [job, name] of aptSteps) {
       const f = fixture();
       f.jobs[job]!["timeout-minutes"] = value;
       expect(() => check(f)).toThrow(
-        "does not exceed the 15-minute apt step bound",
+        "does not exceed the 25-minute apt step bound",
       );
     }
   });
@@ -2177,7 +2183,7 @@ test("apt timeout reads the parsed run script, not names or layout", () => {
   const flowMarker = "      - name: Build Linux media guard probe\n";
   const flowed = source.replace(
     flowMarker,
-    "      - { run: 'sudo apt-get install -y jq', timeout-minutes: 15 }\n" +
+    "      - { run: 'sudo apt-get install -y jq', timeout-minutes: 25 }\n" +
       flowMarker,
   );
   expect(flowed).not.toBe(source);
@@ -2185,7 +2191,7 @@ test("apt timeout reads the parsed run script, not names or layout", () => {
   const quoted = fixture();
   quoted.jobs["linux-gui-smoke"]!.steps.push({
     run: "sudo apt-get install -y jq\n",
-    "timeout-minutes": "15",
+    "timeout-minutes": "25",
   });
   expect(() => check(quoted)).not.toThrow();
   const unrelated = fixture();
@@ -2199,7 +2205,7 @@ const b3MainSaveIf =
   "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}";
 const b3BunNoCache =
   "${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}";
-const b3BunJobs = ["check", "bun-test", "hygiene"] as const;
+const b3BunJobs = ["check", "windows-media", "bun-test", "hygiene"] as const;
 
 function b3BunAction(f: Fixture, jobName: string): Step {
   const actions = f.jobs[jobName]!.steps.filter((step) =>
