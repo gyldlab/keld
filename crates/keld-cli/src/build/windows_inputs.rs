@@ -2,7 +2,7 @@
 //!
 //! This explicit check creates no package, stage, process, profile or grant.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
@@ -16,6 +16,10 @@ use super::{BuildError, config};
 use crate::boot;
 
 const AUTHORING_LIMIT: u64 = 64 * 1024;
+
+fn has_windows_trailing_alias(name: &OsStr) -> bool {
+    matches!(name.as_encoded_bytes().last(), Some(b'.' | b' '))
+}
 
 /// Return the stable drive path of the exact directory handle retained last
 /// by `pin_input_root`. A mapped drive may be rebound while that handle remains
@@ -37,8 +41,7 @@ pub(super) fn stable_file_at_parent(path: &Path, parents: &[File]) -> Result<Pat
             "regular file leaf required",
         ));
     };
-    let bytes = leaf.as_encoded_bytes();
-    if matches!(bytes.last(), Some(b'.' | b' ')) {
+    if has_windows_trailing_alias(leaf) {
         return Err(BuildError::input(
             "Windows local file",
             "ambiguous trailing dot/space leaf",
@@ -61,6 +64,15 @@ pub(super) fn stable_local_target_path(path: &Path) -> Result<(PathBuf, Vec<File
         return Err(BuildError::input(
             "Windows local target",
             "use an absolute local-disk target without parent traversal",
+        ));
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::Normal(name) if has_windows_trailing_alias(name)))
+    {
+        return Err(BuildError::input(
+            "Windows local target",
+            "ambiguous trailing dot/space target component",
         ));
     }
     let mut suffix = Vec::<OsString>::new();
@@ -568,6 +580,26 @@ mod windows_local_volume_tests {
         assert_eq!(stable, stable_root.join("new-install").join("updates"));
         assert!(!stable.exists());
         assert!(stable_local_target_path(&owned.path().join("..").join("escape")).is_err());
+    }
+
+    #[test]
+    fn nonexistent_target_rejects_windows_trailing_dot_space_aliases() {
+        let owned = tempfile::tempdir().expect("private Windows fixture");
+        for suffix in [
+            "new-install.",
+            "new-install ",
+            "new-install./updates",
+            "new-install /updates",
+            "new-install/updates.",
+            "new-install/updates ",
+        ] {
+            let error = stable_local_target_path(&owned.path().join(suffix))
+                .expect_err("ambiguous Windows target must fail closed");
+            assert!(
+                error.to_string().contains("trailing dot/space"),
+                "target {suffix:?} failed for the wrong reason: {error}"
+            );
+        }
     }
 
     // Failure-first falsifier for a caller that pins a directory but opens

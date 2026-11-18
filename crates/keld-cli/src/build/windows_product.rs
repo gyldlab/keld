@@ -138,7 +138,11 @@ pub(super) fn run(session_path: &Path) -> Result<(), BuildError> {
         ));
     }
     let root = std::env::current_dir().map_err(refuse)?;
-    let project_pins = windows_inputs::pin_input_root(&root)?;
+    run_at_root(&root, session_path)
+}
+
+fn run_at_root(root: &Path, session_path: &Path) -> Result<(), BuildError> {
+    let project_pins = windows_inputs::pin_input_root(root)?;
     let root = windows_inputs::stable_local_path(&project_pins)?;
     let mut build = local_source::pin_file(&root.join("keld.build.ts"), MAX_INPUT)?;
     let bytes = read(&mut build)?;
@@ -147,11 +151,7 @@ pub(super) fn run(session_path: &Path) -> Result<(), BuildError> {
         .parent()
         .ok_or_else(|| refuse("session input parent missing"))?;
     let session_parent_pins = windows_inputs::pin_input_root(parent)?;
-    let stable_session_parent = windows_inputs::stable_local_path(&session_parent_pins)?;
-    let session_name = session_path
-        .file_name()
-        .ok_or_else(|| refuse("session input leaf missing"))?;
-    let session_path = stable_session_parent.join(session_name);
+    let session_path = windows_inputs::stable_file_at_parent(session_path, &session_parent_pins)?;
     let mut session_pin = local_source::pin_file(&session_path, MAX_INPUT)?;
     let session = parse_session(&read(&mut session_pin)?)?;
     // Actual file and directory handles, not drive-letter syntax, own local-volume
@@ -204,8 +204,30 @@ pub(super) fn run(session_path: &Path) -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     fn session() -> serde_json::Value {
         serde_json::json!({"schema":"keld.windows-local-test-session/v1","expectedSourceCommit":"1".repeat(40),"git":"D:/git.exe","cargo":"D:/cargo.exe","rustc":"D:/rustc.exe","cargoHome":"D:/cache","outputNonce":"test-1","signTool":{"path":"D:/signtool.exe","sha256":"2".repeat(64)},"certificateThumbprint":"3".repeat(40),"publisherScope":"4".repeat(64),"releasePublicKey":"D:/public.raw","publishedAt":"2026-11-11T00:00:00Z","cacheMode":"mutable-developer"})
+    }
+    #[test]
+    fn session_file_name_refuses_trailing_dot_space_aliases() {
+        let root = tempfile::tempdir().expect("private Windows project");
+        let recipe = format!(
+            "export default {{target:'windows-x64',signing:'test-local-untimestamped',channel:'stable',outDir:'out',source:{{root:'source',commit:'{}'}},compiler:{{typescriptRoot:'typescript',bun:{{path:'bun.exe',sha256:'{}'}},tsc:{{path:'tsc.js',sha256:'{}'}}}},modules:['main.js']}} as const;",
+            "1".repeat(40),
+            "2".repeat(64),
+            "3".repeat(64),
+        );
+        fs::write(root.path().join("keld.build.ts"), recipe).expect("valid test recipe");
+        for leaf in ["session.json.", "session.json "] {
+            let error = run_at_root(root.path(), &root.path().join(leaf))
+                .expect_err("ambiguous session input must fail closed");
+            assert!(
+                error
+                    .to_string()
+                    .contains("ambiguous trailing dot/space leaf"),
+                "session {leaf:?} failed for the wrong reason: {error}"
+            );
+        }
     }
     #[test]
     fn ephemeral_input_cannot_override_project_or_create_authority() {
