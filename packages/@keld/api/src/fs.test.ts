@@ -17,7 +17,7 @@ import {
   encodePostcardString,
   encodeVarint,
   withIoDeadline,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 import {
   freshWin32AppLinkPipe,
   rejectionOf,

@@ -8,7 +8,7 @@ pub const CORPUS: &str = include_str!("../fixtures/receiver-semantics-v0.tsv");
 pub const CORPUS_PATH: &str = "tests/fixtures/receiver-semantics-v0.tsv";
 /// One owner, one digest: the Bun suite asserts this same constant, so a
 /// corpus edit is an explicit, reviewed change to both consumers.
-pub const CORPUS_SHA256: &str = "94f6dd8a39aab2baf8b6e2ac4eb6c7c8e91e780c20d419ef927bd4dd5faff4af";
+pub const CORPUS_SHA256: &str = "f4744a8bf81481d1a0753563cc871dce0e4f7ec1ea4cdcac4b4e4c231d45e79b";
 
 /// Fixture token declared in the corpus version row (`0x01..0x20`). Not a
 /// secret: the corpus must never contain one (spec §4).

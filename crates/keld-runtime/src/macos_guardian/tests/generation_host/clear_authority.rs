@@ -12,15 +12,16 @@ use nix::sys::signal::kill;
 use nix::unistd::{Pid, getpgid};
 
 use super::super::super::process_group::{
-    GroupIdentity, observe_group_identity, terminate_attested_group,
+    GroupIdentity, TestGroupSignalHookOwner, TestGroupSignalPoint, install_test_group_signal_hook,
+    observe_group_identity, terminate_attested_group,
 };
 use super::super::super::{handshake_client, parse_app_link};
 use super::super::test_support::{NativeChildOwner, verified_real_bun};
 use super::{
     CONTROL_CLEAR, CONTROL_CLEARED, CONTROL_PREPARE, CONTROL_PREPARED, CONTROL_REGISTERED,
     CONTROL_REVOKE, CONTROL_REVOKED, CONTROL_SPAWNED, GenerationControlRecord,
-    GuardedPrimaryUpdate, RecoveryState, RevocationCause, guardian_exchange, lock_recovery,
-    start_generation_host_fixture,
+    GuardedPrimaryUpdate, RecoveryState, RevocationCause, await_bound_generation,
+    guardian_exchange, lock_recovery, start_generation_host_fixture_with_setup,
 };
 
 struct NativeBunGroup {
@@ -121,14 +122,13 @@ fn descendant_gone(pid: i32) {
     }
 }
 
-#[test]
-fn early_kgc1_clear_reaps_live_bun_and_same_group_descendant_before_cleared() {
-    let root = tempfile::tempdir().expect("owned native Bun/CLEAR test root");
-    let marker = root.path().join("descendant.pid");
-    let mut owned = start_real_bun_group(&marker);
-    let group_pid = owned.leader.id();
+fn assert_live_bun_group(
+    owned: &mut NativeBunGroup,
+    group_pid: u32,
+    marker: &std::path::Path,
+) -> (Pid, i32) {
     let group = Pid::from_raw(i32::try_from(group_pid).expect("group pid fits"));
-    let descendant = await_bun_descendant(&marker);
+    let descendant = await_bun_descendant(marker);
     assert_eq!(
         getpgid(Some(Pid::from_raw(descendant))),
         Ok(group),
@@ -143,6 +143,90 @@ fn early_kgc1_clear_reaps_live_bun_and_same_group_descendant_before_cleared() {
             .is_none(),
         "premature Bun exit cannot satisfy the forged CLEAR negative control"
     );
+    (group, descendant)
+}
+
+fn assert_native_absence(
+    drained: &crate::primary::RoleProcessDrained,
+    original_principal: crate::primary::RolePrincipal,
+    group: Pid,
+    leader_status: std::process::ExitStatus,
+    current: &Mutex<Option<super::super::super::RegisteredPrimaryGeneration>>,
+) {
+    assert_eq!(drained.principal(), original_principal);
+    assert_eq!(drained.attempt(), 1);
+    assert_eq!(getpgid(Some(group)), Err(Errno::ESRCH));
+    assert_eq!(
+        kill(Pid::from_raw(-group.as_raw()), None),
+        Err(Errno::ESRCH)
+    );
+    assert_eq!(
+        leader_status.signal(),
+        Some(9),
+        "host must SIGKILL still-live Bun at CLEAR"
+    );
+    assert!(current.lock().expect("current generation mutex").is_none());
+}
+
+fn assert_unreaped_clear_refusal(
+    guardian: &mut UnixStream,
+    host_worker: std::thread::JoinHandle<Result<(), super::RuntimeError>>,
+    updates_rx: &mpsc::Receiver<GuardedPrimaryUpdate>,
+) -> super::RuntimeError {
+    assert!(
+        super::read_generation_control(guardian).is_err(),
+        "an unreaped original Bun must never receive CLEARED"
+    );
+    let error = host_worker
+        .join()
+        .expect("host worker terminates on missing proof")
+        .expect_err("physical absence is unproven");
+    assert!(error.to_string().contains("absence"), "{error}");
+    assert!(
+        !updates_rx.try_iter().any(|update| matches!(
+            update,
+            GuardedPrimaryUpdate::Role(super::RoleEvent::ProcessDrained { .. })
+        )),
+        "kill delivery, Revoked and EOF cannot mint physical drain"
+    );
+    error
+}
+
+#[test]
+fn early_kgc1_clear_reaps_live_bun_and_same_group_descendant_before_cleared() {
+    exercise_clear_absence_witness(true);
+}
+
+#[test]
+fn unreaped_bun_cannot_publish_physical_drain_or_release_cleared() {
+    exercise_clear_absence_witness(false);
+}
+
+fn clear_reap_fence(
+    group: u32,
+    enabled: bool,
+    reaped: mpsc::Receiver<()>,
+) -> Option<TestGroupSignalHookOwner> {
+    enabled.then(|| {
+        install_test_group_signal_hook(
+            group,
+            Box::new(move |point| {
+                if point == TestGroupSignalPoint::AfterDelivery {
+                    reaped
+                        .recv_timeout(Duration::from_secs(5))
+                        .expect("test parent reaps the killed group before the absence probe");
+                }
+            }),
+        )
+    })
+}
+
+fn exercise_clear_absence_witness(reap_before_ack: bool) {
+    let root = tempfile::tempdir().expect("owned native Bun/CLEAR test root");
+    let marker = root.path().join("descendant.pid");
+    let mut owned = start_real_bun_group(&marker);
+    let group_pid = owned.leader.id();
+    let (group, descendant) = assert_live_bun_group(&mut owned, group_pid, &marker);
 
     let (host, mut guardian) = UnixStream::pair().expect("private KGC1 generation-control pair");
     guardian
@@ -152,11 +236,13 @@ fn early_kgc1_clear_reaps_live_bun_and_same_group_descendant_before_cleared() {
     let current = Arc::new(Mutex::new(None));
     let recovery = Arc::new(Mutex::new(RecoveryState::new()));
     lock_recovery(&recovery).arm();
-    let host_worker = start_generation_host_fixture(
+    let (reaped_tx, reaped_rx) = mpsc::channel();
+    let host_worker = start_generation_host_fixture_with_setup(
         host,
         updates_tx,
         Arc::clone(&current),
         Arc::clone(&recovery),
+        move || clear_reap_fence(group_pid, reap_before_ack, reaped_rx),
     );
     let prepared = guardian_exchange(
         &mut guardian,
@@ -172,20 +258,16 @@ fn early_kgc1_clear_reaps_live_bun_and_same_group_descendant_before_cleared() {
     let (endpoint, token) = parse_app_link(&app_link).expect("authenticated link contents");
     let mut app = UnixStream::connect(endpoint).expect("connect real generation app link");
     handshake_client(&mut app, &token).expect("authenticate actual generation before revoke");
-    let bound = loop {
-        match updates_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("receive actual bounded generation authentication")
-        {
-            GuardedPrimaryUpdate::Bound(bound) => break bound,
-            GuardedPrimaryUpdate::Role(_) => {}
-        }
-    };
+    let bound = await_bound_generation(
+        &updates_rx,
+        "receive actual bounded generation authentication",
+    );
     assert_eq!(
         bound.attempt(),
         1,
         "host must really bind the admitted Bun generation"
     );
+    let original_principal = bound.principal();
     guardian_exchange(
         &mut guardian,
         &GenerationControlRecord::new(CONTROL_REVOKE, 1)
@@ -203,19 +285,44 @@ fn early_kgc1_clear_reaps_live_bun_and_same_group_descendant_before_cleared() {
     // Compromised/buggy Guardian falsely claims CLEAR despite still-live Bun
     // and descendant. Without the production CLEAR fail-safe, this receives
     // CLEARED while both continue to execute (failure-first negative oracle).
-    guardian_exchange(
+    super::write_generation_control(
         &mut guardian,
         &GenerationControlRecord::new(CONTROL_CLEAR, 1).with_pid(group_pid),
-        CONTROL_CLEARED,
-    );
+    )
+    .expect("request native CLEAR without claiming the child was reaped");
+    if !reap_before_ack {
+        // SIGKILL may be delivered, but this real OS parent deliberately retains
+        // the direct child's zombie. Only actual disappearance may mint proof.
+        let _error = assert_unreaped_clear_refusal(&mut guardian, host_worker, &updates_rx);
+        let _ = owned
+            .leader
+            .wait()
+            .expect("test parent now reaps its exact Bun");
+        descendant_gone(descendant);
+        return;
+    }
+    // The real Guardian performs this exact Child reap BEFORE sending CLEAR.
+    // This early-CLEAR adversary instead waits while Host's fail-safe kills,
+    // then reaps before releasing the test fence at the actual signal boundary.
+    // The production absence check is intentionally not a wait for a live leader.
     let leader_status = owned.leader.wait().expect("host cleared native Bun group");
     descendant_gone(descendant);
-    assert_eq!(
-        leader_status.signal(),
-        Some(9),
-        "host must SIGKILL still-live Bun at CLEAR"
-    );
-    assert!(current.lock().expect("current generation mutex").is_none());
+    reaped_tx
+        .send(())
+        .expect("release absence proof only after real child and descendant disappearance");
+    let cleared = super::read_generation_control(&mut guardian)
+        .expect("CLEARED only after actual native absence");
+    assert_eq!(cleared.kind, CONTROL_CLEARED);
+    let drained = updates_rx
+        .try_iter()
+        .find_map(|update| match update {
+            GuardedPrimaryUpdate::Role(super::RoleEvent::ProcessDrained { retirement }) => {
+                Some(retirement)
+            }
+            _ => None,
+        })
+        .expect("actual old Bun/group disappearance publishes physical witness");
+    assert_native_absence(&drained, original_principal, group, leader_status, &current);
     lock_recovery(&recovery).deny();
     drop(bound);
     drop(app);

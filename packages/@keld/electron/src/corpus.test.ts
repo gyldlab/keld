@@ -12,6 +12,11 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
+import {
+  decodeLifecycleEvent,
+  decodeRuntimeProcessInit,
+  decodeRuntimeInitialized,
+} from "@keld/kipc/runtime-process-facts";
 
 import {
   FrameKind,
@@ -47,7 +52,7 @@ const CORPUS_PATH = join(
 const STALL_LIMIT_MS = 5000;
 /** One owner, one digest: the Rust suite asserts this same constant. */
 const CORPUS_SHA256 =
-  "94f6dd8a39aab2baf8b6e2ac4eb6c7c8e91e780c20d419ef927bd4dd5faff4af";
+  "f4744a8bf81481d1a0753563cc871dce0e4f7ec1ea4cdcac4b4e4c231d45e79b";
 /** Pre-auth policies may reaccept after a rejection; authenticated ones close. */
 const PRE_AUTH_POLICIES = new Set([
   "server-pre-auth-hello",
@@ -224,12 +229,6 @@ function decodeEchoShape(payload: Uint8Array): void {
     throw new Error("KELD-IPC-003: trailing bytes");
 }
 
-function decodeUnitEnum(payload: Uint8Array, max: number): void {
-  if (payload.length !== 1 || payload[0] > max) {
-    throw new Error("KELD-IPC-003: invalid unit enum");
-  }
-}
-
 /** Corpus-only schema validation for the closed enums in keld-ipc lifecycle.rs. */
 function decodeLifecycleShape(
   payload: Uint8Array,
@@ -247,8 +246,9 @@ function decodeLifecycleShape(
       }
       end = afterChannel;
     } else if (variant !== 0) {
-      // Quit
-      throw new Error("KELD-IPC-003: unknown LifecycleRequest discriminant");
+      // New request bodies are validated by their existing generated owner.
+      decodeRuntimeProcessInit(payload);
+      return;
     }
   } else if (variant === 2) {
     // SubscribeRefused { reason: SubscribeRefusal }
@@ -257,8 +257,9 @@ function decodeLifecycleShape(
       throw new Error("KELD-IPC-003: unknown SubscribeRefusal discriminant");
     end = afterReason;
   } else if (variant > 1) {
-    // Quit | Subscribed
-    throw new Error("KELD-IPC-003: unknown LifecycleResponse discriminant");
+    // The generated owner alone validates Initialized and rejects unknown tags.
+    decodeRuntimeInitialized(payload);
+    return;
   }
   if (end !== payload.length)
     throw new Error("KELD-IPC-003: trailing lifecycle bytes");
@@ -309,11 +310,11 @@ function stageTwo(
       decodeWindowRequest(payload);
       return;
     case "lifecycle-event-receiver":
-      decodeUnitEnum(payload, 1); // Ready | LastWindowClosed
+      decodeLifecycleEvent(payload);
       return;
     case "event-receiver":
       if (channel === WINDOW_CHANNEL) decodeWindowEvent(payload);
-      else decodeUnitEnum(payload, 1); // LifecycleEvent
+      else decodeLifecycleEvent(payload);
       return;
     case "reply-waiter":
       // A generic waiter's REPLY codec belongs to the channel that issued the

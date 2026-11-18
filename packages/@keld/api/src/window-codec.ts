@@ -5,14 +5,23 @@
  * the host registry must validate every supplied reference and operation.
  */
 import {
+  stateApply,
+  stateDefineProperty,
+  stateIsArray,
+  stateFloat64At,
+  stateMap,
+  stateMapHas,
+  stateMapSet,
   stateIsUint8Array,
   stateByteLength,
   decodeU64Varint,
   decodeVarint,
+  encodePostcardString,
+  decodePostcardStringAt,
   encodeU64Varint,
   encodeVarint,
   kipcError,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 
 /** Both host-minted identity halves, compared without numeric coercion. */
 export interface WindowRef {
@@ -33,6 +42,24 @@ export interface WindowState {
   maximized: boolean;
   full_screen: boolean;
 }
+/** One native monitor. Geometry is checked integer DIP anchored to primary frame. */
+export interface DesktopFact {
+  id: number;
+  bounds: Rect;
+  work_area: Rect;
+  scale_factor: number;
+}
+/** Current, complete native display/theme observation; no authority or OS handle. */
+export interface DesktopFacts {
+  primary_id: number;
+  displays: DesktopFact[];
+  should_use_dark_colors: boolean;
+}
+/** Counts the entire postcard WindowEvent body, excluding the KIPC header. */
+export const MAX_DESKTOP_EVENT_BYTES = 32 * 1024;
+const MAX_U64 = 0xffff_ffff_ffff_ffffn;
+const NativeDataView = DataView;
+const writeFloat64 = DataView.prototype.setFloat64;
 /** Application verdict on one host-minted pending close sequence. */
 export type CloseVerdict = "Allow" | "Veto";
 /** Host-to-app facts, in the Rust enum's append-only declaration order. */
@@ -48,7 +75,14 @@ export type WindowEvent =
   | { variant: "Maximized"; window: WindowRef; maximized: boolean }
   | { variant: "FullScreen"; window: WindowRef; full_screen: boolean }
   | { variant: "CloseRequested"; window: WindowRef; close_seq: bigint }
-  | { variant: "Destroyed"; window: WindowRef };
+  | { variant: "Destroyed"; window: WindowRef }
+  | {
+      /** GH481: appended postcard tag 7, no WindowRef on this global fact. */
+      variant: "DesktopSnapshot";
+      epoch: bigint;
+      snapshot: DesktopFacts | null;
+    }
+  | WindowEventExtension;
 /** App-to-host calls; optional positions use explicit null, matching postcard. */
 export type WindowRequest =
   | {
@@ -67,7 +101,8 @@ export type WindowRequest =
       close_seq: bigint;
       verdict: CloseVerdict;
     }
-  | { variant: "Destroy"; window: WindowRef };
+  | { variant: "Destroy"; window: WindowRef }
+  | WindowRequestExtension;
 /** Host replies; failures use the existing CallError payload instead. */
 export type WindowResponse =
   | { variant: "Created"; window: WindowRef }
@@ -78,14 +113,15 @@ export type WindowResponse =
   | { variant: "ReplyApplied" }
   | { variant: "ReplyStale" }
   | { variant: "Destroyed" }
-  | { variant: "Adopted"; window: WindowRef };
+  | { variant: "Adopted"; window: WindowRef }
+  | WindowResponseExtension;
 
 type Decoder<T> = (bytes: Uint8Array, offset: number) => [T, number];
 function invalid(detail: string): Error {
   return kipcError("KELD-IPC-003", detail);
 }
 function requireObject(value: unknown): void {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+  if (value === null || typeof value !== "object" || stateIsArray(value)) {
     throw invalid("window payload value must be an object");
   }
 }
@@ -155,6 +191,152 @@ function decodeOption<T>(
   if (tag === 0) return [null, offset + 1];
   if (tag !== 1) throw invalid("invalid or truncated window option");
   return decode(bytes, offset + 1);
+}
+
+function checkedU32(value: number): boolean {
+  return (
+    typeof value === "number" &&
+    value % 1 === 0 &&
+    value >= 0 &&
+    value <= 0xffff_ffff
+  );
+}
+function validateDesktopRect(value: Rect): void {
+  requireObject(value);
+  if (
+    typeof value.x !== "number" ||
+    value.x % 1 !== 0 ||
+    value.x < -0x8000_0000 ||
+    value.x > 0x7fff_ffff ||
+    typeof value.y !== "number" ||
+    value.y % 1 !== 0 ||
+    value.y < -0x8000_0000 ||
+    value.y > 0x7fff_ffff ||
+    !checkedU32(value.width) ||
+    value.width === 0 ||
+    !checkedU32(value.height) ||
+    value.height === 0
+  ) {
+    throw invalid(
+      "desktop rectangles need representable positive logical dimensions",
+    );
+  }
+}
+/** Same validation owner for directly applied facts and decoded postcard facts. */
+export function validateDesktopFacts(value: DesktopFacts): void {
+  requireObject(value);
+  if (!checkedU32(value.primary_id) || value.primary_id === 0)
+    throw invalid("desktop primary id must be a nonzero u32");
+  if (
+    !stateIsArray(value.displays) ||
+    value.displays.length === 0 ||
+    value.displays.length > 32
+  ) {
+    throw invalid("desktop requires between one and 32 displays");
+  }
+  if (typeof value.should_use_dark_colors !== "boolean")
+    throw invalid("desktop appearance must be a boolean");
+  const observed = stateMap<number, true>();
+  let matches = 0;
+  for (let i = 0; i < value.displays.length; i += 1) {
+    const display = value.displays[i]!;
+    requireObject(display);
+    if (
+      !checkedU32(display.id) ||
+      display.id === 0 ||
+      stateMapHas(observed, display.id)
+    )
+      throw invalid("desktop display ids must be unique, nonzero u32");
+    stateMapSet(observed, display.id, true);
+    if (display.id === value.primary_id) matches += 1;
+    validateDesktopRect(display.bounds);
+    validateDesktopRect(display.work_area);
+    if (
+      typeof display.scale_factor !== "number" ||
+      !(display.scale_factor > 0 && display.scale_factor < Infinity)
+    )
+      throw invalid("desktop scale factor must be finite and positive");
+  }
+  if (matches !== 1)
+    throw invalid("desktop primary id must match exactly one display");
+}
+export function validateDesktopEpoch(value: bigint): void {
+  if (
+    typeof value !== "bigint" ||
+    value === 0n ||
+    value > MAX_U64 ||
+    value < 0n
+  )
+    throw invalid("desktop epoch must be a nonzero u64");
+}
+function encodeFloat64(value: number): Uint8Array {
+  if (!Number.isFinite(value) || value <= 0)
+    throw invalid("desktop scale factor must be finite and positive");
+  const bytes = new Uint8Array(8);
+  stateApply(writeFloat64, new NativeDataView(bytes.buffer), [0, value, true]);
+  return bytes;
+}
+function float64At(bytes: Uint8Array, offset: number): [number, number] {
+  if (offset + 8 > stateByteLength(bytes))
+    throw invalid("truncated desktop scale factor");
+  const value = stateFloat64At(bytes, offset);
+  if (!(value > 0 && value < Infinity))
+    throw invalid("desktop scale factor must be finite and positive");
+  return [value, offset + 8];
+}
+function encodeDesktopFacts(value: DesktopFacts): Uint8Array {
+  validateDesktopFacts(value);
+  const displays: Uint8Array[] = [encodeVarint(value.displays.length)];
+  for (let i = 0; i < value.displays.length; i += 1) {
+    const display = value.displays[i]!;
+    displays.push(
+      encodeVarint(display.id),
+      encodeRect(display.bounds),
+      encodeRect(display.work_area),
+      encodeFloat64(display.scale_factor),
+    );
+  }
+  return join([
+    encodeVarint(value.primary_id),
+    ...displays,
+    encodeBool(value.should_use_dark_colors),
+  ]);
+}
+function desktopFactsAt(
+  bytes: Uint8Array,
+  offset: number,
+): [DesktopFacts, number] {
+  const primary = decodeVarint(bytes, offset);
+  const primary_id = primary[0];
+  const countField = decodeVarint(bytes, primary[1]);
+  const count = countField[0];
+  if (count === 0 || count > 32)
+    throw invalid("desktop requires between one and 32 displays");
+  const displays: DesktopFact[] = [];
+  let cursor = countField[1];
+  for (let index = 0; index < count; index += 1) {
+    const id = decodeVarint(bytes, cursor);
+    const bounds = rectAt(bytes, id[1]);
+    const work = rectAt(bytes, bounds[1]);
+    const scale = float64At(bytes, work[1]);
+    stateDefineProperty(displays, index, {
+      __proto__: null,
+      value: {
+        id: id[0],
+        bounds: bounds[0],
+        work_area: work[0],
+        scale_factor: scale[0],
+      },
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    } as PropertyDescriptor);
+    cursor = scale[1];
+  }
+  const appearance = decodeBool(bytes, cursor);
+  const value = { primary_id, displays, should_use_dark_colors: appearance[0] };
+  validateDesktopFacts(value);
+  return [value, appearance[1]];
 }
 
 /** Encode a reference without replacing the registry's ownership checks. */
@@ -303,15 +485,42 @@ export function encodeWindowEvent(value: WindowEvent): Uint8Array {
       ]);
     case "Destroyed":
       return join([encodeVarint(6), encodeWindowRef(value.window)]);
+    case "DesktopSnapshot": {
+      validateDesktopEpoch(value.epoch);
+      const bytes = join([
+        encodeVarint(7),
+        encodeU64Varint(value.epoch),
+        encodeOption(value.snapshot, encodeDesktopFacts),
+      ]);
+      if (bytes.byteLength > MAX_DESKTOP_EVENT_BYTES)
+        throw invalid("desktop WindowEvent exceeds the 32 KiB budget");
+      return bytes;
+    }
     default:
-      throw invalid("unknown WindowEvent variant");
+      return encodeWindowEventExtension(value);
   }
 }
 function eventAt(bytes: Uint8Array, offset: number): [WindowEvent, number] {
   const decoded14 = decodeVarint(bytes, offset);
   const variant = decoded14[0];
   const afterVariant = decoded14[1];
-  if (variant > 6) throw invalid("unknown WindowEvent discriminant");
+  if (variant >= 8) return windowEventExtensionAt(bytes, offset);
+  if (variant === 7) {
+    if (stateByteLength(bytes) > MAX_DESKTOP_EVENT_BYTES)
+      throw invalid("desktop WindowEvent exceeds the 32 KiB budget");
+    const decodedEpoch = decodeU64Varint(bytes, afterVariant);
+    const epoch = decodedEpoch[0];
+    validateDesktopEpoch(epoch);
+    const decodedSnapshot = decodeOption(
+      bytes,
+      decodedEpoch[1],
+      desktopFactsAt,
+    );
+    return [
+      { variant: "DesktopSnapshot", epoch, snapshot: decodedSnapshot[0] },
+      decodedSnapshot[1],
+    ];
+  }
   const decoded15 = windowRefAt(bytes, afterVariant);
   const window = decoded15[0];
   const afterWindow = decoded15[1];
@@ -366,7 +575,7 @@ export function decodeWindowEvent(payload: Uint8Array): WindowEvent {
   return exact(payload, eventAt);
 }
 /** Encode a request; host authorization and native state remain host-owned. */
-export function encodeWindowRequest(value: WindowRequest): Uint8Array {
+function encodeWindowRequestUnchecked(value: WindowRequest): Uint8Array {
   requireObject(value);
   switch (value.variant) {
     case "Create":
@@ -401,7 +610,7 @@ export function encodeWindowRequest(value: WindowRequest): Uint8Array {
     case "Destroy":
       return join([encodeVarint(5), encodeWindowRef(value.window)]);
     default:
-      throw invalid("unknown WindowRequest variant");
+      return encodeWindowRequestExtension(value);
   }
 }
 function requestAt(bytes: Uint8Array, offset: number): [WindowRequest, number] {
@@ -413,7 +622,7 @@ function requestAt(bytes: Uint8Array, offset: number): [WindowRequest, number] {
     const [y, end] = decodeOption(bytes, afterX, decodeI32);
     return [{ variant: "Create", width, height, x, y }, end];
   }
-  if (variant > 5) throw invalid("unknown WindowRequest discriminant");
+  if (variant >= 6) return windowRequestExtensionAt(bytes, offset);
   const [window, afterWindow] = windowRefAt(bytes, afterVariant);
   switch (variant) {
     case 1: {
@@ -439,6 +648,10 @@ function requestAt(bytes: Uint8Array, offset: number): [WindowRequest, number] {
 }
 /** Decode exactly one request without accepting trailing payload data. */
 export function decodeWindowRequest(payload: Uint8Array): WindowRequest {
+  if (!stateIsUint8Array(payload))
+    throw invalid("window payload must be a Uint8Array");
+  if (payload.byteLength > 8192)
+    throw invalid("window call exceeds its encoded body bound");
   return exact(payload, requestAt);
 }
 /** Encode the native result payload; ERR frames retain the CallError codec. */
@@ -464,7 +677,7 @@ export function encodeWindowResponse(value: WindowResponse): Uint8Array {
     case "Adopted":
       return join([encodeVarint(8), encodeWindowRef(value.window)]);
     default:
-      throw invalid("unknown WindowResponse variant");
+      return encodeWindowResponseExtension(value);
   }
 }
 function responseAt(
@@ -500,10 +713,354 @@ function responseAt(
       return [{ variant: "Adopted", window }, end];
     }
     default:
-      throw invalid("unknown WindowResponse discriminant");
+      return windowResponseExtensionAt(bytes, offset);
   }
 }
 /** Decode exactly one reply, retaining all close sequence bits. */
 export function decodeWindowResponse(payload: Uint8Array): WindowResponse {
   return exact(payload, responseAt);
 }
+
+// Use canonical postcard string codecs; these checks do not authenticate a path.
+function encodePreloadString(
+  value: string,
+  maximum: number,
+  nonempty: boolean,
+): Uint8Array {
+  // For valid Unicode, UTF-8 byte length is at least UTF-16 code-unit length.
+  // Reject this necessary bound before canonical validation/UTF-8 allocation.
+  if (
+    typeof value !== "string" ||
+    value.length > maximum ||
+    (nonempty && value.length === 0)
+  )
+    throw invalid("preload metadata exceeds its UTF-8 byte bound");
+  const bytes = encodePostcardString(value, "preload metadata");
+  const length = decodeVarint(bytes, 0)[0];
+  if (length > maximum || (nonempty && length === 0))
+    throw invalid("preload metadata exceeds its UTF-8 byte bound");
+  return bytes;
+}
+function preloadStringAt(
+  bytes: Uint8Array,
+  offset: number,
+  maximum: number,
+  nonempty: boolean,
+): [string, number] {
+  const length = decodeVarint(bytes, offset)[0];
+  if (length > maximum || (nonempty && length === 0))
+    throw invalid("preload metadata exceeds its UTF-8 byte bound");
+  return decodePostcardStringAt(bytes, offset);
+}
+
+/** Full existing Window CALL budget, including tag, reference and metadata. */
+export function encodeWindowRequest(value: WindowRequest): Uint8Array {
+  const bytes = encodeWindowRequestUnchecked(value);
+  if (bytes.byteLength > 8192)
+    throw invalid("window call exceeds its encoded body bound");
+  return bytes;
+}
+function encodePreloadArguments(args: readonly string[]): Uint8Array {
+  if (!stateIsArray(args) || args.length > 16)
+    throw invalid("too many preload arguments");
+  const parts = [encodeVarint(args.length)];
+  let total = 0;
+  for (let index = 0; index < args.length; index += 1) {
+    const bytes = encodePreloadString(args[index], 256, false);
+    total += decodeVarint(bytes, 0)[0];
+    if (total > 2048)
+      throw invalid("preload arguments exceed their byte bound");
+    parts.push(bytes);
+  }
+  return join(parts);
+}
+function preloadArgumentsAt(
+  bytes: Uint8Array,
+  offset: number,
+): [string[], number] {
+  const [count, afterCount] = decodeVarint(bytes, offset);
+  if (count > 16) throw invalid("too many preload arguments");
+  const args: string[] = [];
+  let at = afterCount,
+    total = 0;
+  for (let index = 0; index < count; index += 1) {
+    total += decodeVarint(bytes, at)[0];
+    if (total > 2048)
+      throw invalid("preload arguments exceed their byte bound");
+    const [value, next] = preloadStringAt(bytes, at, 256, false);
+    stateDefineProperty(args, index, {
+      __proto__: null,
+      value,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    } as PropertyDescriptor);
+    at = next;
+  }
+  return [args, at];
+}
+function encodeNativeDocumentGeneration(value: number): Uint8Array {
+  if (!Number.isInteger(value) || value <= 0 || value > 0xffffffff)
+    throw invalid("native document generation must be a nonzero u32");
+  return encodeVarint(value);
+}
+function nativeDocumentGenerationAt(
+  bytes: Uint8Array,
+  offset: number,
+): [number, number] {
+  const decoded = decodeVarint(bytes, offset);
+  if (decoded[0] === 0)
+    throw invalid("native document generation must be nonzero");
+  return decoded;
+}
+// @keld/window-n1-generated-begin
+// @generated by echo-codegen.ts from keld-ipc/src/window.rs; do not edit.
+type WindowRequestExtension =
+  | {
+      variant: "CreateWithPreload";
+      width: number;
+      height: number;
+      x: number | null;
+      y: number | null;
+      preload_absolute: string;
+      additional_arguments: readonly string[];
+    }
+  | { variant: "LoadUrl"; window: WindowRef; uri: string }
+  | {
+      variant: "DestroyOriginalDocument";
+      window: WindowRef;
+      document_generation: number;
+    };
+function encodeWindowRequestExtension(
+  value: WindowRequestExtension,
+): Uint8Array {
+  switch (value.variant) {
+    case "CreateWithPreload":
+      return join([
+        encodeVarint(6),
+        encodeVarint(value.width),
+        encodeVarint(value.height),
+        encodeOption(value.x, encodeI32),
+        encodeOption(value.y, encodeI32),
+        encodePreloadString(value.preload_absolute, 2048, true),
+        encodePreloadArguments(value.additional_arguments),
+      ]);
+    case "LoadUrl":
+      return join([
+        encodeVarint(7),
+        encodeWindowRef(value.window),
+        encodePreloadString(value.uri, 8192, true),
+      ]);
+    case "DestroyOriginalDocument":
+      return join([
+        encodeVarint(8),
+        encodeWindowRef(value.window),
+        encodeNativeDocumentGeneration(value.document_generation),
+      ]);
+    default:
+      throw invalid("unknown WindowRequest extension");
+  }
+}
+function windowRequestExtensionAt(
+  wireBytes: Uint8Array,
+  offset: number,
+): [WindowRequestExtension, number] {
+  const [tag, afterTag] = decodeVarint(wireBytes, offset);
+  switch (tag) {
+    case 6: {
+      let at = afterTag;
+      const [width, next_width] = decodeVarint(wireBytes, at);
+      at = next_width;
+      const [height, next_height] = decodeVarint(wireBytes, at);
+      at = next_height;
+      const [x, next_x] = decodeOption(wireBytes, at, decodeI32);
+      at = next_x;
+      const [y, next_y] = decodeOption(wireBytes, at, decodeI32);
+      at = next_y;
+      const [preload_absolute, next_preload_absolute] = preloadStringAt(
+        wireBytes,
+        at,
+        2048,
+        true,
+      );
+      at = next_preload_absolute;
+      const [additional_arguments, next_additional_arguments] =
+        preloadArgumentsAt(wireBytes, at);
+      at = next_additional_arguments;
+      return [
+        {
+          variant: "CreateWithPreload",
+          width,
+          height,
+          x,
+          y,
+          preload_absolute,
+          additional_arguments,
+        },
+        at,
+      ];
+    }
+    case 7: {
+      let at = afterTag;
+      const [window, next_window] = windowRefAt(wireBytes, at);
+      at = next_window;
+      const [uri, next_uri] = preloadStringAt(wireBytes, at, 8192, true);
+      at = next_uri;
+      return [{ variant: "LoadUrl", window, uri }, at];
+    }
+    case 8: {
+      let at = afterTag;
+      const [window, next_window] = windowRefAt(wireBytes, at);
+      at = next_window;
+      const [document_generation, next_document_generation] =
+        nativeDocumentGenerationAt(wireBytes, at);
+      at = next_document_generation;
+      return [
+        { variant: "DestroyOriginalDocument", window, document_generation },
+        at,
+      ];
+    }
+    default:
+      throw invalid("unknown WindowRequest extension tag");
+  }
+}
+type WindowResponseExtension = { variant: "Loaded" };
+function encodeWindowResponseExtension(
+  value: WindowResponseExtension,
+): Uint8Array {
+  switch (value.variant) {
+    case "Loaded":
+      return join([encodeVarint(9)]);
+    default:
+      throw invalid("unknown WindowResponse extension");
+  }
+}
+function windowResponseExtensionAt(
+  wireBytes: Uint8Array,
+  offset: number,
+): [WindowResponseExtension, number] {
+  const [tag, afterTag] = decodeVarint(wireBytes, offset);
+  switch (tag) {
+    case 9: {
+      let at = afterTag;
+      return [{ variant: "Loaded" }, at];
+    }
+    default:
+      throw invalid("unknown WindowResponse extension tag");
+  }
+}
+type WindowEventExtension =
+  | {
+      variant: "NavigationCommitted";
+      window: WindowRef;
+      document_generation: number;
+      native_url: string;
+    }
+  | {
+      variant: "NavigationFinished";
+      window: WindowRef;
+      document_generation: number;
+    }
+  | {
+      variant: "DocumentRecovered";
+      window: WindowRef;
+      document_generation: number;
+      native_url: string;
+    };
+function encodeWindowEventExtension(value: WindowEventExtension): Uint8Array {
+  switch (value.variant) {
+    case "NavigationCommitted":
+      return join([
+        encodeVarint(8),
+        encodeWindowRef(value.window),
+        encodeNativeDocumentGeneration(value.document_generation),
+        encodePreloadString(value.native_url, 8192, true),
+      ]);
+    case "NavigationFinished":
+      return join([
+        encodeVarint(9),
+        encodeWindowRef(value.window),
+        encodeNativeDocumentGeneration(value.document_generation),
+      ]);
+    case "DocumentRecovered":
+      return join([
+        encodeVarint(10),
+        encodeWindowRef(value.window),
+        encodeNativeDocumentGeneration(value.document_generation),
+        encodePreloadString(value.native_url, 8192, true),
+      ]);
+    default:
+      throw invalid("unknown WindowEvent extension");
+  }
+}
+function windowEventExtensionAt(
+  wireBytes: Uint8Array,
+  offset: number,
+): [WindowEventExtension, number] {
+  const [tag, afterTag] = decodeVarint(wireBytes, offset);
+  switch (tag) {
+    case 8: {
+      let at = afterTag;
+      const [window, next_window] = windowRefAt(wireBytes, at);
+      at = next_window;
+      const [document_generation, next_document_generation] =
+        nativeDocumentGenerationAt(wireBytes, at);
+      at = next_document_generation;
+      const [native_url, next_native_url] = preloadStringAt(
+        wireBytes,
+        at,
+        8192,
+        true,
+      );
+      at = next_native_url;
+      return [
+        {
+          variant: "NavigationCommitted",
+          window,
+          document_generation,
+          native_url,
+        },
+        at,
+      ];
+    }
+    case 9: {
+      let at = afterTag;
+      const [window, next_window] = windowRefAt(wireBytes, at);
+      at = next_window;
+      const [document_generation, next_document_generation] =
+        nativeDocumentGenerationAt(wireBytes, at);
+      at = next_document_generation;
+      return [
+        { variant: "NavigationFinished", window, document_generation },
+        at,
+      ];
+    }
+    case 10: {
+      let at = afterTag;
+      const [window, next_window] = windowRefAt(wireBytes, at);
+      at = next_window;
+      const [document_generation, next_document_generation] =
+        nativeDocumentGenerationAt(wireBytes, at);
+      at = next_document_generation;
+      const [native_url, next_native_url] = preloadStringAt(
+        wireBytes,
+        at,
+        8192,
+        true,
+      );
+      at = next_native_url;
+      return [
+        {
+          variant: "DocumentRecovered",
+          window,
+          document_generation,
+          native_url,
+        },
+        at,
+      ];
+    }
+    default:
+      throw invalid("unknown WindowEvent extension tag");
+  }
+}
+// @keld/window-n1-generated-end

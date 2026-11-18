@@ -1,7 +1,7 @@
 //! Reserved and unknown `keld` verbs (KEL-29 / arch/07 §2).
 //!
-//! README and spec 06 name `build` / `migrate` / `gen` / `ext` before they are
-//! live. A bare `unknown command` with exit 1 lets agents think the verb does
+//! README and spec 06 name `migrate` / `gen` / `ext` before they are
+//! live. `build` is implemented for macos-arm64 only. A bare `unknown command` with exit 1 lets agents think the verb does
 //! not exist. Reserved verbs are `KELD-CLI-045` (exit 2) with a tracking issue
 //! and the Phase 2 workaround. Garbage verbs are `KELD-CLI-046` (exit 2).
 
@@ -14,13 +14,11 @@ pub const RESERVED_VERB_CODE: &str = "KELD-CLI-045";
 pub const UNKNOWN_VERB_CODE: &str = "KELD-CLI-046";
 
 /// Live `keld` verbs in dispatch order (usage text / unknown-verb fix).
-pub const LIVE_VERBS: &str = "create, dev, doctor, mcp, hello, ipc-echo, ipc-client";
+pub const LIVE_VERBS: &str = "create, dev, build, doctor, mcp, hello, ipc-echo, ipc-client";
 
 /// Spec 06 verbs that exist in the product vocabulary but are not in this binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReservedVerb {
-    /// `keld build` — packaging (`keld-pack`).
-    Build,
     /// `keld migrate` — Electron analyzer + compat config.
     Migrate,
     /// `keld gen` — schema → TS/Rust codegen.
@@ -34,7 +32,6 @@ impl ReservedVerb {
     #[must_use]
     pub fn parse(token: &str) -> Option<Self> {
         match token {
-            "build" => Some(Self::Build),
             "migrate" => Some(Self::Migrate),
             "gen" => Some(Self::Gen),
             "ext" => Some(Self::Ext),
@@ -46,7 +43,6 @@ impl ReservedVerb {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Build => "build",
             Self::Migrate => "migrate",
             Self::Gen => "gen",
             Self::Ext => "ext",
@@ -57,7 +53,7 @@ impl ReservedVerb {
     #[must_use]
     pub const fn tracking(self) -> &'static str {
         match self {
-            Self::Build | Self::Ext => "KEL-19",
+            Self::Ext => "KEL-19",
             Self::Migrate => "KEL-17",
             Self::Gen => "KEL-13",
         }
@@ -67,10 +63,6 @@ impl ReservedVerb {
     #[must_use]
     pub const fn fix(self) -> &'static str {
         match self {
-            Self::Build => {
-                "Packaging is not in Phase 2 (KEL-19 / keld-pack). \
-                 Use `keld create <name>` then `keld dev`."
-            }
             Self::Migrate => {
                 "Electron migrate is not in Phase 2 (KEL-17). \
                  Scaffold a hello app with `keld create <name>` then `keld dev`."
@@ -134,7 +126,7 @@ mod tests {
 
     #[test]
     fn reserved_tokens_are_045_with_tracking_and_phase2_fix() {
-        for token in ["build", "migrate", "gen", "ext"] {
+        for token in ["migrate", "gen", "ext"] {
             let verb = ReservedVerb::parse(token).expect(token);
             assert_eq!(verb.as_str(), token);
             let msg = ReservedVerbError { verb }.to_string();

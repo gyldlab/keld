@@ -536,11 +536,21 @@ class ExecutorTests(SelectionTests):
                        "packages/@keld/api/src/echo.generated.ts",
                        "packages/@keld/api/src/fs.generated.ts",
                        "packages/@keld/api/src/auth.generated.ts",
+                       "packages/@keld/api/src/menu.generated.ts",
+                       "packages/@keld/api/src/dialog.generated.ts",
+                       "packages/@keld/api/src/window-codec.ts",
+                       "packages/@keld/kipc/src/runtime-process.generated.ts",
+                       "packages/@keld/kipc/src/compat-control.generated.ts",
                        "packages/@keld/kipc/src/transport.ts"]
             for relative in outputs + ["justfile", "bunfig.toml", "tools/fmt_included.sh",
                     "packages/@keld/kipc/scripts/echo-codegen.ts",
+                    "packages/@keld/kipc/scripts/menu-codegen.ts",
+                    "packages/@keld/kipc/src/launch-facts.ts",
                     "crates/keld-ipc/src/echo.rs", "crates/keld-ipc/src/channel_table.rs",
-                    "crates/keld-native/src/fs.rs", "crates/keld-native/src/auth/mod.rs"]:
+                    "crates/keld-ipc/src/lifecycle.rs", "crates/keld-ipc/src/window.rs",
+                    "crates/keld-ipc/src/compat_control.rs",
+                    "crates/keld-native/src/fs.rs", "crates/keld-native/src/auth/mod.rs",
+                    "crates/keld-native/src/menu.rs", "crates/keld-native/src/dialog.rs"]:
                 destination = root / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source / relative, destination)
@@ -1233,7 +1243,8 @@ NOT_GIT_ARGUMENT_AFTER = re.compile(r"^\s*(?:[=!]=|=>)")
 # Only an executable `config` call counts: a comment that names the setting, or
 # the key without `config`, configures nothing. That includes a whole-line `#` or
 # `//` comment of a script embedded in a string, such as a Rust raw string.
-MAINTENANCE_OFF = re.compile(r"\bconfig\W+maintenance\.auto\W+false\b")
+# Git's `--local` option before the key still writes the repository's config.
+MAINTENANCE_OFF = re.compile(r"\bconfig\W+(?:--local\W+)?maintenance\.auto\W+false\b")
 EMBEDDED_COMMENT_LINE = re.compile(r"""^\s*["'`]?\s*(?:#|//)""")
 MAINTENANCE_OFF_WINDOW = 4
 TEMP_REPOSITORY_SOURCES = ("*.py", "*.sh", "*.rs", "*.ts")
@@ -1439,6 +1450,18 @@ class TempRepositoryMaintenanceTests(unittest.TestCase):
         self.assertEqual(sites, {"tools/a.py:1": True, "tools/b.sh:1": True, "tools/c.rs:1": True,
                                  "tools/d.ts:1": True, "tools/e.py:1": True, "tools/f.sh:1": True,
                                  "tools/g.rs:2": True})
+
+    def test_census_accepts_explicit_local_maintenance_only(self):
+        sites = self.census({
+            "tools/local.ts": 'for (const args of [["{verb}", "--quiet"], '
+                              '["config", "--local", "maintenance.auto", "false"]]) git(...args);\n',
+            "tools/enabled.ts": 'git("{verb}");\ngit("config", "--local", "maintenance.auto", "true");\n',
+            "tools/global.ts": 'git("{verb}");\ngit("config", "--global", "maintenance.auto", "false");\n',
+            "tools/comment.ts": 'git("{verb}");\n// git config --local maintenance.auto false\n',
+        })
+        self.assertEqual(sites, {"tools/local.ts:1": True,
+                                 "tools/enabled.ts:1": False, "tools/global.ts:1": False,
+                                 "tools/comment.ts:1": False})
 
     def test_census_counts_every_quoted_init_in_a_file_that_mentions_git(self):
         # Fail closed: no call-shape attribution decides a site, so every shape that can
