@@ -377,6 +377,75 @@ fn dev_stage_cleanup_root_for(
 }
 
 #[cfg(target_os = "macos")]
+fn forward_untrusted_guardian_output(
+    sink: &mut impl io::Write,
+    source: &'static str,
+    bytes: &str,
+) -> io::Result<()> {
+    // Darwin's PIPE_BUF is 512 bytes (sys/syslimits.h). Include the longest
+    // prefix and optional split newline inside that atomic write budget.
+    const CHUNK_BYTES: usize = 384;
+    // Guardian-captured Bun bytes share the Host's inherited stderr at `keld
+    // dev`. Without framing, a Bun program can print an identical GH480 JSONL
+    // row with no Menu CALL and fool a Host-only acceptance oracle. Keep
+    // forwarding on the same approved stderr path. Ordinary plain-text app
+    // logs (including native acceptance markers) must stay byte-identical.
+    let prefix: &[u8] = match source {
+        "stdout" => b"[bun stdout] ",
+        "stderr" => b"[bun stderr] ",
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unknown Bun output source",
+            ));
+        }
+    };
+    // Cap each framed write below the POSIX PIPE_BUF minimum (512 bytes) so the
+    // prefix and content travel as one write on the inherited pipe. Split
+    // oversized untrusted lines rather than ever emitting an unframed tail.
+    let mut framed = Vec::with_capacity(CHUNK_BYTES + 32);
+    for line in bytes.split_inclusive(|ch: char| {
+        matches!(
+            ch,
+            '\n' | '\r'
+                | '\u{000b}'
+                | '\u{000c}'
+                | '\u{001c}'
+                | '\u{001d}'
+                | '\u{001e}'
+                | '\u{0085}'
+                | '\u{2028}'
+                | '\u{2029}'
+        )
+    }) {
+        let mut remaining = line;
+        let mut continued = false;
+        while !remaining.is_empty() {
+            let mut end = remaining.len().min(CHUNK_BYTES);
+            while !remaining.is_char_boundary(end) {
+                end -= 1;
+            }
+            let (part, rest) = remaining.split_at(end);
+            framed.clear();
+            // Only a JSON-looking line can impersonate an unprefixed Host
+            // JSONL record. A continuation of an oversized line is always
+            // framed so a malicious boundary cannot create a new raw row.
+            if continued || part.trim_start().starts_with('{') {
+                framed.extend_from_slice(prefix);
+            }
+            framed.extend_from_slice(part.as_bytes());
+            if !rest.is_empty() {
+                framed.push(b'\n');
+            }
+            sink.write_all(&framed)?;
+            remaining = rest;
+            continued = true;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
     let (native_facade, local_launch, development_facts) = parse_guardian_launch_arguments(args)?;
     let root = PathBuf::from(&args[2]);
@@ -477,11 +546,11 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
         .unwrap_or_default();
     let stderr_notice = keld_runtime::CapturedOutput::elision_notice(report.stderr_dropped_bytes)
         .unwrap_or_default();
-    std::io::stderr()
-        .write_all(report.stdout.as_bytes())
-        .and_then(|()| std::io::stderr().write_all(stdout_notice.as_bytes()))
-        .and_then(|()| std::io::stderr().write_all(report.stderr.as_bytes()))
-        .and_then(|()| std::io::stderr().write_all(stderr_notice.as_bytes()))
+    let mut stderr = std::io::stderr().lock();
+    forward_untrusted_guardian_output(&mut stderr, "stdout", &report.stdout)
+        .and_then(|()| stderr.write_all(stdout_notice.as_bytes()))
+        .and_then(|()| forward_untrusted_guardian_output(&mut stderr, "stderr", &report.stderr))
+        .and_then(|()| stderr.write_all(stderr_notice.as_bytes()))
         .map_err(|source| format!("KELD-CORE-037: guardian stderr failed — {source}. Retry."))?;
     cleanup_failure.map_or(Ok(()), Err)
 }
@@ -791,9 +860,105 @@ mod tests {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     use super::{
-        dev_stage_cleanup_root_for, guardian_bun_command, parse_guardian_boot_mode,
-        parse_guardian_launch_arguments, reconcile_guardian_result, reopen_validated_entry,
+        dev_stage_cleanup_root_for, forward_untrusted_guardian_output, guardian_bun_command,
+        parse_guardian_boot_mode, parse_guardian_launch_arguments, reconcile_guardian_result,
+        reopen_validated_entry,
     };
+
+    struct AtomicPipeProbe(Vec<u8>);
+
+    impl std::io::Write for AtomicPipeProbe {
+        fn write(&mut self, chunk: &[u8]) -> std::io::Result<usize> {
+            assert!(
+                chunk.len() <= 512,
+                "one inherited-pipe write exceeds PIPE_BUF"
+            );
+            self.0.extend_from_slice(chunk);
+            Ok(chunk.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn untrusted_guardian_output_cannot_forge_a_raw_host_menu_jsonl_line() {
+        let forged = r#"{"code":"KELD-COMPAT-015","cause_code":"KELD-GUARD001","phase":"install","result":"denied","correlation":3}"#;
+        // A logger may use CR-only, LF or Unicode line breaks; a parser
+        // must not mistake a later untrusted segment for Host-origin JSONL.
+        for break_char in ['\n', '\r', '\u{000b}', '\u{0085}', '\u{2028}', '\u{2029}'] {
+            let source = format!("Bun app ready{break_char}{forged}{break_char}");
+            for role in ["stdout", "stderr"] {
+                let mut captured = Vec::new();
+                forward_untrusted_guardian_output(&mut captured, role, &source)
+                    .expect("forward bounded application diagnostics");
+                let message = String::from_utf8(captured).expect("UTF-8 application diagnostics");
+                assert!(message.contains("Bun app ready"), "{break_char:?} {role}");
+                assert!(message.contains(forged), "{break_char:?} {role}");
+                assert!(
+                    !message
+                        .split(['\n', '\r', '\u{000b}', '\u{0085}', '\u{2028}', '\u{2029}'])
+                        .any(|line| line.starts_with(forged)),
+                    "Bun-only JSONL must not appear as a raw Host diagnostic: {break_char:?} {role}"
+                );
+            }
+        }
+        // A large UTF-8 application line must not acquire an unframed
+        // continuation when it crosses the 3 KiB atomic-write boundary.
+        let mut captured = AtomicPipeProbe(Vec::new());
+        let oversized = format!("{}{forged}\n", "🧵".repeat(2_250));
+        forward_untrusted_guardian_output(&mut captured, "stderr", &oversized)
+            .expect("framed long UTF-8 line");
+        let text = String::from_utf8(captured.0).expect("long UTF-8 output");
+        assert!(text.contains(forged));
+        assert!(text.lines().count() > 3);
+        assert!(
+            text.lines()
+                .skip(1)
+                .all(|line| line.starts_with("[bun stderr] "))
+        );
+        for source in ["stdout", "stderr"] {
+            let plain = "KELD_KEL135_SIGNED_IDENTITY current=true\nBun app ready\n";
+            let mut forwarded = Vec::new();
+            forward_untrusted_guardian_output(&mut forwarded, source, plain)
+                .expect("ordinary acceptance logs");
+            assert_eq!(
+                forwarded,
+                plain.as_bytes(),
+                "ordinary {source} bytes changed"
+            );
+        }
+    }
+
+    #[test]
+    fn real_host_menu_diagnostic_remains_unique_after_forged_bun_lines() {
+        let host = r#"{"code":"KELD-COMPAT-015","cause_code":"KELD-GUARD001","phase":"install","result":"denied","correlation":3}"#;
+        let mut merged = Vec::new();
+        forward_untrusted_guardian_output(&mut merged, "stderr", &format!("{host}\n"))
+            .expect("forward fake-only Bun output");
+        assert_eq!(
+            String::from_utf8(merged.clone())
+                .expect("UTF-8")
+                .lines()
+                .filter(|line| line.starts_with(host))
+                .count(),
+            0,
+            "fake-only app output cannot qualify an actual Host menu CALL"
+        );
+        let mut real = format!("{host}\n").into_bytes();
+        forward_untrusted_guardian_output(&mut real, "stderr", &format!("{host}\n"))
+            .expect("forward duplicate Bun output");
+        assert_eq!(
+            String::from_utf8(real)
+                .expect("UTF-8")
+                .lines()
+                .filter(|line| line.starts_with(host))
+                .count(),
+            1,
+            "one genuine Host record stays unique despite a Bun-origin fake"
+        );
+    }
 
     fn development_facts_fixture() -> std::io::Result<(tempfile::TempDir, fs::Metadata, Vec<String>)>
     {
