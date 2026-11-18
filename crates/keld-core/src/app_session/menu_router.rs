@@ -29,6 +29,10 @@ const RETIRED_FIX: &str = "Install a fresh menu from the current authenticated a
 const CAPACITY_FIX: &str =
     "Wait for the outstanding menu installation to finish before submitting another installation.";
 const UNKNOWN_FIX: &str = "Inspect the Host installation outcome before a fresh deliberate install; never automatically replay an unknown effect.";
+// GH480 first-proof terminal diagnostics have one Host-owned registry identity.
+// The original typed ERR and its independently registered cause code remain unchanged.
+const DIAGNOSTIC_CODE: &str = "KELD-COMPAT-015";
+const DIAGNOSTIC_FIX: &str = "Inspect the Host menu diagnostic phase, result and cause code; correct the verified permission or native failure before a fresh deliberate install. Never replay an unknown effect.";
 
 struct MenuWork {
     caller: PrimaryCallerContext,
@@ -208,43 +212,67 @@ fn native_reason(error: &IpcError) -> &'static str {
 }
 impl std::fmt::Display for Diagnostic<'_> {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            out,
-            "{} phase={} result={} correlation={} role={:?} menu-generation={:?} ticket={:?} fix={:?}",
-            self.error.code,
-            self.phase,
-            self.result,
-            self.correlation,
-            self.role,
-            self.generation,
-            self.ticket,
-            self.fix
-        )?;
+        let mut record = serde_json::json!({
+            "code": DIAGNOSTIC_CODE,
+            "cause_code": self.error.code.as_str(),
+            "phase": self.phase,
+            "result": self.result,
+            "correlation": (self.correlation != 0).then_some(self.correlation),
+            "role_generation": self.role,
+            "menu_generation": self.generation,
+            "ticket": self.ticket,
+            "fix": DIAGNOSTIC_FIX,
+            "cause_fix": self.fix,
+        });
         if let Some(evidence) = self.activation {
-            write!(
-                out,
-                " activation-generation={} activation-command={} activation-sequence={} native-action={:?} native-tree-current-before-dispatch={} native-cause={:?}",
-                evidence.stamp.generation,
-                evidence.stamp.command,
-                evidence.stamp.sequence,
-                evidence.action,
-                evidence.tree_current_before_dispatch,
-                evidence.reason,
-            )?;
+            let fields = record.as_object_mut().ok_or(std::fmt::Error)?;
+            fields.insert(
+                "activation_generation".to_owned(),
+                serde_json::json!(evidence.stamp.generation),
+            );
+            fields.insert(
+                "activation_command".to_owned(),
+                serde_json::json!(evidence.stamp.command),
+            );
+            fields.insert(
+                "activation_sequence".to_owned(),
+                serde_json::json!(evidence.stamp.sequence),
+            );
+            fields.insert(
+                "native_action".to_owned(),
+                serde_json::json!(evidence.action.map(|action| format!("{action:?}"))),
+            );
+            fields.insert(
+                "native_tree_current_before_dispatch".to_owned(),
+                serde_json::json!(evidence.tree_current_before_dispatch),
+            );
+            fields.insert(
+                "native_cause".to_owned(),
+                serde_json::json!(evidence.reason),
+            );
             if let Some(focus) = evidence.focus {
-                write!(
-                    out,
-                    " app-active-at-click={} key-window-at-click={} main-window-at-click={} app-active-before-dispatch={} key-window-before-dispatch={} main-window-before-dispatch={}",
-                    focus.at_click.app_active,
-                    focus.at_click.key_window_present,
-                    focus.at_click.main_window_present,
-                    focus.before_dispatch.app_active,
-                    focus.before_dispatch.key_window_present,
-                    focus.before_dispatch.main_window_present,
-                )?;
+                for (name, value) in [
+                    ("app_active_at_click", focus.at_click.app_active),
+                    ("key_window_at_click", focus.at_click.key_window_present),
+                    ("main_window_at_click", focus.at_click.main_window_present),
+                    (
+                        "app_active_before_dispatch",
+                        focus.before_dispatch.app_active,
+                    ),
+                    (
+                        "key_window_before_dispatch",
+                        focus.before_dispatch.key_window_present,
+                    ),
+                    (
+                        "main_window_before_dispatch",
+                        focus.before_dispatch.main_window_present,
+                    ),
+                ] {
+                    fields.insert(name.to_owned(), serde_json::json!(value));
+                }
             }
         }
-        Ok(())
+        out.write_str(&record.to_string())
     }
 }
 fn diagnostic(record: &Diagnostic<'_>) {
@@ -799,15 +827,33 @@ mod activation_diagnostic_tests {
             }),
         };
         let line = diagnostic.to_string();
-        assert!(line.starts_with(
-            "KELD-NATIVE-017 phase=activation result=native-failed correlation=0 role=Some(1) menu-generation=Some(1) ticket=None"
-        ));
-        assert!(line.contains(
-            "activation-generation=1 activation-command=13 activation-sequence=2 native-action=Some(NativeRole(Quit)) native-tree-current-before-dispatch=false native-cause=\"native menu tree is no longer installed\""
-        ));
-        assert!(line.contains(
-            "app-active-at-click=false key-window-at-click=false main-window-at-click=true app-active-before-dispatch=true key-window-before-dispatch=true main-window-before-dispatch=true"
-        ));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&line).expect("complete native activation JSONL");
+        assert_eq!(parsed["code"], "KELD-COMPAT-015");
+        assert_eq!(parsed["cause_code"], "KELD-NATIVE-017");
+        assert_eq!(parsed["fix"], DIAGNOSTIC_FIX);
+        assert_eq!(parsed["cause_fix"], MenuFault::NativeFailure.fix());
+        assert_eq!(parsed["phase"], "activation");
+        assert_eq!(parsed["result"], "native-failed");
+        assert!(parsed["correlation"].is_null());
+        assert_eq!(parsed["role_generation"], 1);
+        assert_eq!(parsed["menu_generation"], 1);
+        assert!(parsed["ticket"].is_null());
+        assert_eq!(parsed["activation_generation"], 1);
+        assert_eq!(parsed["activation_command"], 13);
+        assert_eq!(parsed["activation_sequence"], 2);
+        assert_eq!(parsed["native_action"], "NativeRole(Quit)");
+        assert_eq!(parsed["native_tree_current_before_dispatch"], false);
+        assert_eq!(
+            parsed["native_cause"],
+            "native menu tree is no longer installed"
+        );
+        assert_eq!(parsed["app_active_at_click"], false);
+        assert_eq!(parsed["key_window_at_click"], false);
+        assert_eq!(parsed["main_window_at_click"], true);
+        assert_eq!(parsed["app_active_before_dispatch"], true);
+        assert_eq!(parsed["key_window_before_dispatch"], true);
+        assert_eq!(parsed["main_window_before_dispatch"], true);
         assert!(!line.contains("0x"), "native handles must stay private");
     }
 
@@ -847,16 +893,22 @@ mod activation_diagnostic_tests {
                     reason: "native menu action had no key window at click",
                 }),
             };
-            let expected = format!(
-                "app-active-at-click={} key-window-at-click={} main-window-at-click={} app-active-before-dispatch={} key-window-before-dispatch={} main-window-before-dispatch={}",
-                mask & 1 != 0,
-                mask & 2 != 0,
-                mask & 4 != 0,
-                mask & 8 != 0,
-                mask & 16 != 0,
-                mask & 32 != 0,
-            );
-            assert!(diagnostic.to_string().ends_with(&expected), "mask {mask}");
+            let line = diagnostic.to_string();
+            let fields: serde_json::Value =
+                serde_json::from_str(&line).expect("native activation JSONL");
+            for (index, key) in [
+                "app_active_at_click",
+                "key_window_at_click",
+                "main_window_at_click",
+                "app_active_before_dispatch",
+                "key_window_before_dispatch",
+                "main_window_before_dispatch",
+            ]
+            .iter()
+            .enumerate()
+            {
+                assert_eq!(fields[*key], flags[index], "mask {mask} field {key}");
+            }
         }
     }
 }

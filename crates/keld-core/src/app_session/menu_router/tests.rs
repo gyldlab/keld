@@ -1,9 +1,9 @@
 //! Actual Core caller fence, ordered socket writer and inherited-stderr capture.
 //! Component fixture identities prove these local contracts, not Runtime or UI.
 use super::{
-    HostAppError, MenuSession, MenuWork, PrimaryCallerContext, PrimaryRouterHandle,
-    publish_quit_requested, retire_quit_intent_write_failure, same_caller, window_owner,
-    with_primary_caller_locked,
+    DIAGNOSTIC_FIX, GUARD_FIX, HostAppError, MenuSession, MenuWork, PrimaryCallerContext,
+    PrimaryRouterHandle, publish_quit_requested, retire_quit_intent_write_failure, same_caller,
+    window_owner, with_primary_caller_locked,
 };
 use crate::app_session as app;
 use keld_ipc::codec::{decode, encode};
@@ -240,12 +240,23 @@ fn received_guard_err_has_exactly_one_actual_stderr_record_and_no_private_label(
         .env(CHILD, "1").output().expect("child stderr capture");
     assert!(output.status.success(), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("diagnostic UTF8");
-    assert_eq!(stderr.matches("phase=install").count(), 1, "{stderr}");
-    assert!(
-        stderr.contains("KELD-GUARD001 phase=install result=denied correlation=71 role=Some(1)"),
-        "{stderr}"
-    );
-    assert!(stderr.contains("fix="));
+    let records: Vec<serde_json::Value> = stderr
+        .lines()
+        .filter(|line| line.starts_with('{'))
+        .map(|line| serde_json::from_str(line).expect("one complete Host-owned JSONL record"))
+        .collect();
+    assert_eq!(records.len(), 1, "{stderr}");
+    let record = &records[0];
+    assert_eq!(record["code"], "KELD-COMPAT-015");
+    assert_eq!(record["cause_code"], "KELD-GUARD001");
+    assert_eq!(record["phase"], "install");
+    assert_eq!(record["result"], "denied");
+    assert_eq!(record["correlation"], 71);
+    assert_eq!(record["role_generation"], 1);
+    assert!(record["menu_generation"].is_null());
+    assert!(record["ticket"].is_null());
+    assert_eq!(record["fix"], DIAGNOSTIC_FIX);
+    assert_eq!(record["cause_fix"], GUARD_FIX);
     assert!(!stderr.contains("PRIVATE-LABEL-MUST-NOT-LOG"));
     assert!(!stderr.contains("0x"));
 }
