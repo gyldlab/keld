@@ -41,10 +41,29 @@ pub(super) fn stable_file_at_parent(path: &Path, parents: &[File]) -> Result<Pat
             "regular file leaf required",
         ));
     };
+    // Verbatim Windows path parsing can preserve '/' within a Normal leaf.
+    // Re-parse under ordinary DOS rules before joining to the retained parent:
+    // an absolute or multi-component leaf would escape that parent's custody.
+    let mut ordinary = Path::new(leaf).components();
+    if !matches!(
+        (ordinary.next(), ordinary.next()),
+        (Some(Component::Normal(_)), None)
+    ) {
+        return Err(BuildError::input(
+            "Windows local file",
+            "leaf must be one ordinary path component",
+        ));
+    }
     if has_windows_trailing_alias(leaf) {
         return Err(BuildError::input(
             "Windows local file",
             "ambiguous trailing dot/space leaf",
+        ));
+    }
+    if keld_update::reserved_dos_device_name(leaf) {
+        return Err(BuildError::input(
+            "Windows local file",
+            "reserved DOS device leaf",
         ));
     }
     Ok(stable_local_path(parents)?.join(leaf))
@@ -73,6 +92,14 @@ pub(super) fn stable_local_target_path(path: &Path) -> Result<(PathBuf, Vec<File
         return Err(BuildError::input(
             "Windows local target",
             "ambiguous trailing dot/space target component",
+        ));
+    }
+    if path.components().any(|component| {
+        matches!(component, Component::Normal(name) if keld_update::reserved_dos_device_name(name))
+    }) {
+        return Err(BuildError::input(
+            "Windows local target",
+            "reserved DOS device target component",
         ));
     }
     let mut suffix = Vec::<OsString>::new();
@@ -600,6 +627,63 @@ mod windows_local_volume_tests {
                 "target {suffix:?} failed for the wrong reason: {error}"
             );
         }
+    }
+
+    #[test]
+    fn nonexistent_target_rejects_reserved_dos_devices_in_any_component() {
+        let owned = tempfile::tempdir().expect("private Windows fixture");
+        for suffix in [
+            "NUL",
+            "NUL.txt",
+            "nul.txt",
+            "CON",
+            "aux.log",
+            "COM1",
+            "LPT9.txt",
+            "new-install/NUL.txt",
+            "NUL.txt/updates",
+        ] {
+            let error = stable_local_target_path(&owned.path().join(suffix))
+                .expect_err("reserved DOS device target must fail closed");
+            assert!(
+                error.to_string().contains("reserved DOS device"),
+                "target {suffix:?} failed for the wrong reason: {error}"
+            );
+        }
+        let ordinary = owned.path().join("NUL-safe").join("updates");
+        assert!(stable_local_target_path(&ordinary).is_ok());
+        let pins = pin_input_root(owned.path()).expect("retained test parent");
+        let error = stable_file_at_parent(&owned.path().join("NUL.txt"), &pins)
+            .expect_err("synthetic reserved leaf must be refused");
+        assert!(error.to_string().contains("reserved DOS device"));
+    }
+
+    #[test]
+    fn retained_parent_rejects_verbatim_leaf_that_reparses_as_rooted_path() {
+        let owned = tempfile::tempdir().expect("private Windows fixture");
+        let pins = pin_input_root(owned.path()).expect("retained Windows parent");
+        let disguised = Path::new(r"\\?\D:\admitted\/outside/release.key");
+        let Some(Component::Normal(leaf)) = disguised.components().next_back() else {
+            panic!("verbatim path must expose its last leaf");
+        };
+        assert!(matches!(
+            Path::new(leaf).components().next(),
+            Some(Component::RootDir)
+        ));
+        let error = stable_file_at_parent(disguised, &pins)
+            .expect_err("rooted reparse cannot escape retained parent");
+        assert!(
+            error.to_string().contains("one ordinary path component"),
+            "unexpected refusal reason: {error}"
+        );
+
+        let ordinary = owned.path().join("release.key");
+        assert_eq!(
+            stable_file_at_parent(&ordinary, &pins).expect("ordinary leaf remains local"),
+            stable_local_path(&pins)
+                .expect("retained parent path")
+                .join("release.key")
+        );
     }
 
     // Failure-first falsifier for a caller that pins a directory but opens

@@ -50,7 +50,7 @@ const VOLUME_GUID_ROOT_UNITS: usize = 49;
 // A retained verbatim NTFS name must remain a file, not become a DOS device
 // when exported as a regular Win32 path. Extensions do not make CON/NUL/etc.
 // safe, and Win32 also reserves superscript 1/2/3 on COM/LPT names.
-fn reserved_dos_device_component(component: &[u16]) -> bool {
+pub(crate) fn reserved_dos_device_component(component: &[u16]) -> bool {
     let stem = component
         .split(|&unit| unit == u16::from(b'.') || unit == u16::from(b':'))
         .next()
