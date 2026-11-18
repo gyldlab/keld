@@ -32,7 +32,7 @@ Reject recursive input deeper than 16 containers. Reject strings over their stat
 | `key32` | `h32`, then strict Ed25519 verification-key validation, including weak-key refusal |
 | `n53` | JSON integer from 1 through 9,007,199,254,740,991 |
 | `app` | Existing KEL-135 grammar, 1..255 ASCII bytes |
-| `channel` | Exactly `stable`, `beta`, or `canary` |
+| `channel` | Wire grammar: `stable`, `beta`, or `canary`. Only the single commissioned Windows MVP release channel is admissible (D-89). |
 | `target` | Exactly `windows-x64` in this qualification cell |
 | `version` | Existing strict SemVer spelling, 1..255 ASCII bytes |
 | `oid` | Canonical dotted decimal, 3..255 ASCII bytes, at most 64 arcs |

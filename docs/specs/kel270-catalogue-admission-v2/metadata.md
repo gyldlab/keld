@@ -71,7 +71,7 @@ The client caps remaining lifetime against its fixed refresh time. The release s
 
 PROPOSED: `RepositoryId` contains 32 opaque commissioned bytes. It does not contain a channel, key, SPKI, URL, or policy digest. The signed Host expectation binds this ID and exact repository-policy digest. The identity part owns the repository-policy codec.
 
-Profile 1 assigns exactly one app ID to each repository ID. Cross-app repository sharing is unsupported. Require exact equality between Host appId, RepositoryPolicy appId, and enrollment-anchor appId. A mismatch refuses before metadata loading. Channels, origins, signing keys, and SPKIs still share that app's existing repository floors.
+Profile 1 assigns exactly one app ID to each repository ID. Cross-app repository sharing is unsupported. Require exact equality between Host appId, RepositoryPolicy appId, and enrollment-anchor appId. A mismatch refuses before metadata loading. Keep that app's floors across origin, key and SPKI changes. Another release channel refuses under D-89; it cannot obtain fresh floors.
 
 The Windows part owns these OS-derived paths:
 

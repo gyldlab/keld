@@ -54,7 +54,7 @@ Run AC-1 and every malformed enum, OID, size, and cross-version case.
 - **Blocked by:** T-1, T-23, T-42, T-81
 
 Implement D-3 through D-9 and integration D-84 through D-87 with the existing owners.
-Include D-89's MVP concurrency/census cases, not its non-gating future mechanisms.
+Implement only the single commissioned release channel. T-2 must not add channel switching, sibling migration or side-by-side operation.
 Run AC-2 through AC-4, including the exact planned-policy repository fence and cross-store cuts.
 Keep the legacy support cell disabled until its bridge and joined recovery evidence pass.
 
@@ -124,6 +124,7 @@ Extend the existing source and metadata owners. Run AC-41, AC-42, and AC-43 agai
 ### T-42: Integrate one-shot admission
 - **Blocked by:** T-41, T-1, T-60, T-23
 
+Enforce D-89/D-90 in fresh admission, established mutation and restart through the existing repository owner. No per-channel stores or parallel leases.
 Join the approved codecs, metadata generation, native custody, and recovery journal. Run AC-44 and AC-45 with controlled subprocess boundaries.
 
 ### T-43: Qualify installed behavior
@@ -197,7 +198,8 @@ Record all remaining implementation gates without declaring them passed.
 
 - **Blocked by:** T-80
 
-The release/security owner records actual profile, issuer, repository, catalogue, and independent recovery policy evidence.
+The release/security owner records the sole release-wide channel, profile, issuer, repository, catalogue and independent recovery policy evidence.
+Pin the channel in the authenticated distribution/Host configuration independently of the incoming candidate. No fixture default, first-writer enrollment choice or new wire enum.
 Commission and pin the durable recovery-only profile OID and issuer policy,
 not the daily-rotating leaf SPKI. Verify separate signing permissions and custody,
 application-signer and dual-profile refusal, changed-leaf-SPKI continuity

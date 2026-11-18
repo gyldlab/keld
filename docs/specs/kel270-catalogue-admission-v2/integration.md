@@ -60,7 +60,8 @@ Merge and release remain separate decisions under their existing owners and evid
 
 | Cell | Design disposition | Required execution before a claim |
 |---|---|---|
-| Fresh v2, Windows x64 direct per-user | Defined | Commissioned signatures, full admission, crash and native cases |
+| Fresh v2, Windows x64 direct per-user, sole commissioned channel | Conditional on D-89/D-90 | Commissioned signatures, full admission, crash and native cases |
+| Second/different release channel, even with the same policy | Deferred; refuse without effects (D-89) | No supported coexistence, switching or catch-up cell |
 | Different apps sharing one repository ID | Outside this profile | Each app needs its own commissioned repository; enrolled-ID reuse refuses |
 | v2 planned key or identity transition | Changed policy conditional on D-84/D-90; positive cell currently unqualified | Fresh metadata, U1/U2 proofs, joined browser/floor/LKG and D-87 cases |
 | v2 loss-only manual recovery | Defined under D-61 prerequisites | Independent credential custody, exact directive, native ceremony and recovery cuts |
@@ -96,8 +97,8 @@ absence from a caller-supplied list is not proof. Use the independently versione
 D-90 completeness proof from the existing owner and authenticated discovery, not a new
 per-channel store or an environment override. An existing sibling channel
 blocks before journal/pointer publication or candidate execution.
-Same-policy multiple-channel operation remains unchanged. Cross-channel
-policy migration is unsupported until separately specified and approved;
+The same eligibility rule applies to unchanged policy (D-89). Cross-channel
+operation is unsupported until separately specified and approved;
 this design does not claim a post-switch catch-up path for a stranded sibling.
 
 Preserve repository ID, app ID, target, metadata profile, enrollment identity,
@@ -276,8 +277,8 @@ Add two installed channels sharing policy A: an otherwise valid A-to-B
 transition MUST refuse before prepared/pointer/candidate effects. Repeat after
 restart, with another-channel pending ownership, and with an unreadable census
 entry. Omitting only the sibling predicate must make the intended refusal
-assertion fail. Retain a genuine sole-channel A-to-B positive and same-policy
-multi-channel positive; refusal alone does not prove supported behavior.
+assertion fail. Retain genuine sole-channel same-policy and A-to-B positives; refusal alone
+does not prove supported behavior. Neither positive changes release channel.
 
 ### D-88: Metadata retention and authority-use clock
 
@@ -301,23 +302,37 @@ protocol timestamp remains unchanged; the admission deadline is a separate bound
 
 ### D-89: MVP boundary and future multi-channel evolution
 
-The MVP includes the necessary already-specified admission, same-policy
-coexistence, lifecycle, rollback and recovery behaviors for its supported cells.
-D-84 through D-87 supply the missing policy-changing transition contract only
-for a proven sole eligible installed channel. They do not introduce a general
-multi-channel migration coordinator. An existing sibling or uncertain census
-refuses before effects; deleting sibling evidence or weakening its authority is
-not an MVP path. D-90 owns census and source-reader eligibility.
-Same-policy coexistence remains supported under existing rules, not permission
-to enroll a new channel through an outstanding transition fence.
+Windows MVP admits one commissioned release channel only. Obtain its exact value
+from the independently authenticated release configuration under T-81; the request,
+a candidate's self-description and the wire enum are not commissioning authority.
+This is one release-wide channel, not a per-device or first-admission choice.
+Without that binding, enable no channel. Pin it across Host, catalogue, source and
+destination provenance, update, rollback and manual recovery. Policy A-to-B on
+the same channel is not a channel change. No channel switching, coexistence
+(even with identical policy), automatic catch-up or per-channel trust store.
 
-Prove concurrency at the repository owner: race a second-channel admission
-against the initial census, pre-commit recheck and pointer publication. A prior
-admission, including an outstanding admitted permit, must cause transition
-refusal; an established transition fence must prevent new admission. Both must
-never proceed. Include retained channel roots absent from candidate discovery;
-the complete census cannot be replaced by a caller list or blob-only inventory.
-These MVP negative/positive cases are NOT_RUN until actual qualification.
+For this app/repository/SID, read-only preflight requires authoritative D-90
+coverage: no conflicting current, LKG, previous-LKG, retained or pending owner
+or admitted permit of another channel. Fresh enrollment requires zero incumbent
+channels; existing operations require only the exact commissioned channel.
+A nonmatching request, sibling or unknown membership refuses: no new admission,
+journal, trust mutation, publication or candidate execution. Preserve all retained
+evidence, floors and fences; do not remove or relabel a sibling to pass the check.
+Do not convert refusal into authority to terminate an already installed offline app.
+
+Serialize membership and every writer under the existing repository lease/fence;
+revalidate before enrollment or permit issuance, after waits, before commit and on
+restart. Preserve D-44/D-46 lock order and D-65/D-68 exact-owner cleanup: pending
+work cannot bootstrap, clear a fence or resume new effects on ambiguous ownership.
+Reopen retained parents and verify SID, lease and exact object custody per D-48/D-60
+before bounded terminal cleanup; path text or a journal alone grants no authority.
+Race two first admissions and race an attempted sibling against pending admission,
+transition and commit. At most one eligible channel may acquire authority; the
+other has no new effects. Repeat with identical/different policies, omitted roots,
+unreadable evidence and restart. Removing only channel equality or census
+serialization must break the corresponding refusal or race assertion. Keep real
+sole-channel fresh, ordinary update, rollback, planned change and recovery controls
+for their eligible cells. These native controls are NOT_RUN.
 
 FUTURE DIRECTION, NON-NORMATIVE AND NOT IMPLEMENTED: Multi-channel policy
 changes would require one atomic shared
@@ -352,7 +367,7 @@ multi-channel policy migration or Host/Guard bridging is implemented today.
 ### D-90: Authoritative membership and source-reader eligibility
 
 A discovery list or directory scan alone cannot prove sole-channel ownership.
-The planned-policy cell requires an independently reviewed, versioned completeness
+MVP channel eligibility requires an independently reviewed, versioned completeness
 proof from the existing native repository owner. It must bind the supported
 installation topology and all possible supported v1/v2 root namespaces for this
 app/repository/SID, retained-parent enumeration, pinned provenance, pending
@@ -365,11 +380,9 @@ No new registry schema or retroactive completeness declaration is introduced her
 
 This revision specifies the required proof boundary, not a qualified producer.
 Until an exact producer/version and its coverage, crash/race and old-reader
-controls are independently qualified, the policy-changing positive cell remains
-unavailable: refuse it, do not label it implemented or accepted for the MVP.
-This is necessary safety evidence for that supported single-channel cell, not a
-requirement to implement the future multi-channel coordinator. Existing qualified
-same-policy behavior can proceed without claiming this transition is qualified.
+controls are independently qualified, any cell relying on that proof remains
+unavailable. Do not assume an empty installation, approve a fallback, or claim
+MVP qualification. This prerequisite does not require a multi-channel coordinator.
 
 Before preparation, prove that every source Host/Guard/launcher capable of using
 this repository implements the pointer, prepared-journal and membership fences.
@@ -403,5 +416,5 @@ fresh acquisition. Future broader revocation semantics remain D-89 work.
 Qualify missing/forged/incomplete coverage proof, unknown legacy roots, concurrent
 pending admission, unsupported old readers and in-flight old launch races.
 Each must refuse before unsafe effects. Preserve genuine qualified sole-channel
-transition and same-policy coexistence positives. Cases are NOT_RUN, not claims
+same-policy update and same-channel planned-transition positives. Cases are NOT_RUN, not claims
 that a completeness producer or compatibility bridge already exists.

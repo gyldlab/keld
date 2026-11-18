@@ -115,7 +115,7 @@ These are required native acceptance cases, not results of the synthetic identit
 ### AC-4: Joined migration and recovery preserve one complete state
 
 For changed policy digests, integration D-87 adds mandatory joined crash and rollback controls.
-D-89 adds mandatory MVP concurrency/census cases; its future mechanisms are non-gating.
+D-89 requires sole-channel positives and zero-effect sibling, wrong-channel and census/race refusals. Its future mechanisms are non-gating.
 
 - **Given:** An admitted predecessor has browser data and a last-known-good artifact.
 - **When:** An authorized identity transition fails after each named durable cut.
@@ -213,8 +213,8 @@ Run actual Windows process-death and physical power-loss cases separately; synth
 ### AC-26: Repository changes cannot reset its trust state
 
 - **Given:** One repository ID with an established root and role floors.
-- **When:** Channel, origin, signing key, SPKI, or policy version changes.
-- **Then:** The adapter opens the same repository ledger. It requires an authenticated policy successor where applicable.
+- **When:** Origin, signing key, SPKI, policy version or the requested release channel changes.
+- **Then:** Eligible same-channel changes retain the ledger and require an authenticated successor where applicable. A different channel refuses without creating or resetting a ledger.
 - **Negative control:**
   - **Single fault:** Include the current policy digest in the ledger namespace.
   - **At-risk precondition:** A genuine successor Host carries a new repository policy.

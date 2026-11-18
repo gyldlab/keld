@@ -465,8 +465,8 @@ Preserve original data for forensic or user-data recovery. Do not claim automati
 The legacy v1 bridge remains conditional on its own admissible signer and compatibility evidence.
 Absence of that evidence blocks the legacy cell. It does not block independent fresh-v2 qualification.
 No result in fresh-v2 qualification can mark manual recovery, legacy migration, or compromise recovery complete.
-Recovery does not silently change another channel's installed provenance.
-An incompatible other channel remains refused; catch-up is unqualified and needs a separately approved cell.
+D-89 forbids channel switches. Any sibling or uncertain membership blocks new mutation; retain evidence and fences.
+Never delete, relabel or catch up a sibling.
 
 ### D-68: Locate and bound one pending repository operation
 
