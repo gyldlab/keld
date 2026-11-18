@@ -3099,6 +3099,14 @@ command". Garbage verbs are `KELD-CLI-046` (exit 2).
 it is removed at macOS guardian spawn or Windows primary spawn and never reaches Bun or
 grants authority. On Windows it only routes boot to the owner-private `DevStage`
 validator instead of installed admission (KEL-254 AC2).
+On macOS and Linux, the CLI also binds the Host's stage cleanup admission to
+`KELD_DEV_STAGE_ID=<device>:<inode>`, read from the directory handle retained
+since stage creation. The Host compares both numbers with the opened stage
+directory, rejecting a replaced pathname even when the replacement has the
+same valid nonce layout and private mode. The macOS Guardian inherits this
+binding for its own cleanup; Bun children do not. Linux CLI fallback cleanup
+uses its retained directory handle after Host exit, including abnormal exits;
+neither process recursively deletes through a subsequently redirected path.
 §1's contract above is the destination shape; `keld-runtime`'s pinning/download of Bun,
 the destination env vars, `--inspect` passthrough, and Bun watch hot-restart are not
 built yet. Spawn/backoff/crash-loop supervision **is** built (KEL-70):
@@ -3202,7 +3210,8 @@ KEL-78/T3's host Job and post-CLI-death stage deletion through
 `keld.windows-dev-stage-cleanup/v1`. The Linux no-flag slice proves the
 corresponding real host-only death against KEL-78/T4's PID namespace and
 parent-death coupling: the Bun leader and descendant disappear, the live CLI
-removes its exact stage, and a fresh Wayland launch succeeds. LPAC and the wider
+removes its original stage through its retained directory handle, and a fresh
+Wayland launch succeeds. LPAC and the wider
 strict-profile admission matrix remain separately owned and evidenced by
 KEL-78; KEL-96 consumes only the landed per-OS mechanisms.
 The Bun side speaks kipc directly — `packages/@keld/kipc/src/transport.ts` is the

@@ -355,19 +355,35 @@ impl DevStageCleanup {
 fn dev_stage_cleanup_root() -> Option<DevStageCleanup> {
     let executable = env::current_exe().ok()?;
     let lease = env::var_os("KELD_DEV_LEASE");
-    dev_stage_cleanup_root_for(&executable, lease.as_deref())
+    dev_stage_cleanup_root_for(&executable, lease.as_deref(), dev_stage_identity_from_env())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn dev_stage_identity_from_env() -> Option<(u64, u64)> {
+    let value = env::var(keld_core::app_session::DEV_STAGE_ID_ENV).ok()?;
+    let (dev, ino) = value.split_once(':')?;
+    if dev.is_empty()
+        || ino.is_empty()
+        || !dev.bytes().all(|byte| byte.is_ascii_digit())
+        || !ino.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((dev.parse().ok()?, ino.parse().ok()?))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn dev_stage_cleanup_root_for(
     executable: &std::path::Path,
     lease: Option<&std::ffi::OsStr>,
+    stage_identity: Option<(u64, u64)>,
 ) -> Option<DevStageCleanup> {
     use cap_std::fs::{MetadataExt as _, PermissionsExt as _};
 
     if lease != Some(std::ffi::OsStr::new("stdin-v1")) {
         return None;
     }
+    let (stage_dev, stage_ino) = stage_identity?;
     let executable = executable.canonicalize().ok()?;
     let root = executable.parent()?;
     let nonce = root.file_name()?.to_str()?;
@@ -388,6 +404,8 @@ fn dev_stage_cleanup_root_for(
         || !metadata.is_dir()
         || expected.dev() != metadata.dev()
         || expected.ino() != metadata.ino()
+        || metadata.dev() != stage_dev
+        || metadata.ino() != stage_ino
         || metadata.permissions().mode() & 0o7777 != 0o700
     {
         return None;
@@ -512,6 +530,7 @@ fn guardian_bun_command(
         .current_dir(root)
         .env("KELD_APP_LINK", app_link)
         .env_remove(keld_runtime::primary::BUN_OPTIONS_ENV)
+        .env_remove(keld_core::app_session::DEV_STAGE_ID_ENV)
         .stdin(Stdio::null());
     Ok(command)
 }
@@ -538,7 +557,11 @@ fn guardian_stage_cleanup_root(argument: &Path) -> Result<DevStageCleanup, Strin
             "KELD-CORE-037: guardian stage identity failed — {source}. Relaunch through `keld dev`."
         )
     })?;
-    let expected = dev_stage_cleanup_root_for(&executable, Some(std::ffi::OsStr::new("stdin-v1")))
+    let expected = dev_stage_cleanup_root_for(
+        &executable,
+        Some(std::ffi::OsStr::new("stdin-v1")),
+        dev_stage_identity_from_env(),
+    )
         .ok_or_else(|| String::from("KELD-CORE-037: guardian is not executing from a validated private dev stage. Relaunch through `keld dev`."))?;
     let argument = argument.canonicalize().map_err(|source| {
         format!(
@@ -901,23 +924,36 @@ mod tests {
         let executable = root.join("keld-host");
         fs::write(&executable, b"host").expect("host fixture");
         let canonical_root = root.canonicalize().expect("canonical nonce root");
+        let stage = fs::metadata(&root).expect("stage identity");
+        let identity = Some((stage.dev(), stage.ino()));
 
         assert_eq!(
-            dev_stage_cleanup_root_for(&executable, Some(OsStr::new("stdin-v1")))
+            dev_stage_cleanup_root_for(&executable, Some(OsStr::new("stdin-v1")), identity)
                 .map(|cleanup| cleanup.path)
                 .as_deref(),
             Some(canonical_root.as_path())
         );
-        assert!(dev_stage_cleanup_root_for(&executable, None).is_none());
-        assert!(dev_stage_cleanup_root_for(&executable, Some(OsStr::new("wrong"))).is_none());
+        assert!(dev_stage_cleanup_root_for(&executable, None, identity).is_none());
+        assert!(
+            dev_stage_cleanup_root_for(&executable, Some(OsStr::new("wrong")), identity).is_none()
+        );
+        assert!(
+            dev_stage_cleanup_root_for(&executable, Some(OsStr::new("stdin-v1")), None).is_none()
+        );
         fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).expect("public mode");
-        assert!(dev_stage_cleanup_root_for(&executable, Some(OsStr::new("stdin-v1"))).is_none());
+        assert!(
+            dev_stage_cleanup_root_for(&executable, Some(OsStr::new("stdin-v1")), identity)
+                .is_none()
+        );
 
         let unrelated = temp.path().join("bin/keld-host");
         fs::create_dir_all(unrelated.parent().expect("unrelated parent"))
             .expect("unrelated directory");
         fs::write(&unrelated, b"host").expect("unrelated host");
-        assert!(dev_stage_cleanup_root_for(&unrelated, Some(OsStr::new("stdin-v1"))).is_none());
+        assert!(
+            dev_stage_cleanup_root_for(&unrelated, Some(OsStr::new("stdin-v1")), identity)
+                .is_none()
+        );
     }
 
     #[test]
@@ -946,11 +982,17 @@ mod tests {
 }
 
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[allow(clippy::expect_used)] // OS fixture setup and custody assertions must stop on I/O errors.
 mod stage_cleanup_tests {
     use super::dev_stage_cleanup_root_for;
     use std::ffi::OsStr;
     use std::fs;
-    use std::os::unix::fs::{PermissionsExt as _, symlink};
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
+
+    fn identity(root: &std::path::Path) -> (u64, u64) {
+        let metadata = fs::metadata(root).expect("stage inode");
+        (metadata.dev(), metadata.ino())
+    }
 
     #[test]
     fn cleanup_cannot_be_redirected_by_ancestor_replacement() {
@@ -962,8 +1004,12 @@ mod stage_cleanup_tests {
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("private stage");
         let executable = root.join("keld-host");
         fs::write(&executable, b"host").expect("executable");
-        let cleanup = dev_stage_cleanup_root_for(&executable, Some(OsStr::new("stdin-v1")))
-            .expect("admitted stage");
+        let cleanup = dev_stage_cleanup_root_for(
+            &executable,
+            Some(OsStr::new("stdin-v1")),
+            Some(identity(&root)),
+        )
+        .expect("admitted stage");
         let victim = temp.path().join("victim");
         let victim_root = victim.join(relative);
         fs::create_dir_all(&victim_root).expect("victim stage");
@@ -994,10 +1040,57 @@ mod stage_cleanup_tests {
         let victim = temp.path().join("keep");
         fs::write(&victim, b"victim data").expect("victim contents");
         symlink(temp.path(), root.join("outside")).expect("descendant link");
-        let cleanup = dev_stage_cleanup_root_for(&executable, Some(OsStr::new("stdin-v1")))
-            .expect("admitted stage");
+        let cleanup = dev_stage_cleanup_root_for(
+            &executable,
+            Some(OsStr::new("stdin-v1")),
+            Some(identity(&root)),
+        )
+        .expect("admitted stage");
         cleanup.remove().expect("cleanup retained stage");
         assert_eq!(fs::read(victim).expect("victim survives"), b"victim data");
         assert!(!root.exists());
+    }
+
+    #[test]
+    fn cleanup_rejects_replacement_before_directory_handle_acquisition() {
+        let temp = tempfile::tempdir().expect("cleanup fixture");
+        let root = temp
+            .path()
+            .join("project/.keld/dev/0123456789abcdef0123456789abcdef");
+        fs::create_dir_all(&root).expect("original private stage");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("private mode");
+        let executable = root.join("keld-host");
+        fs::write(&executable, b"original").expect("original executable");
+        let original_identity = identity(&root);
+
+        let moved = temp.path().join("original-stage");
+        fs::rename(&root, &moved).expect("move original stage");
+        fs::create_dir(&root).expect("replace original stage entry");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("replacement private mode");
+        fs::write(&executable, b"replacement").expect("replacement executable");
+        assert_ne!(
+            identity(&root),
+            original_identity,
+            "fixture must change inode"
+        );
+
+        assert!(
+            dev_stage_cleanup_root_for(
+                &executable,
+                Some(OsStr::new("stdin-v1")),
+                Some(original_identity),
+            )
+            .is_none(),
+            "Host must refuse a valid replacement created before handle capture"
+        );
+        assert_eq!(
+            fs::read(executable).expect("replacement retained"),
+            b"replacement"
+        );
+        assert_eq!(
+            fs::read(moved.join("keld-host")).expect("original retained"),
+            b"original"
+        );
     }
 }

@@ -374,8 +374,15 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
         });
     let stage = crate::boot::stage_dev_boot(project_root, &developer_host)
         .map_err(|error| DevError::Doctor(error.to_string()))?;
+    #[cfg(windows)]
     let stage_root = stage.root().to_owned();
     let staged_host = stage.host().to_owned();
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let (stage_dev, stage_ino) = stage.stage_identity().map_err(|source| {
+        DevError::Runtime(format!(
+            "KELD-CLI-047: cannot authenticate retained dev-stage directory — {source}. Recreate the dev stage."
+        ))
+    })?;
     #[cfg(windows)]
     let attempt_job = WindowsProcessJob::create().map_err(|error| {
         DevError::Runtime(format!(
@@ -389,6 +396,11 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    command.env(
+        keld_core::app_session::DEV_STAGE_ID_ENV,
+        format!("{stage_dev}:{stage_ino}"),
+    );
     #[cfg(windows)]
     command.env(WINDOWS_LAUNCH_GATE_ENV, WINDOWS_LAUNCH_GATE_ATTEMPT_JOB_V1);
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -402,8 +414,13 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
     let mut host = match host {
         Ok(host) => host,
         Err(source) => {
-            drop(stage);
-            let cleanup = fs::remove_dir_all(&stage_root);
+            #[cfg(windows)]
+            let cleanup = {
+                drop(stage);
+                fs::remove_dir_all(&stage_root)
+            };
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            let cleanup = stage.cleanup();
             return Err(staged_host_launch_error(staged_host, source, cleanup));
         }
     };
@@ -425,11 +442,12 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
     let status = {
         let status = host.wait()?;
         drop(lease_writer);
+        #[cfg(target_os = "linux")]
+        cleanup_linux_dev_stage(stage)?;
+        #[cfg(target_os = "macos")]
         drop(stage);
         status
     };
-    #[cfg(target_os = "linux")]
-    cleanup_linux_dev_stage(&stage_root)?;
     if status.success() {
         Ok(())
     } else {
@@ -515,8 +533,9 @@ fn finish_windows_dev_host(
 }
 
 #[cfg(target_os = "linux")]
-fn cleanup_linux_dev_stage(stage_root: &Path) -> Result<(), DevError> {
-    match fs::remove_dir_all(stage_root) {
+fn cleanup_linux_dev_stage(stage: crate::boot::DevBootStage) -> Result<(), DevError> {
+    let stage_root = stage.root().to_owned();
+    match stage.cleanup() {
         Ok(()) => Ok(()),
         Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(source) => Err(DevError::Doctor(format!(
