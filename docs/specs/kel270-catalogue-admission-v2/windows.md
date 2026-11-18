@@ -92,13 +92,17 @@ Discovery returns exactly one disposition:
 | Disposition | Result |
 |---|---|
 | FreshAbsent | Continue without creating installation objects |
-| ExactEmptyScaffold | Continue with validated retained objects |
+| ExactEmptyScaffold | Continue only with independent durable pre-attempt creator provenance; not commissioned in this profile |
 | InstalledDirect | Refuse this entry and use existing update/recovery |
 | Managed | Refuse before any network request and before direct-writer acquisition |
 | PartialOrUncertain | Refuse and retain diagnosis evidence |
 | ConflictingIdentity | Refuse without copying, merging, deleting, or relabeling state |
 
 Evaluate all required discovery entries before returning FreshAbsent. An absent provenance file alone does not prove freshness. Inaccessible, corrupt, foreign, or unexpected objects do not mean absence. Recheck the disposition after obtaining the installation lease.
+An empty canonical root with only matching D-48 identity, owner and DACL is `PartialOrUncertain`, not qualified `ExactEmptyScaffold`.
+That observation cannot distinguish a prior pre-journal installer crash from a legitimately older empty root.
+Only separately approved, independently authenticated creator provenance, durable before installer access and bound to that root, could qualify it.
+No such producer is commissioned. Refuse this cell; never fabricate origin proof from a timestamp, empty root or bootstrap lock.
 
 ### D-44: Protected acquisition namespace
 

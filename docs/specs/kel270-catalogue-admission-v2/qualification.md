@@ -199,10 +199,22 @@ durable `creation-armed` fence. Withdraw the target, prove no native
 installation effect, abort and clear the pointer, then admit a different
 valid target. As a refusal control, create one scaffold before its durable
 receipt. Restart MUST keep the pointer and refuse to delete that object.
+In this profile, inject a canonical empty root created before `admitted` and crash without any record.
+Matching owner/DACL and empty contents MUST NOT authorize `ExactEmptyScaffold`; expect `PartialOrUncertain` refusal.
+Any future positive requires independent pre-attempt creator evidence bound to root, owner and DACL.
+Mutate that origin, root identity, DACL and contents separately; each MUST refuse. No positive is claimed yet.
+Cut after `admitted` but before pointer publication; find the journal under the lease and retain D-9 references through terminal abort.
+With no pointer, inject corrupt, wrong-owner or multiple orphan journals and missing D-9 references separately.
+Each MUST halt before ordinary mutation or new admission, with no object deletion.
 For root catch-up, accept at least three consecutive signed successors.
 At every publish and committed-history retirement crash cut, prove no more
 than three generation files, protected references remain live and another
-valid refresh succeeds. Remove the retirement intent as a negative fault.
+valid refresh succeeds. Delete one listed N-2 blob, crash, then remove its durable retirement intent as a negative fault.
+Restart MUST refuse further deletion without that exact intent; do not confuse normal completed-intent removal.
+Repeat from committed N-2/N-1/N with a valid manual loss-only directive.
+Retire unreferenced N-2 before the D-65 journal and D-68 pointer; cut at each retirement edge.
+Also crash after listed exclusive-blob deletion and N-2 generation deletion while intent remains; resume without reconstructing absent bytes.
+Held or foreign N-2 MUST refuse without deletion or a new pointer. Recovery remains a planned native test.
 For the D-27 admission codec, read back one canonical receipt and mutate
 each target, policy, generation and expiry binding independently. Each
 MUST refuse before the consuming transition journal is written.
@@ -215,8 +227,8 @@ The fixture and review files are in `docs/engineering/evidence/kel270-catalogue-
 
 - **Run:** `python3 -B docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py --check`
   and `just spec-structure` in the owning repository.
-- **n:** 94 identity cases, nine evidence-capacity cases, and two isolated
-  stale-evidence negative controls. The compact receipt pins both report digests.
+- **n:** 94 identity cases, nine evidence-capacity cases, three isolated checker
+  negative controls, and 23 receipt-readiness negative controls. The compact receipt pins both report digests.
 - **Environment:** A verified local Mac worktree. The check does not modify
   tracked source. Complete historical output remains archived in research.
   Automatic hosted evidence verification is blocked by B-82.

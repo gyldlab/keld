@@ -304,7 +304,7 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
 
 ### AC-60: Initial admission has one recoverable owner
 
-- **Given:** A fresh destination and a valid, leased metadata revision.
+- **Given:** A `FreshAbsent` root and a valid, leased metadata revision.
 - **When:** The admitting process terminates at each persisted boundary.
 - **Then:** The next admitted worker completes the exact attempt or refuses unrelated bytes.
   A durable `admitted` record with no `creation-armed` fence permits terminal
@@ -316,11 +316,12 @@ Start the creation census at retained LocalAppData, above GYLDLAB, including cle
   - **At-risk precondition:** Termination occurs immediately after the first scaffold creation.
   - **Expected RED:** The next worker observes an installation effect without an authenticated attempt record.
 
-The independent positive cut stops after `admitted` and pointer readback,
-withdraws the exact target before `creation-armed`, and requires finite
-terminal abort, pointer removal and a healthy fresh admissible attempt.
-The adverse cut creates a scaffold without a durable creation receipt.
-Automatic abort MUST refuse and leave every unknown object untouched.
+Run `FreshAbsent` positives after `admitted`, before and after pointer publication.
+Withdraw the target before `creation-armed`; require finite abort and a healthy new admission.
+An empty root without independent pre-attempt creator provenance MUST refuse as `PartialOrUncertain`.
+The adverse cut creates an apparently valid empty canonical root before `admitted`, then crashes without a journal or pointer.
+Restart MUST refuse despite matching owner/DACL, without adopting or deleting the root.
+A future `ExactEmptyScaffold` positive requires separately commissioned origin proof; no such evidence exists now.
 
 ### AC-61: A missing key cannot authorize its own replacement
 
@@ -396,6 +397,8 @@ Automatic abort MUST refuse and leave every unknown object untouched.
 
 - **Given:** A `prepared` journal, sealed prewrite inventory and pending pointer. Old metadata and application state remain current.
 - Before that journal, D-24 MUST retire any valid ordinary N+1 orphan while no pointer exists. Hold the repository lease through retirement, absence, plan sealing and pointer publication.
+- With three committed generations, D-65 MUST retire unreferenced N-2 under D-24 before the manual journal or pointer.
+- A held or foreign N-2 MUST refuse before any new journal, pointer or deletion. Crash recovery MUST resume only its exact committed intent.
 - An ambiguous ordinary orphan or mismatched intent MUST block recovery before a new journal or pointer.
 - **When:** The process crashes, the directive expires, and the recovery owner restarts.
 - **Then:** It refuses expired trust commit and readback-verifies terminal `aborted`. It preserves established current/LKG.

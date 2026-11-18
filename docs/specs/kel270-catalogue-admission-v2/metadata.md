@@ -254,18 +254,21 @@ unreferenced blob objects absent before sealing a new recovery prewrite inventor
 If source identity, generation epoch or ownership is ambiguous,
 refuse recovery without creating its journal or pending pointer.
 
-Before creating an ordinary N+1 successor, make capacity for that successor
+Before creating any N+1 successor, including D-65 manual recovery, make capacity
 while holding the exclusive metadata lease. At current N, protect N and its
 immediate predecessor N-1. If a third committed N-2 exists, retire it first.
 An unexpected fourth generation MUST halt without deletion.
-Authenticate N, N-1, N-2, the anchor and every protected reference. Confirm
-that N-2 is not current, predecessor, pending, selected LKG, or held by
-another owner. A historical digest in N-1 or the anchor is not by itself
-a live request to reopen N-2. Refuse when a consumer still requires its bytes.
-Refuse any D-68 pointer, outstanding intent, prepared N+1 or foreign file.
+Authenticate N, N-1, anchor and every protected owner. Refuse any D-68
+pointer, foreign intent, prepared N+1 or foreign file. For a new
+retirement, authenticate present N-2 and prove it is not current,
+predecessor, pending, selected LKG or held by another owner. A historical
+digest alone is not a live N-2 reference. A live consumer blocks deletion.
+For a retained matching committed intent, authenticate its old state and
+owner census; only intent-listed objects may already be absent.
 
-Compute the exact N-2 generation digest and every blob exclusive to N-2.
+For new retirement, compute the exact N-2 digest and exclusive blob list.
 Publish, flush and reread D-23's committed-history intent before deletion.
+For resumed retirement, reuse the authenticated intent and its exact list.
 Keep N, N-1 and their blobs pinned through retained handles. For each listed
 object, recheck bytes, regular non-reparse type, owner SID, DACL, and full
 unreachability from N, N-1, anchor, LKG, previous LKG and other protected
@@ -274,11 +277,12 @@ object counts as previously retired only under the unchanged durable intent.
 Recheck current N, N-1, anchor and all owners after each crash or deletion.
 Never retire N-2 without the matching intent; never delete an unlisted object.
 Once N-2 and its exclusive blobs are absent, remove and verify the intent.
-Only then may ordinary publication prepare N+1. Resume a retained intent
+Only then may ordinary publication or D-65 prepare N+1. Resume a retained intent
 before accepting any new root or role. An ambiguous record or reference halts.
 Before retirement the three slots can hold N-2, N-1 and N. After
 retirement they can hold N-1, N and one prepared N+1. Root catch-up
-MUST perform this retirement before each advancing root transition.
+MUST retire before each advancing root transition. D-65 MUST finish this
+retirement before its manual journal or D-68 pointer.
 
 For D-65 manual recovery only, a verified expired `prepared` journal,
 matching D-68 pending pointer, protected old `current` and terminal
