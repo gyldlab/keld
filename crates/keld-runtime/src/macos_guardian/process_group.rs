@@ -314,8 +314,60 @@ pub(super) fn terminate_attested_group_until(
     group: GroupIdentity,
     reap_deadline: Instant,
 ) -> Result<(), RuntimeError> {
-    match observe_group_identity(group.pid) {
-        Ok(current) if current == group => signal_attested_group_once(group, reap_deadline),
+    terminate_attested_group_outcome(group, reap_deadline).map(|_| ())
+}
+
+// Internal outcome only: a delivered signal is not an absence proof.
+enum AttestedGroupTermination {
+    SignalDelivered,
+    AbsenceProven,
+}
+
+// Preserve the first successful proof within the caller's original budget.
+// Only a delivered signal still requires the read-only absence owner.
+pub(super) fn terminate_attested_group_and_prove_absence(
+    group: GroupIdentity,
+    deadline: Instant,
+) -> Result<(), RuntimeError> {
+    finish_attested_group_termination(terminate_attested_group_outcome(group, deadline), || {
+        require_attested_group_absence(group, deadline)
+    })
+}
+
+fn finish_attested_group_termination(
+    outcome: Result<AttestedGroupTermination, RuntimeError>,
+    prove_absence: impl FnOnce() -> Result<(), RuntimeError>,
+) -> Result<(), RuntimeError> {
+    match outcome? {
+        AttestedGroupTermination::SignalDelivered => prove_absence(),
+        AttestedGroupTermination::AbsenceProven => Ok(()),
+    }
+}
+
+fn terminate_attested_group_outcome(
+    group: GroupIdentity,
+    reap_deadline: Instant,
+) -> Result<AttestedGroupTermination, RuntimeError> {
+    terminate_attested_group_with_observers(
+        group,
+        || observe_group_identity(group.pid),
+        probe_group_absence,
+        || signal_attested_group_once(group, reap_deadline),
+        || require_attested_group_absence(group, reap_deadline),
+    )
+}
+
+// Private composition seam. Shipping callers supply the exact kernel operations;
+// component regressions supply observations, not an invented outcome variant.
+fn terminate_attested_group_with_observers(
+    group: GroupIdentity,
+    observe_identity: impl FnOnce() -> Result<GroupIdentity, RuntimeError>,
+    first_probe: impl FnOnce(i32) -> (Result<Pid, Errno>, Result<(), Errno>),
+    signal_once: impl FnOnce() -> Result<AttestedGroupTermination, RuntimeError>,
+    prove_absence: impl FnOnce() -> Result<(), RuntimeError>,
+) -> Result<AttestedGroupTermination, RuntimeError> {
+    match observe_identity() {
+        Ok(current) if current == group => signal_once(),
         Ok(_) => Err(lifecycle_error(
             "macOS guardian registered group identity changed",
             io::Error::new(
@@ -332,13 +384,14 @@ pub(super) fn terminate_attested_group_until(
             // absence owner, which never signals and accepts only dual ESRCH
             // within the caller's reap deadline (a quarter of the existing
             // shutdown deadline unless a retained owner shares one budget).
-            if probe_group_absence(raw) == (Err(Errno::ESRCH), Ok(())) {
-                return signal_attested_group_once(group, reap_deadline);
+            if first_probe(raw) == (Err(Errno::ESRCH), Ok(())) {
+                return signal_once();
             }
             // Keep this fallback's existing typed failure: callers and
             // their native oracles distinguish it from a later probe-only
             // absence timeout of a retained generation.
-            require_attested_group_absence(group, reap_deadline)
+            prove_absence()
+                .map(|()| AttestedGroupTermination::AbsenceProven)
                 .map_err(|_| registered_identity_unavailable(observation))
         }
     }
@@ -372,14 +425,23 @@ fn registered_identity_unavailable(observation: RuntimeError) -> RuntimeError {
 fn signal_attested_group_once(
     group: GroupIdentity,
     reap_deadline: Instant,
-) -> Result<(), RuntimeError> {
+) -> Result<AttestedGroupTermination, RuntimeError> {
     #[cfg(test)]
     run_test_group_signal_hook(group.pid, TestGroupSignalPoint::BeforeSignal);
-    terminate_registered_group(group.pid).or_else(|denied| {
+    classify_attested_group_signal(terminate_registered_group(group.pid), |denied| {
         #[cfg(test)]
         run_test_group_signal_hook(group.pid, TestGroupSignalPoint::AfterDeniedSignal);
         reconcile_denied_signal_after_reap(group, denied, reap_deadline)
     })
+}
+
+fn classify_attested_group_signal(
+    signal: Result<(), RuntimeError>,
+    reconcile: impl FnOnce(RuntimeError) -> Result<(), RuntimeError>,
+) -> Result<AttestedGroupTermination, RuntimeError> {
+    signal
+        .map(|()| AttestedGroupTermination::SignalDelivered)
+        .or_else(|denied| reconcile(denied).map(|()| AttestedGroupTermination::AbsenceProven))
 }
 
 // One read-only kernel observation of the original leader PID and its whole
@@ -858,3 +920,7 @@ pub(super) fn reject_host_registration(
     // Post-enrollment rejection runs its separate birth-attested group cleanup.
     collapse_failures(failures)
 }
+
+#[cfg(test)]
+#[path = "process_group/absence_composition_tests.rs"]
+mod absence_composition_tests;

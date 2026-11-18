@@ -1,8 +1,7 @@
 //! Registered guardian host-side lifecycle and owned shutdown handling.
 use super::error::typed_cleanup_io_error;
 use super::process_group::{
-    GroupIdentity, observe_group_identity, require_attested_group_absence,
-    terminate_attested_group_until,
+    GroupIdentity, observe_group_identity, terminate_attested_group_and_prove_absence,
 };
 use super::{
     Child, ChildStdin, ChildStdout, ExitStatus, GUARDIAN_SHUTDOWN_DEADLINE, GuardianReport,
@@ -337,18 +336,6 @@ impl HostGuardian {
         }
         collapse_failures(failures)
     }
-}
-
-// A delivered group SIGKILL is one spent authority, not whole-group absence.
-// Use the same absolute budget for the one signal and read-only dual-ESRCH
-// proof. Every legacy caller, including rejected registration, observes
-// unresolved descendants as a typed cleanup failure.
-fn terminate_attested_group_and_prove_absence(
-    group: GroupIdentity,
-    deadline: Instant,
-) -> Result<(), RuntimeError> {
-    terminate_attested_group_until(group, deadline)?;
-    require_attested_group_absence(group, deadline)
 }
 
 impl Drop for HostGuardian {

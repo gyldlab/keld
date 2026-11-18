@@ -237,27 +237,37 @@ struct HeldGuardianMember(Option<Child>);
 impl HeldGuardianMember {
     fn new(group_pid: u32) -> Self {
         let raw = i32::try_from(group_pid).expect("authenticated Bun group PID fits i32");
-        let member = Command::new("/bin/sleep")
-            .arg("30")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(raw)
-            .spawn()
-            .expect("test-owned child joined authenticated G1 group");
+        // Own the exact Child before checking its group: a failed assertion
+        // must still reach the test-only kill-and-wait Drop rescue.
+        let member = Self(Some(
+            Command::new("/bin/sleep")
+                .arg("30")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .process_group(raw)
+                .spawn()
+                .expect("test-owned child joined authenticated G1 group"),
+        ));
         assert_eq!(
             getpgid(Some(Pid::from_raw(
-                i32::try_from(member.id()).expect("member PID fits")
+                i32::try_from(member.0.as_ref().expect("owned member").id())
+                    .expect("member PID fits")
             ))),
             Ok(Pid::from_raw(raw)),
             "member is in the authentic, registered generation group"
         );
-        Self(Some(member))
+        member
     }
 
     fn reap(&mut self) {
-        let mut member = self.0.take().expect("one owned child reap");
-        let deadline = Instant::now() + OBSERVATION_BOUND;
+        self.reap_until(Instant::now() + OBSERVATION_BOUND);
+    }
+
+    fn reap_until(&mut self, deadline: Instant) {
+        // Keep the owner populated until the exact Child has been reaped and
+        // its signal checked. If either assertion panics, Drop must rescue it.
+        let member = self.0.as_mut().expect("one owned child reap");
         let status = loop {
             if let Some(status) = member.try_wait().expect("reap exact test child") {
                 break status;
@@ -269,6 +279,7 @@ impl HeldGuardianMember {
             thread::yield_now();
         };
         assert_eq!(status.signal(), Some(nix::libc::SIGKILL));
+        self.0.take();
     }
 }
 
@@ -279,6 +290,41 @@ impl Drop for HeldGuardianMember {
             let _ = member.wait();
         }
     }
+}
+
+// A RED negative control must not strand a test-owned child outside the
+// isolated actor fixture. Use an already-expired deadline to test the exact
+// failure path without sleeping, and rescue even a deliberately broken owner.
+#[test]
+fn held_member_reap_timeout_keeps_child_for_drop_rescue() {
+    let child = Command::new("/bin/sleep")
+        .arg("30")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .expect("spawn exact test-owned independent child");
+    let pid = Pid::from_raw(i32::try_from(child.id()).expect("owned PID fits"));
+    let mut owned = HeldGuardianMember(Some(child));
+    let attempted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        owned.reap_until(Instant::now());
+    }));
+    let still_owned = owned.0.is_some();
+    drop(owned);
+    if !still_owned {
+        // Failure-first mutation rescue: this test spawned the exact process,
+        // and no other parent-side waiter was installed for its PID.
+        let _ = kill(pid, Some(Signal::SIGKILL));
+        let _ = nix::sys::wait::waitpid(pid, None);
+    }
+    assert!(attempted.is_err(), "the live member must reach its timeout oracle");
+    assert!(still_owned, "the assertion may not disarm owned-child Drop rescue");
+    assert_eq!(
+        getpgid(Some(pid)),
+        Err(Errno::ESRCH),
+        "Drop must kill and reap the exact test-owned child"
+    );
 }
 
 #[test]
