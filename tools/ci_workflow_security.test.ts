@@ -2136,7 +2136,7 @@ for (const [job, name] of aptSteps) {
       aptStepTimeoutMinutes - 1,
       aptStepTimeoutMinutes + 1,
       "${{ inputs.minutes }}",
-      "15m",
+      "25m",
     ]) {
       const f = fixture();
       const selected = step(f, job, name);
@@ -2150,7 +2150,7 @@ for (const [job, name] of aptSteps) {
       const f = fixture();
       f.jobs[job]!["timeout-minutes"] = value;
       expect(() => check(f)).toThrow(
-        "does not exceed the 15-minute apt step bound",
+        "does not exceed the 25-minute apt step bound",
       );
     }
   });
@@ -2177,7 +2177,7 @@ test("apt timeout reads the parsed run script, not names or layout", () => {
   const flowMarker = "      - name: Build Linux media guard probe\n";
   const flowed = source.replace(
     flowMarker,
-    "      - { run: 'sudo apt-get install -y jq', timeout-minutes: 15 }\n" +
+    "      - { run: 'sudo apt-get install -y jq', timeout-minutes: 25 }\n" +
       flowMarker,
   );
   expect(flowed).not.toBe(source);
@@ -2185,7 +2185,7 @@ test("apt timeout reads the parsed run script, not names or layout", () => {
   const quoted = fixture();
   quoted.jobs["linux-gui-smoke"]!.steps.push({
     run: "sudo apt-get install -y jq\n",
-    "timeout-minutes": "15",
+    "timeout-minutes": "25",
   });
   expect(() => check(quoted)).not.toThrow();
   const unrelated = fixture();

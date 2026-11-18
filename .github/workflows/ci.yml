@@ -274,7 +274,7 @@ jobs:
           key: ${{ steps.webkitgtk-apt-key.outputs.key }}
       - name: Install WebKitGTK build deps (KEL-28, see keld-wv/Cargo.toml)
         if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.webkitgtk == 'true'
-        timeout-minutes: 15
+        timeout-minutes: 25
         run: tools/ci_webkitgtk_apt.sh install ~/.cache/keld-webkitgtk-debs
       - name: Save WebKitGTK .deb cache
         if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.webkitgtk == 'true' && steps.webkitgtk-apt-cache.outputs.cache-hit != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -458,9 +458,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: "1.4.4"
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master pinned commit
         with:
           toolchain: 1.99.1
@@ -723,9 +720,9 @@ jobs:
   linux-gui-smoke:
     name: Linux GUI smoke test (Xvfb)
     runs-on: ubuntu-latest
-    # Above the 15-minute apt step bound, so a slow but healthy mirror can
-    # finish and the build and smoke (p90 about 2 minutes) still run (#624).
-    timeout-minutes: 20
+    # Above the 25-minute cold-cache apt step bound; retain real release
+    # build and Xvfb smoke rather than counting an apt timeout as success.
+    timeout-minutes: 40
     needs: changes
     if: needs.changes.outputs.gui == 'true'
     env:
@@ -748,8 +745,9 @@ jobs:
       # apt's signed index; everything else downloads as before. A miss takes
       # the old path and then saves the cache. A stuck cache download aborts
       # after 2 minutes and proceeds as a miss; both cache steps are bounded.
-      # Same evidence-based bound as the clippy leg (#624): above the slowest
-      # observed successful apt step (642 s), far below the 44-minute hangs.
+      # A cold Ubuntu 26.04 runner planned 181 signed-index-backed .debs, and
+      # was still downloading #168/181 after 15 minutes (18 Nov #1542).
+      # Keep a finite 25-minute step limit below historical 44-minute hangs.
       - name: Resolve WebKitGTK apt cache key
         id: webkitgtk-apt-key
         run: tools/ci_webkitgtk_apt.sh key >> "$GITHUB_OUTPUT"
@@ -763,7 +761,7 @@ jobs:
           path: ~/.cache/keld-webkitgtk-debs
           key: ${{ steps.webkitgtk-apt-key.outputs.key }}
       - name: Install WebKitGTK build deps + X11 control tools (KEL-28)
-        timeout-minutes: 15
+        timeout-minutes: 25
         run: tools/ci_webkitgtk_apt.sh install ~/.cache/keld-webkitgtk-debs
       - name: Save WebKitGTK .deb cache
         if: steps.webkitgtk-apt-cache.outputs.cache-hit != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
