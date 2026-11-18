@@ -59,6 +59,20 @@ max-threads = 1
 filter = "binary(no_flag_macos)"
 test-group = "macos-no-flag-gui"
 
+# DiskImages/hdiutil is a shared macOS native resource, not an application
+# concurrency contract. Hosted #1542 run 44267577049 ran the three real DMG
+# package tests simultaneously; all three got Resource temporarily unavailable,
+# even though the bounded, fail-closed verify retries remained enabled.
+# Serialize only these three native signing/verification transactions. Keep
+# each signed-image integrity assertion, corrupt-image negative control,
+# umask subprocess, test deadline and retry-free CI profile unchanged.
+[test-groups.macos-dmg-integrity]
+max-threads = 1
+
+[[profile.ci.overrides]]
+filter = 'package(keld-pack) & (test(native_graph_transaction_signs_and_copy_verifies_only_the_compiled_fixed_leaves) | test(native_signed_bundle_checks_every_directory_under_umask_077) | test(native_assembly_verifies_app_image_copy_and_rejects_mutations))'
+test-group = "macos-dmg-integrity"
+
 # Real Windows no-flag rows each own a native WebView2 session. Running those
 # sessions concurrently on the two-core GitHub runner can starve a renderer
 # beacon while every process and port remains test-private. Serialize only this
