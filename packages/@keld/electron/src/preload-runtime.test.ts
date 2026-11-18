@@ -717,4 +717,91 @@ describe("original preload runtime only", () => {
       f.restore();
     }
   });
+  test("forged A2 page carrier cannot mint native authority before app binding", () => {
+    const f = fixture(undefined, false);
+    try {
+      const before = f.appMessages.length;
+      f.page.document.dispatchEvent(
+        new CustomEvent("__keld_page_call_data_v1", {
+          detail: JSON.stringify({
+            v: 1,
+            kind: "call",
+            call: 900,
+            method: "sendMessage",
+            args: ["rendererReq", { action: "isFullscreen" }],
+            document: "f".repeat(32),
+          }),
+        }),
+      );
+      expect(f.appMessages).toHaveLength(before);
+      expect(f.pageMessages).toHaveLength(0);
+      expect(f.sends()).toHaveLength(0);
+      expect(Object.hasOwn(f.page, "__keldHostDocumentCredential")).toBe(false);
+    } finally {
+      f.restore();
+    }
+  });
+  test("forged A2 carrier cannot send during Bun retirement and healthy recovery works", () => {
+    const f = fixture(undefined, true, false);
+    try {
+      const spoofedDocument = "f".repeat(32);
+      const dispatch = (value: unknown) =>
+        f.page.document.dispatchEvent(
+          new CustomEvent("__keld_page_call_data_v1", {
+            detail: JSON.stringify(value),
+          }),
+        );
+      const forged = {
+        v: 1,
+        kind: "call",
+        call: 901,
+        method: "request",
+        args: [{ k: "object", entries: [["action", "isFullscreen"]] }],
+        document: spoofedDocument,
+      };
+      const before = f.pageMessages.length;
+      dispatch({ ...forged, method: "__keld_app_world" });
+      dispatch({ ...forged, args: {} });
+      expect(f.pageMessages).toHaveLength(before);
+
+      // A2 is untrusted data, not a document token. The app world supplies its
+      // own binding to native; native role admission is still a separate gate.
+      dispatch(forged);
+      expect(f.pageMessages).toHaveLength(before + 1);
+      const offered = f.pageMessages.at(-1)!;
+      expect(offered.document).toBe(token);
+      expect(offered.document).not.toBe(spoofedDocument);
+      expect(f.sends()).toHaveLength(0);
+
+      // This fake invokes the private callback directly; production must
+      // additionally check native frame/role/credit before invoking it.
+      (f.app.__keldAppNativeCall as (value: unknown) => void)(offered);
+      expect(f.sends()).toHaveLength(0);
+
+      (f.app.__keldAppRouteState as (document: string, ready: boolean) => void)(
+        spoofedDocument,
+        true,
+      );
+      expect(f.sends()).toHaveLength(0);
+      (f.app.__keldAppRouteState as (document: string, ready: boolean) => void)(
+        token,
+        true,
+      );
+      const values: unknown[] = [];
+      f.call(
+        "request",
+        { action: "isFullscreen" },
+        (value: unknown) => values.push(value),
+        () => {},
+      );
+      expect(f.sends()).toHaveLength(1);
+      const sent = decodeEndpointArguments(
+        new Uint8Array(f.sends()[0]!.payload as number[]),
+      )[0] as { reqId: number };
+      f.event("mainResp", [{ reqId: sent.reqId, data: false }]);
+      expect(values).toEqual([false]);
+    } finally {
+      f.restore();
+    }
+  });
 });
