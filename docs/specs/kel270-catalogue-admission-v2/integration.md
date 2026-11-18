@@ -72,3 +72,23 @@ Merge and release remain separate decisions under their existing owners and evid
 
 The release record must name each supported cell. A passing fresh install cannot qualify migration or recovery.
 Do not ship a broad recovery claim while the independent authority or joined evidence is missing.
+
+### D-88: Metadata retention and authority-use clock
+
+These rules are normative parts of D-24 and D-26, not optional qualification.
+
+Installed current/LKG/previous-LKG provenance retains its own verified package,
+manifest, policy and rollback binding; a historical metadata digest is audit-only.
+Completed admission/metadata receipts retain audit-only generation digests once
+the live operation is terminal; they cannot renew a ReadyRevision or pin role blobs.
+Never delete the independently retained installation objects or receipt evidence.
+A live admitted attempt or ReadyRevision lease using that generation does pin it;
+release only after terminal attempt cleanup and every borrower has relinquished it.
+Pending journal/pointer ownership remains a hold until its owning crash-resumable
+protocol proves terminal completion and release. Unknown ownership refuses retirement.
+
+After every wait and at the final effect check, observe fresh OS UTC and
+checked monotonic elapsed time since the captured refresh start. Refuse if either
+fresh UTC or fixed refresh UTC plus elapsed is at or after any signed role expiry.
+Overflow, unrepresentable addition or invalid monotonic elapsed refuses. The fixed
+protocol timestamp remains unchanged; the admission deadline is a separate bound.

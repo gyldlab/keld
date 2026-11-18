@@ -193,6 +193,8 @@ Run actual Windows process-death and physical power-loss cases separately; synth
   - **At-risk precondition:** The fixed refresh time equals the timestamp expiry.
   - **Expected RED:** The metadata client accepts the expired boundary.
 
+- **Authority-use expiry cases (NOT_RUN):** Capture UTC 100, expiry 110; elapsed 11 and fresh UTC 105 must refuse despite the clock remaining above its floor. Equality, forward UTC expiry and addition overflow also refuse. Remove only elapsed-time expiry enforcement: the rollback case must become RED. A nonexpired role under both clocks remains a positive control.
+
 ### AC-25: Incomplete target streams produce no authority
 
 - **Given:** A valid metadata graph and a correctly authenticated target description.
@@ -476,3 +478,9 @@ A future `ExactEmptyScaffold` positive requires separately commissioned origin p
   - **Single fault:** Mark one native case passed using only a JSON fixture check.
   - **At-risk precondition:** The native case requires actual Windows handles or signed artifacts.
   - **Expected RED:** The evidence review rejects the unsupported qualification.
+
+Metadata retirement qualification (NOT_RUN): keep installed LKG unchanged while
+refreshing N to N+1 after retiring N-2; audit-only provenance must not block it.
+An actual admitted N-2 borrower or pending journal must block retirement until
+its terminal release, including restart. Removing only live-owner checks must
+make that retention assertion RED; LKG package/manifest/binding bytes stay intact.

@@ -261,8 +261,10 @@ An unexpected fourth generation MUST halt without deletion.
 Authenticate N, N-1, anchor and every protected owner. Refuse any D-68
 pointer, foreign intent, prepared N+1 or foreign file. For a new
 retirement, authenticate present N-2 and prove it is not current,
-predecessor, pending, selected LKG or held by another owner. A historical
+predecessor, pending, or held by an active LKG recovery or other live owner. A historical
 digest alone is not a live N-2 reference. A live consumer blocks deletion.
+D-88 in [integration](integration.md)
+owns the binding distinction between live holds and completed audit references.
 For a retained matching committed intent, authenticate its old state and
 owner census; only intent-listed objects may already be absent.
 
@@ -271,8 +273,9 @@ Publish, flush and reread D-23's committed-history intent before deletion.
 For resumed retirement, reuse the authenticated intent and its exact list.
 Keep N, N-1 and their blobs pinned through retained handles. For each listed
 object, recheck bytes, regular non-reparse type, owner SID, DACL, and full
-unreachability from N, N-1, anchor, LKG, previous LKG and other protected
-owners. Delete through the verified retained parent only. An absent listed
+unreachability from N, N-1, anchor, active LKG recovery and all other live
+metadata owners, excluding audit-only completed references. Delete through the
+verified retained parent only. An absent listed
 object counts as previously retired only under the unchanged durable intent.
 Recheck current N, N-1, anchor and all owners after each crash or deletion.
 Never retire N-2 without the matching intent; never delete an unlisted object.
@@ -395,9 +398,9 @@ Before the first installation effect, acquire leases in this order:
 3. Browser profile.
 
 After every wait, check the monotonic deadline and all role expiry values. Check the store sequence and selected catalogue again under the metadata lease. Keep that lease across comparison and the first installation effect. The native owner consumes the one-shot permit on the admitted worker.
-For the final effect check, observe fresh OS UTC separately from the fixed
-protocol refresh timestamp. Refuse if a signed role has expired during the
-lease wait, even when the monotonic admission deadline remains open.
+At every authority-use check apply D-88
+[integration](integration.md):
+check fresh UTC and refresh UTC plus checked monotonic elapsed against expiry.
 
 A fresh install has no existing bootstrap lock. Consume the private one-shot permit when entering the effectful operation. Hold the metadata lease. Next, persist and read back the admission record outside the installation tree. Then create the scaffold and exclusive bootstrap lock. Recheck ownership.
 Keep the metadata lease until the durable record and exclusive bootstrap ownership exist. The recovery part owns the admission record. No installation-tree creation precedes its durable readback.
