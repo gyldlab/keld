@@ -307,10 +307,33 @@ fn held_member_reap_timeout_keeps_child_for_drop_rescue() {
         .expect("spawn exact test-owned independent child");
     let pid = Pid::from_raw(i32::try_from(child.id()).expect("owned PID fits"));
     let mut owned = HeldGuardianMember(Some(child));
+    // Independent precondition: a child that already exited cannot prove the
+    // live-child timeout or its unwind cleanup.
+    let live_before = owned
+        .0
+        .as_mut()
+        .expect("exact test child still owned")
+        .try_wait()
+        .expect("inspect test child before timeout")
+        .is_none();
     let attempted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         owned.reap_until(Instant::now());
     }));
+    // Catching any panic is not an oracle: wrong exit status also panics in
+    // reap_until. Require the exact timeout and a still-running owned child.
+    let timeout_panic = attempted.err().and_then(|payload| {
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+    });
     let still_owned = owned.0.is_some();
+    let live_after = owned.0.as_mut().is_some_and(|member| {
+        member
+            .try_wait()
+            .expect("inspect exact child after caught timeout")
+            .is_none()
+    });
     drop(owned);
     if !still_owned {
         // Failure-first mutation rescue: this test spawned the exact process,
@@ -319,12 +342,21 @@ fn held_member_reap_timeout_keeps_child_for_drop_rescue() {
         let _ = nix::sys::wait::waitpid(pid, None);
     }
     assert!(
-        attempted.is_err(),
-        "the live member must reach its timeout oracle"
+        live_before,
+        "timeout test started with an exited test child"
+    );
+    assert_eq!(
+        timeout_panic.as_deref(),
+        Some("original group signal did not kill held member"),
+        "only the real live-child deadline refusal qualifies"
     );
     assert!(
         still_owned,
         "the assertion may not disarm owned-child Drop rescue"
+    );
+    assert!(
+        live_after,
+        "the original child must still be running before Drop"
     );
     assert_eq!(
         getpgid(Some(pid)),
