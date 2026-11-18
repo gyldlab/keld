@@ -153,7 +153,7 @@ impl std::error::Error for HostAppError {
             self.manifest_source
                 .as_ref()
                 .map(|source| source.as_ref() as &(dyn std::error::Error + 'static))
-                .or_else(|| {
+                .or({
                     #[cfg(target_os = "macos")]
                     {
                         self.runtime_source
