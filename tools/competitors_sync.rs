@@ -84,7 +84,7 @@ fn run(root: &Path, dry_run: bool, force: bool) -> Result<(), String> {
             );
             continue;
         }
-        sync_one(repo, &dest, force)?;
+        sync_one(root, repo, &dest, force)?;
     }
     if dry_run {
         println!("competitors-sync: dry-run ok ({} repos)", repos.len());
@@ -171,6 +171,96 @@ fn ensure_under_competitors(root: &Path, dest: &Path) -> Result<(), String> {
             dest.display()
         ));
     }
+    verify_existing_destination(root, dest)?;
+    Ok(())
+}
+
+fn refuse_redirected_entry(path: &Path) -> Result<Option<fs::Metadata>, String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "cannot inspect {} for redirected destination components: {error}. Check permissions and retry.",
+                path.display()
+            ));
+        }
+    };
+    #[cfg(windows)]
+    let redirected = {
+        use std::os::windows::fs::MetadataExt as _;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_type().is_symlink()
+            || (metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0
+    };
+    #[cfg(not(windows))]
+    let redirected = metadata.file_type().is_symlink();
+    if redirected {
+        return Err(format!(
+            "destination {} has a symlink/reparse redirect. Remove that component before syncing.",
+            path.display()
+        ));
+    }
+    Ok(Some(metadata))
+}
+
+fn verify_existing_destination(root: &Path, dest: &Path) -> Result<(), String> {
+    // Lexical containment alone does not prevent a Windows junction or Unix
+    // symlink below the selected checkout root from redirecting Git writes.
+    let suffix = dest.strip_prefix(root).map_err(|_| {
+        format!(
+            "destination {} is not under the selected repository root.",
+            dest.display()
+        )
+    })?;
+    let mut cursor = root.to_path_buf();
+    refuse_redirected_entry(&cursor)?;
+    for component in suffix.components() {
+        let Component::Normal(name) = component else {
+            return Err(format!(
+                "destination {} has non-normalized components.",
+                dest.display()
+            ));
+        };
+        cursor.push(name);
+        refuse_redirected_entry(&cursor)?;
+    }
+    // Existing checkout metadata can redirect fetch and reset writes even when
+    // the destination directory itself is a normal directory.
+    let git = dest.join(".git");
+    let Some(metadata) = refuse_redirected_entry(&git)? else {
+        return Ok(());
+    };
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+    let mut directories = vec![git];
+    while let Some(directory) = directories.pop() {
+        let entries = fs::read_dir(&directory).map_err(|error| {
+            format!(
+                "cannot inspect Git metadata {}: {error}. Check permissions and retry.",
+                directory.display()
+            )
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                format!(
+                    "cannot inspect Git metadata {}: {error}. Retry after fixing the directory.",
+                    directory.display()
+                )
+            })?;
+            let path = entry.path();
+            let metadata = refuse_redirected_entry(&path)?.ok_or_else(|| {
+                format!(
+                    "Git metadata {} disappeared during admission; retry with a stable checkout.",
+                    path.display()
+                )
+            })?;
+            if metadata.is_dir() {
+                directories.push(path);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -188,7 +278,8 @@ fn normalize_lexically(path: &Path) -> PathBuf {
     out
 }
 
-fn sync_one(repo: &Repo, dest: &Path, force: bool) -> Result<(), String> {
+fn sync_one(root: &Path, repo: &Repo, dest: &Path, force: bool) -> Result<(), String> {
+    ensure_under_competitors(root, dest)?;
     if dest.join(".git").is_dir() {
         update_existing(repo, dest, force)
     } else if dest.exists() {
@@ -197,11 +288,11 @@ fn sync_one(repo: &Repo, dest: &Path, force: bool) -> Result<(), String> {
             dest.display()
         ))
     } else {
-        clone_new(repo, dest)
+        clone_new(root, repo, dest)
     }
 }
 
-fn clone_new(repo: &Repo, dest: &Path) -> Result<(), String> {
+fn clone_new(root: &Path, repo: &Repo, dest: &Path) -> Result<(), String> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -210,6 +301,7 @@ fn clone_new(repo: &Repo, dest: &Path) -> Result<(), String> {
             )
         })?;
     }
+    ensure_under_competitors(root, dest)?;
     let mut cmd = Command::new("git");
     cmd.args(["clone", "--depth", "1", "--branch", &repo.branch, &repo.url]);
     cmd.arg(dest);
@@ -434,6 +526,70 @@ fn unquote(value: &str, line_no: usize) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    struct SafetyFixture {
+        base: PathBuf,
+        root: PathBuf,
+        outside: PathBuf,
+        redirects: Vec<PathBuf>,
+    }
+
+    impl SafetyFixture {
+        fn new() -> Self {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos();
+            let base = env::temp_dir().join(format!(
+                "keld-competitors-containment-{}-{nonce}",
+                std::process::id()
+            ));
+            let root = base.join("source");
+            let outside = base.join("outside");
+            fs::create_dir_all(root.join("competitors")).expect("competitors fixture");
+            fs::create_dir_all(&outside).expect("outside fixture");
+            Self {
+                base,
+                root,
+                outside,
+                redirects: Vec::new(),
+            }
+        }
+
+        fn redirect(&mut self, link: &Path, target: &Path) {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(target, link).expect("create directory symlink");
+            #[cfg(windows)]
+            {
+                let command = format!(
+                    "New-Item -ItemType Junction -Path '{}' -Target '{}' -ErrorAction Stop | Out-Null",
+                    link.display().to_string().replace('\'', "''"),
+                    target.display().to_string().replace('\'', "''"),
+                );
+                let output = Command::new("powershell")
+                    .args(["-NoProfile", "-NonInteractive", "-Command", &command])
+                    .output()
+                    .expect("create Windows junction");
+                assert!(
+                    output.status.success(),
+                    "junction creation failed: {output:?}"
+                );
+            }
+            self.redirects.push(link.to_path_buf());
+        }
+    }
+
+    impl Drop for SafetyFixture {
+        fn drop(&mut self) {
+            for link in self.redirects.iter().rev() {
+                #[cfg(unix)]
+                let _ = fs::remove_file(link);
+                #[cfg(windows)]
+                let _ = fs::remove_dir(link);
+            }
+            let _ = fs::remove_dir_all(&self.base);
+        }
+    }
+
     fn sample_repos() -> Vec<Repo> {
         let text = r#"
 [[repo]]
@@ -604,5 +760,100 @@ branch = "dev"
         repo.path_override = Some("competitors/custom/electron".into());
         let dest = resolve_path(Path::new("/tmp/keld"), &repo).expect("nested");
         assert_eq!(dest, PathBuf::from("/tmp/keld/competitors/custom/electron"));
+    }
+
+    #[test]
+    fn refuses_redirected_competitor_destination_before_dry_run_or_git() {
+        let mut fixture = SafetyFixture::new();
+        let junction = fixture.root.join("competitors").join("alias");
+        let outside = fixture.outside.clone();
+        fixture.redirect(&junction, &outside);
+        fs::write(outside.join("sentinel"), b"unchanged").expect("outside sentinel");
+        let lock = r#"
+[[repo]]
+name = "probe"
+kind = "competitor"
+url = "file:///nonexistent-keld-competitor-test.git"
+branch = "main"
+path = "competitors/alias/clone"
+"#;
+        fs::write(fixture.root.join("competitors.lock.toml"), lock).expect("fixture lock");
+        for dry_run in [true, false] {
+            let error = run(&fixture.root, dry_run, false).expect_err("redirect refused");
+            assert!(
+                error.contains("redirect") || error.contains("reparse"),
+                "unsafe destination must be refused before git (dry_run={dry_run}): {error}"
+            );
+        }
+        assert_eq!(
+            fs::read(outside.join("sentinel")).expect("outside unchanged"),
+            b"unchanged"
+        );
+        assert!(
+            !outside.join("clone").exists(),
+            "clone escaped via junction"
+        );
+    }
+
+    #[test]
+    fn refuses_redirected_competitors_root() {
+        let mut fixture = SafetyFixture::new();
+        let competitors = fixture.root.join("competitors");
+        fs::remove_dir(&competitors).expect("replace empty competitors directory");
+        let outside = fixture.outside.clone();
+        fixture.redirect(&competitors, &outside);
+        let error = resolve_path(&fixture.root, &sample_repos()[0])
+            .expect_err("redirected competitors root refused");
+        assert!(
+            error.contains("redirect") || error.contains("reparse"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn refuses_redirected_git_metadata_and_nested_objects() {
+        for nested in [false, true] {
+            let mut fixture = SafetyFixture::new();
+            let checkout = fixture.root.join("competitors").join("electron");
+            fs::create_dir_all(&checkout).expect("existing checkout");
+            let git = checkout.join(".git");
+            let link = if nested {
+                fs::create_dir(&git).expect("git metadata directory");
+                git.join("objects")
+            } else {
+                git
+            };
+            let outside = fixture.outside.clone();
+            fixture.redirect(&link, &outside);
+            let error = resolve_path(&fixture.root, &sample_repos()[0])
+                .expect_err("redirected git metadata refused");
+            assert!(
+                error.contains("redirect") || error.contains("reparse"),
+                "nested={nested}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_git_metadata_and_existing_nested_destination_remain_allowed() {
+        let fixture = SafetyFixture::new();
+        let checkout = fixture.root.join("competitors").join("electron");
+        fs::create_dir_all(checkout.join(".git").join("objects")).expect("git metadata fixture");
+        assert_eq!(
+            resolve_path(&fixture.root, &sample_repos()[0]).expect("normal checkout"),
+            checkout
+        );
+        let mut repo = sample_repos().remove(0);
+        repo.path_override = Some("competitors/custom/electron".into());
+        fs::create_dir_all(fixture.root.join("competitors").join("custom"))
+            .expect("existing nested parent");
+        assert_eq!(
+            resolve_path(&fixture.root, &repo).expect("normal nested destination"),
+            fixture
+                .root
+                .join("competitors")
+                .join("custom")
+                .join("electron")
+        );
     }
 }
