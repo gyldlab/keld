@@ -38,6 +38,15 @@ pub fn restamp_transport(source: &str) -> String {
     format!("{TRANSPORT_STAMP_PREFIX}{digest:x}\n{unstamped}")
 }
 
+/// Render an actual retained canonical transport through the same create owner.
+/// This transforms bytes only; it grants no release or filesystem authority.
+#[must_use]
+pub fn render_transport(source: &str, name: &str) -> String {
+    restamp_transport(&source.replace("{{name}}", name).replacen(
+        KIPC_RELEASE_DECLARATION, KIPC_RELEASE_DEFINITION, 1,
+    ))
+}
+
 impl TemplateFile {
     /// The file as `keld create` writes it for project `name`: `{{name}}`
     /// substituted, and the transport with [`KIPC_RELEASE_DEFINITION`] in
@@ -46,11 +55,7 @@ impl TemplateFile {
     pub fn render(&self, name: &str) -> String {
         let rendered = self.contents.replace("{{name}}", name);
         if self.path == "src/kipc-transport.ts" {
-            restamp_transport(&rendered.replacen(
-                KIPC_RELEASE_DECLARATION,
-                KIPC_RELEASE_DEFINITION,
-                1,
-            ))
+            render_transport(self.contents, name)
         } else {
             rendered
         }
@@ -293,5 +298,30 @@ mod tests {
             !generated.contents.contains("EchoClient"),
             "generated artifact must not invent a second client interface"
         );
+    }
+}
+
+#[cfg(test)]
+mod retained_transport_render_tests {
+    use super::*;
+    #[test]
+    fn factoring_preserves_every_existing_template_output() {
+        for name in ["hello", "windows-runnable-hello", "unicode-λ", "{{name}}"] {
+            for file in HELLO_TEMPLATE {
+                let rendered = file.contents.replace("{{name}}", name);
+                let old = if file.path == "src/kipc-transport.ts" {
+                    restamp_transport(&rendered.replacen(KIPC_RELEASE_DECLARATION, KIPC_RELEASE_DEFINITION, 1))
+                } else { rendered };
+                assert_eq!(file.render(name), old);
+            }
+        }
+    }
+    #[test]
+    fn retained_dynamic_source_uses_exact_old_substitution_and_stamp() {
+        for source in ["", "// @keld/kipc-transport sha256:old\n{{name}}", KIPC_RELEASE_DECLARATION] {
+            let owned = source.to_owned();
+            let old = restamp_transport(&owned.replace("{{name}}", "hello").replacen(KIPC_RELEASE_DECLARATION, KIPC_RELEASE_DEFINITION, 1));
+            assert_eq!(render_transport(&owned, "hello"), old);
+        }
     }
 }

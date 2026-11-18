@@ -502,6 +502,8 @@ enum SuspendedStartup<'a> {
     },
     /// The same-token candidate launch: no attribute list and no inheritance.
     SameToken(&'a STARTUPINFOW),
+    /// Same-token tool launch with exactly three admitted standard handles.
+    SameTokenStdio(&'a STARTUPINFOEXW),
 }
 
 /// The one `CreateProcessW` call of every Keld suspended launch.
@@ -524,7 +526,7 @@ fn create_suspended_process(
     startup: SuspendedStartup<'_>,
 ) -> Result<WindowsSuspendedChild, WindowsLpacError> {
     // The pointer is derived from the whole startup object of each arm: the
-    // LPAC call reads the STARTUPINFOEXW beyond its leading STARTUPINFOW.
+    // LPAC and explicit-stdio calls read beyond the leading STARTUPINFOW.
     let (launch, startup_info, flags, inherit_handles, extended, phase): (
         _,
         *const STARTUPINFOW,
@@ -543,6 +545,14 @@ fn create_suspended_process(
             inherit_handles,
             EXTENDED_STARTUPINFO_PRESENT,
             "CreateProcessW LPAC launch",
+        ),
+        SuspendedStartup::SameTokenStdio(startup) => (
+            SuspendedLaunch::SameToken,
+            std::ptr::from_ref(startup).cast::<STARTUPINFOW>(),
+            startup.StartupInfo.dwFlags,
+            true,
+            EXTENDED_STARTUPINFO_PRESENT,
+            "CreateProcessW same-token stdio launch",
         ),
         SuspendedStartup::SameToken(startup) => (
             SuspendedLaunch::SameToken,
@@ -565,16 +575,17 @@ fn create_suspended_process(
     let creation_flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | extended;
     // SAFETY: every pointer refers to live storage through this synchronous
     // call; command line is mutable as required; `startup_info` points at the
-    // borrowed startup object of its arm: a STARTUPINFOW for the same-token
-    // launch, and for the LPAC launch a STARTUPINFOEXW whose attribute list
+    // borrowed startup object of its arm: STARTUPINFOW for the default candidate,
+    // or STARTUPINFOEXW for LPAC and explicit stdio, whose attribute list
     // retains its backing values, where the pointer is derived from the whole
     // STARTUPINFOEXW, so the extended read of `lpAttributeList` that
     // EXTENDED_STARTUPINFO_PRESENT (set only then) requests is within its
     // provenance; its standard-handle fields are null or the LPAC launch's
-    // retained private copies, and the flag that makes them the child's is
+    // retained private copies (also used by same-token stdio), and the flag that makes them the child's is
     // checked above; process/thread outputs are writable. TRUE inheritance is
-    // used only by the LPAC launch, together with its explicit handle-list
-    // attribute; the same-token launch passes FALSE and no token, so the child
+    // used only with an explicit handle-list attribute, by LPAC or the tool
+    // stdio launch. The default same-token candidate passes FALSE. No token is
+    // supplied for either same-token variant, so the child
     // runs under a copy of this process's primary token.
     let created = unsafe {
         CreateProcessW(
@@ -622,7 +633,7 @@ fn create_suspended_process(
     })
 }
 
-/// The exact standard handles admitted to one LPAC child.
+/// The exact standard handles admitted to one suspended child.
 #[derive(Debug, Clone, Copy)]
 pub struct WindowsLpacStdio<'a> {
     /// Child standard input.
@@ -730,6 +741,89 @@ impl WindowsSuspendedChild {
             &environment,
             Some(&current_dir),
             SuspendedStartup::SameToken(&startup),
+        )
+    }
+
+    /// Creates a same-token tool suspended with only the explicit standard
+    /// handles inherited. This does not grant LPAC or Strict admission.
+    ///
+    /// The original handles retain their inheritance flags. Private inheritable
+    /// copies are restricted by an explicit handle list and closed after process
+    /// creation. The caller must record, assign to its Job, and only then resume;
+    /// it owns pipe draining, byte limits, deadlines and observed family reap.
+    /// The default candidate launch remains unchanged and inherits no handles.
+    ///
+    /// # Errors
+    ///
+    /// Refuses relative paths, malformed inputs, handle duplication, attribute
+    /// construction or process creation with `KELD-RUNTIME-020`.
+    pub fn spawn_same_token_with_stdio(
+        program: &Path,
+        args: &[OsString],
+        environment: &[(OsString, OsString)],
+        current_dir: &Path,
+        standard_handles: WindowsLpacStdio<'_>,
+    ) -> Result<Self, WindowsLpacError> {
+        let same_token = |error: WindowsLpacError| error.in_launch(SuspendedLaunch::SameToken);
+        for (path, phase) in [
+            (program, "application path"),
+            (current_dir, "current directory"),
+        ] {
+            if !path.is_absolute() {
+                return Err(same_token(WindowsLpacError::contract(
+                    phase,
+                    "path is not absolute",
+                )));
+            }
+        }
+        let application = wide_nul(program.as_os_str(), "application path").map_err(same_token)?;
+        let mut command_line =
+            encode_command_line(program.as_os_str(), args).map_err(same_token)?;
+        let environment = encode_environment(environment).map_err(same_token)?;
+        let current_dir =
+            wide_nul(current_dir.as_os_str(), "current directory").map_err(same_token)?;
+        let mut raw_handles = vec![
+            standard_handles.stdin.as_raw_handle().cast(),
+            standard_handles.stdout.as_raw_handle().cast(),
+            standard_handles.stderr.as_raw_handle().cast(),
+        ];
+        deduplicate_handles(&mut raw_handles).map_err(same_token)?;
+        let inherited = InheritedHandleCopies::duplicate(&raw_handles).map_err(same_token)?;
+        let handles = inherited.raw_handles();
+        let mut attributes = AttributeList::new(1).map_err(same_token)?;
+        attributes
+            .update(
+                PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                handles.as_ptr().cast(),
+                std::mem::size_of_val(handles.as_slice()),
+                "explicit inherited-handle list",
+            )
+            .map_err(same_token)?;
+        let mut startup = STARTUPINFOEXW::default();
+        startup.StartupInfo.cb =
+            u32::try_from(std::mem::size_of::<STARTUPINFOEXW>()).map_err(|_| {
+                same_token(WindowsLpacError::contract(
+                    "STARTUPINFOEXW size",
+                    "structure exceeds u32",
+                ))
+            })?;
+        startup.lpAttributeList = attributes.pointer;
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        startup.StartupInfo.hStdInput = inherited
+            .copy_of(standard_handles.stdin.as_raw_handle().cast())
+            .map_err(same_token)?;
+        startup.StartupInfo.hStdOutput = inherited
+            .copy_of(standard_handles.stdout.as_raw_handle().cast())
+            .map_err(same_token)?;
+        startup.StartupInfo.hStdError = inherited
+            .copy_of(standard_handles.stderr.as_raw_handle().cast())
+            .map_err(same_token)?;
+        create_suspended_process(
+            &application,
+            &mut command_line,
+            &environment,
+            Some(&current_dir),
+            SuspendedStartup::SameTokenStdio(&startup),
         )
     }
 
@@ -1213,6 +1307,47 @@ mod tests {
     use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT};
 
     use super::{InheritedHandleCopies, WindowsSuspendedChild};
+
+    #[test]
+    fn same_token_stdio_returns_exact_bytes_after_job_retirement() {
+        use crate::windows_job::{WindowsLaunchedProcess, WindowsProcessJob};
+        use std::os::windows::io::AsHandle as _;
+
+        let system32 =
+            std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+                .join("System32");
+        let stdin = std::fs::File::open("NUL").expect("null stdin");
+        let (stdout, stdout_writer) = std::io::pipe().expect("stdout pipe");
+        let (stderr, stderr_writer) = std::io::pipe().expect("stderr pipe");
+        let mut job = WindowsProcessJob::create().expect("Job");
+        let child = WindowsSuspendedChild::spawn_same_token_with_stdio(
+            &system32.join("cmd.exe"),
+            &["/d", "/c", "echo exact-output& echo exact-error 1>&2"].map(std::ffi::OsString::from),
+            &[],
+            &system32,
+            super::WindowsLpacStdio {
+                stdin: stdin.as_handle(),
+                stdout: stdout_writer.as_handle(),
+                stderr: stderr_writer.as_handle(),
+            },
+        )
+        .expect("suspended exact stdio");
+        // Parent writers must not keep the read ends alive after child retirement.
+        drop(stdout_writer);
+        drop(stderr_writer);
+        let mut process = WindowsLaunchedProcess::record(child).expect("record");
+        let membership = job.assign_child(process.child()).expect("assign");
+        process.resume(&membership).expect("resume");
+        let status = process.wait(10_000);
+        job.terminate_and_wait(process.child(), std::time::Duration::from_secs(10))
+            .expect("family retired");
+        assert_eq!(status.expect("wait"), 0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let out = crate::read_windows_tool_pipe(stdout, 1024, deadline).expect("bounded stdout");
+        let err = crate::read_windows_tool_pipe(stderr, 1024, deadline).expect("bounded stderr");
+        assert_eq!(out, b"exact-output\r\n");
+        assert_eq!(err, b"exact-error \r\n");
+    }
 
     #[test]
     fn resume_refuses_a_primary_thread_not_held_suspended_exactly_once() {

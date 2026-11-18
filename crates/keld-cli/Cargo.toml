@@ -38,6 +38,8 @@ rustix = { workspace = true, features = ["process"] }
 keld-pack = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
+keld-pack = { workspace = true }
+keld-update = { workspace = true }
 windows-permissions = { workspace = true }
 windows-sys = { workspace = true }
 

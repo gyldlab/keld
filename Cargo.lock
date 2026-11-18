@@ -1530,6 +1530,7 @@ dependencies = [
  "keld-ipc",
  "keld-pack",
  "keld-runtime",
+ "keld-update",
  "rmcp",
  "rustix",
  "schemars",

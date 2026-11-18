@@ -60,6 +60,7 @@ pub use full::VerifiedFull;
 #[doc(hidden)]
 pub use full::fuzz_canonical_archive;
 pub use manifest::{ManifestDecision, SelectedFull};
+pub use manifest::verify_literal_release_signature;
 #[cfg(any(windows, test))]
 pub use provenance::ExpectedAppIdentity;
 pub use provenance::{

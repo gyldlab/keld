@@ -416,8 +416,8 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-CLI-052
 
 - crate: keld-cli
-- message: Local macOS packaging was refused during the named build phase
-- fix: Use `keld build --target macos-arm64` on Apple Silicon macOS with closed literal application/build configuration, an explicitly declared Legacy permission profile, pinned Host/Bun inputs and a new output directory. Correct the named input or native-tool failure; do not bypass admission or edit a signed bundle.
+- message: Build input checking or local packaging was refused during the named phase
+- fix: Use `keld build --target macos-arm64` on Apple Silicon macOS with closed literal application/build configuration, an explicitly declared Legacy permission profile, pinned Host/Bun inputs and a new output directory. For the separate native Windows app-authoring check, use `keld build --target windows-x64 --check-app-inputs` with owner-held regular literal application/permission files and an explicit Strict declaration. That action does not build, sign, install, launch, validate build configuration or qualify a runtime. Correct the named input or native-tool failure; do not bypass admission or edit a signed bundle.
 
 ## KELD-MCP001
 

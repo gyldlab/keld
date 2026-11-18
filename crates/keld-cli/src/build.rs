@@ -4,8 +4,32 @@
 //! permissions, the existing boot compiler owns the sealed descriptor, and
 //! Pack owns resource capture, code signing, image verification and publication.
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(windows)]
+mod compiler_toolchain;
+#[cfg(any(target_os = "macos", windows, test))]
 mod config;
+#[cfg(windows)]
+mod local_archive;
+#[cfg(windows)]
+mod local_archive_command;
+#[cfg(windows)]
+mod local_initial_install;
+#[cfg(windows)]
+mod local_manifest_session;
+#[cfg(all(windows, test))]
+mod local_baseline;
+#[cfg(windows)]
+mod local_images;
+#[cfg(windows)]
+mod local_source;
+#[cfg(windows)]
+mod windows_archive;
+#[cfg(windows)]
+mod windows_compiler;
+#[cfg(windows)]
+mod windows_inputs;
+#[cfg(windows)]
+mod windows_product;
 
 use std::fmt;
 
@@ -38,7 +62,7 @@ pub struct BuildError {
 }
 
 impl BuildError {
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", windows, test))]
     fn input(phase: &'static str, detail: impl fmt::Display) -> Self {
         Self {
             phase,
@@ -66,9 +90,9 @@ impl fmt::Display for BuildError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "KELD-CLI-052: local macOS build refused during {}: {}. \
-             Use `keld build --target macos-arm64` with closed literal authoring \
-             files, independently pinned binaries and a new output directory.",
+            "KELD-CLI-052: build input or assembly refused during {}: {}. \
+             Use a supported native target with closed literal authoring files. \
+             Windows --check-app-inputs checks authoring only; it does not build an application.",
             self.phase, self.detail
         )
     }
@@ -110,6 +134,25 @@ fn require_graph_pairing(
     }
 }
 
+fn is_windows_app_input_check(args: &[String]) -> bool {
+    matches!(args, [target, check] if target == "--target=windows-x64" && check == "--check-app-inputs")
+        || matches!(args, [flag, target, check] if flag == "--target" && target == "windows-x64" && check == "--check-app-inputs")
+}
+
+/// Recognizes only the ordinary Windows product route after diagnostic routes.
+fn windows_product_session(args:&[String])->Result<Option<&str>,BuildError> {
+    let rest=match args {
+        [flag,target,rest @ ..] if flag=="--target" && target=="windows-x64"=>Some(rest),
+        [target,rest @ ..] if target=="--target=windows-x64"=>Some(rest),
+        _=>None,
+    };
+    match rest {
+        None=>Ok(None),
+        Some([flag,path]) if flag=="--local-test-session" && !path.is_empty()=>Ok(Some(path)),
+        Some(_)=>Err(BuildError::invocation("Windows build requires explicit --local-test-session ABS_JSON and test-local-untimestamped in keld.build.ts; production signing is unavailable, installation is not implied")),
+    }
+}
+
 fn parse_args(args: &[String]) -> Result<(), BuildError> {
     match args {
         [flag, target] if flag == "--target" && target == "macos-arm64" => Ok(()),
@@ -130,6 +173,72 @@ fn parse_args(args: &[String]) -> Result<(), BuildError> {
 /// missing input pins, invalid permissions and native tool failures. Independent
 /// source/runtime qualification remains the caller's separate evidence obligation.
 pub fn run_build(args: &[String]) -> Result<(), BuildError> {
+    if args.starts_with(&[
+        "--target".into(),
+        "windows-x64".into(),
+        "--prepare-local-source-test-archive".into(),
+    ]) {
+        #[cfg(windows)]
+        {
+            return local_archive_command::run(&args[3..]);
+        }
+        #[cfg(not(windows))]
+        {
+            return Err(BuildError::invocation(
+                "local Windows archive assembly requires native Windows",
+            ));
+        }
+    }
+    if args.starts_with(&[
+        "--target".into(),
+        "windows-x64".into(),
+        "--prepare-local-source-test-images".into(),
+    ]) {
+        #[cfg(windows)]
+        {
+            return local_images::run(&args[3..]);
+        }
+        #[cfg(not(windows))]
+        {
+            return Err(BuildError::invocation(
+                "local-source image preparation requires native Windows; nothing was signed",
+            ));
+        }
+    }
+    if args.starts_with(&[
+        "--target".into(),
+        "windows-x64".into(),
+        "--prepare-local-source-test".into(),
+    ]) {
+        #[cfg(windows)]
+        {
+            return local_source::run(&args[3..]);
+        }
+        #[cfg(not(windows))]
+        {
+            return Err(BuildError::invocation(
+                "local-source test preparation requires native Windows; no source was read or built",
+            ));
+        }
+    }
+    if is_windows_app_input_check(args) {
+        #[cfg(windows)]
+        {
+            return windows_inputs::run();
+        }
+        #[cfg(not(windows))]
+        {
+            return Err(BuildError::invocation(
+                "Windows app-input checking requires native Windows; no inputs were read",
+            ));
+        }
+    }
+    if let Some(session)=windows_product_session(args)? {
+        #[cfg(windows)]
+        {return windows_product::run(std::path::Path::new(session));}
+        #[cfg(not(windows))]
+        {let _=session;return Err(BuildError::invocation("Windows product build requires native Windows; no source was built or signed"));}
+    }
     parse_args(args)?;
     if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         return Err(BuildError::invocation(
@@ -376,6 +485,44 @@ mod tests {
     }
 
     #[test]
+    fn windows_app_check_is_explicit_and_never_an_ordinary_build() {
+        assert!(is_windows_app_input_check(&[
+            "--target".into(),
+            "windows-x64".into(),
+            "--check-app-inputs".into()
+        ]));
+        assert!(is_windows_app_input_check(&[
+            "--target=windows-x64".into(),
+            "--check-app-inputs".into()
+        ]));
+        for args in [
+            vec!["--target".into(), "windows-x64".into()],
+            vec![
+                "--target".into(),
+                "windows-x64".into(),
+                "--check-app-inputs".into(),
+                "--sign".into(),
+            ],
+            vec![
+                "--target".into(),
+                "macos-arm64".into(),
+                "--check-app-inputs".into(),
+            ],
+        ] {
+            assert!(!is_windows_app_input_check(&args));
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn windows_input_check_refuses_foreign_os_before_reading_inputs() {
+        let error = run_build(&["--target=windows-x64".into(), "--check-app-inputs".into()])
+            .expect_err("native Windows required");
+        assert_eq!(error.exit_code(), 2);
+        assert!(error.to_string().contains("no inputs were read"));
+    }
+
+    #[test]
     fn only_one_concrete_mac_target_is_accepted() {
         assert!(parse_args(&["--target".into(), "macos-arm64".into()]).is_ok());
         assert!(parse_args(&["--target=macos-arm64".into()]).is_ok());
@@ -400,5 +547,19 @@ mod tests {
             run_build(&["--target".into(), "macos-arm64".into()]).expect_err("foreign platform");
         assert_eq!(error.exit_code(), 2);
         assert!(error.to_string().contains("Apple Silicon"));
+    }
+}
+
+#[cfg(test)]
+mod windows_product_route_tests {
+    use super::*;
+    fn args(values:&[&str])->Vec<String> {values.iter().map(|s|(*s).to_owned()).collect()}
+    #[test] fn ordinary_windows_route_is_explicit_test_only_and_closed() {
+        for a in [args(&["--target","windows-x64","--local-test-session","D:/session.json"]),args(&["--target=windows-x64","--local-test-session","D:/session.json"])] {
+            assert_eq!(windows_product_session(&a).unwrap(),Some("D:/session.json"));
+        }
+        for a in [args(&["--target","windows-x64"]),args(&["--target","windows-x64","--sign","production"]),args(&["--target","windows-x64","--local-test-session","D:/s","--install"])] {assert!(windows_product_session(&a).is_err());}
+        assert_eq!(windows_product_session(&args(&["--target","macos-arm64"])).unwrap(),None);
+        parse_args(&args(&["--target","macos-arm64"])).unwrap();
     }
 }

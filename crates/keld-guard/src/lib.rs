@@ -1099,8 +1099,30 @@ pub fn validate_windows_package_component(component: &str) -> Result<(), String>
 /// Returns a refusal for an invalid path, non-NFC component, case-insensitive
 /// path collision, or Windows API/allocation failure.
 #[cfg(windows)]
-#[allow(unsafe_code)] // SAFETY: FFI is limited to checked Win32 NLS calls on owned buffers below.
 pub fn validate_windows_package_paths(paths: &[&str]) -> Result<(), String> {
+    validate_windows_bounded_paths(paths, 100)
+}
+
+/// Validates source-snapshot names with the same Windows spelling, NFC and
+/// ordinal-collision rules as package names, but a 4096-byte source path limit.
+/// This does not validate an archive or grant package admission.
+///
+/// # Errors
+///
+/// Refuses malformed names, non-NFC spelling, ordinal collisions, names above
+/// the source limit, or Windows NLS/allocation failures.
+#[cfg(windows)]
+pub fn validate_windows_source_paths(paths: &[&str]) -> Result<(), String> {
+    validate_windows_bounded_paths(paths, 4096)
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)] // SAFETY: FFI is limited to checked Win32 NLS calls on owned buffers below.
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep reviewed Windows NLS normalization and ordinal collision admission in one owner."
+)]
+fn validate_windows_bounded_paths(paths: &[&str], max_bytes: usize) -> Result<(), String> {
     use std::cmp::Ordering;
     use windows_sys::Win32::Globalization::{
         CSTR_EQUAL, CSTR_GREATER_THAN, CSTR_LESS_THAN, CompareStringOrdinal,
@@ -1185,8 +1207,11 @@ pub fn validate_windows_package_paths(paths: &[&str]) -> Result<(), String> {
         .try_reserve_exact(paths.len())
         .map_err(|_| "cannot allocate Windows package path set".to_owned())?;
     for path in paths {
-        if path.is_empty() || path.len() > 100 || path.starts_with('/') || path.ends_with('/') {
-            return Err("Windows package path is empty, absolute, or exceeds 100 bytes".to_owned());
+        if path.is_empty() || path.len() > max_bytes || path.starts_with('/') || path.ends_with('/')
+        {
+            return Err(format!(
+                "Windows package path is empty, absolute, or exceeds {max_bytes} bytes"
+            ));
         }
         for component in path.split('/') {
             validate_windows_package_component(component)?;
@@ -2524,5 +2549,20 @@ mod tests {
             eval_app(&manifest, "fs.read", "$APPDATA/file"),
             Decision::Allow(_)
         ));
+    }
+}
+
+#[cfg(all(windows, test))]
+mod source_path_boundary_tests {
+    #[test]
+    fn source_budget_does_not_relax_archive_budget_or_namespace() {
+        let long = format!("{}/file.rs", "a".repeat(101));
+        assert!(super::validate_windows_package_paths(&[&long]).is_err());
+        assert!(super::validate_windows_source_paths(&[&long]).is_ok());
+        assert!(super::validate_windows_source_paths(&["a.rs", "A.rs"]).is_err());
+        assert!(super::validate_windows_source_paths(&["../a.rs"]).is_err());
+        assert!(super::validate_windows_source_paths(&["con"]).is_err());
+        assert!(super::validate_windows_source_paths(&["file~1.rs"]).is_err());
+        assert!(super::validate_windows_source_paths(&[&"a".repeat(4097)]).is_err());
     }
 }

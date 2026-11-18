@@ -2423,6 +2423,105 @@ fn spawn_capture_thread(
         })
 }
 
+/// Captures exact binary bytes from one exclusively owned tool-output pipe.
+///
+/// This is a bounded reader, not process supervision or source authentication.
+/// The caller must not retain or create another reader for this pipe. It owns
+/// suspended launch, Job assignment, writer closure, cancellation and observed
+/// family retirement. Use one absolute deadline shared with that orchestration.
+///
+/// Unlike supervisor text tails, no byte is silently truncated or replaced.
+/// Overflow, timeout and I/O failure refuse the entire result.
+///
+/// # Errors
+///
+/// Refuses overflow, deadline expiry or pipe I/O errors. A broken pipe denotes
+/// EOF only after all buffered bytes have been read.
+#[cfg(windows)]
+pub fn read_windows_tool_pipe(
+    mut reader: std::io::PipeReader,
+    limit: usize,
+    deadline: Instant,
+) -> std::io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    loop {
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "tool capture deadline",
+            ));
+        }
+        let available = match peek_pipe_available_handle(reader.as_raw_handle().addr()) {
+            Ok(available) => available,
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => return Ok(output),
+            Err(error) => return Err(error),
+        };
+        if available == 0 {
+            thread::park_timeout(
+                POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())),
+            );
+            continue;
+        }
+        // Read one byte beyond the ceiling solely to distinguish exact limit
+        // followed by EOF from overflow. Retained byte length stays within the
+        // ceiling; Vec allocator capacity/rounding is not an authority claim.
+        let remaining = limit.saturating_sub(output.len());
+        let count = usize::try_from(available)
+            .unwrap_or(buffer.len())
+            .min(buffer.len())
+            .min(remaining.saturating_add(1));
+        let read = reader.read(&mut buffer[..count])?;
+        if read == 0 {
+            return Ok(output);
+        }
+        if read > remaining {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "tool output exceeds limit",
+            ));
+        }
+        output.try_reserve(read).map_err(std::io::Error::other)?;
+        output.extend_from_slice(&buffer[..read]);
+    }
+}
+
+#[cfg(all(windows, test))]
+mod windows_tool_pipe_tests {
+    use super::read_windows_tool_pipe;
+    use std::io::Write as _;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn binary_pipe_preserves_exact_limit_and_refuses_one_extra() {
+        for bytes in [&b"\0\xff"[..], &b"\0\xffx"[..]] {
+            let (reader, mut writer) = std::io::pipe().expect("pipe");
+            writer.write_all(bytes).expect("write");
+            drop(writer);
+            let result = read_windows_tool_pipe(reader, 2, Instant::now() + Duration::from_secs(2));
+            if bytes.len() == 2 {
+                assert_eq!(result.expect("exact bound"), bytes);
+            } else {
+                assert_eq!(
+                    result.expect_err("overflow").kind(),
+                    std::io::ErrorKind::InvalidData
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn binary_pipe_deadline_does_not_wait_for_writer_eof() {
+        let (reader, writer) = std::io::pipe().expect("pipe");
+        let result = read_windows_tool_pipe(reader, 8, Instant::now() + Duration::from_millis(20));
+        assert_eq!(
+            result.expect_err("deadline").kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        drop(writer);
+    }
+}
+
 #[cfg(windows)]
 #[allow(unsafe_code)] // read-only availability query on a live borrowed pipe handle
 fn peek_pipe_available_handle(handle: usize) -> std::io::Result<u32> {
