@@ -36,6 +36,9 @@ const SANDBOX_ROLE_ROOT: &str = "/app";
 const LANDLOCK_CANARY_ROOT: &str = "/landlock-probe";
 const LAUNCHER_READY_FD: std::os::fd::RawFd = 5;
 const LAUNCHER_READY_FD_PATH: &str = "/proc/self/fd/5";
+const ROLE_MOUNT_FD: std::os::fd::RawFd = 6;
+const SETUP_FD_TARGETS: [std::os::fd::RawFd; 4] = [3, 4, LAUNCHER_READY_FD, ROLE_MOUNT_FD];
+const SETUP_FD_CLOEXEC_START: std::os::fd::RawFd = 7;
 const LAUNCHER_READY_MAX: usize = 64;
 const BUBBLEWRAP_MODE_FORBIDDEN: u32 = 0o6022;
 const BUBBLEWRAP_READY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -368,7 +371,10 @@ fn append_bubblewrap_mounts(
             .arg(&socket.source)
             .arg(&socket.destination);
     }
-    command.args(["--bind-fd", "6", SANDBOX_ROLE_ROOT]);
+    command
+        .arg("--bind-fd")
+        .arg(ROLE_MOUNT_FD.to_string())
+        .arg(SANDBOX_ROLE_ROOT);
 }
 
 fn append_strict_launch(
@@ -529,15 +535,15 @@ fn isolate_pre_exec_fds(source_fds: [std::os::fd::RawFd; 4]) -> std::io::Result<
     let mut relocated = [-1_i32; 4];
     for (index, source) in source_fds.into_iter().enumerate() {
         // SAFETY: fcntl duplicates one child-local live descriptor at or
-        // above 6. Relocating every source first prevents a fixed-target dup3
+        // above the setup capability FDs. Relocating sources prevents dup3
         // from overwriting another source when it occupied FD 3, 4, 5, or 6.
-        let duplicate = unsafe { libc::fcntl(source, libc::F_DUPFD, 7) };
+        let duplicate = unsafe { libc::fcntl(source, libc::F_DUPFD, SETUP_FD_CLOEXEC_START) };
         if duplicate == -1 {
             return Err(std::io::Error::last_os_error());
         }
         relocated[index] = duplicate;
     }
-    for (source, target) in relocated.into_iter().zip([3, 4, LAUNCHER_READY_FD, 6]) {
+    for (source, target) in relocated.into_iter().zip(SETUP_FD_TARGETS) {
         // SAFETY: both numbers name child-local descriptors after fork;
         // `target` is replaced atomically and flags=0 leaves it inheritable
         // for the immediate Bubblewrap exec only.
@@ -552,7 +558,7 @@ fn isolate_pre_exec_fds(source_fds: [std::os::fd::RawFd; 4]) -> std::io::Result<
     if unsafe {
         libc::syscall(
             libc::SYS_close_range,
-            7_u32,
+            SETUP_FD_CLOEXEC_START as u32,
             u32::MAX,
             libc::CLOSE_RANGE_CLOEXEC,
         )
@@ -920,7 +926,7 @@ pub(crate) fn validate_trusted_ancestors(
             .map_err(|source| LinuxStrictError::new(phase, source.to_string()))?
             .join(path)
     };
-    open_trusted_parent(&absolute, current_uid, phase).map(drop)
+    open_trusted_parent(&absolute, current_uid, phase, false).map(drop)
 }
 
 // Walk from the root using retained parent FDs: an ancestor cannot be swapped
@@ -929,6 +935,7 @@ fn open_trusted_parent(
     path: &Path,
     current_uid: u32,
     phase: &'static str,
+    require_role_filesystem: bool,
 ) -> Result<(File, bool), LinuxStrictError> {
     use rustix::fs::{Mode, OFlags, open, openat};
     if !path.is_absolute() {
@@ -950,6 +957,9 @@ fn open_trusted_parent(
                 "expected canonical absolute path",
             ));
         }
+        if require_role_filesystem {
+            require_kernel_dac_filesystem(&directory, phase)?;
+        }
         let metadata = directory
             .metadata()
             .map_err(|source| LinuxStrictError::new(phase, source.to_string()))?;
@@ -967,6 +977,40 @@ fn open_trusted_parent(
         private_parent = mode.trailing_zeros() >= 6;
     }
     Ok((directory, private_parent))
+}
+
+// A FUSE daemon (or remote filesystem server) can report mode 0700 while
+// independently granting access to another UID. Directory-FD retention pins
+// an object, but does not authenticate its reported DAC policy. Admit only
+// known local filesystems with kernel-enforced discretionary access checks.
+fn kernel_dac_filesystem(fs_type: u64) -> bool {
+    matches!(
+        fs_type,
+        0xef53 // ext2/3/4
+            | 0x9123_683e // btrfs
+            | 0x5846_5342 // XFS
+            | 0x0102_1994 // tmpfs
+            | 0x794c_7630 // overlayfs (container/CI root)
+            | 0xf2f5_2010 // F2FS
+    )
+}
+
+fn require_kernel_dac_filesystem(
+    directory: &File,
+    phase: &'static str,
+) -> Result<(), LinuxStrictError> {
+    let fs_type = rustix::fs::fstatfs(directory)
+        .map_err(|source| LinuxStrictError::new(phase, source.to_string()))?
+        .f_type as u64;
+    if !kernel_dac_filesystem(fs_type) {
+        return Err(LinuxStrictError::new(
+            phase,
+            format!(
+                "role root ancestry requires a local kernel-DAC filesystem; type=0x{fs_type:x}"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn reject_file_capabilities(path: &Path, phase: &'static str) -> Result<(), LinuxStrictError> {
@@ -997,7 +1041,7 @@ fn validate_role_root(path: &Path) -> Result<Arc<File>, LinuxStrictError> {
         .ok_or_else(|| LinuxStrictError::new("role root path", "missing directory name"))?;
     let current_uid = current_effective_uid()?;
     let (parent, private_parent) =
-        open_trusted_parent(&absolute, current_uid, "role root ancestor")?;
+        open_trusted_parent(&absolute, current_uid, "role root ancestor", true)?;
     // A retained FD to a searchable descendant bypasses an earlier private ancestor.
     // The immediate parent must itself deny other principals search access, even if
     // the sandbox target later widens its writable role root.
@@ -1016,6 +1060,7 @@ fn validate_role_root(path: &Path) -> Result<Arc<File>, LinuxStrictError> {
         )
         .map_err(|source| LinuxStrictError::new("role root metadata", source.to_string()))?,
     );
+    require_kernel_dac_filesystem(&directory, "role root filesystem")?;
     let metadata = directory
         .metadata()
         .map_err(|source| LinuxStrictError::new("role root metadata", source.to_string()))?;
@@ -1233,6 +1278,61 @@ mod readiness_tests {
 #[cfg(test)]
 mod role_root_tests {
     use super::*;
+
+    #[test]
+    fn role_root_filesystem_policy_denies_fuse_and_remote_metadata() {
+        // FUSE's reported mode and UID need not govern another UID's access.
+        for fs_type in [0x6573_5546, 0x6969, 0xff53_4d42, 0] {
+            assert!(
+                !kernel_dac_filesystem(fs_type),
+                "filesystem 0x{fs_type:x} must not authenticate DAC"
+            );
+        }
+        for fs_type in [
+            0xef53,
+            0x9123_683e,
+            0x5846_5342,
+            0x0102_1994,
+            0x794c_7630,
+            0xf2f5_2010,
+        ] {
+            assert!(kernel_dac_filesystem(fs_type));
+        }
+    }
+
+    #[test]
+    fn role_root_filesystem_gate_checks_real_mount_descriptors() {
+        let special = File::open("/proc").expect("procfs");
+        let error = require_kernel_dac_filesystem(&special, "role root filesystem")
+            .expect_err("kernel special filesystem cannot supply role DAC");
+        assert!(error.to_string().contains("kernel-DAC filesystem"));
+
+        let private = tempfile::tempdir().expect("local temporary directory");
+        let local = File::open(private.path()).expect("local directory");
+        require_kernel_dac_filesystem(&local, "role root filesystem")
+            .expect("local DAC filesystem");
+    }
+
+    #[test]
+    fn role_root_setup_fd_abi_tracks_bubblewrap_mount_argument() {
+        assert_eq!(SETUP_FD_TARGETS, [3, 4, 5, 6]);
+        assert_eq!(SETUP_FD_CLOEXEC_START, 7);
+        let mut command = Command::new("/usr/bin/bwrap");
+        append_bubblewrap_mounts(
+            &mut command,
+            Path::new("/usr/bin/true"),
+            Path::new("/usr/bin/true"),
+            &[],
+            &[],
+        );
+        let args: Vec<_> = command.get_args().collect();
+        assert!(
+            args.windows(3)
+                .any(|window| window[0] == OsStr::new("--bind-fd")
+                    && window[1] == OsStr::new("6")
+                    && window[2] == OsStr::new("/app"))
+        );
+    }
 
     #[test]
     fn role_root_rejects_replaceable_ancestor() {
