@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  existsSync,
   mkdtempSync,
   rmSync,
   readFileSync,
@@ -32,164 +33,234 @@ async function launch(
   observer: boolean,
   mutant = false,
   installed?: { wrapper: string; entry: string; bootstrap?: string },
+  observe?: (
+    stage: string,
+    resources: {
+      dir: string;
+      wrapper?: string;
+      server?: Bun.SocketListener<undefined>;
+      proc?: Bun.Subprocess<"ignore", "pipe", "pipe">;
+    },
+  ) => void,
 ) {
   const dir = mkdtempSync(join(tmpdir(), "krp-"));
-  const endpoint =
-    process.platform === "win32" ? freshWin32AppLinkPipe() : join(dir, "s");
-  const reader = new FrameReader();
-  const drain = new DrainSignal();
-  let connections = 0;
-  let open!: (socket: Bun.Socket<undefined>) => void;
-  const opened = new Promise<Bun.Socket<undefined>>((resolve) => {
-    open = resolve;
-  });
-  const server = Bun.listen<undefined>({
-    unix: endpoint,
-    socket: {
-      binaryType: "uint8array",
-      open(socket) {
-        connections++;
-        open(socket);
-      },
-      data(_socket, data) {
-        reader.push(data);
-      },
-      drain() {
-        drain.fire();
-      },
-      close() {
-        reader.end(new Error("test peer closed"));
-      },
-      error() {},
-    },
-  });
-  const messages: Message[] = [];
-  let pending: ((message: Message) => void) | undefined;
-  let wrapper =
-    installed?.wrapper ?? join(import.meta.dir, "runtime-preload.ts");
-  if (mutant) {
-    wrapper = join(import.meta.dir, "runtime-preload-no-await.fixture.ts");
-    writeFileSync(
-      wrapper,
-      readFileSync(join(import.meta.dir, "runtime-preload.ts"), "utf8").replace(
-        "await preloadRuntimeProcessFacts(process.versions)",
-        "void preloadRuntimeProcessFacts(process.versions)",
-      ),
-    );
+  let closeHost = () => {};
+  let stopChild = () => {};
+  let awaitExit: (() => Promise<unknown>) | undefined;
+  let mutantWrapper: string | undefined;
+  let disposal: Promise<void> | undefined;
+  function dispose(): Promise<void> {
+    return (disposal ??= (async () => {
+      const errors: unknown[] = [];
+      for (const action of [closeHost, stopChild]) {
+        try {
+          action();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      let reaped = !awaitExit;
+      try {
+        await awaitExit?.();
+        reaped = true;
+      } catch (error) {
+        errors.push(error);
+      }
+      // Preserve the fixture if child ownership could not be discharged.
+      if (reaped) {
+        for (const path of [dir, mutantWrapper]) {
+          if (path === undefined) continue;
+          try {
+            rmSync(path, { recursive: true, force: true });
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+      }
+      if (errors.length)
+        throw new AggregateError(errors, "Launch cleanup failed");
+    })());
   }
-  const command = [
-    process.execPath,
-    "--no-env-file",
-    "--no-install",
-    "--define=__KELD_RUNTIME_PROCESS_FACTS__:true",
-    ...(observer
-      ? [
-          "--preload",
-          join(import.meta.dir, "runtime-preload-observer.fixture.mjs"),
-        ]
-      : []),
-    ...(installed?.bootstrap ? [] : ["--preload", wrapper]),
-    ...(installed?.bootstrap
-      ? ["run", installed.bootstrap, installed.entry]
-      : [
-          installed?.entry ??
-            join(import.meta.dir, "runtime-preload-entry.fixture.mjs"),
-        ]),
-  ];
-  const proc = Bun.spawn(command, {
-    env: {
-      ...process.env,
-      KELD_APP_LINK: endpoint + "#" + "72".repeat(32),
-      KELD_NATIVE_WINDOW_FACADE: "1",
-    },
-    stdout: "pipe",
-    stderr: "pipe",
-    ipc(message: Message) {
-      if (pending) {
-        const resolve = pending;
-        pending = undefined;
-        resolve(message);
-      } else messages.push(message);
-    },
-  });
-  async function message(): Promise<Message> {
-    return (
-      messages.shift() ??
-      withIoDeadline(
-        new Promise<Message>((resolve) => {
-          pending = resolve;
-        }),
-      )
-    );
-  }
-  const socket = await withIoDeadline(opened);
-  const writer = new WriteQueue(socket, drain);
-  const hello = await withIoDeadline(reader.readFrame());
-  expect(hello.header.kind).toBe(FrameKind.Hello);
-  await writer.writeFrame(
-    FrameKind.Hello,
-    0,
-    0,
-    0,
-    new Uint8Array(32).fill(0x72),
-  );
-  const init = await withIoDeadline(reader.readFrame());
-  expect(init.header).toMatchObject({
-    kind: FrameKind.Call,
-    channel: LIFECYCLE_CHANNEL,
-    corr: 1,
-    flags: 0,
-  });
-  const captured = decodeRuntimeProcessInit(init.payload);
-  const saved = init.payload.slice();
-  return {
-    proc,
-    reader,
-    writer,
-    captured,
-    saved,
-    message,
-    connections: () => connections,
-    async ack(value = 3) {
-      await writer.writeFrame(
-        FrameKind.Reply,
-        0,
-        LIFECYCLE_CHANNEL,
-        1,
-        Uint8Array.of(value),
+  try {
+    observe?.("directory", { dir });
+    const endpoint =
+      process.platform === "win32" ? freshWin32AppLinkPipe() : join(dir, "s");
+    const reader = new FrameReader();
+    const drain = new DrainSignal();
+    let connections = 0;
+    let open!: (socket: Bun.Socket<undefined>) => void;
+    const opened = new Promise<Bun.Socket<undefined>>((resolve) => {
+      open = resolve;
+    });
+    const server = Bun.listen<undefined>({
+      unix: endpoint,
+      socket: {
+        binaryType: "uint8array",
+        open(socket) {
+          connections++;
+          open(socket);
+        },
+        data(_socket, data) {
+          reader.push(data);
+        },
+        drain() {
+          drain.fire();
+        },
+        close() {
+          reader.end(new Error("test peer closed"));
+        },
+        error() {},
+      },
+    });
+    closeHost = () => server.stop(true);
+    observe?.("listener", { dir, server });
+    const messages: Message[] = [];
+    let pending: ((message: Message) => void) | undefined;
+    let wrapper =
+      installed?.wrapper ?? join(import.meta.dir, "runtime-preload.ts");
+    if (mutant) {
+      wrapper = join(import.meta.dir, "runtime-preload-no-await.fixture.ts");
+      mutantWrapper = wrapper;
+      writeFileSync(
+        wrapper,
+        readFileSync(
+          join(import.meta.dir, "runtime-preload.ts"),
+          "utf8",
+        ).replace(
+          "await preloadRuntimeProcessFacts(process.versions)",
+          "void preloadRuntimeProcessFacts(process.versions)",
+        ),
       );
-    },
-    async subscribe() {
-      for (const channel of [WINDOW_CHANNEL, COMPAT_CONTROL_CHANNEL]) {
-        const call = await withIoDeadline(reader.readFrame());
-        expect(call.header.kind).toBe(FrameKind.Call);
-        expect(call.header.channel).toBe(LIFECYCLE_CHANNEL);
-        expect([...call.payload]).toEqual([1, channel]);
+    }
+    const command = [
+      process.execPath,
+      "--no-env-file",
+      "--no-install",
+      "--define=__KELD_RUNTIME_PROCESS_FACTS__:true",
+      ...(observer
+        ? [
+            "--preload",
+            join(import.meta.dir, "runtime-preload-observer.fixture.mjs"),
+          ]
+        : []),
+      ...(installed?.bootstrap ? [] : ["--preload", wrapper]),
+      ...(installed?.bootstrap
+        ? ["run", installed.bootstrap, installed.entry]
+        : [
+            installed?.entry ??
+              join(import.meta.dir, "runtime-preload-entry.fixture.mjs"),
+          ]),
+    ];
+    const proc = Bun.spawn(command, {
+      env: {
+        ...process.env,
+        KELD_APP_LINK: endpoint + "#" + "72".repeat(32),
+        KELD_NATIVE_WINDOW_FACADE: "1",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+      ipc(message: Message) {
+        if (pending) {
+          const resolve = pending;
+          pending = undefined;
+          resolve(message);
+        } else messages.push(message);
+      },
+    });
+    stopChild = () => {
+      if (proc.exitCode === null && proc.signalCode === null) proc.kill();
+    };
+    awaitExit = () => withIoDeadline(proc.exited);
+    observe?.("spawn", { dir, wrapper: mutantWrapper, server, proc });
+    async function message(): Promise<Message> {
+      return (
+        messages.shift() ??
+        withIoDeadline(
+          new Promise<Message>((resolve) => {
+            pending = resolve;
+          }),
+        )
+      );
+    }
+    const socket = await withIoDeadline(opened);
+    closeHost = () => {
+      try {
+        socket.end();
+      } finally {
+        server.stop(true);
+      }
+    };
+    observe?.("connected", { dir, wrapper: mutantWrapper, server, proc });
+    const writer = new WriteQueue(socket, drain);
+    const hello = await withIoDeadline(reader.readFrame());
+    observe?.("hello", { dir, wrapper: mutantWrapper, server, proc });
+    expect(hello.header.kind).toBe(FrameKind.Hello);
+    await writer.writeFrame(
+      FrameKind.Hello,
+      0,
+      0,
+      0,
+      new Uint8Array(32).fill(0x72),
+    );
+    const init = await withIoDeadline(reader.readFrame());
+    expect(init.header).toMatchObject({
+      kind: FrameKind.Call,
+      channel: LIFECYCLE_CHANNEL,
+      corr: 1,
+      flags: 0,
+    });
+    observe?.("init", { dir, wrapper: mutantWrapper, server, proc });
+    const captured = decodeRuntimeProcessInit(init.payload);
+    const saved = init.payload.slice();
+    return {
+      proc,
+      reader,
+      writer,
+      captured,
+      saved,
+      message,
+      connections: () => connections,
+      async ack(value = 3) {
         await writer.writeFrame(
           FrameKind.Reply,
           0,
           LIFECYCLE_CHANNEL,
-          call.header.corr,
-          Uint8Array.of(1),
+          1,
+          Uint8Array.of(value),
         );
-      }
-      await writer.writeFrame(
-        FrameKind.Event,
-        0,
-        LIFECYCLE_CHANNEL,
-        0,
-        Uint8Array.of(0),
-      );
-    },
-    async dispose() {
-      proc.kill();
-      await proc.exited;
-      socket.end();
-      server.stop(true);
-      rmSync(dir, { recursive: true, force: true });
-      if (mutant) rmSync(wrapper, { force: true });
-    },
-  };
+      },
+      async subscribe() {
+        for (const channel of [WINDOW_CHANNEL, COMPAT_CONTROL_CHANNEL]) {
+          const call = await withIoDeadline(reader.readFrame());
+          expect(call.header.kind).toBe(FrameKind.Call);
+          expect(call.header.channel).toBe(LIFECYCLE_CHANNEL);
+          expect([...call.payload]).toEqual([1, channel]);
+          await writer.writeFrame(
+            FrameKind.Reply,
+            0,
+            LIFECYCLE_CHANNEL,
+            call.header.corr,
+            Uint8Array.of(1),
+          );
+        }
+        await writer.writeFrame(
+          FrameKind.Event,
+          0,
+          LIFECYCLE_CHANNEL,
+          0,
+          Uint8Array.of(0),
+        );
+      },
+      dispose,
+    };
+  } catch (error) {
+    try {
+      await dispose();
+    } catch (cleanupError) {
+      console.error("Startup cleanup failed", cleanupError);
+    }
+    throw error;
+  }
 }
 
 test("one real API preload holds entry through Init ACK then reuses one WorkerLink", async () => {
@@ -338,3 +409,108 @@ test("packed API captures and ACKs through the supported installed entry", async
     rmSync(stage, { recursive: true, force: true });
   }
 }, 15000);
+
+test("startup rejection releases every acquired resource and preserves its error", async () => {
+  for (const phase of [
+    "directory",
+    "listener",
+    "spawn",
+    "connected",
+    "hello",
+    "init",
+  ]) {
+    const original = new Error(`injected ${phase} failure`);
+    let resources:
+      | {
+          dir: string;
+          wrapper?: string;
+          server?: Bun.SocketListener<undefined>;
+          proc?: Bun.Subprocess<"ignore", "pipe", "pipe">;
+        }
+      | undefined;
+    let stopped = 0;
+    let caught: unknown;
+    try {
+      await launch(false, phase === "spawn", undefined, (stage, value) => {
+        resources = value;
+        if (stage === "listener") {
+          const stop = value.server!.stop.bind(value.server);
+          value.server!.stop = (...args) => {
+            stopped++;
+            return stop(...args);
+          };
+        }
+        if (stage === phase) throw original;
+      });
+    } catch (error) {
+      caught = error;
+    }
+    try {
+      expect(caught).toBe(original);
+      expect(stopped).toBe(phase === "directory" ? 0 : 1);
+      expect(resources).toBeDefined();
+      expect(existsSync(resources!.dir)).toBe(false);
+      if (resources!.wrapper)
+        expect(existsSync(resources!.wrapper!)).toBe(false);
+      if (resources!.proc)
+        expect(
+          resources!.proc!.exitCode !== null ||
+            resources!.proc!.signalCode !== null,
+        ).toBe(true);
+    } finally {
+      resources?.server?.stop(true);
+      const child = resources?.proc;
+      if (child) {
+        if (child.exitCode === null && child.signalCode === null) child.kill();
+        await withIoDeadline(child.exited);
+      }
+      if (resources) rmSync(resources.dir, { recursive: true, force: true });
+      if (resources?.wrapper) rmSync(resources.wrapper, { force: true });
+    }
+  }
+}, 30000);
+
+test("successful launch transfers one concurrent-safe disposer", async () => {
+  let dir = "";
+  const run = await launch(false, false, undefined, (_stage, resource) => {
+    dir = resource.dir;
+  });
+  try {
+    expect(existsSync(dir)).toBe(true);
+    expect(run.proc.exitCode).toBeNull();
+    await run.ack();
+    await run.subscribe();
+    expect((await run.message()).kind).toBe("entry");
+    await Promise.all([run.dispose(), run.dispose(), run.dispose()]);
+    expect(run.proc.exitCode !== null || run.proc.signalCode !== null).toBe(
+      true,
+    );
+    expect(existsSync(dir)).toBe(false);
+  } finally {
+    await run.dispose();
+  }
+}, 15000);
+
+test("startup error identity survives a secondary cleanup error", async () => {
+  const original = new Error("original startup failure");
+  const cleanup = new Error("secondary stop failure");
+  let dir = "";
+  let caught: unknown;
+  try {
+    await launch(false, false, undefined, (stage, value) => {
+      dir = value.dir;
+      if (stage === "listener") {
+        const stop = value.server!.stop.bind(value.server);
+        value.server!.stop = (...args) => {
+          stop(...args);
+          throw cleanup;
+        };
+        throw original;
+      }
+    });
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBe(original);
+  expect(existsSync(dir)).toBe(false);
+});
