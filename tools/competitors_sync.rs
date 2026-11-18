@@ -31,6 +31,23 @@ struct Repo {
     path_override: Option<String>,
 }
 
+fn git_command() -> Command {
+    #[cfg(test)]
+    {
+        // Test fixtures must not inherit high-precedence process Git policy
+        // that overrides their disposable repositories' local config.
+        let mut cmd = Command::new("git");
+        cmd.env_remove("GIT_CONFIG_COUNT");
+        cmd.env_remove("GIT_CONFIG_PARAMETERS");
+        cmd
+    }
+    #[cfg(not(test))]
+    {
+        // Preserve the caller's policy in the real standalone utility.
+        Command::new("git")
+    }
+}
+
 fn main() -> ExitCode {
     let mut args: Vec<String> = env::args().skip(1).collect();
     let dry_run = args.iter().any(|a| a == "--dry-run");
@@ -65,14 +82,27 @@ fn run(root: &Path, dry_run: bool, force: bool) -> Result<(), String> {
         );
     }
 
-    // Validate the entire lockfile before cloning or resetting any checkout.
-    // Git's "--" ends option parsing, but refspecs can still write local refs.
+    // Validate all references and destinations before cloning or resetting
+    // any checkout. Git's "--" ends option parsing, but refspecs can still
+    // write local refs and an invalid later path must not cause partial sync.
+    let mut destinations = Vec::with_capacity(repos.len());
     for repo in &repos {
         validate_reference_inputs(repo)?;
+        let dest = resolve_path(root, repo)?;
+        if destinations
+            .iter()
+            .any(|prior: &PathBuf| dest.starts_with(prior) || prior.starts_with(&dest))
+        {
+            return Err(format!(
+                "repo `{}`: destination `{}` overlaps an earlier checkout. Give each repo a distinct path.",
+                repo.name,
+                dest.display()
+            ));
+        }
+        destinations.push(dest);
     }
 
-    for repo in &repos {
-        let dest = resolve_path(root, repo)?;
+    for (repo, dest) in repos.iter().zip(&destinations) {
         if dry_run {
             println!(
                 "would sync {} ({:?}) → {} [branch={}{}]",
@@ -87,7 +117,7 @@ fn run(root: &Path, dry_run: bool, force: bool) -> Result<(), String> {
             );
             continue;
         }
-        sync_one(repo, &dest, force)?;
+        sync_one(repo, dest, force)?;
     }
     if dry_run {
         println!("competitors-sync: dry-run ok ({} repos)", repos.len());
@@ -108,7 +138,7 @@ fn validate_reference_inputs(repo: &Repo) -> Result<(), String> {
     }
     // Use Git's own branch-name contract, but reject option-like strings and
     // previous-checkout shorthand before Git can reinterpret them.
-    let check = Command::new("git")
+    let check = git_command()
         .args(["check-ref-format", "--branch", branch])
         .output()
         .map_err(|error| {
@@ -268,7 +298,7 @@ fn clone_new(repo: &Repo, dest: &Path) -> Result<(), String> {
 }
 
 fn clone_command(repo: &Repo, dest: &Path) -> Command {
-    let mut cmd = Command::new("git");
+    let mut cmd = git_command();
     cmd.args([
         "clone",
         "--depth",
@@ -292,12 +322,12 @@ fn update_existing(repo: &Repo, dest: &Path, force: bool) -> Result<(), String> 
         let branch_ref = format!("refs/heads/{}", repo.branch);
         fetch_origin_reference(dest, &branch_ref, &format!("fetch {}", repo.name))?;
 
-        let mut reset = Command::new("git");
-        reset.current_dir(dest);
+        // Capture the immutable object ID now. A later fetch may replace the
+        // shared FETCH_HEAD before a reset that resolves it again.
+        let fetched = fetched_commit_id(dest, &format!("fetch {}", repo.name))?;
         // An earlier remote-tracking ref can still exist but be stale when
         // the clone's fetch map covers only its original single branch.
-        reset.args(["reset", "--hard", "FETCH_HEAD"]);
-        run_git(&mut reset, &format!("reset FETCH_HEAD {}", repo.name))?;
+        reset_to_commit(dest, &fetched, &format!("reset fetched {}", repo.name))?;
     }
     println!(
         "competitors-sync: updated {} @ {}",
@@ -318,7 +348,7 @@ fn refuse_dirty_unless_force(dest: &Path, force: bool) -> Result<(), String> {
 }
 
 fn is_dirty(dest: &Path) -> Result<bool, String> {
-    let mut status = Command::new("git");
+    let mut status = git_command();
     status.current_dir(dest);
     status.args(["status", "--porcelain"]);
     let output = status.output().map_err(|error| {
@@ -341,28 +371,51 @@ fn is_dirty(dest: &Path) -> Result<bool, String> {
 fn fetch_reset_sha(dest: &Path, sha: &str, force: bool) -> Result<(), String> {
     refuse_dirty_unless_force(dest, force)?;
     fetch_origin_reference(dest, sha, &format!("fetch sha {sha}"))?;
-    // A 40/64-hex string can also be a remote ref name. The pinned contract
-    // requires the fetched commit to have the exact requested object ID.
-    let mut verify = Command::new("git");
+    // A 40/64-hex string can also be a remote ref name. Verify the pin, then
+    // reset the captured immutable ID rather than re-reading FETCH_HEAD.
+    let fetched = fetched_commit_id(dest, &format!("fetch sha {sha}"))?;
+    verify_pinned_identity(sha, &fetched)?;
+    reset_to_commit(dest, &fetched, &format!("reset sha {sha}"))
+}
+
+fn verify_pinned_identity(expected: &str, fetched: &str) -> Result<(), String> {
+    if !fetched.eq_ignore_ascii_case(expected) {
+        return Err(format!(
+            "fetched commit does not match pinned sha {expected}; refusing to reset checkout"
+        ));
+    }
+    Ok(())
+}
+
+fn fetched_commit_id(dest: &Path, label: &str) -> Result<String, String> {
+    let mut verify = git_command();
     verify.current_dir(dest);
     verify.args(["rev-parse", "--verify", "FETCH_HEAD^{commit}"]);
     let output = verify
         .output()
-        .map_err(|error| format!("verify sha {sha}: failed to spawn git: {error}"))?;
+        .map_err(|error| format!("{label}: failed to verify fetched commit: {error}"))?;
     let actual = String::from_utf8_lossy(&output.stdout);
-    if !output.status.success() || !actual.trim().eq_ignore_ascii_case(sha) {
+    let actual = actual.trim();
+    if !output.status.success()
+        || !matches!(actual.len(), 40 | 64)
+        || !actual.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
         return Err(format!(
-            "fetched commit does not match pinned sha {sha}; refusing to reset checkout"
+            "{label}: Git did not return one valid fetched commit ID"
         ));
     }
-    let mut reset = Command::new("git");
+    Ok(actual.to_string())
+}
+
+fn reset_to_commit(dest: &Path, oid: &str, label: &str) -> Result<(), String> {
+    let mut reset = git_command();
     reset.current_dir(dest);
-    reset.args(["reset", "--hard", "FETCH_HEAD"]);
-    run_git(&mut reset, &format!("reset sha {sha}"))
+    reset.args(["reset", "--hard", oid]);
+    run_git(&mut reset, label)
 }
 
 fn fetch_origin_reference(dest: &Path, reference: &str, label: &str) -> Result<(), String> {
-    let mut fetch = Command::new("git");
+    let mut fetch = git_command();
     fetch.current_dir(dest);
     fetch.args(["fetch", "--depth", "1", "--", "origin", reference]);
     run_git(&mut fetch, label)
@@ -528,7 +581,7 @@ mod tests {
     }
 
     fn git(dir: &Path, args: &[&str]) -> String {
-        let output = Command::new("git")
+        let output = git_command()
             .current_dir(dir)
             .args(args)
             .output()
@@ -595,7 +648,7 @@ mod tests {
         // Prove this exact Git transport and shell quoting can execute the
         // harmless marker command. Otherwise the rejection test could pass
         // because its negative oracle is incapable of seeing execution.
-        let positive = Command::new("git")
+        let positive = git_command()
             .current_dir(&dest)
             .args(["fetch", "--depth", "1", &malicious, "origin", "main"])
             .output()
@@ -655,6 +708,105 @@ mod tests {
             repo.sha = Some(sha);
             validate_reference_inputs(&repo).expect("full Git object ID");
         }
+    }
+
+    #[test]
+    fn pinned_identity_rejects_different_commit_before_reset() {
+        let expected = "a".repeat(40);
+        let other = "b".repeat(40);
+        verify_pinned_identity(&expected, &expected.to_uppercase()).expect("same pinned hash");
+        let error = verify_pinned_identity(&expected, &other).expect_err("different hash");
+        assert!(error.contains("refusing to reset checkout"), "{error}");
+    }
+
+    #[test]
+    fn pinned_tag_object_must_not_reset_to_peeled_commit() {
+        let temp = isolated_temp_dir();
+        let origin = temp.0.join("origin");
+        let checkout = temp.0.join("checkout");
+        fs::create_dir(&origin).expect("origin directory");
+        fs::create_dir(&checkout).expect("checkout directory");
+        git(&origin, &["init", "--initial-branch=main"]);
+        git(&origin, &["config", "--local", "commit.gpgSign", "false"]);
+        git(&origin, &["config", "--local", "tag.gpgSign", "false"]);
+        git(
+            &origin,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ],
+        );
+        let initial = git(&origin, &["rev-parse", "HEAD"]).trim().to_string();
+        git(
+            &origin,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "tag",
+                "-a",
+                "annotated",
+                "-m",
+                "tag object is not a commit",
+            ],
+        );
+        let tag_oid = git(&origin, &["rev-parse", "refs/tags/annotated^{tag}"])
+            .trim()
+            .to_string();
+        git(
+            &origin,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "new main",
+            ],
+        );
+        let later = git(&origin, &["rev-parse", "HEAD"]).trim().to_string();
+        git(&checkout, &["init"]);
+        git(
+            &checkout,
+            &["config", "--local", "maintenance.auto", "false"],
+        );
+        git(
+            &checkout,
+            &["config", "--local", "protocol.file.allow", "always"],
+        );
+        git(
+            &checkout,
+            &[
+                "remote",
+                "add",
+                "origin",
+                origin.to_str().expect("origin path"),
+            ],
+        );
+        git(&checkout, &["fetch", "--", "origin", "refs/heads/main"]);
+        git(&checkout, &["reset", "--hard", "FETCH_HEAD"]);
+        assert_eq!(git(&checkout, &["rev-parse", "HEAD"]).trim(), later);
+        let err = fetch_reset_sha(&checkout, &tag_oid, true).expect_err("non-commit pin");
+        assert!(err.contains("fetched commit does not match"), "{err}");
+        assert_eq!(
+            git(&checkout, &["rev-parse", "FETCH_HEAD^{commit}"]).trim(),
+            initial,
+            "the raw tag object peels to a different commit"
+        );
+        assert_eq!(
+            git(&checkout, &["rev-parse", "HEAD"]).trim(),
+            later,
+            "a mismatched pin must never reset the checkout"
+        );
     }
 
     #[test]
@@ -724,6 +876,43 @@ sha = "main:refs/heads/unexpected"
             !temp.0.join("competitors").exists(),
             "reject malformed lockfile before fetching even the first repo"
         );
+    }
+
+    #[test]
+    fn rejects_late_bad_or_overlapping_paths_before_any_clone() {
+        let temp = isolated_temp_dir();
+        for path in [
+            "competitors/../outside",
+            "competitors/first",
+            "competitors/first/nested",
+        ] {
+            let lock = format!(
+                r#"
+[[repo]]
+name = "first"
+kind = "competitor"
+url = "missing-local-origin"
+branch = "main"
+
+[[repo]]
+name = "second"
+kind = "competitor"
+url = "missing-local-origin"
+branch = "main"
+path = "{path}"
+"#
+            );
+            fs::write(temp.0.join("competitors.lock.toml"), lock).expect("write lockfile");
+            let err = run(&temp.0, false, true).expect_err("invalid checkout destination");
+            assert!(
+                err.contains("normalized") || err.contains("overlaps"),
+                "path={path:?}: {err}"
+            );
+            assert!(
+                !temp.0.join("competitors").exists(),
+                "path={path:?}: must reject before cloning any checkout"
+            );
+        }
     }
 
     #[test]
@@ -811,6 +1000,11 @@ sha = "main:refs/heads/unexpected"
             second,
             "must use remote branch target, not the same-named object or stale tracking ref"
         );
+        // Prove the reset helper does not resolve the mutable FETCH_HEAD
+        // again after a different fetch changes it.
+        git(&checkout, &["fetch", "--", "origin", &first]);
+        reset_to_commit(&checkout, &second, "reset captured object").expect("immutable reset");
+        assert_eq!(git(&checkout, &["rev-parse", "HEAD"]).trim(), second);
     }
 
     fn sample_repos() -> Vec<Repo> {
