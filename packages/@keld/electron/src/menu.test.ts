@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 import { Menu, MenuItem, MenuTemplateError } from "./menu.ts";
 import { isUnsupportedMemberError } from "./unsupported.ts";
 
@@ -72,9 +73,9 @@ test("GH480 native role labels use only actual pre-entry Host launch metadata", 
       "--no-install",
       "--no-env-file",
       '--define=__KELD_HOST_LAUNCH_FACTS__:{"schema":1,"kind":"development","name":"draw.io","root":"/qualified-stage"}',
-      `--preload=${new URL("../../kipc/src/transport.ts", import.meta.url).pathname}`,
+      `--preload=${fileURLToPath(new URL("../../kipc/src/transport.ts", import.meta.url))}`,
       "-e",
-      `import { Menu } from ${JSON.stringify(new URL("./menu.ts", import.meta.url).pathname)}; const m=Menu.buildFromTemplate([{role:'hide'},{role:'hideothers'},{role:'unhide'},{role:'quit'}]); console.log(JSON.stringify(m.items.map(i=>[i.role,i.label,i.accelerator])));`,
+      `import { Menu } from ${JSON.stringify(fileURLToPath(new URL("./menu.ts", import.meta.url)))}; const m=Menu.buildFromTemplate([{role:'hide'},{role:'hideothers'},{role:'unhide'},{role:'quit'}]); console.log(JSON.stringify(m.items.map(i=>[i.role,i.label,i.accelerator])));`,
     ],
     stdout: "pipe",
     stderr: "pipe",
@@ -97,9 +98,9 @@ test("GH480 both original macOS template variants construct all source menus, ro
       "--no-install",
       "--no-env-file",
       '--define=__KELD_HOST_LAUNCH_FACTS__:{"schema":1,"kind":"development","name":"draw.io","root":"/qualified-stage"}',
-      `--preload=${new URL("../../kipc/src/transport.ts", import.meta.url).pathname}`,
+      `--preload=${fileURLToPath(new URL("../../kipc/src/transport.ts", import.meta.url))}`,
       "-e",
-      `import { Menu } from ${JSON.stringify(new URL("./menu.ts", import.meta.url).pathname)}; import {drawioMenuTemplate} from ${JSON.stringify(new URL("./menu.test-fixture.ts", import.meta.url).pathname)}; const results=[];for(const [disabled,dontCheck] of [[false,undefined],[false,true],[true,undefined]]){const menu=Menu.buildFromTemplate(drawioMenuTemplate(disabled,dontCheck));const items=menu.items.flatMap(i=>i.submenu.items);results.push({roots:menu.items.map(i=>i.label),counts:menu.items.map(i=>i.submenu.items.length),roles:items.filter(i=>i.role).map(i=>i.role),checked:items.filter(i=>i.type==='checkbox').map(i=>i.checked)});}console.log(JSON.stringify(results));`,
+      `import { Menu } from ${JSON.stringify(fileURLToPath(new URL("./menu.ts", import.meta.url)))}; import {drawioMenuTemplate} from ${JSON.stringify(fileURLToPath(new URL("./menu.test-fixture.ts", import.meta.url)))}; const results=[];for(const [disabled,dontCheck] of [[false,undefined],[false,true],[true,undefined]]){const menu=Menu.buildFromTemplate(drawioMenuTemplate(disabled,dontCheck));const items=menu.items.flatMap(i=>i.submenu.items);results.push({roots:menu.items.map(i=>i.label),counts:menu.items.map(i=>i.submenu.items.length),roles:items.filter(i=>i.role).map(i=>i.role),checked:items.filter(i=>i.type==='checkbox').map(i=>i.checked)});}console.log(JSON.stringify(results));`,
     ],
     stdout: "pipe",
     stderr: "pipe",
@@ -181,7 +182,7 @@ test("GH480 setter is void and consumes a real missing-link failure instead of c
       "--no-install",
       "--no-env-file",
       "-e",
-      `delete process.env.KELD_APP_LINK; Object.defineProperty(Error.prototype,"origin",{value:"peer",configurable:true}); import { Menu } from ${JSON.stringify(new URL("./menu.ts", import.meta.url).pathname)}; process.on('unhandledRejection',()=>{console.log('UNHANDLED');process.exitCode=4;}); console.log('RETURN='+String(Menu.setApplicationMenu(Menu.buildFromTemplate([{label:'Explicit'}])))); await new Promise(resolve=>setImmediate(resolve));`,
+      `delete process.env.KELD_APP_LINK; Object.defineProperty(Error.prototype,"origin",{value:"peer",configurable:true}); import { Menu } from ${JSON.stringify(fileURLToPath(new URL("./menu.ts", import.meta.url)))}; process.on('unhandledRejection',()=>{console.log('UNHANDLED');process.exitCode=4;}); console.log('RETURN='+String(Menu.setApplicationMenu(Menu.buildFromTemplate([{label:'Explicit'}])))); await new Promise(resolve=>setImmediate(resolve));`,
     ],
     stdout: "pipe",
     stderr: "pipe",

@@ -124,15 +124,9 @@ where
             "DMG creation",
         )?,
     );
-    assembly.tools.insert(
-        "dmg-verify",
-        run(
-            command("/usr/bin/hdiutil")
-                .args(["verify", "-nocache"])
-                .arg(&dmg),
-            "DMG integrity",
-        )?,
-    );
+    assembly
+        .tools
+        .insert("dmg-verify", verify_dmg_integrity(&dmg)?);
     let dmg_round_trip = verify_dmg_copy(
         staging.path(),
         &dmg,
@@ -171,6 +165,129 @@ where
         receipt: output.join("artifact-receipt.json"),
         directory: output,
     })
+}
+
+// DiskImages can briefly refuse a newly created UDZO image with EAGAIN.
+// Successful hdiutil integrity verification remains mandatory before mount,
+// copy verification or publication. Never retry corruption or unknown exits.
+const DMG_VERIFY_TRANSIENT_RETRIES: usize = 2;
+const DMG_VERIFY_RETRY_DELAY: Duration = Duration::from_millis(750);
+
+fn verify_dmg_integrity(dmg: &Path) -> Result<ToolOutput, MacosPackError> {
+    verify_dmg_with_transient_retry(|| {
+        run(
+            command("/usr/bin/hdiutil")
+                .args(["verify", "-nocache"])
+                .arg(dmg),
+            "DMG integrity",
+        )
+    })
+}
+
+fn verify_dmg_with_transient_retry(
+    mut verify: impl FnMut() -> Result<ToolOutput, MacosPackError>,
+) -> Result<ToolOutput, MacosPackError> {
+    for _ in 0..DMG_VERIFY_TRANSIENT_RETRIES {
+        match verify() {
+            Err(error)
+                if error.phase == "DMG integrity"
+                    && error.detail.contains("native tool exited exit status: 1:")
+                    && error
+                        .detail
+                        .contains("hdiutil: verify failed - Resource temporarily unavailable") =>
+            {
+                std::thread::sleep(DMG_VERIFY_RETRY_DELAY);
+            }
+            result => return result,
+        }
+    }
+    // Exhaustion remains a hard failure: a successful last verify is required.
+    verify()
+}
+
+#[cfg(test)]
+mod dmg_verify_retry_tests {
+    #![allow(clippy::expect_used)] // Test-only verification of exact retry semantics.
+
+    use super::{MacosPackError, ToolOutput, verify_dmg_with_transient_retry};
+
+    fn transient() -> MacosPackError {
+        MacosPackError::new(
+            "DMG integrity",
+            "native tool exited exit status: 1: hdiutil: verify: unable to recognize image (Resource temporarily unavailable)\nhdiutil: verify failed - Resource temporarily unavailable",
+        )
+    }
+
+    #[test]
+    fn one_transient_verify_error_retries_and_retains_real_success_receipt() {
+        let mut calls = 0;
+        let receipt = verify_dmg_with_transient_retry(|| {
+            calls += 1;
+            if calls == 1 {
+                return Err(transient());
+            }
+            Ok(ToolOutput {
+                stdout: "verified actual disk image".into(),
+                stderr: String::new(),
+            })
+        })
+        .expect("second actual verify succeeded");
+        assert_eq!(calls, 2);
+        assert_eq!(receipt.stdout, "verified actual disk image");
+    }
+
+    #[test]
+    fn repeated_transient_verify_errors_still_fail_closed() {
+        let mut calls = 0;
+        let error = verify_dmg_with_transient_retry(|| {
+            calls += 1;
+            Err(transient())
+        })
+        .expect_err("three resource failures must not publish");
+        assert_eq!(calls, 3);
+        assert!(
+            error
+                .to_string()
+                .contains("Resource temporarily unavailable")
+        );
+    }
+
+    #[test]
+    fn bad_image_is_not_retried_even_if_it_mentions_resources() {
+        let mut calls = 0;
+        let error = verify_dmg_with_transient_retry(|| {
+            calls += 1;
+            Err(MacosPackError::new(
+                "DMG integrity",
+                "native tool exited exit status: 1: hdiutil: verify failed - image checksum mismatch (Resource temporarily unavailable)",
+            ))
+        })
+        .expect_err("corrupt image must fail on the first attempt");
+        assert_eq!(calls, 1);
+        assert!(error.to_string().contains("checksum mismatch"));
+    }
+
+    #[test]
+    fn other_phase_and_unknown_exit_do_not_retry() {
+        for (phase, detail) in [
+            (
+                "DMG creation",
+                "native tool exited exit status: 1: hdiutil: verify failed - Resource temporarily unavailable",
+            ),
+            (
+                "DMG integrity",
+                "native tool exit state is unknown; hdiutil: verify failed - Resource temporarily unavailable",
+            ),
+        ] {
+            let mut calls = 0;
+            verify_dmg_with_transient_retry(|| {
+                calls += 1;
+                Err(MacosPackError::new(phase, detail))
+            })
+            .expect_err("nontransient errors must refuse immediately");
+            assert_eq!(calls, 1);
+        }
+    }
 }
 
 /// Assemble and sign one app candidate; the returned inventory reflects bytes

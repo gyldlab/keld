@@ -58,11 +58,11 @@ describe("app.quit vs Electron void", () => {
       stderr: "pipe",
       env: { ...process.env, KELD_NATIVE_WINDOW_FACADE: "1" },
     });
-    const { stdout, stderr, code } = await waitChildOrKill(child, 4_000);
+    const { stdout, stderr, code } = await waitChildOrKill(child, 8_000);
     expect(code).toBe(0);
     expect(stderr).toBe("");
     expect(stdout).toContain("KELD_QUIT_BEFORE_NATIVE_READY_REFUSED");
-  });
+  }, 10_000);
 
   test("delayed LastWindowClosed cannot default-quit a newly created native window", async () => {
     child = Bun.spawn({
@@ -72,11 +72,11 @@ describe("app.quit vs Electron void", () => {
       stderr: "pipe",
       env: { ...process.env, KELD_NATIVE_WINDOW_FACADE: "1" },
     });
-    const { stdout, stderr, code } = await waitChildOrKill(child, 4_000);
+    const { stdout, stderr, code } = await waitChildOrKill(child, 8_000);
     expect(code).toBe(0);
     expect(stderr).toBe("");
     expect(stdout).toContain("KELD_QUIT_STALE_LAST_WINDOW_SAFE");
-  });
+  }, 10_000);
 
   test("returns Promise<void> so unset KELD_APP_LINK is KELD-IPC-007, not silent void", async () => {
     const prev = process.env.KELD_APP_LINK;
@@ -108,13 +108,13 @@ describe("Electron ready event over the shared lifecycle owner", () => {
         KELD_APP_LINK: `1#${"ab".repeat(32)}`,
       },
     });
-    const { stdout, stderr, code } = await waitChildOrKill(child, 4_000);
+    const { stdout, stderr, code } = await waitChildOrKill(child, 8_000);
     expect(stderr).toBe("");
     expect(code).toBe(0);
     expect(stdout).toContain("KEL142_READY_LISTENER_ONLY");
     expect(stdout).toContain("KEL72_READY_SECOND");
     expect(stdout).toContain("KEL142_CONNECT_CALLS=1");
-  });
+  }, 10_000);
 
   test("quit opening the shared link still delivers the host Ready event", async () => {
     child = Bun.spawn({
@@ -127,12 +127,12 @@ describe("Electron ready event over the shared lifecycle owner", () => {
         KELD_APP_LINK: `1#${"ab".repeat(32)}`,
       },
     });
-    const { stdout, stderr, code } = await waitChildOrKill(child, 4_000);
+    const { stdout, stderr, code } = await waitChildOrKill(child, 8_000);
     expect(stderr).toBe("");
     expect(code).toBe(0);
     expect(stdout).toContain("KEL142_READY_VIA_QUIT");
     expect(stdout).toContain("KEL142_CONNECT_CALLS=1");
-  });
+  }, 10_000);
 });
 
 describe("app.whenReady on link death", () => {

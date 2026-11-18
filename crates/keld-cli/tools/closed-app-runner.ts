@@ -3,7 +3,7 @@ import { bundleCapturedApp } from "./closed-app.ts";
 import { decodeInputs, encodeOutputs, readBoundedInput } from "./protocol.ts";
 import { admitStaticRenderer } from "./static-renderer.ts";
 import {
-  buildReleaseTransportFromSourceRoot,
+  buildReleaseTransport,
   TEST_HOOK_NAMES,
 } from "../../../packages/@keld/kipc/scripts/package-artifacts.ts";
 import {
@@ -12,12 +12,12 @@ import {
 } from "../../../packages/@keld/kipc/src/transport.ts";
 if (import.meta.main) {
   try {
-    if (process.argv.length !== 4)
-      throw new Error("Exact retained source root and parser required");
+    if (process.argv.length !== 3)
+      throw new Error("Exact retained native parser required");
     const captured = decodeInputs(await readBoundedInput(Bun.stdin.stream()));
     const renderer = await admitStaticRenderer(captured.renderer);
     const parser = {
-      tsserverPath: process.argv[3],
+      tsserverPath: process.argv[2],
       virtualRoot: process.cwd().replaceAll("\\", "/") + "/virtual",
     };
     const main = await bundleCapturedApp(
@@ -25,7 +25,9 @@ if (import.meta.main) {
       parser,
       captured.entry,
     );
-    const release = await buildReleaseTransportFromSourceRoot(process.argv[2]);
+    // The retained module derives its own source root from import.meta.dir.
+    // No caller-selected alternate source root participates in this build.
+    const release = await buildReleaseTransport();
     if (TEST_HOOK_NAMES.some((name) => release.includes(name)))
       throw new Error("Release transport contains test hooks");
     const transport = new TextEncoder().encode(stampTransport(release));

@@ -109,7 +109,21 @@ fn written_ready_commits_before_quit_and_stopped_reader_still_owes_its_drain_rep
     assert!(router.shutdown.is_running());
     assert!(!router.window_ready.load(Ordering::Acquire));
     assert!(router.current.try_lock().is_ok());
-    assert!(router.shutdown.transition.try_lock().is_ok());
+    // The test hook announces immediately before Condvar::wait_timeout releases
+    // the transition guard. Do not race the sender and assert on that tiny gap;
+    // require the guard to become available within a bounded handoff interval.
+    let transition_deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        if let Ok(transition) = router.shutdown.transition.try_lock() {
+            drop(transition);
+            break;
+        }
+        assert!(
+            Instant::now() < transition_deadline,
+            "Quit must release the transition guard while waiting for Ready commit"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
     let writer = router.primary_writer_owner().expect("one primary writer");
     let (quit_dequeued, quit_write) = writer.hold_next_dequeue_for_test();
     ready_resume.send(()).expect("allow canonical Ready commit");

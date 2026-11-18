@@ -1,6 +1,7 @@
 // Source contracts only; injected selection/Source data is not Host/native qualification.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const developmentFacts = {
   schema: 5,
@@ -81,8 +82,9 @@ for (const { facts, mode } of cases) {
         "--no-env-file",
         `--define=__KELD_HOST_LAUNCH_FACTS__:${JSON.stringify(selected)}`,
         `--define=__KELD_RUNTIME_PROCESS_FACTS__:${mode !== "runtime-disabled"}`,
-        new URL("../fixtures/native_quit_requested.ts", import.meta.url)
-          .pathname,
+        fileURLToPath(
+          new URL("../fixtures/native_quit_requested.ts", import.meta.url),
+        ),
         mode,
       ],
       env: {

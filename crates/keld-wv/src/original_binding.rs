@@ -145,7 +145,7 @@ impl OriginalBinding {
         }
     }
     #[cfg(any(
-        test,
+        all(test, windows),
         all(target_os = "macos", feature = "profile-test-hooks", debug_assertions)
     ))]
     pub(crate) const fn has_prepared_attempt(&self) -> bool {

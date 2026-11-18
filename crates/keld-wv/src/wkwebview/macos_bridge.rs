@@ -22,7 +22,9 @@ use sha2::{Digest as _, Sha256};
 use crate::WebviewId;
 use crate::error::WvError;
 use crate::original_binding::{OriginalBinding, OriginalCredentialSlot};
-use crate::original_call::active::{ActiveOriginalCall, PendingOriginalSend};
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+use crate::original_call::active::ActiveOriginalCall;
+use crate::original_call::active::PendingOriginalSend;
 use crate::original_call::queue::{
     OriginalCallInput, OriginalCallQueue, OriginalControlFault, OriginalInvocationKind,
     OriginalQueueProgress, PreparingOriginalInvocation,
@@ -858,14 +860,14 @@ impl MacRendererBridge {
                 view,
                 &app_world,
                 &app_bind,
-                app.clone(),
+                &app,
                 EvaluationPurpose::Control,
             );
             evaluate_owned(
                 view,
                 &trusted_world,
                 "globalThis.__keldBridgeNativeTryBind?.(); void 0;",
-                app.clone(),
+                &app,
                 EvaluationPurpose::Control,
             );
             Ok(())
@@ -1069,7 +1071,7 @@ impl MacRendererBridge {
             webview,
             world,
             &format!("globalThis.__keldAppNativeEvent({json});"),
-            app.clone(),
+            app,
             EvaluationPurpose::Event { id: request, lease },
         );
         Ok(())
@@ -1113,7 +1115,7 @@ impl MacRendererBridge {
                         webview,
                         world,
                         &format!("globalThis.__keldAppNativeTerminal({json});"),
-                        app.clone(),
+                        app,
                         EvaluationPurpose::Control,
                     );
                 }
@@ -1151,7 +1153,7 @@ impl MacRendererBridge {
                     webview,
                     world,
                     &format!("globalThis.__keldAppRouteState({token},{ready});"),
-                    app.clone(),
+                    app,
                     EvaluationPurpose::Control,
                 );
                 Ok(())
@@ -1202,7 +1204,7 @@ impl MacRendererBridge {
                 webview,
                 &self.world,
                 &format!("globalThis.__keldBridgeV2Result({private});"),
-                app.clone(),
+                app,
                 EvaluationPurpose::Control,
             );
         } else {
@@ -1291,10 +1293,10 @@ mod native_message_text_tests {
     }
     #[test]
     fn native_utf8_bound_is_checked_without_repair_or_clipping() {
-        assert!(bounded_native_message_text(&NSString::from_str("Ã©"), 1).is_err());
+        assert!(bounded_native_message_text(&NSString::from_str("é"), 1).is_err());
         assert_eq!(
-            bounded_native_message_text(&NSString::from_str("Ã©"), 2).expect("exact UTF8"),
-            "Ã©"
+            bounded_native_message_text(&NSString::from_str("é"), 2).expect("exact UTF8"),
+            "é"
         );
         assert!(bounded_native_message_text(&NSString::from_str("ab"), 1).is_err());
     }
@@ -1965,7 +1967,7 @@ fn handle_app_call(
 }
 
 /// Ephemeral service notification only. The proxy is cloned under the existing
-/// owner, then every RefCell guard ends before the same original wake is posted.
+/// owner, then every `RefCell` guard ends before the same original wake is posted.
 fn post_original_service_wake(app: &SharedAppState, needs_service_wake: bool) {
     if needs_service_wake {
         let wake = app.borrow().wake.clone();
@@ -1991,7 +1993,7 @@ fn pump_original_call(
                 id: prepared.identity().id(),
                 lease: prepared.identity().lease().clone(),
             };
-            evaluate_owned_inner(webview, world, "", app.clone(), purpose, Some(prepared))
+            evaluate_owned_inner(webview, world, "", app, purpose, Some(prepared))
         }
         None => Ok(()),
     };
@@ -2225,7 +2227,7 @@ fn handle_app_control(
                 webview,
                 &ivars.world,
                 &format!("globalThis.__keldAppNativeRegistered({token});"),
-                app.clone(),
+                app,
                 EvaluationPurpose::Control,
             );
         }
@@ -2242,7 +2244,7 @@ fn handle_app_control(
                 webview,
                 &ivars.world,
                 &format!("globalThis.__keldAppNativeRefusal({token},{call});"),
-                app.clone(),
+                app,
                 EvaluationPurpose::Control,
             );
         }
@@ -2379,7 +2381,7 @@ fn bind_compat_document(
         webview,
         &ivars.world,
         &script,
-        app.clone(),
+        app,
         EvaluationPurpose::Control,
     );
     Ok(())
@@ -2675,17 +2677,16 @@ impl AppNativeState {
         Ok(admitted)
     }
     fn flush_controls(&mut self) -> bool {
-        match self.calls.flush_controls(
+        if let Ok(progress) = self.calls.flush_controls(
             &mut self.binding,
             &self.document.borrow(),
             &mut self.pending_event,
             &self.requests,
         ) {
-            Ok(progress) => progress.needs_service_wake,
-            Err(_) => {
-                self.control_fault.latch();
-                false
-            }
+            progress.needs_service_wake
+        } else {
+            self.control_fault.latch();
+            false
         }
     }
     fn evaluations_drained(&self) -> bool {
@@ -2735,10 +2736,10 @@ fn evaluate_owned(
     webview: &WKWebView,
     world: &WKContentWorld,
     script: &str,
-    app: SharedAppState,
+    app: &SharedAppState,
     purpose: EvaluationPurpose,
 ) {
-    if let Err(error) = evaluate_owned_inner(webview, world, script, app.clone(), purpose, None) {
+    if let Err(error) = evaluate_owned_inner(webview, world, script, app, purpose, None) {
         app.borrow_mut().control_fault.latch();
         eprintln!("{error}");
     }
@@ -2748,7 +2749,7 @@ fn evaluate_owned_inner(
     webview: &WKWebView,
     world: &WKContentWorld,
     script: &str,
-    app: SharedAppState,
+    app: &SharedAppState,
     purpose: EvaluationPurpose,
     original: Option<PreparingOriginalInvocation<String>>,
 ) -> Result<(), WvError> {
@@ -2781,73 +2782,7 @@ fn evaluate_owned_inner(
         state.evaluations += 1;
     }
     let source = NSString::from_str(script);
-    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-    let control_kind = control_observation_kind(script);
-    let callback_app = app.clone();
-    let completion = block2::RcBlock::new(
-        move |_value: *mut objc2::runtime::AnyObject, error: *mut objc2_foundation::NSError| {
-            let receipt = NativeEvaluationReceipt {
-                purpose: purpose.clone(),
-                completed: error.is_null(),
-            };
-            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-            {
-                let mut state = callback_app.borrow_mut();
-                state.fixture.actual_completions += 1;
-                if !error.is_null() && matches!(&receipt.purpose, EvaluationPurpose::Control) {
-                    // SAFETY: WebKit supplies this nonnull NSError for the actual
-                    // completion block and keeps it live throughout the callback.
-                    // Read only its scalar code here; no handle or data escapes.
-                    let code = unsafe { (&*error).code() };
-                    if let Some(found) = state
-                        .fixture
-                        .control_errors
-                        .iter_mut()
-                        .find(|found| found.kind == control_kind && found.code == code)
-                    {
-                        found.count = found.count.saturating_add(1);
-                    } else if state.fixture.control_errors.len() < 16 {
-                        state.fixture.control_errors.push(NativeControlFailure {
-                            kind: control_kind,
-                            code,
-                            count: 1,
-                        });
-                    }
-                }
-                if !receipt.completed {
-                    let index = match &receipt.purpose {
-                        EvaluationPurpose::Control => 0,
-                        EvaluationPurpose::Call { .. } => 1,
-                        EvaluationPurpose::Event { .. } => 2,
-                        EvaluationPurpose::FixtureReplay => 3,
-                        EvaluationPurpose::FixtureBinding { .. } => 4,
-                    };
-                    state.fixture.evaluation_failures[index] =
-                        state.fixture.evaluation_failures[index].saturating_add(1);
-                }
-                let hold_event = state.fixture.hold_next_completion.event
-                    && matches!(&receipt.purpose, EvaluationPurpose::Event { .. });
-                let hold_call = state.fixture.hold_next_completion.call
-                    && matches!(&receipt.purpose, EvaluationPurpose::Call { .. });
-                if hold_event || hold_call {
-                    if hold_event {
-                        state.fixture.hold_next_completion.event = false;
-                    }
-                    if hold_call {
-                        state.fixture.hold_next_completion.call = false;
-                    }
-                    if state.fixture.held_completion.is_some() {
-                        state.control_fault.latch();
-                        return;
-                    }
-                    state.fixture.held_completion = Some(receipt);
-                    let _ = state.wake.send_event(super::WkUserEvent::RendererCustody);
-                    return;
-                }
-            }
-            complete_evaluation(&callback_app, receipt);
-        },
-    );
+    let completion = block2::RcBlock::new(evaluation_completion_handler(app, purpose, script));
     if let Some(prepared) = original.as_ref() {
         // The source and owned completion are already prepared. Release both
         // AppState/document borrows before the immediate existing native call.
@@ -2855,9 +2790,9 @@ fn evaluate_owned_inner(
         if !admitted.as_ref().is_ok_and(|entered| *entered) {
             if let Some(prepared) = original {
                 let progress = app.borrow_mut().calls.defer_preparation(prepared)?;
-                post_original_service_wake(&app, progress.needs_service_wake);
+                post_original_service_wake(app, progress.needs_service_wake);
             }
-            flush_app_controls(&app);
+            flush_app_controls(app);
             return admitted.map(|_| ());
         }
     }
@@ -2878,9 +2813,83 @@ fn evaluate_owned_inner(
         prepared.native_returned()?;
         // An inline callback may already have supplied both independent facts.
         // The same charged record can release only now, after real API return.
-        flush_app_controls(&app);
+        flush_app_controls(app);
     }
     Ok(())
+}
+
+fn evaluation_completion_handler(
+    app: &SharedAppState,
+    purpose: EvaluationPurpose,
+    script: &str,
+) -> impl Fn(*mut objc2::runtime::AnyObject, *mut objc2_foundation::NSError) + 'static {
+    let callback_app = app.clone();
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    let control_kind = control_observation_kind(script);
+    #[cfg(not(all(feature = "profile-test-hooks", debug_assertions)))]
+    let _ = script;
+    move |_value: *mut objc2::runtime::AnyObject, error: *mut objc2_foundation::NSError| {
+        let receipt = NativeEvaluationReceipt {
+            purpose: purpose.clone(),
+            completed: error.is_null(),
+        };
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        {
+            let mut state = callback_app.borrow_mut();
+            state.fixture.actual_completions += 1;
+            if !error.is_null() && matches!(&receipt.purpose, EvaluationPurpose::Control) {
+                // SAFETY: WebKit supplies this nonnull NSError for the actual
+                // completion block and keeps it live throughout the callback.
+                // Read only its scalar code here; no handle or data escapes.
+                let code = unsafe { (&*error).code() };
+                if let Some(found) = state
+                    .fixture
+                    .control_errors
+                    .iter_mut()
+                    .find(|found| found.kind == control_kind && found.code == code)
+                {
+                    found.count = found.count.saturating_add(1);
+                } else if state.fixture.control_errors.len() < 16 {
+                    state.fixture.control_errors.push(NativeControlFailure {
+                        kind: control_kind,
+                        code,
+                        count: 1,
+                    });
+                }
+            }
+            if !receipt.completed {
+                let index = match &receipt.purpose {
+                    EvaluationPurpose::Control => 0,
+                    EvaluationPurpose::Call { .. } => 1,
+                    EvaluationPurpose::Event { .. } => 2,
+                    EvaluationPurpose::FixtureReplay => 3,
+                    EvaluationPurpose::FixtureBinding { .. } => 4,
+                };
+                state.fixture.evaluation_failures[index] =
+                    state.fixture.evaluation_failures[index].saturating_add(1);
+            }
+            let hold_event = state.fixture.hold_next_completion.event
+                && matches!(&receipt.purpose, EvaluationPurpose::Event { .. });
+            let hold_call = state.fixture.hold_next_completion.call
+                && matches!(&receipt.purpose, EvaluationPurpose::Call { .. });
+            if hold_event || hold_call {
+                if hold_event {
+                    state.fixture.hold_next_completion.event = false;
+                }
+                if hold_call {
+                    state.fixture.hold_next_completion.call = false;
+                }
+                if state.fixture.held_completion.is_some() {
+                    state.control_fault.latch();
+                    return;
+                }
+                state.fixture.held_completion = Some(receipt);
+                let _ = state.wake.send_event(super::WkUserEvent::RendererCustody);
+                return;
+            }
+        }
+        complete_evaluation(&callback_app, receipt);
+    }
 }
 
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -3114,7 +3123,7 @@ impl MacRendererBridge {
             view,
             world,
             &script,
-            app.clone(),
+            app,
             EvaluationPurpose::FixtureBinding { index },
         );
         Ok(())
@@ -3175,7 +3184,7 @@ impl MacRendererBridge {
             view,
             world,
             "throw new Error('KELD fixture deliberate control exception'); void 0;",
-            app.clone(),
+            app,
             EvaluationPurpose::Control,
         );
         Ok(())
@@ -3235,7 +3244,7 @@ impl MacRendererBridge {
             &format!(
                 "(()=>{{const old=JSON.parse({encoded});globalThis.__keldAppNativeCall(old);window.webkit.messageHandlers.__keld_app_world.postMessage({encoded});}})();"
             ),
-            app.clone(),
+            app,
             EvaluationPurpose::FixtureReplay,
         );
         Ok(())
@@ -3289,13 +3298,7 @@ impl MacRendererBridge {
             .as_ref()
             .ok_or_else(|| bridge_error("no probe realm"))?;
         drop(state);
-        evaluate_owned(
-            view,
-            world,
-            &script,
-            app.clone(),
-            EvaluationPurpose::Control,
-        );
+        evaluate_owned(view, world, &script, app, EvaluationPurpose::Control);
         Ok(())
     }
     pub(super) fn fixture_origin_result(&self) -> Option<serde_json::Value> {

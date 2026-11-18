@@ -488,6 +488,13 @@ fn capture_source_pipe(
     result
 }
 
+pub(super) struct CapturedToolOutput {
+    pub(super) status: u32,
+    pub(super) stdout: Vec<u8>,
+    #[cfg(test)]
+    pub(super) stderr: Vec<u8>,
+}
+
 struct CaptureOptions<'a> {
     stdout_limit: usize,
     stderr_limit: usize,
@@ -562,6 +569,83 @@ fn run_captured_with_options(
     input: &File,
     options: CaptureOptions<'_>,
 ) -> Result<Vec<u8>, BuildError> {
+    let output = run_captured_with_output(tool, args, environment, cwd, input, options)?;
+    if output.status != 0 {
+        return Err(failure(
+            "source capture status",
+            format!("exit status {}", output.status),
+        ));
+    }
+    Ok(output.stdout)
+}
+
+#[cfg(test)]
+pub(super) fn run_captured_diagnostic(
+    tool: &PinnedFile,
+    args: &[OsString],
+    environment: &[(OsString, OsString)],
+    cwd: &Path,
+    input: &File,
+    stdout_limit: usize,
+) -> Result<CapturedToolOutput, BuildError> {
+    run_captured_diagnostic_with_timeout(
+        tool,
+        args,
+        environment,
+        cwd,
+        input,
+        stdout_limit,
+        Duration::from_secs(120),
+    )
+}
+
+#[cfg(test)]
+pub(super) fn run_captured_diagnostic_with_timeout(
+    tool: &PinnedFile,
+    args: &[OsString],
+    environment: &[(OsString, OsString)],
+    cwd: &Path,
+    input: &File,
+    stdout_limit: usize,
+    timeout: Duration,
+) -> Result<CapturedToolOutput, BuildError> {
+    run_captured_with_output(
+        tool,
+        args,
+        environment,
+        cwd,
+        input,
+        CaptureOptions {
+            stdout_limit,
+            stderr_limit: 64 * 1024,
+            timeout,
+            stderr_file: None,
+        },
+    )
+}
+
+fn run_captured_with_output(
+    tool: &PinnedFile,
+    args: &[OsString],
+    environment: &[(OsString, OsString)],
+    cwd: &Path,
+    input: &File,
+    options: CaptureOptions<'_>,
+) -> Result<CapturedToolOutput, BuildError> {
+    run_captured_with_output_and_job_observer(tool, args, environment, cwd, input, options, |_| {
+        Ok(())
+    })
+}
+
+fn run_captured_with_output_and_job_observer(
+    tool: &PinnedFile,
+    args: &[OsString],
+    environment: &[(OsString, OsString)],
+    cwd: &Path,
+    input: &File,
+    options: CaptureOptions<'_>,
+    observer: impl FnOnce(&WindowsProcessJob) -> Result<(), BuildError>,
+) -> Result<CapturedToolOutput, BuildError> {
     use keld_runtime::windows_lpac::WindowsLpacStdio;
     use std::os::windows::io::AsHandle as _;
     let deadline = std::time::Instant::now() + options.timeout;
@@ -599,6 +683,7 @@ fn run_captured_with_options(
             return Err(failure("source capture assignment", error));
         }
     };
+    observer(&job)?;
     let capture_failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let out_failed = std::sync::Arc::clone(&capture_failed);
     let err_failed = std::sync::Arc::clone(&capture_failed);
@@ -651,16 +736,16 @@ fn run_captured_with_options(
     // Preserve the actual reader refusal before the generic cancellation/status
     // result. Otherwise an overflow-triggered child exit can hide its cause.
     let stdout = stdout?;
+    let stderr = stderr?;
     // Do not echo captured diagnostics: source/tool output may contain private data.
-    retain_source_stderr(options.stderr_file, &stderr?)?;
+    retain_source_stderr(options.stderr_file, &stderr)?;
     let status = status?;
-    if status != 0 {
-        return Err(failure(
-            "source capture status",
-            format!("exit status {status}"),
-        ));
-    }
-    Ok(stdout)
+    Ok(CapturedToolOutput {
+        status,
+        stdout,
+        #[cfg(test)]
+        stderr,
+    })
 }
 
 /// Observed source/tool/output identities from one nonhermetic developer build.
@@ -677,6 +762,50 @@ pub(super) struct LocalSourceBuildObservation {
     _directory_pins: Vec<File>,
     pub(super) host: PinnedFile,
     pub(super) helper: PinnedFile,
+}
+
+/// Test-only exact source pins for exercising the production compiler binder.
+/// This does not create a `LocalSourceBuildObservation` receipt or release authority.
+#[cfg(test)]
+pub(super) fn compiler_source_observation_for_test(
+    source_root: &Path,
+    executable: &Path,
+) -> Result<LocalSourceBuildObservation, BuildError> {
+    let required = [
+        "crates/keld-cli/tools/closed-app-runner.ts",
+        "crates/keld-cli/tools/closed-app.ts",
+        "crates/keld-cli/tools/protocol.ts",
+        "crates/keld-cli/tools/static-renderer.ts",
+        "packages/@keld/kipc/scripts/package-artifacts.ts",
+        "packages/@keld/kipc/src/transport.ts",
+    ];
+    let mut directory_pins = super::windows_inputs::pin_input_root(source_root)?;
+    let mut source_pins = Vec::with_capacity(required.len());
+    for relative in required {
+        let path = source_root.join(relative);
+        let parent = path
+            .parent()
+            .ok_or_else(|| failure("test compiler source", "source parent missing"))?;
+        directory_pins.extend(super::windows_inputs::pin_input_root(parent)?);
+        source_pins.push(pin_file(&path, MAX_SOURCE_FILE)?);
+    }
+    // The compiler binder never reads these two image fields. Keep real retained
+    // handles so this fixture uses the same observation owner shape as production.
+    let host = pin_file(executable, MAX_IMAGE)?;
+    let helper = pin_file(executable, MAX_IMAGE)?;
+    Ok(LocalSourceBuildObservation {
+        source_root: source_root.to_owned(),
+        source_commit: "0".repeat(40),
+        source_sha256: [0; 32],
+        cargo_lock_sha256: [0; 32],
+        cache_sha256: None,
+        recipe_sha256: [0; 32],
+        tool_sha256: [[0; 32]; 3],
+        source_pins,
+        _directory_pins: directory_pins,
+        host,
+        helper,
+    })
 }
 
 /// Borrowing this value keeps the existing exact source-tree file/directory pins
@@ -741,6 +870,24 @@ impl ObservedCompilerSources<'_> {
     pub(super) fn kipc_root(&self) -> PathBuf {
         self.owner.source_root.join("packages/@keld/kipc")
     }
+    /// Retained exact compiler main source, not a new ambient lookup.
+    pub(super) fn closed_app(&self) -> Result<&PinnedFile, BuildError> {
+        let path = self
+            .owner
+            .source_root
+            .join("crates/keld-cli/tools/closed-app.ts");
+        self.owner
+            .source_pins
+            .iter()
+            .find(|pin| pin.path == path)
+            .ok_or_else(|| {
+                failure(
+                    "observed compiler closure",
+                    "required retained compiler main source absent",
+                )
+            })
+    }
+
     pub(super) fn entry(&self) -> &PinnedFile {
         self.entry
     }
@@ -1632,9 +1779,175 @@ pub(super) fn run(args: &[String]) -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use keld_runtime::windows_job::WindowsLifecycleQueryWitness;
+
     fn entry(mode: &str, path: &str) -> Vec<u8> {
         format!(":000000 {mode} 0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 A\0{path}\0").into_bytes()
     }
+
+    fn descendant_process_fixture(
+        temporary: &Path,
+        system_root: &Path,
+    ) -> (Vec<OsString>, Vec<(OsString, OsString)>, PathBuf) {
+        let system32 = system_root.join("System32");
+        let parent_started = temporary.join("parent-started.marker");
+        let parent_spawned = temporary.join("parent-spawned.marker");
+        let started = temporary.join("descendant-started.marker");
+        let environment = vec![
+            ("SystemRoot".into(), system_root.as_os_str().to_owned()),
+            ("WINDIR".into(), system_root.as_os_str().to_owned()),
+            ("PATH".into(), system32.as_os_str().to_owned()),
+            ("TEMP".into(), temporary.as_os_str().to_owned()),
+            ("TMP".into(), temporary.as_os_str().to_owned()),
+            ("HOME".into(), temporary.as_os_str().to_owned()),
+            ("USERPROFILE".into(), temporary.as_os_str().to_owned()),
+            ("APPDATA".into(), temporary.as_os_str().to_owned()),
+            ("LOCALAPPDATA".into(), temporary.as_os_str().to_owned()),
+            ("KELD_TEST_DESCENDANT_PARENT".into(), OsString::from("1")),
+            (
+                "KELD_TEST_PARENT_STARTED".into(),
+                parent_started.as_os_str().to_owned(),
+            ),
+            (
+                "KELD_TEST_PARENT_SPAWNED".into(),
+                parent_spawned.as_os_str().to_owned(),
+            ),
+            (
+                "KELD_TEST_DESCENDANT_STARTED".into(),
+                started.as_os_str().to_owned(),
+            ),
+        ];
+        let args = vec![
+            OsString::from("--ignored"),
+            OsString::from("--exact"),
+            OsString::from("build::local_source::tests::descendant_parent_fixture"),
+            OsString::from("--nocapture"),
+            OsString::from("--test-threads=1"),
+        ];
+        (args, environment, started)
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture used only by the bounded descendant capture regression"]
+    fn descendant_parent_fixture() {
+        if std::env::var_os("KELD_TEST_DESCENDANT_PARENT").is_none() {
+            return;
+        }
+        let parent_started = PathBuf::from(
+            std::env::var_os("KELD_TEST_PARENT_STARTED").expect("parent start marker path"),
+        );
+        let parent_spawned = PathBuf::from(
+            std::env::var_os("KELD_TEST_PARENT_SPAWNED").expect("parent child marker path"),
+        );
+        let child_started = PathBuf::from(
+            std::env::var_os("KELD_TEST_DESCENDANT_STARTED").expect("child start marker path"),
+        );
+        fs::write(&parent_started, "started").expect("write parent start witness");
+        let mut child = std::process::Command::new(
+            std::env::current_exe().expect("current pinned test executable"),
+        )
+        .args([
+            "--ignored",
+            "--exact",
+            "build::local_source::tests::descendant_child_fixture",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env_remove("KELD_TEST_DESCENDANT_PARENT")
+        .env("KELD_TEST_DESCENDANT_CHILD", "1")
+        .spawn()
+        .expect("spawn Rust descendant fixture");
+        fs::write(&parent_spawned, child.id().to_string()).expect("write spawned child PID");
+        let startup_deadline = Instant::now() + Duration::from_secs(10);
+        while !child_started.exists() {
+            assert!(
+                Instant::now() < startup_deadline,
+                "descendant fixture did not publish its own start witness"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(
+            child
+                .try_wait()
+                .expect("query descendant after start witness")
+                .is_none(),
+            "descendant exited after publishing its start witness"
+        );
+        drop(child);
+        std::thread::sleep(Duration::from_secs(60));
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture used only by the bounded descendant capture regression"]
+    fn descendant_child_fixture() {
+        if std::env::var_os("KELD_TEST_DESCENDANT_CHILD").is_none() {
+            return;
+        }
+        let started = PathBuf::from(
+            std::env::var_os("KELD_TEST_DESCENDANT_STARTED").expect("child start marker path"),
+        );
+        fs::write(&started, std::process::id().to_string()).expect("write child start witness");
+        std::thread::sleep(Duration::from_secs(60));
+    }
+
+    fn observe_suspended_capture_job(
+        job: &WindowsProcessJob,
+        observer: &std::sync::Mutex<Option<std::sync::Arc<WindowsLifecycleQueryWitness>>>,
+    ) -> Result<(), BuildError> {
+        let handle = job
+            .duplicate_lifecycle_keeper_handle()
+            .map_err(|error| failure("source capture test Job observer", error))?;
+        let witness = WindowsLifecycleQueryWitness::adopt_transferred(handle)
+            .map_err(|error| failure("source capture test Job observer", error))?;
+        let active = witness
+            .active_processes()
+            .map_err(|error| failure("source capture test Job observer", error))?;
+        if active != 1 {
+            return Err(failure(
+                "source capture test Job observer",
+                format!("expected one suspended parent before resume, observed {active}"),
+            ));
+        }
+        *observer
+            .lock()
+            .map_err(|_| failure("source capture test Job observer", "observer lock poisoned"))? =
+            Some(std::sync::Arc::new(witness));
+        Ok(())
+    }
+
+    fn monitor_descendant_job_membership(
+        child_started: PathBuf,
+        observer: std::sync::Arc<
+            std::sync::Mutex<Option<std::sync::Arc<WindowsLifecycleQueryWitness>>>,
+        >,
+    ) -> std::thread::JoinHandle<Result<u32, String>> {
+        std::thread::spawn(move || {
+            let startup_deadline = Instant::now() + Duration::from_secs(20);
+            while !child_started.exists() {
+                if Instant::now() >= startup_deadline {
+                    return Err(
+                        "descendant start witness was not observed before the deadline".into(),
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            let witness = observer
+                .lock()
+                .map_err(|_| "Job observer lock poisoned".to_owned())?
+                .clone()
+                .ok_or_else(|| "Job observer was not published before child startup".to_owned())?;
+            let active = witness
+                .active_processes()
+                .map_err(|error| error.to_string())?;
+            if active < 2 {
+                return Err(format!(
+                    "expected parent and descendant in the capture Job before timeout, observed {active}"
+                ));
+            }
+            Ok(active)
+        })
+    }
+
     #[test]
     fn full_tree_listing_preserves_blob_identity_and_mode() {
         let mut bytes = entry("100644", "Cargo.toml");
@@ -1924,6 +2237,96 @@ mod tests {
         assert!(detail.contains("source stderr") && detail.contains("tool output exceeds limit"));
     }
 
+    #[test]
+    fn capture_deadline_terminates_and_reaps_descendant_processes() {
+        let system_root =
+            PathBuf::from(std::env::var_os("SystemRoot").expect("Windows system root"));
+        let test_binary = std::env::current_exe().expect("Windows Rust test binary");
+        let tool = pin_file(&test_binary, MAX_IMAGE).expect("pinned Rust test binary fixture");
+        let temporary = tempfile::tempdir().expect("owned descendant fixture");
+        let (args, environment, started) =
+            descendant_process_fixture(temporary.path(), &system_root);
+        let parent_started = temporary.path().join("parent-started.marker");
+        let parent_spawned = temporary.path().join("parent-spawned.marker");
+
+        let input = File::open("NUL").expect("null input");
+        let mut stderr = tempfile::tempfile().expect("private descendant stderr");
+        let start = Instant::now();
+        // Failure-first oracle: the same query-only Job witness must see one
+        // suspended parent, both live processes, then zero members after cleanup.
+        let job_observer: std::sync::Arc<
+            std::sync::Mutex<Option<std::sync::Arc<WindowsLifecycleQueryWitness>>>,
+        > = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let membership_monitor = monitor_descendant_job_membership(
+            started.clone(),
+            std::sync::Arc::clone(&job_observer),
+        );
+        let result = run_captured_with_output_and_job_observer(
+            &tool,
+            &args,
+            &environment,
+            temporary.path(),
+            &input,
+            CaptureOptions {
+                stdout_limit: 1024,
+                stderr_limit: 64 * 1024,
+                timeout: Duration::from_secs(30),
+                stderr_file: Some(&mut stderr),
+            },
+            |job| observe_suspended_capture_job(job, &job_observer),
+        );
+        let mut stderr_detail = String::new();
+        stderr
+            .seek(SeekFrom::Start(0))
+            .expect("rewind descendant stderr");
+        stderr
+            .read_to_string(&mut stderr_detail)
+            .expect("read descendant stderr");
+        let Err(error) = result else {
+            panic!("parent and descendant must be terminated at the deadline");
+        };
+        assert!(
+            error.to_string().contains("tool deadline")
+                || error.to_string().contains("tool capture deadline"),
+            "{error}; capture stderr: {stderr_detail}"
+        );
+        assert!(start.elapsed() < Duration::from_secs(45));
+        assert!(
+            parent_started.exists(),
+            "the parent fixture must start before timeout; stderr: {stderr_detail}"
+        );
+        assert!(
+            started.exists(),
+            "the descendant must write its own start identity before timeout; stderr: {stderr_detail}"
+        );
+        let parent_child_pid =
+            fs::read_to_string(&parent_spawned).expect("parent child PID marker");
+        let descendant_pid = fs::read_to_string(&started).expect("descendant PID marker");
+        assert_eq!(
+            descendant_pid.trim(),
+            parent_child_pid.trim(),
+            "the child marker must belong to the process created by the parent; stderr: {stderr_detail}"
+        );
+
+        let observed_members = membership_monitor
+            .join()
+            .expect("Job membership monitor thread")
+            .expect("parent and live descendant must both be Job members before timeout");
+        assert!(
+            observed_members >= 2,
+            "the capture Job must contain the parent and descendant before timeout"
+        );
+        let job = job_observer
+            .lock()
+            .expect("test Job observer lock")
+            .clone()
+            .expect("retained query-only Job observer");
+        assert_eq!(
+            job.active_processes().expect("query Job after deadline"),
+            0,
+            "the exact capture Job must have no live parent or descendant after the deadline"
+        );
+    }
     #[test]
     fn private_stderr_is_retained_without_echoing_into_build_errors() {
         let root = PathBuf::from(std::env::var_os("SystemRoot").expect("Windows system root"));
