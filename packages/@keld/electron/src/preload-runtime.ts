@@ -777,7 +777,6 @@ export function installApp(
       extra = 0,
       reserved = 0,
       entered = false;
-    const proxiesBefore = new Set(callbackProxies.keys());
     try {
       const ids = new Set<number>();
       let censusNodes = 0;
@@ -843,10 +842,22 @@ export function installApp(
         releaseCall(call.call);
       }
     } catch (error) {
-      if (!entered) {
+      // Only a pending native request or acknowledged watch can retain a
+      // failed original call. A partially installed local listener cannot.
+      const pending =
+        [...requests.values()].some((request) => request.call === call.call) ||
+        [...watches.values()].includes(call.call);
+      if (!entered || !pending) {
+        for (const [topic, rows] of listeners) {
+          const otherCalls = rows.filter((row) => row.call !== call.call);
+          if (otherCalls.length) listeners.set(topic, otherCalls);
+          else listeners.delete(topic);
+        }
         charged -= reserved;
-        for (const id of callbackProxies.keys())
-          if (!proxiesBefore.has(id)) callbackProxies.delete(id);
+        localCharges.delete(call.call);
+        watchCharges.delete(call.call);
+        // releaseCall removes only this call's unshared callback proxies and
+        // signals the page to release its matching callback registration.
         releaseCall(call.call);
       }
       console.error("KELD-COMPAT-103: original preload call refused", error);
