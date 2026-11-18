@@ -47,6 +47,37 @@ use directory_entries::{DirectoryChild, parse_directory_entries};
 const MAX_WINDOWS_PATH_UNITS: usize = 32_768;
 const VOLUME_GUID_ROOT_UNITS: usize = 49;
 
+// A retained verbatim NTFS name must remain a file, not become a DOS device
+// when exported as a regular Win32 path. Extensions do not make CON/NUL/etc.
+// safe, and Win32 also reserves superscript 1/2/3 on COM/LPT names.
+fn reserved_dos_device_component(component: &[u16]) -> bool {
+    let stem = component
+        .split(|&unit| unit == u16::from(b'.') || unit == u16::from(b':'))
+        .next()
+        .unwrap_or_default();
+    let end = stem
+        .iter()
+        .rposition(|&unit| unit != u16::from(b' '))
+        .map_or(0, |index| index + 1);
+    let stem = &stem[..end];
+    let mut upper = [0_u8; 7];
+    if stem.len() > upper.len() {
+        return false;
+    }
+    for (&unit, output) in stem.iter().zip(&mut upper) {
+        let Ok(byte) = u8::try_from(unit) else {
+            return false;
+        };
+        *output = byte.to_ascii_uppercase();
+    }
+    matches!(
+        &upper[..stem.len()],
+        b"CON" | b"PRN" | b"AUX" | b"NUL" | b"CONIN$" | b"CONOUT$"
+    ) || (stem.len() == 4
+        && (upper[..3] == *b"COM" || upper[..3] == *b"LPT")
+        && matches!(upper[3], b'1'..=b'9' | 0xb9 | 0xb2 | 0xb3))
+}
+
 /// Resolves the same retained OS object to a stable local DOS path.
 /// Mapped SMB handles resolve to UNC (or fail after disconnect) and are refused.
 pub(crate) fn fixed_local_dos_path(handle: &File) -> io::Result<PathBuf> {
@@ -98,6 +129,14 @@ pub(crate) fn fixed_local_dos_path(handle: &File) -> io::Result<PathBuf> {
     {
         return Err(unsupported(
             "retained handle path has a component that ordinary Windows path parsing changes",
+        ));
+    }
+    if stable
+        .split(|&unit| unit == u16::from(b'\\'))
+        .any(reserved_dos_device_component)
+    {
+        return Err(unsupported(
+            "retained handle path has a reserved DOS device name",
         ));
     }
     Ok(PathBuf::from(OsString::from_wide(stable)))
