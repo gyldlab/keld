@@ -696,8 +696,9 @@ impl GuardedPrimary {
         // worker failure.
         let reconciled = |error: &RuntimeError| {
             shutdown_won
+                && orderly_acknowledged
                 && ((denied_before_initial_ready && is_initial_recovery_denied(error))
-                    || (orderly_acknowledged && denied && is_post_shutdown_spawn_refused(error)))
+                    || (denied && is_post_shutdown_spawn_refused(error)))
         };
         if let Err(error) = worker_result
             && !reconciled(&error)
