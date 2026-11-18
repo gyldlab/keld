@@ -250,7 +250,7 @@ PROPOSED: Prepare the new metadata graph privately before changing established s
 The same bounded client verifies it from the directive-bound replacement root.
 Download and authenticate the exact candidate and finite rollback binding.
 The recovery directive replaces planned-transition authority. It does not require an unavailable U1 signature.
-Do not run candidate code during preparation.
+Apply D-90's manual reader and drain gates. Never run candidate code during preparation.
 Require a compatible rollback artifact before admitting any change.
 An old Host that cannot consume the new identity/recovery view does not satisfy that requirement.
 
@@ -418,7 +418,7 @@ Reject a stale directive or a changed replacement without changing the establish
 | Before manual journal, no pointer, ordinary orphan, blob-only residue, intent or third committed N-2 | Complete D-24 ordinary and committed-history retirement before any manual journal or pointer. Refuse held or ambiguous objects. |
 | Initial `admitted`, pointer present or absent, target withdrawn | Require D-64's no-effect proof for `FreshAbsent`, or separately provenance-qualified `ExactEmptyScaffold`. Reread terminal `aborted`; clear only a matching pointer. |
 | Initial `creation-armed` or ambiguous scaffold | Preserve the pointer and journal for KEL-53 operator disposition. Never infer no-effect from apparent absence. |
-| `prepared`, old metadata current, directive valid | Reverify the original authorization and all source/policy bindings, then commit or refuse. |
+| `prepared`, old metadata current, directive valid | Reverify authorization, all source/policy bindings and D-90's manual gates; commit or refuse. |
 | `prepared`, old metadata current, directive expired | Verify no trust or application effect. Durably mark `aborted`. Retire present exact-or-partial planned preparation only with expected owner/DACL, regular non-reparse type and no protected references under a D-23 intent. Clear the pointer after old-state verification. |
 | `prepared`, new metadata current | Match the recorded destination generation. Advance the journal without repeating the epoch change. |
 | `aborted`, old metadata current, intent present, both journal digests null | Verify the sealed prewrite plan, matching attempt, protected old state, pending pointer, and every listed object's owner, DACL, type and unreachability. Bind and reread the exact intent digest before deletion. |

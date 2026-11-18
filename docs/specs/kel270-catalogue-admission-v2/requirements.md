@@ -352,6 +352,8 @@ A future `ExactEmptyScaffold` positive requires separately commissioned origin p
 - **When:** One source, destination, operation, issuer, profile, epoch, expiry, or consent binding differs.
 - **Then:** Recovery refuses before mutation of established metadata or installation state.
 - The verifier also refuses an ordinary application signer before a recovery authorization exists.
+- With an otherwise valid manual directive, substitute one installed reader that ignores the D-68 pointer: D-90 MUST refuse before preparation.
+- Hold one old-generation launch live across the seal, including on pre-switch restart: protected current MUST NOT change until its retirement or drain is verified. A new admission racing the seal MUST NOT escape it.
 - **Negative control:**
   - **Single fault:** Omit the source update-key comparison.
   - **At-risk precondition:** A valid directive names another installation key under the same publisher.

@@ -381,6 +381,17 @@ operation through existing process/browser barriers before commit-authorized.
 No old process may survive as an unaccounted writer or launch authority. This is
 an MVP fail-closed eligibility condition, not the future mixed-version bridge.
 
+D-65 manual recovery applies the same source-reader eligibility, admission seal and drain, not planned-transition signing authority.
+Before preparation, the existing owner must prove complete coverage of readers of the shared repository and qualify each source
+Host/Guard/launcher for the D-68 pending pointer and applicable prepared-journal and membership fences. Unknown coverage or
+any unsupported or unfenced reader refuses before preparation. A digest or successful directive check is not that proof.
+Under the repository and installation leases, seal new ordinary admission and drain or retire every old-generation admitted launch
+and operation through the existing process/browser barriers before switching protected current. Verify no unaccounted old writer
+or launch authority remains. Hold the ordinary admission seal until D-68 releases it; only the matching recovery owner may
+advance its independently authorized candidate/health or exact rollback under D-65. On pre-switch restart,
+re-establish eligibility, seal and drain under those leases; neither a journal nor a pointer proves an earlier drain still holds.
+If proof or drain fails, do not switch trust. Follow D-65/D-66 for pending recovery or abort; never clear the fence as a shortcut.
+
 D-8's artifact-specific LKG exception remains limited to its exact verified
 package, manifest, policy and binding. Neither metadata expiry nor withdrawal
 alone authorizes killing an already installed offline application. At recovery
