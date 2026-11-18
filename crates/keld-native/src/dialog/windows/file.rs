@@ -113,11 +113,7 @@ fn default_hint(dialog: &IFileDialog, hint: &str) -> Result<(), IpcError> {
         |_| hint.ends_with(['\\', '/']),
         |metadata| metadata.is_dir(),
     );
-    if !directory {
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| invalid("invalid Windows default filename"))?;
+    if let Some(name) = filename_hint(path, directory)? {
         let name = wide(name)?;
         // SAFETY: the validated UTF-16 name remains live for the copying setter.
         native(
@@ -147,12 +143,31 @@ fn default_hint(dialog: &IFileDialog, hint: &str) -> Result<(), IpcError> {
             unsafe { dialog.SetFolder(&item) },
             "Windows default folder failed",
         )?;
-    } else if path.components().count() != 1 {
+    }
+    Ok(())
+}
+
+fn filename_hint(path: &Path, directory: bool) -> Result<Option<&str>, IpcError> {
+    // draw.io prefixes a filename with "./" when Documents is unavailable.
+    // This is still a filename hint; only absolute paths can set a folder.
+    let filename_path = path
+        .strip_prefix(".")
+        .ok()
+        .filter(|relative| !directory && relative.file_name().is_some())
+        .unwrap_or(path);
+    if !path.is_absolute() && filename_path.components().count() != 1 {
         return Err(invalid(
             "Windows default path must be absolute or a filename",
         ));
     }
-    Ok(())
+    if directory {
+        return Ok(None);
+    }
+    filename_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(Some)
+        .ok_or_else(|| invalid("invalid Windows default filename"))
 }
 
 #[allow(unsafe_code)] // Exact Windows dialog ABI in this directory's AGENTS.md.
@@ -308,4 +323,37 @@ pub(super) fn save(
         canceled: !selected,
         file_path,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::filename_hint;
+
+    #[test]
+    fn explicit_current_directory_save_hint_preserves_its_filename() {
+        assert_eq!(filename_hint(Path::new("."), true).unwrap(), None);
+        for input in ["diagram ü.png", "./diagram ü.png", r".\diagram ü.png"] {
+            assert_eq!(
+                filename_hint(Path::new(input), false).unwrap(),
+                Some("diagram ü.png"),
+                "input {input:?}",
+            );
+        }
+        for input in [
+            "child/diagram.png",
+            "./child/diagram.png",
+            "../diagram.png",
+            "./../diagram.png",
+            "D:diagram.png",
+            r"\diagram.png",
+        ] {
+            assert!(
+                filename_hint(Path::new(input), false).is_err(),
+                "input {input:?}"
+            );
+        }
+        assert!(filename_hint(Path::new("./child/"), true).is_err());
+    }
 }
