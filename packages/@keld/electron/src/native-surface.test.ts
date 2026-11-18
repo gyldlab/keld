@@ -104,8 +104,9 @@ test("menu.set-application-menu source: void call reports actual missing-link fa
   expect(diagnostics).toHaveLength(1);
   expect(diagnostics[0]).toMatchObject({
     code: "KELD-IPC-007",
-    phase: "menu-install",
+    phase: "pre-send",
     result: "not-sent",
+    correlation: null,
   });
 });
 
