@@ -1195,6 +1195,32 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
       } finally {
         writeFileSync(installedBootstrap, savedBootstrap);
       }
+
+      // The signed selector is a filesystem pathname, not an import URL.
+      // Graph admission permits spaces: run that exact physical original as
+      // Bun's truthful main, after both Host subscriptions and Ready, rather
+      // than stopping at a Core-only acceptance assertion.
+      const spacedOriginal = "real user entry.mjs";
+      const spacedEntry = join(stage, spacedOriginal);
+      writeFileSync(spacedEntry, readFileSync(entry, "utf8"));
+      writeFileSync(
+        installedBootstrap,
+        ownerTemplate.replaceAll(marker, JSON.stringify(spacedOriginal)),
+      );
+      await provePackedHandshake(
+        stage,
+        wrapper,
+        installedBootstrap,
+        false,
+        false,
+        false,
+        true,
+        false,
+        spacedEntry,
+        true,
+        true,
+      );
+      writeFileSync(installedBootstrap, savedBootstrap);
     }
 
     // Extra argv cannot select another original, even when a different file
