@@ -373,12 +373,16 @@ function observeFailure(error: unknown): void {
     (error as { origin?: unknown }).origin === "peer"
   )
     return;
+  // Only the missing authenticated link proves that no CALL was sent.
+  // An ambiguous local failure must not assert pre-send or no native effect.
+  const definitelyNotSent = code === "KELD-IPC-007";
   try {
     process.stderr.write(
       JSON.stringify({
         code,
-        phase: "menu-install",
-        result: code === "KELD-IPC-007" ? "not-sent" : "effect-unknown",
+        phase: definitelyNotSent ? "pre-send" : "menu-install",
+        result: definitelyNotSent ? "not-sent" : "effect-unknown",
+        ...(definitelyNotSent ? { correlation: null } : {}),
         fix: "Inspect Host menu admission and link diagnostics; make a fresh deliberate install only after correcting the cause.",
       }) + "\n",
     );
