@@ -104,6 +104,14 @@ admission. All 20 required objects MUST fit and remain authenticated.
 Add a 25th distinct evidence object as an isolated negative control.
 The evidence owner MUST refuse before a consuming journal becomes effectful.
 
+Include an authorized profile-OID transition from installed P1 to destination P2, with both complete policy cohorts authenticated.
+The D-3 candidate check MUST accept P2 under D-7's destination cohort before journal publication.
+Ordinary launch MUST still use P1 until D-9 commits the complete after-state.
+As separate negative controls, remove U1 authorization or add either cohort's recovery-only profile OID to the candidate signer.
+Keep every other admission prerequisite valid, including candidate Authenticode and metadata freshness.
+Each control MUST refuse before journal publication or candidate execution.
+These are required native acceptance cases, not results of the synthetic identity codec checks.
+
 ### AC-4: Joined migration and recovery preserve one complete state
 
 - **Given:** An admitted predecessor has browser data and a last-known-good artifact.

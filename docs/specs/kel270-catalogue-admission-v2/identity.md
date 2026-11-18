@@ -59,13 +59,33 @@ ordinary launch or catalogue permission.
 Retain the existing one-primary/zero-secondary signature rule and Authenticode trust, timestamp, and revocation policy.
 Unrelated additional EKUs do not count as extra signers. The separately
 commissioned recovery profile OID is **not** unrelated. An ordinary
-application/candidate Host MUST match the full installed application profile
-OID and MUST NOT contain the full installed recovery-only profile OID
+application/candidate Host MUST match the full authorized application profile
+OID and MUST NOT contain the corresponding full recovery-only profile OID
 in its verified primary signer leaf. A RecoveryImage MUST match the recovery
 profile OID and MUST NOT contain the application profile OID. Reject a
 single valid leaf carrying both role-specific EKUs before either role grants
 authority; chain success, the generic Public Trust marker and the
 one-primary-signature rule do not override role exclusivity.
+
+Select the complete authorized policy cohort by operation, before granting candidate authority:
+
+| Operation | Policy cohort |
+|---|---|
+| Fresh admission | Complete signed Host-pinned D-9 cohort after D-45 full verification and fresh admission checks |
+| Ordinary launch or unchanged-policy update | Complete admitted installed cohort |
+| D-7 planned-transition candidate | Exact authenticated destination cohort, after independent source-authorized transition validation |
+| D-61 loss-only recovery candidate | Complete unchanged installed application cohort |
+| Dedicated RecoveryImage | Separate installed recovery-only cohort under D-61 and D-62 |
+
+D-7 selects candidate verification policy from the exact source-authorized transition and its authenticated destination policy.
+Require the admitted source, installed U1 signature, applicable U2 signature, and fresh independent metadata authorization.
+Then require full candidate verification and exact destination catalogue, manifest, signed images, policy bytes, and package agreement.
+All checks MUST pass before candidate admission and journal publication.
+The candidate signer MUST exclude both authenticated source and destination recovery-only profile OIDs, counting equal OIDs once.
+An active source recovery profile cannot become the destination application profile during that transition.
+A candidate's signed fields alone MUST NOT authorize a different policy cohort.
+Destination authority is attempt-bound. It cannot replace current provenance, source/LKG verification, or ordinary-launch policy before D-9 commit.
+Missing transition authority MUST refuse, without falling back to fresh admission or recovery.
 
 `PublisherPolicy` has these ordered fields:
 
