@@ -480,6 +480,11 @@ mod rust_binder_acceptance_tests {
         None,
         HostileConfig(&'a Path),
         RejectedImport(&'a str),
+        RejectedImportWithUnlistedMember {
+            sentinel: &'a str,
+            name: &'a str,
+            source: &'a str,
+        },
     }
 
     struct Scratch(PathBuf);
@@ -654,6 +659,13 @@ mod rust_binder_acceptance_tests {
         // to produce a percent-escaped file URL for the generated import.
         let stage = root.join("stage # encoded");
         write_app(&app_root, modules);
+        if let NativeCaseControl::RejectedImportWithUnlistedMember { name, source, .. } = control {
+            let path = app_root.join(name);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("create unlisted physical module parent");
+            }
+            fs::write(path, source).expect("write unlisted physical module");
+        }
         crate::boot::create_windows_stage_root(&stage).map_err(refusal)?;
         let names = modules
             .iter()
@@ -694,7 +706,8 @@ mod rust_binder_acceptance_tests {
                 );
                 Ok(built_app)
             }
-            NativeCaseControl::RejectedImport(sentinel) => {
+            NativeCaseControl::RejectedImport(sentinel)
+            | NativeCaseControl::RejectedImportWithUnlistedMember { sentinel, .. } => {
                 assert!(
                     result.is_err(),
                     "production compiler accepted invalid import"
@@ -927,7 +940,11 @@ mod rust_binder_acceptance_tests {
                 &[("main.js", "import './outside.js'; console.log('bad');")],
                 &stage,
                 None,
-                NativeCaseControl::RejectedImport(IMPORT_REFUSAL),
+                NativeCaseControl::RejectedImportWithUnlistedMember {
+                    sentinel: IMPORT_REFUSAL,
+                    name: "outside.js",
+                    source: "throw new Error('AMBIENT_OUTSIDE_MEMBER'); export const outside = 1;",
+                },
             )
             .is_err(),
             "missing captured member must be refused"

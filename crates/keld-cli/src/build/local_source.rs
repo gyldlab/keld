@@ -1843,7 +1843,7 @@ mod tests {
             std::env::var_os("KELD_TEST_DESCENDANT_STARTED").expect("child start marker path"),
         );
         fs::write(&parent_started, "started").expect("write parent start witness");
-        let child = std::process::Command::new(
+        let mut child = std::process::Command::new(
             std::env::current_exe().expect("current pinned test executable"),
         )
         .args([
@@ -1858,7 +1858,6 @@ mod tests {
         .spawn()
         .expect("spawn Rust descendant fixture");
         fs::write(&parent_spawned, child.id().to_string()).expect("write spawned child PID");
-        drop(child);
         let startup_deadline = Instant::now() + Duration::from_secs(10);
         while !child_started.exists() {
             assert!(
@@ -1867,6 +1866,14 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(25));
         }
+        assert!(
+            child
+                .try_wait()
+                .expect("query descendant after start witness")
+                .is_none(),
+            "descendant exited after publishing its start witness"
+        );
+        drop(child);
         std::thread::sleep(Duration::from_secs(60));
     }
 
@@ -1882,6 +1889,65 @@ mod tests {
         fs::write(&started, std::process::id().to_string()).expect("write child start witness");
         std::thread::sleep(Duration::from_secs(60));
     }
+
+    fn observe_suspended_capture_job(
+        job: &WindowsProcessJob,
+        observer: &std::sync::Mutex<Option<std::sync::Arc<WindowsLifecycleQueryWitness>>>,
+    ) -> Result<(), BuildError> {
+        let handle = job
+            .duplicate_lifecycle_keeper_handle()
+            .map_err(|error| failure("source capture test Job observer", error))?;
+        let witness = WindowsLifecycleQueryWitness::adopt_transferred(handle)
+            .map_err(|error| failure("source capture test Job observer", error))?;
+        let active = witness
+            .active_processes()
+            .map_err(|error| failure("source capture test Job observer", error))?;
+        if active != 1 {
+            return Err(failure(
+                "source capture test Job observer",
+                format!("expected one suspended parent before resume, observed {active}"),
+            ));
+        }
+        *observer
+            .lock()
+            .map_err(|_| failure("source capture test Job observer", "observer lock poisoned"))? =
+            Some(std::sync::Arc::new(witness));
+        Ok(())
+    }
+
+    fn monitor_descendant_job_membership(
+        child_started: PathBuf,
+        observer: std::sync::Arc<
+            std::sync::Mutex<Option<std::sync::Arc<WindowsLifecycleQueryWitness>>>,
+        >,
+    ) -> std::thread::JoinHandle<Result<u32, String>> {
+        std::thread::spawn(move || {
+            let startup_deadline = Instant::now() + Duration::from_secs(20);
+            while !child_started.exists() {
+                if Instant::now() >= startup_deadline {
+                    return Err(
+                        "descendant start witness was not observed before the deadline".into(),
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            let witness = observer
+                .lock()
+                .map_err(|_| "Job observer lock poisoned".to_owned())?
+                .clone()
+                .ok_or_else(|| "Job observer was not published before child startup".to_owned())?;
+            let active = witness
+                .active_processes()
+                .map_err(|error| error.to_string())?;
+            if active < 2 {
+                return Err(format!(
+                    "expected parent and descendant in the capture Job before timeout, observed {active}"
+                ));
+            }
+            Ok(active)
+        })
+    }
+
     #[test]
     fn full_tree_listing_preserves_blob_identity_and_mode() {
         let mut bytes = entry("100644", "Cargo.toml");
@@ -2186,9 +2252,15 @@ mod tests {
         let input = File::open("NUL").expect("null input");
         let mut stderr = tempfile::tempfile().expect("private descendant stderr");
         let start = Instant::now();
-        // Failure-first oracle: the same query-only Job witness must see the
-        // suspended parent before resume and zero members after timeout cleanup.
-        let job_observer = std::sync::Mutex::new(None);
+        // Failure-first oracle: the same query-only Job witness must see one
+        // suspended parent, both live processes, then zero members after cleanup.
+        let job_observer: std::sync::Arc<
+            std::sync::Mutex<Option<std::sync::Arc<WindowsLifecycleQueryWitness>>>,
+        > = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let membership_monitor = monitor_descendant_job_membership(
+            started.clone(),
+            std::sync::Arc::clone(&job_observer),
+        );
         let result = run_captured_with_output_and_job_observer(
             &tool,
             &args,
@@ -2201,26 +2273,7 @@ mod tests {
                 timeout: Duration::from_secs(30),
                 stderr_file: Some(&mut stderr),
             },
-            |job| {
-                let handle = job
-                    .duplicate_lifecycle_keeper_handle()
-                    .map_err(|error| failure("source capture test Job observer", error))?;
-                let witness = WindowsLifecycleQueryWitness::adopt_transferred(handle)
-                    .map_err(|error| failure("source capture test Job observer", error))?;
-                let active = witness
-                    .active_processes()
-                    .map_err(|error| failure("source capture test Job observer", error))?;
-                if active != 1 {
-                    return Err(failure(
-                        "source capture test Job observer",
-                        format!("expected one suspended parent before resume, observed {active}"),
-                    ));
-                }
-                *job_observer.lock().map_err(|_| {
-                    failure("source capture test Job observer", "observer lock poisoned")
-                })? = Some(witness);
-                Ok(())
-            },
+            |job| observe_suspended_capture_job(job, &job_observer),
         );
         let mut stderr_detail = String::new();
         stderr
@@ -2255,9 +2308,18 @@ mod tests {
             "the child marker must belong to the process created by the parent; stderr: {stderr_detail}"
         );
 
+        let observed_members = membership_monitor
+            .join()
+            .expect("Job membership monitor thread")
+            .expect("parent and live descendant must both be Job members before timeout");
+        assert!(
+            observed_members >= 2,
+            "the capture Job must contain the parent and descendant before timeout"
+        );
         let job = job_observer
-            .into_inner()
+            .lock()
             .expect("test Job observer lock")
+            .clone()
             .expect("retained query-only Job observer");
         assert_eq!(
             job.active_processes().expect("query Job after deadline"),
