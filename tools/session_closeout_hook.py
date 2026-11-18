@@ -218,6 +218,11 @@ def configuration(harness="codex", platform=None, git_executable=None):
                                  "Git executable must be outside the checkout")
         session_closeout.require(candidate.is_file() and os.access(candidate, os.X_OK),
                                  "Git executable must be an executable file")
+        # An outside pathname may hard-link to untrusted bytes inside the
+        # checkout. Reject multi-link executables rather than trusting a path
+        # that cannot prove the executable's independent custody.
+        session_closeout.require(candidate.stat().st_nlink == 1,
+                                 "Git executable must have only one hard link")
         git_executable = str(candidate)
     specs = [(name, hashlib.sha256(Path(__file__).with_name(name + ".py").read_bytes()).hexdigest())
              for name in ("session_closeout", "workspace", "session_closeout_hook")]

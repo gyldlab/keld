@@ -681,7 +681,9 @@ Codex/Claude/Cursor identity, loading or stopping behavior.
 
 Generate registration from this reviewed checkout with a trusted absolute Git executable
 path outside the checkout. Review that executable and its installation before use;
-registration binds its path, not its binary contents. For example, on Linux:
+multi-link executables are refused because an outside hard link could refer to
+checkout-owned code. Registration binds the path, not its binary contents.
+For example, on Linux:
 
 ```text
 python3 -B tools/session_closeout_hook.py --print-config --harness codex --git-executable /usr/bin/git

@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -63,6 +64,29 @@ class HookTests(unittest.TestCase):
             self.skipTest('filesystem does not support the case-alias attack')
         with self.assertRaisesRegex(ValueError, 'outside the checkout'):
             hook.configuration(git_executable=str(alias))
+
+    def test_registration_rejects_outside_hardlink_to_checkout_executable(self):
+        """An outside pathname cannot make a checkout inode trusted."""
+        checkout = Path(hook.__file__).resolve().parent.parent
+        local_git = Path(hook.__file__).parent / (
+            'hardlink-git.exe' if os.name == 'nt' else 'hardlink-git'
+        )
+        if os.name == 'nt':
+            shutil.copyfile(sys.executable, local_git)
+        else:
+            local_git.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+            local_git.chmod(0o755)
+        self.addCleanup(local_git.unlink)
+        with tempfile.TemporaryDirectory(prefix='keld-hardlink-', dir=checkout.parent) as temp:
+            alias = Path(temp) / local_git.name
+            try:
+                os.link(local_git, alias)
+            except OSError as error:
+                self.skipTest(f'filesystem lacks hard-link support: {error}')
+            self.assertTrue(alias.samefile(local_git))
+            self.assertGreater(alias.stat().st_nlink, 1)
+            with self.assertRaisesRegex(ValueError, 'only one hard link'):
+                hook.configuration(git_executable=str(alias))
 
     def test_unconfigured_registration_fails_closed(self):
         handler = hook.configuration('claude')['hooks']['Stop'][0]['hooks'][0]
