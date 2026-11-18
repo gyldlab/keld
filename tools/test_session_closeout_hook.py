@@ -51,6 +51,19 @@ class HookTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'absolute'):
             hook.configuration(git_executable='git')
 
+    def test_registration_rejects_case_alias_of_checkout_git(self):
+        """Real filesystem identity must trump differing component spellings."""
+        local_git = Path(hook.__file__).parent / 'case-alias-git'
+        local_git.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+        local_git.chmod(0o755)
+        self.addCleanup(local_git.unlink)
+        checkout = Path(hook.__file__).resolve().parent.parent
+        alias = checkout.with_name(checkout.name.swapcase()) / 'tools' / local_git.name
+        if not alias.exists() or not alias.samefile(local_git):
+            self.skipTest('filesystem does not support the case-alias attack')
+        with self.assertRaisesRegex(ValueError, 'outside the checkout'):
+            hook.configuration(git_executable=str(alias))
+
     def test_unconfigured_registration_fails_closed(self):
         handler = hook.configuration('claude')['hooks']['Stop'][0]['hooks'][0]
         result = subprocess.run([sys.executable, *handler['args']], cwd=self.repo,

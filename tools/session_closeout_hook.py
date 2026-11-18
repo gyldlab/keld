@@ -210,7 +210,11 @@ def configuration(harness="codex", platform=None, git_executable=None):
     if git_executable is not None:
         candidate = session_closeout.absolute(git_executable).resolve(strict=True)
         checkout = Path(__file__).resolve().parent.parent
-        session_closeout.require(not candidate.is_relative_to(checkout),
+        # A case-insensitive filesystem can preserve a caller's mixed-case
+        # spelling in resolve(), so lexical containment is insufficient.
+        # Match existing ancestor directory identities instead.
+        session_closeout.require(not any(parent.samefile(checkout)
+                                        for parent in (candidate, *candidate.parents)),
                                  "Git executable must be outside the checkout")
         session_closeout.require(candidate.is_file() and os.access(candidate, os.X_OK),
                                  "Git executable must be an executable file")
