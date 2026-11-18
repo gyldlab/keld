@@ -551,11 +551,41 @@ pub fn admit(
     facts: &HostFacts,
     archive: Option<&ProofArchive>,
 ) -> Result<ProfileState, AdmissionError> {
-    match req.requested {
+    admit_requested(req.requested, || admit_strict(req, facts, archive))
+}
+
+/// Admit a request for a launcher positively known to be uncontained.
+///
+/// This returns only [`ProfileState::Unverified`] or [`ProfileState::Legacy`].
+/// It is not a fallback for a failed qualified [`admit`] call, and it never
+/// manufactures an artifact digest, profile digest or containment proof.
+/// A successful result is a policy decision, not a receipt that a child ran.
+///
+/// # Errors
+///
+/// A Strict request fails with the existing missing-primitive error. Even if
+/// primitive observation later changes, absent proof still refuses Strict.
+/// Callers must not launch or retry unsandboxed after that refusal.
+pub fn admit_uncontained(requested: ProfileState) -> Result<ProfileState, AdmissionError> {
+    admit_requested(requested, || {
+        refuse_uncontained_strict(&HostFacts::observe_uncontained())
+    })
+}
+
+fn admit_requested(
+    requested: ProfileState,
+    strict: impl FnOnce() -> Result<ProfileState, AdmissionError>,
+) -> Result<ProfileState, AdmissionError> {
+    match requested {
         ProfileState::Unverified => Ok(ProfileState::Unverified),
         ProfileState::Legacy => Ok(ProfileState::Legacy),
-        ProfileState::Strict => admit_strict(req, facts, archive),
+        ProfileState::Strict => strict(),
     }
+}
+
+fn refuse_uncontained_strict(facts: &HostFacts) -> Result<ProfileState, AdmissionError> {
+    require_primitives(facts)?;
+    Err(proof_missing(facts.os))
 }
 
 fn admit_strict(
@@ -898,6 +928,13 @@ mod tests {
             }
             other => panic!("T1 live facts must fail closed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn uncontained_entry_retains_proof_missing_backstop_with_present_primitives() {
+        let error = refuse_uncontained_strict(&facts_primitives_present())
+            .expect_err("a known-uncontained path cannot turn observed primitives into proof");
+        assert_code(&error, "KELD-GUARD011");
     }
 
     #[test]

@@ -5,7 +5,7 @@ import {
   decodeVarint,
   encodePostcardString,
   encodeVarint,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 import type { EchoRequest, EchoResponse } from "./echo.generated.ts";
 import type { Unsubscribe } from "./app.ts";
 

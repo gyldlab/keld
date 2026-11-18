@@ -1,7 +1,8 @@
 /** Independent actual app.ts Ready-publication sequence (only socket is mocked). */
 import assert from "node:assert/strict";
 import { mock } from "bun:test";
-import type { WindowEvent } from "./window-codec.ts";
+import { encodeWindowEvent, type WindowEvent } from "./window-codec.ts";
+import { WindowSource } from "./window-source.ts";
 
 type Hooks = { onReady(): void; onWindowFact?(fact: WindowEvent): void };
 let hooks: Hooks | undefined;
@@ -38,6 +39,31 @@ hooks.onWindowFact?.({
   state,
   pending_close: 7n,
 });
+// Drive the real WindowSource codec/apply/dispatch through app.ts's real
+// onWindowFact receipt listener. A desktop EVENT is windowless: removing the
+// WindowCloseReceipts early return makes this application path throw.
+const desktopSource = new WindowSource((event) => hooks?.onWindowFact?.(event));
+const desktop = desktopSource.decode(
+  encodeWindowEvent({
+    variant: "DesktopSnapshot",
+    epoch: 1n,
+    snapshot: {
+      primary_id: 17,
+      displays: [
+        {
+          id: 17,
+          bounds: { x: 0, y: 0, width: 1440, height: 900 },
+          work_area: { x: 0, y: 24, width: 1440, height: 876 },
+          scale_factor: 2,
+        },
+      ],
+      should_use_dark_colors: false,
+    },
+  }),
+);
+desktopSource.apply(desktop);
+desktopSource.dispatch(desktop);
+assert.equal(desktopSource.desktop()?.primary_id, 17);
 hooks.onReady();
 assert.equal(
   app.isReady(),
@@ -63,6 +89,7 @@ await ready;
 assert.equal(app.isReady(), true);
 assert.deepEqual(observed, [
   "fact:Created:false",
+  "fact:DesktopSnapshot:false",
   "fact:Bounds:false",
   "application:ready",
 ]);

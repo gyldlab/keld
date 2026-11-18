@@ -21,6 +21,24 @@ targets = [
 yanked = "deny"
 # Scope: direct workspace deps only (not all/transitive). Promote to "all" once tree stabilizes.
 unmaintained = "workspace"
+# Every ID below is a RustSec advisory against an OPTIONAL module of a crate we
+# build with `default-features = false`, so no affected code is compiled into any
+# Keld binary. This is a scope statement, not a waiver: remove an entry the day
+# the audit no longer holds.
+ignore = [
+  # rmcp 3.1.2 (Cargo.toml pins `=3.1.2`; server/macros/transport-io only):
+  #   RUSTSEC-2026-0457 affects `src/transport/auth.rs`, compiled only under the
+  #   `auth` feature; RUSTSEC-2026-0461 affects `streamable_http_server`, gated on
+  #   `transport-streamable-http-server-session`; RUSTSEC-2026-0462 affects
+  #   `streamable_http_client`, gated on `transport-streamable-http-client`.
+  #   `cargo tree -e features -p keld-cli -i rmcp` shows only macros/schemars/
+  #   server/transport-async-rw/transport-io, and oauth2/reqwest/tower-http are
+  #   absent from the graph. Upgrading instead would change the reviewed MCP wire
+  #   snapshot (crates/keld-cli --test doctor_mcp), so it needs its own PR.
+  "RUSTSEC-2026-0457",
+  "RUSTSEC-2026-0461",
+  "RUSTSEC-2026-0462",
+]
 
 [licenses]
 # Keld itself is MIT OR Apache-2.0 (pending final GYLDLAB licensing call — see

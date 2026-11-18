@@ -144,6 +144,21 @@ console.log("PASS staged same canonical capture");
       join(repo, "packages/@keld/kipc/src/transport.ts"),
       join(stage, "kipc-transport.ts"),
     );
+    // Keep the generated subpath imports on the same staged transport owner.
+    // Replace specific subpaths before the bare package name: replacing the
+    // bare name first would fabricate a path such as transport.ts/compat-control.
+    for (const [source, staged] of [
+      ["compat-control.generated.ts", "kipc-compat-control.ts"],
+      ["runtime-process.generated.ts", "kipc-runtime-process.ts"],
+    ]) {
+      writeFileSync(
+        join(stage, staged),
+        readFileSync(
+          join(repo, "packages/@keld/kipc/src", source),
+          "utf8",
+        ).replaceAll('"@keld/kipc"', '"./kipc-transport.ts"'),
+      );
+    }
     // run() fixes cwd to stage; use the same portable module specifier as the
     // staged imports instead of a platform-specific absolute filesystem path.
     const preload = await run([
@@ -169,10 +184,13 @@ console.log("PASS staged same canonical capture");
       if (!file.endsWith(".ts") || file.includes("test")) continue;
       writeFileSync(
         join(stage, file),
-        readFileSync(join(apiRoot, file), "utf8").replaceAll(
-          "../../kipc/src/transport.ts",
-          "./kipc-transport.ts",
-        ),
+        readFileSync(join(apiRoot, file), "utf8")
+          .replaceAll("@keld/kipc/compat-control", "./kipc-compat-control.ts")
+          .replaceAll(
+            "@keld/kipc/runtime-process-facts",
+            "./kipc-runtime-process.ts",
+          )
+          .replaceAll("@keld/kipc", "./kipc-transport.ts"),
       );
       direct = direct.replaceAll(
         JSON.stringify(join(apiRoot, file)),

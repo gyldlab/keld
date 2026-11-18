@@ -105,7 +105,10 @@ fn native_close_holds_one_pending_sequence_instead_of_tearing_down() -> TestResu
         state: snapshot(),
         pending_close: Some(1),
     };
-    assert_eq!(registry.replay(owner(1)).collect::<Vec<_>>(), vec![pending]);
+    assert_eq!(
+        registry.replay(owner(1)).collect::<Vec<_>>(),
+        vec![pending.clone()]
+    );
     registry.native_close(WebviewId(7));
     assert_eq!(registry.replay(owner(1)).collect::<Vec<_>>(), vec![pending]);
     Ok(())
@@ -155,6 +158,37 @@ fn native_view_numbers_do_not_mint_logical_window_ids() -> TestResult {
     assert_eq!(first.id, WindowId(1));
     assert_eq!(second.id, WindowId(2));
     assert_ne!(first.incarnation, second.incarnation);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn dialog_parent_resolution_never_changes_window_adoption_state() -> TestResult {
+    let mut registry = ready();
+    let current = owner(1);
+    let window = complete(&mut registry, current, 1, 7)?;
+    // Use a deliberate state sentinel to detect the existing setter's
+    // adoption-mark side effect. Resolving a dialog parent is read-only:
+    // an eventually refused Busy/nonce must not mutate this window.
+    registry.entries.get_mut(&window.id.0).unwrap().adoptable = true;
+    assert_eq!(
+        registry.admitted_dialog_view(current, window),
+        Ok(WebviewId(7))
+    );
+    assert!(registry.entries.get(&window.id.0).unwrap().adoptable);
+    let forged = WindowRef {
+        incarnation: WindowGeneration(window.incarnation.0 + 1),
+        ..window
+    };
+    assert_eq!(
+        registry.admitted_dialog_view(current, forged),
+        Err(WindowError::StaleWindow)
+    );
+    assert_eq!(
+        registry.admitted_dialog_view(owner(2), window),
+        Err(WindowError::WrongOwner)
+    );
+    assert!(registry.entries.get(&window.id.0).unwrap().adoptable);
     Ok(())
 }
 
@@ -756,3 +790,11 @@ fn late_initialization_cannot_reopen_a_terminated_registry() {
         Err(WindowError::NotReady)
     );
 }
+
+mod original_load_context;
+
+#[cfg(all(target_os = "macos", debug_assertions))]
+mod original_document_destroy;
+
+#[cfg(all(target_os = "macos", debug_assertions))]
+mod original_recovery;

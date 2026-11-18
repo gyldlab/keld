@@ -17,6 +17,7 @@ import {
   renderAuthBinding,
   renderEchoDeclarations,
   renderFsBinding,
+  renderRuntimeProcessBinding,
 } from "./echo-codegen.ts";
 import {
   decodeFsResponse,
@@ -34,6 +35,11 @@ const generationOutputs = [
   "packages/@keld/api/src/fs.generated.ts",
   "packages/@keld/api/src/auth.generated.ts",
   "packages/@keld/kipc/src/transport.ts",
+  "packages/@keld/api/src/dialog.generated.ts",
+  "packages/@keld/kipc/src/compat-control.generated.ts",
+  "packages/@keld/api/src/window-codec.ts",
+  "packages/@keld/api/src/menu.generated.ts",
+  "packages/@keld/kipc/src/runtime-process.generated.ts",
 ];
 
 function withGeneratorCheckout(run: (root: string) => void): void {
@@ -67,10 +73,17 @@ function withGeneratorCheckout(run: (root: string) => void): void {
     for (const path of [
       ...generationOutputs,
       "packages/@keld/kipc/scripts/echo-codegen.ts",
+      "packages/@keld/kipc/src/launch-facts.ts",
+      "packages/@keld/kipc/scripts/menu-codegen.ts",
+      "crates/keld-native/src/menu.rs",
       "crates/keld-ipc/src/echo.rs",
+      "crates/keld-ipc/src/lifecycle.rs",
       "crates/keld-ipc/src/channel_table.rs",
+      "crates/keld-ipc/src/compat_control.rs",
+      "crates/keld-ipc/src/window.rs",
       "crates/keld-native/src/fs.rs",
       "crates/keld-native/src/auth/mod.rs",
+      "crates/keld-native/src/dialog.rs",
     ]) {
       mkdirSync(dirname(resolve(root, path)), { recursive: true });
       cpSync(
@@ -122,6 +135,7 @@ test("late transport computation failure leaves every destination unchanged", ()
     expect(result.stderr.toString()).toContain(
       "exactly one channel-table region",
     );
+    expect(result.stderr.toString()).not.toContain("ENOENT");
     generationOutputs.forEach((path, index) => {
       expect(readFileSync(resolve(root, path)), path).toEqual(before[index]);
     });
@@ -617,7 +631,7 @@ async function withFsBinding(
     writeFileSync(
       path,
       renderFsBinding(source).replace(
-        'from "../../kipc/src/transport.ts"',
+        'from "@keld/kipc"',
         `from "${pathToFileURL(transportPath).href}"`,
       ),
     );
@@ -935,4 +949,31 @@ describe("native auth derive grammar", () => {
     for (const source of mutations)
       expect(() => renderAuthBinding(source)).toThrow(/echo codegen:/);
   });
+});
+
+test("GH563 lifecycle generation retains old unit tags and appends only QuitRequested", () => {
+  const source = readFileSync(
+    resolve(import.meta.dir, "../../../../crates/keld-ipc/src/lifecycle.rs"),
+    "utf8",
+  );
+  const rendered = renderRuntimeProcessBinding(source);
+  expect(rendered).toContain("case 0:");
+  expect(rendered).toContain('return "ready";');
+  expect(rendered).toContain("case 1:");
+  expect(rendered).toContain('return "last-window-closed";');
+  expect(rendered).toContain("case 2:");
+  expect(rendered).toContain('return "quit-requested";');
+  const reordered = source
+    .replace("    Ready,", "    TemporaryReady,")
+    .replace("    LastWindowClosed,", "    Ready,")
+    .replace("    TemporaryReady,", "    LastWindowClosed,");
+  expect(() => renderRuntimeProcessBinding(reordered)).toThrow("append-only");
+  expect(() =>
+    renderRuntimeProcessBinding(
+      source.replace(
+        "    QuitRequested,",
+        "    QuitRequested {\n        invented: u32,\n    },",
+      ),
+    ),
+  ).toThrow();
 });
