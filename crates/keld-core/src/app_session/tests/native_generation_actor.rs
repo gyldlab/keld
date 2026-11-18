@@ -304,13 +304,21 @@ fn finish_retained_actor(mut fixture: ActorFixture, failure: HostRunFailure) {
     assert!(
         matches!(&router_tail, Err(error)
             if error.code() == "KELD-CORE-037"
-            && error.to_string().contains("guardian owner ended before acknowledging link failure")),
+            && error.phase == "primary app-link failure"
+            && matches!(error.detail.as_str(),
+                "guardian owner stopped"
+                | "guardian owner ended before acknowledging link failure")),
         "the retired reader must fail closed when its Guardian owner is gone: {router_tail:?}"
     );
     let stage = fixture.inputs.stage_root.clone();
     drop(failure);
     drop(fixture);
-    fs::remove_dir_all(&stage).expect("remove fully retired native test stage");
+    let deleted = fs::remove_dir_all(&stage);
+    assert!(
+        deleted.is_ok()
+            || matches!(&deleted, Err(source) if source.kind() == std::io::ErrorKind::NotFound),
+        "exact native fixture stage cleanup after group retirement: {deleted:?}"
+    );
     assert!(
         !stage.exists(),
         "fixture stage deletion after native custody proof"
@@ -421,6 +429,123 @@ fn fatal_actor_retains_held_native_group_in_host_failure() {
         "KELD_GH824_CORE_CUSTODY actor_joined=true held_member_denied=true failure_retained=true dual_esrch_released=true"
     );
     println!("KELD_AC7_CASE_DONE case={CASE} actor_joined=true fatal_custody=true");
+}
+
+/// A non-release Rust panic must preserve the same original, registered G1
+/// and source-bound Host stage when the actor unwinds while the group is held.
+fn inject_actual_actor_unwind() {
+    panic!("test-only GuardianOwner actor unwind");
+}
+
+#[test]
+#[ignore = "explicit physical macOS actor unwind with real enrolled group"]
+fn actor_unwind_retains_original_guardian_and_denies_successor() {
+    const CASE: &str = "guardian-actor-unwind-custody";
+    const SELECTOR: &str = "app_session::tests::worker_link_e2e::native_observer_e2e::native_generation_recovery::actor_owner::actor_unwind_retains_original_guardian_and_denies_successor";
+    if !support::is_native_child(CASE) {
+        support::isolated_guardian_case(CASE, SELECTOR);
+        return;
+    }
+
+    let mut fixture = ActorFixture::start();
+    let group_pid = fixture.initial_bun_group;
+    let group = Pid::from_raw(i32::try_from(group_pid).expect("enrolled G1 PID fits"));
+    let mut held = HeldGuardianMember::new(group_pid);
+    fixture
+        .owner
+        .as_ref()
+        .expect("actual original Guardian actor")
+        .trigger_panic_for_test(inject_actual_actor_unwind);
+    assert_eq!(
+        fixture
+            .window
+            .recv_timeout(OBSERVATION_BOUND * 2)
+            .expect("fatal UI wake"),
+        AppWindowCommand::Fatal
+    );
+    let mut failure = fixture
+        .owner
+        .take()
+        .expect("original Guardian actor")
+        .shutdown()
+        .expect_err("actor unwind must not complete shutdown");
+    assert_eq!(failure.code(), "KELD-CORE-037");
+    assert!(
+        failure
+            .to_string()
+            .contains("actor panicked before proving"),
+        "the original panic must remain the first terminal cause: {failure}"
+    );
+    assert!(
+        failure.retains_main_custody(),
+        "Host must retain the original Guardian"
+    );
+    assert_eq!(
+        failure
+            .retained_guardian
+            .as_ref()
+            .expect("retained native owner")
+            .group_pid(),
+        Some(group_pid),
+        "actor unwind must retain the original registered birth"
+    );
+    assert!(
+        fixture.inputs.stage_root.exists(),
+        "Host must retain unproved stage"
+    );
+    assert!(!fixture.handle().is_current(2), "no successor after panic");
+    assert_ne!(
+        killpg(group, None::<Signal>),
+        Err(Errno::ESRCH),
+        "the unreaped same-group member keeps group absence unproved"
+    );
+
+    // The synthetic panic occurs before any native signal. Only in this
+    // controlled test can the retained original owner safely perform its
+    // first shutdown; an arbitrary actor panic never retries it automatically.
+    let guardian = failure
+        .retained_guardian
+        .as_mut()
+        .expect("original Guardian remains available after unwind");
+    guardian
+        .shutdown()
+        .expect_err("an unreaped same-group child must deny clean shutdown");
+    assert_eq!(
+        guardian.group_pid(),
+        Some(group_pid),
+        "failed native absence retains the original group birth"
+    );
+
+    // After the test parent reaps its exact child, the original group may
+    // clear only through the runtime's read-only absence probe.
+    held.reap();
+    let deadline = Instant::now() + OBSERVATION_BOUND;
+    while killpg(group, None::<Signal>) != Err(Errno::ESRCH) {
+        assert!(
+            Instant::now() < deadline,
+            "original process group still held"
+        );
+        thread::yield_now();
+    }
+    // The same retained owner now performs only its read-only absence poll.
+    guardian
+        .poll_fatal()
+        .expect_err("panicked Guardian owner remains terminal");
+    assert_eq!(
+        guardian.group_pid(),
+        None,
+        "dual ESRCH releases enrolled birth"
+    );
+    assert_eq!(
+        failure.code(),
+        "KELD-CORE-037",
+        "panic failure stays sticky"
+    );
+    finish_retained_actor(fixture, failure);
+    println!(
+        "KELD_GH824_ACTOR_PANIC_CUSTODY retained=true held_member_denied=true successor=false dual_esrch_released=true"
+    );
+    println!("KELD_AC7_CASE_DONE case={CASE} panic_custody=true");
 }
 
 fn assert_old_return_and_broker_baseline(fixture: &mut ActorFixture) {

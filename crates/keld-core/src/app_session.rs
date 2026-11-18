@@ -4559,10 +4559,16 @@ fn coordinate_window_events(
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(all(test, feature = "fs-acceptance-observer"))]
+type GuardianOwnerTestPanic = Arc<Mutex<Option<fn()>>>;
+
+#[cfg(target_os = "macos")]
 struct GuardianOwner {
     command_tx: Sender<GuardianOwnerCommand>,
     handle: Option<JoinHandle<GuardianOwnerTerminal>>,
     lease_shutdown: Option<JoinHandle<()>>,
+    #[cfg(all(test, feature = "fs-acceptance-observer"))]
+    panic_requested: GuardianOwnerTestPanic,
 }
 
 #[cfg(target_os = "macos")]
@@ -4627,6 +4633,10 @@ impl GuardianOwner {
         // only original Guardian birth on this side until spawn succeeds.
         let pending_guardian = Arc::new(Mutex::new(Some(guardian)));
         let actor_guardian = Arc::clone(&pending_guardian);
+        #[cfg(all(test, feature = "fs-acceptance-observer"))]
+        let panic_requested = Arc::new(Mutex::new(None::<fn()>));
+        #[cfg(all(test, feature = "fs-acceptance-observer"))]
+        let actor_panic_requested = Arc::clone(&panic_requested);
         let handle = thread::Builder::new()
             .name("keld-core-guardian-owner".to_owned())
             .spawn(move || {
@@ -4645,11 +4655,23 @@ impl GuardianOwner {
                 };
                 let mut performed_shutdown = false;
                 let mut shutdown_proved = false;
-                let result = (|| -> Result<ExitStatus, HostAppError> {
+                // The original Guardian stays outside the unwind boundary.
+                // An actor panic must return owned custody to the Host result,
+                // even when the one native group signal cannot prove absence.
+                let actor_loop = || -> Result<ExitStatus, HostAppError> {
                     let mut router = None;
                     let mut initial_arm = false;
                     let mut fs_recovery: Option<FsRecoveryAttempt> = None;
                     loop {
+                        #[cfg(all(test, feature = "fs-acceptance-observer"))]
+                        let injected_panic = actor_panic_requested
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take();
+                        #[cfg(all(test, feature = "fs-acceptance-observer"))]
+                        if let Some(injected) = injected_panic {
+                            injected();
+                        }
                         match command_rx.recv_timeout(Duration::from_millis(50)) {
                             Ok(GuardianOwnerCommand::AttachRouter(attached, reply)) => {
                                 let attached = *attached;
@@ -4890,18 +4912,48 @@ impl GuardianOwner {
                             return Err(app_guardian_fatal("guardian watcher", &source));
                         }
                     }
-                })();
+                };
+                let actor_result =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(actor_loop));
+                let mut actor_panicked = false;
+                let result = if let Ok(result) = actor_result {
+                    result
+                } else {
+                    actor_panicked = true;
+                    guardian.deny_recovery();
+                    let _ = window_commands.send(AppWindowCommand::Fatal);
+                    Err(app_detail(
+                        "guardian owner",
+                        "actor panicked before proving the original Guardian's retirement",
+                    ))
+                };
                 if result.is_err() {
                     guardian.deny_recovery();
                 }
-                let result = if result.is_err() && !performed_shutdown {
+                let result = if result.is_err() && !performed_shutdown && !actor_panicked {
                     // An early owner failure still owes the original Guardian
                     // its one ordered shutdown attempt. Never replace the first
                     // failure with a later cleanup result.
-                    let cleanup = guardian
-                        .shutdown()
-                        .map(|_| ())
-                        .map_err(|source| app_guardian_fatal("guardian fatal cleanup", &source));
+                    // A caught panic may have interrupted a native signal
+                    // before its spent-authority record was published. Never
+                    // retry shutdown after such an ambiguous operation.
+                    // A second panic during fatal cleanup is also an unproved
+                    // owner result. Catch it without dropping the same Child,
+                    // group birth, or spent signal authority.
+                    let cleanup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        guardian.shutdown()
+                    }))
+                    .map_err(|_| {
+                        app_detail(
+                            "guardian fatal cleanup",
+                            "shutdown panicked with original Guardian custody unresolved",
+                        )
+                    })
+                    .and_then(|shutdown| {
+                        shutdown
+                            .map(|_| ())
+                            .map_err(|source| app_guardian_fatal("guardian fatal cleanup", &source))
+                    });
                     shutdown_proved = cleanup.is_ok();
                     result.map_err(|error| append_app_cleanup(error, [cleanup]))
                 } else {
@@ -4933,6 +4985,8 @@ impl GuardianOwner {
             command_tx,
             handle: Some(handle),
             lease_shutdown: Some(lease_shutdown),
+            #[cfg(all(test, feature = "fs-acceptance-observer"))]
+            panic_requested,
         })
     }
 
@@ -4940,6 +4994,14 @@ impl GuardianOwner {
         GuardianOwnerHandle {
             command_tx: self.command_tx.clone(),
         }
+    }
+
+    #[cfg(all(test, feature = "fs-acceptance-observer"))]
+    fn trigger_panic_for_test(&self, injected: fn()) {
+        *self
+            .panic_requested
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(injected);
     }
 
     fn shutdown(mut self) -> Result<(), HostRunFailure> {
