@@ -305,10 +305,13 @@ those functions work.
   **Host menu diagnostic JSONL record** in the native acceptance harness.
   Owner decision [#6959223617](https://github.com/gyldlab/keld/issues/480#issuecomment-6959223617)
   accepts this existing inherited process-stderr route for first-proof
-  diagnostics. It approves the observation location only; it does not
-  allocate a code/fix, approve implementation or prove native capture.
-  The JSONL record grammar below remains a proposed contract, not a claim
-  that a structured async menu collector ships. **FACT at Pin:** keld-cli dev
+  diagnostics. It approved the observation location only. The integrated
+  #1507 candidate now emits Host JSONL using proposed `KELD-COMPAT-015`;
+  independent registry-owner approval is still required. One actual
+  `keld dev` denied-install capture passed on the Mac
+  ([GH480 receipt](https://github.com/gyldlab/keld/issues/480#issuecomment-6977209218));
+  other terminal outcomes and the full native product gate remain open.
+  This is not a structured async menu collector. **FACT at Pin:** keld-cli dev
   launches the staged keld-host with inherited
   stderr (`crates/keld-cli/src/dev.rs:385-391`). keld-host writes and flushes
   HostRunFailure to stderr (`crates/keld-host/src/main.rs:118-125`).
@@ -322,7 +325,7 @@ those functions work.
 
   | Field | Type and rule |
   | --- | --- |
-  | `code` | Registry-assigned stable `KELD-COMPAT-*` code. The next free `KELD-COMPAT-013` is only a candidate; it is not allocated by this spec. |
+  | `code` | Registry-assigned stable `KELD-COMPAT-*` code. The #1507 candidate emits and registers `KELD-COMPAT-015`, subject to independent registry-owner approval. `-013` and `-014` were already allocated for other features; do not reuse either. |
   | `phase` | `pre-send`, `install` or `activation`. |
   | `result` | `denied`, `native-failed`, `effect-unknown` or `unsupported`. |
   | `correlation` | CALL correlation for install; Host-owned operation correlation for an activation; JSON `null` only for a definitely pre-send failure. |
@@ -331,13 +334,13 @@ those functions work.
   | `ticket` | Owning ticket, such as `GH480`, `GH556` or `GH563`. |
   | `fix` | Static actionable fix text from the error-code registry. |
 
-  The record is proposed as JSONL, not free-form stderr prose. The registry
-  owns the exact code and fix; this spec does not allocate `KELD-COMPAT-013`
-  or any replacement. Never log menu labels, paths, user text, OS selectors,
+  The #1507 candidate emits JSONL with additional static `cause_code` and
+  `cause_fix` fields, preserving the original typed Guard/IPC ERR; the
+  registry owner must approve the final grammar and `-015` allocation.
+  This spec itself allocates no code. Never log menu labels, paths, user text, OS selectors,
   identity secrets or native pointers. The existing
   [error-code registry](../../engineering/keld-error-codes.md) is the sole
-  code/fix allocation owner; its owner must approve the record grammar and
-  allocate the code before implementation.
+  code/fix allocation owner; candidate source publication is not approval.
 - **Outcome observation and exactly one owner:** A definitely pre-send
   Bun-local failure (missing link or invalid local projection) may emit one
   `phase=pre-send` JSONL record with `correlation=null` and zero Host frames.
@@ -354,6 +357,8 @@ those functions work.
   terminal outcome, assert exactly one Host-owned JSONL record after admission,
   assert no duplicate Bun-side record, and prove zero app-link/Bun effects
   for denied or unsupported cases. A mock logger does not qualify.
+  The observed denied-install case is one partial pass, not evidence that
+  activation, native-failed or effect-unknown outcomes meet this full matrix.
   This path does **not** expose a new Electron callback, PubSub subscriber,
   menu channel EVENT or private JS diagnostic API.
 - **Void-return safety:** `@keld/api` schedules exactly one bounded

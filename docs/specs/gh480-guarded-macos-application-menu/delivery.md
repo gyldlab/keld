@@ -266,15 +266,21 @@ accepts the existing inherited `keld dev` process-stderr route for
 first-proof diagnostics. No new subscriber, PubSub stream, JS callback,
 menu EVENT or durable store is approved.
 
-**Still open:** the error-registry owner must allocate the exact stable
-code/fix and approve the JSONL record grammar. The real native acceptance
-harness must capture the actual `keld dev` parent stderr, prove one
-Host-owned terminal record after CALL admission, one separate definitely
+**Partial native pass:** current #1507 candidate `0c1376514` emitted one
+Host-owned `KELD-COMPAT-015` JSONL denial record on the actual Mac `keld dev`
+parent stderr, with original cause `KELD-GUARD001`, current correlation and
+no private label or duplicate Bun-side terminal record
+([receipt](https://github.com/gyldlab/keld/issues/480#issuecomment-6977209218)).
+`KELD-COMPAT-013` and `-014` are already registered for other features.
+
+**Still open:** registry-maintainer approval of `-015`, its static fix and
+final JSONL grammar. Native acceptance must additionally prove late failure,
+effect-unknown and unsupported outcomes, one separate definitely
 pre-send Bun record with zero Host frames, no duplicate Bun record after
 admission, zero forbidden effects, and no sensitive menu/path/user/OS data.
 The `@keld/api` internal continuation must consume every REPLY/ERR without
-an unhandled JS rejection, Promise return or retry. `KELD-COMPAT-013` remains
-only a candidate until the registry owner allocates it.
+an unhandled JS rejection, Promise return or retry. The published candidate
+is not independent owner approval or a complete GH480 native acceptance.
 ### Q-3 - Single role table and checked-state admission
 
  approve the
@@ -317,8 +323,8 @@ Check: Record one shared resource-less system-literal evaluator and exact owner 
 ### B-2 - Host stderr diagnostic contract
 Status: open
 Owner: Host and error-registry owners
-Impact: The observation channel is approved, but the record grammar, stable code/fix allocation and real native capture are not complete.
-Check: The registry owner allocates the exact code/fix; Host emits one JSONL record per terminal outcome; the native `keld dev` harness proves pre-send versus Host post-admission ownership, no duplicate Bun record, zero forbidden effects and no sensitive fields.
+Impact: The approved observation channel and one real denied-install capture now exist; code/fix/grammar approval and other native outcomes are incomplete.
+Check: Independently approve the proposed `KELD-COMPAT-015` registry entry and record schema; prove late native failures, effect-unknown, unsupported activation and pre-send versus Host ownership on real `keld dev`, with zero duplicate Bun records, forbidden effects or sensitive fields.
 
 ### B-3 - Role registry and checked-state API
 Status: open
