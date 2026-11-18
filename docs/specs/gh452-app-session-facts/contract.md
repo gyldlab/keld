@@ -1,0 +1,441 @@
+# GH452 session-facts contract and scoped T2 amendments
+
+Part of: [index](index.md)
+Owns: sections 2–4
+
+## 2. Spec refs
+
+- `docs/architecture/04-electron-compat.md` §3 (the `app` facade delegates to the
+  generic API; Electron names and listener behaviour live in `@keld/electron`).
+- `docs/architecture/03-security.md` §1 (principals are Host-minted) and §2 (filesystem
+  paths are grants in `keld.permissions.jsonc`; the role has no path authority of its own).
+- `docs/specs/kel75-principalized-bun-child-roles/roles.md` (`KELD_APP_LINK` is the sole child
+  bootstrap variable; requested `env` is applied per key through `RoleConfig::env`,
+  `crates/keld-runtime/src/role.rs:456`).
+- `docs/specs/kel96-no-flag-host-boot/boot.md` §4.1 (`KEL-96-D3`: no-flag boot reads only the
+  compiled `keld.boot.json` schema v1, fields `schema,name,entry,renderer,permissions`;
+  `KEL-96-D11`: `keld-core` owns boot validation).
+- `docs/specs/gh532-first-proof-evidence-rules.md` rule 3 (red-until-implemented cells)
+  and `docs/specs/gh566-corpus-manifest-owner.md` (the corpus owner and exact-bytes digest).
+- GH497 (`docs/specs/gh497-first-proof-migration-output.md`, `Status: approved` on the
+  PR #1172 branch; not on `origin/main` at `b72e4c19`): the declared role environment
+  is "BLOCKED until #452 approves/implements key". GH499
+  (`docs/specs/gh499-drawio-hand-authored-migration.md`, approved on the PR #1170
+  branch, likewise not on `origin/main`) A08/A13: exactly `DRAWIO_DISABLE_UPDATE=true`,
+  and "spec proposals are not permission to guess or invent a field in an unmerged
+  parser".
+
+T1 deviates from no architecture section (`No boundary change`: no handle ownership,
+crash ownership or principal minting moves). T2 amends KEL-75 and KEL-96 and must update
+both specs in its own PR.
+
+## 3. Acceptance criteria
+
+T1 (this PR). "Not delivered" means the Host passed no session-facts payload, which is
+every role at `b72e4c19`.
+
+### AC-1: Absent Host facts refuse before facade Ready
+
+- **Given:** the Host has delivered no session-facts payload.
+- **When:** module evaluation calls `app.getPath('userData')` before `whenReady`.
+- **Then:** throw an Error with code `KELD-COMPAT-040`, fact `path.userData`, and a message naming `app.getPath('userData')`, `path.userData` and `GH-452`.
+- **Negative control:** make only the absent-fact branch return a guessed path.
+  - **Single fault:** replace the typed refusal with a path fallback.
+  - **At-risk precondition:** the Host record is absent during import.
+  - **Expected RED:** the existing missing-fact test observes a value rather than code 040.
+
+2. Same state, `app.getVersion()` throws `KELD-COMPAT-040` with `fact` `version`.
+3. Same state, `app.getName()` and a read of `app.name` each throw `KELD-COMPAT-040`
+   with `fact` `name`; `name` is a non-enumerable, non-configurable accessor with a
+   setter, as Electron defines it (`lib/browser/api/app.ts` at 694f4585), not a data
+   property, so `{ ...app }`, `Object.entries(app)` and `JSON.stringify(app)` do not
+   invoke it.
+4. Same state, `app.getAppPath()` throws `KELD-COMPAT-040` with `fact` `appPath`.
+5. Same state, `app.getLocale()` called after the facade `ready` event (the pinned
+   app.md: "This API must be called after the `ready` event is emitted.") throws
+   `KELD-COMPAT-040` with `fact` `locale`, observed in a child process that reaches
+   `ready` through a `ready` listener.
+6. Same state, a read of `app.isPackaged` throws `KELD-COMPAT-040` with `fact`
+   `isPackaged`; it is neither `false` nor `undefined`, and it is a non-enumerable
+   accessor without a setter (Electron's read-only property).
+7. Error case: `app.getPath('bogus')` throws `KELD-COMPAT-041`, whose message names
+   `bogus`, says the name is not *documented*, and lists the documented names. The
+   documented list equals, in order, the names under `### app.getPath(name)` in the
+   pinned v44.4.5 snapshot
+   `crates/keld-compat/fixtures/doc-snapshots/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/app.md`
+   (`home` through `crashDumps`, 17 names). Electron's source at the same commit also
+   accepts `cache`, `userCache` and `userDesktop`, excludes `assets` on macOS and
+   `recent` outside Windows; the message must not claim Electron rejects a name, and
+   whether the payload carries the undocumented names is §10 Q9.
+8. Negative control (decoy environment and environment-read oracle): given an
+   observer that replaces `process.env` with a recording Proxy and wraps `process.cwd`
+   before any facade module loads, spawned with `HOME`, `XDG_CONFIG_HOME`, `APPDATA`,
+   `LANG` and `LC_ALL` set to decoy values, when each of the seven members (plus
+   `getPath('documents')`) is read at import and again after the facade `ready` event,
+   then every outcome in both phases is `KELD-COMPAT-040` with no string or boolean,
+   and the recorded reads of `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`,
+   `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `LANG`, `LC_ALL`, `LC_MESSAGES`, `TMPDIR` and of
+   the cwd are empty. A facade that reads `HOME` even into an error message, derives
+   `name`/`version` from a `package.json`, `locale` from `Intl`, `isPackaged` from a
+   constant, or mints any value once `isReady()` is true fails it.
+9. Error cases on the call itself: assigning `app.name` (string or Symbol) throws
+   `KELD-COMPAT-042` naming the value and `setName`, and the next read still fails
+   closed with `040`; `app.getPath` with a non-string argument (`undefined`, `null`, a
+   number, a Symbol, an object) throws `KELD-COMPAT-041` naming the received type and
+   never a second untyped `TypeError`.
+10. The seven `electron-app-v1` cells `app.get-path.user-data-default`,
+   `app.get-version.loaded-app`, `app.get-name.package-name`, `app.name.property`,
+   `app.get-app-path.app-directory`, `app.get-locale.after-ready` and
+   `app.is-packaged.dev-false` keep `expected_verdict: fail` with
+   `implementing_ticket: GH-452`; each `test_name` equals the re-recorded today-test that
+   asserts criteria 1–6 (read before `ready`; the negative-control texts say so and
+   point at criterion 8 for the after-`ready` read); `denominator.json`
+   `corpus_sha256` equals the SHA-256 of the exact `corpus.json` bytes. Flipping any
+   of them to `pass` in T1 is rejected.
+11. `KELD-COMPAT-040`, `041` and `042` are registered in
+    `docs/engineering/keld-error-codes.md` with `crate`, `message` and `fix`, and
+    `cargo test -p keld-cli --test error_registry` passes.
+
+T2 (Host-minted delivery; blocked on §10 Q1–Q4). Restated from the issue so a fresh
+agent can bind tests; values are decided by the owners named in §10.
+
+12. Given a role spawned by the Host with the session-facts payload, when
+    `app.getPath('userData')` is called at module evaluation, then it returns
+    synchronously the Host-computed Electron default (`appData` + app name) for the
+    legacy macOS profile; the facade reads no environment variable to produce it.
+13. `app.getVersion()`, `app.getName()`, `app.name`, `app.getAppPath()` return the
+    payload values synchronously at module evaluation; `app.getLocale()` returns the
+    payload locale after `ready`.
+14. `app.isPackaged` is `false` under `keld dev`; its true-half cell is recorded
+    `unknown` naming KEL-141. Hard-coding `true` fails the dev cell; a constant `false`
+    is rejected at review because the payload must carry the value.
+15. Negative controls: removing payload delivery makes criterion 12's cell throw
+    `KELD-COMPAT-040` (the T1 branch); spawning with decoy `HOME`/`XDG_CONFIG_HOME`
+    leaves every returned path equal to the payload.
+16. The payload's user-argument vector is byte-equal to the arguments given to
+    `keld dev` (payload-level observable; #570 owns `process.argv`).
+17. The seven cells flip to `pass` with inverted today-tests in the same change
+    (gh532 rule 3), and no `implementing_ticket` remains on them.
+
+T3 (declared role environment; blocked on §10 Q5). Restated from the issue.
+
+18. A declared key is visible in `process.env` at module evaluation when the operator
+    shell does not set it; for first proof the reviewed list is exactly
+    `DRAWIO_DISABLE_UPDATE`.
+19. Each reserved-floor fixture (`KELD_APP_LINK`, `NODE_OPTIONS`, `BUN_OPTIONS`,
+    `NODE_TLS_REJECT_UNAUTHORIZED`, `DYLD_INSERT_LIBRARIES`, `LD_PRELOAD`, `https_proxy`)
+    and every non-literal name (`DRAWIO_*`, a name containing `=`) is rejected before
+    spawn with a typed `KELD-*` error naming the key; no role process is created.
+20. The generated role-policy record and every guard decision are identical with and
+    without the declared environment.
+
+## 4. Design
+
+### 4.1 First-principles facts (ownership, trust, lifecycle, I/O, failure)
+
+| Member | Electron source of the value | Keld owner of the value | Why the Bun role cannot mint it honestly at `b72e4c19` |
+|---|---|---|---|
+| `getPath(name)` | Chromium path service; `userData` = `appData` + app name | Host owns path provenance; a returned string is not a grant | Role-side HOME/XDG/APPDATA lookup is decoy-sensitive and violates the one-owner value contract; access authority is a separate boundary |
+| `getVersion()` | loaded app's `package.json` `version` | Host via a schema-v1 field (`version` does not exist in schema v1; adding it is a KEL-96/KEL-15 change) | See `getVersion()` detail after this table |
+| `getName()` / `name` | `package.json` `name` or `productName` | Host: the compiled descriptor `name` (issue text; `boot.rs:521`) | The role receives no descriptor value; parsing `keld.boot.json` in the role would be a duplicate parser of a Host-owned schema (GH499 A18) |
+| `getAppPath()` | app directory | Host: the launch root it staged | `dirname(Bun.main)` is `src/`, not the app directory; the launch root is not delivered |
+| `getLocale()` | Chromium `l10n_util` UI locale | Host: the webview engine's locale | See `getLocale()` detail after this table |
+| `isPackaged` | packaging state | Host: knows dev lease vs installed provenance (`KELD_DEV_LEASE`, KEL-254) | Dev vs installed is indistinguishable from inside the role; no installed artifact exists (KEL-141, KEL-103), so a constant `false` is a stub whose cell would prove only the stub |
+| `DRAWIO_DISABLE_UPDATE` | app-declared env | Host spawn contract (KEL-75 amendment, permission-model gate) | A facade write to `process.env` would be a second environment path; GH497 M06 and GH499 A08 bind it to the Host declaration |
+
+**`getVersion()` (full table-cell detail):**
+`keld dev` stages only the entry and the kipc sidecar (`crates/keld-cli/src/boot.rs:475-482`);
+no `package.json` is staged; walking up from the staged entry crosses the launch root (a layout
+coincidence under dev, denied under strict `/app`)
+
+**`getLocale()` (full table-cell detail):**
+`Intl.DateTimeFormat().resolvedOptions().locale` is the Bun process's ICU default; measured
+`en-US` on Bun 1.4.4/macOS 25.5 under `LANG=de_DE.UTF-8` and under `LC_ALL=fr_FR.UTF-8` (system
+`AppleLanguages` is `en-US`, so tracking of the macOS preference was not distinguishable from a
+constant without changing the user's system setting). No contract binds it to the Host webview
+
+
+Failure facts: a throw at `electron.js:30` is caught by draw.io's own try/catch (`store`
+becomes `null`); the reads at `:58`/`:70` then throw `KELD-COMPAT-040` inside
+`whenReady`, replacing today's `TypeError`. Nothing in T1 can crash independently of the
+role; no handle, queue or copy is introduced.
+
+### 4.2 Reuse before rewrite
+
+- Error shape: the facade's existing typed refusals are `Error` values whose message
+  begins with the code (`browser-window.ts:127`, `489`; `app.ts` `KELD-COMPAT-012`) and
+  carry no `code` field; the public typed shape elsewhere is
+  `KeldCallError = Error & { code: string }` (`packages/@keld/kipc/src/transport.ts:1471`,
+  recognised by `isCallError`). T1 throws an `Error` subclass that keeps the message
+  prefix and additionally carries `code` and `fact`, so it satisfies both conventions.
+  That is a superset of the older facade errors, not a second family; giving 010–012 a
+  `code` field is parked as adjacent cleanup.
+- Closed name set: the pinned v44.4.5 `app.md` snapshot already committed for the app
+  corpus is the oracle for the 17 `getPath` names; the test parses it rather than
+  copying the list a second time.
+- Delivery precedent for T2: the Host already mints one immutable launch fact into the
+  role with a Bun define, `--define=process.env.KELD_NATIVE_WINDOW_FACADE:"1"`
+  (`crates/keld-host/src/main.rs:491-495`, consumed at
+  `packages/@keld/kipc/src/transport.ts:32`). The per-key `RoleConfig::env` setter
+  exists for T3. T2 must choose one carrier (§10 Q1) and must not add a second
+  environment path (issue text).
+- Rejected alternatives, each recorded with the reason: derive `userData` from
+  `~/Library/Application Support/<name>` in Bun (wrong value-provenance owner;
+  reads `HOME`; needs undelivered `name`); read `package.json` by walking up from the
+  entry (not a contract; crosses the launch root; decoy-sensitive); `Intl` locale
+  (Bun-process observable, not the webview locale; see the measurement above); constant
+  `isPackaged = false` (stub; its cell would prove the constant); parse `keld.boot.json`
+  in the role (duplicate parser of a Host-owned schema); a `KELD_*` environment carrier
+  for the payload (conflicts with KEL-75's sole bootstrap variable unless that spec is
+  amended, which is Q1).
+
+### 4.3 Types (T1, `packages/@keld/electron/src/app-session-facts.ts`)
+
+```ts
+export const ELECTRON_PATH_NAMES: readonly [
+  "home", "appData", "assets", "userData", "sessionData", "temp", "exe", "module",
+  "desktop", "documents", "downloads", "music", "pictures", "videos", "recent", "logs",
+  "crashDumps",
+];
+export type ElectronPathName = (typeof ELECTRON_PATH_NAMES)[number];
+export type AppSessionFact =
+  | "name" | "version" | "appPath" | "locale" | "isPackaged" | `path.${ElectronPathName}`;
+export type AppSessionFactCode =
+  | "KELD-COMPAT-040" | "KELD-COMPAT-041" | "KELD-COMPAT-042";
+export class AppSessionFactError extends Error {
+  readonly code: AppSessionFactCode;
+  /** The missing fact for 040; undefined for 041/042 (the call itself is the defect). */
+  readonly fact: AppSessionFact | undefined;
+}
+/** Fail-closed read: throws 040 until a Host payload exists (T2 replaces the body). */
+export function readSessionFact(fact: AppSessionFact, call: string): never;
+/** Non-string or undocumented `name` → 041; otherwise reads `path.<name>` (040). */
+export function readSessionPath(name: string): never;
+export interface AppSessionFactAccessors { name: string; readonly isPackaged: boolean }
+/** Defines `name` (get + refusing set) and `isPackaged` (get) as non-enumerable accessors. */
+export function defineSessionFactAccessors<T extends object>(target: T): T & AppSessionFactAccessors;
+```
+
+`app.ts` adds `getPath(name)`, `getVersion()`, `getName()`, `getAppPath()` and
+`getLocale()` to the existing `app` object literal and wraps the literal in
+`defineSessionFactAccessors`, which installs `name` and `isPackaged` as non-enumerable
+accessors. The listener table is untouched; `index.ts` is not edited (#565 owns
+exports).
+
+Public contract of T1: the seven member names and the runtime `code`/`fact` fields on
+the thrown `Error` (readable through `isCallError` and `.code`). `AppSessionFactError`
+and its types are reachable from `@keld/electron/src/app-session-facts.ts` but are not
+exported from the package entry; adding them to the exports map belongs to #565.
+
+T2 sketch (for the owners, not implemented here): a read-only `SessionFacts` record
+`{ name, version, appPath, locale, isPackaged, paths: Record<ElectronPathName, string>,
+userArgs: string[] }` minted by the Host before spawn and frozen in the role before the
+app entry evaluates; `readSessionFact` returns the field or throws 040 when the record
+is absent.
+
+- Capabilities required; manifest changes: none in T1. T2 adds no capability (facts are
+  not grants); T3 adds the declared-environment field (permission-model gate).
+- Wire/protocol changes: none in T1. T2 is a `keld.boot.json` schema-v1 extension plus a
+  KEL-75 spawn amendment (version bump + wire/public-contract review gates).
+- Platform notes: macOS first. `recent` is accepted as a *name* on every OS because the
+  pinned list contains it; which names have a value on which OS is the payload owner's
+  decision (T2). Linux/Windows path values and argv shape stay unknown (issue text).
+- Runtime seam: none in T1 (no execution owner changes; the throw happens in the role
+  on the caller's stack). T2 moves fact minting to the Host before spawn: OS grants
+  unchanged, crash domain unchanged, config captured at spawn.
+- Migration unit: callers are the draw.io sites in §1 and the import-time reads of
+  `electron-store` (`getPath('userData')`, `getVersion()`) and `electron-log`
+  (`name`/`getName`/`getPath`/`getVersion`/`isPackaged`, timing unknown). No adapter;
+  the permanent facade is the `app` object.
+
+
+### T2a — existing development-launch facts only
+
+This bounded vertical slice does not add a boot-descriptor field. It consumes the
+already validated descriptor `name`, canonical stage root, and actual development
+lease. It enables `getName`/`name`, `getAppPath` and `isPackaged` on the macOS development
+path only. Missing facts keep the T1 refusal. Version, OS paths, locale, user arguments,
+declared environment, installed launch and Windows/Linux delivery remain unimplemented.
+
+The generic Core record is closed JSON:
+`{ "schema": 1, "kind": "development", "name": string, "root": string }`.
+Only the retained validated Core selection and an admitted live dev lease mint it.
+It contains no token, principal, grant or Electron-specific routing rule. The record
+is at most 16 KiB UTF-8; name/root must be nonempty, NUL-free, each at most 4096 bytes;
+root must be absolute. A legacy launch with no dev lease has no record, not a fabricated
+packaged-state verdict. No filesystem authority is added by disclosing the stage path.
+
+Core serializes once into the existing private Guardian invocation. Guardian decodes
+with Core's closed parser, refuses duplicate/unknown/type/version errors and a root
+different from its validated stage, then retains the record across Bun generations.
+The optional eighth private argument carries this record; the seven-argument historical
+form has no facts. It is not a public CLI option or a new bootstrap environment variable.
+
+Before the entry argument, Guardian supplies one Bun parse-time constant,
+`__KELD_HOST_LAUNCH_FACTS__`, and retains the existing canonical transport preload.
+The self-contained canonical transport captures and freezes a copied four-field record
+before app imports. Absent input produces no facts; malformed present input throws
+`KELD-IPC-029`. There is no public setter and no process.env fallback. Runtime config
+refusal and BUN_OPTIONS removal remain unchanged. The installed graph must still prove
+that the facade consumes the admitted transport instance; source-only proof is scoped.
+
+Guardian explicitly defines the reserved constant as `undefined` when its private
+record is absent, including historical launches without a sidecar. An application's
+same-named global cannot turn that absence into delivered facts. A standalone Bun
+invocation without either Host-selected constants or the canonical preload is not a
+qualified launch and has no Host-provenance guarantee.
+
+The facade returns the captured name/root and maps `kind: development` to
+`isPackaged=false`. It does not infer mode from a pathname, argv or missing input.
+Other getters continue to throw 040. T1's absent-payload tests remain valid. No complete
+GH452 or Draw.io corpus cell is flipped from this partial slice.
+
+Acceptance: strict Rust producer/parser tests; pre-entry canonical capture and facade
+tests with omission, malformed and post-capture mutation controls; actual shipping
+no-flag Mac Host delivery observed before Ready, followed by authenticated Quit and
+cleanup. Synthetic define values do not prove the Host producer. Exact-tip formatting,
+Clippy, full tests, generated-doc checks and independent public-API/private-startup
+review remain merge gates. T2a changes no kipc frame/channel or permission policy.
+
+Settled decisions: Q1 uses the existing qualified constant/preload path; Q3 preserves
+the compiled name without adding productName; Q6 retains typed absence; Q7 keeps the
+already published 040–042 assignments; Q8 permits honest re-recording while verdicts
+stay fail. Q2/Q4/Q5/Q9 remain with the remaining value-producing slices, not reasons to
+fabricate a version, locale, path or declared environment in this change.
+
+
+### T2b — explicit version and macOS directory facts
+
+The current literal template may declare one root `version` string. The existing
+root-property scanner and config capture own its extraction; no configuration code
+is evaluated. Present values must be nonempty, NUL-free UTF-8 strings of at most
+4096 bytes. Null, expressions, duplicate keys, accessors, computed keys and ambiguous
+roots are rejected. An omitted value remains omitted, not a package.json or framework
+version fallback. The compiler inserts this optional metadata into the existing boot
+descriptor and Core retains it with the admitted selection. Descriptor bytes without
+the field remain unchanged. This is additive metadata, not a new numeric schema:
+KEL78's profile schemas 3/4 and the graph owner must remain coordinated separately.
+
+Core captures Application Support and Documents through the pinned Foundation
+`NSSearchPathForDirectoriesInDomains` safe API in the user domain, with tilde expansion.
+An unavailable directory result remains absent. Present directory values must be
+bounded, NUL-free absolute paths. `userData` is the captured Application Support path
+joined with the compiled name only when that name is exactly one normal component;
+an unsafe name leaves only `userData` absent. No directory is created, no environment
+variable is consulted, and disclosing any path grants no filesystem access. Native
+references: Apple's `NSApplicationSupportDirectory`/`NSDocumentDirectory` contracts
+and the pinned objc2-foundation 0.3.2 safe wrapper; Electron v44.4.5 `app.getPath` defines
+the appData/name relationship. Permission checks remain solely with Guard.
+
+The private facts carrier uses schema 2 with the schema-1 required fields, an optional
+`version`, and a required closed `paths` object containing only optional `appData`,
+`userData`, and `documents` strings. Schema 1 remains readable and rejects those added
+fields. Present null values are invalid; absent optional fields retain typed 040.
+The existing 16 KiB record bound and 4096-byte field bounds still apply. Core captures
+once; Guardian validates and replays that same record through Bun recovery. Canonical
+transport makes a fresh immutable copy, including the nested paths object.
+Both copies have no prototype, so later application prototype writes cannot supply
+an omitted version or directory value. A present `paths` must be an own data field;
+inherited fields and getters are not startup input. Both private JSON boundaries
+require objects, not positional arrays, while retaining duplicate-key rejection.
+
+Acceptance adds literal-parser and strict-descriptor controls, real compiler output,
+native Foundation results, unsafe-name/path and partial-absence controls, malformed
+nested input, before-Ready delivery, and actual Bun restart with unchanged values.
+Q2 selects explicit version only; Q9 remains bounded to the documented three paths.
+Locale, other paths, installed delivery and declared environment remain outside this
+slice. No complete Draw.io or all-facts corpus cell may be promoted on this proof.
+
+
+### T2c — retained macOS preferred-language fact
+
+Status: approved under the user's standing technical-design delegation; independent
+architecture/public-contract review by `/root/locale_contract_review` on 2026-11-01.
+This resolves Q4 only for qualified macOS development. Source review and actual OS
+verification remain separate gates.
+
+**Reduced compatibility.** Electron v44.4.5 `getLocale()` returns Chromium's
+application UI locale. This slice instead returns the first preferred-language
+identifier of the **Host process**, selected by Foundation
+`NSLocale.preferredLanguages`. It does not claim Chromium or WebKit language
+negotiation, a universally selected system UI language, or installed-app behavior.
+Pinned Electron documents after-ready use; its implementation has no ready guard.
+The captured Keld value is synchronously readable before and after facade ready.
+No extra ready-state error is introduced.
+
+Core selects exactly the first ordered identifier once, during the existing
+validated development-session capture. An empty array leaves locale absent. A
+present empty, NUL-containing or over-4096-byte string fails with KELD-CORE-037.
+Core retains every accepted UTF-8 byte: no normalization, language negotiation,
+fallback to a later preference, `Intl`, locale environment variable, or constant.
+Foundation owns identifier semantics; this slice adds no BCP-47 parser.
+
+The **private launch-facts record** advances to schema 3. This version belongs only
+to the existing private Guardian argument and Bun parse-time data constant; it is
+not `keld.boot.json`, a profile schema, or a kipc wire version. Schema 3 has the
+same required `schema/kind/name/root/paths` fields as schema 2, optional `version`,
+and optional `locale`. Present locale must pass the existing bounded string rule.
+Schemas 1 and 2 retain their exact closed field sets and reject locale. Older
+records remain readable. Schema-3 omission remains a missing fact and
+`app.getLocale()` throws KELD-COMPAT-040; no guessed language is returned.
+
+Reuse and ownership: Core owns native selection and the closed JSON record;
+Guardian retains and replays that record for every Bun generation; the existing
+canonical transport validates its own data properties and captures a new frozen,
+null-prototype object; the facade only reads that captured field. Inherited values,
+accessors, null, wrong types, duplicate JSON keys, unsupported schemas and oversize
+records keep the existing typed refusal. Later application prototype/global/env
+changes cannot supply or replace a locale. This changes no handle/crash ownership,
+principal, permission, endpoint, runtime selection or configuration file. No
+boundary change to authority. The safe Foundation wrapper reuses the existing
+pinned objc2-foundation dependency with its macOS-only NSLocale feature enabled;
+there is no new package, version or unsafe operation.
+
+#### Acceptance and first falsifiers
+
+| Atom | Observable | First falsifier |
+|---|---|---|
+| Native selection / Core | The first Foundation result is retained, or an empty result stays absent | Return a constant, skip the first result, or read Bun locale instead |
+| Closed private record / Core and transport | Schema 3 accepts bounded locale; schemas 1/2 reject it; malformed present data refuses | Accept locale under schema 2, null, an accessor or inherited-only data |
+| Immutable delivery / canonical preload | Nondefault, script and numeric-region identifiers survive byte-for-byte; mutation cannot replace or create locale | Drop the field, normalize it, or let prototype mutation supply it |
+| Facade / app.getLocale | Present value is the same before/after ready; missing remains 040 | Return a default, add a ready guard, or keep refusing a present fact |
+| Actual session / shipping Host | Native startup and Bun crash/recovery observations equal an independent OS query and each other | Remove native capture/delivery or alter the replayed value |
+
+Synthetic tests use distinct identifiers including fr-CA, zh-Hant-TW and es-419;
+these prove representation, not OS preference selection. The native observer uses
+Swift Foundation `Locale.preferredLanguages.first` in the controlled unbundled
+test context, separately from Core's Objective-C wrapper. Its context must match
+the Host; this does not prove all per-application preference overrides. The native
+fixture also supplies irrelevant Bun locale-environment decoys. Do not change the
+user's system preferences to run it. Reuse the existing startup/recovery tests and
+retain their real PID, readiness, authenticated Quit and stage-cleanup assertions.
+
+Boundaries: existing GH452 Core record, canonical transport, facade, their tests,
+native launch-facts fixture, this specification and the macOS feature declaration.
+KEL75/KEL96 notes describe the private record-version change without a boot-schema
+change. Public API, private-startup-data and dependency-feature gates require
+independent review. No new unsafe or permission gate is introduced. Cost is one
+cold Foundation query and one bounded string per session; no performance gain is
+claimed. Other paths, declared environment, Windows/Linux, installed delivery,
+original draw.io renderer/document acceptance and full T2/T3 remain open. Existing
+whole-app/all-facts conformance verdicts must not be promoted from this partial proof.
+
+#### Current-documentation receipt
+
+- Applicability: applied: native preferred-language selection and Electron
+  `app.getLocale()` semantics.
+- Context7: used:`/electron/electron/v44.4.5`; query on `getLocale`, Chromium UI
+  locale, readiness and macOS preferred languages; retrieved 2026-11-01.
+- Official primary: https://developer.apple.com/documentation/Foundation/NSLocale/preferredLanguages
+  (ordered language preferences); https://developer.apple.com/videos/play/wwdc2025/222/
+  at 5:35 (BCP-47 identifiers), retrieved 2026-11-01.
+- Official pinned primary: https://github.com/electron/electron/blob/v44.4.5/docs/api/app.md
+  (getLocale and getPreferredSystemLanguages); and
+  https://github.com/electron/electron/blob/v44.4.5/shell/browser/api/electron_api_app.cc
+  (`App::GetLocale` directly returns `GetApplicationLocale`, without a ready
+  guard), retrieved 2026-11-01. Source blobs 3671f71273c2bad64c502a079f6676ce55e5a932
+  and 1771753b59dfd6a625a8637dc650ca2cc182666d respectively.
+- Supported claim: Host language preference is a documented reduced alternative
+  to Chromium's application UI locale, not proof of identical locale negotiation.
+- Fallback/blocker: no external-semantic blocker; exact source and actual native
+  execution are required before reporting this implementation verified.

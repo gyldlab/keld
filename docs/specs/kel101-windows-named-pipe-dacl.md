@@ -38,7 +38,8 @@ Non-goals:
   guard-before-handler.
 - `docs/architecture/06-runtime-and-tooling.md` §1 — canonical
   `KELD_APP_LINK=<endpoint>#<64 hex chars>` bootstrap contract.
-- `docs/specs/kel75-principalized-bun-child-roles.md` §§3–4, 7 — reusable
+- `docs/specs/kel75-principalized-bun-child-roles/roles.md` §§3–4 and
+  `docs/specs/kel75-principalized-bun-child-roles/routing.md` §7 — reusable
   bootstrap admission, redacted rejection, and no inherited authority handle.
 - KEL-60 — v2 token defense that must not regress.
 

@@ -13,6 +13,11 @@ use super::{AuthConfiguration, DIGEST_PREFIX, HostAppError, MAX_BOOT_BYTES, PERM
 struct BootDocument {
     schema: u8,
     name: String,
+    #[serde(
+        default,
+        deserialize_with = "crate::hello::deserialize_optional_app_version"
+    )]
+    version: Option<String>,
     entry: String,
     renderer: String,
     permissions: PermissionsDocument,
@@ -37,6 +42,11 @@ struct SchemaProbe {
 struct FacadeBootDocument {
     schema: u8,
     name: String,
+    #[serde(
+        default,
+        deserialize_with = "crate::hello::deserialize_optional_app_version"
+    )]
+    version: Option<String>,
     entry: String,
     permissions: PermissionsDocument,
 }
@@ -52,6 +62,7 @@ struct PermissionsDocument {
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 pub(super) struct ParsedBoot {
     pub(super) name: String,
+    pub(super) version: Option<String>,
     pub(super) entry: PathBuf,
     pub(super) initial: InitialWindow,
     pub(super) permissions_digest: [u8; 32],
@@ -86,7 +97,7 @@ pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError>
             "Write one schema key and a strict versioned boot descriptor.",
         )
     })?;
-    let (name, entry, renderer, permissions, auth_configuration) = match probe.schema {
+    let (name, version, entry, renderer, permissions, auth_configuration) = match probe.schema {
         1 => {
             let document: BootDocument = serde_json::from_str(text).map_err(|source| {
                 boot_error(
@@ -97,6 +108,7 @@ pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError>
             debug_assert_eq!(document.schema, 1);
             (
                 document.name,
+                document.version,
                 document.entry,
                 Some(document.renderer),
                 document.permissions,
@@ -113,6 +125,7 @@ pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError>
             debug_assert_eq!(document.schema, 2);
             (
                 document.name,
+                document.version,
                 document.entry,
                 None,
                 document.permissions,
@@ -149,6 +162,7 @@ pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError>
     let permissions_digest = decode_digest(&permissions.content_sha256)?;
     Ok(ParsedBoot {
         name,
+        version,
         entry,
         initial,
         permissions_digest,

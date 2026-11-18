@@ -53,11 +53,11 @@ Non-goals:
   host-owned, guarded kipc brokers.
 - `docs/architecture/06-runtime-and-tooling.md` §§1–2: supervised Bun roles
   and the `keld dev` / `keld-host` boundary.
-- `docs/specs/kel75-principalized-bun-child-roles.md`: destination role
+- `docs/specs/kel75-principalized-bun-child-roles/roles.md`: destination role
   generations and role grants; KEL-102 does not duplicate that registry.
 - `docs/specs/kel78-strict-profile-sandbox.md`: strict-profile admission is a
   separate, fail-closed OS-containment gate.
-- `docs/specs/kel96-no-flag-host-boot.md`: the prerequisite no-flag host boot
+- `docs/specs/kel96-no-flag-host-boot/index.md`: the prerequisite no-flag host boot
   artifact and process-lifecycle owner.
 
 This spec makes the destination enforcement stated in architecture 03
@@ -79,17 +79,17 @@ trailing newline. Its SHA-256 is recorded in the header.
 {"schema":"keld.kel102-decisions/v1","permission_model":"approved:immutable-host-session-snapshot;fail-before-listener-child-window;no-load-error-fallback","public_api":"approved:verified-loader+run_guarded+media-policy;guard-owns-read-hash-parse;private-guard-context","kel96_dependency":"KEL-102/T2-consumes-KEL-96/T1a-acceptance-from-atomic-T1a+T1b-head","identity":"approved:accepted-v0-app-link-to-AppProcess;reject-caller-selected-identity","dispatch":"approved:evaluate+dispatch_privileged-only","task_order":"KEL-102/T2->KEL-102/T3->KEL-102/T4->KEL-102/T5","kel97_predecessor_task_id":"none","containment":"KEL-78-complementary-not-blocker-or-substitute;no-strict-release-claim","reload":"excluded-until-revocation-before-reprovision-spec","review_gates":"permission+public-api-required;unsafe+dependency+kipc-wire-absent-unless-separately-approved"}
 ```
 
-| ID | Approved selection |
+| ID| Approved selection |
 |---|---|
-| `KEL-102-D1` | Approve one immutable host-owned policy snapshot per application session. Invalid boot or policy input fails before listener, child, or window creation. A load failure never becomes an empty/default policy; valid `{}` remains a deliberate all-deny policy. |
-| `KEL-102-D2` | Approve the exact public APIs in §4: `keld_guard::verified_manifest::load_verified_manifest`, `keld_core::app_session::run_guarded`, and the non-cloneable `keld_wv::MediaPolicy`/borrowed `WebEngine::create` injection seam. `GuardSnapshot`, `TrustedDispatchContext`, raw policy bytes, manifest fields, and callback leases remain private. |
-| `KEL-102-D3` | `KEL-102/T2` consumes the `KEL-96/T1a` acceptance row from one landed atomic T1a+T1b `host-boot-and-session` artifact. It does not accept the stale standalone `host-boot-descriptor` terminal and does not depend on KEL-96 T2-T5. |
-| `KEL-102-D4` | One host-accepted authenticated v0 app link maps to `Principal::AppProcess`. Frame data, token text, PID, environment, working directory, role name, and Electron options cannot select identity. Role generations remain KEL-75/KEL-97. |
-| `KEL-102-D5` | `keld_ipc::guard_dispatch::dispatch_privileged` is the sole production guard-before-handler boundary and sole production caller of `keld_guard::evaluate`. After the principal decision but before an FS handler, its private allocation-free request check enforces the guard-owned component grammar; direct `evaluate` retains literal matcher semantics for permission-explain tooling. Its `Allow(ScopePermit)` result lends `&ScopePermit` to the callback; the callback result cannot borrow it, and the permit has no public constructor. `keld-native` uses that borrow to select the first-match retained grant for registered native channels; other direct consumers ignore it. `keld-core` resolves trusted context, decodes, validates, and routes; it never evaluates, accepts a permit/index, or adds a second authorization check. |
-| `KEL-102-D6` | Freeze the order `KEL-102/T2` verified load/snapshot → `T3` reachable filesystem vertical → `T4` webview media injection → `T5` role-generation binding after KEL-97. Set `kel97_predecessor_task_id=none`: KEL-97 owns role-link identity independently; KEL-102/T5 consumes KEL-97, never the reverse. |
-| `KEL-102-D7` | KEL-78 OS containment is complementary to broker authorization, neither a blocker nor a substitute. KEL-102 alone cannot support a strict-profile or release-containment claim. |
-| `KEL-102-D8` | Controlled reload is outside this specification until a separately approved revocation-before-reprovision contract exists. |
-| `KEL-102-D9` | The delegated source explicitly approves the permission model and exact public APIs above for this contract. This spec authorizes no unsafe, dependency, kipc-wire, or manifest-schema change. T2's `sha2`, T3/T4 sibling dependency requests, and any later unsafe/wire/schema delta require their own explicit review gate. |
+| `KEL-102-D1`| Approve one immutable host-owned policy snapshot per application session. Invalid boot or policy input fails before listener, child, or window creation. A load failure never becomes an empty/default policy; valid `{}` remains a deliberate all-deny policy. |
+| `KEL-102-D2`| Approve the exact public APIs in §4: `keld_guard::verified_manifest::load_verified_manifest`, `keld_core::app_session::run_guarded`, and the non-cloneable `keld_wv::MediaPolicy`/borrowed `WebEngine::create` injection seam. `GuardSnapshot`, `TrustedDispatchContext`, raw policy bytes, manifest fields, and callback leases remain private. |
+| `KEL-102-D3`| `KEL-102/T2` consumes the `KEL-96/T1a` acceptance row from one landed atomic T1a+T1b `host-boot-and-session` artifact. It does not accept the stale standalone `host-boot-descriptor` terminal and does not depend on KEL-96 T2-T5. |
+| `KEL-102-D4`| One host-accepted authenticated v0 app link maps to `Principal::AppProcess`. Frame data, token text, PID, environment, working directory, role name, and Electron options cannot select identity. Role generations remain KEL-75/KEL-97. |
+| `KEL-102-D5`| `keld_ipc::guard_dispatch::dispatch_privileged` is the sole production guard-before-handler boundary and sole production caller of `keld_guard::evaluate`. After the principal decision but before an FS handler, its private allocation-free request check enforces the guard-owned component grammar; direct `evaluate` retains literal matcher semantics for permission-explain tooling. Its `Allow(ScopePermit)` result lends `&ScopePermit` to the callback; the callback result cannot borrow it, and the permit has no public constructor. `keld-native` uses that borrow to select the first-match retained grant for registered native channels; other direct consumers ignore it. `keld-core` resolves trusted context, decodes, validates, and routes; it never evaluates, accepts a permit/index, or adds a second authorization check. |
+| `KEL-102-D6`| Freeze the order `KEL-102/T2` verified load/snapshot → `T3` reachable filesystem vertical → `T4` webview media injection → `T5` role-generation binding after KEL-97. Set `kel97_predecessor_task_id=none`: KEL-97 owns role-link identity independently; KEL-102/T5 consumes KEL-97, never the reverse. |
+| `KEL-102-D7`| KEL-78 OS containment is complementary to broker authorization, neither a blocker nor a substitute. KEL-102 alone cannot support a strict-profile or release-containment claim. |
+| `KEL-102-D8`| Controlled reload is outside this specification until a separately approved revocation-before-reprovision contract exists. |
+| `KEL-102-D9`| The delegated source explicitly approves the permission model and exact public APIs above for this contract. This spec authorizes no unsafe, dependency, kipc-wire, or manifest-schema change. T2's `sha2`, T3/T4 sibling dependency requests, and any later unsafe/wire/schema delta require their own explicit review gate. |
 
 ## 3. Acceptance criteria (binary, each becomes a test)
 
@@ -207,9 +207,9 @@ trailing newline. Its SHA-256 is recorded in the header.
 
 **Ownership, trust, lifecycle, I/O, and failure facts:**
 
-| Fact | Decision |
+| Fact| Decision |
 |---|---|
-| Policy-file authority | The `keld-host` process owns selection of the owner-private staged policy copy and the immutable policy snapshot. A single `keld-guard` verified-load operation owns reading its retained handle, byte verification, and parsing. `keld-core` receives the snapshot as trusted session state; Bun and webviews receive neither a path nor a mutable manifest. |
+| Policy-file authority| The `keld-host` process owns selection of the owner-private staged policy copy and the immutable policy snapshot. A single `keld-guard` verified-load operation owns reading its retained handle, byte verification, and parsing. `keld-core` receives the snapshot as trusted session state; Bun and webviews receive neither a path nor a mutable manifest. |
 | Manifest path and trust | The exact filename is `keld.permissions.jsonc` beneath the canonical app root. KEL-96's dev stage is owner-controlled and its digest proves byte consistency, not release authenticity. A future production boot artifact must authenticate its relative location, content digest, and container-to-root relationship through KEL-103 or an approved successor. In both cases the host selects the exact relative filename and rejects a missing, escaping, or non-regular file; a child payload never selects it. |
 | Caller identity | The host creates the dispatch context after link authentication or from its webview/navigation registry. v0 maps its only accepted app link to `AppProcess`; destination role bindings come from KEL-75. No wire field, endpoint string, token, PID, environment variable, or Electron option is identity. |
 | Permission decision | `keld_guard` remains the one evaluator and mints an opaque first-match `ScopePermit`; `keld_ipc::guard_dispatch::dispatch_privileged` remains the one production guard-before-handler helper and lends `&ScopePermit` only for its callback. The result cannot borrow it. `keld-core` owns routing and supplies trusted context but no permit or grant index; `keld-native` reads the index only inside the callback to select its prepared retained grant, while non-filesystem direct consumers ignore the borrow. |

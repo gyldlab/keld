@@ -74,6 +74,7 @@ pub(crate) struct ProductFixture {
     pub(crate) root: tempfile::TempDir,
     pub(crate) project: PathBuf,
     pub(crate) entry_source: String,
+    pub(crate) version: Option<&'static str>,
     pub(crate) native_census: OnceLock<PathBuf>,
 }
 
@@ -95,6 +96,7 @@ impl ProductFixture {
             root,
             project,
             entry_source,
+            version: None,
             native_census: OnceLock::new(),
         }
     }
@@ -118,10 +120,16 @@ impl ProductFixture {
             )
             .expect("fallback renderer");
         }
+        let version = self.version.map_or_else(String::new, |version| {
+            format!(
+                "  version: {},\n",
+                serde_json::to_string(version).expect("literal fixture version")
+            )
+        });
         fs::write(
             self.project.join("keld.config.ts"),
             format!(
-                "export default {{\n  name: \"{TITLE}\",\n  entry: \"src/main.ts\",\n  renderer: \"index.html\",\n}} as const;\n"
+                "export default {{\n  name: \"{TITLE}\",\n{version}  entry: \"src/main.ts\",\n  renderer: \"index.html\",\n}} as const;\n"
             ),
         )
         .expect("fixture config");

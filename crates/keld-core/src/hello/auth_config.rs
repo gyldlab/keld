@@ -41,6 +41,72 @@ impl std::fmt::Display for InitialWindowConfigError {
 
 impl std::error::Error for InitialWindowConfigError {}
 
+/// Invalid explicit version metadata; no application configuration is executed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppVersionConfigError {
+    detail: &'static str,
+}
+
+impl std::fmt::Display for AppVersionConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "KELD-CORE-035: invalid application version: {}. Declare one nonempty literal root version string in keld.config.ts, without expressions, accessors, computed keys or spreads.",
+            self.detail
+        )
+    }
+}
+
+impl std::error::Error for AppVersionConfigError {}
+
+/// Extracts only explicit version metadata through the existing root scanner.
+/// An absent value stays absent; this does not consult package files or the environment.
+///
+/// # Errors
+/// Rejects ambiguous declarations and values outside the bounded string contract.
+pub fn version_from_config_ts(source: &str) -> Result<Option<String>, AppVersionConfigError> {
+    let invalid = |_| AppVersionConfigError {
+        detail: "the exported root version must be unique and literal",
+    };
+    let Some(value) = root_facade_property_slice(source, "version").map_err(invalid)? else {
+        return Ok(None);
+    };
+    if value.len() > 64 * 1024 {
+        return Err(AppVersionConfigError {
+            detail: "the literal source exceeds 64 KiB",
+        });
+    }
+    let tokens = config_tokens(value).map_err(invalid)?;
+    let [ConfigToken::Text(version)] = tokens.as_slice() else {
+        return Err(AppVersionConfigError {
+            detail: "only a literal string is supported",
+        });
+    };
+    validate_app_version(version)?;
+    Ok(Some(version.clone()))
+}
+
+pub(crate) fn validate_app_version(value: &str) -> Result<(), AppVersionConfigError> {
+    if value.is_empty() || value.len() > 4096 || value.contains('\0') {
+        return Err(AppVersionConfigError {
+            detail: "the value must be nonempty, NUL-free and at most 4096 UTF-8 bytes",
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn deserialize_optional_app_version<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // `default` handles an omitted field. A present null must not become absence.
+    let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+    validate_app_version(&value).map_err(serde::de::Error::custom)?;
+    Ok(Some(value))
+}
+
 /// Whether the exported root selects an app-owned first window.
 ///
 /// Missing config retains the renderer-declared schema-1 boot. A present root

@@ -9,7 +9,7 @@ docs/specs/gh531-window-registry-close-state-machine.md	1673	119800	262	exempt
 docs/specs/gh532-first-proof-evidence-rules.md	691	43313	-	exempt
 docs/specs/gh566-corpus-manifest-owner.md	1421	84867	97	exempt
 docs/specs/kel101-windows-named-pipe-dacl.md	-	-	1336	exempt
-docs/specs/kel102-host-guard-enforcement.md	865	60432	3820	exempt
+docs/specs/kel102-host-guard-enforcement.md	865	60432	3819	exempt
 docs/specs/kel130-retained-filesystem.md	1011	88401	10432	exempt
 docs/specs/kel132-webview-gpu-media.md	-	-	-	exempt
 docs/specs/kel133-kipc-receiver-semantics.md	-	-	228	exempt
@@ -31,14 +31,12 @@ docs/specs/kel53-t4b-windows-task-amendment-draft.md	-	-	-	exempt
 docs/specs/kel53-windows-install-modes-draft.md	-	-	4	exempt
 docs/specs/kel64-macos-startup-attribution.md	-	-	-	exempt
 docs/specs/kel74-compat-evidence-schema.md	-	-	182	exempt
-docs/specs/kel75-principalized-bun-child-roles.md	542	-	138	exempt
 docs/specs/kel77-bun-child-process-differential.md	-	-	-	exempt
 docs/specs/kel78-primary-sources.md	-	-	1684	exempt
-docs/specs/kel78-strict-profile-sandbox.md	782	47609	486	exempt
+docs/specs/kel78-strict-profile-sandbox.md	782	47608	486	exempt
 docs/specs/kel81-ci-change-routing.md	-	-	-	exempt
 docs/specs/kel82-linux-webkitgtk-ci-image.md	713	51369	1069	exempt
-docs/specs/kel96-no-flag-host-boot.md	858	54555	-	exempt
 docs/specs/kel98-echo-codegen.md	-	-	-	exempt
-docs/specs/keld-auth.md	1784	143339	7454	exempt
+docs/specs/keld-auth.md	1784	143317	7454	exempt
 docs/specs/keld-mcp-server-v1.md	-	-	-	exempt
 docs/specs/optional-agent-memory-pilot.md	681	-	-	exempt

@@ -74,8 +74,8 @@ Non-goals:
 - `docs/architecture/06-runtime-and-tooling.md` §§2, 3, 4, 4a: boot ownership,
   Windows x64 canonical package, signed full-artifact identity, and unsupported-cell
   refusal.
-- `docs/specs/kel96-no-flag-host-boot.md` §§3, 4.1 D4, 4.2, 4.3, 4.8: strict boot
-  descriptor, no caller-selected mode, and current dev-stage-only consumer. This spec
+- KEL96 `kel96-no-flag-host-boot/`: `boot.md` §§3, 4.1–4.3 D4; `lifecycle.md` §4.8:
+  strict boot descriptor, no caller-selected mode, dev-stage-only consumer. This spec
   is a proposed successor to D4 only for Windows direct-installed packages, and on
   Windows it also ends lease-less dev-stage boot (AC2).
 - `docs/specs/kel53-full-package-activation.md` §§3, 4, 5, 7, 8: installer-owned
@@ -308,9 +308,9 @@ D4 note remains outside the frozen decision block so its approved digest does no
 
 ### First-principles and reuse decision
 
-| Atom / owner | Boundary and input → output | Failure mode | Independent observable |
+| Atom / owner| Boundary and input → output| Failure mode| Independent observable |
 |---|---|---|---|
-| Mode selection / KEL-53 + `keld-core` | valid dev lease routing to the `DevStage` validator, or authenticated install provenance → opaque `DevStage` or mode-tagged direct selection | path/env/caller bool or observed ACL chooses trust mode | independently mutate cwd, environment, argv, executable path, provenance mode, owner SID and root; only the authenticated record controls the cell |
+| Mode selection / KEL-53 + `keld-core`| valid dev lease routing to the `DevStage` validator, or authenticated install provenance → opaque `DevStage` or mode-tagged direct selection| path/env/caller bool or observed ACL chooses trust mode | independently mutate cwd, environment, argv, executable path, provenance mode, owner SID and root; only the authenticated record controls the cell |
 | App identity / KEL-135 | verified current Authenticode image → publisher scope + app id | untrusted, ambiguous or differently signed image is treated as Keld | real signed fixture and wrong-publisher/app negative controls |
 | Install provenance / KEL-53 | trusted per-user or machine installer → mode, owner SID, install/update roots and initial baseline identity or refusal | missing/mismatched mode, synthetic record, or managed owner is treated as direct | real installer record/readback per mode plus independently changed record fields |
 | Active selection/lifecycle / KEL-53 | provenance + floor + `current` + journal + attempt-owner acceptance → one exact active version tree and normal/candidate mode, with the specified current→LKG recovery | stale baseline, orphan tree, partial update or replayed or substituted candidate claim boots; valid LKG is skipped after a recoverable current failure | independently mutate current/LKG/previous-LKG/floor/journal/marker/path/owner endpoint; only a valid state or the exact approved LKG recovery reaches the boot parser |

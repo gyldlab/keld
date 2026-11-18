@@ -52,7 +52,7 @@ Non-goals:
 - `docs/specs/kel133-kipc-receiver-semantics.md`: one validator, one canonical corpus
   (`crates/keld-ipc/tests/fixtures/receiver-semantics-v0.tsv`) and one digest. This
   spec adds corpus rows (§4.9).
-- `docs/specs/kel75-principalized-bun-child-roles.md`: role generation, `RevokeAll`
+- `docs/specs/kel75-principalized-bun-child-roles/roles.md`: role generation, `RevokeAll`
   and crash paths. Unchanged; Worker death maps onto its natural-crash row.
 - `docs/specs/kel139-macos-product-spine.md` AC6: quit order (accept and attribute,
   reply, quiesce and drain, revoke and close, terminate and reap).
@@ -355,9 +355,9 @@ that links the real `keld-ipc` writer and the real `@keld/kipc` framing, on macO
 arm64, Bun 1.4.2. Its results are FACT for that prototype and platform only. INFERENCE
 marks a design consequence that this spec's tests must confirm.
 
-| # | Atom | Owner and boundary | Failure mode | Observable contract | Evidence |
+| #| Atom| Owner and boundary| Failure mode| Observable contract| Evidence |
 |---|---|---|---|---|---|
-| A1 | Link handle ownership | Transport Worker in the role process; owns the socket from connect to close | main thread blocks the link reader | criterion 1 | FACT: arm B 5/5, 704,043 B written, no `KELD-IPC-006`; arm A 5/5 stalled at 8,192 B |
+| A1| Link handle ownership | Transport Worker in the role process; owns the socket from connect to close | main thread blocks the link reader | criterion 1 | FACT: arm B 5/5, 704,043 B written, no `KELD-IPC-006`; arm A 5/5 stalled at 8,192 B |
 | A2 | Identity and authentication | Host mints the endpoint and token (KEL-75); Worker sends `HELLO` | second link or second principal | criterion 11 | FACT: arm B second connect refused `ENOENT` 5/5; arch 02 §2 consumed locator |
 | A3 | Authorization | Unchanged: host binds the link to the role principal and the guard decides per CALL | none added | no new capability | FACT: no grant or guard change in this spec |
 | A4 | OS containment | Worker runs inside the role's process and strict profile; no new mount | a third staged file would widen the Linux strict mount | T3 Linux test: Worker entry is the staged transport file | FACT: arch 06 binds exactly two files. INFERENCE: a self-entry Worker needs no new mount |

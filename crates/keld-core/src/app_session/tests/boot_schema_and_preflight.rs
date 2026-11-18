@@ -32,6 +32,43 @@ fn schema_one_still_requires_renderer() {
 }
 
 #[test]
+fn boot_optional_version_accepts_literal_metadata_in_existing_schemas() {
+    for schema in [1, 2] {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&valid_boot("src/main.ts", "index.html")).expect("fixture");
+        value["schema"] = schema.into();
+        if schema == 2 {
+            value.as_object_mut().expect("object").remove("renderer");
+        }
+        value["version"] = "29.1.7-test+build.4".into();
+        let bytes = serde_json::to_vec(&value).expect("versioned fixture");
+        let parsed = parse_boot_bytes(&bytes).expect("explicit version in existing schema");
+        assert_eq!(parsed.version.as_deref(), Some("29.1.7-test+build.4"));
+    }
+}
+
+#[test]
+fn boot_optional_version_rejects_present_invalid_values_and_duplicates() {
+    for version in [
+        serde_json::Value::Null,
+        serde_json::json!(7),
+        serde_json::json!(false),
+        serde_json::json!(""),
+        serde_json::json!("v\0bad"),
+        serde_json::json!("a".repeat(4097)),
+    ] {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&valid_boot("src/main.ts", "index.html")).expect("fixture");
+        value["version"] = version;
+        let bytes = serde_json::to_vec(&value).expect("invalid version fixture");
+        assert!(parse_boot_bytes(&bytes).is_err());
+    }
+    let original = String::from_utf8(valid_boot("src/main.ts", "index.html")).expect("UTF-8");
+    let duplicate = original.replacen('{', "{\"version\":\"1\",\"version\":\"2\",", 1);
+    assert!(parse_boot_bytes(duplicate.as_bytes()).is_err());
+}
+
+#[test]
 fn schema_two_strictly_rejects_renderer_auth_profile_unknown_and_duplicate_fields() {
     const FIELDS: &str = r#""name":"Fixture","entry":"src/main.ts","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}"#;
     for injected in [
