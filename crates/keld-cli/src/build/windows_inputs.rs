@@ -54,6 +54,14 @@ pub(super) fn stable_file_at_parent(path: &Path, parents: &[File]) -> Result<Pat
             "leaf must be one ordinary path component",
         ));
     }
+    // On NTFS, "file:stream" names an alternate data stream, not the
+    // ordinary default-stream file the caller intended to select.
+    if leaf.as_encoded_bytes().contains(&b':') {
+        return Err(BuildError::input(
+            "Windows local file",
+            "alternate data stream file leaf",
+        ));
+    }
     if has_windows_trailing_alias(leaf) {
         return Err(BuildError::input(
             "Windows local file",
@@ -102,13 +110,64 @@ pub(super) fn stable_local_target_path(path: &Path) -> Result<(PathBuf, Vec<File
             "reserved DOS device target component",
         ));
     }
+    // Bind the caller's drive namespace before testing whether *any* target
+    // component exists. A SUBST alias can change between a missing-path probe
+    // and a later directory pin, even if both destinations are fixed local.
+    let drive_root = path
+        .ancestors()
+        .last()
+        .ok_or_else(|| BuildError::input("Windows local target", "missing drive root"))?;
+    #[cfg(test)]
+    windows_local_volume_tests::run_before_target_root_pin();
+    let root_pins = pin_input_root(drive_root)?;
+    stable_local_target_from_pinned_root(path, drive_root, root_pins)
+}
+
+fn stable_local_target_from_pinned_root(
+    path: &Path,
+    drive_root: &Path,
+    root_pins: Vec<File>,
+) -> Result<(PathBuf, Vec<File>), BuildError> {
+    let relative = path.strip_prefix(drive_root).map_err(|_| {
+        BuildError::input(
+            "Windows local target",
+            "target differs from retained drive root",
+        )
+    })?;
+    let mut stable_target = stable_local_path(&root_pins)?;
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(BuildError::input(
+                "Windows local target",
+                "target contains a non-ordinary path component",
+            ));
+        };
+        // The original caller can supply a verbatim component containing a
+        // slash or drive-relative prefix that ordinary DOS parsing reinterprets.
+        // Reject it before pushing into the stable, nonverbatim path.
+        let mut ordinary = Path::new(name).components();
+        if !matches!(
+            (ordinary.next(), ordinary.next()),
+            (Some(Component::Normal(_)), None)
+        ) || name.as_encoded_bytes().contains(&b':')
+        {
+            return Err(BuildError::input(
+                "Windows local target",
+                "target component is not one ordinary filename",
+            ));
+        }
+        stable_target.push(name);
+    }
     let mut suffix = Vec::<OsString>::new();
-    let mut cursor = path;
+    let mut cursor = stable_target.as_path();
     loop {
         match std::fs::symlink_metadata(cursor) {
             Ok(_) => {
-                let pins = pin_input_root(cursor)?;
-                let mut stable = stable_local_path(&pins)?;
+                let ancestor_pins = pin_input_root(cursor)?;
+                let stable_ancestor = stable_local_path(&ancestor_pins)?;
+                let mut pins = root_pins;
+                pins.extend(ancestor_pins);
+                let mut stable = stable_ancestor;
                 for component in suffix.iter().rev() {
                     stable.push(component);
                 }
@@ -578,11 +637,23 @@ fn require_windows_authoring_paths(entry: &str, renderer: Option<&str>) -> Resul
 mod windows_local_volume_tests {
     use super::*;
     use sha2::Digest as _;
+    use std::cell::RefCell;
     use std::process::{Command, ExitStatus};
     use std::sync::Mutex;
 
     // Never allow two native fixture lifecycles to share the test-only Z: alias.
     static Z_MAPPING_TEST_LOCK: Mutex<()> = Mutex::new(());
+    std::thread_local! {
+        static BEFORE_TARGET_ROOT_PIN: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn run_before_target_root_pin() {
+        BEFORE_TARGET_ROOT_PIN.with(|hook| {
+            if let Some(callback) = hook.borrow_mut().take() {
+                callback();
+            }
+        });
+    }
     const LOCAL_CAPTURE_MARKER: &[u8] = b"R208_CAPTURED_LOCAL_ORIGIN_ONLY";
 
     #[test]
@@ -659,6 +730,115 @@ mod windows_local_volume_tests {
     }
 
     #[test]
+    fn target_refuses_colon_in_an_ordinary_suffixed_component() {
+        let owned = tempfile::tempdir().expect("private Windows fixture");
+        let invalid = owned.path().join("future:payload");
+        let error = stable_local_target_path(&invalid)
+            .expect_err("colon in target component must not be reinterpreted");
+        assert!(
+            error.to_string().contains("not one ordinary filename"),
+            "target failed for the wrong reason: {error}"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires an unused Z: SUBST letter"]
+    fn target_entry_rebinds_before_root_pin_and_rechecks_existing_b_target() {
+        let _lock = Z_MAPPING_TEST_LOCK.lock().expect("shared Z: lock");
+        let original = tempfile::tempdir().expect("original fixed-local A root");
+        let replacement = tempfile::tempdir().expect("replacement fixed-local B root");
+        let b_target = replacement.path().join("new-install").join("updates");
+        std::fs::create_dir_all(&b_target).expect("already existing B target");
+        std::fs::write(b_target.join("B.marker"), b"B").expect("distinguishable B target");
+        assert!(!original.path().join("new-install").exists());
+        assert!(!Path::new(r"Z:\").exists(), "unused Z: required");
+        assert!(!net_use(&["use", "Z:"]).unwrap().success());
+        let mut mapping = TemporaryMappedDrive {
+            kind: MappingKind::None,
+        };
+        assert!(
+            subst(&["Z:", original.path().to_str().unwrap()])
+                .unwrap()
+                .success()
+        );
+        mapping.kind = MappingKind::Subst;
+        let replacement_name = replacement
+            .path()
+            .to_str()
+            .expect("native B root")
+            .to_owned();
+        BEFORE_TARGET_ROOT_PIN.with(|hook| {
+            assert!(hook.borrow().is_none(), "one active root-pin hook");
+            *hook.borrow_mut() = Some(Box::new(move || {
+                assert!(subst(&["Z:", "/D"]).unwrap().success(), "release A alias");
+                assert!(
+                    subst(&["Z:", &replacement_name]).unwrap().success(),
+                    "bind B alias"
+                );
+            }));
+        });
+        // Rebind inside the actual production entry, not a private helper.
+        let selected = Path::new(r"Z:\new-install\updates");
+        let (stable, pins) = stable_local_target_path(selected).expect("physical B target");
+        assert_eq!(
+            stable.canonicalize().expect("resolved selected target"),
+            b_target.canonicalize().expect("resolved actual B target")
+        );
+        assert_eq!(
+            stable_local_path(&pins)
+                .expect("retained B target")
+                .canonicalize()
+                .expect("resolved retained B target"),
+            b_target.canonicalize().expect("actual B target"),
+            "the retained deepest handle must be B's target, not its parent"
+        );
+        assert_eq!(std::fs::read(stable.join("B.marker")).unwrap(), b"B");
+    }
+
+    #[test]
+    #[ignore = "requires an unused Z: SUBST letter"]
+    fn missing_target_uses_root_pinned_before_local_alias_rebind() {
+        let _lock = Z_MAPPING_TEST_LOCK.lock().expect("shared Z: lock");
+        let original = tempfile::tempdir().expect("original fixed-local root");
+        let replacement = tempfile::tempdir().expect("replacement fixed-local root");
+        std::fs::create_dir_all(replacement.path().join("new-install").join("updates"))
+            .expect("preexisting replacement target");
+        assert!(!original.path().join("new-install").exists());
+        assert!(!Path::new(r"Z:\").exists(), "unused Z: required");
+        assert!(!net_use(&["use", "Z:"]).unwrap().success());
+        let mut mapping = TemporaryMappedDrive {
+            kind: MappingKind::None,
+        };
+        assert!(
+            subst(&["Z:", original.path().to_str().unwrap()])
+                .unwrap()
+                .success()
+        );
+        mapping.kind = MappingKind::Subst;
+        let drive_root = Path::new(r"Z:\");
+        let root_pins = pin_input_root(drive_root).expect("retain original A namespace");
+        let stable_original = stable_local_path(&root_pins).expect("original retained volume");
+        assert!(subst(&["Z:", "/D"]).unwrap().success());
+        mapping.kind = MappingKind::None;
+        assert!(
+            subst(&["Z:", replacement.path().to_str().unwrap()])
+                .unwrap()
+                .success()
+        );
+        mapping.kind = MappingKind::Subst;
+        let selected = Path::new(r"Z:\new-install\updates");
+        assert!(selected.exists(), "rebound B has an existing target");
+        let (stable, pins) = stable_local_target_from_pinned_root(selected, drive_root, root_pins)
+            .expect("missing A target under retained A namespace");
+        assert_eq!(stable, stable_original.join("new-install").join("updates"));
+        assert!(!stable.exists(), "the selected A target is still missing");
+        assert_eq!(
+            stable_local_path(&pins).expect("retained existing A ancestor"),
+            stable_original
+        );
+    }
+
+    #[test]
     fn retained_parent_rejects_verbatim_leaf_that_reparses_as_rooted_path() {
         let owned = tempfile::tempdir().expect("private Windows fixture");
         let pins = pin_input_root(owned.path()).expect("retained Windows parent");
@@ -686,6 +866,35 @@ mod windows_local_volume_tests {
         );
     }
 
+    #[test]
+    fn retained_parent_refuses_ntfs_named_stream_instead_of_default_file() {
+        let owned = tempfile::tempdir().expect("private NTFS fixture");
+        let ordinary = owned.path().join("release.key");
+        std::fs::write(&ordinary, b"default stream").expect("ordinary file");
+        let alternate = owned.path().join("release.key:proof");
+        std::fs::write(&alternate, b"separate stream").expect("real NTFS named stream");
+        assert_eq!(
+            std::fs::read(&alternate).expect("read named stream"),
+            b"separate stream"
+        );
+        assert_eq!(
+            std::fs::read(&ordinary).expect("read default stream"),
+            b"default stream"
+        );
+        let pins = pin_input_root(owned.path()).expect("retained local parent");
+        let error = stable_file_at_parent(&alternate, &pins)
+            .expect_err("a named stream cannot stand in for a default-stream file");
+        assert!(
+            error.to_string().contains("alternate data stream"),
+            "unexpected refusal: {error}"
+        );
+        assert_eq!(
+            stable_file_at_parent(&ordinary, &pins).expect("ordinary file remains allowed"),
+            stable_local_path(&pins)
+                .expect("physical parent")
+                .join("release.key")
+        );
+    }
     // Failure-first falsifier for a caller that pins a directory but opens
     // its file through the original mutable DOS alias after an A-to-B rebind.
     #[test]

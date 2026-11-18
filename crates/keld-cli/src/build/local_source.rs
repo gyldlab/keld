@@ -886,8 +886,55 @@ fn pin_directories(path: &Path) -> Result<Vec<File>, BuildError> {
     super::windows_inputs::pin_input_root(path)
 }
 
+// The retained fixed-volume path is DOS-form for tool identity, but direct
+// Win32 security and CreateDirectoryW calls must use extended syntax when a
+// short SUBST locator expands beyond the ordinary Win32 directory limit.
+// This is syntax conversion only: neither the path nor its owner is trusted
+// without the independent retained-handle and principal checks.
+fn win32_extended_if_long(path: &Path) -> Result<PathBuf, BuildError> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::path::{Component, Prefix};
+
+    if path.as_os_str().encode_wide().count() < 248 {
+        return Ok(path.to_owned());
+    }
+    match path.components().next() {
+        Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::VerbatimDisk(_)) => {
+            Ok(path.to_owned())
+        }
+        Some(Component::Prefix(prefix))
+            if path.is_absolute() && matches!(prefix.kind(), Prefix::Disk(_)) =>
+        {
+            let mut extended = OsString::from(r"\\?\");
+            extended.push(path.as_os_str());
+            Ok(PathBuf::from(extended))
+        }
+        _ => Err(failure(
+            "local source long path",
+            "a retained absolute fixed-local DOS path is required",
+        )),
+    }
+}
+
 fn create_private(path: &Path) -> Result<(), BuildError> {
-    boot::create_windows_stage_root(path).map_err(|error| failure("local source session", error))
+    let api_path = win32_extended_if_long(path)?;
+    boot::create_windows_stage_root(&api_path)
+        .map_err(|error| failure("local source session", error))
+}
+
+// The caller's session leaf must remain a single ordinary filename when
+// appended to the retained physical parent. A verbatim path may hide an
+// absolute DOS path inside Component::Normal, so never join file_name raw.
+fn stabilize_source_session(session: &Path) -> Result<(PathBuf, Vec<File>), BuildError> {
+    let parent = session
+        .parent()
+        .ok_or_else(|| failure("local source session", "session parent missing"))?;
+    let pins = pin_directories(parent)?;
+    let stable_parent = super::windows_inputs::stable_local_path(&pins)?;
+    boot::ensure_current_principal_owns(&win32_extended_if_long(&stable_parent)?)
+        .map_err(|error| failure("local source session owner", error))?;
+    let stable_session = super::windows_inputs::stable_file_at_parent(session, &pins)?;
+    Ok((stable_session, pins))
 }
 
 fn os_args(values: &[&str]) -> Vec<OsString> {
@@ -1113,20 +1160,8 @@ pub(super) fn prepare(
     request.source = super::windows_inputs::stable_local_path(&source_pins)?;
     let cargo_home_pins = pin_directories(&request.cargo_home)?;
     request.cargo_home = super::windows_inputs::stable_local_path(&cargo_home_pins)?;
-    let session_name = request
-        .session
-        .file_name()
-        .ok_or_else(|| failure("local source session", "session leaf missing"))?
-        .to_os_string();
-    let parent = request
-        .session
-        .parent()
-        .ok_or_else(|| failure("local source session", "session parent missing"))?;
-    let session_pins = pin_directories(parent)?;
-    let stable_session_parent = super::windows_inputs::stable_local_path(&session_pins)?;
-    boot::ensure_current_principal_owns(&stable_session_parent)
-        .map_err(|error| failure("local source session owner", error))?;
-    request.session = stable_session_parent.join(session_name);
+    let (stable_session, session_pins) = stabilize_source_session(&request.session)?;
+    request.session = stable_session;
     let mut directory_pins = source_pins;
     directory_pins.extend(cargo_home_pins);
     directory_pins.extend(session_pins);
@@ -1660,6 +1695,56 @@ pub(super) fn run(args: &[String]) -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn verbatim_rooted_source_session_leaf_cannot_escape_retained_parent() {
+        let owned = tempfile::tempdir().expect("private local session fixture");
+        let verbatim_parent = owned
+            .path()
+            .canonicalize()
+            .expect("verbatim Windows parent");
+        let disguised = PathBuf::from(format!(r"{}\/outside/session", verbatim_parent.display()));
+        let Some(std::path::Component::Normal(leaf)) = disguised.components().next_back() else {
+            panic!("verbatim filename must expose one disguised leaf");
+        };
+        assert!(matches!(
+            Path::new(leaf).components().next(),
+            Some(std::path::Component::RootDir)
+        ));
+        let error = stabilize_source_session(&disguised)
+            .expect_err("a rooted reparse must not redirect the local source session");
+        assert!(
+            error.to_string().contains("one ordinary path component"),
+            "unexpected source session refusal: {error}"
+        );
+        let valid = owned.path().join("session-1");
+        let (stable, pins) =
+            stabilize_source_session(&valid).expect("ordinary session remains admissible");
+        let retained = super::super::windows_inputs::stable_local_path(&pins)
+            .expect("retained session parent");
+        assert_eq!(stable, retained.join("session-1"));
+    }
+
+    #[test]
+    fn expanded_fixed_local_session_creates_beyond_ordinary_win32_path_limit() {
+        use std::os::windows::ffi::OsStrExt as _;
+        let owned = tempfile::tempdir().expect("private Windows session parent");
+        let mut parent = owned.path().to_path_buf();
+        while parent.as_os_str().encode_wide().count() < 270 {
+            parent.push("expanded-fixed-local-session-parent");
+            std::fs::create_dir_all(&parent).expect("private nested parent");
+        }
+        let session = parent.join("session-1");
+        let (stable, pins) =
+            stabilize_source_session(&session).expect("retain exact long session parent");
+        assert!(
+            stable.as_os_str().encode_wide().count() > 260,
+            "the test must exercise a real expanded Win32 long path"
+        );
+        create_private(&stable).expect("owner-private session creation beyond MAX_PATH");
+        assert!(stable.is_dir(), "the exact admitted session was created");
+        drop(pins);
+    }
+
     fn entry(mode: &str, path: &str) -> Vec<u8> {
         format!(":000000 {mode} 0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 A\0{path}\0").into_bytes()
     }
