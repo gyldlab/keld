@@ -105,11 +105,12 @@ pub(crate) fn fixed_local_dos_path(handle: &File) -> io::Result<PathBuf> {
             "retained handle does not resolve to a local DOS disk path",
         ));
     }
-    let mut root = path[..offset + 3].to_vec();
-    root.push(0);
-    // SAFETY: `root` is the checked, NUL-terminated DOS drive root derived from
-    // the live handle's final path; the synchronous API retains no pointer.
-    let drive_type = unsafe { GetDriveTypeW(root.as_ptr()) };
+    // The DOS drive letter may be fixed while a nested volume mounted beneath
+    // it is removable. Qualify the volume that owns this retained handle.
+    let volume_root = volume_guid_root(&normalized_guid_path(handle)?)?;
+    // SAFETY: `volume_root` is the validated, NUL-terminated volume GUID root
+    // of the live handle; this synchronous API retains no pointer.
+    let drive_type = unsafe { GetDriveTypeW(volume_root.as_ptr()) };
     if drive_type != DRIVE_FIXED {
         return Err(unsupported(
             "retained handle is not on a fixed local volume",
