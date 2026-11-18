@@ -102,6 +102,18 @@ pub(super) fn stable_local_target_path(path: &Path) -> Result<(PathBuf, Vec<File
             "reserved DOS device target component",
         ));
     }
+    // Windows PathBuf::push interprets `D:future` as a drive-relative
+    // replacement, even when it was parsed as a Normal component of the
+    // original absolute path. A colon can also select a named data stream.
+    // Reject either form before constructing a path beneath retained pins.
+    if path.components().any(|component| {
+        matches!(component, Component::Normal(name) if name.as_encoded_bytes().contains(&b':'))
+    }) {
+        return Err(BuildError::input(
+            "Windows local target",
+            "colon in target component may redirect the retained path",
+        ));
+    }
     let mut suffix = Vec::<OsString>::new();
     let mut cursor = path;
     loop {
@@ -627,6 +639,25 @@ mod windows_local_volume_tests {
                 "target {suffix:?} failed for the wrong reason: {error}"
             );
         }
+    }
+
+    #[test]
+    fn nonexistent_target_rejects_drive_relative_and_stream_components() {
+        let owned = tempfile::tempdir().expect("private Windows fixture");
+        // A verbatim absolute path can expose `D:future` as Normal, but
+        // PathBuf::push would reset the retained base to drive-relative D:.
+        for suffix in ["D:future", "file:stream"] {
+            let path = PathBuf::from(format!(r"\\?\{}\{suffix}", owned.path().display()));
+            assert!(path.is_absolute());
+            let error = stable_local_target_path(&path)
+                .expect_err("colon-bearing target must not redirect retained ancestry");
+            assert!(
+                error.to_string().contains("colon in target component"),
+                "unexpected refusal for {suffix}: {error}"
+            );
+        }
+        let ordinary = owned.path().join("new-install").join("updates");
+        assert!(stable_local_target_path(&ordinary).is_ok());
     }
 
     #[test]
