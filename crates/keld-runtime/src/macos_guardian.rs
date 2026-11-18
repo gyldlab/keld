@@ -27,6 +27,7 @@ mod generation_wire;
 mod host_control;
 
 mod process_group;
+pub(crate) use self::process_group::clone_unproven_denied_signal;
 #[cfg(test)]
 use self::process_group::terminate_registered_group;
 use self::process_group::{

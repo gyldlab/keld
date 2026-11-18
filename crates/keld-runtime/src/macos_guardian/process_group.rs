@@ -624,6 +624,20 @@ impl std::error::Error for UnprovenDeniedSignal {
     }
 }
 
+// Preserve the original signal-phase errno when a RuntimeError is cloned for
+// Core/Host diagnostic retention. This only copies error evidence: no signal,
+// child wait, group probe, or new process authority is performed here.
+pub(crate) fn clone_unproven_denied_signal(source: &io::Error) -> Option<io::Error> {
+    let context = source.get_ref()?.downcast_ref::<UnprovenDeniedSignal>()?;
+    Some(io::Error::new(
+        source.kind(),
+        UnprovenDeniedSignal {
+            denied: crate::clone_runtime_io_error(&context.denied),
+            absence: context.absence.clone(),
+        },
+    ))
+}
+
 // The exact signal-phase EPERM: the kernel's raw error, or that same raw error
 // carried inside an unproven-absence context. Nothing else is a denial.
 fn is_denied_signal_source(source: &io::Error) -> bool {

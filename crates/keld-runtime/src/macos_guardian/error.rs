@@ -85,7 +85,9 @@ mod tests {
     fn denied_with_unproven_absence() -> (GroupIdentity, RuntimeError) {
         let group = GroupIdentity::unverified_for_test(7_331);
         let deadline = Instant::now() + Duration::from_secs(1);
-        let before = deadline - Duration::from_millis(1);
+        let before = deadline
+            .checked_sub(Duration::from_millis(1))
+            .expect("test deadline has one millisecond of margin");
         let after = deadline + Duration::from_millis(1);
         let mut clock_reads = 0;
         let denied = reconcile_denied_signal_after_reap_for_test(
