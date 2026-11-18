@@ -235,4 +235,70 @@ mod tests {
             "{error}"
         );
     }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn startup_cleanup_keeps_first_typed_guardian_cause() {
+        use std::error::Error as _;
+        use std::io;
+
+        use keld_runtime::RuntimeError;
+
+        let first = RuntimeError::Lifecycle {
+            phase: "original guardian failure",
+            source: io::Error::from_raw_os_error(nix::libc::ECHILD),
+        };
+        let second = RuntimeError::Lifecycle {
+            phase: "cleanup guardian failure",
+            source: io::Error::from_raw_os_error(nix::libc::ETIMEDOUT),
+        };
+        let primary = super::super::app_guardian_fatal("guardian failed", &first);
+        let cleanup = super::super::app_guardian_fatal("guardian cleanup", &second);
+        let combined = super::super::append_app_cleanup(primary, [Err(cleanup)]);
+        let cause = combined
+            .source()
+            .and_then(|source| source.downcast_ref::<RuntimeError>())
+            .expect("original typed Guardian cause remains first");
+        assert!(
+            matches!(cause, RuntimeError::Lifecycle { phase: "original guardian failure", source }
+                if source.raw_os_error() == Some(nix::libc::ECHILD)),
+            "cleanup must not replace original typed failure: {cause:?}"
+        );
+        assert!(
+            combined.to_string().contains("cleanup guardian failure"),
+            "later failure remains in diagnostic text: {combined}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn startup_cleanup_preserves_typed_guardian_failure_if_primary_is_plain() {
+        use std::error::Error as _;
+        use std::io;
+
+        use keld_runtime::RuntimeError;
+
+        let primary = HostAppError::new(
+            "KELD-CORE-037",
+            "primary startup",
+            "primary startup failed",
+            "fix the primary error",
+        );
+        let runtime = RuntimeError::Lifecycle {
+            phase: "guardian native wait",
+            source: io::Error::from_raw_os_error(nix::libc::ECHILD),
+        };
+        let cleanup = super::super::app_guardian_fatal("guardian shutdown", &runtime);
+        let combined = super::super::append_app_cleanup(primary, [Err(cleanup)]);
+        assert!(combined.to_string().contains("cleanup:"), "{combined}");
+        let cause = combined
+            .source()
+            .and_then(|source| source.downcast_ref::<RuntimeError>())
+            .expect("original typed Guardian failure must survive startup cleanup");
+        assert!(
+            matches!(cause, RuntimeError::Lifecycle { phase: "guardian native wait", source }
+                if source.raw_os_error() == Some(nix::libc::ECHILD)),
+            "original ECHILD and phase must remain inspectable: {cause:?}"
+        );
+    }
 }

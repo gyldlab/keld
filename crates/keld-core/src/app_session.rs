@@ -8271,6 +8271,12 @@ fn append_app_cleanup<const N: usize>(
     cleanup: [Result<(), HostAppError>; N],
 ) -> HostAppError {
     for error in cleanup.into_iter().filter_map(Result::err) {
+        // Preserve the original typed native failure even when an earlier
+        // startup error is only text. The first native cause retains priority.
+        #[cfg(target_os = "macos")]
+        if primary.runtime_source.is_none() {
+            primary.runtime_source = error.runtime_source.as_deref().cloned().map(Box::new);
+        }
         primary.detail.push_str("; cleanup: ");
         primary.detail.push_str(&error.to_string());
     }
