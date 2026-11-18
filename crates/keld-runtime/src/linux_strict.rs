@@ -1001,7 +1001,8 @@ fn require_kernel_dac_filesystem(
 ) -> Result<(), LinuxStrictError> {
     let fs_type = rustix::fs::fstatfs(directory)
         .map_err(|source| LinuxStrictError::new(phase, source.to_string()))?
-        .f_type as u64;
+        .f_type
+        .cast_unsigned();
     if !kernel_dac_filesystem(fs_type) {
         return Err(LinuxStrictError::new(
             phase,
