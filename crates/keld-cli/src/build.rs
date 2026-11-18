@@ -271,6 +271,39 @@ fn successful_local_build_report(
 }
 
 #[cfg(target_os = "macos")]
+fn installed_generated_sources(
+    original_relative: &str,
+    original_graph: bool,
+) -> Result<Vec<MacosGeneratedFile>, BuildError> {
+    keld_core::app_session::macos_local_launch_bootstrap_sources()
+        .into_iter()
+        // Ordinary applications may use this app-root filename themselves.
+        // Only the sealed original-graph route owns the generated fourth leaf.
+        .filter(|(path, _)| {
+            original_graph || *path != keld_core::app_session::MACOS_LOCAL_RUNTIME_ENTRY_PATH
+        })
+        .map(|(path, bytes)| {
+            let bytes = if original_graph
+                && path == keld_core::app_session::MACOS_LOCAL_RUNTIME_ENTRY_PATH
+            {
+                // The same original entry is compiled into boot, generated
+                // here before Pack's census, and checked by installed Core.
+                keld_core::app_session::macos_local_original_entry_bootstrap_source(
+                    original_relative,
+                )
+                .map_err(|error| BuildError::input("installed original entry", error))?
+            } else {
+                bytes.to_vec()
+            };
+            Ok(MacosGeneratedFile {
+                path: path.to_owned(),
+                bytes,
+            })
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
 fn run_macos_native() -> Result<(), BuildError> {
     let root = env::current_dir()
         .and_then(|path| path.canonicalize())
@@ -306,6 +339,7 @@ fn run_macos_native() -> Result<(), BuildError> {
     metadata
         .validate()
         .map_err(|error| BuildError::input("Apple bundle metadata", error))?;
+    let generated = installed_generated_sources(&app.entry, graph_capture.is_some())?;
     let package = MacosPackageInput {
         project_root: root,
         metadata,
@@ -325,13 +359,7 @@ fn run_macos_native() -> Result<(), BuildError> {
         icon: build.icon,
         boot,
         permissions,
-        generated: keld_core::app_session::macos_local_launch_bootstrap_sources()
-            .into_iter()
-            .map(|(path, bytes)| MacosGeneratedFile {
-                path: path.to_owned(),
-                bytes: bytes.to_vec(),
-            })
-            .collect(),
+        generated,
         out_dir: build.out_dir,
     };
     let result = if let Some((selected, expected)) = graph_capture {
@@ -373,6 +401,56 @@ fn run_macos_native() -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pack_stages_one_exact_original_entry_source_before_graph_capture() {
+        let original = installed_generated_sources("src/main.mjs", true)
+            .expect("Host-selected original entry is canonical");
+        let ordinary = installed_generated_sources("src/main.mjs", false)
+            .expect("plain installed application retains only three generated owners");
+        assert_eq!(original.len(), 4);
+        assert_eq!(ordinary.len(), 3);
+
+        let selected = keld_core::app_session::MACOS_LOCAL_RUNTIME_ENTRY_PATH;
+        for index in 0..3 {
+            assert_eq!(original[index].path, ordinary[index].path);
+            assert_eq!(original[index].bytes, ordinary[index].bytes);
+        }
+        assert_eq!(original[3].path, selected);
+        assert!(ordinary.iter().all(|source| source.path != selected));
+        let selected_source = String::from_utf8(original[3].bytes.clone())
+            .expect("rendered original entry is exact UTF-8");
+        assert!(
+            selected_source.contains("const sealedOriginalRelative = \"src/main.mjs\";")
+                && selected_source.contains(
+                    "canonicalEntry = realpathSync(join(canonicalRoot, sealedOriginalRelative));"
+                )
+                && selected_source.contains("await bootHostSelectedEntry(async () => undefined);"),
+            "Pack must preserve the sealed original selector and awaited preload before signing"
+        );
+        assert!(!selected_source.contains("__KELD_SELECTED_ENTRY__"));
+        let space = installed_generated_sources("src/with space.mjs", true)
+            .expect("a graph-approved entry with a space is buildable");
+        assert!(
+            String::from_utf8(space[3].bytes.clone())
+                .expect("sealed original entry is UTF-8")
+                .contains("const sealedOriginalRelative = \"src/with space.mjs\";"),
+            "space in a signed filesystem path must remain one JS string literal"
+        );
+        for valid in ["src/malicious?query.mjs", "src/main#fragment.mjs"] {
+            assert!(
+                installed_generated_sources(valid, true).is_ok(),
+                "a valid graph filename is a filesystem member, not an import URL: {valid}"
+            );
+        }
+        for invalid in ["src/../other.mjs", "src/./main.mjs", "src\\main.mjs"] {
+            assert!(
+                installed_generated_sources(invalid, true).is_err(),
+                "producer must preserve the graph path refusal: {invalid}"
+            );
+        }
+    }
 
     #[test]
     fn local_package_requires_explicit_legacy_policy_at_guard_boundary() {

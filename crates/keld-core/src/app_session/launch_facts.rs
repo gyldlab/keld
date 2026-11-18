@@ -24,12 +24,59 @@ const ORIGINAL_RESOURCE_POLICY_CONTRACT: &str = "gh473-original-editor-offline/v
 pub const MACOS_LOCAL_LAUNCH_PRELOAD_PATH: &str =
     "keld-launch-facts/electron/src/installed-launch-preload.ts";
 
+/// Fixed app-root ESM preload with Core-compiled, exact-checked bytes.
+/// The macOS Host selects it before Bun executes the verified original main.
+pub const MACOS_LOCAL_RUNTIME_ENTRY_PATH: &str = "keld-installed-runtime-entry.mjs";
+const BOOT_ENTRY_MARKER: &str = "__KELD_SELECTED_ENTRY__";
+const BOOT_ENTRY_TEMPLATE: &str =
+    include_str!("../../../../packages/@keld/api/src/installed-runtime-entry.mjs");
+
+/// Bind the one graph/boot-selected original to an exact compiled relative
+/// path in the pre-sign app-root preload. The original becomes Bun main only
+/// after the authenticated preload completes. The existing Windows CLI
+/// preload/main cache split is not an approved original-graph launch path.
+///
+/// This renderer is shared by CLI producer and Core installed admission; a
+/// caller cannot supply new executable source bytes. Boot/graph validation
+/// independently binds the original path before either use.
+///
+/// # Errors
+/// Refuses noncanonical or escaping paths; the selected graph path is a
+/// filesystem path, not an ESM import specifier.
+pub fn macos_local_original_entry_bootstrap_source(
+    original_relative: &str,
+) -> Result<Vec<u8>, HostAppError> {
+    super::graph_contract::validate_graph_relative_path(original_relative)?;
+    // The Bun preload resolves a signed *filesystem* path with realpathSync.
+    // Serialize the graph-approved spelling as one JavaScript string literal,
+    // not as an import URL or an unescaped insertion into quoted source.
+    let escaped_relative = serde_json::to_string(original_relative).map_err(|error| {
+        HostAppError::new(
+            "KELD-CORE-036",
+            "original entry literal",
+            error.to_string(),
+            "Rebuild the original graph from reviewed inputs.",
+        )
+    })?;
+    if BOOT_ENTRY_TEMPLATE.matches(BOOT_ENTRY_MARKER).count() != 1 {
+        return Err(HostAppError::new(
+            "KELD-CORE-036",
+            "original entry template",
+            "compiled KELD owner template has unexpected replacement slots",
+            "Rebuild an intact KELD Host and Pack from reviewed sources.",
+        ));
+    }
+    Ok(BOOT_ENTRY_TEMPLATE
+        .replace(BOOT_ENTRY_MARKER, &escaped_relative)
+        .into_bytes())
+}
+
 /// Exact source inputs shared by the local producer and installed admission.
 ///
 /// These are compiled owner bytes, not files or fingerprints supplied by the
 /// application. The relative layout preserves the source modules' imports.
 #[must_use]
-pub const fn macos_local_launch_bootstrap_sources() -> [(&'static str, &'static [u8]); 3] {
+pub const fn macos_local_launch_bootstrap_sources() -> [(&'static str, &'static [u8]); 4] {
     [
         (
             "keld-launch-facts/kipc/src/launch-facts.ts",
@@ -42,6 +89,15 @@ pub const fn macos_local_launch_bootstrap_sources() -> [(&'static str, &'static 
         (
             MACOS_LOCAL_LAUNCH_PRELOAD_PATH,
             include_bytes!("../../../../packages/@keld/electron/src/installed-launch-preload.ts"),
+        ),
+        // Only original-graph builds stage and admit this fourth owner leaf.
+        // Ordinary bundles keep three generated modules and may include a
+        // user-owned file at the same app-root name without an owner collision.
+        // A graph build replaces the marker using its sealed boot-selected
+        // original before Pack captures and signs the application.
+        (
+            MACOS_LOCAL_RUNTIME_ENTRY_PATH,
+            BOOT_ENTRY_TEMPLATE.as_bytes(),
         ),
     ]
 }
@@ -615,12 +671,94 @@ fn invalid(detail: impl Into<String>) -> HostAppError {
 
 #[cfg(test)]
 mod tests {
-    use super::LaunchFacts;
+    use super::{
+        LaunchFacts, MACOS_LOCAL_RUNTIME_ENTRY_PATH, macos_local_launch_bootstrap_sources,
+        macos_local_original_entry_bootstrap_source,
+    };
     use std::path::Path;
 
     const ORIGINAL_FIXTURE: &str = include_str!(
         "../../../../packages/@keld/kipc/test/fixtures/installed-launch-facts-v7.json"
     );
+
+    #[test]
+    fn installed_original_literal_entry_is_deterministic_and_rejects_url_authority() {
+        let sources = macos_local_launch_bootstrap_sources();
+        assert_eq!(sources.len(), 4, "installed source receipt is complete");
+        assert_eq!(
+            sources[3].0, MACOS_LOCAL_RUNTIME_ENTRY_PATH,
+            "fourth exact owner is app-root bootstrap"
+        );
+        assert!(
+            std::str::from_utf8(sources[3].1)
+                .expect("compiled JS template")
+                .contains("__KELD_SELECTED_ENTRY__")
+        );
+        for relative in [
+            "main.js",
+            "src/main.ts",
+            "src/deep/main.mjs",
+            "src/main.cjs",
+            "src/with space.mjs",
+            "src/with\"quote.mjs",
+            "src/entry#fragment.mjs",
+            "src/entry?query.mjs",
+            "src/%2e%2e/not-traversal.mjs",
+            "src/entry\nline.mjs",
+            "src/über.mjs",
+        ] {
+            let bytes = macos_local_original_entry_bootstrap_source(relative)
+                .expect("graph-approved main can be rendered");
+            let text = std::str::from_utf8(&bytes).expect("valid generated UTF-8");
+            assert_eq!(
+                bytes,
+                macos_local_original_entry_bootstrap_source(relative)
+                    .expect("render cannot depend on mutable state"),
+                "producer and installed reader need identical bytes"
+            );
+            assert!(!text.contains("__KELD_SELECTED_ENTRY__"));
+            assert!(
+                text.contains("await bootHostSelectedEntry(async () => undefined);"),
+                "authenticated preload must finish before Bun evaluates original main"
+            );
+            assert!(
+                text.contains(&format!(
+                    "const sealedOriginalRelative = {};",
+                    serde_json::to_string(relative).expect("string literal is encodable")
+                )) && text.contains(
+                    "canonicalEntry = realpathSync(join(canonicalRoot, sealedOriginalRelative));"
+                ),
+                "the compiled literal must drive the canonical original-member check"
+            );
+            assert!(
+                text.contains("process.argv.length !== 2")
+                    && !text.contains("process.argv[2]")
+                    && text.contains("const sealedBootstrap = fileURLToPath(import.meta.url);")
+                    && text.contains("const bunMainIdentity = statSync(Bun.main"),
+                "the compiled original entry must not become a user argument"
+            );
+        }
+        for invalid in [
+            "",
+            "/absolute.js",
+            ".",
+            "src/../other.mjs",
+            "src/./entry.js",
+            "src\\entry.js",
+            "src//entry.js",
+            "src/entry:stream.mjs",
+            "src/entry\0.js",
+        ] {
+            assert!(
+                macos_local_original_entry_bootstrap_source(invalid).is_err(),
+                "the shared graph path contract must refuse: {invalid:?}"
+            );
+        }
+        assert!(
+            macos_local_original_entry_bootstrap_source(&"a".repeat(4097)).is_err(),
+            "graph path length budget must be preserved"
+        );
+    }
 
     fn original() -> serde_json::Value {
         serde_json::from_str(ORIGINAL_FIXTURE).expect("shared literal schema-7 fixture")
