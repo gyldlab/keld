@@ -618,6 +618,100 @@ describe("original preload runtime only", () => {
       f.restore();
     }
   });
+  test("sync original request failures release each call without retiring pending replies or acknowledged watches", () => {
+    const f = fixture();
+    const refused: number[] = [];
+    f.page.document.addEventListener("__keld_page_refusal_data_v1", (event) => {
+      refused.push((event as CustomEvent<number>).detail);
+    });
+    const previousError = console.error;
+    let originalThrows = 0;
+    console.error = (...values: unknown[]) => {
+      if (values[0] === "KELD-COMPAT-103: original preload call refused")
+        originalThrows++;
+      else previousError(...values);
+    };
+    try {
+      const pageErrors: string[] = [];
+      for (let i = 0; i < 70; i++) {
+        try {
+          f.call(
+            "request",
+            null,
+            () => {},
+            () => {},
+          );
+        } catch (error) {
+          pageErrors.push(String(error));
+        }
+      }
+      expect(pageErrors).toEqual([]);
+      expect(originalThrows).toBe(70); // Actual unmodified draw.io request(null) threw.
+      expect(refused).toHaveLength(70);
+      expect(new Set(refused).size).toBe(70);
+      expect(f.sends()).toHaveLength(0);
+      expect(
+        f.appMessages.filter((value) => value.kind === "call-finished"),
+      ).toHaveLength(70);
+
+      const observed: unknown[] = [];
+      f.call(
+        "request",
+        { action: "isFullscreen" },
+        (value: unknown) => {
+          observed.push(value);
+        },
+        () => {},
+      );
+      const first = decodeEndpointArguments(
+        new Uint8Array(f.sends().at(-1)!.payload as number[]),
+      )[0] as { reqId: number };
+      f.event("mainResp", [{ reqId: first.reqId, data: false }], 1);
+      expect(observed).toEqual([false]);
+
+      const pending: unknown[] = [];
+      f.call(
+        "request",
+        { action: "isFullscreen" },
+        (value: unknown) => {
+          pending.push(value);
+        },
+        () => {},
+      );
+      const pendingReq = decodeEndpointArguments(
+        new Uint8Array(f.sends().at(-1)!.payload as number[]),
+      )[0] as { reqId: number };
+      const watchPath = "/test/preserved-after-throw.xml";
+      let watchEvents = 0;
+      f.call(
+        "request",
+        { action: "watchFile", path: watchPath, listener: () => watchEvents++ },
+        () => {},
+        () => {},
+      );
+      const watchReq = decodeEndpointArguments(
+        new Uint8Array(f.sends().at(-1)!.payload as number[]),
+      )[0] as { reqId: number };
+      f.event("mainResp", [{ reqId: watchReq.reqId, data: true }], 2);
+
+      f.call(
+        "request",
+        null,
+        () => {},
+        () => {},
+      );
+      expect(originalThrows).toBe(71);
+      expect(refused).toHaveLength(72); // Valid response and failed call both release.
+      expect(f.sends()).toHaveLength(3); // No native send for 71 failed calls.
+      f.event("mainResp", [{ reqId: pendingReq.reqId, data: true }], 3);
+      f.event("fileChanged", [{ path: watchPath, curr: 1, prev: 0 }], 4);
+      expect(pending).toEqual([true]);
+      expect(watchEvents).toBe(1);
+    } finally {
+      console.error = previousError;
+      f.restore();
+    }
+  });
   test("native fixture payload vectors are the sole endpoint codec output", () => {
     expect(Array.from(encodeEndpointArguments(["old"]))).toEqual([
       6, 1, 0, 5, 3, 0, 111, 108, 100,
