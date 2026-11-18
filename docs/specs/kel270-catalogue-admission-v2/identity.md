@@ -244,6 +244,39 @@ The document has ordered fields `schema`, `repositoryId`, `appId`, `channel`, `t
 `browserStore` has `mode`, then `profileIdentity`. The only mode is `retain-source`.
 The profile identity must equal the exact admitted physical predecessor store.
 
+This target selects one exact transition document per authenticated metadata
+revision, not every installation history of the source artifact. Distinct
+installations can share all target-path segments while retaining different
+browser identities: a fresh P2 installation uses P2's derived identity, while
+an installation migrated from P1 to the same P2 artifact may retain P1's
+identity. The source artifact and update key do not distinguish those cohorts.
+The release owner MUST identify the exact retained-binding cohort served by
+the published document. Only a source whose complete artifact, rollback and
+browser bindings match that document may enter this transition. Other cohorts
+remain on their existing admitted state and are deferred from this transition;
+never report their transition as qualified or complete. They retain only the
+ordinary operation permitted by their existing authority, not an exemption
+from any revocation, floor or admission predicate.
+
+This MVP does not define authenticated variant selection at this target.
+Do not search archived targets, accept a caller-selected variant, wildcard the
+profile binding, derive a replacement profile from the current publisher, or
+copy/reset retained browser data to make a mismatching document pass. Serving
+additional cohorts requires a separately authenticated matching publication
+under the existing refresh rules, or a separately specified and approved
+variant protocol. A publication for one cohort does not prove simultaneous
+rollout support for all histories of that artifact.
+
+Qualification MUST include two independent sole-channel installations of the
+same source artifact and update key: one fresh under P2 and one migrated from
+P1 with its distinct retained profile. Publish a genuine otherwise-valid
+transition for one cohort. Require its matching-cohort positive and the
+other cohort's refusal before transition preparation or candidate effects,
+with both original stores and bindings unchanged by refusal. Independently
+omit only exact browser-binding comparison and require that refusal oracle
+to fail. Repeat with the other cohort's authenticated document. These are
+NOT_RUN implementation cases, not current native qualification.
+
 `ArtifactBinding` has ordered fields `version`, `contentBlake3`, `hostSha256`, `helperSha256`, `manifestSha256`, `updatePublicKeyEd25519`, `hostSpkiSha256`, `identity`.
 Its digest fields use `h32`. Its key uses `key32`.
 `identity` is one of these closed objects:

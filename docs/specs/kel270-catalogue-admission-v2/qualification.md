@@ -442,8 +442,8 @@ No design approval or release approval is recorded by this draft.
 
 - **Status:** open
 - **Owner:** Repository CI/security maintainer with the trusted-base authority.
-- **Impact:** The standalone non-mutating evidence check and its two
-  failure mutants pass locally. They cannot become a hosted required
+- **Impact:** The standalone non-mutating evidence check and its negative
+  controls recorded in E-80 pass locally. They cannot become a hosted required
   CI gate through this normal specification PR. CI provenance prohibits
   edits to `.github/workflows/ci.yml`, `justfile` and CI executors.
   Its 15 published SHA-256 values come from a receipt in the incoming

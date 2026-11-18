@@ -141,9 +141,12 @@ Use commissioned production policy and signed artifacts. Run the full applicable
 | `crates/keld-update/src/windows_baseline/initialize.rs` | Consume one-shot admission before any initialization effect |
 | `crates/keld-update/src/windows_baseline/initialize/publication.rs` | Accept the retained validated TAR through publication |
 | Existing KEL-53 metadata integration owner | Enrollment, generation, metadata lease, and retained readback |
-| `crates/keld-host/src/windows_initial_install.rs` | Thin commissioned-policy adapter after upstream gates pass |
+| `crates/keld-host/src/windows_initial_install.rs` (product pin #1531, not this specification's main baseline) | Thin commissioned-policy adapter after upstream gates pass |
 
-The current Host refuses unconditionally. The new adapter cannot replace that refusal before authority commissioning and its required checks. The first code slice can strengthen token and retained-source ownership while keeping the Host closed.
+T-43 must first record the exact implementation-base commit, the accepted Host entry or its reviewed equivalent, and its refusal before opening the request, creating a scaffold, or calling protected publication.
+The refusal is verified at product pin `7ff41173d28d58ae61ccbb3382d055c8ef9c9c97`; the named module is absent at main baseline `16a9545ccc417b72b2f0508520c360f9fd5e2ced`.
+If that owner has not landed or been reconciled on the implementation base, block Host integration; do not create a parallel entry.
+The adapter cannot replace that refusal before authority commissioning and its required checks. The first code slice can strengthen token and retained-source ownership while keeping the Host closed.
 That slice still needs approved specification scope and its unsafe/public-API/security review gates. No native tests, physical power-loss tests, production signatures, release approval, or merge occurred in this work.
 
 ## 6. Tasks: Recovery
