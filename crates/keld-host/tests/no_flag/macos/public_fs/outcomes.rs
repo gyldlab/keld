@@ -179,11 +179,44 @@ pub(super) fn assert_component_outcomes(
 }
 
 pub(super) fn assert_component_trace(stderr: &str, reports: &[Value]) {
-    let trace: Vec<Value> = stderr
-        .lines()
-        .filter_map(|line| line.strip_prefix("KELD_KEL140_PUBLIC_APP_COMPONENT "))
-        .map(|line| serde_json::from_str(line).expect("actual public-main outcome trace"))
-        .collect();
+    const MARKER: &str = "KELD_KEL140_PUBLIC_APP_COMPONENT ";
+    const CONTINUATION: &str = "[bun stderr] ";
+    let mut trace = Vec::new();
+    let mut partial: Option<String> = None;
+    for line in stderr.lines() {
+        if let Some(first) = line.strip_prefix(MARKER) {
+            assert!(
+                partial.is_none(),
+                "interleaved incomplete public-main trace"
+            );
+            partial = Some(first.to_owned());
+        } else if let Some(rest) = line.strip_prefix(CONTINUATION) {
+            let Some(bytes) = partial.as_mut() else {
+                continue;
+            };
+            bytes.push_str(rest);
+        } else {
+            assert!(
+                partial.is_none(),
+                "incomplete public-main trace before another output"
+            );
+            continue;
+        }
+        let bytes = partial.as_ref().expect("framed trace started");
+        assert!(
+            bytes.len() <= 1024 * 1024,
+            "public-main trace exceeds capture bound"
+        );
+        match serde_json::from_str::<Value>(bytes) {
+            Ok(value) => {
+                trace.push(value);
+                partial = None;
+            }
+            Err(error) if error.is_eof() => {}
+            Err(error) => panic!("invalid public-main framed trace: {error}"),
+        }
+    }
+    assert!(partial.is_none(), "truncated public-main framed trace");
     let observed: Vec<_> = reports
         .iter()
         .filter(|report| report["phase"] == "app-result")
@@ -194,6 +227,40 @@ pub(super) fn assert_component_trace(stderr: &str, reports: &[Value]) {
         &trace[0], observed[0],
         "public-main terminal outcome bound to HTTP observation"
     );
+}
+
+#[test]
+fn component_trace_requires_exact_framed_bun_continuations_and_http_parity() {
+    let report = json!({"phase":"app-result","componentOnly":true,"message":"x".repeat(1200)});
+    let source = format!("KELD_KEL140_PUBLIC_APP_COMPONENT {report}");
+    let chunks: Vec<_> = source.as_bytes().chunks(384).collect();
+    assert!(
+        chunks.len() > 2,
+        "actual Host framing must split the long trace"
+    );
+    let frame = |parts: &[&[u8]]| {
+        let mut output = String::new();
+        for (index, bytes) in parts.iter().enumerate() {
+            if index > 0 {
+                output.push_str("[bun stderr] ");
+            }
+            output.push_str(std::str::from_utf8(bytes).expect("ASCII fixture"));
+            output.push('\n');
+        }
+        output
+    };
+    let framed = frame(&chunks);
+    assert_component_trace(&framed, std::slice::from_ref(&report));
+    for (candidate, observed) in [
+        (frame(&chunks[..chunks.len() - 1]), report.clone()),
+        (framed.replace("[bun stderr] ", "[bun stdout] "), report),
+        (framed, json!({"phase":"app-result","message":"forged"})),
+    ] {
+        assert!(
+            std::panic::catch_unwind(|| assert_component_trace(&candidate, &[observed])).is_err(),
+            "truncated, wrong-source or mismatched trace was accepted"
+        );
+    }
 }
 
 pub(super) fn assert_natural_outcomes(
