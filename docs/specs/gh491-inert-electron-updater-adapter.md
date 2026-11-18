@@ -273,8 +273,8 @@ Negative control: Apply this isolated fault, then rerun the named oracle.
     dependency replacement the one mechanism; a sub-path would be a second resolver. Rejected.
 - Reuse: `node:events` for the emitter (as `@keld/electron/src/browser-window.ts` does);
   `@keld/kipc`'s `KeldCallError` shape (`Error & { code }`) and `isCallError` predicate for the
-  typed refusal, with the registry's `"<code>: <detail>"` message form (`linkError`); sibling
-  packages reached by relative source path exactly as `@keld/electron` reaches `@keld/api`;
+  typed refusal, with the registry's `"<code>: <detail>"` message form (`linkError`);
+  the single installed `electron` peer (GH499 A10), with a dev-only sibling link;
   the `docs/engineering/keld-error-codes.md` registry held by `crates/keld-cli/tests/error_registry.rs`.
 - Compatibility fallback: `getFeedURL()` keeps upstream's deprecated literal; `setFeedURL`
   keeps upstream's `void` no-throw contract; both match cells of criterion 9 keep upstream's
@@ -288,17 +288,17 @@ Negative control: Apply this isolated fault, then rerun the named oracle.
   Alternative `@keld/updater-compat` rejected: it does not name the replaced package, which
   the X02-T3 manifest reviewer must recognise. Falsifier: the migrated manifest's
   `electron-updater` entry cannot name the package.
-### D-2 Reaching the facade. `src/electron-app.ts` imports `app` from
-  `../../electron/src/index.ts` statically, as upstream's `ElectronAppAdapter` does
-  `require("electron").app` when the updater is constructed. Alternatives: (a) a lazy dynamic
-  import, rejected because upstream's gate is synchronous and laziness would only hide a facade
-  import-time regression that the app's own `import "electron"` hits first; (b) `import "electron"`
-  through the app's resolver, rejected because the repository's sibling convention is relative
-  source paths and a symlinked checkout cannot resolve `electron` from inside the repository.
-  Edge: this makes the facade's import-time purity part of criterion 2; today the transport
-  connects only inside functions (`packages/@keld/kipc/src/transport.ts:1287`, `:2600`) and its
-  Worker self-entry is guarded by `!isMainThread` (`:3760`). Falsifier: the import probe records
-  a socket or Worker.
+### D-2 Reaching the facade. `src/electron-app.ts` MUST statically import `app`
+  from the bare `electron` peer, matching upstream's `require("electron").app`.
+  `peerDependencies.electron: "0.0.1"` is mandatory in the installed adapter;
+  the consumer MUST resolve it to its one admitted `@keld/electron` alias (GH499 A10).
+  Development MAY use `devDependencies.electron: "link:../electron"` only; the
+  installed package MUST NOT import `../../electron/src/index.ts` or bundle another facade.
+  Lazy imports are rejected: the fact getter and typed missing-fact refusal MUST
+  stay synchronous, without substituting an invented `false`. The facade MUST
+  stay import-time inert under AC-2. Falsifiers: wrong/missing peer, nested Electron,
+  a second resolver, async refusal, or a probe-visible socket/Worker. GH499 A17
+  keeps installed/signed app acceptance UNKNOWN until independent image evidence.
 ### D-3 Injectable application facts
 `AppUpdater`'s constructor takes `(options, app:
   AppAdapter)` with `AppAdapter = { readonly isPackaged: boolean; quit(): void | Promise<void> }`,
@@ -416,8 +416,8 @@ Blocked by: T-2
       to `pass`/▲ against the test names in §7 once this package lands.
 ### T-4
 Blocked by: T-2
-(X02-T3 / #499, separate owner) points the migrated manifest's `electron-updater` entry
-      at this package under the #502 resolver.
+(X02-T3 / GH499 A10, separate owner) installs the updater alias and one Electron
+      peer; GH499 A17 leaves installed/signed image acceptance to KEL-141.
 
 ## 7. Test plan & evidence
 
@@ -465,8 +465,8 @@ acceptance checks remain with #452 and X02-T4.
 - public API: **yes** (new package `@keld/electron-updater`: `autoUpdater`, `AppUpdater`,
   `NoOpLogger`, the types above, and one new registry code).
 - permission model: none (no grant, no host call).
-- dependency addition: none (Keld-owned package; its two devDependencies, `@types/bun 1.4.0`
-  and `typescript 7.0.2`, are the siblings' exact pins; no runtime dependency).
+- dependency addition: **yes** (mandatory `electron@0.0.1` peer and dev-only
+  `link:../electron`; installed peer identity and lock require independent review).
 - wire protocol: none.
 
 ## 9. Perf impact

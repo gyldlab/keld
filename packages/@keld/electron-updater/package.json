@@ -12,10 +12,18 @@
     ".": "./src/index.ts"
   },
   "files": [
-    "src"
+    "src/index.ts",
+    "src/app-updater.ts",
+    "src/electron-app.ts",
+    "src/error.ts",
+    "src/types.ts"
   ],
   "devDependencies": {
     "@types/bun": "1.4.0",
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "electron": "link:../electron"
+  },
+  "peerDependencies": {
+    "electron": "0.0.1"
   }
 }
