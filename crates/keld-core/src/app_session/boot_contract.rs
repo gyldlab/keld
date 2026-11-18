@@ -3,7 +3,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use super::{AuthConfiguration, DIGEST_PREFIX, HostAppError, MAX_BOOT_BYTES, PERMISSIONS_FILE};
 
@@ -15,6 +15,7 @@ struct BootDocument {
     name: String,
     entry: String,
     renderer: String,
+    #[serde(deserialize_with = "deserialize_object")]
     permissions: PermissionsDocument,
     /// Optional schema-v1 operator auth carrier. This is deserialized only;
     /// Native remains the sole owner of profile filtering and semantic checks.
@@ -38,6 +39,7 @@ struct FacadeBootDocument {
     schema: u8,
     name: String,
     entry: String,
+    #[serde(deserialize_with = "deserialize_object")]
     permissions: PermissionsDocument,
 }
 
@@ -51,11 +53,49 @@ struct PermissionsDocument {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 pub(super) struct ParsedBoot {
+    pub(super) schema: u8,
     pub(super) name: String,
     pub(super) entry: PathBuf,
     pub(super) initial: InitialWindow,
     pub(super) permissions_digest: [u8; 32],
     pub(super) auth_configuration: AuthConfiguration,
+}
+
+/// Selects the renderer contract from the sole manifest declaration.
+///
+/// Schema 1 preserves the profile-free renderer shape. Schema 3 preserves that
+/// exact shape but requires explicit-profile enforcement. Facade schemas 2/4
+/// belong to GH-446 and cannot be inferred or emitted by this renderer API.
+#[must_use]
+pub const fn renderer_boot_schema(profile: Option<keld_guard::DeclaredProfile>) -> u8 {
+    if profile.is_some() { 3 } else { 1 }
+}
+
+fn parse_object<'a, T: Deserialize<'a>>(text: &'a str) -> Result<T, serde_json::Error> {
+    let mut decoder = serde_json::Deserializer::from_str(text);
+    let value = deserialize_object(&mut decoder)?;
+    decoder.end()?;
+    Ok(value)
+}
+
+// Require an object without a Value round-trip that would erase duplicate keys.
+// The derived DTO remains the sole field/type parser at both closed boundaries.
+fn deserialize_object<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct ObjectVisitor<T>(std::marker::PhantomData<T>);
+    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for ObjectVisitor<T> {
+        type Value = T;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a closed boot-contract JSON object")
+        }
+        fn visit_map<M: serde::de::MapAccess<'de>>(self, map: M) -> Result<T, M::Error> {
+            T::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        }
+    }
+    deserializer.deserialize_map(ObjectVisitor(std::marker::PhantomData))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
@@ -69,7 +109,7 @@ pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError>
     if bytes.len() > MAX_BOOT_BYTES {
         return Err(boot_error(
             "keld.boot.json exceeds the 64 KiB limit",
-            "Regenerate a bounded schema-v1 boot descriptor.",
+            "Regenerate a bounded renderer boot descriptor (schema 1 or 3).",
         ));
     }
     let text = std::str::from_utf8(bytes).map_err(|source| {
@@ -80,21 +120,21 @@ pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError>
     })?;
     // Probe the version with Serde, not a JSON Value map: even a duplicate
     // schema key must fail before selecting either closed descriptor shape.
-    let probe: SchemaProbe = serde_json::from_str(text).map_err(|source| {
+    let probe: SchemaProbe = parse_object(text).map_err(|source| {
         boot_error(
             format!("boot descriptor schema probe was rejected: {source}"),
             "Write one schema key and a strict versioned boot descriptor.",
         )
     })?;
     let (name, entry, renderer, permissions, auth_configuration) = match probe.schema {
-        1 => {
-            let document: BootDocument = serde_json::from_str(text).map_err(|source| {
+        1 | 3 => {
+            let document: BootDocument = parse_object(text).map_err(|source| {
                 boot_error(
                     format!("strict schema-v1 JSON was rejected: {source}"),
                     "Remove duplicate/unknown fields and regenerate keld.boot.json schema 1.",
                 )
             })?;
-            debug_assert_eq!(document.schema, 1);
+            debug_assert_eq!(document.schema, probe.schema);
             (
                 document.name,
                 document.entry,
@@ -104,7 +144,7 @@ pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError>
             )
         }
         2 => {
-            let document: FacadeBootDocument = serde_json::from_str(text).map_err(|source| {
+            let document: FacadeBootDocument = parse_object(text).map_err(|source| {
                 boot_error(
                     format!("strict schema-v2 JSON was rejected: {source}"),
                     "Remove renderer, auth, profile, duplicate and unknown fields from the facade descriptor.",
@@ -122,7 +162,7 @@ pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError>
         version => {
             return Err(boot_error(
                 format!("unsupported schema {version}"),
-                "Regenerate the descriptor with supported schema 1 or 2.",
+                "Regenerate the descriptor with supported schema 1, 2 or 3; facade/profile schema 4 is unsupported.",
             ));
         }
     };
@@ -148,6 +188,7 @@ pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError>
     }
     let permissions_digest = decode_digest(&permissions.content_sha256)?;
     Ok(ParsedBoot {
+        schema: probe.schema,
         name,
         entry,
         initial,

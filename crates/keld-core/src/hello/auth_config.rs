@@ -13,11 +13,21 @@ pub struct AuthConfigError {
 
 impl std::fmt::Display for AuthConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "KELD-CORE-035: invalid static auth configuration: {}. Use export default {{ auth: {{ \"entra-common\": {{ clientId: \"...\" }} }} }} as const with literal strings; remove expressions, computed keys and spreads.",
-            self.detail
-        )
+        match self.detail {
+            "root profile belongs in permissions manifest" => write!(
+                f,
+                "KELD-CORE-035: root profile in keld.config.ts is unsupported. Declare the exact root profile in keld.permissions.jsonc instead."
+            ),
+            "root initialWindow requires facade integration" => write!(
+                f,
+                "KELD-CORE-035: root initialWindow in keld.config.ts is unsupported until GH #446 facade Ready integration; no renderer fallback is allowed."
+            ),
+            _ => write!(
+                f,
+                "KELD-CORE-035: invalid static auth configuration: {}. Use export default {{ auth: {{ \"entra-common\": {{ clientId: \"...\" }} }} }} as const with literal strings; remove expressions, computed keys and spreads.",
+                self.detail
+            ),
+        }
     }
 }
 
