@@ -466,6 +466,12 @@ jobs:
         with:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           cache-on-failure: true
+      # Two WebView2 original-bootstrap contract tests execute Bun. Retain the
+      # audited 1.4.4 pin without allowing PR or other untrusted cache writes.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.4"
+          no-cache: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
       - name: Ensure cargo bin dir exists
         shell: pwsh
         run: |

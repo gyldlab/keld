@@ -400,7 +400,9 @@ function checkB3RustCacheWritePolicy(stepsByJob: Map<string, Mapping[]>): void {
 
 /** B3: the pinned setup-bun post hook must not save on PR or untrusted pushes. */
 function checkB3BunCachePolicy(stepsByJob: Map<string, Mapping[]>): void {
-  const bunOwners = new Set(["check", "bun-test", "hygiene"]);
+  // WebView2's executable original-bootstrap fixtures need Bun too. They
+  // must use the same immutable pin and untrusted-cache refusal as the other jobs.
+  const bunOwners = new Set(["check", "windows-media", "bun-test", "hygiene"]);
   const noCacheForUntrustedEvents =
     "${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}";
   for (const [jobName, steps] of stepsByJob) {
@@ -1895,8 +1897,10 @@ export function checkWorkflowSecurity(source: string): void {
   // steps, changed ordering, and environment/PATH writers between gates.
   const reviewedStepInventories: Record<string, string> = {
     fmt: "5021013ee751a651b110df9c3f45d96425b8a51ca5f6b7e13ce107c4a0042ea9",
+    // The two actual bootstrap tests require Bun. Recomputed with the
+    // reviewed immutable 1.4.4 setup and no-cache rule for untrusted PRs.
     "windows-media":
-      "385b68e1ef567912453c5a08eaa7e7d678f48444956115ade2ad110ffac2b0d8",
+      "5382ebb021126cdeb428cf74d43e7e1185cca14189a09ec0a3c82c9dc3829eae",
     // Recomputed from the reviewed check job after its verified apt step
     // moved from 15 to 25 minutes. The other executable steps are unchanged.
     check: "55e2022dd23f199456d5371f30f18a83b7d21f76242a94c042f8165a3668689d",
