@@ -53,13 +53,13 @@ for (const defaultApp of [true, false, undefined]) {
     ];
     for (const hostFacts of mismatches) {
       for (const extra of [[], [diagram]]) {
-        const raw = Object.freeze([bun, bootstrap, original, ...extra]);
+        const raw = Object.freeze([bun, bootstrap, ...extra]);
         assert.throws(
           () => originalParserArgv(raw, defaultApp, true, hostFacts),
           /KELD-IPC-005/,
           `selected role must refuse ${JSON.stringify(hostFacts)} with extra=${extra.length}`,
         );
-        assert.deepEqual(raw, [bun, bootstrap, original, ...extra]);
+        assert.deepEqual(raw, [bun, bootstrap, ...extra]);
       }
     }
   });
@@ -68,7 +68,7 @@ for (const defaultApp of [true, false, undefined]) {
     assert.throws(
       () =>
         originalParserArgv(
-          Object.freeze([bun, bootstrap, original]),
+          Object.freeze([bun, bootstrap]),
           defaultApp,
           false,
           selectedFacts,
@@ -82,7 +82,7 @@ for (const defaultApp of [true, false, undefined]) {
       assert.throws(
         () =>
           originalParserArgv(
-            Object.freeze([bun, bootstrap, original]),
+            Object.freeze([bun, bootstrap]),
             defaultApp,
             selection,
             selectedFacts,
@@ -96,13 +96,13 @@ for (const defaultApp of [true, false, undefined]) {
 for (const defaultApp of [true, false, undefined]) {
   for (const user of [[], [diagram]]) {
     test(`signed-installed parser refuses unadmitted CLI operands; defaultApp=${String(defaultApp)} extra=${user.length}`, () => {
-      const authentic = Object.freeze([bun, bootstrap, original, ...user]);
+      const authentic = Object.freeze([bun, bootstrap, ...user]);
       if (user.length) {
         assert.throws(
           () => originalParserArgv(authentic, defaultApp, true, selectedFacts),
           /KELD-IPC-005/,
         );
-        assert.deepEqual(authentic, [bun, bootstrap, original, ...user]);
+        assert.deepEqual(authentic, [bun, bootstrap, ...user]);
         return;
       }
       const effective = originalParserArgv(
@@ -112,7 +112,7 @@ for (const defaultApp of [true, false, undefined]) {
         selectedFacts,
       );
       assert.deepEqual(parsedPositions(effective), []);
-      assert.deepEqual(authentic, [bun, bootstrap, original, ...user]);
+      assert.deepEqual(authentic, [bun, bootstrap, ...user]);
       assert.equal(effective.includes(bootstrap), false);
       assert.equal(effective.includes(original), false);
       assert.equal(effective[1], null);
@@ -121,9 +121,13 @@ for (const defaultApp of [true, false, undefined]) {
   }
 }
 
-test("installed parser refuses absent original identity instead of treating argv as a grant", () => {
+test("installed parser refuses malformed bootstrap argv instead of treating argv as a grant", () => {
   for (const bad of [
-    [bun, bootstrap],
+    [],
+    [bun],
+    [null, bootstrap],
+    [bun, null],
+    [bun, bootstrap, original],
     [bun, bootstrap, null],
     [bun, bootstrap, { malicious: true }],
   ])
@@ -134,13 +138,13 @@ test("installed parser refuses absent original identity instead of treating argv
 });
 
 test("installed bootstrap refuses appended argv even if it names an existing user diagram", () => {
-  // The signed Host currently authenticates only argc=3. An extra path is NOT
+  // The signed Host currently authenticates only argc=2. An extra path is NOT
   // a trustworthy open-file event; never bless it by parsing mutable argv.
   for (const mode of [true, false, undefined]) {
     assert.throws(
       () =>
         originalParserArgv(
-          [bun, bootstrap, original, diagram],
+          [bun, bootstrap, diagram],
           mode,
           true,
           selectedFacts,
@@ -244,7 +248,7 @@ test(
           assert.throws(
             () =>
               originalParserArgv(
-                [bun, bootstrap, original, ...user],
+                [bun, bootstrap, ...user],
                 defaultApp,
                 true,
                 selectedFacts,
@@ -254,7 +258,7 @@ test(
           continue;
         }
         const mapped = originalParserArgv(
-          [bun, bootstrap, original, ...user],
+          [bun, bootstrap, ...user],
           defaultApp,
           true,
           selectedFacts,
@@ -270,7 +274,7 @@ test(
           assert.throws(() => {
             // Refusal must occur *before* the actual pinned draw.io parser.
             const permitted = originalParserArgv(
-              [bun, bootstrap, original, ...user],
+              [bun, bootstrap, ...user],
               defaultApp,
               true,
               badFacts,
@@ -319,7 +323,7 @@ test(
       }
       for (const mode of [true, false, undefined]) {
         for (const selected of [[], [realDiagram]]) {
-          const actual = [bun, roleBootstrap, roleOriginal, ...selected];
+          const actual = [bun, roleBootstrap, ...selected];
           if (selected.length) {
             // A real selected .drawio still needs its independent OS open-file
             // authorization; the installed Host cannot admit it via CLI argv.
@@ -343,8 +347,19 @@ test(
           assert.deepEqual(conditionalBlessInputs, []);
           assert(!fixed.includes(roleOriginal));
           assert(!fixed.includes(roleBootstrap));
-          // Deleting the adaptation restores the concrete original.js false grant.
-          const old = parseDrawioArgs(actual).args;
+          // Historical three-token bootstrap exposed the internal original as a grant.
+          // The current adapter must reject that obsolete shape before parsing.
+          assert.throws(
+            () =>
+              originalParserArgv(
+                [bun, roleBootstrap, roleOriginal],
+                mode,
+                true,
+                selectedFacts,
+              ),
+            /KELD-IPC-005/,
+          );
+          const old = parseDrawioArgs([bun, roleBootstrap, roleOriginal]).args;
           assert(old.includes(roleOriginal));
           assert(old.filter((path) => existsSync(path)).includes(roleOriginal));
         }

@@ -4,8 +4,8 @@
  * this module is not a KELD runtime or Pack hook.
  *
  * The signed original entry checks physical identities and authenticates the
- * Host IPC link before importing original electron.js. Its fixed argv[2] is
- * an internal selected source, never evidence of user open-file intent.
+ * Host IPC link before importing original electron.js. The original entry is
+ * a sealed bootstrap literal, never an argv operand or user open-file intent.
  */
 export function originalParserArgv(
   rawArgv,
@@ -31,17 +31,16 @@ export function originalParserArgv(
       );
     }
     if (
-      rawArgv.length !== 3 ||
+      rawArgv.length !== 2 ||
       typeof rawArgv[0] !== "string" ||
-      typeof rawArgv[1] !== "string" ||
-      typeof rawArgv[2] !== "string"
+      typeof rawArgv[1] !== "string"
     ) {
       throw new Error(
         "KELD-IPC-005: Host-selected original arguments are malformed",
       );
     }
-    // [Bun, fixed bootstrap, sealed original], with NO CLI user operands.
-    // The signed Host refuses argc!=3 before evaluating the original.
+    // [Bun, fixed bootstrap], with NO original-entry or CLI user operands.
+    // The signed bootstrap refuses argc!=2 before evaluating the original.
     // File intent remains with existing native open-file / picker owners.
     // Never promote a mutable argv tail into a user-authorized file.
     return [rawArgv[0], null];
