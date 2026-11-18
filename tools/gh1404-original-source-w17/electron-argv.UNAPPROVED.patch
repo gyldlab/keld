@@ -2,7 +2,7 @@
 +++ b/src/main/electron.js
 @@ -10,0 +11 @@
 +import { hostLaunchFacts, runtimeProcessFactsSelected } from '@keld/kipc';
-@@ -24,0 +26,50 @@
+@@ -24,0 +26,49 @@
 +
 +function originalParserArgv(
 +  rawArgv,
@@ -28,17 +28,16 @@
 +      );
 +    }
 +    if (
-+      rawArgv.length !== 3 ||
++      rawArgv.length !== 2 ||
 +      typeof rawArgv[0] !== "string" ||
-+      typeof rawArgv[1] !== "string" ||
-+      typeof rawArgv[2] !== "string"
++      typeof rawArgv[1] !== "string"
 +    ) {
 +      throw new Error(
 +        "KELD-IPC-005: Host-selected original arguments are malformed",
 +      );
 +    }
-+    // [Bun, fixed bootstrap, sealed original], with NO CLI user operands.
-+    // The signed Host refuses argc!=3 before evaluating the original.
++    // [Bun, fixed bootstrap], with NO original-entry or CLI user operands.
++    // The signed bootstrap refuses argc!=2 before evaluating the original.
 +    // File intent remains with existing native open-file / picker owners.
 +    // Never promote a mutable argv tail into a user-authorized file.
 +    return [rawArgv[0], null];
@@ -53,7 +52,7 @@
 +  // Preserve ordinary original/Electron parsing without changing process.argv.
 +  return defaultApp === true ? [...rawArgv] : [null, ...rawArgv];
 +}
-@@ -1056,7 +1107,5 @@
+@@ -1056,7 +1106,5 @@
 -    let argv = process.argv
 -
 -    // https://github.com/electron/electron/issues/4690#issuecomment-217435222

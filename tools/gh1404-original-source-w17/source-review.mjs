@@ -38,7 +38,7 @@ export const pins = Object.freeze({
   ],
 });
 const pinnedAdapterSha =
-  "b5ea68c99292bf42ca476e7348e5e05a5010a563324c65b29533bc5e64868085";
+  "530a1e951911e7475122af2899731211cc476724bb70e200c0d1ce2690d28968";
 export const sha256 = (bytes) =>
   createHash("sha256").update(bytes).digest("hex");
 const gitBlob = (bytes) =>
@@ -91,6 +91,14 @@ export async function produceReview(rootInput, adapterInput, outputInput) {
   const patched = module.patchOriginalMainText(
     source["src/main/electron.js"].toString("utf8"),
   );
+  // The reviewed source bytes are authoritative, not runtime-specific toString output.
+  if (
+    sha256(Buffer.from(patched)) !==
+    "f2969473b298e6b8ad55577b7e6494db691b8273f22d69ef8ad5cf33c477fa9b"
+  )
+    throw new Error(
+      "GH1404 generated main pin mismatch; use the qualified Node producer",
+    );
   for (const marker of [
     "ipcMain.on('isModified-result'",
     "mainWindow.webContents.send('saveAndClose'",
@@ -141,7 +149,7 @@ export async function produceReview(rootInput, adapterInput, outputInput) {
     upstream_desktop_commit: "2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e",
     upstream_webapp_gitlink: "24b76c2cbd55d88e354042e8d329a2e4708972bc",
     parser_proposal_pr: 1506,
-    parser_proposal_commit: "1ff2c9f68f22e4cf0c8ef9ec7dde046f63cf69fa",
+    parser_proposal_commit: "40861a8c772d6bfd99849559a126d773722974a4",
     parser_adapter_sha256: pinnedAdapterSha,
     proposed_main_sha256: sha256(Buffer.from(patched)),
     pristine_source_hashes: pins,

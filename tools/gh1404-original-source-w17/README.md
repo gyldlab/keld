@@ -2,11 +2,13 @@
 
 STATUS: UNAPPROVED, INCOMPLETE, NOT INSTALLABLE. DO NOT BUILD, MERGE, OR RELEASE.
 
-This bounded source producer transforms pristine jgraph/drawio-desktop commit 2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e using ONLY the exact separately published #1506 original argv parser adapter at 1ff2c9f68f22e4cf0c8ef9ec7dde046f63cf69fa. The dependent webapp gitlink remains jgraph/drawio commit 24b76c2cbd55d88e354042e8d329a2e4708972bc. No historical installed V9 bytes are sourced or copied.
+This bounded source producer transforms pristine jgraph/drawio-desktop commit 2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e using ONLY the exact separately published #1506 original argv parser adapter at 40861a8c772d6bfd99849559a126d773722974a4. The adapter matches #1510's two-element Bun/bootstrap argv and rejects obsolete original-entry or user-file operands. The dependent webapp gitlink remains jgraph/drawio commit 24b76c2cbd55d88e354042e8d329a2e4708972bc. No historical installed V9 bytes are sourced or copied.
 
 Six core files are compared against immutable original SHA-256 and Git blob hashes: src/main/electron.js, args.js, electron-preload.js, package.json, package-lock.json and LICENSE. The generated actual modified electron.js only changes the argument parsing seam through #1506. It does not rewrite real process.argv, Bun.main, import.meta.main, original dirty-document dialogs or file-grant handlers. Native correctness has not been tested.
 
 Run on an already verified immutable pristine original source root with a distinct NEW scratch output path:
+
+The qualified producer is Node 24.19.0. The exact generated main SHA-256 is f2969473b298e6b8ad55577b7e6494db691b8273f22d69ef8ad5cf33c477fa9b and is checked before any output is written. Bun 1.4.4 transforms the adapter's function.toString() representation; its different output is deliberately refused rather than accepted as the reviewed artifact. Bun test success covers that refusal, not source generation or installed execution.
 
 GH1404_PINNED_PRISTINE_DESKTOP=/approved/pristine GH1404_PINNED_1506_ADAPTER=/approved/pr1506/tools/gh1404-original-argv/patch-original-main.mjs GH1404_WORKER17_SOURCE_OUTPUT=/own/scratch/new-output node --test tools/gh1404-original-source-w17/source-review.test.mjs
 
