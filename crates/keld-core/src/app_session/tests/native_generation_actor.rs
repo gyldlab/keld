@@ -318,8 +318,14 @@ fn held_member_reap_timeout_keeps_child_for_drop_rescue() {
         let _ = kill(pid, Some(Signal::SIGKILL));
         let _ = nix::sys::wait::waitpid(pid, None);
     }
-    assert!(attempted.is_err(), "the live member must reach its timeout oracle");
-    assert!(still_owned, "the assertion may not disarm owned-child Drop rescue");
+    assert!(
+        attempted.is_err(),
+        "the live member must reach its timeout oracle"
+    );
+    assert!(
+        still_owned,
+        "the assertion may not disarm owned-child Drop rescue"
+    );
     assert_eq!(
         getpgid(Some(pid)),
         Err(Errno::ESRCH),
