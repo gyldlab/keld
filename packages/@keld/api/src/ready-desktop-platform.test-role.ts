@@ -83,9 +83,8 @@ mock.module("./link.ts", () => ({
 }));
 
 process.env.KELD_APP_LINK = `/controlled-no-socket#${"a".repeat(64)}`;
-const { app, getDesktopSnapshot, isDesktopS1Selected } = await import(
-  "./app.ts"
-);
+const { app, getDesktopSnapshot, isDesktopS1Selected } =
+  await import("./app.ts");
 assert.equal(isDesktopS1Selected(), mode?.startsWith("mac-"));
 const ready = app.whenReady();
 assert.ok(callbacks, "the real app installs exactly one lifecycle handler");

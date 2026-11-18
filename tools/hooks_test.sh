@@ -24,7 +24,8 @@ mkdir -p "$fixture/.githooks"
 cp "$source_root/justfile" "$fixture/justfile"
 cp "$source_root/.githooks/post-checkout" "$fixture/.githooks/post-checkout"
 cp "$source_root/.githooks/post-merge" "$fixture/.githooks/post-merge"
-git -C "$fixture" add justfile .githooks/post-checkout .githooks/post-merge
+cp "$source_root/.githooks/pre-commit" "$fixture/.githooks/pre-commit"
+git -C "$fixture" add justfile .githooks/post-checkout .githooks/post-merge .githooks/pre-commit
 git -C "$fixture" commit -qm base
 
 git -C "$fixture" switch -qc attack
