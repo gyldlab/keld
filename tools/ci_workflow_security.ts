@@ -150,11 +150,11 @@ function requiredAction(
 
 /**
  * The `timeout-minutes` every step whose `run` script invokes apt must set
- * (#624): above the slowest observed successful apt step (642 s), far below
- * the hangs that ran to the 45-minute job timeout. A shorter bound turned a
- * slow but progressing mirror download into a failure.
+ * (#624): a cold Ubuntu 26.04 runner was still downloading file #168/181
+ * when the prior 15-minute limit expired (18 Nov 2026, #1542 CI). The
+ * 25-minute bound remains finite and below the prior 44-minute hangs.
  */
-export const aptStepTimeoutMinutes = 15;
+export const aptStepTimeoutMinutes = 25;
 const aptInvocation = /\bapt(-get)?\b|tools\/ci_webkitgtk_apt\.sh install\b/;
 
 /**
@@ -1897,7 +1897,9 @@ export function checkWorkflowSecurity(source: string): void {
     fmt: "5021013ee751a651b110df9c3f45d96425b8a51ca5f6b7e13ce107c4a0042ea9",
     "windows-media":
       "385b68e1ef567912453c5a08eaa7e7d678f48444956115ade2ad110ffac2b0d8",
-    check: "1aead735aeeb2e6c9d02aa8767f6a5293a621c65489b7d3ee4a1d76dd3330ca4",
+    // Recomputed from the reviewed check job after its verified apt step
+    // moved from 15 to 25 minutes. The other executable steps are unchanged.
+    check: "55e2022dd23f199456d5371f30f18a83b7d21f76242a94c042f8165a3668689d",
     "codeql-rust":
       "513d4978b886a9f8d3b5ce09fc9022a953114fa3cadec43be6c06d8ef39cce41",
     "codeql-javascript-typescript":
