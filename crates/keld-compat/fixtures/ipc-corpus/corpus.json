@@ -1,0 +1,71 @@
+{
+  "schema": "keld.compat.corpus/v1",
+  "corpus_id": "electron-ipc-v1",
+  "scope": "GH-464 slice 1: main-process on/once/removeListener baseline for the macOS draw.io first-proof IPC path at Electron 44.4.5. Pending implementation only; no renderer transport, native WebKit, product compatibility or whole-family completion claim.",
+  "panel": "showcase",
+  "kind": "primary_workflow",
+  "artifact_digest": "manifest_bytes",
+  "engine": {
+    "macos": "wkwebview"
+  },
+  "doc_snapshots": {
+    "docs/api/ipc-main.md": "sha256:50eb49eae6b3d7785e6fc70772bf9bda7b9993c29b89c01dd684030198401f51"
+  },
+  "upstream": {
+    "electron_version": "44.4.5",
+    "electron_commit": "694f45852a0f1726cd23bfd379854de489cccb65"
+  },
+  "cells": [
+    {
+      "operation_id": "ipc-main.on",
+      "oracle_id": "electron-v44.4.5.ipc-main.on",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/ipc-main.md#ipcmainonchannel-listener",
+        "quote": "Listens to `channel`, when a new message arrives `listener` would be called with\n`listener(event, args...)`.",
+        "quote_sha256": "sha256:32d3ffcaa291fa044aa2ef903dd115258e48f1966b3f4559a6873a4338fe3fc3"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-466",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/ipc.test.ts",
+      "test_name": "ipc-main.on today: ipcMain.on is absent and a listener cannot be registered",
+      "negative_control": "Today: exporting an ipcMain object with a callable on method makes this mapped current-behaviour case fail. Exposing only that method leaves the other absent-method baselines unchanged. After GH-466 flips the baseline, removing listener dispatch must produce zero callbacks instead of the expected event and arguments."
+    },
+    {
+      "operation_id": "ipc-main.once",
+      "oracle_id": "electron-v44.4.5.ipc-main.once",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/ipc-main.md#ipcmainoncechannel-listener",
+        "quote": "Adds a one time `listener` function for the event. This `listener` is invoked\nonly the next time a message is sent to `channel`, after which it is removed.",
+        "quote_sha256": "sha256:49b9321f95df2dfc853d65e95d2a01aaff0e3c18e250c02848d67a649be639ff"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-466",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/ipc.test.ts",
+      "test_name": "ipc-main.once today: ipcMain.once is absent and a one-time listener cannot be registered",
+      "negative_control": "Today: exporting an ipcMain object with a callable once method makes this mapped current-behaviour case fail. Exposing only that method leaves the other absent-method baselines unchanged. After GH-466 flips the baseline, replacing once with on must make two admitted messages invoke the callback twice instead of once; a reentrant send must not call the removed listener again."
+    },
+    {
+      "operation_id": "ipc-main.remove-listener",
+      "oracle_id": "electron-v44.4.5.ipc-main.remove-listener",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/ipc-main.md#ipcmainremovelistenerchannel-listener",
+        "quote": "Alias for [`ipcMain.off`](#ipcmainoffchannel-listener).",
+        "quote_sha256": "sha256:9458754849773efd8d457ae9f64093b9a250da2c8b83ddf55c6acd79b01400f7"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-466",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/ipc.test.ts",
+      "test_name": "ipc-main.remove-listener today: ipcMain.removeListener is absent and a listener cannot be removed",
+      "negative_control": "Today: exporting an ipcMain object with a callable removeListener method makes this mapped current-behaviour case fail. Exposing only that method leaves the other absent-method baselines unchanged. After GH-466 flips the baseline, omitting removal must invoke the removed listener once; the unchanged-listener positive control must still fire once."
+    }
+  ]
+}
