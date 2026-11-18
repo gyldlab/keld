@@ -156,7 +156,9 @@ test("menu.role-quit.before-quit pending GH-563: generic live-window Quit stays 
       "--no-env-file",
       "--preload",
       fileURLToPath(new URL("../../kipc/src/transport.ts", import.meta.url)),
-      fileURLToPath(new URL("./browser-window-boot.test-role.ts", import.meta.url)),
+      fileURLToPath(
+        new URL("./browser-window-boot.test-role.ts", import.meta.url),
+      ),
       "native-delete-before-import",
     ],
     env: { ...process.env, KELD_NATIVE_WINDOW_FACADE: "1" },

@@ -99,11 +99,11 @@ Architecture 02 §1 owns the one transport Worker and its self-entry; architectu
   - **At-risk precondition:** The Node consumer calls WorkerLink.open.
   - **Expected RED:** The no-construction control fails rather than qualifying Node transport.
 
-Open follow-up for the GH1301 CI owner: criterion 1 requires pinned tools, but the hosted Bun test lane runs
-this packed-consumer test with the runner-provided `node` and `npm`; no workflow pins Node (`setup-node` and
-`node-version` appear nowhere in `.github/workflows/*.yml`). Bun (1.4.4) and the compiler (lockfile
-`typescript` 7.0.2) are pinned. Hosted Node and npm evidence is therefore unpinned and is not claimed pinned
-here until that owner pins Node with a SHA-pinned setup step or scopes Node out of the lane.
+The hosted TypeScript lane selects Node 26.10.0 with a SHA-pinned `actions/setup-node` step before the Bun
+package tests (`check-latest: false`). Bun 1.4.4 and the lockfile's TypeScript 7.0.2 are likewise pinned.
+The packed-consumer test invokes `npm` by name; the workflow does not pin or assert an npm version
+separately. The GH1301 CI owner still needs to qualify that npm identity and packed-artifact reproducibility.
+The Node selection alone does not establish a passing hosted run at the final head.
 
 ## 4. Design
 
@@ -199,7 +199,7 @@ Do not edit canonical transport runtime, Electron implementation, production Rus
 ### T-3: Task 3
 
 - **Blocked by:** T-2
-- [ ] Reconcile separately owned Node prerequisite, routed gates and integration evidence before merge. Done: the Node prerequisite (fcf013a8, PR #1289) is merged here and criterion 7 records its result. Open: the §8 gates, hosted `CI required` at the final head, and the unpinned Node/npm follow-up under §3.
+- [ ] Reconcile separately owned Node prerequisite, routed gates and integration evidence before merge. Done: the Node prerequisite (fcf013a8, PR #1289) is merged here and criterion 7 records its result. Open: the §8 gates, hosted `CI required` at the final head, and the npm qualification follow-up under §3.
 
 ## 7. Test plan & evidence
 
@@ -227,4 +227,4 @@ No performance claim. Architecture 01 §5 Source and memory budgets require qual
 
 ## 10. Open questions, blockers & unknowns
 
-None for the admitted design. Installed-graph Source qualification (criterion 6) is an acceptance hold, not a design decision. Pinning Node in hosted CI (§3 follow-up) belongs to the GH1301 CI owner.
+None for the admitted design. Installed-graph Source qualification (criterion 6) is an acceptance hold, not a design decision. The remaining npm qualification (§3) belongs to the GH1301 CI owner; the hosted Node version is already pinned.
