@@ -621,6 +621,17 @@ mod windows_local_volume_tests {
             "retained parent must select original A"
         );
         assert!(stable_file_at_parent(Path::new(r"Z:\release.key."), &old_parent).is_err());
+        let initial_sha =
+            super::super::local_initial_install::pin_sha_with_retained_parent_for_test(
+                Path::new(r"Z:\release.key"),
+                32,
+                old_parent,
+            )
+            .expect("initial-install shared production pin must retain original A");
+        assert_eq!(
+            initial_sha, expected,
+            "initial-install must not reselect rebound local B"
+        );
     }
 
     /// The exact authoring-owner path forwarded to the direct image/archive

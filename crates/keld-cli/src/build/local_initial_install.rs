@@ -242,11 +242,32 @@ fn pin(path: &Path, limit: u64) -> Result<InputPin, BuildError> {
     }
     let parent = path.parent().ok_or_else(|| refuse("input parent absent"))?;
     let directories = windows_inputs::pin_input_root(parent)?;
-    let file = local_source::pin_file(path, limit)?;
+    pin_with_retained_parent(path, limit, directories)
+}
+
+fn pin_with_retained_parent(
+    path: &Path,
+    limit: u64,
+    directories: Vec<File>,
+) -> Result<InputPin, BuildError> {
+    // Bind the leaf to the original retained parent, not a mutable drive alias.
+    let stable = windows_inputs::stable_file_at_parent(path, &directories)?;
+    let file = local_source::pin_file(&stable, limit)?;
     Ok(InputPin {
         _directories: directories,
         file,
     })
+}
+
+#[cfg(test)]
+pub(super) fn pin_sha_with_retained_parent_for_test(
+    path: &Path,
+    limit: u64,
+    directories: Vec<File>,
+) -> Result<[u8; 32], BuildError> {
+    Ok(pin_with_retained_parent(path, limit, directories)?
+        .file
+        .sha256)
 }
 fn request_bytes<'a>(
     inputs: &'a Inputs,
