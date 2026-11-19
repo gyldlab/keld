@@ -340,6 +340,10 @@ impl ResourceView {
         (&self.core, self.core_identity, &self.navigation)
     }
 
+    pub(super) fn original_resource_session(&self) -> &Rc<ResourceSession> {
+        &self.session
+    }
+
     pub(super) fn actual_post_controller_closed(&self) -> bool {
         self.close.actual_closed()
     }

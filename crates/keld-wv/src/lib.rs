@@ -24,6 +24,8 @@ mod native_document;
 #[cfg(any(target_os = "macos", windows))]
 mod native_window;
 #[cfg(windows)]
+mod original_binding;
+#[cfg(windows)]
 mod original_call;
 #[cfg(windows)]
 mod original_event;

@@ -612,6 +612,21 @@ impl RendererBridgeEndpoint {
     }
 }
 
+#[cfg(windows)]
+/// Same 128-bit document credential generator used by native adapters.
+pub(crate) fn credential() -> Result<String, crate::WvError> {
+    use std::fmt::Write as _;
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).map_err(|_| crate::WvError::RendererBridge {
+        detail: String::from("Host credential randomness unavailable"),
+    })?;
+    let mut value = String::with_capacity(32);
+    for byte in bytes {
+        let _ = write!(&mut value, "{byte:02x}");
+    }
+    Ok(value)
+}
+
 /// One existing Windows loop service turn, outside all native/Core guards.
 #[cfg(windows)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
