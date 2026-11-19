@@ -3397,7 +3397,7 @@ pub struct WebView2Engine {
     startup_build: Option<view_build::NativeBuild>,
     retained_app_run: Option<RetainedAppRun>,
     selected_renderer: Option<managed_app::SelectedRenderer>,
-    desktop_observation_selected: bool,
+    desktop_observation: Option<desktop_session::DesktopSession>,
     /// One environment per engine: every webview shares its profile directory
     /// and browser process (`learn.microsoft.com`, `WebView2` process model).
     environment: ICoreWebView2Environment,
@@ -3612,7 +3612,7 @@ impl WebView2Engine {
             startup_build: None,
             retained_app_run: None,
             selected_renderer: None,
-            desktop_observation_selected: false,
+            desktop_observation: None,
             view_build_attempt: startup_retirement::NativeViewBuild::NotAttempted,
             saved_permissions_reconciled: false,
             #[cfg(feature = "profile-test-hooks")]
@@ -3678,7 +3678,7 @@ impl WebView2Engine {
     /// Returns an event-loop error if the original UI loop has already been used.
     pub fn select_desktop_observation(&mut self) -> Result<(), WvError> {
         self.creation_event_loop()?;
-        self.desktop_observation_selected = true;
+        self.desktop_observation.get_or_insert_default();
         Ok(())
     }
 
@@ -4018,7 +4018,7 @@ impl WebView2Engine {
     ) -> Result<(), WvError> {
         self.require_startup_build_retired()?;
         let facade = ready_trigger == AppReadyTrigger::HostInitialized;
-        if self.desktop_observation_selected && !facade {
+        if self.desktop_observation.is_some() && !facade {
             return Err(WvError::EventLoop(String::from(
                 "desktop observation requires the selected Windows facade boot",
             )));
@@ -4053,9 +4053,7 @@ impl WebView2Engine {
             .loop_setup_started();
         let navigation_diagnostic = Arc::clone(&self.navigation_diagnostic);
         let terminal_intent_in_loop = Arc::clone(&terminal_intent);
-        let mut desktop: Option<desktop_session::DesktopSession> = self
-            .desktop_observation_selected
-            .then(desktop_session::DesktopSession::default);
+        let mut desktop = self.desktop_observation.take();
         let mut views = std::mem::take(&mut self.views);
         let browser = remember_browser_process_id(&views, &self.browser_binding)?;
         let stop_transition = PersistentStopTransition::from_profile(self.profile.as_ref());

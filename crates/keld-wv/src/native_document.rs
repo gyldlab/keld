@@ -214,7 +214,7 @@ impl NativeDocumentOwner {
         owner
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, test))]
     pub(crate) fn observes_renderer(&self) -> bool {
         self.renderer.is_some()
     }

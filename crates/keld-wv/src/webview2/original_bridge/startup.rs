@@ -19,9 +19,8 @@ pub(super) enum BoundEntry {
 pub(super) struct StartupReceipt {
     document: CheckedNativeDocumentLease,
     deadline: Instant,
-    initial_entered: bool,
+    last_bound_entry: Option<BoundEntry>,
     dom_observed: bool,
-    retry_entered: bool,
     registered_post_returned: bool,
 }
 
@@ -42,9 +41,8 @@ impl StartupReceipt {
         Ok(Self {
             document,
             deadline,
-            initial_entered: false,
+            last_bound_entry: None,
             dom_observed: false,
-            retry_entered: false,
             registered_post_returned: false,
         })
     }
@@ -133,12 +131,10 @@ impl StartupReceipt {
         {
             return None;
         }
-        if !self.initial_entered {
-            Some(BoundEntry::Initial)
-        } else if self.dom_observed && !self.retry_entered {
-            Some(BoundEntry::DomRetry)
-        } else {
-            None
+        match self.last_bound_entry {
+            None => Some(BoundEntry::Initial),
+            Some(BoundEntry::Initial) if self.dom_observed => Some(BoundEntry::DomRetry),
+            Some(_) => None,
         }
     }
 
@@ -155,10 +151,7 @@ impl StartupReceipt {
         if self.next_bound(binding, owner, now) != Some(kind) {
             return false;
         }
-        match kind {
-            BoundEntry::Initial => self.initial_entered = true,
-            BoundEntry::DomRetry => self.retry_entered = true,
-        }
+        self.last_bound_entry = Some(kind);
         true
     }
 }

@@ -50,9 +50,6 @@ impl LocalCallBudget {
     pub(crate) const fn retained_records(&self) -> usize {
         self.records
     }
-    pub(crate) const fn retained_bytes(&self) -> usize {
-        self.bytes
-    }
     pub(crate) fn reserve(&mut self, bytes: usize) -> Result<(), WvError> {
         let records = self
             .records

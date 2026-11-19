@@ -271,49 +271,9 @@ impl ManagedWindows {
                     y,
                     original,
                 };
-                match self.custody.admit(
-                    create,
-                    terminated || terminal_intent,
-                    self.has_build_candidate(),
-                ) {
-                    CreateAdmission::Start(create) => self.build(target, release, create),
-                    CreateAdmission::Queued => {
-                        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-                        observe::build_deferred(build);
-                        Ok(())
-                    }
-                    CreateAdmission::Refused(create) => {
-                        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-                        observe::build_refused(create.build);
-                        send_failure(
-                            &self.events,
-                            create.failure_event(),
-                            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-                            self.test_control.as_ref(),
-                        )
-                    }
-                }
+                self.admit_create(target, release, create, terminated || terminal_intent)
             }
-            AppWindowCommand::DestroyWindow { view } if !terminated => {
-                let Some(native) = self.views.get(&view.0) else {
-                    eprintln!("KELD_WV_STALE_DESTROY view={}", view.0);
-                    return Ok(());
-                };
-                // Park before moving/dropping the custodian. A duplicate key
-                // preserves the original pending entry and this live View.
-                self.custody.park(
-                    native.window.id(),
-                    native.window.hwnd(),
-                    Releasing::Destroy(view),
-                    Instant::now(),
-                )?;
-                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-                observe::releasing(self.custody.len());
-                if native.original.is_none() || native.retire_on_ui() {
-                    self.views.remove(&view.0);
-                }
-                Ok(())
-            }
+            AppWindowCommand::DestroyWindow { view } if !terminated => self.retire_view(view),
             AppWindowCommand::SetMaximized { view, maximized } if !terminated => {
                 if let Some(native) = self.views.get(&view.0) {
                     native.window.set_maximized(maximized);
@@ -343,6 +303,59 @@ impl ManagedWindows {
                 Ok(())
             }
         }
+    }
+
+    fn admit_create(
+        &mut self,
+        target: &EventLoopWindowTarget<WindowsLoopEvent>,
+        release: &Rc<ProfileReleaseWait>,
+        create: DeferredCreate<SelectedCreate>,
+        ending: bool,
+    ) -> Result<(), WvError> {
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let build = create.build;
+        match self
+            .custody
+            .admit(create, ending, self.has_build_candidate())
+        {
+            CreateAdmission::Start(create) => self.build(target, release, create),
+            CreateAdmission::Queued => {
+                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                observe::build_deferred(build);
+                Ok(())
+            }
+            CreateAdmission::Refused(create) => {
+                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                observe::build_refused(create.build);
+                send_failure(
+                    &self.events,
+                    create.failure_event(),
+                    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                    self.test_control.as_ref(),
+                )
+            }
+        }
+    }
+
+    fn retire_view(&mut self, view: crate::WebviewId) -> Result<(), WvError> {
+        let Some(native) = self.views.get(&view.0) else {
+            eprintln!("KELD_WV_STALE_DESTROY view={}", view.0);
+            return Ok(());
+        };
+        // Park before moving/dropping the custodian. A duplicate key
+        // preserves the original pending entry and this live View.
+        self.custody.park(
+            native.window.id(),
+            native.window.hwnd(),
+            Releasing::Destroy(view),
+            Instant::now(),
+        )?;
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        observe::releasing(self.custody.len());
+        if native.original.is_none() || native.retire_on_ui() {
+            self.views.remove(&view.0);
+        }
+        Ok(())
     }
 
     pub(super) fn deferred_wake(
