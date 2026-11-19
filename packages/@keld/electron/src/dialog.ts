@@ -64,28 +64,37 @@ export interface SaveDialogResult {
   filePath: string;
 }
 
-function submit(
-  parent: WindowRef | null,
-  options: MessageOptions,
-): Promise<MessageBoxResult> {
+function submitOnMac<T>(
+  operation: "Message" | "Open" | "Save",
+  invoke: () => Promise<T>,
+): Promise<T> {
   // These Hosts do not admit DIALOG yet. Refuse before touching the shared
   // app link rather than turn an unsupported API call into a protocol failure.
   if (process.platform !== "darwin") {
     return Promise.reject(
-      linkError("KELD-NATIVE-010", "native Message dialogs require macOS"),
+      linkError("KELD-NATIVE-010", `native ${operation} dialogs require macOS`),
     );
   }
-  return invokeMessageDialog(parent, options).then((reply) => {
-    if (reply.variant !== "Message") {
-      throw new Error(
-        "KELD-IPC-003: native Message returned another operation's disposition",
-      );
-    }
-    return {
-      response: reply.response,
-      checkboxChecked: reply.checkbox_checked,
-    };
-  });
+  return invoke();
+}
+
+function submit(
+  parent: WindowRef | null,
+  options: MessageOptions,
+): Promise<MessageBoxResult> {
+  return submitOnMac("Message", () => invokeMessageDialog(parent, options)).then(
+    (reply) => {
+      if (reply.variant !== "Message") {
+        throw new Error(
+          "KELD-IPC-003: native Message returned another operation's disposition",
+        );
+      }
+      return {
+        response: reply.response,
+        checkboxChecked: reply.checkbox_checked,
+      };
+    },
+  );
 }
 
 /** The only public Message API; one-argument calls are allowed by Electron
@@ -150,7 +159,7 @@ export function showOpenDialog(
   const options = normalizeOpenDialogOptions(
     withParent ? input : parentOrOptions,
   );
-  return invokeFileDialog("Open", parent, options).then(
+  return submitOnMac("Open", () => invokeFileDialog("Open", parent, options)).then(
     (result): OpenDialogResult => {
       if (result.variant !== "Open") {
         throw new Error(
@@ -185,7 +194,7 @@ export function showSaveDialog(
   const options = normalizeSaveDialogOptions(
     withParent ? input : parentOrOptions,
   );
-  return invokeFileDialog("Save", parent, options).then(
+  return submitOnMac("Save", () => invokeFileDialog("Save", parent, options)).then(
     (result): SaveDialogResult => {
       if (result.variant !== "Save") {
         throw new Error(

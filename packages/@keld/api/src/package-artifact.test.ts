@@ -43,6 +43,19 @@ assert.equal(declared.WorkerLink, sibling.WorkerLink);
 });
 
 test("real packed SDK installs offline with one API app identity", async () => {
+  // The API's linked KIPC dependency does not install KIPC's dev tools.
+  // Install from KIPC's separate lock before exercising the product packer.
+  // The packed consumer install below still uses an empty, offline cache.
+  const kipcRoot = resolve(import.meta.dir, "../../kipc");
+  const prerequisites = Bun.spawnSync(
+    [process.execPath, "install", "--frozen-lockfile", "--ignore-scripts"],
+    { cwd: kipcRoot, stdout: "pipe", stderr: "pipe" },
+  );
+  expect(
+    prerequisites.exitCode,
+    new TextDecoder().decode(prerequisites.stdout) +
+      new TextDecoder().decode(prerequisites.stderr),
+  ).toBe(0);
   const scratch = realpathSync.native(
     mkdtempSync(join(tmpdir(), "keld-sdk-package-")),
   );

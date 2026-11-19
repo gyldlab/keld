@@ -23,7 +23,7 @@ import * as electron from "./index";
 // Exercise the platform gate in an isolated process so platform/readiness
 // overrides cannot affect another test. This proves facade routing, not native
 // Windows/Linux or AppKit acceptance. Removing the gate must fail this case.
-test("Message refuses unsupported platforms before touching the app link", () => {
+test("dialogs refuse unsupported platforms before touching the app link", () => {
   const result = spawnSync(
     process.execPath,
     [
@@ -31,26 +31,35 @@ test("Message refuses unsupported platforms before touching the app link", () =>
       `
     import assert from "node:assert/strict";
     import { app } from "../../api/src/app.ts";
-    import { showMessageBox } from "./dialog.ts";
+    import { showMessageBox, showOpenDialog, showSaveDialog } from "./dialog.ts";
     let readinessCalls = 0;
     const sentinel = new Error("readiness sentinel");
     app.whenReady = () => {
       readinessCalls++;
       return Promise.reject(sentinel);
     };
+    const operations = [
+      [showMessageBox, { message: "Confirm" }],
+      [showOpenDialog, { properties: ["openFile"] }],
+      [showSaveDialog, { defaultPath: "example.txt" }],
+    ];
     for (const platform of ["linux", "win32"]) {
       Object.defineProperty(process, "platform", { value: platform, configurable: true });
-      for (const args of [[{ message: "Confirm" }], [null, { message: "Confirm" }]]) {
-        const result = showMessageBox(...args);
-        assert.ok(result instanceof Promise);
-        await assert.rejects(result, error => error.code === "KELD-NATIVE-010");
+      for (const [showDialog, options] of operations) {
+        for (const args of [[options], [null, options]]) {
+          const result = showDialog(...args);
+          assert.ok(result instanceof Promise);
+          await assert.rejects(result, error => error.code === "KELD-NATIVE-010");
+        }
+        assert.throws(() => showDialog({ ...options, unsupported: true }), /KELD-COMPAT-010/);
       }
       assert.equal(readinessCalls, 0);
-      assert.throws(() => showMessageBox({ message: "Confirm", unsupported: true }), /KELD-COMPAT-010/);
     }
     Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
-    await assert.rejects(showMessageBox({ message: "Confirm" }), error => error === sentinel);
-    assert.equal(readinessCalls, 1);
+    for (const [showDialog, options] of operations) {
+      await assert.rejects(showDialog(options), error => error === sentinel);
+    }
+    assert.equal(readinessCalls, operations.length);
     console.log("platform refusal and macOS delegation checks pass");
   `,
     ],
