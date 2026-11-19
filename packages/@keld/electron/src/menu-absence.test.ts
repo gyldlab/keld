@@ -31,7 +31,7 @@ function observe(record: unknown, selected = true) {
       const { Menu } = await import(${JSON.stringify(entry)});
       const observe = (action) => {
         try { return action() === undefined ? "void" : "unexpected value"; }
-        catch (error) { return [error.code, error.message.includes("GH-556")]; }
+        catch (error) { return [error.code, error.name, error.member, error.ticket, error.kind]; }
       };
       const nonNull = new Proxy({}, { get() { throw new Error("nonnull argument read"); } });
       console.log(JSON.stringify([
@@ -47,20 +47,29 @@ function observe(record: unknown, selected = true) {
   });
 }
 
-const refusal = ["KELD-COMPAT-013", true];
+const refusal = (member: string, kind: "method" | "constructor") => [
+  "KELD-COMPAT-013",
+  "UnsupportedMemberError",
+  member,
+  "GH-556",
+  kind,
+];
+const unqualified = refusal("Menu.setApplicationMenu(null)", "method");
+const nonNull = refusal("Menu.setApplicationMenu", "method");
+const constructor = refusal("Menu", "constructor");
 
 test("the attested schema eight menu-null call returns void", () => {
   const child = observe({ ...facts, windowsApplicationMenu: "absent-v1" });
   expect(child.exitCode, child.stderr.toString()).toBe(0);
   expect(child.stderr.toString()).toBe("");
-  expect(JSON.parse(child.stdout.toString())).toEqual(["void", refusal, refusal]);
+  expect(JSON.parse(child.stdout.toString())).toEqual(["void", nonNull, constructor]);
 });
 
 test("absent fact, unselected launch and ambient decoys leave the typed refusal", () => {
   for (const child of [observe(facts), observe(undefined), observe(undefined, false)]) {
     expect(child.exitCode, child.stderr.toString()).toBe(0);
     expect(child.stderr.toString()).toBe("");
-    expect(JSON.parse(child.stdout.toString())).toEqual([refusal, refusal, refusal]);
+    expect(JSON.parse(child.stdout.toString())).toEqual([unqualified, nonNull, constructor]);
   }
 });
 
