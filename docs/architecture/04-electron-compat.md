@@ -127,9 +127,11 @@ architecture §2's named file; treating that file as the resolver is a
 defect. This slice adds an exported `BrowserWindow` subset backed by the
 macOS Host-owned native window registry for creation/adoption, selected
 geometry and state, close/destroy, and recovery events. Linux currently
-refuses facade-window subscription. A Windows product build refuses a
-schema-2 facade boot, and Windows answers no window `Create` yet; this is
-not a cross-platform native window backend. Broader Electron behavior and surfaces (`ipcMain`,
+refuses facade-window subscription. Windows admits schema-2 zero-window boots
+through Host Ready and the retained-family release witness (GH-1188 T2).
+Windows still refuses managed window `Create` with `KELD-CORE-042`: its native
+managed-window support remains false until T3. This is not a cross-platform
+native window backend. Broader Electron behavior and surfaces (`ipcMain`,
 preload/`contextBridge`, …) remain later slices. `keld migrate` is not live.
 
 ### 3.1 `utilityProcess` and `MessageChannelMain` stay facades

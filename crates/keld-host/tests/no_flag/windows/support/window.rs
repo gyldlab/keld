@@ -6,12 +6,9 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 pub(crate) use census::app_top_level_windows;
 
-/// The per-PID top-level window census. Its consumers are the test-admitted facade
-/// cells until product admission (GH-1188 T2).
-#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+/// The independent per-PID top-level census used by product facade acceptance.
 mod census {
     use windows_sys::Win32::Foundation::{HWND, LPARAM, TRUE};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -116,4 +113,20 @@ pub(crate) fn wait_for_host_window(pid: u32, deadline: Instant) -> Value {
         );
         thread::park_timeout(Duration::from_millis(20));
     }
+}
+
+/// The caption-close stimulus for an HWND just observed on the test-owned Host.
+pub(crate) fn post_close(hwnd: u64) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+    let hwnd = usize::try_from(hwnd).expect("observed HWND fits native pointer");
+    assert_ne!(hwnd, 0, "no close to a null HWND");
+    // SAFETY: the test retained the live Host and just observed this HWND. This
+    // posts the pointer-free caption-close message, never destroys a foreign window.
+    // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-postmessagew
+    assert_ne!(
+        unsafe { PostMessageW(hwnd as _, WM_CLOSE, 0, 0) },
+        0,
+        "post WM_CLOSE: {}",
+        std::io::Error::last_os_error()
+    );
 }

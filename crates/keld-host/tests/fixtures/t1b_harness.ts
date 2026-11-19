@@ -222,15 +222,28 @@ for (let index = 0; index < token.length; index += 1) {
 await sendControl(`HELLO ${process.pid} ${KEL96_LINK}`);
 if (process.platform === "win32") {
   if (process.env.KELD_T4_JOB_DESCENDANT === "1") {
+    // T2 can supply the existing parked native helper. It lives until the
+    // independently retained test handle or Host Job retires it, not a timer.
+    const heldProgram = process.env.KELD_T4_JOB_DESCENDANT_PROGRAM;
     const descendant = Bun.spawn(
-      [
-        "powershell.exe",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        "Start-Sleep -Seconds 60",
-      ],
-      { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
+      heldProgram
+        ? [heldProgram]
+        : [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Sleep -Seconds 60",
+          ],
+      {
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+        // Bun 1.4.4 otherwise ends this native child when its parent exits.
+        // The T2 hold must survive the real parent crash; ordinary rows stay unchanged.
+        // https://bun.sh/reference/bun/Spawn/BaseOptions/detached
+        detached: heldProgram !== undefined,
+      },
     );
     await sendControl(`DESCENDANT ${descendant.pid}`);
   } else {

@@ -182,3 +182,96 @@ fn expired_launch_pump_rejects_ready_result_before_queued_messages() {
     // dispatch. Contract: PeekMessageW above.
     while unsafe { PeekMessageW(&raw mut message, None, WM_NULL, WM_NULL, PM_REMOVE) }.as_bool() {}
 }
+
+/// The post-exit deadline belongs to the one release owner, not to each observer.
+#[test]
+fn release_witness_preserves_the_existing_post_exit_deadline() {
+    let (_sender, receiver) = release_channel();
+    let release = ProfileReleaseWait::with_bounds(
+        Some(receiver),
+        None,
+        ReleaseSite::Host,
+        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(30),
+    );
+    let now = std::time::Instant::now();
+    release.armed_at.set(Some(now));
+    release.normal_exit_observed_at.set(Some(now));
+    let existing = now + std::time::Duration::from_secs(1);
+    release.post_exit_deadline.set(Some(existing));
+    assert_eq!(
+        release.release_witness_deadline().expect("remaining grace"),
+        existing
+    );
+    assert_eq!(release.post_exit_deadline.get(), Some(existing));
+}
+
+#[test]
+fn release_witness_does_not_renew_an_expired_post_exit_budget() {
+    let (_sender, receiver) = release_channel();
+    let release = ProfileReleaseWait::with_bounds(
+        Some(receiver),
+        None,
+        ReleaseSite::Host,
+        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(30),
+    );
+    let now = std::time::Instant::now();
+    release.armed_at.set(Some(now));
+    release.normal_exit_observed_at.set(Some(now));
+    release.post_exit_deadline.set(Some(now));
+    let error = release
+        .release_witness_deadline()
+        .expect_err("expired original budget");
+    assert!(
+        error
+            .to_string()
+            .contains("existing post-exit grace expired"),
+        "{error}"
+    );
+    assert_eq!(release.post_exit_deadline.get(), Some(now));
+}
+
+#[test]
+fn release_witness_starts_at_the_later_of_terminal_and_normal_receipt() {
+    for receipt_after_terminal in [false, true] {
+        let (_sender, receiver) = release_channel();
+        let grace = std::time::Duration::from_secs(10);
+        let release = ProfileReleaseWait::with_bounds(
+            Some(receiver),
+            None,
+            ReleaseSite::Host,
+            grace,
+            std::time::Duration::from_secs(30),
+        );
+        let now = std::time::Instant::now();
+        let old = now
+            .checked_sub(std::time::Duration::from_secs(1))
+            .expect("test clock has a preceding instant");
+        release
+            .armed_at
+            .set(Some(if receipt_after_terminal { old } else { now }));
+        release
+            .normal_exit_observed_at
+            .set(Some(if receipt_after_terminal { now } else { old }));
+        assert_eq!(
+            release
+                .release_witness_deadline()
+                .expect("one anchored grace"),
+            now + grace
+        );
+    }
+}
+
+#[test]
+fn release_witness_refuses_a_session_that_was_never_armed() {
+    let (_sender, receiver) = release_channel();
+    let release = ProfileReleaseWait::with_bounds(
+        Some(receiver),
+        None,
+        ReleaseSite::Host,
+        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(30),
+    );
+    assert!(release.release_witness_deadline().is_err());
+}
