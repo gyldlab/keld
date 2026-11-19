@@ -31,7 +31,8 @@ keld-guard = { workspace = true }
 # added. SHA-256 is the approved identity primitive, while serde's strict
 # private documents keep marker/registry parsing under one policy owner.
 serde = { workspace = true }
-serde_json = { workspace = true }
+# The W1 app envelope preserves exact binary64 values across its JSON boundary.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 sha2 = { workspace = true }
 
 [lints]

@@ -1,8 +1,8 @@
 //! Contract tests for the private KEL-142 WebView-link envelope decoder.
 
 use keld_wv::wv_link::{
-    MAX_RENDERER_PAYLOAD_LEN, MAX_WV_LINK_ENVELOPE_LEN, WvLinkEnvelope, WvLinkRejectReason,
-    decode_wv_link,
+    MAX_RENDERER_PAYLOAD_LEN, MAX_WV_LINK_ENVELOPE_LEN, WvLinkEnvelope, WvLinkMode,
+    WvLinkRejectReason, decode_app_wv_link, decode_wv_link, decode_wv_link_for_mode,
 };
 
 fn invoke(document: &str, request: &str, channel: &str, payload: &str) -> String {
@@ -12,6 +12,26 @@ fn invoke(document: &str, request: &str, channel: &str, payload: &str) -> String
 }
 
 const CONTRACT_PAYLOAD_MAX: usize = 4096;
+
+#[test]
+fn legacy_echo_rejects_the_admitted_named_transport_messages() {
+    let send = br#"{"v":2,"kind":"send","document":"0123456789abcdef0123456789abcdef","message":1,"channel":"topic","payload":[]}"#;
+    let consumed = br#"{"v":2,"kind":"consumed","document":"0123456789abcdef0123456789abcdef","delivery":1,"disposition":{"status":"consumed"}}"#;
+    assert!(matches!(
+        decode_wv_link_for_mode(send, WvLinkMode::CompatV2),
+        Ok(WvLinkEnvelope::Send { .. })
+    ));
+    assert!(matches!(
+        decode_wv_link_for_mode(consumed, WvLinkMode::CompatV2),
+        Ok(WvLinkEnvelope::Consumed { .. })
+    ));
+    for input in [send.as_slice(), consumed.as_slice()] {
+        assert_eq!(
+            decode_wv_link(input),
+            Err(WvLinkRejectReason::MalformedEnvelope)
+        );
+    }
+}
 
 fn repeated_byte_json(byte: u8, count: usize) -> String {
     std::iter::repeat_n(byte.to_string(), count)
@@ -165,4 +185,69 @@ fn payload_boundary_is_exact_and_large_envelopes_are_prebounded() {
         decode_wv_link(huge.as_bytes()),
         Err(WvLinkRejectReason::MalformedEnvelope)
     );
+}
+
+#[test]
+fn compat_and_app_decoders_share_typed_payload_overflow() {
+    let document = "0123456789abcdef0123456789abcdef";
+    for (kind, id, channel) in [
+        ("invoke", "request", "1"),
+        ("send", "message", r#""mainResp""#),
+    ] {
+        for count in [CONTRACT_PAYLOAD_MAX, CONTRACT_PAYLOAD_MAX + 1] {
+            let payload = repeated_byte_json(0, count);
+            let input = format!(
+                r#"{{"v":2,"kind":"{kind}","document":"{document}","{id}":1,"channel":{channel},"payload":[{payload}]}}"#
+            );
+            let transport = decode_wv_link_for_mode(input.as_bytes(), WvLinkMode::CompatV2);
+            let app = decode_app_wv_link(input.as_bytes());
+            if count == CONTRACT_PAYLOAD_MAX {
+                assert!(transport.is_ok(), "{kind} exact boundary");
+                assert!(app.is_ok(), "{kind} exact boundary");
+            } else {
+                assert_eq!(transport.err(), Some(WvLinkRejectReason::PayloadTooLarge));
+                assert_eq!(app.err(), Some(WvLinkRejectReason::PayloadTooLarge));
+            }
+        }
+    }
+}
+
+#[test]
+fn displayed_json_keys_cannot_spoof_overflow_in_v2_or_app_roles() {
+    for input in [
+        br#"{"v":2,"kind":"bind","keld-wv-link-payload-too-large":0}"#.as_slice(),
+        br#"{"v":2,"kind":"bind","keld-wv-link-payload-\u0074oo-large":0}"#.as_slice(),
+    ] {
+        assert_eq!(
+            decode_wv_link_for_mode(input, WvLinkMode::CompatV2).err(),
+            Some(WvLinkRejectReason::MalformedEnvelope)
+        );
+        assert_eq!(
+            decode_app_wv_link(input).err(),
+            Some(WvLinkRejectReason::MalformedEnvelope)
+        );
+    }
+}
+
+#[test]
+fn payload_overflow_does_not_hide_a_malformed_tail() {
+    let payload = repeated_byte_json(0, CONTRACT_PAYLOAD_MAX + 1);
+    let legacy = invoke("d", "1", "1", &format!("{payload},256"));
+    assert_eq!(
+        decode_wv_link(legacy.as_bytes()).err(),
+        Some(WvLinkRejectReason::MalformedEnvelope)
+    );
+    for tail in [",256]}", r#"],"unknown":0}"#] {
+        let input = format!(
+            r#"{{"v":2,"kind":"invoke","document":"0123456789abcdef0123456789abcdef","request":1,"channel":1,"payload":[{payload}{tail}"#
+        );
+        assert_eq!(
+            decode_wv_link_for_mode(input.as_bytes(), WvLinkMode::CompatV2).err(),
+            Some(WvLinkRejectReason::MalformedEnvelope)
+        );
+        assert_eq!(
+            decode_app_wv_link(input.as_bytes()).err(),
+            Some(WvLinkRejectReason::MalformedEnvelope)
+        );
+    }
 }

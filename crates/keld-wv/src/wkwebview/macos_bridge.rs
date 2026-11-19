@@ -746,6 +746,9 @@ fn handle_message(
     };
 
     match envelope {
+        WvLinkEnvelope::Send { .. } | WvLinkEnvelope::Consumed { .. } => {
+            report_detail_rejection("named envelope cannot use a legacy endpoint");
+        }
         WvLinkEnvelope::Bind => {
             let nonce = match lock_state(&ivars.state).bind() {
                 Ok(nonce) => nonce,
@@ -852,6 +855,9 @@ fn reject_detail(reason: WvLinkRejectReason) -> &'static str {
         WvLinkRejectReason::PayloadTooLarge => "renderer payload exceeds 4096 bytes",
         WvLinkRejectReason::ZeroRequest => "renderer request id is zero",
         WvLinkRejectReason::ZeroChannel => "renderer channel id is zero",
+        WvLinkRejectReason::InvalidNamedChannel => "invalid literal renderer topic",
+        WvLinkRejectReason::InvalidDocument => "invalid private world credential",
+        WvLinkRejectReason::ControlTooLarge => "renderer control envelope exceeds 4096 bytes",
     }
 }
 
