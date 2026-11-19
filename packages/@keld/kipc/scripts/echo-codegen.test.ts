@@ -71,6 +71,7 @@ function withGeneratorCheckout(run: (root: string) => void): void {
     for (const path of [
       ...generationOutputs,
       "packages/@keld/kipc/scripts/echo-codegen.ts",
+      "packages/@keld/kipc/src/launch-facts.ts",
       "crates/keld-ipc/src/echo.rs",
       "crates/keld-ipc/src/lifecycle.rs",
       "crates/keld-ipc/src/channel_table.rs",
@@ -162,6 +163,24 @@ test("a Rust compat cap change makes the generated transport stale", () => {
     const stale = runGenerator(root, "check");
     expect(stale.exitCode).not.toBe(0);
     expect(stale.stderr.toString()).toContain("compat frame limits are stale");
+    expect(runGenerator(root, "generate").exitCode).toBe(0);
+    expect(runGenerator(root, "check").exitCode).toBe(0);
+  });
+});
+
+test("a launch facts owner change makes the standalone transport stale", () => {
+  withGeneratorCheckout((root) => {
+    const source = resolve(root, "packages/@keld/kipc/src/launch-facts.ts");
+    const original = readFileSync(source, "utf8");
+    const changed = original.replace(
+      "LAUNCH_FACT_TEXT_BYTES = 4096",
+      "LAUNCH_FACT_TEXT_BYTES = 4095",
+    );
+    expect(changed).not.toBe(original);
+    writeFileSync(source, changed);
+    const stale = runGenerator(root, "check");
+    expect(stale.exitCode).not.toBe(0);
+    expect(stale.stderr.toString()).toContain("launch-facts region is stale");
     expect(runGenerator(root, "generate").exitCode).toBe(0);
     expect(runGenerator(root, "check").exitCode).toBe(0);
   });

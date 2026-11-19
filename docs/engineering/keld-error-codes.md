@@ -202,6 +202,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: the keld-attempt claim wait was cancelled by its owner before a claimant was accepted (the launched candidate's handle signaled, or the owner ended the wait); the endpoint is closed
 - fix: Roll the attempt back: health cannot commit, and end the candidate family if any of it still runs.
 
+## KELD-IPC-029
+
+- crate: @keld/kipc
+- message: A present Host launch-facts record is malformed, unsupported or oversized, or installed startup has no installed record
+- fix: Rebuild and launch through the qualified Host. Do not substitute application globals, environment values or mixed development/installed records for the private Host data.
+
 ## KELD-WV-001
 
 - crate: keld-wv
@@ -928,11 +934,35 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: `app.quit()` is not yet a cancelable Electron quit sequence with live or not-yet-censused native windows; a direct Host Quit would bypass unsaved-document close veto
 - fix: Close each native window through its cancelable `close` policy before requesting Quit. Full `before-quit`/`will-quit` and OS-initiated quit integration belongs to GH451; do not claim application compatibility until independently reviewed.
 
+## KELD-COMPAT-013
+
+- crate: @keld/electron
+- message: An Electron main-process member is linked but not implemented by this Keld compatibility surface
+- fix: Guard or remove the named member's call, property access or construction until the issue named in its typed refusal lands; do not treat the linked binding as a working stub.
+
 ## KELD-COMPAT-014
 
 - crate: @keld/electron
 - message: A second owner defined a conflicting or incompatible main-role process fact before the canonical installer
 - fix: Remove the competing definition and use the process-facts owner through the Host-selected preload or facade import. A conflict refuses the complete set before writing another property.
+
+## KELD-COMPAT-040
+
+- crate: @keld/electron
+- message: An app session fact was read but the Host did not deliver that fact to this role
+- fix: Launch through a qualified Host that supplies the named fact, or handle the typed absence. Do not derive it from environment variables, cwd, argv, Intl or package.json.
+
+## KELD-COMPAT-041
+
+- crate: @keld/electron
+- message: app.getPath received a non-string or an undocumented path name
+- fix: Pass one of the documented names listed in the error. A recognized name can still have a typed absent Host fact.
+
+## KELD-COMPAT-042
+
+- crate: @keld/electron
+- message: The application tried to assign app.name, which this bounded session-facts surface does not support
+- fix: Declare the application name in keld.config.ts and rebuild. The Host owns the admitted name; setName remains separate work.
 
 ## KELD-COMPAT-100
 

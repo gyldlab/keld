@@ -18,6 +18,7 @@ import {
   stateMapGet,
   stateMapSet,
 } from "@keld/kipc";
+import { attachAppSessionFacts } from "./app-session-facts.ts";
 
 type AppListener = (...args: never[]) => void;
 
@@ -127,7 +128,7 @@ function onLastWindowClosed(): void {
 }
 
 apiApp.onLastWindowClosed(onLastWindowClosed);
-export const app = {
+export const app = attachAppSessionFacts({
   whenReady(): Promise<void> {
     return observeReady();
   },
@@ -181,4 +182,4 @@ export const app = {
 
   removeListener: removeAppListener,
   off: removeAppListener,
-};
+});

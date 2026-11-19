@@ -33,6 +33,10 @@ const transportPath = resolve(
   repositoryRoot,
   "packages/@keld/kipc/src/transport.ts",
 );
+const launchFactsSourcePath = resolve(
+  repositoryRoot,
+  "packages/@keld/kipc/src/launch-facts.ts",
+);
 const fsSourcePath = resolve(repositoryRoot, "crates/keld-native/src/fs.rs");
 const fsGeneratedPath = resolve(
   repositoryRoot,
@@ -1796,7 +1800,38 @@ function replaceCompatFrameRegion(
   );
 }
 
-/** The transport with fresh Rust-owned regions, restamped over the final bytes. */
+const LAUNCH_FACTS_REGION_BEGIN = "// @generated-begin host-launch-facts";
+const LAUNCH_FACTS_REGION_END = "// @generated-end host-launch-facts";
+
+function replaceLaunchFactsRegion(
+  transportSource: string,
+  ownerSource: string,
+): string {
+  const lines = transportSource.split("\n");
+  const begins = lines.flatMap((line, index) =>
+    line.startsWith(LAUNCH_FACTS_REGION_BEGIN) ? [index] : [],
+  );
+  const ends = lines.flatMap((line, index) =>
+    line.startsWith(LAUNCH_FACTS_REGION_END) ? [index] : [],
+  );
+  if (begins.length !== 1 || ends.length !== 1 || begins[0] > ends[0])
+    fail("transport.ts requires exactly one ordered host-launch-facts region");
+  if (
+    ownerSource.includes(LAUNCH_FACTS_REGION_BEGIN) ||
+    ownerSource.includes(LAUNCH_FACTS_REGION_END)
+  )
+    fail("launch-facts owner must not contain generated-region markers");
+  return [
+    ...lines.slice(0, begins[0]),
+    LAUNCH_FACTS_REGION_BEGIN,
+    "// packages/@keld/kipc/src/launch-facts.ts. Do not edit by hand.",
+    ownerSource.replaceAll("\r\n", "\n").trimEnd(),
+    LAUNCH_FACTS_REGION_END,
+    ...lines.slice(ends[0] + 1),
+  ].join("\n");
+}
+
+/** The transport with fresh generated regions, restamped over the final bytes. */
 export function regenerateTransport(
   rustSource: string,
   transportSource: string,
@@ -1804,9 +1839,12 @@ export function regenerateTransport(
 ): string {
   const region = renderChannelTableRegion(rustSource);
   return stampTransport(
-    replaceCompatFrameRegion(
-      compatSource,
-      replaceChannelTableRegion(unstampedTransport(transportSource), region),
+    replaceLaunchFactsRegion(
+      replaceCompatFrameRegion(
+        compatSource,
+        replaceChannelTableRegion(unstampedTransport(transportSource), region),
+      ),
+      readFileSync(launchFactsSourcePath, "utf8"),
     ),
   );
 }
@@ -2260,6 +2298,13 @@ function check(): void {
   );
   if (replaceCompatFrameRegion(compatSource, transport) !== transport)
     fail("compat frame limits are stale; run bun run echo:generate");
+  if (
+    replaceLaunchFactsRegion(
+      transport,
+      readFileSync(launchFactsSourcePath, "utf8"),
+    ) !== transport
+  )
+    fail("launch-facts region is stale; run bun run echo:generate");
   try {
     verifyTransportStamp(
       readFileSync(transportPath),
