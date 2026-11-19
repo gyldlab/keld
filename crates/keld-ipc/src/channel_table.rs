@@ -95,7 +95,8 @@ impl ReceiveClass {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Authority {
-    /// Session control on the host-minted link; never evaluated by `keld-guard`.
+    /// Session control carried on the host-minted link. The renderer topic
+    /// still requires the existing WebView principal guard for compat delivery.
     HostInternal,
     /// Every call is evaluated by `keld-guard` against one of these manifest
     /// capability names. They are `keld_guard::capability` constants, never
@@ -216,8 +217,17 @@ pub const DIALOG: ChannelEntry = ChannelEntry::new(
     Authority::Guarded(&[DIALOG_CAPABILITY]),
 );
 
+/// Family-neutral compatibility carriage on the authenticated app link (GH-540).
+pub const COMPAT_CONTROL: ChannelEntry = ChannelEntry::new(
+    "compat-control",
+    7,
+    ReceiveClass::HostCallWithEvents,
+    Authority::HostInternal,
+);
+
 /// Every allocated channel, in strictly increasing id order.
-pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, LIFECYCLE, AUTH, WINDOW, DIALOG];
+pub const CHANNEL_TABLE: &[ChannelEntry] =
+    &[ECHO, FS, LIFECYCLE, AUTH, WINDOW, DIALOG, COMPAT_CONTROL];
 
 // An invalid table does not build (spec §3 criteria 2-5).
 const _: () = assert!(validate_table(CHANNEL_TABLE).is_ok());

@@ -1,0 +1,16 @@
+# Exact literal vectors from the approved GH540 section 4 wire contract.
+deliver-current	request	00010178030001ff
+deliver-original	request	0101020178030001ff
+consumed	request	0201020300
+no-listener	request	0201020301
+renderer-message	event	000102030966696c653a2f2f2f61046e756c6c0178030001ff
+document-retired	event	010102
+document-retired-max	event	01ffffffff0fffffffff0f
+deliver-consumed	response	0000
+deliver-no-listener	response	0001
+deliver-stale	response	0002
+route-not-dispatched	response	000400
+route-outcome-unknown	response	000401
+released	response	01
+deliver-current-max	request	00ffffffff0f017800
+call-error	error	0d4b454c442d47554152443030330178

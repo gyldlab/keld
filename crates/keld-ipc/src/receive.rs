@@ -350,6 +350,16 @@ impl ReceivePolicy {
         policy
     }
 
+    /// Host-side GH540 receiver for compatibility CALLs on the authenticated
+    /// app link. The owning router selects it only for an admitted compat peer.
+    #[must_use]
+    pub const fn compat_call_receiver() -> Self {
+        let mut policy = Self::lifecycle_receiver();
+        policy.channel = crate::channel_table::COMPAT_CONTROL.id();
+        policy.allow_ping = false;
+        policy
+    }
+
     /// The live primary app-link receiver: the one v0 session that
     /// multiplexes spec-table rows 3 and 5 — authenticated echo and
     /// lifecycle `CALL`s — plus the `PING` probe on a single stream.
@@ -426,7 +436,7 @@ impl ReceivePolicy {
             payload: PayloadMode::Codec,
             expected_corr: ExpectedCorrelation::Zero,
             kinds: AllowedKinds::only(FrameKind::Event),
-            allow_ping: true,
+            allow_ping: channel.0 != crate::channel_table::COMPAT_CONTROL.wire_id(),
             also_channel: None,
         }
     }
@@ -721,6 +731,16 @@ pub fn validate_received_header(
             }
         }
         PayloadMode::Codec => {}
+    }
+
+    if header.channel == crate::channel_table::COMPAT_CONTROL.id() {
+        let limit =
+            crate::compat_control::limit_for_kind(header.kind).ok_or(IpcError::Protocol {
+                detail: "frame kind is not a compatibility carriage",
+            })?;
+        if usize::try_from(header.len).map_err(|_| IpcError::PayloadTooLarge)? > limit {
+            return Err(IpcError::PayloadTooLarge);
+        }
     }
 
     Ok(ValidatedFrameHeader(header))
