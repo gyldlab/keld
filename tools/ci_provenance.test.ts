@@ -6,7 +6,9 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -937,12 +939,50 @@ function assertEvidenceBeforeCandidateCode(steps: Record<string, any>[]) {
   expect(steps[2].run).toBe(approvedKEL270EvidenceRun);
 }
 
+// The shell body is not the first code that Bash executes: BASH_ENV, PATH,
+// job selection and action inputs are independent preflight entry points.
+// Keep the job/step context assertions separate from the exact shell oracle.
+function assertKEL270HygieneContext(job: Record<string, any>) {
+  expect(Object.keys(job).sort()).toEqual(
+    ["name", "runs-on", "timeout-minutes", "needs", "if", "steps"].sort(),
+  );
+  expect(job.name).toBe("CODEOWNERS + templates");
+  expect(job["runs-on"]).toBe("ubuntu-24.04");
+  expect(job["timeout-minutes"]).toBe(10);
+  expect(job.needs).toBe("changes");
+  expect(job.if).toBe(
+    "needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'",
+  );
+  const steps = job.steps as Record<string, any>[];
+  expect(steps.length).toBeGreaterThanOrEqual(3);
+  expect(Object.keys(steps[0]).sort()).toEqual(["uses", "with"]);
+  expect(steps[0].uses).toBe(
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+  );
+  expect(steps[0].with).toEqual({
+    "fetch-depth": 0,
+    "persist-credentials": false,
+  });
+  expect(Object.keys(steps[1]).sort()).toEqual(["uses", "with"]);
+  expect(steps[1].uses).toBe(
+    "dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8",
+  );
+  expect(steps[1].with).toEqual({
+    toolchain: "1.99.1",
+    components: "rustfmt, clippy",
+  });
+  expect(Object.keys(steps[2]).sort()).toEqual(["name", "run", "shell"]);
+  expect(steps[2].name).toBe("KEL-270 definition evidence (read-only)");
+  expect(steps[2].shell).toBe("bash");
+}
+
 test("KEL-270 evidence executes before any candidate-controlled code", () => {
   const ci = Bun.YAML.parse(
     readFileSync(".github/workflows/ci.yml", "utf8"),
   ) as Record<string, any>;
   const steps = ci.jobs.hygiene.steps as Record<string, any>[];
   assertEvidenceBeforeCandidateCode(steps);
+  assertKEL270HygieneContext(ci.jobs.hygiene);
 
   // An injected candidate-owned command before verification must fail the
   // ordering guard, even if that command later restores the verifier bytes.
@@ -963,6 +1003,81 @@ test("KEL-270 evidence executes before any candidate-controlled code", () => {
     ]),
   ).toThrow();
 });
+
+test("KEL-270 job and step startup overrides cannot bypass evidence", () => {
+  const ci = Bun.YAML.parse(
+    readFileSync(".github/workflows/ci.yml", "utf8"),
+  ) as Record<string, any>;
+  const pristine = ci.jobs.hygiene as Record<string, any>;
+  assertKEL270HygieneContext(pristine);
+  const run = (mutate: (job: Record<string, any>) => void) => {
+    const job = structuredClone(pristine);
+    mutate(job);
+    expect(() => assertKEL270HygieneContext(job)).toThrow();
+  };
+  run((job) => {
+    job.env = { BASH_ENV: "./tools/attacker-init.sh" };
+  });
+  run((job) => {
+    job.env = { PATH: "attacker-bin" };
+  });
+  run((job) => {
+    job.if = false;
+  });
+  run((job) => {
+    job["runs-on"] = "self-hosted";
+  });
+  run((job) => {
+    job.steps[0].env = { BASH_ENV: "./tools/attacker-init.sh" };
+  });
+  run((job) => {
+    job.steps[1].env = { BASH_ENV: "./tools/attacker-init.sh" };
+  });
+  run((job) => {
+    job.steps[2].env = { BASH_ENV: "./tools/attacker-init.sh" };
+  });
+  run((job) => {
+    job.steps[2]["working-directory"] = "docs";
+  });
+  run((job) => {
+    job.steps[1].with.components = "rustfmt, clippy, rogue";
+  });
+  run((job) => {
+    job.steps[0].uses = "actions/checkout@" + "1".repeat(40);
+  });
+});
+
+const unixOnlyKEL270Test = test.skipIf(process.platform === "win32");
+unixOnlyKEL270Test(
+  "KEL-270 Bash startup negative control proves pre-body exit-zero",
+  () => {
+    const temporary = mkdtempSync(join(tmpdir(), "keld270-bash-env-"));
+    try {
+      const startup = join(temporary, "attacker-init.sh");
+      writeFileSync(startup, 'echo "STARTUP_EXECUTED"; exit 0\n');
+      const env = { ...process.env };
+      delete env.BASH_ENV;
+      const body = 'echo "EVIDENCE_BODY_EXECUTED"; exit 73';
+      const invoke = (environment: Record<string, string | undefined>) =>
+        Bun.spawnSync(
+          ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", body],
+          { cwd: temporary, env: environment },
+        );
+      const clean = invoke(env);
+      expect(clean.exitCode).toBe(73);
+      expect(new TextDecoder().decode(clean.stdout)).toContain(
+        "EVIDENCE_BODY_EXECUTED",
+      );
+      const poisoned = invoke({ ...env, BASH_ENV: startup });
+      expect(poisoned.exitCode).toBe(0);
+      const output = new TextDecoder().decode(poisoned.stdout);
+      expect(output).toContain("STARTUP_EXECUTED");
+      expect(output).not.toContain("EVIDENCE_BODY_EXECUTED");
+    } finally {
+      rmSync(temporary, { recursive: true, force: true });
+    }
+  },
+);
 
 test("KEL-270 evidence rejects in-step untrusted execution and failure masking", () => {
   const ci = Bun.YAML.parse(
@@ -999,9 +1114,9 @@ test("KEL-270 evidence rejects in-step untrusted execution and failure masking",
   }
 });
 
-test("KEL-270 evidence preflight binds a clean Git checkout to its expected SHA", () => {
+const linuxTest = test.skipIf(process.platform !== "linux");
+linuxTest("KEL-270 preflight rejects SHA, symlinks, and repins", () => {
   // This preflight targets the Ubuntu runner and uses GNU realpath.
-  if (process.platform !== "linux") return;
 
   const temporary = mkdtempSync(join(tmpdir(), "keld270-checkout-binding-"));
   const receipt = JSON.parse(
@@ -1066,6 +1181,172 @@ test("KEL-270 evidence preflight binds a clean Git checkout to its expected SHA"
     expect(incorrect.exitCode).toBe(1);
     expect(new TextDecoder().decode(incorrect.stderr)).toContain(
       "KEL-270 B-82 checkout identity mismatch",
+    );
+
+    // A file or one of its ancestors can redirect Python's __file__ to a
+    // different evidence/specification tree without changing reviewed bytes.
+    // Exercise the two path guards independently: a full preflight refusal
+    // alone could be preserved by the other guard after one was deleted.
+    const bashBoundary = preflight.indexOf("\n# The receipt supplies");
+    const sourceBoundary = preflight.indexOf(
+      "# Bind all receipt-pinned sources to regular blobs",
+    );
+    expect(bashBoundary).toBeGreaterThan(0);
+    expect(sourceBoundary).toBeGreaterThan(bashBoundary);
+    const bashPathCheck =
+      preflight.slice(0, bashBoundary) +
+      `\nrequire_checkout_file "${trustedKEL270VerifierPath}"\n`;
+    const sourcePathCheck =
+      `set -euo pipefail\nreceipt_path=${trustedKEL270ReceiptPath}\n` +
+      preflight.slice(sourceBoundary);
+    const runPathCheck = (script: string) =>
+      Bun.spawnSync(["bash", "-c", script], {
+        cwd: temporary,
+        env: {
+          ...process.env,
+          GITHUB_WORKSPACE: temporary,
+          GITHUB_SHA: head,
+        },
+      });
+    expect(runPathCheck(bashPathCheck).exitCode).toBe(0);
+    expect(runPathCheck(sourcePathCheck).exitCode).toBe(0);
+
+    const nested = join(temporary, "alternate-evidence-tree");
+    mkdirSync(nested);
+    cpSync(join(temporary, "docs"), join(nested, "docs"), {
+      recursive: true,
+    });
+    const verifier = join(temporary, trustedKEL270VerifierPath);
+    const verifierParent = dirname(verifier);
+    const nestedVerifier = join(nested, trustedKEL270VerifierPath);
+    const assertPinnedBytes = () => {
+      expect(
+        createHash("sha256")
+          .update(readFileSync(join(temporary, trustedKEL270ReceiptPath)))
+          .digest("hex"),
+      ).toBe(trustedKEL270ReceiptSha256);
+      expect(
+        createHash("sha256").update(readFileSync(verifier)).digest("hex"),
+      ).toBe(trustedKEL270VerifierSha256);
+    };
+    const assertRejected = (script: string, diagnostic: string) => {
+      const result = runPathCheck(script);
+      expect(result.exitCode).not.toBe(0);
+      expect(new TextDecoder().decode(result.stderr)).toContain(diagnostic);
+    };
+
+    // The same verifier bytes through a symlink must not become executable
+    // evidence just because Git hash-object and SHA-256 still match.
+    rmSync(verifier);
+    symlinkSync(nestedVerifier, verifier);
+    assertPinnedBytes();
+    assertRejected(bashPathCheck, "evidence file does not match checkout");
+    assertRejected(preflight, "evidence file does not match checkout");
+    assertRejected(
+      sourcePathCheck,
+      "evidence source outside canonical checkout",
+    );
+    rmSync(verifier);
+    writeFileSync(verifier, readFileSync(nestedVerifier));
+
+    // A symlinked ancestor of the verifier has the same failure mode.
+    const originalVerifierParent = `${verifierParent}-original`;
+    renameSync(verifierParent, originalVerifierParent);
+    symlinkSync(dirname(nestedVerifier), verifierParent);
+    assertPinnedBytes();
+    assertRejected(bashPathCheck, "evidence file does not match checkout");
+    assertRejected(preflight, "evidence file does not match checkout");
+    assertRejected(
+      sourcePathCheck,
+      "evidence source outside canonical checkout",
+    );
+    rmSync(verifierParent);
+    renameSync(originalVerifierParent, verifierParent);
+
+    // A symlinked specification parent must also fail the source inventory,
+    // even though the verifier itself is still a regular tracked blob.
+    const specParent = join(
+      temporary,
+      "docs/specs/kel270-catalogue-admission-v2",
+    );
+    const originalSpecParent = `${specParent}-original`;
+    renameSync(specParent, originalSpecParent);
+    symlinkSync(
+      join(nested, "docs/specs/kel270-catalogue-admission-v2"),
+      specParent,
+    );
+    assertPinnedBytes();
+    expect(runPathCheck(bashPathCheck).exitCode).toBe(0);
+    assertRejected(preflight, "evidence source outside canonical checkout");
+    assertRejected(
+      sourcePathCheck,
+      "evidence source outside canonical checkout",
+    );
+    rmSync(specParent);
+    renameSync(originalSpecParent, specParent);
+
+    // A source mutation that leaves HEAD and the reviewed receipt unchanged
+    // must fail even when the candidate verifier would otherwise run.
+    const identityName = "docs/specs/kel270-catalogue-admission-v2/identity.md";
+    const identityTarget = join(temporary, identityName);
+    const originalIdentity = readFileSync(identityTarget);
+    writeFileSync(
+      identityTarget,
+      Buffer.concat([
+        originalIdentity,
+        Buffer.from("\n<!-- altered source -->\n"),
+      ]),
+    );
+    const sourceMutant = run(head);
+    expect(sourceMutant.exitCode).not.toBe(0);
+    expect(new TextDecoder().decode(sourceMutant.stderr)).toContain(
+      "KEL-270 B-82 evidence source does not match checkout",
+    );
+    writeFileSync(identityTarget, originalIdentity);
+    expect(run(head).exitCode).toBe(0);
+
+    // A malicious commit can update the Git tree, source, verifier and
+    // manifest together. It still cannot change the trusted workflow pin.
+    const receiptTarget = join(temporary, trustedKEL270ReceiptPath);
+    const repinned = JSON.parse(readFileSync(receiptTarget, "utf8")) as {
+      published_file_sha256: Record<string, string>;
+    };
+    const attackedIdentity = Buffer.concat([
+      originalIdentity,
+      Buffer.from("\n<!-- attacker-controlled policy -->\n"),
+    ]);
+    const noOpVerifier = Buffer.from(
+      '#!/usr/bin/env python3\nprint("NOOP VERIFIER: PASS")\n',
+    );
+    writeFileSync(identityTarget, attackedIdentity);
+    writeFileSync(verifier, noOpVerifier);
+    repinned.published_file_sha256[identityName] = createHash("sha256")
+      .update(attackedIdentity)
+      .digest("hex");
+    repinned.published_file_sha256[trustedKEL270VerifierPath] = createHash(
+      "sha256",
+    )
+      .update(noOpVerifier)
+      .digest("hex");
+    writeFileSync(receiptTarget, JSON.stringify(repinned, null, 2) + "\n");
+    git("add", "-f", "--", "docs");
+    git(
+      "-c",
+      "user.name=KEL-270 test",
+      "-c",
+      "user.email=kel270-test@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "-qm",
+      "Repin changed source and replaced verifier",
+    );
+    const repinnedHead = git("rev-parse", "HEAD");
+    expect(repinnedHead).not.toBe(head);
+    const repinnedMutant = run(repinnedHead);
+    expect(repinnedMutant.exitCode).not.toBe(0);
+    expect(new TextDecoder().decode(repinnedMutant.stderr)).toContain(
+      "KEL-270 B-82 trusted receipt SHA-256 mismatch",
     );
   } finally {
     rmSync(temporary, { recursive: true, force: true });

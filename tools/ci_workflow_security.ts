@@ -1839,6 +1839,65 @@ export function checkWorkflowSecurity(source: string): void {
   // Globally reject unknown Actions SHAs before checking approved Bun cache
   // owners. This preserves the upstream unreviewed-action failure diagnostic.
   checkB3BunCachePolicy(stepsByJob);
+  // B-82 runs candidate-owned Python only after its trusted checkout and
+  // verifier checks. Pin the COMPLETE preflight execution context: a job or
+  // step BASH_ENV runs before Bash reads the first `set -euo pipefail`,
+  // so an apparently unchanged run script can be skipped with `exit 0`.
+  const hygieneContext =
+    "KEL-270 B-82 hygiene gate must preserve its reviewed execution context";
+  const hygieneJob = mapping(jobs.hygiene, "jobs.hygiene");
+  exactKeys(
+    hygieneJob,
+    ["name", "runs-on", "timeout-minutes", "needs", "if", "steps"],
+    hygieneContext,
+  );
+  if (
+    hygieneJob.name !== "CODEOWNERS + templates" ||
+    hygieneJob["runs-on"] !== "ubuntu-24.04" ||
+    scalar(hygieneJob["timeout-minutes"]) !== "10" ||
+    hygieneJob.needs !== "changes" ||
+    hygieneJob.if !==
+      "needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'"
+  ) {
+    fail(hygieneContext);
+  }
+  const hygieneSteps = stepsByJob.get("hygiene");
+  if (!hygieneSteps || hygieneSteps.length < 3) fail(hygieneContext);
+  const hygieneCheckout = hygieneSteps[0]!;
+  exactKeys(hygieneCheckout, ["uses", "with"], hygieneContext);
+  if (
+    hygieneCheckout.uses !==
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+  ) {
+    fail(hygieneContext);
+  }
+  inputsMatch(
+    mapping(hygieneCheckout.with, "KEL-270 B-82 hygiene checkout inputs"),
+    { "fetch-depth": "0", "persist-credentials": "false" },
+    hygieneContext,
+  );
+  const hygieneRustInstaller = hygieneSteps[1]!;
+  exactKeys(hygieneRustInstaller, ["uses", "with"], hygieneContext);
+  if (
+    hygieneRustInstaller.uses !==
+    "dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8"
+  ) {
+    fail(hygieneContext);
+  }
+  inputsMatch(
+    mapping(hygieneRustInstaller.with, "KEL-270 B-82 Rust installer inputs"),
+    { toolchain: "1.99.1", components: "rustfmt, clippy" },
+    hygieneContext,
+  );
+  const evidenceStep = hygieneSteps[2]!;
+  exactKeys(evidenceStep, ["name", "shell", "run"], hygieneContext);
+  if (
+    evidenceStep.name !== "KEL-270 definition evidence (read-only)" ||
+    evidenceStep.shell !== "bash" ||
+    typeof evidenceStep.run !== "string"
+  ) {
+    fail(hygieneContext);
+  }
   // This broad safety net runs AFTER the narrower, previously reviewed
   // executable-step checks. That keeps their deterministic negative-control
   // diagnostics while also rejecting an otherwise permitted earlier step

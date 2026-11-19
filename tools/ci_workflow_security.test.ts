@@ -336,6 +336,68 @@ test("actual workflow passes parsed security admission", () => {
   expect(() => checkWorkflowSecurity(source)).not.toThrow();
 });
 
+test("KEL-270 B-82 refuses shell startup and unreviewed hygiene context", () => {
+  const evidenceName = "KEL-270 definition evidence (read-only)";
+  const malicious = "./tools/attacker-init.sh";
+  const mutations: Array<[string, (workflow: Fixture) => void]> = [
+    [
+      "hygiene job BASH_ENV",
+      (workflow) => {
+        workflow.jobs.hygiene!.env = { BASH_ENV: malicious };
+      },
+    ],
+    [
+      "evidence step BASH_ENV",
+      (workflow) => {
+        step(workflow, "hygiene", evidenceName).env = { BASH_ENV: malicious };
+      },
+    ],
+    [
+      "hygiene job PATH",
+      (workflow) => {
+        workflow.jobs.hygiene!.env = { PATH: "attacker-bin" };
+      },
+    ],
+    [
+      "evidence step PATH",
+      (workflow) => {
+        step(workflow, "hygiene", evidenceName).env = { PATH: "attacker-bin" };
+      },
+    ],
+    [
+      "hygiene job skipped",
+      (workflow) => {
+        workflow.jobs.hygiene!.if = false;
+      },
+    ],
+    [
+      "hygiene checkout startup env",
+      (workflow) => {
+        workflow.jobs.hygiene!.steps[0]!.env = { BASH_ENV: malicious };
+      },
+    ],
+    [
+      "hygiene Rust installer startup env",
+      (workflow) => {
+        workflow.jobs.hygiene!.steps[1]!.env = { BASH_ENV: malicious };
+      },
+    ],
+    [
+      "unreviewed Rust installer component",
+      (workflow) => {
+        (workflow.jobs.hygiene!.steps[1]!.with as Step).components =
+          "rustfmt, clippy, attacker";
+      },
+    ],
+  ];
+  expect(() => check(fixture())).not.toThrow();
+  for (const [label, mutate] of mutations) {
+    const workflow = fixture();
+    mutate(workflow);
+    expect(() => check(workflow), label).toThrow("KEL-270 B-82 hygiene");
+  }
+});
+
 test("Linux and Windows native acceptance tests print cargo failure output", () => {
   const f = fixture();
   const bash =
