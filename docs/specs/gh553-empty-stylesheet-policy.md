@@ -1,8 +1,11 @@
 # Spec: Explicit empty-stylesheet admission for installed original content
-Status: proposed (exact independent permission review required before implementation)
-Tracker: GH-553 / GH-1404 · Owner: Guard catalog and original-source composition · Updated: 2026-11-06
+Status: draft
+Tracker: GH-553
+Owner: Guard catalog and original-source composition
+Updated: 2026-11-19
+Pin: d98675c1a3b2eabb19e3000705e178f84fd169b4
 
-## 1. Goal and non-goals
+## 1. Goal & non-goals
 
 Support a verified application that creates an empty stylesheet and populates it
 through CSSOM (the browser's stylesheet object API). Preserve the existing strict
@@ -14,7 +17,7 @@ nonempty inline style text, inline style attributes, inline scripts or a new nat
 principal. Do not patch draw.io or its spinner. This is not proof of complete editor
 styling, iframe/print behavior, public release readiness or another platform.
 
-## 2. Existing contracts and evidence
+## 2. Spec refs
 
 The predecessor is GH-553's `gh553-verified-csp-admission-d1.md`, immutable source
 `53593f96c9d1aa9518758cc065ae0ab56ccb6d6c`. Its original H2 policy remains unchanged.
@@ -38,30 +41,87 @@ identifies its exact path separately from the original worker source.
 
 ## 3. Acceptance criteria
 
-1. The existing strict selector and exact H2 response are unchanged. Unknown
-   selectors, malformed policy and missing or ambiguous original-window mapping
-   still fail closed. A mixed pair of old/new selected windows is ambiguous.
-2. Only explicit manifest `original-editor-offline-empty-style` selects H2E below.
-   Neither app network grants nor application arguments alter either response.
-3. `ResolvedWindowCsp` still comes only from the digest-verified Guard snapshot.
-   Core carries its actual selector, digest and window key into the existing
-   metadata record. No caller string can install a response header.
-4. The installed schema7 decoder accepts the new closed selector as data; the old
-   developer schema5 retains only its prior strict selector. Missing, unknown or
-   mixed data fail. Metadata itself does not grant content or IPC access.
-5. Real native three-arm tests distinguish H2, H2E and an unsafe-inline diagnostic
-   comparator. H2E admits the actual original empty spinner sheet and arbitrary
-   rules inserted by already admitted external JS; it does not hash those rules.
-6. Nonempty inline text, text appended after empty admission, inline attributes,
-   inline scripts, remote script, foreign stylesheet links, foreign CSSOM imports
-   and CSSOM remote-image requests remain denied. Exercise the newly admitted
-   empty sheet in the H2E arm. Require a browser violation and zero forbidden
-   requests/native-handler calls, with healthy same-origin controls.
-7. Rebuild the exact Host, providers and signed app with the new explicit manifest.
-   Run original editor workflows and negative controls on those bytes. A spinner
-   mechanism pass alone cannot qualify the editor, its print path or all styles.
+### AC-1: preserve the existing strict selector and H2 response
 
-## 4. Design and rejected alternatives
+- **Given:** The existing strict selector and exact H2 policy.
+- **When:** Guard resolves a selected window policy.
+- **Then:** H2 remains byte-identical. Unknown selectors, malformed policy and
+  missing or ambiguous original-window mapping fail closed. A mixed pair of
+  old/new selected windows is ambiguous.
+- **Negative control:**
+  - **Single fault:** Change H2 or allow an ambiguous selector mapping.
+  - **At-risk precondition:** The original strict policy is resolved.
+  - **Expected RED:** Exact-header or ambiguity tests fail.
+
+### AC-2: only an explicit manifest selector chooses H2E
+
+- **Given:** The explicit manifest value `original-editor-offline-empty-style`.
+- **When:** The installed original policy is resolved.
+- **Then:** Only that explicit value selects H2E. App network grants and
+  application arguments do not alter either response.
+- **Negative control:**
+  - **Single fault:** Infer H2E from a network grant or application argument.
+  - **At-risk precondition:** The manifest does not contain the explicit selector.
+  - **Expected RED:** The resolver selects a policy without the required declaration.
+
+### AC-3: the header comes from the digest-verified Guard snapshot
+
+- **Given:** A digest-verified Guard snapshot and its resolved window policy.
+- **When:** Core builds the existing metadata record.
+- **Then:** Core carries the actual selector, digest and window key.
+  No caller string can install a response header.
+- **Negative control:**
+  - **Single fault:** Allow a caller-provided string to choose the header.
+  - **At-risk precondition:** A caller attempts to override the resolved policy.
+  - **Expected RED:** The independent provenance check rejects the override.
+
+### AC-4: schema admission remains closed and metadata is not authority
+
+- **Given:** The installed schema7 decoder and old developer schema5 decoder.
+- **When:** Each decodes the selected policy.
+- **Then:** Schema7 accepts the new closed selector as data. Schema5 retains only
+  its prior strict selector. Missing, unknown or mixed data fail. Metadata grants
+  no content or IPC access.
+- **Negative control:**
+  - **Single fault:** Accept an unknown or mixed selector, or treat metadata as a grant.
+  - **At-risk precondition:** The decoder receives unsupported policy data.
+  - **Expected RED:** Closed-shape or no-authority tests fail.
+
+### AC-5: native three-arm controls distinguish H2, H2E and unsafe-inline
+
+- **Given:** The original empty spinner stylesheet and admitted external JavaScript.
+- **When:** Native H2, H2E and unsafe-inline diagnostic controls run.
+- **Then:** H2E admits the actual empty spinner sheet and arbitrary rules inserted
+  by already admitted external JavaScript. Those later rules are not hash-bound.
+- **Negative control:**
+  - **Single fault:** Replace the empty hash with unsafe-inline or admit nonempty text.
+  - **At-risk precondition:** The original spinner attempts CSSOM insertion.
+  - **Expected RED:** The three-arm policy and nonempty-style controls fail.
+
+### AC-6: all unrelated inline and remote resources remain denied
+
+- **Given:** The H2E policy and an installed original document.
+- **When:** Nonempty inline text, appended text, style attributes, inline scripts,
+  remote scripts, foreign stylesheet links/imports and remote CSSOM images are attempted.
+- **Then:** The browser reports violations and forbidden request/native-handler
+  counts remain zero. Same-origin positive controls remain healthy.
+- **Negative control:**
+  - **Single fault:** Permit one forbidden resource class.
+  - **At-risk precondition:** The installed document attempts that resource.
+  - **Expected RED:** The browser violation or zero-request oracle fails.
+
+### AC-7: qualify the exact installed Host and signed application
+
+- **Given:** The exact Host, providers and signed app with the explicit manifest.
+- **When:** Original editor workflows and negative controls run on those bytes.
+- **Then:** Acceptance is based on the complete installed workflow.
+  A spinner-mechanism pass alone does not qualify the editor, print path or all styles.
+- **Negative control:**
+  - **Single fault:** Use a development/test Host or omit the installed workflow.
+  - **At-risk precondition:** The release candidate is presented for acceptance.
+  - **Expected RED:** The installed-artifact provenance gate refuses qualification.
+
+## 4. Design
 
 The sole Guard catalog adds `OriginalEditorOfflineEmptyStyle`, serialized as
 `original-editor-offline-empty-style`. Its exact header H2E is:
@@ -94,7 +154,7 @@ existing selected semantics); editing the original app/spinner (not framework
 compatibility); intercepting DOM constructors (another implicit policy owner);
 loosening source hashes or native resource checks (unrelated authority bypass).
 
-## 5. Implementation boundaries
+## 5. Boundaries
 
 Guard `window_csp.rs`, `verified_manifest.rs` and their existing tests own policy.
 Core installed source/facts carries the actual resolved selector. The canonical
@@ -103,15 +163,31 @@ the decoded record. The native handler already consumes `ResolvedWindowCsp` and
 must not gain raw-header overrides. The original app's declared manifest changes
 only its selected catalog name; source, preload, channels and other grants do not.
 
-## 6. Ordered tasks
+## 6. Tasks
 
-- [ ] Exact independent design approval and owning tracker record.
-- [ ] Failure-first parser/catalog/mixed-ambiguity and schema7 controls.
-- [ ] Small owner implementation, generated transport refresh and source review.
-- [ ] Qualified fresh providers/Host, explicit manifest, signed original app and
-  real workflow, including the required denied-resource and cleanup controls.
+### T-1: approve the exact permission-model design
 
-## 7. Failure-first validation
+- **Blocked by:** none
+- [ ] Obtain exact independent design approval and owning tracker record.
+
+### T-2: implement failure-first parser and catalog controls
+
+- **Blocked by:** T-1
+- [ ] Add parser/catalog/mixed-ambiguity and schema7 controls.
+- [ ] Implement the small owner-scoped change and refresh generated transport.
+
+### T-3: review the source and generated transport
+
+- **Blocked by:** T-2
+- [ ] Complete exact-source and generated-transport review.
+
+### T-4: qualify the installed original application
+
+- **Blocked by:** T-3
+- [ ] Use qualified fresh providers/Host, explicit manifest and signed original app.
+- [ ] Run real workflows, denied-resource controls and cleanup controls.
+
+## 7. Test plan & evidence
 
 Keep old exact-header assertions. New selector must reject before implementation.
 Its selected header must differ from H2 by exactly one hash token. Mutating that
@@ -121,23 +197,36 @@ signature cannot substitute for manifest provenance or actual resource denial.
 Use the same canonical schema7 literal vectors in Rust/JS metadata tests; the
 decoder's acceptance is not native authority. Preserve every native failed run.
 
-## 8. Review gates
+## 8. Review gates triggered
 
 Permission model and public configuration: independent exact-source security and
 architecture review. No new unsafe operation, dependency or wire channel is planned.
 Do not score this as full GH-553/473 completion or dismiss existing review requests.
 
-## 9. Performance
+## 9. Perf impact
 
 One cold catalog selection and one constant header; no new process, queue, runtime,
 DOM interception or per-frame allocation. No performance improvement is claimed.
 
-## 10. Remaining evidence and sources
+## 10. Open questions, blockers & unknowns
 
-The native extended resource-denial controls, complete installed editor, final
-exact-source review, repository gates and second-Mac acceptance remain separate.
-New failures in other style constructors must be traced and reviewed, not met with
-an automatic broader inline allowance.
+### B-1: independent permission-model review is pending
+
+- **Status:** open
+- **Owner:** Guard catalog and original-source composition
+- **Impact:** Implementation must not start until exact permission review approves
+  the selected H2E semantics and no-authority boundary.
+- **Check:** Obtain independent exact-source security and architecture review.
+
+### B-2: native and installed acceptance is pending
+
+- **Status:** open
+- **Owner:** GH-1404 native acceptance owner
+- **Impact:** Spinner success alone does not qualify the editor, print path or all styles.
+- **Check:** Complete native extended resource-denial controls, installed editor
+  workflow, exact-source review, repository gates and second-Mac acceptance.
+  New failures in other style constructors must be traced, not met with a broader
+  inline allowance.
 
 Primary semantic references: W3C CSP3 Working Draft 2026-10-27, sections 6.1.13 and
 6.7.3.3; WebKit `InlineStyleSheetOwner.cpp` and `ContentSecurityPolicy.cpp`, commit
