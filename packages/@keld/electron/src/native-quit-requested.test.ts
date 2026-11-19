@@ -99,7 +99,7 @@ cases.push({
 });
 
 for (const { facts, mode } of cases) {
-  test(`qualified native Quit intent uses the existing Source/app.quit owner: schema ${facts.schema}, ${mode}`, () => {
+  test(`simulated Host Quit intent exercises the Source/app.quit route: schema ${facts.schema}, ${mode}`, () => {
     const selected =
       mode === "missing-selection"
         ? {
