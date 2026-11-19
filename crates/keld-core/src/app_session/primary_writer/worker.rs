@@ -265,6 +265,22 @@ fn run(shared: &Arc<Shared>, router: &PrimaryRouterHandle) -> Result<(), HostApp
         // Drop the sole payload before a slot could become free. Releasing at
         // dequeue, timeout, role replacement, or before this drop over-admits.
         drop(packet);
+        #[cfg(test)]
+        {
+            let hook = shared
+                .state
+                .lock()
+                .ok()
+                .and_then(|mut state| state.before_completion.take());
+            if let Some(hook) = hook {
+                hook.returned
+                    .send((outcome, completed_at))
+                    .map_err(|_| app_detail("writer completion fixture", "observer disappeared"))?;
+                hook.publish
+                    .recv()
+                    .map_err(|_| app_detail("writer completion fixture", "release disappeared"))?;
+            }
+        }
         let retirement = if outcome == WriteCompletion::OutcomeUnknown {
             // Record the exact failing link before making its completion
             // observable. This worker never waits on the recovery owner.
@@ -296,4 +312,10 @@ pub(in crate::app_session) struct DequeueHook {
     pub(in crate::app_session) arrived: std::sync::mpsc::SyncSender<()>,
     pub(in crate::app_session) resume: Mutex<std::sync::mpsc::Receiver<()>>,
     pub(in crate::app_session) panic_after_resume: bool,
+}
+
+#[cfg(test)]
+pub(super) struct CompletionHook {
+    pub(super) returned: std::sync::mpsc::SyncSender<(WriteCompletion, Instant)>,
+    pub(super) publish: std::sync::mpsc::Receiver<()>,
 }

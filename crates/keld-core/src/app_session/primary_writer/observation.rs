@@ -1,10 +1,13 @@
 //! One synchronous source keeps this result until its publication turn ends.
 //! Waiting observes only the original receipt; recovery stays with its real owner.
 
-use super::{PrimaryWriteFailure, WriteCompletion, WriteReceipt, WriterLink};
+use super::{PrimaryWriteFailure, WriteCompletion, WriteReceipt, WriterLink, WriterRefusal};
 use crate::app_session::{HostAppError, PrimaryRouterHandle, app_detail, append_app_cleanup};
 use std::sync::Arc;
 use std::time::Instant;
+
+#[cfg(all(test, not(keld_core_native_renderer_main)))]
+mod tests;
 
 /// Actual completion and optional sealed failure, with no payload or new queue.
 #[must_use = "report the retained write failure after releasing source publication guards"]
@@ -34,6 +37,16 @@ impl PrimaryRouterHandle {
         phase: &'static str,
     ) -> DeferredPrimaryWrite {
         let observed = receipt.wait(deadline);
+        self.finish_primary_write_observation(target, receipt, observed, phase)
+    }
+
+    fn finish_primary_write_observation(
+        &self,
+        target: &Arc<WriterLink>,
+        receipt: WriteReceipt,
+        observed: Result<WriteCompletion, WriterRefusal>,
+        phase: &'static str,
+    ) -> DeferredPrimaryWrite {
         if observed == Ok(WriteCompletion::Written) {
             let result = receipt
                 .written_at()

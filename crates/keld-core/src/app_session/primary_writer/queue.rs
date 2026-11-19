@@ -64,6 +64,8 @@ pub(super) struct State {
     #[cfg(test)]
     pub(super) after_dequeue: Option<Arc<worker::DequeueHook>>,
     #[cfg(test)]
+    pub(super) before_completion: Option<worker::CompletionHook>,
+    #[cfg(test)]
     pub(super) capacity_wait_observer: Option<std::sync::mpsc::SyncSender<()>>,
     #[cfg(test)]
     pub(super) quiescence_wait_observer: Option<std::sync::mpsc::SyncSender<()>>,
@@ -82,6 +84,8 @@ impl State {
             next_send_failure: None,
             #[cfg(test)]
             after_dequeue: None,
+            #[cfg(test)]
+            before_completion: None,
             #[cfg(test)]
             capacity_wait_observer: None,
             #[cfg(test)]
