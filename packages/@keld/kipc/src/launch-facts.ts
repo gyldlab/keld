@@ -303,7 +303,9 @@ function bindLaunchFactsCapture(intrinsic: LaunchFactsIntrinsics) {
         ...(version === undefined ? {} : { version }),
         ...(locale === undefined ? {} : { locale }),
         ...(singleInstance === undefined ? {} : { singleInstance }),
-        ...(windowsApplicationMenu === undefined ? {} : { windowsApplicationMenu }),
+        ...(windowsApplicationMenu === undefined
+          ? {}
+          : { windowsApplicationMenu }),
       });
     const json = intrinsic.stringify(captured);
     if (

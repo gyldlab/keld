@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:d977c0295813699c42745af6f8d0dbfb4852627122ace9cb94b765a871d17ee9
+// @keld/kipc-transport sha256:44ff3925d4334bb30a45babacbdce7dc0a8e1111c88f469c1a0754ed50a4c77c
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -358,7 +358,9 @@ function bindLaunchFactsCapture(intrinsic: LaunchFactsIntrinsics) {
         ...(version === undefined ? {} : { version }),
         ...(locale === undefined ? {} : { locale }),
         ...(singleInstance === undefined ? {} : { singleInstance }),
-        ...(windowsApplicationMenu === undefined ? {} : { windowsApplicationMenu }),
+        ...(windowsApplicationMenu === undefined
+          ? {}
+          : { windowsApplicationMenu }),
       });
     const json = intrinsic.stringify(captured);
     if (

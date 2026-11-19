@@ -250,7 +250,9 @@ test("Windows schema eight freezes the exact own application menu absence", () =
   });
   const captured = captureHostLaunchFacts(input, true)!;
   input.windowsApplicationMenu = "changed";
-  expect(Object.getOwnPropertyDescriptor(captured, "windowsApplicationMenu")).toEqual({
+  expect(
+    Object.getOwnPropertyDescriptor(captured, "windowsApplicationMenu"),
+  ).toEqual({
     value: "absent-v1",
     enumerable: true,
     writable: false,
@@ -259,7 +261,11 @@ test("Windows schema eight freezes the exact own application menu absence", () =
 });
 
 test("Windows menu absence refuses foreign, older and malformed own data", () => {
-  const { originalResourcePolicy: _policy, singleInstance: _verdict, ...legacy } = facts;
+  const {
+    originalResourcePolicy: _policy,
+    singleInstance: _verdict,
+    ...legacy
+  } = facts;
   const attested = { ...facts, windowsApplicationMenu: "absent-v1" };
   for (const child of [
     observe(attested, false),
@@ -272,25 +278,34 @@ test("Windows menu absence refuses foreign, older and malformed own data", () =>
     expect(child.stdout.toString()).toBe("");
   }
   for (const value of [undefined, null, true, "", "absent-v2", ["absent-v1"]]) {
-    expect(() => captureHostLaunchFacts({ ...facts, windowsApplicationMenu: value }, true))
-      .toThrow("KELD-IPC-029");
+    expect(() =>
+      captureHostLaunchFacts({ ...facts, windowsApplicationMenu: value }, true),
+    ).toThrow("KELD-IPC-029");
   }
 });
 
 test("Windows menu absence never reads an accessor or inherits a fact", () => {
   let reads = 0;
-  const accessor = Object.defineProperty({ ...facts }, "windowsApplicationMenu", {
-    get() {
-      reads++;
-      return "absent-v1";
+  const accessor = Object.defineProperty(
+    { ...facts },
+    "windowsApplicationMenu",
+    {
+      get() {
+        reads++;
+        return "absent-v1";
+      },
     },
-  });
+  );
   expect(() => captureHostLaunchFacts(accessor, true)).toThrow("KELD-IPC-029");
   expect(reads).toBe(0);
   const inherited = Object.assign(
     Object.create({ windowsApplicationMenu: "absent-v1" }),
     facts,
   );
-  expect(captureHostLaunchFacts(inherited, true)?.windowsApplicationMenu).toBeUndefined();
-  expect(captureHostLaunchFacts(facts, true)?.windowsApplicationMenu).toBeUndefined();
+  expect(
+    captureHostLaunchFacts(inherited, true)?.windowsApplicationMenu,
+  ).toBeUndefined();
+  expect(
+    captureHostLaunchFacts(facts, true)?.windowsApplicationMenu,
+  ).toBeUndefined();
 });
