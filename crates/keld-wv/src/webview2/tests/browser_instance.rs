@@ -821,13 +821,37 @@ fn failing_original_wake_preserves_browser_exit_receipt_and_profile_wake() {
     ));
 }
 
+fn current_renderer_lease(
+    source: &Arc<crate::resource_source::AdmittedWebAppSource>,
+    view: u32,
+    lifetime: crate::native_document::RendererLifetime,
+) -> (
+    crate::native_document::NativeDocumentOwner,
+    crate::native_document::NativeDocumentLease,
+) {
+    use crate::WebviewId;
+    use crate::native_document::{NativeCommitIdentity, NativeDocumentOwner};
+    use std::num::NonZeroU64;
+
+    let mut owner = NativeDocumentOwner::for_windows_renderer(WebviewId(view), Some(lifetime));
+    owner.bind_source(source).unwrap();
+    let attempt = owner.begin_host_load(source.source_id()).unwrap();
+    let stamp = owner
+        .commit_admitted(
+            attempt,
+            source.source_id(),
+            NativeCommitIdentity(NonZeroU64::new(u64::from(view)).unwrap()),
+        )
+        .unwrap();
+    let lease = owner.lease_for(stamp).unwrap();
+    (owner, lease)
+}
+
 #[test]
 fn top_level_renderer_loss_revokes_only_its_lease_before_the_original_wake() {
-    use crate::WebviewId;
-    use crate::native_document::{NativeCommitIdentity, NativeDocumentOwner, RendererLifetime};
+    use crate::native_document::RendererLifetime;
     use crate::resource_source::windows::tests::Fixture;
     use crate::webview2::WindowsLoopEvent;
-    use std::num::NonZeroU64;
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_PROCESS_FAILED_KIND_FRAME_RENDER_PROCESS_EXITED,
         COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
@@ -837,22 +861,8 @@ fn top_level_renderer_loss_revokes_only_its_lease_before_the_original_wake() {
     let source = fixture.source_arc();
     let selected = RendererLifetime::default();
     let other = RendererLifetime::default();
-    let lease = |view, lifetime: RendererLifetime| {
-        let mut owner = NativeDocumentOwner::for_windows_renderer(WebviewId(view), Some(lifetime));
-        owner.bind_source(&source).unwrap();
-        let attempt = owner.begin_host_load(source.source_id()).unwrap();
-        let stamp = owner
-            .commit_admitted(
-                attempt,
-                source.source_id(),
-                NativeCommitIdentity(NonZeroU64::new(u64::from(view)).unwrap()),
-            )
-            .unwrap();
-        let lease = owner.lease_for(stamp).unwrap();
-        (owner, lease)
-    };
-    let (_selected_owner, selected_lease) = lease(71, selected.clone());
-    let (_other_owner, other_lease) = lease(72, other);
+    let (_selected_owner, selected_lease) = current_renderer_lease(&source, 71, selected.clone());
+    let (_other_owner, other_lease) = current_renderer_lease(&source, 72, other);
     assert!(selected_lease.is_current() && other_lease.is_current());
     let (tx, rx) = mpsc::channel();
     let tx = Arc::new(tx);
@@ -892,4 +902,44 @@ fn top_level_renderer_loss_revokes_only_its_lease_before_the_original_wake() {
     .unwrap();
     assert!(woke.get());
     assert!(matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+}
+
+#[test]
+fn unreadable_failure_kind_revokes_the_selected_lease_without_a_browser_receipt() {
+    use crate::native_document::RendererLifetime;
+    use crate::resource_source::windows::tests::Fixture;
+    use crate::webview2::WindowsLoopEvent;
+    use windows::Win32::Foundation::{E_POINTER, E_UNEXPECTED};
+
+    let fixture = Fixture::new();
+    let source = fixture.source_arc();
+    let selected = RendererLifetime::default();
+    let (_selected_owner, selected_lease) = current_renderer_lease(&source, 71, selected.clone());
+    let (_other_owner, other_lease) =
+        current_renderer_lease(&source, 72, RendererLifetime::default());
+    assert!(selected_lease.is_current() && other_lease.is_current());
+
+    let (sender, receipts) = mpsc::channel();
+    let sender = Arc::new(sender);
+    let woke = Cell::new(false);
+    let error = super::dispatch_process_failure(
+        Some(&selected),
+        &Arc::downgrade(&sender),
+        A,
+        Err(E_POINTER.into()),
+        &|event| {
+            assert!(matches!(event, WindowsLoopEvent::OriginalWake));
+            assert!(!selected_lease.is_current());
+            assert!(other_lease.is_current());
+            assert!(!woke.replace(true));
+            Err(E_UNEXPECTED.into())
+        },
+    )
+    .expect_err("unreadable failure kind must preserve its own error");
+    assert!(woke.get());
+    assert_eq!(error.code(), E_POINTER);
+    assert!(matches!(
+        receipts.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
 }
