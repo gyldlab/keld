@@ -186,3 +186,39 @@ fn present_native_failure_cannot_replace_accepted_terminal_cause() {
         .is_none()
     );
 }
+
+#[test]
+fn app_session_binds_only_the_boot_selected_prepared_graph() {
+    use crate::app_session::WindowsGraphSelection;
+    use std::sync::Arc;
+
+    let (_files, source, root, entry) = prepared_original_launch_source();
+    let (_other_files, other, _, _) = prepared_original_launch_source();
+    assert_eq!(
+        source.launch_graph().graph_sha256(),
+        other.launch_graph().graph_sha256(),
+        "the separately admitted graph has the same expected bytes"
+    );
+    let declaration = serde_json::from_str(r#"{"id":"con.example"}"#).expect("boot declaration");
+    let validated = WindowsGraphSelection {
+        graph: Arc::clone(source.launch_graph()),
+        version: Some(String::from("31.7.0-selected")),
+        single_instance: Some(declaration),
+        application_name_for_user_agent: None,
+    };
+    let selected = validated
+        .launch_selection(&source, &root, entry, "Exact")
+        .expect("same admitted graph");
+    assert_eq!(selected.version, Some("31.7.0-selected"));
+    assert_eq!(
+        selected.declaration.expect("actual boot declaration").id(),
+        "con.example"
+    );
+    assert!(std::ptr::eq(selected.source, &source));
+    assert!(
+        validated
+            .launch_selection(&other, &root, entry, "Exact")
+            .is_err(),
+        "an independently prepared graph cannot supply the selection"
+    );
+}

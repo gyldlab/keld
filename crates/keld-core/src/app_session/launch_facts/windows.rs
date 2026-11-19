@@ -9,7 +9,7 @@ use serde::Serialize;
 use super::original_webapp::PreparedOriginalSource;
 use super::windows_instance_election::{self, Election};
 use super::{
-    DEV_LEASE_ENV, HostAppError, SessionShutdownState, WindowsDevLeaseMonitor, WindowsProfileMode,
+    HostAppError, SessionShutdownState, WindowsDevLeaseMonitor, WindowsProfileMode,
     run_direct_startup_if_session_running,
 };
 use crate::SingleInstanceDeclaration;
@@ -89,10 +89,7 @@ fn prepare_selected(
     let winner_lease = facts.set_election(selected.declaration.map(elect).transpose()?);
     let config = PrimaryRoleConfig::new("bun")
         .source_recheck(graph.clone())
-        .current_dir(selected.root)
         .env_remove(BUN_OPTIONS_ENV)
-        .env_remove(DEV_LEASE_ENV)
-        .env_remove(keld_runtime::windows_job::WINDOWS_LAUNCH_GATE_ENV)
         .arg("--no-env-file")
         .arg("--no-install")
         .arg("--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\"")

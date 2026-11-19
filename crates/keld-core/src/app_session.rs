@@ -504,9 +504,35 @@ enum WindowsBootMode {
 #[derive(Debug)]
 struct WindowsGraphSelection {
     graph: Arc<AdmittedStageGraph>,
-    _version: Option<String>,
-    _single_instance: Option<crate::SingleInstanceDeclaration>,
+    version: Option<String>,
+    single_instance: Option<crate::SingleInstanceDeclaration>,
     application_name_for_user_agent: Option<keld_wv::ApplicationNameForUserAgent>,
+}
+
+#[cfg(windows)]
+impl WindowsGraphSelection {
+    fn launch_selection<'a>(
+        &'a self,
+        source: &'a original_webapp::PreparedOriginalSource,
+        root: &'a Path,
+        entry: &'a Path,
+        name: &'a str,
+    ) -> Result<windows_launch_facts::SelectedLaunch<'a>, HostAppError> {
+        if !Arc::ptr_eq(&self.graph, source.launch_graph()) {
+            return Err(app_detail(
+                "Windows development graph startup",
+                "prepared original source is not the admitted BOOT8 graph",
+            ));
+        }
+        Ok(windows_launch_facts::SelectedLaunch {
+            root,
+            entry,
+            name,
+            version: self.version.as_deref(),
+            declaration: self.single_instance.as_ref(),
+            source,
+        })
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -1488,6 +1514,7 @@ struct RetainedWindowsSession {
     _events: Sender<AppWindowEvent>,
     _lease_errors: Option<Receiver<HostAppError>>,
     _families: keld_runtime::windows_job::WindowsPrimaryFamilies,
+    _instance_lease: Option<keld_update::WindowsInstanceLeaseFile>,
     installed_package: Option<Box<keld_update::ActivePackageSelection>>,
     guard: Option<GuardSnapshot>,
 }
@@ -1676,8 +1703,8 @@ fn validate_windows_boot_files_from(
         )?;
         WindowsBootMode::DevelopmentGraph(Box::new(WindowsGraphSelection {
             graph: Arc::new(graph),
-            _version: selected.version,
-            _single_instance: selected.single_instance,
+            version: selected.version,
+            single_instance: selected.single_instance,
             application_name_for_user_agent: selected.application_name_for_user_agent,
         }))
     } else {
@@ -2270,6 +2297,11 @@ pub fn run_guarded(
         profile_preflight::disclose_profile(profile, false)?;
         let guard_snapshot = GuardSnapshot::prepare_uncontained(verified, profile)
             .map_err(|source| HostAppError::fs_prepare(&source))?;
+        // The selected launch must have its entire verified provider and UI
+        // route before the public no-flag entry may dispatch it.
+        if matches!(&app.mode, WindowsBootMode::DevelopmentGraph(_)) {
+            return Err(windows_graph_view_error().into());
+        }
         let mut retained = None;
         let result = run_app_direct(
             app,
@@ -3764,11 +3796,15 @@ fn windows_primary_config(
     entry_path: &Path,
     native_facade: bool,
     dev_lease: Option<&WindowsDevLeaseMonitor>,
+    selected_config: Option<PrimaryRoleConfig>,
 ) -> Result<PrimaryRoleConfig, HostAppError> {
-    let config = PrimaryRoleConfig::new("bun")
-        .staged_bun_launch(root, native_facade)
-        .arg("run")
-        .arg(root.join(entry_path))
+    let config = selected_config.unwrap_or_else(|| {
+        PrimaryRoleConfig::new("bun")
+            .staged_bun_launch(root, native_facade)
+            .arg("run")
+            .arg(root.join(entry_path))
+    });
+    let config = config
         .current_dir(root)
         .env(
             NATIVE_WINDOW_FACADE_ENV,
@@ -3858,10 +3894,18 @@ fn run_app_direct(
     // Held until the last session returns, so the installed version tree every
     // session runs from stays pinned through teardown.
     #[cfg(windows)]
-    let (installed_identity, mut installed_package) = match mode {
-        WindowsBootMode::DevStage => (None, None),
-        WindowsBootMode::DevelopmentGraph(_selection) => return Err(windows_graph_view_error()),
-        WindowsBootMode::Installed { identity, active } => (Some(identity), Some(active)),
+    let (installed_identity, mut installed_package, development_graph) = match mode {
+        WindowsBootMode::DevStage => (None, None, None),
+        WindowsBootMode::DevelopmentGraph(selection) => (None, None, Some(selection)),
+        WindowsBootMode::Installed { identity, active } => (Some(identity), Some(active), None),
+    };
+    #[cfg(windows)]
+    let selected = match (development_graph.as_deref(), original_source.as_deref()) {
+        (Some(graph), Some(source)) if guard_snapshot.is_some() => {
+            Some(graph.launch_selection(source, &root, &entry_path, &name)?)
+        }
+        (None, None) => None,
+        _ => return Err(windows_graph_view_error()),
     };
     let html = match initial_window {
         ValidatedInitialWindow::Renderer(html) => {
@@ -3894,6 +3938,21 @@ fn run_app_direct(
     #[cfg(windows)]
     let windows_profile_mode =
         select_windows_profile_mode(installed_identity, dev_lease.is_some())?;
+    #[cfg(windows)]
+    let (mut selected_config, mut instance_lease) = if let Some(selected) = selected {
+        let Some(prepared) = windows_launch_facts::prepare_original(
+            selected,
+            windows_profile_mode,
+            dev_lease.as_ref(),
+            &shutdown,
+        )?
+        else {
+            return take_direct_prestart_lease_result(dev_lease.as_ref());
+        };
+        (Some(prepared.config), prepared.winner_lease)
+    } else {
+        (None, None)
+    };
     #[cfg(all(debug_assertions, windows))]
     let mut session_seam = TestSessionSeam::from_environment(dev_lease.is_some())?;
     #[cfg(target_os = "linux")]
@@ -3928,6 +3987,8 @@ fn run_app_direct(
             &inputs,
             &shutdown,
             dev_lease,
+            #[cfg(windows)]
+            selected_config.take(),
             #[cfg(all(debug_assertions, windows))]
             handover_at_ready,
             #[cfg(windows)]
@@ -3936,6 +3997,7 @@ fn run_app_direct(
         #[cfg(windows)]
         if let Some(session) = retained.as_mut() {
             session.installed_package = installed_package.take();
+            session._instance_lease = instance_lease.take();
         }
         #[cfg(all(debug_assertions, windows))]
         let another_requested = session_seam.take_request();
@@ -3950,6 +4012,13 @@ fn run_app_direct(
         ) {
             DirectSessionNext::Exit => return result.map(|_| ()),
             DirectSessionNext::RunAnother => {
+                #[cfg(windows)]
+                if development_graph.is_some() {
+                    return Err(app_detail(
+                        "Windows development graph startup",
+                        "an admitted original development launch owns only one Host session",
+                    ));
+                }
                 // The next session's guard preflight, before any of its resources.
                 if let Some(snapshot) = inputs.guard_snapshot {
                     snapshot.prepare_next_session()?;
@@ -3978,6 +4047,7 @@ fn run_direct_app_session(
     shutdown: &SessionShutdownState,
     #[cfg(windows)] dev_lease: Option<WindowsDevLeaseMonitor>,
     #[cfg(target_os = "linux")] dev_lease: Option<DevHostLease>,
+    #[cfg(windows)] selected_config: Option<PrimaryRoleConfig>,
     #[cfg(all(debug_assertions, windows))] handover_at_ready: bool,
     #[cfg(windows)] retained: &mut Option<Box<RetainedWindowsSession>>,
 ) -> Result<DirectSessionEnd, HostAppError> {
@@ -4001,6 +4071,7 @@ fn run_direct_app_session(
         inputs.entry_path,
         ready_trigger == AppReadyTrigger::HostInitialized,
         dev_lease.as_ref(),
+        selected_config,
     )?
     .windows_primary_families(primary_families.clone());
     // Subscribe is allowed immediately after the primary link connects. Native
@@ -4278,6 +4349,7 @@ fn run_direct_app_session(
                         _events: window_events_tx,
                         _lease_errors: lease_errors,
                         _families: primary_families.clone(),
+                        _instance_lease: None,
                         installed_package: None,
                         guard: None,
                     }));
@@ -4362,6 +4434,7 @@ fn run_direct_app_session(
                 _events: window_events_tx,
                 _lease_errors: lease_errors,
                 _families: primary_families.clone(),
+                _instance_lease: None,
                 installed_package: None,
                 guard: None,
             }));
