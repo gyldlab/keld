@@ -1004,6 +1004,11 @@ type WindowEventExtension =
       window: WindowRef;
       document_generation: number;
       native_url: string;
+    }
+  | {
+      variant: "NavigationFinishedUnitPinchV1";
+      window: WindowRef;
+      document_generation: number;
     };
 function encodeWindowEventExtension(value: WindowEventExtension): Uint8Array {
   switch (value.variant) {
@@ -1026,6 +1031,12 @@ function encodeWindowEventExtension(value: WindowEventExtension): Uint8Array {
         encodeWindowRef(value.window),
         encodeNativeDocumentGeneration(value.document_generation),
         encodePreloadString(value.native_url, 8192, true),
+      ]);
+    case "NavigationFinishedUnitPinchV1":
+      return join([
+        encodeVarint(11),
+        encodeWindowRef(value.window),
+        encodeNativeDocumentGeneration(value.document_generation),
       ]);
     default:
       throw invalid("unknown WindowEvent extension");
@@ -1093,6 +1104,22 @@ function windowEventExtensionAt(
           window,
           document_generation,
           native_url,
+        },
+        at,
+      ];
+    }
+    case 11: {
+      let at = afterTag;
+      const [window, next_window] = windowRefAt(wireBytes, at);
+      at = next_window;
+      const [document_generation, next_document_generation] =
+        nativeDocumentGenerationAt(wireBytes, at);
+      at = next_document_generation;
+      return [
+        {
+          variant: "NavigationFinishedUnitPinchV1",
+          window,
+          document_generation,
         },
         at,
       ];

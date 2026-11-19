@@ -216,6 +216,14 @@ replay<WindowCarrierEvent>(
           "keld-resource://0123456789abcdef0123456789abcdef/index.html?q=1",
       },
     ],
+    [
+      "event-navigation-finished-unit-pinch-v1",
+      {
+        variant: "NavigationFinishedUnitPinchV1",
+        window: WINDOW,
+        document_generation: 5,
+      },
+    ],
   ],
   encodeWindowCarrierEvent,
   decodeWindowCarrierEvent,
@@ -348,7 +356,7 @@ replay<CloseVerdict>(
 );
 
 test("every shared vector is replayed exactly once", () => {
-  expect(vectors.size).toBe(48);
+  expect(vectors.size).toBe(49);
   expect([...replayed].sort()).toEqual([...vectors.keys()].sort());
 });
 
@@ -357,7 +365,7 @@ test("unknown discriminants and malformed scalar bytes fail closed", () => {
     [decodeWindowEvent, [7]],
     [decodeWindowRequest, [6]],
     [decodeWindowResponse, [10]],
-    [decodeWindowCarrierEvent, [11, 7, 0xac, 2, 5]],
+    [decodeWindowCarrierEvent, [12, 7, 0xac, 2, 5]],
     [decodeCloseVerdict, [2]],
     [decodeWindowEvent, [2, 7, 0xac, 2, 2]],
     [decodeWindowRequest, [0, 0, 0, 2]],
@@ -549,6 +557,7 @@ test("ordinary Window decoder refuses complete appended event facts", () => {
     "event-navigation-committed",
     "event-navigation-finished",
     "event-document-recovered",
+    "event-navigation-finished-unit-pinch-v1",
   ]) {
     const fact = vectors.get(id);
     if (!fact) throw new Error("Missing appended event vector " + id);

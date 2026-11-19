@@ -245,6 +245,13 @@ fn window_events_match_shared_vectors() {
                     .to_owned(),
             },
         ),
+        (
+            "event-navigation-finished-unit-pinch-v1",
+            WindowEvent::NavigationFinishedUnitPinchV1 {
+                window: WINDOW,
+                document_generation: 5,
+            },
+        ),
     ];
     let cases: Vec<_> = cases.into_iter().chain(desktop::literal_cases()).collect();
     assert_vectors("event", &cases);
@@ -407,7 +414,7 @@ fn window_responses_match_shared_vectors() {
 #[test]
 fn window_payloads_reject_unknown_discriminants_and_invalid_scalar_values() {
     assert!(matches!(
-        decode::<WindowEvent>(&[11, 7, 0xac, 2, 5]),
+        decode::<WindowEvent>(&[12, 7, 0xac, 2, 5]),
         Err(IpcError::Codec(_))
     ));
     assert!(matches!(

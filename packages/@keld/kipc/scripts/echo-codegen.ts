@@ -303,6 +303,10 @@ const NATIVE_SCHEMAS: Readonly<Record<NativeEnumName, NativeSchema>> = {
       document_generation: "u32",
       native_url: "String",
     },
+    NavigationFinishedUnitPinchV1: {
+      window: "WindowRef",
+      document_generation: "u32",
+    },
   },
   FsRequest: {
     Read: { path: "String" },

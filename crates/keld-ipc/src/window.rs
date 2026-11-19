@@ -175,6 +175,13 @@ pub enum WindowEventValue<T> {
         /// Retained credited native URL from that exact qualified commit.
         native_url: T,
     },
+    /// Selected Windows original navigation finished with the native unit pinch policy confirmed.
+    NavigationFinishedUnitPinchV1 {
+        /// Existing Host-minted identity of the window whose controller enforces the policy.
+        window: WindowRef,
+        /// Same native-observed generation as the matching original document commit.
+        document_generation: u32,
+    },
 }
 
 /// Owned app decoder for the canonical host-to-app window facts.
