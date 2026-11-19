@@ -231,3 +231,7 @@ fn invalid(detail: impl Into<String>) -> HostAppError {
 #[cfg(test)]
 #[path = "selected_windows_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "selected_command_tests.rs"]
+mod command_tests;

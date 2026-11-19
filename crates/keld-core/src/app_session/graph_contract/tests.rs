@@ -518,11 +518,16 @@ fn schema8_resource_handoff_binds_the_selected_document_and_guard_receipt() {
 fn original_graph_and_policy(
     fixture: &Fixture,
 ) -> (AdmittedStageGraph, keld_guard::ResolvedWindowCsp, [u8; 32]) {
+    let graph = bind(fixture, Some(&qualification())).expect("admitted retained graph fixture");
+    let (policy, digest) = original_fixture_policy(fixture);
+    (graph, policy, digest)
+}
+
+fn original_fixture_policy(fixture: &Fixture) -> (keld_guard::ResolvedWindowCsp, [u8; 32]) {
     use keld_guard::verified_manifest::load_verified_manifest;
 
     const POLICY: &[u8] =
         br#"{"profile":"legacy","windows":{"editor":{"web":{"csp":"original-editor-offline"}}}}"#;
-    let graph = bind(fixture, Some(&qualification())).expect("admitted retained graph fixture");
     let path = fixture.owned.path().join("verified-policy.json");
     fs::write(&path, POLICY).expect("fixture policy");
     let digest = Sha256::digest(POLICY).into();
@@ -532,7 +537,72 @@ fn original_graph_and_policy(
     let policy = manifest
         .resolve_unique_original_window_csp()
         .expect("unique editor policy");
-    (graph, policy, digest)
+    (policy, digest)
+}
+
+pub(in crate::app_session) fn prepared_pinned_launch_source(
+    provider_root: &Path,
+    entry: &str,
+) -> (
+    tempfile::TempDir,
+    crate::app_session::original_webapp::PreparedOriginalSource,
+    PathBuf,
+    &'static Path,
+) {
+    use crate::app_session::original_webapp::PreparedOriginalSource;
+    use std::sync::Arc;
+
+    let mut fixture = fixture_with_entry();
+    fixture.root = fixture.root.canonicalize().expect("verbatim fixture root");
+    for name in ["electron", "@keld/api", "@keld/kipc"] {
+        copy_provider_tree(
+            &provider_root.join(name),
+            &fixture.root.join("node_modules").join(name),
+        )
+        .expect("disposable copy of the qualified provider");
+    }
+    Fixture::write(&fixture.root, MAIN, entry.as_bytes());
+    let mut approved = approved();
+    let qualification = qualified_windows_distribution().expect("qualified Windows x64 tuple");
+    approved.expected_package_trees = *qualification.provider_trees();
+    let bytes = make_graph_leaf_from_retained_root(
+        &fixture.root,
+        &fixture.held,
+        &approved,
+        &fixture.selected,
+        MAIN,
+    )
+    .expect("capture exact qualified providers and fixture source");
+    Fixture::write(&fixture.root, GRAPH_FILE, &bytes);
+    let graph = read_windows_bound_graph_from_retained_root(
+        &fixture.root,
+        &fixture.held,
+        Sha256::digest(bytes).into(),
+        Path::new(MAIN),
+        &fixture.selected,
+    )
+    .expect("production graph and provider admission");
+    let (policy, _) = original_fixture_policy(&fixture);
+    let source =
+        PreparedOriginalSource::prepare(Arc::new(graph), policy, None).expect("verified fixture");
+    (fixture.owned, source, fixture.root, Path::new(MAIN))
+}
+
+fn copy_provider_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for member in fs::read_dir(from)? {
+        let member = member?;
+        let destination = to.join(member.file_name());
+        let kind = member.file_type()?;
+        if kind.is_dir() {
+            copy_provider_tree(&member.path(), &destination)?;
+        } else if kind.is_file() {
+            fs::copy(member.path(), destination)?;
+        } else {
+            return Err(std::io::Error::other("unqualified provider fixture member"));
+        }
+    }
+    Ok(())
 }
 
 pub(in crate::app_session) fn retained_original_window_resources() -> (
