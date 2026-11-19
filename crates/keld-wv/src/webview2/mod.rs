@@ -439,7 +439,7 @@ struct SelectedWindowsProfile {
 }
 
 #[derive(Clone, Copy)]
-enum WindowsLoopEvent {
+pub(crate) enum WindowsLoopEvent {
     App(AppWindowCommand),
     ProfileReleaseWake,
     OriginalWake,
