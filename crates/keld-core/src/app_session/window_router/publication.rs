@@ -1,11 +1,16 @@
 //! Window sources submit to the single session-wide primary FIFO.
 
 mod common;
+mod desktop;
+mod desktop_time;
 mod emitter;
 mod input;
 mod native;
 mod original_navigation;
 mod replay;
+
+pub(in crate::app_session) use desktop::DesktopStartup;
+pub(super) use desktop::SelectedDesktop;
 
 pub(in crate::app_session) use common::{
     NativePublicationDisposition, PublicationError, PublicationResult,

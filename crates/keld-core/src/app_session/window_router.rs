@@ -16,6 +16,8 @@ mod native_outcome;
 #[cfg(windows)]
 mod publication;
 #[cfg(windows)]
+pub(super) use publication::DesktopStartup;
+#[cfg(windows)]
 mod publication_turn;
 #[cfg(windows)]
 pub(super) use publication::NativePublicationDisposition;
@@ -54,6 +56,8 @@ pub(super) struct WindowSession {
     #[cfg(windows)]
     original_selection: Option<std::sync::Arc<super::original_webapp::OriginalLoadSelection>>,
     #[cfg(windows)]
+    desktop: Option<publication::SelectedDesktop>,
+    #[cfg(windows)]
     compat: Option<std::sync::Arc<super::compat_router::CompatSession>>,
     // The one subscription owner is this live link, not the window instances.
     subscribed: Option<WindowOwner>,
@@ -68,6 +72,8 @@ impl WindowSession {
             #[cfg(windows)]
             original_selection: None,
             #[cfg(windows)]
+            desktop: None,
+            #[cfg(windows)]
             compat: None,
             subscribed: None,
             #[cfg(windows)]
@@ -80,6 +86,9 @@ impl WindowSession {
         mut self,
         selection: Option<std::sync::Arc<super::original_webapp::OriginalLoadSelection>>,
     ) -> Self {
+        self.desktop = selection
+            .is_some()
+            .then(publication::SelectedDesktop::default);
         self.original_selection = selection;
         self
     }
@@ -489,6 +498,10 @@ impl PrimaryRouterHandle {
                 .map_err(|_| app_detail("window role retirement", "registry lock poisoned"))?;
             if session.subscribed == Some(retired) {
                 session.subscribed = None;
+            }
+            #[cfg(windows)]
+            if let Some(desktop) = session.desktop.as_mut() {
+                desktop.retire(retired);
             }
             session.registry.role_lost(retired, report_abandoned);
         }

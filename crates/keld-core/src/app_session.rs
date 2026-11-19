@@ -4292,10 +4292,13 @@ fn run_direct_app_session(
             if let Some((mut dispatch, endpoint)) = renderer_plan.take() {
                 let observer = router.handle();
                 let attached = direct_engine
-                    .attach_selected_renderer(endpoint, move |context, fact| {
-                        observer
-                            .capture_original_navigation_fact(context, fact)
-                            .map_err(|error| WvError::EventLoop(error.to_string()))
+                    .select_desktop_observation()
+                    .and_then(|()| {
+                        direct_engine.attach_selected_renderer(endpoint, move |context, fact| {
+                            observer
+                                .capture_original_navigation_fact(context, fact)
+                                .map_err(|error| WvError::EventLoop(error.to_string()))
+                        })
                     })
                     .map_err(|error| app_detail("selected renderer attachment", error.to_string()))
                     .and_then(|wake| dispatch.start(router.handle(), move || wake.notify()));
@@ -5432,6 +5435,17 @@ fn receive_initial_milestone(
     events: &Receiver<AppWindowEvent>,
     watch: Option<&OnceLock<Instant>>,
 ) -> InitialMilestoneReceive {
+    receive_initial_milestone_with_desktop(events, watch, false)
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn receive_initial_milestone_with_desktop(
+    events: &Receiver<AppWindowEvent>,
+    watch: Option<&OnceLock<Instant>>,
+    allow_desktop: bool,
+) -> InitialMilestoneReceive {
+    #[cfg(not(windows))]
+    let _ = allow_desktop;
     let before_receive = watch.and_then(|clock| clock.get().copied());
     let poll = initial_milestone_poll(before_receive, Instant::now());
     let received = events.recv_timeout(poll);
@@ -5440,6 +5454,10 @@ fn receive_initial_milestone(
     // the native producer has armed this same OnceLock.
     let deadline = watch.and_then(|clock| clock.get().copied());
     match received {
+        #[cfg(windows)]
+        Ok(event @ AppWindowEvent::DesktopObserved { .. }) if allow_desktop => {
+            InitialMilestoneReceive::Event(event)
+        }
         Ok(AppWindowEvent::HostInitialized { observed_at })
             if watch.is_some() && deadline.is_none_or(|at| observed_at >= at) =>
         {
@@ -5525,26 +5543,57 @@ fn coordinate_window_events(
         }
         Ok::<(), HostAppError>(())
     };
-    let mut publish_ready = || router.signal_ready().and_then(|()| on_ready(router));
+    #[cfg(windows)]
+    let selected_desktop = router.selected_desktop_enabled()?;
+    #[cfg(windows)]
+    let desktop_before_init = std::cell::Cell::new(false);
+    #[cfg(windows)]
+    let mut selected_ready_published = false;
     let mut process_event = |event| {
         let result = match event {
             AppWindowEvent::NavigationReady => {
                 #[cfg(target_os = "macos")]
                 {
-                    accept_ready(AppReadyTrigger::NavigationReady).and_then(|()| publish_ready())
+                    accept_ready(AppReadyTrigger::NavigationReady)
+                        .and_then(|()| router.signal_ready())
+                        .and_then(|()| on_ready(router))
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
                     if router.windows.is_none() {
-                        publish_ready()
+                        router.signal_ready().and_then(|()| on_ready(router))
                     } else {
                         Ok(())
                     }
                 }
             }
             #[cfg(any(target_os = "macos", windows))]
-            AppWindowEvent::HostInitialized { .. } => {
-                accept_ready(AppReadyTrigger::HostInitialized).and_then(|()| publish_ready())
+            AppWindowEvent::HostInitialized { observed_at } => {
+                accept_ready(AppReadyTrigger::HostInitialized).and_then(|()| {
+                    #[cfg(windows)]
+                    if selected_desktop {
+                        let entered = init_watch
+                            .and_then(|(clock, _)| clock.get())
+                            .and_then(|deadline| {
+                                deadline.checked_sub(keld_wv::INITIAL_MILESTONE_DEADLINE)
+                            })
+                            .ok_or_else(|| {
+                                app_detail("selected desktop Init", "actual UI entry is absent")
+                            })?;
+                        return router.mark_selected_desktop_initialized(entered, observed_at);
+                    }
+                    let _ = observed_at;
+                    router.signal_ready().and_then(|()| on_ready(router))
+                })
+            }
+            #[cfg(windows)]
+            AppWindowEvent::DesktopObserved { facts } => {
+                desktop_before_init.set(true);
+                router.observe_selected_desktop(None, facts)
+            }
+            #[cfg(windows)]
+            AppWindowEvent::WindowsDesktopObserved { capture, facts } => {
+                router.observe_selected_desktop(Some(capture), facts)
             }
             #[cfg(any(target_os = "macos", windows))]
             AppWindowEvent::DialogFinished {
@@ -5594,6 +5643,27 @@ fn coordinate_window_events(
                 }
             }
         };
+        #[cfg(windows)]
+        let result = if selected_desktop && result.is_ok() {
+            use window_router::DesktopStartup;
+            match router.service_selected_desktop() {
+                Ok(DesktopStartup::Waiting) => Ok(()),
+                Ok(DesktopStartup::FatalQueued(error)) => return Err(error),
+                Ok(DesktopStartup::Ready { target, deadline }) => router
+                    .signal_ready_with_writer_for(&target, deadline)
+                    .and_then(|()| {
+                        if !selected_ready_published && router.window_ready.load(Ordering::Acquire)
+                        {
+                            selected_ready_published = true;
+                            on_ready(router)?;
+                        }
+                        Ok(())
+                    }),
+                Err(error) => Err(error),
+            }
+        } else {
+            result
+        };
         if let Err(error) = result {
             let _ = commands.send(AppWindowCommand::Fatal);
             Err(error)
@@ -5616,7 +5686,32 @@ fn coordinate_window_events(
         }
         let until_init = init_watch
             .filter(|_| ready_trigger == AppReadyTrigger::HostInitialized && !init_seen.get());
-        let event = match receive_initial_milestone(events, until_init.map(|(clock, _)| clock)) {
+        #[cfg(windows)]
+        if selected_desktop {
+            let entered = init_watch
+                .and_then(|(clock, _)| clock.get())
+                .and_then(|deadline| deadline.checked_sub(keld_wv::INITIAL_MILESTONE_DEADLINE));
+            if let Err(error) = router.selected_desktop_startup_deadline(entered, Instant::now()) {
+                if !init_seen.get()
+                    && let Some((_, terminal)) = until_init
+                {
+                    terminate_stalled_ui(router, terminal, error);
+                }
+                return Err(append_app_cleanup(
+                    error,
+                    [stop_failed_renderer_dispatch(router, commands)],
+                ));
+            }
+        }
+        #[cfg(windows)]
+        let allow_desktop = selected_desktop && !init_seen.get() && !desktop_before_init.get();
+        #[cfg(not(windows))]
+        let allow_desktop = false;
+        let event = match if allow_desktop {
+            receive_initial_milestone_with_desktop(events, until_init.map(|(clock, _)| clock), true)
+        } else {
+            receive_initial_milestone(events, until_init.map(|(clock, _)| clock))
+        } {
             InitialMilestoneReceive::Event(event) => {
                 if router.shutdown.reader_stop.load(Ordering::Acquire) && router.windows.is_none() {
                     break;
@@ -5659,6 +5754,15 @@ fn terminate_stalled_init(router: &PrimaryRouterHandle, terminal: fn(&HostAppErr
         "initial UI milestone",
         "the UI loop did not deliver its first turn within 15 s",
     );
+    terminate_stalled_ui(router, terminal, error)
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn terminate_stalled_ui(
+    router: &PrimaryRouterHandle,
+    terminal: fn(&HostAppError) -> !,
+    error: HostAppError,
+) -> ! {
     router.guardian.deny_recovery();
     router.shutdown.reader_stop.store(true, Ordering::Release);
     // Do not block on a reader/native handler holding one of these locks.
@@ -8736,10 +8840,14 @@ impl PrimaryRouterHandle {
             };
             #[cfg(windows)]
             {
+                if let Some(target) = writer_link.as_ref() {
+                    self.bind_selected_desktop(target.caller())?;
+                }
+                let selected_desktop = self.selected_desktop_enabled()?;
                 writer_replay = writer_link.as_ref().map(|target| {
                     (
                         Arc::clone(target),
-                        self.window_ready.load(Ordering::Acquire),
+                        !selected_desktop && self.window_ready.load(Ordering::Acquire),
                         self.windows.is_none() && self.last_window_closed.load(Ordering::Acquire),
                         Instant::now() + APP_LINK_IO_DEADLINE,
                     )

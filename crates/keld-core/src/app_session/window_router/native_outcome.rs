@@ -151,6 +151,14 @@ impl PrimaryRouterHandle {
                     "the first host Init milestone belongs only to the lifecycle coordinator",
                 ));
             }
+            #[cfg(windows)]
+            AppWindowEvent::DesktopObserved { .. }
+            | AppWindowEvent::WindowsDesktopObserved { .. } => {
+                return Err(app_detail(
+                    "window native event",
+                    "desktop observations belong to the current-reader coordinator",
+                ));
+            }
             #[cfg(any(target_os = "macos", windows))]
             AppWindowEvent::DialogFinished { .. } => {
                 return Err(app_detail(

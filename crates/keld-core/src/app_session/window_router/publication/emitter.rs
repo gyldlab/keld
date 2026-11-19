@@ -1,7 +1,7 @@
 //! Reserve/encode, fence/enqueue and observe the actual original write receipt.
 
 use super::super::super::primary_writer::{
-    ControlMessage, PreparedFrame, WriterLink, admit_locked,
+    ControlMessage, PreparedFrame, WriteReceipt, WriterLink, admit_locked,
 };
 use super::super::super::window_registry::{ClosingCleanup, Teardown, fixed_event_window};
 use super::super::request::WindowRefusal;
@@ -31,21 +31,47 @@ impl WindowEmitter<'_, '_> {
         check: impl FnOnce(&WindowSession) -> bool,
         phase: &'static str,
     ) -> PublicationResult<bool> {
-        let receipt = self
-            .with_registry(phase, |session, active| {
-                if check(session) {
-                    admit_locked(active, frame).map(Some)
-                } else {
-                    Ok(None)
-                }
-            })?
-            .flatten();
+        let receipt = self.admit_record(frame, check, phase)?;
         let Some(receipt) = receipt else {
             return Ok(false);
         };
         self.router
             .observe_publication(self.target, receipt, self.deadline, phase)?;
         Ok(true)
+    }
+
+    pub(super) fn admit_by_deadline(
+        &self,
+        frame: PreparedFrame,
+        check: impl FnOnce(&WindowSession) -> bool,
+        phase: &'static str,
+    ) -> PublicationResult<bool> {
+        let Some(receipt) = self.admit_record(frame, check, phase)? else {
+            return Ok(false);
+        };
+        let written =
+            self.router
+                .observe_publication_at(self.target, receipt, self.deadline, phase)?;
+        if written >= self.deadline {
+            return Err(super::super::app_ipc(phase, &keld_ipc::IpcError::Timeout).into());
+        }
+        Ok(true)
+    }
+
+    fn admit_record(
+        &self,
+        frame: PreparedFrame,
+        check: impl FnOnce(&WindowSession) -> bool,
+        phase: &'static str,
+    ) -> Result<Option<WriteReceipt>, HostAppError> {
+        self.with_registry(phase, |session, active| {
+            if check(session) {
+                admit_locked(active, frame).map(Some)
+            } else {
+                Ok(None)
+            }
+        })
+        .map(Option::flatten)
     }
 
     pub(super) fn with_registry<T>(

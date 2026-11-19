@@ -47,11 +47,22 @@ impl PrimaryRouterHandle {
         deadline: Instant,
         phase: &'static str,
     ) -> PublicationResult<()> {
+        self.observe_publication_at(target, receipt, deadline, phase)
+            .map(drop)
+    }
+
+    pub(super) fn observe_publication_at(
+        &self,
+        target: &Arc<WriterLink>,
+        receipt: WriteReceipt,
+        deadline: Instant,
+        phase: &'static str,
+    ) -> PublicationResult<Instant> {
         let (result, write) = self
             .observe_primary_write(target, receipt, deadline, phase)
             .into_parts();
         match (result, write) {
-            (Ok(_), None) => Ok(()),
+            (Ok(written), None) => Ok(written),
             (Err(cause), write) => Err(PublicationError { cause, write }),
             (Ok(_), Some(write)) => Err(PublicationError {
                 cause: app_detail(phase, "writer returned contradictory completion evidence"),

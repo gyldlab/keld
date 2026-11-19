@@ -75,24 +75,32 @@ impl PrimaryRouterHandle {
 
 impl PrimaryRouterHandle {
     pub(super) fn signal_ready_with_writer(&self) -> Result<(), HostAppError> {
-        let deadline = Instant::now() + APP_LINK_IO_DEADLINE;
         let Some(target) = self.current_primary_writer_target()? else {
             return Ok(());
         };
+        self.signal_ready_with_writer_for(&target, Instant::now() + APP_LINK_IO_DEADLINE)
+    }
+
+    pub(super) fn signal_ready_with_writer_for(
+        &self,
+        target: &Arc<WriterLink>,
+        deadline: Instant,
+    ) -> Result<(), HostAppError> {
+        let deadline = deadline.min(Instant::now() + APP_LINK_IO_DEADLINE);
         let prepared = (|| {
             let frame = self.prepare_primary_control(
                 target.caller(),
-                Arc::clone(&target),
+                Arc::clone(target),
                 ControlMessage::LifecycleEvent(LifecycleEvent::Ready),
                 deadline,
                 "lifecycle Ready reservation",
             )?;
-            self.admit_ready(&target, frame, deadline)
+            self.admit_ready(target, frame, deadline)
         })();
         let receipt = match prepared {
             Ok(Some(receipt)) => receipt,
             Ok(None) => return Ok(()),
-            Err(primary) => return self.abort_live_ready(&target, primary),
+            Err(primary) => return self.abort_live_ready(target, primary),
         };
         // Unknown/expired admitted writes retain actual receipt evidence;
         // their exact existing owner decides recovery or startup denial.
@@ -100,14 +108,14 @@ impl PrimaryRouterHandle {
         let committed = (|| {
             #[cfg(test)]
             self.hold_ready_written_for_test()?;
-            let reply = self.commit_written_ready(&target)?;
+            let reply = self.commit_written_ready(target)?;
             if let Some(reply) = reply {
                 PlatformPrimaryOwnerHandle::await_recovery_arm(&reply)?;
                 self.recovery_armed.store(true, Ordering::Release);
             }
             Ok(())
         })();
-        committed.or_else(|primary| self.abort_live_ready(&target, primary))
+        committed.or_else(|primary| self.abort_live_ready(target, primary))
     }
 
     /// A known-not-admitted or known-Written Ready failure may end live startup.
