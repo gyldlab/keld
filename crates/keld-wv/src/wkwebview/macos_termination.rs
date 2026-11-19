@@ -1,4 +1,4 @@
-//! macOS native Quit admission for the existing renderer-window close owner.
+//! macOS native Quit cancellation until a renderer-owned veto path is qualified.
 //!
 //! Tao 0.35.3 installs `TaoAppDelegateParent` and observes will-terminate, but has
 //! no should-terminate hook. Its dock API reads that same delegate's auxState.
@@ -14,7 +14,6 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::rc::{Rc, Weak};
 use std::sync::OnceLock;
@@ -23,10 +22,8 @@ use objc2::encode::Encode;
 use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
 use objc2::{MainThreadMarker, class, ffi, msg_send, sel};
 use tao::event_loop::EventLoopProxy;
-use wry::WebViewExtMacOS;
 
-use super::{View, WkUserEvent};
-use crate::engine::AppReadyTrigger;
+use super::WkUserEvent;
 use crate::error::WvError;
 
 struct Owner {
@@ -51,7 +48,6 @@ static HOOK_CLASS: OnceLock<Result<usize, &'static str>> = OnceLock::new();
 /// owner; later callbacks cancel without dispatch, even if the weak slot remains.
 pub(super) struct NativeQuitBridge {
     owner: Rc<Owner>,
-    main_thread: MainThreadMarker,
 }
 
 fn error(detail: &str) -> WvError {
@@ -89,7 +85,7 @@ impl NativeQuitBridge {
                 Ok(())
             })
             .map_err(|_| error("main-thread callback storage is unavailable"))??;
-        Ok(Self { owner, main_thread })
+        Ok(Self { owner })
     }
 
     pub(super) fn failure(&self) -> Option<WvError> {
@@ -99,37 +95,11 @@ impl NativeQuitBridge {
             .then(|| error("could not dispatch the native request to its live UI loop"))
     }
 
-    /// Request the actual native close path only for the admitted renderer slice.
-    /// The existing `CloseRequested` handler still owns release and anchor draining.
-    pub(super) fn request_renderer_close(
-        &self,
-        ready_trigger: AppReadyTrigger,
-        navigation_ready: bool,
-        views: &BTreeMap<u32, View>,
-        closing: &[u32],
-    ) -> Result<bool, WvError> {
+    /// Retire the posted Quit intent so later OS requests can be diagnosed.
+    /// A native close request cannot prove that the legacy renderer accepted
+    /// its close, so no window is touched until GH451's veto owner is qualified.
+    pub(super) fn retain_unqualified_quit(&self) {
         self.owner.pending.set(false);
-        if ready_trigger != AppReadyTrigger::NavigationReady
-            || !navigation_ready
-            || views.len() != 1
-        {
-            return Ok(false);
-        }
-        let Some((id, view)) = views.first_key_value() else {
-            return Ok(false);
-        };
-        // Registry/original/mixed apps require their existing app Quit intent and
-        // veto owner. Never broaden this renderer close path to those modes.
-        if view.registry_managed || closing.contains(id) {
-            return Ok(false);
-        }
-        let window = view
-            .webview
-            .webview()
-            .window()
-            .ok_or_else(|| error("the admitted renderer no longer owns its native window"))?;
-        request_close(&window, self.main_thread);
-        Ok(true)
     }
 }
 
@@ -252,15 +222,34 @@ unsafe extern "C-unwind" fn should_terminate(
     0 // NSTerminateCancel: only the existing application Quit call may terminate.
 }
 
-#[allow(unsafe_code)]
-fn request_close(window: &objc2_app_kit::NSWindow, _: MainThreadMarker) {
-    // SAFETY: This retained, currently owned NSWindow is used on the UI thread.
-    // performClose: takes a nullable object sender and returns void. Apple's
-    // delegate veto remains intact. Tao 0.35.3 window_should_close enqueues a real
-    // CloseRequested and returns NO; no recursive Keld callback or direct drop.
-    // <https://developer.apple.com/documentation/appkit/nswindow/performclose(_:)>
-    // Pinned Tao window_delegate.rs and app_state.rs: emit_event -> queue_event.
-    unsafe {
-        let _: () = msg_send![window, performClose: std::ptr::null_mut::<AnyObject>()];
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unowned_native_quit_is_canceled_without_appkit() {
+        // SAFETY: The hook compares these opaque null pointers without using
+        // them. No session was bound, so it must cancel without any AppKit call.
+        #[allow(unsafe_code)]
+        let reply = unsafe {
+            should_terminate(
+                std::ptr::null_mut(),
+                sel!(applicationShouldTerminate:),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(reply, 0, "an unowned native Quit must cancel");
+    }
+
+    #[test]
+    fn native_quit_has_no_unqualified_native_window_close_primitive() {
+        // Source guard, not an installed-AppKit acceptance test. This checks
+        // the high-risk primitive at the native Quit hook owner. The renderer
+        // has no synchronous close/preventDefault receipt for this legacy path.
+        let source = include_str!("macos_termination.rs");
+        assert!(
+            !source.contains(concat!("perform", "Close:")),
+            "native Quit must not request an NSWindow close before a renderer-owned veto"
+        );
     }
 }
