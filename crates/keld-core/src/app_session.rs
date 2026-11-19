@@ -36,6 +36,8 @@ mod primary_reader_failure;
 mod primary_writer;
 mod profile_preflight;
 #[cfg(windows)]
+mod renderer_dispatch;
+#[cfg(windows)]
 mod renderer_role;
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 pub use self::boot_contract::boot_schema;

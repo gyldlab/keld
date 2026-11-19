@@ -107,6 +107,7 @@ impl Drop for NativeRelease {
         // Outcome disposal may already hold the ledger. Wake the existing
         // servicing owner without taking that lock or refunding a writer slot.
         self.released.store(true, Ordering::Release);
+        self.owner.backing_released.store(true, Ordering::Release);
         let _ = self.owner.writer.completed_source_progress();
     }
 }

@@ -154,6 +154,17 @@ impl WindowSession {
     pub(super) fn close_native_view_offers(&mut self, window: keld_ipc::window::WindowRef) -> bool {
         self.registry.close_native_view_offers(window)
     }
+    #[cfg(windows)]
+    pub(super) fn note_native_registration(
+        &mut self,
+        caller: &PrimaryCallerContext,
+        view: keld_wv::WebviewId,
+        document: &keld_wv::renderer_contract::CheckedNativeDocumentLease,
+    ) -> Result<(), WindowError> {
+        self.compat.as_ref().ok_or(WindowError::NotReady)?;
+        self.registry
+            .note_native_registration(caller, view, document)
+    }
     #[cfg(any(target_os = "macos", windows))]
     pub(super) fn admitted_dialog_view(
         &mut self,

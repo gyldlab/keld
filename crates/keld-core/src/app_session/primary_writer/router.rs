@@ -76,6 +76,7 @@ impl PrimaryRouterHandle {
         self.primary_writer_owner()?
             .acknowledge_progress()
             .map_err(|error| error.into_host_error("primary writer progress"))?;
+        self.service_renderer_native_capacity()?;
         self.service_dialog_writer_progress()
     }
 

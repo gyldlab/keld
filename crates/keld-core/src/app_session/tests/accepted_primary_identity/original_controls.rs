@@ -242,3 +242,78 @@ fn windows_original_control_is_shared_and_survives_primary_replacement() {
         Some(keld_runtime::SupervisorOutcome::Stopped)
     ));
 }
+
+#[test]
+fn windows_original_control_release_moves_one_capacity_marker_to_the_renderer_endpoint() {
+    let _custody = keld_runtime::windows_job::install_host_death_job()
+        .expect("install process-lifetime custody");
+    let mut role = primary_role();
+    let (bound, _control) = role.bind();
+    let fixture = start_control_router(bound);
+    let handle = fixture.router.handle();
+    let (_, native) = original_window(&handle, &current_caller(&handle), 1, &fixture.resources);
+    let (mut dispatch, endpoint) =
+        crate::app_session::renderer_dispatch::RendererDispatch::prepare();
+    let signals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = Arc::clone(&signals);
+    let (woke, wakes) = mpsc::channel();
+    dispatch
+        .start(handle.clone(), move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            woke.send(()).map_err(|_| {
+                keld_wv::WvError::EventLoop(String::from(
+                    "fixture dropped the native wake receiver",
+                ))
+            })
+        })
+        .expect("actual retained dispatcher");
+
+    handle
+        .service_primary_writer_progress()
+        .expect("ordinary writer progress");
+    assert_eq!(signals.load(std::sync::atomic::Ordering::Relaxed), 0);
+    let charged = native
+        .try_reserve_native_control(1, 1025)
+        .expect("original native allocation");
+    handle
+        .service_primary_writer_progress()
+        .expect("reserved backing remains live");
+    assert_eq!(signals.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+    drop(charged);
+    assert!(matches!(
+        fixture
+            .events
+            .recv_timeout(super::BOUND)
+            .expect("original native release marker"),
+        AppWindowCommand::HostWriterProgress
+    ));
+    handle
+        .service_primary_writer_progress()
+        .expect("forward through actual writer progress");
+    wakes
+        .try_recv()
+        .expect("real capacity outcome woke native consumer");
+    handle
+        .service_primary_writer_progress()
+        .expect("no next release");
+    assert_eq!(signals.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+    drop(endpoint);
+    wakes
+        .recv_timeout(super::BOUND)
+        .expect("actual request disconnect closed outcome producer");
+    fixture.router.shutdown().expect("router cleanup");
+    assert!(matches!(
+        role.finish(),
+        Some(keld_runtime::SupervisorOutcome::Stopped)
+    ));
+    let deadline = std::time::Instant::now() + super::BOUND;
+    while !dispatch.poll_finished().expect("producer joined cleanly") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "original worker did not exit"
+        );
+        std::thread::yield_now();
+    }
+}

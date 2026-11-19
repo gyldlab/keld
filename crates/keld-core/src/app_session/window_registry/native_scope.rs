@@ -8,11 +8,14 @@ use super::{
     WindowError, WindowOwner, WindowRef, WindowRegistry,
 };
 use crate::app_session::PrimaryCallerContext;
+use keld_wv::WebviewId;
+use keld_wv::renderer_contract::CheckedNativeDocumentLease;
 
 pub(super) struct OriginalWindowBinding {
     resources: OriginalWindowResources,
     caller: Arc<AtomicBool>,
     native_offers_closed: bool,
+    registered_document: Option<CheckedNativeDocumentLease>,
 }
 
 pub(super) fn adopt_original_binding(
@@ -28,7 +31,10 @@ pub(super) fn adopt_original_binding(
                     .preload
                     .same_configuration(&requested.resources.preload) =>
         {
-            existing.caller = Arc::clone(&requested.caller);
+            if !Arc::ptr_eq(&existing.caller, &requested.caller) {
+                existing.registered_document = None;
+                existing.caller = Arc::clone(&requested.caller);
+            }
             Ok(())
         }
         _ => Err(WindowError::WrongOwner),
@@ -55,6 +61,7 @@ impl WindowRegistry {
                 resources,
                 caller: Arc::clone(&caller.reader_stop),
                 native_offers_closed: false,
+                registered_document: None,
             }),
         )
     }
@@ -104,5 +111,50 @@ impl WindowRegistry {
         };
         binding.native_offers_closed = true;
         true
+    }
+
+    /// Record only the physical native registration on the existing Entry.
+    /// Caller holds the same Runtime fence as native CONTROL admission.
+    pub(in crate::app_session) fn note_native_registration(
+        &mut self,
+        caller: &PrimaryCallerContext,
+        view: WebviewId,
+        document: &CheckedNativeDocumentLease,
+    ) -> Result<(), WindowError> {
+        if !document.is_current() {
+            return Ok(());
+        }
+        self.require_ready()?;
+        let owner = WindowOwner::new(caller.identity, caller.attempt);
+        let entry = self
+            .entries
+            .values_mut()
+            .find(|entry| entry.view() == Some(view))
+            .ok_or(WindowError::StaleWindow)?;
+        let binding = entry.original.as_mut().ok_or(WindowError::StaleWindow)?;
+        if binding.native_offers_closed {
+            return Ok(());
+        }
+        if !matches!(entry.phase, Phase::Open(_) | Phase::ClosePending(_, _))
+            || document.stamp().view() != view
+            || entry.owner != owner
+            || !entry.owner_live
+            || !Arc::ptr_eq(&binding.caller, &caller.reader_stop)
+            || !document.belongs_to_source(&binding.resources.source)
+        {
+            return Err(WindowError::WrongOwner);
+        }
+        if let Some(previous) = &binding.registered_document
+            && previous.is_current()
+        {
+            return previous
+                .same_binding(document)
+                .then_some(())
+                .ok_or(WindowError::WrongOwner);
+        }
+        // The retained observation remains revocable and establishes neither
+        // readiness nor authorization for a later message.
+        binding.registered_document = Some(document.clone());
+        Ok(())
     }
 }
