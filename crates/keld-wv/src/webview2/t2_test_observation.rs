@@ -165,11 +165,8 @@ pub(super) fn foreign_normal(current: super::browser_instance::BrowserInstance, 
     }
 }
 
-pub(super) fn bridge_posted(observing: bool, command: AppWindowCommand) {
-    if !observing {
-        return;
-    }
-    let name = match command {
+pub(super) fn bridge_command_name(command: &AppWindowCommand) -> &'static str {
+    match command {
         AppWindowCommand::CreateWindow { .. } => "CreateWindow",
         AppWindowCommand::DestroyWindow { .. } => "DestroyWindow",
         AppWindowCommand::SetMaximized { .. } => "SetMaximized",
@@ -177,8 +174,13 @@ pub(super) fn bridge_posted(observing: bool, command: AppWindowCommand) {
         AppWindowCommand::DialogWake => "DialogWake",
         AppWindowCommand::Quit => "Quit",
         AppWindowCommand::Fatal => "Fatal",
-    };
-    eprintln!("BRIDGE_POSTED {name}");
+    }
+}
+
+pub(super) fn bridge_posted(observing: bool, name: &'static str) {
+    if observing {
+        eprintln!("BRIDGE_POSTED {name}");
+    }
 }
 
 pub(super) fn destroyed(hwnd: isize) {

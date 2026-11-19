@@ -438,7 +438,7 @@ struct SelectedWindowsProfile {
     recovery_required: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) enum WindowsLoopEvent {
     App(AppWindowCommand),
     ProfileReleaseWake,
@@ -4378,10 +4378,12 @@ fn spawn_app_wake_bridge(
                         if terminal {
                             terminal_intent.store(true, Ordering::Release);
                         }
+                        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                        let command_name = t2_test_observation::bridge_command_name(&command);
                         let posted = proxy.send_event(WindowsLoopEvent::App(command)).is_ok();
                         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
                         if posted {
-                            t2_test_observation::bridge_posted(observing, command);
+                            t2_test_observation::bridge_posted(observing, command_name);
                         }
                         if !posted || terminal {
                             return;
