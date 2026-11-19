@@ -1,4 +1,4 @@
-//! Read target identity from DisplayConfig. HMONITOR, enumeration order and GDI
+//! Read target identity from `DisplayConfig`. HMONITOR, enumeration order and GDI
 //! source names alone are not stable display identities across topology changes.
 
 use super::{os_error, unavailable};
@@ -15,7 +15,7 @@ use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
 pub(super) struct Target {
     adapter_high: i32,
     adapter_low: u32,
-    target_id: u32,
+    id: u32,
     device_path: String,
 }
 
@@ -118,7 +118,7 @@ pub(super) fn read(gdi_name: &[u16]) -> Result<Target, WvError> {
     Ok(Target {
         adapter_high: path.targetInfo.adapterId.HighPart,
         adapter_low: path.targetInfo.adapterId.LowPart,
-        target_id: path.targetInfo.id,
+        id: path.targetInfo.id,
         device_path,
     })
 }

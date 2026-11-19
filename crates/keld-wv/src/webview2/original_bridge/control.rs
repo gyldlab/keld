@@ -120,11 +120,10 @@ impl StartupControl {
                 }
                 self.dispose_if_quiescent()
             }
-            PostResult::AlreadyReturned => self.dispose_if_quiescent(),
+            PostResult::AlreadyReturned | PostResult::NotAdmitted => self.dispose_if_quiescent(),
             PostResult::Returned(Err(_)) => {
                 Err(failure("native startup CONTROL returned a failure"))
             }
-            PostResult::NotAdmitted => self.dispose_if_quiescent(),
             PostResult::OutcomeUnknown => Err(failure(
                 "native startup CONTROL return is unproved; custody retained",
             )),

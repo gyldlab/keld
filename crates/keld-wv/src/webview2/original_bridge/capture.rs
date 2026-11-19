@@ -118,14 +118,13 @@ impl OriginalBridge {
             self.fail("selected input release lost its retained account");
             return Err(error);
         }
-        match result {
-            Ok(result) => result,
-            Err(_) => {
-                self.fail("selected input capture unwound");
-                Err(failure(
-                    "selected input capture unwound with storage disposed",
-                ))
-            }
+        if let Ok(result) = result {
+            result
+        } else {
+            self.fail("selected input capture unwound");
+            Err(failure(
+                "selected input capture unwound with storage disposed",
+            ))
         }
     }
 

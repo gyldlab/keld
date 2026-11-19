@@ -1,5 +1,5 @@
 //! Windows application appearance. Never substitute the system theme or a registry
-//! approximation for the user's WinRT accessibility text scale.
+//! approximation for the user's `WinRT` accessibility text scale.
 
 use super::{os_error, unavailable};
 use crate::WvError;

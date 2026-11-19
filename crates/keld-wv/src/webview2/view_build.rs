@@ -325,7 +325,7 @@ impl NativeBuild {
                 .map_err(BuildFailure::webview)?;
         }
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-        if let (Some(control), Some(build)) = (test_control.as_deref_mut(), managed) {
+        if let (Some(control), Some(build)) = (test_control, managed) {
             control
                 .hold_build_pump(build.create.build, deadline)
                 .map_err(BuildFailure::webview)?;

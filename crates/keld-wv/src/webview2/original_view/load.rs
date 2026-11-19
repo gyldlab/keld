@@ -160,13 +160,12 @@ impl OriginalView {
             return refuse(refusal);
         };
         let observed = NativeAttemptObservation(attempt);
-        let dispatch = match (admitted, self.call.as_ref()) {
-            (true, Some(call)) => call.invoke(),
-            _ => {
-                self.session
-                    .latch_failure("selected load fence and retained call disagree", self.id);
-                LoadDispatch::OutcomeUnknown
-            }
+        let dispatch = if let (true, Some(call)) = (admitted, self.call.as_ref()) {
+            call.invoke()
+        } else {
+            self.session
+                .latch_failure("selected load fence and retained call disagree", self.id);
+            LoadDispatch::OutcomeUnknown
         };
         drop(previous_call);
         let failure_reported = self
@@ -203,7 +202,7 @@ impl OriginalView {
         &self,
         now: Instant,
     ) -> Result<(), WvError> {
-        let observed = {
+        let expiration = {
             let mut nav = self
                 .navigation
                 .try_borrow_mut()
@@ -215,7 +214,7 @@ impl OriginalView {
             );
             nav.expire_unfinished(now).then_some(observed)
         };
-        if let Some((Some(context), Some(attempt), revoked)) = observed {
+        if let Some((Some(context), Some(attempt), revoked)) = expiration {
             let observer = self.observer.as_ref().ok_or_else(|| {
                 failure("selected navigation timeout lost its actual Host observer")
             })?;

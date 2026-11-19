@@ -93,17 +93,15 @@ pub(super) fn post_control(
     let finished = navigation
         .try_borrow_mut()
         .is_ok_and(|mut owner| owner.finish_post());
-    match (returned, finished) {
-        (Ok(result), true) => {
-            *phase = PostPhase::Returned;
-            PostResult::Returned(result)
+    let completion = (returned, finished);
+    if let (Ok(result), true) = completion {
+        *phase = PostPhase::Returned;
+        PostResult::Returned(result)
+    } else {
+        *phase = PostPhase::OutcomeUnknown;
+        if let Ok(mut owner) = navigation.try_borrow_mut() {
+            owner.destroy();
         }
-        _ => {
-            *phase = PostPhase::OutcomeUnknown;
-            if let Ok(mut owner) = navigation.try_borrow_mut() {
-                owner.destroy();
-            }
-            PostResult::OutcomeUnknown
-        }
+        PostResult::OutcomeUnknown
     }
 }

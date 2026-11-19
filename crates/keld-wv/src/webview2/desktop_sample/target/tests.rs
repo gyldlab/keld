@@ -9,7 +9,7 @@ fn target(high: i32, low: u32, id: u32, path: &str) -> Target {
     Target {
         adapter_high: high,
         adapter_low: low,
-        target_id: id,
+        id,
         device_path: path.to_owned(),
     }
 }
