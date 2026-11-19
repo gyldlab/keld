@@ -18,6 +18,10 @@ pub(super) enum WindowRefusal {
     Registry(WindowError),
     #[cfg(windows)]
     OriginalPreload(HostAppError),
+    #[cfg(windows)]
+    OriginalUri(&'static str),
+    #[cfg(windows)]
+    NativeNavigation(keld_wv::NativeNavigationRefusal),
     Fixed {
         code: &'static str,
         message: &'static str,
@@ -37,6 +41,20 @@ impl WindowRefusal {
                 "KELD-CORE-051",
                 format!(
                     "KELD-CORE-051: {error}; use the exact original preload and bounded captured arguments"
+                ),
+            ),
+            #[cfg(windows)]
+            Self::OriginalUri(detail) => (
+                "KELD-CORE-051",
+                format!(
+                    "KELD-CORE-051: {detail}; load the retained selected entry and its original query"
+                ),
+            ),
+            #[cfg(windows)]
+            Self::NativeNavigation(error) => (
+                "KELD-CORE-052",
+                format!(
+                    "KELD-CORE-052: {error}; check the selected source and native runtime qualification"
                 ),
             ),
             Self::Fixed { code, message } => (code, message.to_owned()),

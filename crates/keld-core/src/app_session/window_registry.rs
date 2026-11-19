@@ -20,7 +20,13 @@ use super::PrimaryLinkIdentity;
 #[cfg(windows)]
 mod native_scope;
 #[cfg(windows)]
+mod original_load;
+#[cfg(windows)]
 mod publication;
+#[cfg(windows)]
+pub(super) use original_load::{
+    NavigationPublication, NavigationPublicationKind, NavigationTerminal, OriginalLoadRefusal,
+};
 #[cfg(windows)]
 pub(super) use publication::{ClosingCleanup, fixed_event_window};
 
@@ -50,6 +56,8 @@ pub(super) enum WindowCounter {
     Id,
     Incarnation,
     CloseSequence,
+    #[cfg(windows)]
+    OriginalLoadOperation,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WindowError {
@@ -59,6 +67,8 @@ pub(super) enum WindowError {
     WrongOwner,
     PendingDestroyCapacity,
     SessionWindowCapacity,
+    #[cfg(windows)]
+    OriginalLoadBusy,
 }
 impl WindowError {
     pub(super) const fn code(self) -> &'static str {
@@ -69,6 +79,8 @@ impl WindowError {
             Self::WrongOwner => "KELD-CORE-043",
             Self::PendingDestroyCapacity => "KELD-CORE-046",
             Self::SessionWindowCapacity => "KELD-CORE-047",
+            #[cfg(windows)]
+            Self::OriginalLoadBusy => "KELD-CORE-050",
         }
     }
 }
@@ -85,6 +97,10 @@ impl fmt::Display for WindowError {
             Self::Exhausted(WindowCounter::CloseSequence) => {
                 "close_seq exhausted; destroy the window or start a new app session"
             }
+            #[cfg(windows)]
+            Self::Exhausted(WindowCounter::OriginalLoadOperation) => {
+                "original load operation exhausted; start a new app session"
+            }
             Self::NotReady => {
                 "window registry is not serviceable; wait for Ready on a live app session"
             }
@@ -96,6 +112,10 @@ impl fmt::Display for WindowError {
             }
             Self::SessionWindowCapacity => {
                 "this Host session has reached its cumulative distinct-window admission limit; end the session to mint another identity"
+            }
+            #[cfg(windows)]
+            Self::OriginalLoadBusy => {
+                "another selected load owns this window; await its exact native completion"
             }
         };
         write!(formatter, "{}: {detail}", self.code())
@@ -233,6 +253,8 @@ struct Entry {
     destroy_calls: Vec<PendingWindowCall>,
     #[cfg(windows)]
     original: Option<native_scope::OriginalWindowBinding>,
+    #[cfg(windows)]
+    original_load: Option<original_load::PendingOriginalLoad>,
     phase: Phase,
 }
 
@@ -289,6 +311,8 @@ pub(super) struct WindowRegistry {
     ending: bool,
     last_id: u32,
     last_incarnation: u64,
+    #[cfg(windows)]
+    last_original_load_operation: u64,
     entries: BTreeMap<u32, Entry>,
     deferred_last_window: bool,
     destroyed_fact_drops: u64,
@@ -300,6 +324,8 @@ impl WindowRegistry {
             ending: false,
             last_id: 0,
             last_incarnation: 0,
+            #[cfg(windows)]
+            last_original_load_operation: 0,
             entries: BTreeMap::new(),
             deferred_last_window: false,
             destroyed_fact_drops: 0,
@@ -387,6 +413,8 @@ impl WindowRegistry {
                 destroy_calls: Vec::new(),
                 #[cfg(windows)]
                 original,
+                #[cfg(windows)]
+                original_load: None,
                 phase: Phase::Opening(call),
             },
         );
@@ -501,8 +529,15 @@ impl WindowRegistry {
     /// The existing entry owns both admitted Create and deferred Destroy calls.
     pub(super) fn has_pending_call(&self, owner: WindowOwner, correlation: CorrelationId) -> bool {
         self.entries.values().any(|entry| {
+            #[cfg(windows)]
+            let original = entry.original_load.as_ref().is_some_and(|pending| {
+                pending.call.owner == owner && pending.call.correlation == correlation
+            });
+            #[cfg(not(windows))]
+            let original = false;
             matches!(entry.phase, Phase::Opening(call) if call.owner == owner && call.correlation == correlation)
                 || entry.destroy_calls.iter().any(|call| call.owner == owner && call.correlation == correlation)
+                || original
         })
     }
     fn require_ready(&self) -> Result<(), WindowError> {
@@ -805,6 +840,7 @@ impl WindowRegistry {
         #[cfg(windows)]
         {
             entry.original = None;
+            entry.original_load = None;
         }
         entry.adoptable = false;
         let dropped_facts = entry.dropped;
@@ -874,6 +910,10 @@ impl WindowRegistry {
             entry.owner_live = false;
             entry.adoptable = false;
             entry.destroy_calls.clear();
+            #[cfg(windows)]
+            {
+                entry.original_load = None;
+            }
             match entry.phase {
                 Phase::Opening(_) => entry.phase = Phase::Closing(None),
                 Phase::ClosePending(native, close_seq) => {
@@ -920,6 +960,10 @@ impl WindowRegistry {
         self.deferred_last_window = false;
         for entry in self.entries.values_mut() {
             entry.adoptable = false;
+            #[cfg(windows)]
+            {
+                entry.original_load = None;
+            }
             match entry.phase {
                 Phase::Opening(call) => {
                     entry.phase = Phase::Closing(None);

@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 
 use keld_ipc::window::WindowRef;
 
-use super::super::window_registry::OriginalWindowResources;
+use super::super::window_registry::{OriginalLoadRefusal, OriginalWindowResources};
+use super::request::{WindowRefusal, WindowRequestOutcome};
 use super::{
     AppWindowCommand, CorrelationId, CreateOutcome, HostAppError, PrimaryCallerContext,
     PrimaryRouterHandle, WindowError, WindowRequest, WindowSession,
@@ -31,6 +32,48 @@ pub(in crate::app_session) enum PreparedOriginalWindowCreate {
 }
 
 impl PrimaryRouterHandle {
+    pub(super) fn prepare_original_window_load_locked(
+        &self,
+        session: &mut WindowSession,
+        caller: &PrimaryCallerContext,
+        correlation: CorrelationId,
+        window: WindowRef,
+        uri: &str,
+    ) -> WindowRequestOutcome {
+        let Some(role) = self.renderer_role_scope(caller) else {
+            return WindowRequestOutcome::Refused(WindowRefusal::fixed(
+                "KELD-CORE-042",
+                "KELD-CORE-042: selected loading requires the admitted native Window adapter.",
+            ));
+        };
+        let pending = match session
+            .registry
+            .prepare_original_load(caller, correlation, window, uri)
+        {
+            Ok(pending) => pending,
+            Err(OriginalLoadRefusal::Registry(error)) => {
+                return WindowRequestOutcome::Refused(WindowRefusal::Registry(error));
+            }
+            Err(OriginalLoadRefusal::Uri(detail)) => {
+                return WindowRequestOutcome::Refused(WindowRefusal::OriginalUri(detail));
+            }
+        };
+        let context = pending.context;
+        let sent = self.window_commands.send(AppWindowCommand::LoadOriginal {
+            context,
+            query: pending.query,
+            role: role.for_original_load(window, context),
+        });
+        if sent.is_err() {
+            session.registry.abandon_original_load(window, context);
+            return WindowRequestOutcome::Refused(WindowRefusal::fixed(
+                "KELD-CORE-051",
+                "KELD-CORE-051: the native UI is unavailable; restart the Host before another selected load.",
+            ));
+        }
+        WindowRequestOutcome::Deferred
+    }
+
     /// Caller holds transition -> authenticated current generation -> Window
     /// Registry. The ordered publication owner retains or emits this outcome.
     pub(in crate::app_session) fn prepare_original_window_create_locked(

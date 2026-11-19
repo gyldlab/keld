@@ -144,6 +144,15 @@ impl PrimaryRouterHandle {
                 )),
             };
         }
+        if let WindowRequest::LoadUrl { window, uri } = &request {
+            return Ok(self.prepare_original_window_load_locked(
+                session,
+                caller,
+                correlation,
+                *window,
+                uri,
+            ));
+        }
         if !matches!(&request, WindowRequest::CreateWithPreload { .. }) {
             return self.prepare_window_request_locked(session, active, correlation, request);
         }
@@ -207,10 +216,13 @@ impl WindowEmitter<'_, '_> {
             WindowRequestOutcome::Refused(refusal) => {
                 self.refusal(correlation, refusal, false, None)
             }
-            WindowRequestOutcome::Teardown(teardown) => self
-                .router
-                .cleanup_window_action(teardown, "Window teardown")
-                .map_err(Into::into),
+            WindowRequestOutcome::Teardown(teardown) => {
+                let interruption = self.interrupt_original_navigation(teardown.window);
+                let cleanup = self
+                    .router
+                    .cleanup_window_action(teardown, "Window teardown");
+                with_cleanup(interruption, cleanup)
+            }
             WindowRequestOutcome::Close(close) => match prepare_close_reply(close)? {
                 CloseReplyPublication::Reply { response, fact } => {
                     if let Some(fact) = fact {
@@ -219,11 +231,15 @@ impl WindowEmitter<'_, '_> {
                     self.reply(correlation, response, None)
                 }
                 CloseReplyPublication::Teardown(teardown) => {
-                    let reply = self.reply(
-                        correlation,
-                        WindowResponse::ReplyApplied,
-                        Some(teardown.window),
-                    );
+                    let reply = self
+                        .interrupt_original_navigation(teardown.window)
+                        .and_then(|()| {
+                            self.reply(
+                                correlation,
+                                WindowResponse::ReplyApplied,
+                                Some(teardown.window),
+                            )
+                        });
                     let cleanup = self
                         .router
                         .cleanup_window_action(teardown, "Window teardown");

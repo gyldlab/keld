@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use keld_ipc::window::WindowRef;
 use keld_runtime::primary::RoleOwner;
+use keld_wv::NativeNavigationContext;
 use keld_wv::renderer_bridge::{
     NativeControlReservation, RendererControlOwner, RendererRoleFence, RendererRoleWitness,
 };
@@ -23,8 +24,28 @@ pub(super) struct CanonicalRendererRoleScope {
 
 impl CanonicalRendererRoleScope {
     pub(super) fn for_window(self, window: WindowRef) -> RendererRoleWitness {
+        self.witness(window, None)
+    }
+
+    pub(super) fn for_original_load(
+        self,
+        window: WindowRef,
+        context: NativeNavigationContext,
+    ) -> RendererRoleWitness {
+        self.witness(window, Some(context))
+    }
+
+    fn witness(
+        self,
+        window: WindowRef,
+        original_load: Option<NativeNavigationContext>,
+    ) -> RendererRoleWitness {
         let stopped = Arc::clone(&self.caller.reader_stop);
-        let owner = Arc::new(CanonicalRendererRoleFence { role: self, window });
+        let owner = Arc::new(CanonicalRendererRoleFence {
+            role: self,
+            window,
+            original_load,
+        });
         RendererRoleWitness::with_fence(stopped, owner.clone()).with_controls(owner)
     }
 }
@@ -32,13 +53,19 @@ impl CanonicalRendererRoleScope {
 struct CanonicalRendererRoleFence {
     role: CanonicalRendererRoleScope,
     window: WindowRef,
+    original_load: Option<NativeNavigationContext>,
 }
 
 impl RendererRoleFence for CanonicalRendererRoleFence {
     fn try_admit_native(&self, admit: &mut dyn FnMut() -> bool) -> bool {
         // The callback commits only native-local state. Native I/O starts
         // after this fence returns and all these guards drop.
-        self.with_live_scope(|_| admit()).unwrap_or(false)
+        self.with_live_scope(|windows| {
+            self.original_load.is_none_or(|context| {
+                windows.original_load_can_enter_native(&self.role.caller, self.window, context)
+            }) && admit()
+        })
+        .unwrap_or(false)
     }
 }
 

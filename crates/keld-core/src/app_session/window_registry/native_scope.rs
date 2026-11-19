@@ -18,6 +18,16 @@ pub(super) struct OriginalWindowBinding {
     registered_document: Option<CheckedNativeDocumentLease>,
 }
 
+impl OriginalWindowBinding {
+    pub(super) fn source(&self) -> &Arc<keld_wv::resource_source::AdmittedWebAppSource> {
+        &self.resources.source
+    }
+
+    pub(super) fn owns_caller(&self, caller: &PrimaryCallerContext) -> bool {
+        Arc::ptr_eq(&self.caller, &caller.reader_stop)
+    }
+}
+
 pub(super) fn adopt_original_binding(
     entry: &mut Entry,
     requested: &Option<OriginalWindowBinding>,
@@ -79,8 +89,7 @@ impl WindowRegistry {
                     entry.phase,
                     Phase::Opening(_) | Phase::Open(_) | Phase::ClosePending(_, _)
                 ) && entry.original.as_ref().is_some_and(|binding| {
-                    !binding.native_offers_closed
-                        && Arc::ptr_eq(&binding.caller, &caller.reader_stop)
+                    !binding.native_offers_closed && binding.owns_caller(caller)
                 })
             })
     }

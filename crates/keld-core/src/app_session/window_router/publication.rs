@@ -4,6 +4,7 @@ mod common;
 mod emitter;
 mod input;
 mod native;
+mod original_navigation;
 mod replay;
 
 pub(in crate::app_session) use common::{

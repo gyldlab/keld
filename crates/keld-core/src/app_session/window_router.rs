@@ -117,6 +117,17 @@ impl WindowSession {
     ) -> bool {
         self.registry.current_original_binding(caller, window)
     }
+
+    #[cfg(windows)]
+    pub(super) fn original_load_can_enter_native(
+        &self,
+        caller: &PrimaryCallerContext,
+        window: keld_ipc::window::WindowRef,
+        context: keld_wv::NativeNavigationContext,
+    ) -> bool {
+        self.registry
+            .original_load_can_enter_native(caller, window, context)
+    }
     #[cfg(windows)]
     pub(super) fn bind_compat_writer(
         &mut self,
