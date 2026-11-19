@@ -66,7 +66,7 @@ impl OriginalView {
         &mut self,
         context: NativeNavigationContext,
         query: &OriginalEntryQuery,
-        role: RendererRoleWitness,
+        role: &RendererRoleWitness,
     ) -> Option<OriginalNavigationFact> {
         let refuse = |error| Some(OriginalNavigationFact::Refused { error });
         if context.view() != self.id {

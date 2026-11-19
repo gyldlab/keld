@@ -177,7 +177,9 @@ impl OriginalBridge {
         self.clear_closed_registrations();
         if !self.driving.get()
             && !self.current.is_empty()
-            && let Err(error) = self.current.drive(StartupControl::dispose_if_quiescent)
+            && let Err(error) = self
+                .current
+                .drive(|control| Ok(control.dispose_if_quiescent()))
         {
             self.fail("closed bridge could not settle its retained control");
             eprintln!("{error}");

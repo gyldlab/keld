@@ -109,7 +109,11 @@ impl ManagedWindows {
         let fact = match view {
             Some(view) if !self.custody.contains(view.window.id()) => {
                 match view.original.as_mut() {
-                    Some(original) if !ending => original.load_on_ui(context, query, role),
+                    Some(original) if !ending => {
+                        let fact = original.load_on_ui(context, query, &role);
+                        drop(role);
+                        fact
+                    }
                     Some(_) => Some(OriginalNavigationFact::Refused {
                         error: NativeNavigationRefusal::Unavailable,
                     }),

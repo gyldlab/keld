@@ -36,9 +36,8 @@ impl<T> NativePosition<T> {
         }
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             read(match &owned {
-                Custody::Empty => None,
+                Custody::Empty | Custody::NativeEntry => None,
                 Custody::Retained(value) => Some(value),
-                Custody::NativeEntry => None,
             })
         }));
         self.custody.set(owned);

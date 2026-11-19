@@ -33,17 +33,17 @@ pub(super) struct StartupControl {
 }
 
 impl StartupControl {
-    pub(super) fn dispose_if_quiescent(&mut self) -> Result<Action, WvError> {
+    pub(super) fn dispose_if_quiescent(&mut self) -> Action {
         if let Some(prepared) = self.prepared.take() {
             match prepared.into_charge_after_close() {
                 Ok(charge) => self.charge = Some(charge),
                 Err(retained) => {
                     self.prepared = Some(retained);
-                    return Ok(Action::Keep);
+                    return Action::Keep;
                 }
             }
         }
-        Ok(Action::Dispose)
+        Action::Dispose
     }
 
     fn drive(&mut self, bridge: &OriginalBridge) -> Result<Action, WvError> {
@@ -52,7 +52,7 @@ impl StartupControl {
             || !self.document.is_current()
             || !self.role.is_live()
         {
-            return self.dispose_if_quiescent();
+            return Ok(self.dispose_if_quiescent());
         }
         if self.prepared.is_none() {
             let charge = self
@@ -118,9 +118,11 @@ impl StartupControl {
                 if matches!(kind, StartupKind::Registered) {
                     bridge.record_registered_post_return(&self.document)?;
                 }
-                self.dispose_if_quiescent()
+                Ok(self.dispose_if_quiescent())
             }
-            PostResult::AlreadyReturned | PostResult::NotAdmitted => self.dispose_if_quiescent(),
+            PostResult::AlreadyReturned | PostResult::NotAdmitted => {
+                Ok(self.dispose_if_quiescent())
+            }
             PostResult::Returned(Err(_)) => {
                 Err(failure("native startup CONTROL returned a failure"))
             }
@@ -156,7 +158,8 @@ impl OriginalBridge {
             if self.retired.get() {
                 self.clear_closed_registrations();
                 if !self.current.is_empty() {
-                    self.current.drive(StartupControl::dispose_if_quiescent)?;
+                    self.current
+                        .drive(|control| Ok(control.dispose_if_quiescent()))?;
                 }
                 return Ok(());
             }
