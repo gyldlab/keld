@@ -1,51 +1,21 @@
+#[cfg(any(not(windows), test))]
+use super::super::{encode, write_frame};
 use super::{
     ActivePrimaryGeneration, CallError, CorrelationId, DialogFault, DialogOwner, DialogReplyV1,
-    DialogSession, DialogUiOutcome, DialogWorkOptions, FrameKind, HostAppError,
-    PrimaryCallerContext, PrimaryRouterHandle, WebviewId, WindowError, WindowOwner, app_detail,
-    app_ipc, encode, with_primary_caller_locked, write_frame,
+    DialogSession, DialogUiOutcome, DialogWorkOptions, HostAppError, PrimaryCallerContext,
+    PrimaryRouterHandle, WebviewId, WindowError, WindowOwner, app_detail, app_ipc,
 };
+#[cfg(any(not(windows), test))]
+use super::{FrameKind, with_primary_caller_locked};
 
-fn write_error(
-    active: &mut ActivePrimaryGeneration,
-    correlation: CorrelationId,
-    error: &CallError,
-) -> Result<(), HostAppError> {
-    keld_ipc::write_call_error(
-        &mut active.writer,
-        keld_ipc::channel_table::DIALOG.id(),
-        correlation,
-        error,
-    )
-    .map_err(|source| app_ipc("dialog correlated refusal", &source))
-}
-
-fn write_fault(
-    active: &mut ActivePrimaryGeneration,
-    correlation: CorrelationId,
-    fault: DialogFault,
-) -> Result<(), HostAppError> {
-    write_error(active, correlation, &fault.call_error())
-}
-
-fn write_reply(
-    active: &mut ActivePrimaryGeneration,
-    correlation: CorrelationId,
-    reply: &DialogReplyV1,
-) -> Result<(), HostAppError> {
-    let bytes = encode(reply).map_err(|source| app_ipc("dialog reply encode", &source))?;
-    write_frame(
-        &mut active.writer,
-        FrameKind::Reply,
-        0,
-        keld_ipc::channel_table::DIALOG.id(),
-        correlation,
-        &bytes,
-    )
-    .map_err(|source| app_ipc("dialog correlated reply", &source))
+pub(super) enum DialogAdmission {
+    Native,
+    Reply(DialogReplyV1),
+    Refused(CallError),
 }
 
 impl PrimaryRouterHandle {
-    fn dialog_parent_view(
+    pub(super) fn dialog_parent_view(
         &self,
         owner: WindowOwner,
         parent: keld_ipc::window::WindowRef,
@@ -68,159 +38,202 @@ impl PrimaryRouterHandle {
         nonce: u64,
         parent: Option<keld_ipc::window::WindowRef>,
         options: DialogWorkOptions,
-    ) -> Result<(), HostAppError> {
-        let Some(parent) = parent else {
-            // True parentless modal presentation is a separate deferred
-            // CFRunLoop contract; never run a blocking AppKit modal loop here.
-            return write_error(active, correlation, &DialogFault::Unsupported.call_error());
-        };
-        let owner = WindowOwner::new(active.identity, active.attempt);
-        let view = match self.dialog_parent_view(owner, parent) {
-            Ok(view) => view,
-            Err(reason) => return write_error(active, correlation, &reason.call_error()),
-        };
+    ) -> Result<(), DialogFault> {
+        let parent = parent.ok_or(DialogFault::Unsupported)?;
+        let view =
+            self.dialog_parent_view(WindowOwner::new(active.identity, active.attempt), parent)?;
         if !dialog.has_capacity() {
-            return write_error(active, correlation, &DialogFault::Busy.call_error());
+            return Err(DialogFault::Busy);
         }
         let previous = active.dialog_nonce_high_water;
         if !active.accept_dialog_nonce(nonce) {
-            return write_error(
-                active,
-                correlation,
-                &DialogFault::InvalidRequest.call_error(),
-            );
+            return Err(DialogFault::InvalidRequest);
         }
-        let effect_owner = DialogOwner {
+        let owner = DialogOwner {
             identity: active.identity,
             attempt: active.attempt,
             correlation,
             nonce,
             parent: Some(parent),
         };
+        #[cfg(windows)]
+        let reservation = dialog.reserve_for_caller(
+            owner,
+            options,
+            view,
+            PrimaryCallerContext {
+                attempt: active.attempt,
+                identity: active.identity,
+                reader_stop: std::sync::Arc::clone(&active.reader_stop),
+            },
+        );
+        #[cfg(not(windows))]
         let reservation = match options {
-            DialogWorkOptions::Message(message) => dialog.reserve(effect_owner, message, view),
+            DialogWorkOptions::Message(message) => dialog.reserve(owner, message, view),
             file @ (DialogWorkOptions::Open(_) | DialogWorkOptions::Save(_)) => {
-                dialog.reserve_file(effect_owner, file, view)
+                dialog.reserve_file(owner, file, view)
             }
         };
-        if let Err(reason) = reservation {
-            // No UI was admitted. This still runs under the existing one
-            // generation writer lock, so rollback cannot race a second CALL.
+        if reservation.is_err() {
+            // The existing caller fence owns the same high-water rollback:
+            // no native effect was queued and no second CALL can race it.
             active.dialog_nonce_high_water = previous;
-            return write_error(active, correlation, &reason.call_error());
         }
-        Ok(())
+        reservation
     }
-    /// This is the only shipping entry from the primary app-link's validated
-    /// DIALOG CALL. It owns Guard evaluation and existing Runtime caller/nonce
-    /// fences, then reserves one native effect before queuing a Tao wake.
+
+    /// One shared permission/nonce/cancellation rule. Platform publication only
+    /// decides when these existing source results enter the physical writer.
+    pub(super) fn admit_dialog_call(
+        &self,
+        active: &mut ActivePrimaryGeneration,
+        dialog: &DialogSession,
+        correlation: CorrelationId,
+        payload: &[u8],
+        #[cfg(windows)] retain_cancel_ack: bool,
+    ) -> DialogAdmission {
+        if !active.identity.is_primary() {
+            return DialogAdmission::Refused(DialogFault::InvalidRequest.call_error());
+        }
+        if let Err(denied) = dialog.authorize() {
+            return DialogAdmission::Refused(denied);
+        }
+        let Ok(request) = keld_native::dialog::decode_dialog_request(payload) else {
+            return DialogAdmission::Refused(DialogFault::InvalidRequest.call_error());
+        };
+        let (nonce, parent, options) = match request {
+            keld_native::dialog::DialogRequestV1::Cancel { nonce } => {
+                return match dialog.cancel_inner(
+                    active.identity,
+                    active.attempt,
+                    nonce,
+                    correlation,
+                    #[cfg(windows)]
+                    retain_cancel_ack,
+                ) {
+                    Ok(disposition) => {
+                        DialogAdmission::Reply(DialogReplyV1::Cancel { disposition })
+                    }
+                    Err(reason) => DialogAdmission::Refused(reason.call_error()),
+                };
+            }
+            keld_native::dialog::DialogRequestV1::Message {
+                nonce,
+                parent,
+                options,
+            } => (nonce, parent, DialogWorkOptions::Message(options)),
+            keld_native::dialog::DialogRequestV1::Open {
+                nonce,
+                parent,
+                options,
+            } => (nonce, parent, DialogWorkOptions::Open(options)),
+            keld_native::dialog::DialogRequestV1::Save {
+                nonce,
+                parent,
+                options,
+            } => (nonce, parent, DialogWorkOptions::Save(options)),
+        };
+        match self.admit_dialog_effect(active, dialog, correlation, nonce, parent, options) {
+            Ok(()) => DialogAdmission::Native,
+            Err(fault) => DialogAdmission::Refused(fault.call_error()),
+        }
+    }
+
     pub(in super::super) fn dispatch_dialog(
         &self,
         caller: &PrimaryCallerContext,
         correlation: CorrelationId,
         payload: &[u8],
     ) -> Result<(), HostAppError> {
+        #[cfg(windows)]
+        {
+            self.dispatch_dialog_writer(caller, correlation, payload)
+        }
+        #[cfg(not(windows))]
+        {
+            self.dispatch_dialog_legacy(caller, correlation, payload)
+        }
+    }
+
+    #[cfg(any(not(windows), test))]
+    pub(super) fn dispatch_dialog_legacy(
+        &self,
+        caller: &PrimaryCallerContext,
+        correlation: CorrelationId,
+        payload: &[u8],
+    ) -> Result<(), HostAppError> {
         let Some(dialog) = &self.dialog else {
-            return Ok(()); // The channel validator cannot admit an unconfigured owner.
+            return Ok(());
         };
         let mut collision = None;
         let result = with_primary_caller_locked(&self.current, &self.shutdown, caller, |current| {
             let active = current.as_mut().ok_or_else(|| {
                 app_detail("dialog admission", "authenticated generation disappeared")
             })?;
-            // The original owns this correlation until its terminal write. Check
-            // before decoding or refusing any CALL, including malformed Cancel.
             if dialog.pending_original_for(active.identity, active.attempt) == Some(correlation) {
-                let attempt = active.attempt;
-                let primary = app_ipc(
-                    "dialog admission",
-                    &keld_ipc::IpcError::Protocol {
-                        detail: "dialog CALL reuses an already-pending correlation",
-                    },
-                );
-                let retirement = self.retire_current_generation_locked(
+                collision = Some(self.retire_current_generation_locked(
                     current,
-                    attempt,
+                    caller.attempt,
                     "dialog correlation reused",
                     "failed dialog session close",
-                );
-                collision = Some((attempt, retirement));
-                return Err(primary);
+                ));
+                return Err(reused_correlation());
             }
-            if !active.identity.is_primary() {
-                return write_fault(active, correlation, DialogFault::InvalidRequest);
-            }
-            if let Err(denied) = dialog.authorize() {
-                return write_error(active, correlation, &denied);
-            }
-            let Ok(request) = keld_native::dialog::decode_dialog_request(payload) else {
-                return write_fault(active, correlation, DialogFault::InvalidRequest);
-            };
-            match request {
-                keld_native::dialog::DialogRequestV1::Cancel { nonce } => {
-                    match dialog.cancel(active.identity, active.attempt, nonce, correlation) {
-                        Ok(disposition) => {
-                            write_reply(active, correlation, &DialogReplyV1::Cancel { disposition })
-                        }
-                        Err(reason) => write_fault(active, correlation, reason),
-                    }
-                }
-                keld_native::dialog::DialogRequestV1::Message {
-                    nonce,
-                    parent,
-                    options,
-                } => self.admit_dialog_effect(
-                    active,
-                    dialog,
-                    correlation,
-                    nonce,
-                    parent,
-                    DialogWorkOptions::Message(options),
-                ),
-                keld_native::dialog::DialogRequestV1::Open {
-                    nonce,
-                    parent,
-                    options,
-                } => self.admit_dialog_effect(
-                    active,
-                    dialog,
-                    correlation,
-                    nonce,
-                    parent,
-                    DialogWorkOptions::Open(options),
-                ),
-                keld_native::dialog::DialogRequestV1::Save {
-                    nonce,
-                    parent,
-                    options,
-                } => self.admit_dialog_effect(
-                    active,
-                    dialog,
-                    correlation,
-                    nonce,
-                    parent,
-                    DialogWorkOptions::Save(options),
-                ),
+            match self.admit_dialog_call(
+                active,
+                dialog,
+                correlation,
+                payload,
+                #[cfg(windows)]
+                false,
+            ) {
+                DialogAdmission::Native => Ok(()),
+                DialogAdmission::Reply(reply) => write_reply(active, correlation, &reply),
+                DialogAdmission::Refused(error) => write_error(active, correlation, &error),
             }
         });
-        if let Some((attempt, retirement)) = collision {
-            // Runtime recovery may re-enter Core; neither writer nor transition
-            // lock may survive this call. A revoked reader otherwise suppresses
-            // its error, so surface failed cleanup/recovery to the UI owner.
-            let recovery = self.link_failed(attempt);
-            if retirement.is_err() || recovery.is_err() {
-                let _ = self.window_commands.send(super::AppWindowCommand::Fatal);
-            }
-            return result.map_err(|primary| {
-                super::super::append_app_cleanup(primary, [retirement, recovery])
-            });
+        if let Some(retirement) = collision {
+            return result.map_err(|error| self.finish_dialog_collision(caller, retirement, error));
         }
         result
     }
 
+    #[cfg(any(not(windows), test))]
+    fn finish_dialog_collision(
+        &self,
+        caller: &PrimaryCallerContext,
+        retirement: Result<(), HostAppError>,
+        primary: HostAppError,
+    ) -> HostAppError {
+        // The reader's normal failure tail does not report errors after explicit
+        // revocation. Preserve the original recovery failure and its Fatal wake.
+        let recovery = self.link_failed(caller.attempt);
+        if retirement.is_err() || recovery.is_err() {
+            let _ = self.window_commands.send(super::AppWindowCommand::Fatal);
+        }
+        super::super::append_app_cleanup(primary, [retirement, recovery])
+    }
+
+    pub(in super::super) fn dialog_native_finished(
+        &self,
+        attempt: u32,
+        nonce: u64,
+        outcome: DialogUiOutcome,
+    ) -> Result<(), HostAppError> {
+        #[cfg(windows)]
+        {
+            self.dialog_native_finished_writer(attempt, nonce, outcome)
+        }
+        #[cfg(not(windows))]
+        {
+            self.dialog_native_finished_legacy(attempt, nonce, outcome)
+        }
+    }
+
     /// Called by the Core UI event coordinator after the genuine `AppKit` sheet
     /// completed, not by the untrusted caller or the background reader.
-    pub(in super::super) fn dialog_native_finished(
+    #[cfg(any(not(windows), test))]
+    pub(super) fn dialog_native_finished_legacy(
         &self,
         attempt: u32,
         nonce: u64,
@@ -234,9 +247,8 @@ impl PrimaryRouterHandle {
             .current
             .lock()
             .map_err(|_| app_detail("dialog native terminal", "generation writer lock poisoned"))?;
-        // Keep terminal custody until the writer is held, so a reused CALL
-        // cannot slip between taking the original terminal and publishing it.
-        // Even a retired/shutdown callback must release its native custody.
+        // A raw publisher consumes the original only after owning its sole writer.
+        // Even a retired callback must still drain actual native custody.
         let terminal = dialog.complete(attempt, nonce, outcome)?;
         let Some((owner, result)) = terminal else {
             return Ok(());
@@ -294,4 +306,54 @@ impl PrimaryRouterHandle {
             )),
         }
     }
+}
+
+pub(super) fn reused_correlation() -> HostAppError {
+    app_ipc(
+        "dialog admission",
+        &keld_ipc::IpcError::Protocol {
+            detail: "dialog CALL reuses an already-pending correlation",
+        },
+    )
+}
+
+#[cfg(any(not(windows), test))]
+fn write_error(
+    active: &mut ActivePrimaryGeneration,
+    correlation: CorrelationId,
+    error: &CallError,
+) -> Result<(), HostAppError> {
+    #[cfg(windows)]
+    let writer = active.legacy_writer_mut()?;
+    #[cfg(not(windows))]
+    let writer = &mut active.writer;
+    keld_ipc::write_call_error(
+        writer,
+        keld_ipc::channel_table::DIALOG.id(),
+        correlation,
+        error,
+    )
+    .map_err(|source| app_ipc("dialog correlated refusal", &source))
+}
+
+#[cfg(any(not(windows), test))]
+fn write_reply(
+    active: &mut ActivePrimaryGeneration,
+    correlation: CorrelationId,
+    reply: &DialogReplyV1,
+) -> Result<(), HostAppError> {
+    let bytes = encode(reply).map_err(|source| app_ipc("dialog reply encode", &source))?;
+    #[cfg(windows)]
+    let writer = active.legacy_writer_mut()?;
+    #[cfg(not(windows))]
+    let writer = &mut active.writer;
+    write_frame(
+        writer,
+        FrameKind::Reply,
+        0,
+        keld_ipc::channel_table::DIALOG.id(),
+        correlation,
+        &bytes,
+    )
+    .map_err(|source| app_ipc("dialog correlated reply", &source))
 }

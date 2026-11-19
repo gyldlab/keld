@@ -21,8 +21,7 @@ use super::dialog_custody::{CancelResult, DialogCustody, DialogOwner, ReserveErr
 use super::window_registry::{WindowError, WindowOwner};
 use super::{
     ActivePrimaryGeneration, CorrelationId, FrameKind, HostAppError, PrimaryCallerContext,
-    PrimaryLinkIdentity, PrimaryRouterHandle, app_detail, app_ipc, encode,
-    with_primary_caller_locked, write_frame,
+    PrimaryLinkIdentity, PrimaryRouterHandle, app_detail, with_primary_caller_locked,
 };
 
 /// Native UI custody deadline, independent of transport's much shorter CALL
@@ -119,6 +118,12 @@ struct DialogState {
     parent: Option<WebviewId>,
     #[cfg(windows)]
     native_fault: Option<DialogFault>,
+    #[cfg(windows)]
+    caller: Option<PrimaryCallerContext>,
+    #[cfg(windows)]
+    cancel_ack: Option<CorrelationId>,
+    #[cfg(windows)]
+    publication: Option<publication::DialogPublication>,
 }
 
 impl DialogState {
@@ -154,6 +159,12 @@ impl DialogSession {
                 parent: None,
                 #[cfg(windows)]
                 native_fault: None,
+                #[cfg(windows)]
+                caller: None,
+                #[cfg(windows)]
+                cancel_ack: None,
+                #[cfg(windows)]
+                publication: None,
             }),
             wake,
         }
@@ -174,16 +185,24 @@ impl DialogSession {
 
     /// Reserve exactly one original after caller, Guard, parent and high-water
     /// checks. A queued message is never visible to UI before this reservation.
+    #[cfg(any(not(windows), test))]
     pub(super) fn reserve(
         &self,
         owner: DialogOwner,
         options: MessageOptions,
         parent: WebviewId,
     ) -> Result<(), DialogFault> {
-        self.reserve_operation(owner, DialogWorkOptions::Message(options), parent)
+        self.reserve_operation(
+            owner,
+            DialogWorkOptions::Message(options),
+            parent,
+            #[cfg(windows)]
+            None,
+        )
     }
 
     /// The real Open/Save operation uses exactly the Message queue/custody.
+    #[cfg(any(not(windows), test))]
     pub(super) fn reserve_file(
         &self,
         owner: DialogOwner,
@@ -193,7 +212,33 @@ impl DialogSession {
         if matches!(options, DialogWorkOptions::Message(_)) {
             return Err(DialogFault::InvalidRequest);
         }
-        self.reserve_operation(owner, options, parent)
+        self.reserve_operation(
+            owner,
+            options,
+            parent,
+            #[cfg(windows)]
+            None,
+        )
+    }
+
+    /// Capture the existing authenticated caller before native work is woken.
+    #[cfg(windows)]
+    fn reserve_for_caller(
+        &self,
+        owner: DialogOwner,
+        options: DialogWorkOptions,
+        parent: WebviewId,
+        caller: PrimaryCallerContext,
+    ) -> Result<(), DialogFault> {
+        if caller.identity != owner.identity
+            || caller.attempt != owner.attempt
+            || caller
+                .reader_stop
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(DialogFault::InvalidRequest);
+        }
+        self.reserve_operation(owner, options, parent, Some(caller))
     }
 
     fn reserve_operation(
@@ -201,9 +246,14 @@ impl DialogSession {
         owner: DialogOwner,
         options: DialogWorkOptions,
         parent: WebviewId,
+        #[cfg(windows)] caller: Option<PrimaryCallerContext>,
     ) -> Result<(), DialogFault> {
         {
             let mut state = self.state.lock().map_err(|_| DialogFault::NativeFailure)?;
+            #[cfg(windows)]
+            if state.publication.is_some() {
+                return Err(DialogFault::Busy);
+            }
             state.custody.reserve(owner).map_err(|error| match error {
                 ReserveError::Busy => DialogFault::Busy,
                 ReserveError::Stale | ReserveError::InvalidTransition => DialogFault::NativeFailure,
@@ -213,6 +263,7 @@ impl DialogSession {
             {
                 state.parent = Some(parent);
                 state.native_fault = None;
+                state.caller = caller;
             }
             state.pending = Some(DialogWork {
                 owner,
@@ -228,6 +279,10 @@ impl DialogSession {
                 state.pending = None;
                 state.custody.retire(owner.identity, owner.attempt);
                 let _ = state.custody.quiesced(owner);
+                #[cfg(windows)]
+                {
+                    state.caller = None;
+                }
             }
             return Err(DialogFault::NativeFailure);
         }
@@ -236,12 +291,31 @@ impl DialogSession {
 
     /// Cancel is allowed while the one Message reservation occupies capacity.
     /// Caller, Guard and Cancel's *own* correlation are checked by Core first.
+    #[cfg(test)]
     pub(super) fn cancel(
         &self,
         identity: PrimaryLinkIdentity,
         attempt: u32,
         nonce: u64,
         cancel_correlation: CorrelationId,
+    ) -> Result<CancelDisposition, DialogFault> {
+        self.cancel_inner(
+            identity,
+            attempt,
+            nonce,
+            cancel_correlation,
+            #[cfg(windows)]
+            false,
+        )
+    }
+
+    fn cancel_inner(
+        &self,
+        identity: PrimaryLinkIdentity,
+        attempt: u32,
+        nonce: u64,
+        cancel_correlation: CorrelationId,
+        #[cfg(windows)] retain_ack: bool,
     ) -> Result<CancelDisposition, DialogFault> {
         let mut state = self.state.lock().map_err(|_| DialogFault::NativeFailure)?;
         if state.custody.active_owner().is_some_and(|owner| {
@@ -257,6 +331,12 @@ impl DialogSession {
         let outcome = state.custody.cancel(identity, attempt, nonce);
         if outcome == CancelResult::Requested {
             state.tighten_cleanup(Instant::now() + Duration::from_secs(10));
+            #[cfg(windows)]
+            if retain_ack {
+                // Raw publication held the caller fence through the Cancel ACK.
+                // Retain that order without waiting while holding the fence.
+                state.cancel_ack = Some(cancel_correlation);
+            }
         }
         drop(state);
         match outcome {
@@ -279,11 +359,28 @@ impl DialogSession {
         // the shared Host queue. This also keeps existing FS/Ready teardown
         // ordering unchanged when the policy happens to include `dialog`.
         let wake_needed = if let Ok(mut state) = self.state.lock() {
-            let retired = state.custody.retire(identity, attempt);
-            if retired {
+            let wake = state.custody.retire(identity, attempt);
+            if wake {
                 state.tighten_cleanup(Instant::now() + Duration::from_secs(5));
             }
-            retired
+            #[cfg(windows)]
+            {
+                if wake {
+                    state.cancel_ack = None;
+                }
+                if state.publication.as_ref().is_some_and(|record| {
+                    record.owner.identity == identity
+                        && record.owner.attempt == attempt
+                        && !record.preparing
+                        && record.receipt.is_none()
+                }) {
+                    state.publication = None;
+                }
+                if state.custody.active_owner().is_none() {
+                    state.caller = None;
+                }
+            }
+            wake
         } else {
             false
         };
@@ -308,16 +405,24 @@ impl DialogSession {
     }
 
     pub(super) fn has_capacity(&self) -> bool {
-        self.state
-            .lock()
-            .is_ok_and(|state| state.custody.active_owner().is_none())
+        self.state.lock().is_ok_and(|state| {
+            #[cfg(windows)]
+            if state.publication.is_some() {
+                return false;
+            }
+            state.custody.active_owner().is_none()
+        })
     }
 
     #[cfg(any(target_os = "macos", test))]
     pub(super) fn fully_drained(&self) -> bool {
-        self.state
-            .lock()
-            .is_ok_and(|state| state.pending.is_none() && state.custody.active_owner().is_none())
+        self.state.lock().is_ok_and(|state| {
+            #[cfg(windows)]
+            if state.publication.is_some() {
+                return false;
+            }
+            state.pending.is_none() && state.custody.active_owner().is_none()
+        })
     }
 
     fn take_work(&self) -> Result<Option<DialogWork>, HostAppError> {
@@ -464,86 +569,14 @@ impl DialogSession {
         }
         Ok(())
     }
-
-    /// A native result is delivered to Core only after physical quiescence.
-    /// Nothing here is a trusted caller: outcome may no longer have a live role.
-    pub(super) fn complete(
-        &self,
-        attempt: u32,
-        nonce: u64,
-        outcome: DialogUiOutcome,
-    ) -> Result<Option<DialogTerminal>, HostAppError> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| app_detail("native dialog terminal", "custody lock poisoned"))?;
-        let Some(owner) = state
-            .custody
-            .active_owner()
-            .filter(|owner| owner.attempt == attempt && owner.nonce == nonce)
-        else {
-            // Stale/duplicate callbacks cannot mint a reply or release custody.
-            return Ok(None);
-        };
-        // Do not invent a winning terminal here: the native owner committed
-        // the outcome on the UI thread before sending this event. An observed
-        // Cancel/expiry/retirement already owns the cause if it happened first.
-        let file_result = state.file_result.take();
-        #[cfg(windows)]
-        let native_fault = state
-            .native_fault
-            .take()
-            .unwrap_or(DialogFault::NativeFailure);
-        #[cfg(not(windows))]
-        let native_fault = DialogFault::NativeFailure;
-        let terminal = state
-            .custody
-            .take_original_terminal(owner)
-            .map(|(_, kind)| {
-                let result = match (kind, outcome) {
-                    (
-                        TerminalKind::NativeResult,
-                        DialogUiOutcome::Selected {
-                            response,
-                            checkbox_checked,
-                        },
-                    ) => Ok(DialogReplyV1::Message {
-                        response,
-                        checkbox_checked,
-                    }),
-                    (TerminalKind::NativeResult, DialogUiOutcome::FileResult) => {
-                        match file_result {
-                            Some((retained_owner, value)) if retained_owner == owner => Ok(value),
-                            _ => Err(DialogFault::NativeFailure),
-                        }
-                    }
-                    (TerminalKind::Cancelled, _) => Err(DialogFault::Cancelled),
-                    (TerminalKind::Expired, _) => Err(DialogFault::Expired),
-                    (TerminalKind::NativeFailure | TerminalKind::NativeResult, _) => {
-                        Err(native_fault)
-                    }
-                };
-                (owner, result)
-            });
-        state.custody.quiesced(owner).map_err(|_| {
-            app_detail(
-                "native dialog terminal",
-                "physical quiescence has no active effect",
-            )
-        })?;
-        #[cfg(windows)]
-        {
-            state.parent = None;
-        }
-        drop(state);
-        // A terminal native callback can be delivered after Tao's last tick;
-        // this wake makes final close wait until the custody record is gone.
-        let _ = self.wake.send(AppWindowCommand::DialogWake);
-        Ok(terminal)
-    }
 }
 
+mod completion;
+#[cfg(windows)]
+mod dispatch_writer;
 mod host_route;
+#[cfg(windows)]
+mod publication;
 
 #[cfg(target_os = "macos")]
 mod native_ui;

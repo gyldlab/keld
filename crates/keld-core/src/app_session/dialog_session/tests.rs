@@ -10,7 +10,7 @@ use std::sync::mpsc;
 #[path = "publication_tests.rs"]
 mod publication;
 
-fn with_manifest(
+pub(super) fn with_manifest(
     source: &str,
 ) -> (
     DialogSession,
@@ -44,7 +44,7 @@ fn original(correlation: u32, nonce: u64) -> DialogOwner {
     }
 }
 
-fn options() -> MessageOptions {
+pub(super) fn options() -> MessageOptions {
     MessageOptions {
         message: "Unsaved changes".to_owned(),
         kind: keld_native::dialog::MessageKind::Question,
