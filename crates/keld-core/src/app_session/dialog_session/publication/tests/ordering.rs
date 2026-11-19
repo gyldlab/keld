@@ -191,3 +191,56 @@ fn allowed_cancel_ack_precedes_original_terminal_when_native_finishes_during_cap
         assert!(dialog.fully_drained());
     });
 }
+
+#[test]
+fn distinct_link_cannot_cancel_a_same_number_original() {
+    fixture(|router, _original_peer, _writer, _events| {
+        let target = router
+            .current_primary_writer_target()
+            .expect("capture")
+            .expect("active original");
+        let caller = target.caller();
+        let effect = DialogOwner {
+            identity: caller.identity,
+            attempt: caller.attempt,
+            correlation: CorrelationId(81),
+            nonce: 9,
+            parent: None,
+        };
+        let dialog = router.dialog.as_ref().expect("same source");
+        dialog
+            .reserve_for_caller(
+                effect,
+                DialogWorkOptions::Message(crate::app_session::dialog_session::tests::options()),
+                WebviewId(3),
+                caller.clone(),
+            )
+            .expect("one original reservation, still eligible for native use");
+        let (successor, mut peer) = super::replace_with_equal_number(router);
+        let attempted_cancel = CorrelationId(82);
+        router
+            .dispatch_dialog(
+                &successor,
+                attempted_cancel,
+                &encode(&DialogRequestV1::Cancel {
+                    nonce: effect.nonce,
+                })
+                .expect("bounded Cancel"),
+            )
+            .expect("a distinct caller receives the ordinary dialog refusal");
+        let (header, bytes) = read_frame(&mut peer).expect("actual successor link refusal");
+        assert_eq!(
+            (header.kind, header.corr),
+            (FrameKind::Err, attempted_cancel)
+        );
+        assert_eq!(
+            decode::<CallError>(&bytes).expect("typed rejection").code,
+            DialogFault::InvalidRequest.code()
+        );
+        assert!(
+            dialog
+                .may_present(effect)
+                .expect("actual original remains eligible")
+        );
+    });
+}

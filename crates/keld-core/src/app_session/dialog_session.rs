@@ -18,6 +18,8 @@ use keld_wv::WebviewId;
 use keld_wv::{AppWindowCommand, AppWindowEvent, DialogUiOutcome};
 
 use super::dialog_custody::{CancelResult, DialogCustody, DialogOwner, ReserveError, TerminalKind};
+#[cfg(windows)]
+use super::primary_writer::WriterLink;
 use super::window_registry::{WindowError, WindowOwner};
 use super::{
     ActivePrimaryGeneration, CorrelationId, FrameKind, HostAppError, PrimaryCallerContext,
@@ -127,6 +129,13 @@ struct DialogState {
 }
 
 impl DialogState {
+    #[cfg(windows)]
+    fn original_caller(&self) -> Option<&PrimaryCallerContext> {
+        self.caller
+            .as_ref()
+            .or_else(|| self.publication.as_ref().map(|record| &record.caller))
+    }
+
     // Repeated Cancel/retirement/polls may shorten, never restart, this clock.
     fn tighten_cleanup(&mut self, deadline: Instant) {
         self.cleanup_deadline = Some(
@@ -305,7 +314,7 @@ impl DialogSession {
             nonce,
             cancel_correlation,
             #[cfg(windows)]
-            false,
+            None,
         )
     }
 
@@ -315,9 +324,17 @@ impl DialogSession {
         attempt: u32,
         nonce: u64,
         cancel_correlation: CorrelationId,
-        #[cfg(windows)] retain_ack: bool,
+        #[cfg(windows)] target: Option<&WriterLink>,
     ) -> Result<CancelDisposition, DialogFault> {
         let mut state = self.state.lock().map_err(|_| DialogFault::NativeFailure)?;
+        #[cfg(windows)]
+        if let Some(target) = target
+            && state
+                .original_caller()
+                .is_some_and(|original| !target.matches(original))
+        {
+            return Err(DialogFault::InvalidRequest);
+        }
         if state.custody.active_owner().is_some_and(|owner| {
             owner.identity == identity
                 && owner.attempt == attempt
@@ -332,7 +349,7 @@ impl DialogSession {
         if outcome == CancelResult::Requested {
             state.tighten_cleanup(Instant::now() + Duration::from_secs(10));
             #[cfg(windows)]
-            if retain_ack {
+            if target.is_some() {
                 // Raw publication held the caller fence through the Cancel ACK.
                 // Retain that order without waiting while holding the fence.
                 state.cancel_ack = Some(cancel_correlation);

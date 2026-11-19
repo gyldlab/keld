@@ -313,6 +313,31 @@ fn full_dialog_result_retirement_sends_exactly_one_original_terminal() {
     });
 }
 
+fn replace_with_equal_number(
+    router: &PrimaryRouterHandle,
+) -> (PrimaryCallerContext, keld_ipc::BootstrapStream) {
+    let (server, mut successor_peer) = crate::app_session::tests::primary_test_stream_pair();
+    successor_peer
+        .set_app_link_deadlines(Some(Duration::from_secs(3)))
+        .expect("bounded successor pipe observer");
+    let successor = {
+        let mut current = router.current.lock().expect("canonical current");
+        let active = current.as_mut().expect("actual old link");
+        // Deliberately retain all numeric facts. Only the actual role
+        // allocation distinguishes this adversarial replacement.
+        active.reader_stop = Arc::new(AtomicBool::new(false));
+        let caller = PrimaryCallerContext {
+            attempt: active.attempt,
+            identity: active.identity,
+            reader_stop: Arc::clone(&active.reader_stop),
+        };
+        active.writer_link =
+            Some(WriterLink::new(server, caller.clone()).expect("distinct exact role link"));
+        caller
+    };
+    (successor, successor_peer)
+}
+
 #[test]
 fn same_numeric_successor_cannot_authorize_a_captured_dialog_result() {
     fixture(|router, _original_peer, _writer, _events| {
@@ -322,25 +347,7 @@ fn same_numeric_successor_cannot_authorize_a_captured_dialog_result() {
         let temporary = DialogSource::take(dialog)
             .expect("one preparing source")
             .expect("source");
-        let (server, mut successor_peer) = crate::app_session::tests::primary_test_stream_pair();
-        successor_peer
-            .set_app_link_deadlines(Some(Duration::from_secs(3)))
-            .expect("bounded successor pipe observer");
-        let successor = {
-            let mut current = router.current.lock().expect("canonical current");
-            let active = current.as_mut().expect("actual old link");
-            // Deliberately retain all numeric facts. Only the actual role
-            // allocation distinguishes this adversarial replacement.
-            active.reader_stop = Arc::new(AtomicBool::new(false));
-            let caller = PrimaryCallerContext {
-                attempt: active.attempt,
-                identity: active.identity,
-                reader_stop: Arc::clone(&active.reader_stop),
-            };
-            active.writer_link =
-                Some(WriterLink::new(server, caller.clone()).expect("distinct exact role link"));
-            caller
-        };
+        let (successor, mut successor_peer) = replace_with_equal_number(router);
         drop(temporary);
         router
             .service_dialog_writer_progress()

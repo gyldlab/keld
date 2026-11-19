@@ -45,7 +45,7 @@ impl PrimaryRouterHandle {
                 collision = Some(Arc::clone(target));
                 return Ok(());
             }
-            result = Some(self.admit_dialog_call(active, dialog, correlation, payload, true));
+            result = Some(self.admit_dialog_call(active, dialog, correlation, payload));
             Ok(())
         })?;
         if let Some(target) = collision {
@@ -119,12 +119,11 @@ impl DialogSession {
             .state
             .lock()
             .map_err(|_| app_detail("dialog admission", "custody lock poisoned"))?;
-        let original_caller = state
-            .caller
-            .as_ref()
-            .or_else(|| state.publication.as_ref().map(|record| &record.caller));
         let caller = target.caller();
-        if !original_caller.is_some_and(|original| target.matches(original)) {
+        if !state
+            .original_caller()
+            .is_some_and(|original| target.matches(original))
+        {
             return Ok(false);
         }
         if state
@@ -157,12 +156,10 @@ impl DialogSession {
             .state
             .lock()
             .map_err(|_| app_detail("dialog Cancel acknowledgement", "custody lock poisoned"))?;
-        let caller = state
-            .caller
-            .as_ref()
-            .or_else(|| state.publication.as_ref().map(|record| &record.caller));
         if state.cancel_ack != Some(correlation)
-            || !caller.is_some_and(|caller| target.matches(caller))
+            || !state
+                .original_caller()
+                .is_some_and(|caller| target.matches(caller))
         {
             return Ok(false);
         }

@@ -91,7 +91,6 @@ impl PrimaryRouterHandle {
         dialog: &DialogSession,
         correlation: CorrelationId,
         payload: &[u8],
-        #[cfg(windows)] retain_cancel_ack: bool,
     ) -> DialogAdmission {
         if !active.identity.is_primary() {
             return DialogAdmission::Refused(DialogFault::InvalidRequest.call_error());
@@ -110,7 +109,7 @@ impl PrimaryRouterHandle {
                     nonce,
                     correlation,
                     #[cfg(windows)]
-                    retain_cancel_ack,
+                    active.writer_link.as_deref(),
                 ) {
                     Ok(disposition) => {
                         DialogAdmission::Reply(DialogReplyV1::Cancel { disposition })
@@ -180,14 +179,7 @@ impl PrimaryRouterHandle {
                 ));
                 return Err(reused_correlation());
             }
-            match self.admit_dialog_call(
-                active,
-                dialog,
-                correlation,
-                payload,
-                #[cfg(windows)]
-                false,
-            ) {
+            match self.admit_dialog_call(active, dialog, correlation, payload) {
                 DialogAdmission::Native => Ok(()),
                 DialogAdmission::Reply(reply) => write_reply(active, correlation, &reply),
                 DialogAdmission::Refused(error) => write_error(active, correlation, &error),
