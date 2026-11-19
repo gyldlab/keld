@@ -6381,6 +6381,30 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: A second owner defined a conflicting or incompatible main-role process fact before the canonical installer
 - fix: Remove the competing definition and use the process-facts owner through the Host-selected preload or facade import. A conflict refuses the complete set before writing another property.
 
+## KELD-COMPAT-100
+
+- crate: @keld/kipc
+- message: Unsupported value encountered by the bounded Electron endpoint-value codec
+- fix: Replace the value with a supported, snapshot-safe endpoint value before sending.
+
+## KELD-COMPAT-101
+
+- crate: @keld/kipc
+- message: Malformed endpoint value or renderer argument encoding was refused
+- fix: Correct the encoding and declared value domain before sending it through the renderer channel.
+
+## KELD-COMPAT-102
+
+- crate: @keld/kipc
+- message: Endpoint value exceeded the codec's bounded byte, depth, or node budget
+- fix: Shrink or simplify the endpoint value to the approved codec limits before sending it.
+
+## KELD-COMPAT-103
+
+- crate: @keld/electron
+- message: Original preload runtime refused a local page-to-application crossing or its callback did not complete
+- fix: Correct the reported preload request, binding, document identity, or value-bound failure. Verify the disposition of the original application effect before retrying.
+
 ## KELD-CORE-030
 
 - crate: keld-core
@@ -6494,6 +6518,30 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-core
 - message: This Host session has reached its cumulative distinct-window admission capacity, including destroyed window identities
 - fix: Start a fresh Host session to mint further window identities. Do not retry Create within this session, recycle a retired identity, or bypass the native admission limit. The candidate numeric capacity remains unapproved pending GH1149.
+
+## KELD-CORE-050
+
+- crate: keld-core
+- message: An original document load is already pending for this window
+- fix: Wait for this window's actual native load finish or failure before issuing another explicit load.
+
+## KELD-CORE-051
+
+- crate: keld-core
+- message: The original document source, selected URI, preload, or native UI admission is unavailable or refused
+- fix: Prepare the verified resource graph and use the exact selected entry and preload with bounded arguments. Restart the Host if its native UI owner has ended.
+
+## KELD-CORE-052
+
+- crate: keld-core
+- message: The selected native navigation was refused or failed
+- fix: Correct the reported source, Runtime qualification, or native navigation failure before issuing a new explicit load on a current live window.
+
+## KELD-CORE-053
+
+- crate: keld-core
+- message: The admitted original load lost its native document before completion
+- fix: Use a current live window for a new explicit load.
 
 ## KELD-UPDATE-001
 
