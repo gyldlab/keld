@@ -125,7 +125,8 @@ impl ManagedWindows {
         let events = &self.events;
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         let test_control = self.test_control.as_ref();
-        close_managed_resources(
+        let candidate_drained = self.builder.retire_candidate_on_ui();
+        let stopped = close_managed_resources(
             &mut self.views,
             &mut self.custody,
             after_views_closed,
@@ -141,11 +142,21 @@ impl ManagedWindows {
                     test_control,
                 )
             },
-        )
+        );
+        if !candidate_drained {
+            if let Err(error) = stopped {
+                eprintln!("KELD_WV_BUILD_STOP_CLEANUP {error}");
+            }
+            return Err(super::profile_failure_with(
+                crate::profile::ProfileErrorKind::LifecycleUnproven,
+                "native stop retained an unresolved construction candidate",
+            ));
+        }
+        stopped
     }
 
     pub(super) fn exit_ready(&self, terminal: bool, barrier_ready: bool) -> bool {
-        self.custody.exit_ready(terminal, barrier_ready)
+        self.builder.candidate_is_empty() && self.custody.exit_ready(terminal, barrier_ready)
     }
 
     pub(super) fn command(

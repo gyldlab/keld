@@ -3379,6 +3379,7 @@ impl Drop for View {
 pub struct WebView2Engine {
     /// Drop controllers/windows before environments and the event loop.
     views: BTreeMap<u32, View>,
+    startup_build: Option<view_build::NativeBuild>,
     /// One environment per engine: every webview shares its profile directory
     /// and browser process (`learn.microsoft.com`, `WebView2` process model).
     environment: ICoreWebView2Environment,
@@ -3550,6 +3551,7 @@ impl WebView2Engine {
             navigation_failed: Arc::new(AtomicBool::new(false)),
             navigation_diagnostic: Arc::new(Mutex::new(FirstNavigationDiagnostic::new())),
             app_window_created: false,
+            startup_build: None,
             view_build_attempt: startup_retirement::NativeViewBuild::NotAttempted,
             saved_permissions_reconciled: false,
             #[cfg(feature = "profile-test-hooks")]
@@ -3935,11 +3937,11 @@ impl WebView2Engine {
         let release = Rc::new(release.with_loop_wake(proxy.clone())?);
         let release_in_loop = Rc::clone(&release);
         let managed = Rc::new(RefCell::new(managed_app::ManagedWindows::new(
-            view_build::NativeBuild {
-                environment: self.environment.clone(),
-                next_id: self.next_id,
-                saved_permissions_reconciled: self.saved_permissions_reconciled,
-            },
+            view_build::NativeBuild::new(
+                self.environment.clone(),
+                self.next_id,
+                self.saved_permissions_reconciled,
+            ),
             events.clone(),
             proxy.clone(),
             Rc::clone(&self.activation_observer),
@@ -4416,7 +4418,11 @@ impl WebEngine for WebView2Engine {
         self.creation_event_loop()?;
         self.view_build_attempt = startup_retirement::NativeViewBuild::Attempted;
         self.mark_profile_running()?;
-        let event_loop = self.creation_event_loop()?;
+        self.creation_event_loop()?;
+        let event_loop = self
+            .event_loop
+            .as_ref()
+            .ok_or_else(|| WvError::EventLoop(String::from("event loop already consumed")))?;
         let navigation =
             self.pending_app_events
                 .as_ref()
@@ -4427,11 +4433,15 @@ impl WebEngine for WebView2Engine {
                     failed: Arc::clone(&self.navigation_failed),
                     diagnostic: Arc::clone(&self.navigation_diagnostic),
                 });
-        let mut builder = view_build::NativeBuild {
-            environment: self.environment.clone(),
-            next_id: self.next_id,
-            saved_permissions_reconciled: self.saved_permissions_reconciled,
-        };
+        // Reborrow only the loop after the method above has checked creation
+        // is still legal. The builder must stay retained in this engine.
+        let builder = self.startup_build.get_or_insert_with(|| {
+            view_build::NativeBuild::new(
+                self.environment.clone(),
+                self.next_id,
+                self.saved_permissions_reconciled,
+            )
+        });
         let result = builder.build(
             event_loop,
             &event_loop.create_proxy(),
@@ -4443,14 +4453,21 @@ impl WebEngine for WebView2Engine {
         );
         self.next_id = builder.next_id;
         self.saved_permissions_reconciled = builder.saved_permissions_reconciled;
-        let built = result.map_err(|failure| failure.source)?;
-        if self.views.contains_key(&built.id.0) {
-            return Err(WvError::Window(String::from(
-                "native view identity collision",
-            )));
+        match result {
+            Ok(completed) => {
+                let result = builder.transfer_completed_into(&mut self.views, completed);
+                if result.is_err() {
+                    builder.retire_candidate_on_ui();
+                }
+                result
+            }
+            Err(failure) => {
+                if failure.disposition != view_build::BuildFailureDisposition::NotStarted {
+                    builder.retire_candidate_on_ui();
+                }
+                Err(failure.source)
+            }
         }
-        self.views.insert(built.id.0, built.view);
-        Ok(built.id)
     }
 
     fn navigate(&mut self, id: WebviewId, target: NavTarget) -> Result<(), WvError> {
