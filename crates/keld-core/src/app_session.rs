@@ -2132,8 +2132,15 @@ pub fn run_unprivileged(
         .map_err(HostAppError::manifest)?;
         profile_preflight::validate_profile(schema, &verified, true)?;
         let mut retained = None;
-        run_app_direct(app, None, None, pre_init_terminal, host_death_job, &mut retained)
-            .map_err(|error| HostRunFailure { error, retained })
+        run_app_direct(
+            app,
+            None,
+            None,
+            pre_init_terminal,
+            host_death_job,
+            &mut retained,
+        )
+        .map_err(|error| HostRunFailure { error, retained })
     }
     #[cfg(target_os = "linux")]
     {
