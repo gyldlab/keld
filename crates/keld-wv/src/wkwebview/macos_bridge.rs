@@ -25,8 +25,8 @@ use crate::WebviewId;
 use crate::error::WvError;
 use crate::wv_link::{AppPageCall, AppWvLinkEnvelope, decode_app_wv_link};
 use crate::wv_link::{
-    WvConsumerDisposition, WvLinkEnvelope, WvLinkMode, WvLinkRejectReason, decode_wv_link,
-    decode_wv_link_for_mode,
+    WvConsumerDisposition, WvDispatchCertainty, WvLinkEnvelope, WvLinkMode, WvLinkRejectReason,
+    WvTerminalDisposition, decode_wv_link, decode_wv_link_for_mode,
 };
 
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -691,6 +691,13 @@ struct PendingRequest {
     request: u32,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum InvokeHandoffError {
+    Admission(&'static str),
+    QueueFull,
+    QueueDisconnected,
+}
+
 #[derive(Debug)]
 struct BridgeState {
     webview: WebviewId,
@@ -800,6 +807,34 @@ impl BridgeState {
             native_facts: None,
             role_witness: None,
         })
+    }
+
+    /// The pending slot is owned by the actual queued request. A failed
+    /// nonblocking handoff cannot leave it occupied by a request Core never saw.
+    fn queue_invoke(
+        &mut self,
+        requests: &SyncSender<RendererBridgeRequest>,
+        document: &str,
+        request: u32,
+        channel: u16,
+        payload: Vec<u8>,
+        lease: Option<super::MacNativeDocumentLease>,
+    ) -> Result<(), InvokeHandoffError> {
+        let mut call = self
+            .admit_invoke(document, request, channel, payload)
+            .map_err(InvokeHandoffError::Admission)?;
+        call.document_lease = lease;
+        match requests.try_send(call) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(call)) => {
+                let _ = self.settle(call.navigation(), call.request());
+                Err(InvokeHandoffError::QueueFull)
+            }
+            Err(TrySendError::Disconnected(call)) => {
+                let _ = self.settle(call.navigation(), call.request());
+                Err(InvokeHandoffError::QueueDisconnected)
+            }
+        }
     }
 
     fn settle(&mut self, navigation: u64, request: u32) -> bool {
@@ -1600,12 +1635,12 @@ impl MacRendererBridge {
                     let token = state.app_credential.as_ref().ok_or_else(|| {
                         bridge_error("terminal result has no current app binding")
                     })?;
-                    let json=serde_json::to_string(&serde_json::json!({"v":2,"kind":"send-result","document":token,"message":request,"disposition":disposition})).map_err(|_|bridge_error("private terminal serialization failed"))?;
+                    let script = private_send_terminal_script(token, request, &disposition)?;
                     drop(state);
                     evaluate_owned(
                         webview,
                         world,
-                        &format!("globalThis.__keldAppNativeTerminal({json});"),
+                        &script,
                         app.clone(),
                         EvaluationPurpose::Control,
                     );
@@ -1693,17 +1728,12 @@ impl MacRendererBridge {
                 .trusted_credential
                 .as_ref()
                 .ok_or_else(|| bridge_error("numeric result has no current trusted binding"))?;
-            let result = if payload.ok {
-                serde_json::json!({"status":"reply","payload":payload.payload})
-            } else {
-                serde_json::json!({"status":"error","code":payload.code,"detail":payload.detail})
-            };
-            let private=serde_json::to_string(&serde_json::json!({"v":2,"kind":"invoke-result","document":token,"request":request,"result":result})).map_err(|_|bridge_error("private numeric result serialization failed"))?;
+            let script = private_numeric_result_script(token, &payload)?;
             drop(state);
             evaluate_owned(
                 webview,
                 &self.world,
-                &format!("globalThis.__keldBridgeV2Result({private});"),
+                &script,
                 app.clone(),
                 EvaluationPurpose::Control,
             );
@@ -1725,6 +1755,39 @@ struct PageOutcome {
     code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<String>,
+}
+
+fn private_numeric_result_script(document: &str, payload: &PageOutcome) -> Result<String, WvError> {
+    let result = if payload.ok {
+        serde_json::json!({"status":"reply","payload":payload.payload})
+    } else {
+        serde_json::json!({"status":"error","code":payload.code,"detail":payload.detail})
+    };
+    let private = serde_json::to_string(&serde_json::json!({
+        "v": 2,
+        "kind": "invoke-result",
+        "document": document,
+        "request": payload.request,
+        "result": result,
+    }))
+    .map_err(|_| bridge_error("private numeric result serialization failed"))?;
+    Ok(format!("globalThis.__keldBridgeV2Result({private});"))
+}
+
+fn private_send_terminal_script(
+    document: &str,
+    message: u32,
+    disposition: &WvTerminalDisposition,
+) -> Result<String, WvError> {
+    let private = serde_json::to_string(&serde_json::json!({
+        "v": 2,
+        "kind": "send-result",
+        "document": document,
+        "message": message,
+        "disposition": disposition,
+    }))
+    .map_err(|_| bridge_error("private terminal serialization failed"))?;
+    Ok(format!("globalThis.__keldAppNativeTerminal({private});"))
 }
 
 impl PageOutcome {
@@ -2118,6 +2181,180 @@ mod tests {
 
     /// The echo id `keld-core` passes today; any host-chosen id works the same.
     const ADMITTED: u16 = 1;
+    const DOC: &str = "0123456789abcdef0123456789abcdef";
+
+    fn one_way_request(id: u32) -> RendererBridgeRequest {
+        RendererBridgeRequest {
+            webview: WebviewId(7),
+            navigation: 1,
+            request: id,
+            channel: 0,
+            payload: vec![u8::try_from(id).expect("bounded test message id")],
+            operation: RendererBridgeOperation::Send {
+                channel: String::from("rendererReq"),
+            },
+            document_lease: None,
+            native_facts: None,
+            role_witness: None,
+        }
+    }
+
+    fn current_bridge() -> (BridgeState, String) {
+        let mut state = BridgeState::new(WebviewId(7), ADMITTED);
+        state.bind_webview(0x7000).expect("native view");
+        let nonce = state.bind().expect("current document");
+        (state, nonce)
+    }
+
+    #[test]
+    fn failed_v2_queue_full_releases_exact_pending_and_next_call_is_queued() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        sender
+            .try_send(one_way_request(3))
+            .expect("occupy Core queue");
+        let (mut state, document) = current_bridge();
+        assert_eq!(
+            state.queue_invoke(&sender, &document, 11, ADMITTED, vec![11], None),
+            Err(InvokeHandoffError::QueueFull)
+        );
+        assert!(
+            state.pending.is_none(),
+            "undispatched invoke cannot own pending credit"
+        );
+        assert_eq!(
+            receiver.try_recv().expect("original queued work").request(),
+            3
+        );
+        state
+            .queue_invoke(&sender, &document, 12, ADMITTED, vec![12], None)
+            .expect("next valid invoke after capacity returns");
+        let next = receiver.try_recv().expect("next request really queued");
+        assert_eq!(next.request(), 12);
+        assert_eq!(next.payload(), &[12]);
+        assert!(state.settle(next.navigation(), next.request()));
+    }
+
+    #[test]
+    fn failed_v2_queue_disconnected_releases_exact_pending_for_future_admission() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        drop(receiver);
+        let (mut state, document) = current_bridge();
+        assert_eq!(
+            state.queue_invoke(&sender, &document, 21, ADMITTED, vec![21], None),
+            Err(InvokeHandoffError::QueueDisconnected)
+        );
+        assert!(state.pending.is_none());
+        // Closing the endpoint cannot restore transport, but a failed send
+        // must not turn a new request into a false "already pending" refusal.
+        let next = state
+            .admit_invoke(&document, 22, ADMITTED, vec![22])
+            .expect("new request is independently eligible");
+        assert!(state.settle(next.navigation(), next.request()));
+    }
+
+    #[test]
+    fn one_queued_v2_invoke_blocks_concurrent_invoke_until_its_exact_settlement() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let (mut state, document) = current_bridge();
+        state
+            .queue_invoke(&sender, &document, 31, ADMITTED, vec![31], None)
+            .expect("first queued request");
+        assert_eq!(
+            state.queue_invoke(&sender, &document, 32, ADMITTED, vec![32], None),
+            Err(InvokeHandoffError::Admission(
+                "another renderer invoke is already pending"
+            ))
+        );
+        let first = receiver.try_recv().expect("only original request");
+        assert_eq!(first.request(), 31);
+        assert!(
+            receiver.try_recv().is_err(),
+            "no concurrent second dispatch"
+        );
+        assert!(state.settle(first.navigation(), first.request()));
+        state
+            .queue_invoke(&sender, &document, 33, ADMITTED, vec![33], None)
+            .expect("new invoke after real settlement");
+        assert_eq!(
+            receiver.try_recv().expect("next queued request").request(),
+            33
+        );
+    }
+
+    #[test]
+    fn failed_named_send_full_is_private_refusal_with_no_effect_and_healthy_next_send() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        sender
+            .try_send(one_way_request(1))
+            .expect("occupy Core queue");
+        let result = submit_named_send(&sender, one_way_request(2));
+        let Err(disposition) = result else {
+            panic!("full queue must refuse the second one-way send");
+        };
+        assert!(matches!(
+            &disposition,
+            WvTerminalDisposition::Refused { code, .. } if code == "KELD-WV-011"
+        ));
+        assert_eq!(receiver.try_recv().expect("only first send").request(), 1);
+        assert!(
+            receiver.try_recv().is_err(),
+            "refused send was not dispatched"
+        );
+        let script = private_send_terminal_script(DOC, 2, &disposition).expect("terminal source");
+        assert!(script.starts_with("globalThis.__keldAppNativeTerminal("));
+        assert!(
+            !script.contains("mainResp"),
+            "one-way refusal cannot invent a reply"
+        );
+        let json = script
+            .strip_prefix("globalThis.__keldAppNativeTerminal(")
+            .and_then(|s| s.strip_suffix(");"))
+            .expect("private only");
+        let result: serde_json::Value = serde_json::from_str(json).expect("terminal JSON");
+        assert_eq!(result["document"], DOC);
+        assert_eq!(result["message"], 2);
+        assert_eq!(result["disposition"]["status"], "refused");
+        submit_named_send(&sender, one_way_request(3)).expect("next send when capacity returns");
+        assert_eq!(receiver.try_recv().expect("next send").request(), 3);
+    }
+
+    #[test]
+    fn failed_named_send_disconnected_is_exact_not_dispatched_terminal() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        drop(receiver);
+        let disposition =
+            submit_named_send(&sender, one_way_request(4)).expect_err("closed Core endpoint");
+        assert!(matches!(
+            disposition,
+            WvTerminalDisposition::RouteRetired {
+                certainty: WvDispatchCertainty::NotDispatched
+            }
+        ));
+        let source = private_send_terminal_script(DOC, 4, &disposition).expect("private terminal");
+        assert!(source.contains("\"certainty\":\"not-dispatched\""));
+    }
+
+    #[test]
+    fn failed_v2_invoke_result_is_correlated_to_private_trusted_document() {
+        let result = PageOutcome {
+            request: 49,
+            ok: false,
+            payload: None,
+            code: Some(String::from("KELD-WV-011")),
+            detail: Some(String::from("existing renderer endpoint unavailable")),
+        };
+        let source = private_numeric_result_script(DOC, &result).expect("private result source");
+        let json = source
+            .strip_prefix("globalThis.__keldBridgeV2Result(")
+            .and_then(|s| s.strip_suffix(");"))
+            .expect("trusted-only receiver");
+        let result: serde_json::Value = serde_json::from_str(json).expect("private result JSON");
+        assert_eq!(result["document"], DOC);
+        assert_eq!(result["request"], 49);
+        assert_eq!(result["result"]["status"], "error");
+        assert_eq!(result["result"]["code"], "KELD-WV-011");
+        assert!(result.get("payload").is_none(), "no fabricated reply");
+    }
 
     #[test]
     fn navigation_invalidates_document_and_pending_renderer_call() {
@@ -2730,12 +2967,9 @@ fn handle_compat_envelope(
         .ok_or_else(|| bridge_error("compat handler has no immutable original image"))?;
     match envelope {
         WvLinkEnvelope::Bind => return bind_compat_document(handler, webview, app),
-        WvLinkEnvelope::Send {
-            document,
-            message,
-            channel,
-            payload,
-        } => return send_compat_message(handler, app, &document, message, channel, payload, facts),
+        send @ WvLinkEnvelope::Send { .. } => {
+            return send_compat_message(handler, webview, app, send, facts);
+        }
         WvLinkEnvelope::Consumed {
             document,
             delivery,
@@ -2784,21 +3018,47 @@ fn handle_compat_envelope(
             {
                 return Err(bridge_error("shared native DATA floor is occupied"));
             }
-            let mut call = lock_state(&ivars.state)
-                .admit_invoke(&document, request.get(), channel.get(), payload)
-                .map_err(bridge_error)?;
             let stamp = state
                 .current()
                 .ok_or_else(|| bridge_error("native document retired"))?;
-            call.document_lease = state
+            let lease = state
                 .document
                 .borrow()
                 .lease_for(stamp)
                 .map(super::MacNativeDocumentLease);
-            ivars
-                .requests
-                .try_send(call)
-                .map_err(|_| bridge_error("existing renderer endpoint unavailable"))?;
+            let queued = lock_state(&ivars.state).queue_invoke(
+                &ivars.requests,
+                &document,
+                request.get(),
+                channel.get(),
+                payload,
+                lease,
+            );
+            match queued {
+                Ok(()) => {}
+                Err(InvokeHandoffError::Admission(detail)) => return Err(bridge_error(detail)),
+                Err(InvokeHandoffError::QueueFull | InvokeHandoffError::QueueDisconnected) => {
+                    // This authenticated call was admitted but never queued.
+                    // Its exact pending slot was rolled back. Notify its
+                    // trusted-world waiter after releasing every RefCell borrow.
+                    let outcome = PageOutcome {
+                        request: request.get(),
+                        ok: false,
+                        payload: None,
+                        code: Some(String::from("KELD-WV-011")),
+                        detail: Some(String::from("existing renderer endpoint unavailable")),
+                    };
+                    let script = private_numeric_result_script(&document, &outcome)?;
+                    drop(state);
+                    evaluate_owned(
+                        webview,
+                        &ivars.world,
+                        &script,
+                        app.clone(),
+                        EvaluationPurpose::Control,
+                    );
+                }
+            }
         }
     }
     Ok(())
@@ -2857,19 +3117,26 @@ fn bind_compat_document(
 
 fn send_compat_message(
     handler: &KeldScriptMessageHandler,
+    webview: &WKWebView,
     app: &SharedAppState,
-    document: &str,
-    message: std::num::NonZeroU32,
-    channel: String,
-    payload: Vec<u8>,
+    send: WvLinkEnvelope,
     facts: Option<NativeMessageFacts>,
 ) -> Result<(), WvError> {
+    let WvLinkEnvelope::Send {
+        document,
+        message,
+        channel,
+        payload,
+    } = send
+    else {
+        return Err(bridge_error("named send must use its exact envelope"));
+    };
     let ivars = handler.ivars();
     if ivars.role != HandlerRole::App {
         return Err(bridge_error("trusted world cannot send app topics"));
     }
     let mut state = app.borrow_mut();
-    if !state.authentic(document, HandlerRole::App)
+    if !state.authentic(&document, HandlerRole::App)
         || state.retiring_at.is_some()
         || !state.registered
     {
@@ -2885,6 +3152,8 @@ fn send_compat_message(
     {
         return Err(bridge_error("duplicate, skipped or replayed app message"));
     }
+    // The isolated sender consumed this sequence before the native callback.
+    // Record its one attempt even if local admission or the queue later refuses.
     state.last_message = message.get();
     let active = state
         .active_call
@@ -2911,10 +3180,24 @@ fn send_compat_message(
         payload,
     );
     request.native_facts = facts;
-    state
-        .requests
-        .try_send(request)
-        .map_err(|_| bridge_error("existing bounded renderer endpoint unavailable"))?;
+    let queued = submit_named_send(&state.requests, request);
+    if let Err(disposition) = queued {
+        if matches!(disposition, WvTerminalDisposition::RouteRetired { .. }) {
+            state.control_fault = true;
+        }
+        // No request entered Core: retain neither pending send nor forwarded
+        // effect. The original Function completes and aborts its preflight.
+        let script = private_send_terminal_script(&document, message.get(), &disposition)?;
+        drop(state);
+        evaluate_owned(
+            webview,
+            &ivars.world,
+            &script,
+            app.clone(),
+            EvaluationPurpose::Control,
+        );
+        return Ok(());
+    }
     state.pending_send = Some(PendingAppSend {
         id: message.get(),
         lease,
@@ -2923,6 +3206,24 @@ fn send_compat_message(
         active.send_forwarded = true;
     }
     Ok(())
+}
+
+/// Map only the physical native queue result into a private one-way outcome.
+/// The original Function's preflight and any app-level reply remain separate.
+fn submit_named_send(
+    requests: &SyncSender<RendererBridgeRequest>,
+    request: RendererBridgeRequest,
+) -> Result<(), WvTerminalDisposition> {
+    match requests.try_send(request) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(_)) => Err(WvTerminalDisposition::Refused {
+            code: String::from("KELD-WV-011"),
+            message: String::from("native renderer queue is occupied; send not dispatched"),
+        }),
+        Err(TrySendError::Disconnected(_)) => Err(WvTerminalDisposition::RouteRetired {
+            certainty: WvDispatchCertainty::NotDispatched,
+        }),
+    }
 }
 
 #[cfg(test)]
