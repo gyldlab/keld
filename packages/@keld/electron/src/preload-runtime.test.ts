@@ -397,6 +397,74 @@ describe("original preload runtime only", () => {
       f.restore();
     }
   });
+  test("undispatched native request retires original document before callback slots accumulate", () => {
+    const f = fixture();
+    const priorError = console.error;
+    const errors: string[] = [];
+    console.error = (...args: unknown[]) => errors.push(args.join(" "));
+    try {
+      f.call("request", { action: "isFullscreen" }, () => {}, () => {});
+      expect(f.sends()).toHaveLength(1);
+      expect(f.sends()[0]!.message).toBe(1);
+      (f.app.__keldAppNativeTerminal as (value: unknown) => void)({
+        document: token,
+        message: 1,
+        disposition: {
+          status: "refused",
+          code: "KELD-WV-011",
+          message: "native renderer queue occupied; not dispatched",
+        },
+      });
+      for (let i = 0; i < 80; i++)
+        f.call("request", { action: "isFullscreen" }, () => {}, () => {});
+      // Every later snapshot is released, without ever re-entering the
+      // original closure or inventing a mainResp to erase its old reqInfo.
+      expect(f.sends()).toHaveLength(1);
+      expect(f.appMessages.filter((value) => value.kind === "call-finished")).toHaveLength(81);
+      (f.app.__keldAppRouteState as (document: string, ready: boolean) => void)(
+        token,
+        true,
+      );
+      (f.app.__keldAppNativeRegistered as (document: string) => void)(token);
+      f.call("request", { action: "isFullscreen" }, () => {}, () => {});
+      expect(f.sends()).toHaveLength(1);
+      expect(errors.some((text) => text.includes("reload the document"))).toBe(true);
+    } finally {
+      console.error = priorError;
+      f.restore();
+    }
+    // A separately instantiated document has fresh original callback custody.
+    const fresh = fixture();
+    try {
+      fresh.call("request", { action: "isFullscreen" }, () => {}, () => {});
+      expect(fresh.sends()).toHaveLength(1);
+    } finally {
+      fresh.restore();
+    }
+  });
+
+  test("one-way send refusal and stale terminal do not retire unrelated original requests", () => {
+    const f = fixture();
+    try {
+      f.call("sendMessage", "telemetry", "ok");
+      expect(f.sends()).toHaveLength(1);
+      (f.app.__keldAppNativeTerminal as (value: unknown) => void)({
+        document: token,
+        message: 1,
+        disposition: { status: "refused", code: "KELD-WV-011", message: "not dispatched" },
+      });
+      (f.app.__keldAppNativeTerminal as (value: unknown) => void)({
+        document: "ffffffffffffffffffffffffffffffff",
+        message: 2,
+        disposition: { status: "route-retired", certainty: "not-dispatched" },
+      });
+      f.call("request", { action: "isFullscreen" }, () => {}, () => {});
+      expect(f.sends()).toHaveLength(2);
+    } finally {
+      f.restore();
+    }
+  });
+
   test("native fixture payload vectors are the sole endpoint codec output", () => {
     expect(Array.from(encodeEndpointArguments(["old"]))).toEqual([
       6, 1, 0, 5, 3, 0, 111, 108, 100,

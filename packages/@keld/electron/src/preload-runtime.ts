@@ -41,6 +41,7 @@ interface RuntimeWindow extends Window {
   __keldAppRouteState?: (document: string, ready: boolean) => void;
   __keldAppNativeTerminal?: (value: {
     document: string;
+    message: number;
     disposition: { status: string; code?: string; message?: string };
   }) => void;
   __keldPageReady?: (ready: boolean) => void;
@@ -357,6 +358,10 @@ export function installApp(
   >();
   const watches = new Map<string, number>();
   const activeWatches = new Set<string>();
+  // Only a genuine mainResp can delete the immutable original's reqInfo entry.
+  // If an original request is not dispatched, retire this document rather than
+  // inventing a reply or allowing repeated unreclaimable callback retention.
+  let requiresDocumentReset = false;
   let invoking:
     | { call: number; bytes: number; watch: boolean; retainedEffect: boolean }
     | undefined;
@@ -682,7 +687,13 @@ export function installApp(
       dom.dispatchEvent(new CustomEvent(PAGE_REFUSAL_EVENT, { detail: call }));
   };
   w.__keldAppNativeRegistered = (document) => {
-    if (document === credential && credential && registry && processPublished) {
+    if (
+      !requiresDocumentReset &&
+      document === credential &&
+      credential &&
+      registry &&
+      processPublished
+    ) {
       nativeRegistered = true;
       dom.dispatchEvent(new CustomEvent(READY_EVENT));
     }
@@ -705,6 +716,7 @@ export function installApp(
   };
   w.__keldAppRouteState = (document, value) => {
     if (!credential || document !== credential) return;
+    if (requiresDocumentReset && value === true) return;
     ready = value === true;
     if (!ready) {
       activeWatches.clear();
@@ -713,8 +725,21 @@ export function installApp(
   };
   w.__keldAppNativeTerminal = (value) => {
     if (value.document !== credential) return;
-    if (value.disposition.status === "route-retired")
+    const abandonedOriginalRequest = [...requests.values()].some(
+      (record) => record.message === value.message,
+    );
+    if (
+      value.disposition.status === "route-retired" ||
+      value.disposition.status === "stale" ||
+      (abandonedOriginalRequest && value.disposition.status !== "consumed")
+    ) {
+      if (!requiresDocumentReset)
+        console.error(
+          "KELD-COMPAT-103: original callback ownership is unresolved; reload the document before another request",
+        );
+      requiresDocumentReset = true;
       w.__keldAppRouteState?.(value.document, false);
+    }
     else if (value.disposition.status !== "consumed")
       for (const record of requests.values())
         if (record.message === (value as { message?: number }).message)
@@ -736,6 +761,13 @@ export function installApp(
       !method(call.method)
     )
       return;
+    if (requiresDocumentReset) {
+      // Reject new calls before entering the immutable original. Release only
+      // their page-owned callbacks; the prior request needs a document reset.
+      releaseCall(call.call);
+      post({ v: 1, kind: "call-finished", document: credential, call: call.call });
+      return;
+    }
     let bytes = 0,
       extra = 0,
       reserved = 0,
