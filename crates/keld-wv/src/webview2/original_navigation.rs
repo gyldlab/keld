@@ -106,6 +106,30 @@ impl OriginalNavigation {
     /// The actual Core operation is correlation only, retained by this same attempt.
     pub(super) fn begin_host_load(
         &mut self,
+        qualified: super::original_load::QualifiedHostLoad,
+        context: NativeNavigationContext,
+        role: RendererRoleWitness,
+        now: Instant,
+    ) -> Result<NativeAttempt, NativeNavigationRefusal> {
+        let prepared = qualified.into_prepared_for(self)?;
+        self.begin_for_current_role(prepared, context, role, now)
+    }
+
+    // Isolated state tests supply an already-modeled native observation. Shipping
+    // callers can only enter through the environment-qualified input above.
+    #[cfg(test)]
+    pub(super) fn begin_modeled_host_load(
+        &mut self,
+        prepared: Rc<PreparedLoad>,
+        context: NativeNavigationContext,
+        role: RendererRoleWitness,
+        now: Instant,
+    ) -> Result<NativeAttempt, NativeNavigationRefusal> {
+        self.begin_for_current_role(prepared, context, role, now)
+    }
+
+    fn begin_for_current_role(
+        &mut self,
         prepared: Rc<PreparedLoad>,
         context: NativeNavigationContext,
         role: RendererRoleWitness,

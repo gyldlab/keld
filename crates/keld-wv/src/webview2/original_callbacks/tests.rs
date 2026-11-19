@@ -14,7 +14,7 @@ fn failure_after_destructive_observation_keeps_the_real_started_attempt() {
         .unwrap();
     let context = NativeNavigationContext::new(NonZeroU64::new(1).unwrap(), WebviewId(77));
     let attempt = navigation
-        .begin_host_load(
+        .begin_modeled_host_load(
             prepared,
             context,
             crate::renderer_bridge::RendererRoleWitness::new(std::sync::Arc::new(
@@ -53,7 +53,7 @@ fn captured_a_failure_cannot_retire_a_newer_b_attempt() {
     let context_a = NativeNavigationContext::new(NonZeroU64::new(2).unwrap(), WebviewId(78));
     let context_b = NativeNavigationContext::new(NonZeroU64::new(3).unwrap(), WebviewId(78));
     let a = navigation
-        .begin_host_load(
+        .begin_modeled_host_load(
             prepared,
             context_a,
             crate::renderer_bridge::RendererRoleWitness::new(std::sync::Arc::new(
@@ -71,7 +71,7 @@ fn captured_a_failure_cannot_retire_a_newer_b_attempt() {
         .unwrap();
     let b = state
         .borrow_mut()
-        .begin_host_load(
+        .begin_modeled_host_load(
             prepared,
             context_b,
             crate::renderer_bridge::RendererRoleWitness::new(std::sync::Arc::new(

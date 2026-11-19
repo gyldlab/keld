@@ -459,6 +459,8 @@ pub enum NativeNavigationRefusal {
     InvalidQuery,
     /// Foundation rejected the URL or its normalized shared resource limit.
     NativeUrlRejected,
+    /// Both native header observations have not been qualified on this actual runtime.
+    FileHeadersUnproven,
     /// The native document owner is destroyed or its counter exhausted.
     Unavailable,
     /// The shared source retained-byte account has no capacity for this alias.
@@ -478,6 +480,9 @@ impl core::fmt::Display for NativeNavigationRefusal {
             }
             Self::NativeUrlRejected => {
                 "normalized native URL is invalid or over budget; shorten its query"
+            }
+            Self::FileHeadersUnproven => {
+                "file-navigation header attribution is unproved; use a WebView2 runtime qualified for both native header observations"
             }
             Self::Unavailable => {
                 "native document owner is unavailable; create a fresh admitted window"

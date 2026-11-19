@@ -5,64 +5,138 @@
 #![deny(unsafe_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2, ICoreWebView2_2, ICoreWebView2Environment, ICoreWebView2Environment2,
-    ICoreWebView2WebResourceRequest,
+    ICoreWebView2_2, ICoreWebView2Environment2, ICoreWebView2WebResourceRequest,
 };
 use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::System::Com::IStream;
-use windows::core::{HSTRING, Interface as _};
+use windows::core::{HSTRING, IUnknown, Interface as _};
 
 use super::native_text::read_task_text;
 use super::original_callbacks::attempt_header;
 use super::original_navigation::{HOST_ATTEMPT_HEADER, OriginalNavigation, PreparedLoad};
-use super::original_resource::require_get_without_body;
+use super::original_resource::{ResourceView, require_get_without_body};
 use crate::engine::{NativeNavigationRefusal, OriginalEntryQuery};
 use crate::resource_intake::ORIGINAL_WEBAPP_LIMITS;
 
-/// No document identity has been minted merely by constructing this request.
-pub(super) struct PreparedNativeLoad {
+// GH1185 ?4.6, Q22(a,b). Windows x64 native capture, 2026-11-19:
+// both native header surfaces observed; absent on plain/page/same-URI-frame controls.
+// Probe source 6c38cceee701439dec873000e444f66bd94a329e.
+// Executable SHA-256 7510c5d25998fa66b93267ed2b2d0cd87b7be364358b4e30aeb235ccba2008e5.
+// winq22-current-runtime-20261119-240ec7 / keld-w3-q22-32020-19f864345374bcdb4922b996c05b9558
+// receipt.json SHA-256 0a063e18ac070efea3296deb609b389cfadf747602eae1ae9e471fa18f3a5481.
+// This receipt does not cover reload (Q22c).
+const Q22_AB_WINDOWS_X64: &str = "157.0.4341.60";
+
+fn require_q22_ab(observed: Option<&str>) -> Result<(), NativeNavigationRefusal> {
+    if cfg!(target_arch = "x86_64") && observed == Some(Q22_AB_WINDOWS_X64) {
+        Ok(())
+    } else {
+        Err(NativeNavigationRefusal::FileHeadersUnproven)
+    }
+}
+
+/// Only this module may mint an admission input after inspecting the actual
+/// native target. Preparation alone has no generation or document side effect.
+pub(super) struct QualifiedHostLoad {
     prepared: Rc<PreparedLoad>,
+    owner: Weak<ResourceView>,
+}
+
+impl QualifiedHostLoad {
+    /// The production caller obtains this observation from the retained view's
+    /// creating environment. No other module can construct this input.
+    fn from_version_observation(
+        owner: &Rc<ResourceView>,
+        prepared: Rc<PreparedLoad>,
+        observed: Option<&str>,
+    ) -> Result<Self, NativeNavigationRefusal> {
+        require_q22_ab(observed)?;
+        Ok(Self {
+            prepared,
+            owner: Rc::downgrade(owner),
+        })
+    }
+
+    pub(super) fn into_prepared_for(
+        self,
+        navigation: &OriginalNavigation,
+    ) -> Result<Rc<PreparedLoad>, NativeNavigationRefusal> {
+        let owner = self
+            .owner
+            .upgrade()
+            .ok_or(NativeNavigationRefusal::Unavailable)?;
+        if !owner.holds_live_load_owner(navigation) {
+            return Err(NativeNavigationRefusal::Unavailable);
+        }
+        Ok(self.prepared)
+    }
+}
+
+pub(super) struct PreparedNativeLoad {
+    qualified: QualifiedHostLoad,
     call: NativeLoadCall,
 }
 
 impl PreparedNativeLoad {
+    #[allow(unsafe_code)] // Only the actual bound STA view's creating environment and version getters.
     pub(super) fn prepare(
-        view: &ICoreWebView2,
-        environment: &ICoreWebView2Environment,
-        navigation: &Rc<RefCell<OriginalNavigation>>,
+        owner: &Rc<ResourceView>,
         query: &OriginalEntryQuery,
     ) -> Result<Self, NativeNavigationRefusal> {
-        let prepared = navigation
-            .try_borrow()
-            .map_err(|_| NativeNavigationRefusal::Unavailable)?
-            .prepare(query)?;
-        // No navigation RefCell borrow is alive across any native entry.
-        let view = view
+        let (core, expected_environment, navigation) = owner.original_load_target();
+        // Reserve the existing prepared-load metadata before the bounded native getters.
+        // Version readback finishes before the URI/header readbacks use this allowance.
+        let prepared = {
+            let navigation = navigation
+                .try_borrow()
+                .map_err(|_| NativeNavigationRefusal::Unavailable)?;
+            if !owner.holds_live_load_owner(&navigation) {
+                return Err(NativeNavigationRefusal::Unavailable);
+            }
+            navigation.prepare(query)?
+        };
+        let view = core
             .cast::<ICoreWebView2_2>()
-            .map_err(|_| NativeNavigationRefusal::Unavailable)?;
+            .map_err(|_| NativeNavigationRefusal::FileHeadersUnproven)?;
+        // SAFETY: the ResourceView retains this live Core on the creating STA.
+        // https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2_2#get_environment
+        let environment = unsafe { view.Environment() }
+            .map_err(|_| NativeNavigationRefusal::FileHeadersUnproven)?;
+        let identity = environment
+            .cast::<IUnknown>()
+            .map_err(|_| NativeNavigationRefusal::FileHeadersUnproven)?;
+        if identity.as_raw() as usize != expected_environment {
+            return Err(NativeNavigationRefusal::FileHeadersUnproven);
+        }
+        // SAFETY: this exact environment owns the target view. read_task_text supplies
+        // an initialized PWSTR out-pointer and frees its task allocation on every return.
+        // https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2environment#get_browserversionstring
+        let version = read_task_text(
+            |out| unsafe { environment.BrowserVersionString(out) },
+            Q22_AB_WINDOWS_X64.len(),
+            Q22_AB_WINDOWS_X64.len(),
+        );
+        let qualified =
+            QualifiedHostLoad::from_version_observation(owner, prepared, version.as_deref().ok())?;
         let environment = environment
             .cast::<ICoreWebView2Environment2>()
             .map_err(|_| NativeNavigationRefusal::Unavailable)?;
-        let request = create_checked_request(&environment, &prepared)
-            .map_err(|_| NativeNavigationRefusal::NativeUrlRejected)?;
+        let request = create_checked_request(&environment, &qualified.prepared)?;
         Ok(Self {
             call: NativeLoadCall {
                 view,
                 request,
-                prepared: Rc::clone(&prepared),
+                prepared: Rc::clone(&qualified.prepared),
             },
-            prepared,
+            qualified,
         })
     }
 
-    /// The same prepared object enters the shared owner exactly once. Keeping
-    /// the callable separate lets the final fence contain local state only.
-    pub(super) fn into_parts(self) -> (Rc<PreparedLoad>, NativeLoadCall) {
-        (self.prepared, self.call)
+    pub(super) fn into_parts(self) -> (QualifiedHostLoad, NativeLoadCall) {
+        (self.qualified, self.call)
     }
 }
 
@@ -155,3 +229,6 @@ fn create_checked_request(
     }
     Ok(request)
 }
+
+#[cfg(test)]
+pub(in crate::webview2) mod tests;

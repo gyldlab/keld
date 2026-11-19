@@ -17,7 +17,7 @@ fn actual_commit_before_native_return_fails_and_late_return_cannot_repair_it() {
     let context = NativeNavigationContext::new(id(1), WebviewId(7));
     let attempt = h
         .navigation
-        .begin_host_load(
+        .begin_modeled_host_load(
             prepared,
             context,
             crate::renderer_bridge::RendererRoleWitness::new(std::sync::Arc::new(
@@ -102,7 +102,7 @@ fn wrong_view_context_refuses_before_revoking_a_or_entering_b() {
     let actual_input = Rc::clone(&prepared);
     let wrong = NativeNavigationContext::new(id(2), WebviewId(8));
     assert_eq!(
-        h.navigation.begin_host_load(
+        h.navigation.begin_modeled_host_load(
             prepared,
             wrong,
             crate::renderer_bridge::RendererRoleWitness::new(std::sync::Arc::new(
@@ -171,7 +171,7 @@ fn first_challenge_keeps_exact_load_caller_instead_of_view_creator() {
     let header = prepared.header_value().to_owned();
     let input = Rc::clone(&prepared);
     h.navigation
-        .begin_host_load(prepared, context, role_b.clone(), h.now)
+        .begin_modeled_host_load(prepared, context, role_b.clone(), h.now)
         .unwrap();
     assert!(h.navigation.host_role().unwrap().same_role(&role_b));
     assert!(!h.navigation.host_role().unwrap().same_role(&role_a));
@@ -199,7 +199,8 @@ fn already_stopped_load_caller_refuses_before_old_document_revocation() {
     let input = Rc::clone(&prepared);
     let context = NativeNavigationContext::new(id(82), WebviewId(7));
     assert_eq!(
-        h.navigation.begin_host_load(prepared, context, role, h.now),
+        h.navigation
+            .begin_modeled_host_load(prepared, context, role, h.now),
         Err(NativeNavigationRefusal::Unavailable)
     );
     assert!(current.is_current());
@@ -220,7 +221,7 @@ fn successful_qualification_records_once_and_never_renews_startup_bound() {
     let context = NativeNavigationContext::new(id(83), WebviewId(7));
     let attempt = h
         .navigation
-        .begin_host_load(prepared, context, role, h.now)
+        .begin_modeled_host_load(prepared, context, role, h.now)
         .unwrap();
     assert_eq!(h.navigation.qualified_at(), None);
     assert_eq!(

@@ -295,18 +295,25 @@ impl ResourceView {
     /// view already supplies the environment filter. Never credit that other view
     /// as proof that this callback target survived.
     fn require_install_owner(&self) -> Result<(), WvError> {
+        let nav = self
+            .navigation
+            .try_borrow()
+            .map_err(|_| failure("resource navigation owner is busy"))?;
+        self.require_bound_owner(&nav)
+    }
+
+    fn require_bound_owner(&self, navigation: &OriginalNavigation) -> Result<(), WvError> {
         let registered = self.session.state.try_borrow().is_ok_and(|state| {
             state
                 .views
                 .get(&self.id.0)
                 .is_some_and(|slot| std::ptr::eq(slot.as_ptr(), self))
         });
-        let observer_live = self.navigation.try_borrow().is_ok_and(|nav| {
-            let document = nav.document();
-            document.view() == self.id
-                && !document.renderer_exited()
-                && document.generation().is_some()
-        });
+        let document = navigation.document();
+        let observer_live = std::ptr::eq(self.navigation.as_ptr(), navigation)
+            && document.view() == self.id
+            && !document.renderer_exited()
+            && document.generation().is_some();
         if self.retired.get()
             || self.controller_closed.get()
             || !self.close.is_open()
@@ -320,6 +327,19 @@ impl ResourceView {
             ));
         }
         Ok(())
+    }
+
+    /// All parts come from the same native binding retained during installation.
+    pub(super) fn original_load_target(
+        &self,
+    ) -> (&ICoreWebView2, usize, &Rc<RefCell<OriginalNavigation>>) {
+        (&self.core, self.environment_identity, &self.navigation)
+    }
+
+    pub(super) fn holds_live_load_owner(&self, navigation: &OriginalNavigation) -> bool {
+        self.handler_token.get().is_some()
+            && !self.install_in_progress.get()
+            && self.require_bound_owner(navigation).is_ok()
     }
 
     pub(super) fn is_drained(&self) -> bool {

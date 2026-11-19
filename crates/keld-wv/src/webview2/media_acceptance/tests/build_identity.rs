@@ -76,3 +76,16 @@ fn windows_retired_candidate_cannot_borrow_an_existing_resource_filter() -> Resu
         })
     })
 }
+
+#[test]
+#[ignore = "requires the claimed Windows desktop and x64 WebView2 runtime qualified for Q22(a,b)"]
+fn windows_original_load_requires_its_actual_views_qualified_environment() -> Result<(), WvError> {
+    run_with_watchdog(FIXTURE_DEADLINE, || {
+        with_engine(|engine| {
+            crate::webview2::original_load::tests::captured_runtime_and_view_binding(
+                engine,
+                &blank_spec(),
+            )
+        })
+    })
+}
