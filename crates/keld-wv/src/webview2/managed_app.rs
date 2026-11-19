@@ -81,6 +81,10 @@ impl ManagedWindows {
         }
     }
 
+    pub(super) fn owns_desktop_refresh_window(&self, window: WindowId) -> bool {
+        !self.custody.contains(window) && self.views.values().any(|view| view.window.id() == window)
+    }
+
     /// The engine installs its one endpoint after fallible loop setup.
     pub(super) fn attach_selected_renderer(&mut self, renderer: SelectedRenderer) {
         self.renderer = Some(renderer);
@@ -203,6 +207,9 @@ impl ManagedWindows {
     ) -> Result<(), WvError> {
         match command {
             AppWindowCommand::DialogWake => Ok(()),
+            AppWindowCommand::WindowsDesktopProducer { .. } => Err(WvError::EventLoop(
+                String::from("desktop producer command bypassed its selected UI owner"),
+            )),
             AppWindowCommand::HostWriterProgress => {
                 send(&self.events, AppWindowEvent::HostWriterProgress)
             }

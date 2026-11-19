@@ -1777,6 +1777,8 @@ fn environment_creation_error(phase: &'static str, error: &windows::core::Error)
 }
 
 mod controller_custody;
+mod desktop_sample;
+mod desktop_session;
 
 /// Creates the controller that hosts one webview inside `hwnd`.
 ///
@@ -3395,6 +3397,7 @@ pub struct WebView2Engine {
     startup_build: Option<view_build::NativeBuild>,
     retained_app_run: Option<RetainedAppRun>,
     selected_renderer: Option<managed_app::SelectedRenderer>,
+    desktop_observation_selected: bool,
     /// One environment per engine: every webview shares its profile directory
     /// and browser process (`learn.microsoft.com`, `WebView2` process model).
     environment: ICoreWebView2Environment,
@@ -3609,6 +3612,7 @@ impl WebView2Engine {
             startup_build: None,
             retained_app_run: None,
             selected_renderer: None,
+            desktop_observation_selected: false,
             view_build_attempt: startup_retirement::NativeViewBuild::NotAttempted,
             saved_permissions_reconciled: false,
             #[cfg(feature = "profile-test-hooks")]
@@ -3662,6 +3666,20 @@ impl WebView2Engine {
         // durable. Zero-controller sessions must use the same stop/idle chain.
         engine.mark_profile_running()?;
         Ok(engine)
+    }
+
+    /// Select native desktop observations for the validated Windows facade boot.
+    ///
+    /// The UI samples on genuine first Init and through the captured current-reader
+    /// path. This selection does not issue Ready or admit a window.
+    ///
+    /// # Errors
+    ///
+    /// Returns an event-loop error if the original UI loop has already been used.
+    pub fn select_desktop_observation(&mut self) -> Result<(), WvError> {
+        self.creation_event_loop()?;
+        self.desktop_observation_selected = true;
+        Ok(())
     }
 
     /// Attach the one Core-created renderer endpoint before entering the app loop.
@@ -3999,6 +4017,12 @@ impl WebView2Engine {
         mut dialog_drive: Option<&mut WindowsDialogDriver<'_>>,
     ) -> Result<(), WvError> {
         self.require_startup_build_retired()?;
+        let facade = ready_trigger == AppReadyTrigger::HostInitialized;
+        if self.desktop_observation_selected && !facade {
+            return Err(WvError::EventLoop(String::from(
+                "desktop observation requires the selected Windows facade boot",
+            )));
+        }
         let Some(mut event_loop) = self.event_loop.take() else {
             return Err(WvError::EventLoop(String::from(
                 "run loop already started; call run_app_until_quit once",
@@ -4029,7 +4053,9 @@ impl WebView2Engine {
             .loop_setup_started();
         let navigation_diagnostic = Arc::clone(&self.navigation_diagnostic);
         let terminal_intent_in_loop = Arc::clone(&terminal_intent);
-        let facade = ready_trigger == AppReadyTrigger::HostInitialized;
+        let mut desktop = self
+            .desktop_observation_selected
+            .then(desktop_session::DesktopSession::default);
         let mut views = std::mem::take(&mut self.views);
         let browser = remember_browser_process_id(&views, &self.browser_binding)?;
         let stop_transition = PersistentStopTransition::from_profile(self.profile.as_ref());
@@ -4118,9 +4144,6 @@ impl WebView2Engine {
                     terminal_intent_in_loop.store(true, Ordering::Release);
                 }
             }
-            // The hook runs only between outer message dispatches. This is the
-            // existing sole mutable owner for each backend callback.
-            let mut managed = managed.borrow_mut();
             #[cfg(all(feature = "media-acceptance", test))]
             let native_probe_point = media_acceptance::host_window_probe::Point::capture(&event);
             if first_loop_turn {
@@ -4129,9 +4152,17 @@ impl WebView2Engine {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .first_loop_turn();
             }
-            if facade && first_host_init_turn(&event, &mut host_init_emitted)
-                && !report_host_initialized(&events)
-            {
+            let init_delivered = !facade
+                || !first_host_init_turn(&event, &mut host_init_emitted)
+                || desktop.as_mut().map_or_else(
+                    || report_host_initialized(&events, Instant::now()),
+                    |desktop| desktop.first_init(&events, || exit_requested
+                        || terminal_intent_in_loop.load(Ordering::Acquire)
+                        || release_in_loop.fault().is_some()),
+                );
+            // Native desktop acquisition only borrows its UI-local owner.
+            let mut managed = managed.borrow_mut();
+            if !init_delivered {
                 fatal_in_loop.store(true, Ordering::Release);
                 stop_app_views(&mut views, &mut managed, stop_in_loop.as_ref(),
                     &release_in_loop, &fatal_in_loop);
@@ -4200,6 +4231,8 @@ impl WebView2Engine {
             }
             let ending = exit_requested || terminal_intent_in_loop.load(Ordering::Acquire)
                 || release_in_loop.fault().is_some();
+            let mut desktop_bind = None;
+            let mut desktop_refresh = false;
             let operation = match event {
                 Event::UserEvent(WindowsLoopEvent::App(command @
                     (AppWindowCommand::Quit | AppWindowCommand::Fatal))) => {
@@ -4227,6 +4260,12 @@ impl WebView2Engine {
                     exit_requested = true;
                     Ok(())
                 }
+                Event::UserEvent(WindowsLoopEvent::App(AppWindowCommand::WindowsDesktopProducer { capture })) if facade => {
+                    if !ending && desktop.is_some() {
+                        desktop_bind = Some(capture);
+                    }
+                    Ok(())
+                }
                 Event::UserEvent(WindowsLoopEvent::App(command)) => {
                     if facade {
                         managed.command(command, target, &release_in_loop,
@@ -4247,6 +4286,11 @@ impl WebView2Engine {
                     managed.controller_focus(id)
                 }
                 Event::WindowEvent { window_id, event: ref native_event, .. } if facade => {
+                    desktop_refresh = !ending
+                        && desktop.is_some()
+                        && matches!(native_event,
+                            WindowEvent::ScaleFactorChanged { .. } | WindowEvent::ThemeChanged(_))
+                        && managed.owns_desktop_refresh_window(window_id);
                     managed.window_event(window_id, native_event)
                 }
                 Event::WindowEvent {
@@ -4267,6 +4311,25 @@ impl WebView2Engine {
                     Ok(())
                 }
                 _ => Ok(()),
+            };
+            let operation = if operation.is_ok()
+                && (desktop_bind.is_some() || desktop_refresh)
+                && !terminal_intent_in_loop.load(Ordering::Acquire)
+                && release_in_loop.fault().is_none()
+                && let Some(desktop) = desktop.as_mut()
+            {
+                // The sampler may call synchronous native APIs. Release the
+                // managed map borrow before entering its exact UI-local cut.
+                drop(managed);
+                let result = if let Some(capture) = desktop_bind {
+                    desktop.bind(capture, &events)
+                } else {
+                    desktop.refresh(&events)
+                };
+                managed = managed_in_loop.borrow_mut();
+                result
+            } else {
+                operation
             };
             let operation = operation.and_then(|()| managed.drive_original(
                 &release_in_loop,
@@ -4397,11 +4460,9 @@ impl WebView2Engine {
 /// the Core receiver may be descheduled past the absolute first-Init deadline even
 /// when this genuine event happened on time. `false` means Core's receiver is gone,
 /// so nothing can ever observe Ready; the caller ends the session fatally.
-fn report_host_initialized(events: &Sender<AppWindowEvent>) -> bool {
+fn report_host_initialized(events: &Sender<AppWindowEvent>, observed_at: Instant) -> bool {
     events
-        .send(AppWindowEvent::HostInitialized {
-            observed_at: Instant::now(),
-        })
+        .send(AppWindowEvent::HostInitialized { observed_at })
         .is_ok()
 }
 
@@ -5734,17 +5795,20 @@ mod tests {
     fn host_initialized_report_is_sampled_once_and_detects_a_gone_coordinator() {
         let (events, receiver) = std::sync::mpsc::channel();
         let before = std::time::Instant::now();
-        assert!(super::report_host_initialized(&events));
+        assert!(super::report_host_initialized(&events, before));
         match receiver.try_recv() {
             Ok(super::AppWindowEvent::HostInitialized { observed_at }) => {
-                assert!(observed_at >= before, "the UI turn samples the instant");
+                assert_eq!(
+                    observed_at, before,
+                    "the UI turn retains the genuine sampled instant"
+                );
             }
             other => panic!("expected the Init milestone, got {other:?}"),
         }
         assert!(receiver.try_recv().is_err(), "one report is one milestone");
         drop(receiver);
         assert!(
-            !super::report_host_initialized(&events),
+            !super::report_host_initialized(&events, before),
             "a dropped coordinator can never publish Ready"
         );
     }

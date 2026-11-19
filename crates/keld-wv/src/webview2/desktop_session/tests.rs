@@ -242,3 +242,34 @@ fn failed_then_healthy_refresh_emits_only_current_observations() {
     assert_eq!(values(&rx), vec![observed(&a, Some(true))]);
     assert_eq!(calls(), 3);
 }
+
+#[test]
+fn genuine_initial_unavailability_precedes_the_real_init_receipt() {
+    reset();
+    let (tx, rx) = mpsc::channel();
+    let mut session = Session::default();
+    input(None, None);
+    assert!(session.first_init(&tx, || false));
+    let events = values(&rx);
+    assert_eq!(calls(), 1);
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0], AppWindowEvent::DesktopObserved { facts: None });
+    assert!(matches!(events[1], AppWindowEvent::HostInitialized { .. }));
+}
+
+#[test]
+fn terminal_intent_at_native_return_blocks_both_init_publications() {
+    reset();
+    let (tx, rx) = mpsc::channel();
+    let mut session = Session::default();
+    let terminal_checks = std::cell::Cell::new(0);
+    input(Some(false), None);
+    assert!(session.first_init(&tx, || {
+        let calls = terminal_checks.get();
+        terminal_checks.set(calls + 1);
+        calls > 0
+    }));
+    assert_eq!(calls(), 1);
+    assert!(values(&rx).is_empty());
+    assert!(!session.initialized);
+}
