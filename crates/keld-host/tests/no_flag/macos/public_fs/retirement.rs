@@ -79,7 +79,7 @@ fn public_fs_relaunch_quit_survives_accepted_idle_observer_connection() {
     );
 }
 
-fn run_launch_without_window_census(
+pub(super) fn run_launch_without_window_census(
     fixture: &PublicFsProject,
     launch: usize,
     exercise: Exercise,
@@ -156,6 +156,7 @@ fn run_launch_without_window_census(
     // actually exits, then release it before fixture observer Drop/join.
     drop(idle);
     super::assert_product_quit(&output, &evidence, stage.root(), host_pid, exercise);
+    evidence.capture_profile_diagnostics(fixture, &output);
     if exercise == Exercise::PublicAppRetirement {
         assert_after_quit(&output, &evidence, &prepared.target);
     }

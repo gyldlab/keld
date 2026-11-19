@@ -118,7 +118,14 @@ fn fs_session() -> (tempfile::TempDir, Arc<FsDispatchSession>) {
     };
     let verified = load_verified_manifest(File::open(&path).expect("open manifest"), path, digest)
         .expect("verify manifest");
-    (temp, Arc::new(FsDispatchSession::new(verified)))
+    (
+        temp,
+        Arc::new(FsDispatchSession::new(
+            verified,
+            #[cfg(windows)]
+            None,
+        )),
+    )
 }
 
 /// The filesystem call the application wrote before its `Quit`, admitted and in flight.

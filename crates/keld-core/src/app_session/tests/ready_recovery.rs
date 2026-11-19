@@ -50,6 +50,8 @@ pub(in crate::app_session) fn initial_ready_router_with_window_loop() -> (
     let handle = PrimaryRouterHandle {
         current: Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
             identity: PrimaryLinkIdentity::Fixture,
+            #[cfg(windows)]
+            profile_binding: None,
             attempt: 1,
             writer: server,
             reader_stop: Arc::new(AtomicBool::new(false)),
@@ -285,6 +287,8 @@ fn failed_bound_restart_rejects_unowned_or_terminal_transitions() {
                 let (writer, _peer) = primary_test_stream_pair();
                 *handle.current.lock().expect("generation lock") = Some(ActivePrimaryGeneration {
                     identity: PrimaryLinkIdentity::Fixture,
+                    #[cfg(windows)]
+                    profile_binding: None,
                     attempt: if case == "successor" { 3 } else { 1 },
                     writer,
                     reader_stop: Arc::new(AtomicBool::new(false)),

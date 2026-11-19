@@ -35,6 +35,8 @@ mod policy_startup;
 mod preclick;
 #[path = "public_fs/process_image.rs"]
 mod process_image;
+#[path = "public_fs/profile_admission.rs"]
+mod profile_admission;
 #[path = "public_fs/project.rs"]
 mod project;
 #[path = "public_fs/retirement.rs"]
@@ -66,6 +68,8 @@ struct LaunchEvidence {
     window: Vec<u32>,
     retired_family: Option<ProcessFamily>,
     recovery_boot: Option<RecoveryBoot>,
+    // Test-owned Host stderr; never a GH-587 admission receipt.
+    profile_diagnostics: Option<String>,
 }
 
 struct RecoveryBoot {
@@ -250,6 +254,7 @@ fn run_launch_with_descendant_quit(
         resume_unwind(failure);
     }
     assert_product_quit(&output, &evidence, stage.root(), host_pid, exercise);
+    evidence.capture_profile_diagnostics(fixture, &output);
     if exercise == Exercise::PublicAppRetirement {
         retirement::assert_after_quit(&output, &evidence, &prepared.target);
     }

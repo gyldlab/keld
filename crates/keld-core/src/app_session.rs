@@ -3,6 +3,9 @@
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 mod boot_contract;
 mod error;
+mod profile_preflight;
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
+pub use self::boot_contract::boot_schema;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod window_registry;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -10,6 +13,7 @@ mod window_router;
 pub use self::error::HostAppError;
 #[cfg(all(test, any(target_os = "macos", windows)))]
 use self::error::startup_resource_snapshot;
+pub(crate) use self::profile_preflight::reject_diagnostic_profile;
 
 #[cfg(all(test, windows))]
 use self::boot_contract::decode_digest;
@@ -385,6 +389,8 @@ enum HandoverWait {
 /// or, on Windows, from the authenticated installed package that holds the host.
 pub struct ValidatedBootSelection {
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    schema: u8,
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     app: AppBootSelection,
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     permissions_file: File,
@@ -447,9 +453,33 @@ struct GuardSnapshot {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 impl GuardSnapshot {
+    #[cfg(any(not(windows), test))]
     fn prepare(verified: VerifiedManifest) -> Result<Self, FsPrepareError> {
+        Self::prepare_inner(
+            verified,
+            #[cfg(windows)]
+            None,
+        )
+    }
+
+    #[cfg(windows)]
+    fn prepare_uncontained(
+        verified: VerifiedManifest,
+        admitted: keld_guard::ProfileState,
+    ) -> Result<Self, FsPrepareError> {
+        Self::prepare_inner(verified, Some(admitted))
+    }
+
+    fn prepare_inner(
+        verified: VerifiedManifest,
+        #[cfg(windows)] admitted: Option<keld_guard::ProfileState>,
+    ) -> Result<Self, FsPrepareError> {
         let broker = FsBroker::prepare(&verified)?;
-        let fs = Arc::new(FsDispatchSession::new(verified.clone()));
+        let fs = Arc::new(FsDispatchSession::new(
+            verified.clone(),
+            #[cfg(windows)]
+            admitted,
+        ));
         Ok(Self {
             verified,
             fs,
@@ -525,6 +555,9 @@ struct PendingFsCall {
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct FsDispatchSession {
     verified: VerifiedManifest,
+    // The actual host admission result belongs to this immutable verified policy.
+    #[cfg(windows)]
+    admitted_profile: Option<keld_guard::ProfileState>,
     state: Mutex<FsDispatchState>,
     handler_transition: Mutex<()>,
     drained: Condvar,
@@ -552,9 +585,14 @@ impl FsDispatchState {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 impl FsDispatchSession {
-    fn new(verified: VerifiedManifest) -> Self {
+    fn new(
+        verified: VerifiedManifest,
+        #[cfg(windows)] admitted_profile: Option<keld_guard::ProfileState>,
+    ) -> Self {
         Self {
             verified,
+            #[cfg(windows)]
+            admitted_profile,
             state: Mutex::new(FsDispatchState::initial()),
             handler_transition: Mutex::new(()),
             drained: Condvar::new(),
@@ -1435,6 +1473,7 @@ fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppErro
     let permissions_file =
         open_relative_file(&root_fd, Path::new(PERMISSIONS_FILE), "permissions file")?;
     Ok(ValidatedBootSelection {
+        schema: parsed.schema,
         app: AppBootSelection {
             root,
             name: parsed.name,
@@ -1504,6 +1543,7 @@ fn validate_windows_boot_files(
     let permissions_file =
         open_relative_file_windows(&root, Path::new(PERMISSIONS_FILE), "permissions file")?;
     Ok(ValidatedBootSelection {
+        schema: parsed.schema,
         app: AppBootSelection {
             root,
             name: parsed.name,
@@ -1948,33 +1988,54 @@ pub fn run_unprivileged(
     #[cfg(target_os = "macos")]
     {
         let ValidatedBootSelection {
+            schema,
             app,
             permissions_file,
             permissions_digest,
         } = boot;
         // This explicit diagnostic/test path remains incapable of registering
         // a privileged channel. It never serves as recovery from run_guarded.
-        drop((permissions_file, permissions_digest));
-        run_app(app, None, pre_init_terminal)
+        let verified = load_verified_manifest(
+            permissions_file,
+            app.root.join(PERMISSIONS_FILE),
+            permissions_digest,
+        )
+        .map_err(HostAppError::manifest)?;
+        let profile = profile_preflight::validate_profile(schema, &verified, true)?;
+        run_app(app, None, profile, pre_init_terminal)
     }
     #[cfg(windows)]
     {
         let ValidatedBootSelection {
+            schema,
             app,
             permissions_file,
             permissions_digest,
         } = boot;
-        drop((permissions_file, permissions_digest));
+        let verified = load_verified_manifest(
+            permissions_file,
+            app.root.join(PERMISSIONS_FILE),
+            permissions_digest,
+        )
+        .map_err(HostAppError::manifest)?;
+        profile_preflight::validate_profile(schema, &verified, true)?;
         run_app_direct(app, None, pre_init_terminal, host_death_job).map_err(HostRunFailure::from)
     }
     #[cfg(target_os = "linux")]
     {
         let ValidatedBootSelection {
+            schema,
             app,
             permissions_file,
             permissions_digest,
         } = boot;
-        drop((permissions_file, permissions_digest));
+        let verified = load_verified_manifest(
+            permissions_file,
+            app.root.join(PERMISSIONS_FILE),
+            permissions_digest,
+        )
+        .map_err(HostAppError::manifest)?;
+        profile_preflight::validate_profile(schema, &verified, true)?;
         run_app_direct(app, None).map_err(HostRunFailure::from)
     }
 }
@@ -2008,6 +2069,7 @@ pub fn run_guarded(
     #[cfg(windows)]
     {
         let ValidatedBootSelection {
+            schema,
             app,
             permissions_file,
             permissions_digest,
@@ -2015,19 +2077,21 @@ pub fn run_guarded(
         let display_path = app.root.join(PERMISSIONS_FILE);
         let verified = load_verified_manifest(permissions_file, display_path, permissions_digest)
             .map_err(HostAppError::manifest)?;
-        let guard_snapshot =
-            GuardSnapshot::prepare(verified).map_err(|source| HostAppError::fs_prepare(&source))?;
-        run_app_direct(
-            app,
-            Some(&guard_snapshot),
-            pre_init_terminal,
-            host_death_job,
-        )
-        .map_err(HostRunFailure::from)
+        let profile = profile_preflight::validate_profile(schema, &verified, false)?;
+        if matches!(&app.mode, WindowsBootMode::Installed { .. })
+            && profile == keld_guard::ProfileState::Legacy
+        {
+            return Err(HostAppError::new("KELD-CORE-034", "installed profile", "Legacy is unavailable for direct installed boot", "Use an explicitly declared development profile or a qualified installed Strict profile.").into());
+        }
+        profile_preflight::disclose_profile(profile, false)?;
+        let guard_snapshot = GuardSnapshot::prepare_uncontained(verified, profile)
+            .map_err(|source| HostAppError::fs_prepare(&source))?;
+        run_app_direct(app, Some(&guard_snapshot), pre_init_terminal, host_death_job).map_err(HostRunFailure::from)
     }
     #[cfg(target_os = "macos")]
     {
         let ValidatedBootSelection {
+            schema,
             app,
             permissions_file,
             permissions_digest,
@@ -2035,12 +2099,13 @@ pub fn run_guarded(
         let display_path = app.root.join(PERMISSIONS_FILE);
         let verified = load_verified_manifest(permissions_file, display_path, permissions_digest)
             .map_err(HostAppError::manifest)?;
+        let profile = profile_preflight::validate_profile(schema, &verified, false)?;
         let guard_snapshot =
             GuardSnapshot::prepare(verified).map_err(|source| HostAppError::fs_prepare(&source))?;
         // The owner stays in this frame while run_app performs every startup,
         // event-loop, and ordered-cleanup step. run_app receives only a borrow,
         // so it cannot destroy the verified session policy early.
-        let mut result = run_app(app, Some(&guard_snapshot), pre_init_terminal);
+        let mut result = run_app(app, Some(&guard_snapshot), profile, pre_init_terminal);
         if let Err(failure) = &mut result
             && let Some(retained) = &mut failure.retained
         {
@@ -2051,6 +2116,7 @@ pub fn run_guarded(
     #[cfg(target_os = "linux")]
     {
         let ValidatedBootSelection {
+            schema,
             app,
             permissions_file,
             permissions_digest,
@@ -2058,6 +2124,7 @@ pub fn run_guarded(
         let display_path = app.root.join(PERMISSIONS_FILE);
         let verified = load_verified_manifest(permissions_file, display_path, permissions_digest)
             .map_err(HostAppError::manifest)?;
+        profile_preflight::validate_profile(schema, &verified, false)?;
         let guard_snapshot =
             GuardSnapshot::prepare(verified).map_err(|source| HostAppError::fs_prepare(&source))?;
         run_app_direct(app, Some(&guard_snapshot)).map_err(HostRunFailure::from)
@@ -2408,6 +2475,7 @@ fn configure_guardian_boot_mode(command: &mut Command, ready_trigger: AppReadyTr
 fn run_app(
     boot: AppBootSelection,
     guard_snapshot: Option<&GuardSnapshot>,
+    admitted_profile: keld_guard::ProfileState,
     pre_init_terminal: fn(&HostAppError) -> !,
 ) -> Result<(), HostRunFailure> {
     let mut dev_lease = DevHostLease::from_environment()?;
@@ -2467,6 +2535,9 @@ fn run_app(
         .env_remove(DEV_LEASE_ENV)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    // Freeze the pure policy decision before execution. Failed disclosure must
+    // refuse startup rather than run an undisclosed Legacy role.
+    profile_preflight::disclose_profile(admitted_profile, false)?;
     CHILD_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
     let pending = GuardianBootstrap::spawn_supervised(guardian_command)
         .map_err(|source| app_runtime("guardian bootstrap", &source))?;
@@ -2536,6 +2607,21 @@ fn run_app(
             )
         })
         .map_err(|source| app_io("window event coordinator", &source))?;
+
+    // Actual authentication and router binding precede this diagnostic. It is
+    // not a product receipt: child output shares the sink; GH-587 owns collection.
+    if let Err(primary) = profile_preflight::disclose_profile(admitted_profile, true) {
+        return cleanup_window_start_failure(
+            &primary,
+            guard_snapshot,
+            window_events_tx,
+            event_coordinator,
+            None,
+            (router, presentation_owner, main_thread),
+            guardian_owner,
+        )
+        .map_err(HostRunFailure::from);
+    }
 
     let (renderer_requests_tx, renderer_requests_rx) = mpsc::sync_channel(1);
     let (renderer_outcomes_tx, renderer_outcomes_rx) = mpsc::channel();
@@ -6249,6 +6335,9 @@ struct PrimaryCallerContext {
 struct ActivePrimaryGeneration {
     attempt: u32,
     identity: PrimaryLinkIdentity,
+    // The same retained admission/policy object, associated only at real bind.
+    #[cfg(windows)]
+    profile_binding: Option<Arc<FsDispatchSession>>,
     writer: BootstrapStream,
     reader_stop: Arc<AtomicBool>,
     /// Correlation id of this generation's accepted-but-unanswered `Quit`
@@ -7594,8 +7683,16 @@ impl PrimaryRouterHandle {
                 )
                 .into());
             }
+            #[cfg(windows)]
+            let mut profile_binding = None;
             if let Some(session) = self.fs.as_ref().and_then(Weak::upgrade) {
                 session.install_prepared_attempt(attempt)?;
+                #[cfg(windows)]
+                if matches!(identity, PrimaryLinkIdentity::Role(_))
+                    && session.admitted_profile.is_some()
+                {
+                    profile_binding = Some(Arc::clone(&session));
+                }
             } else if self.fs.is_some() {
                 return Err(app_detail(
                     "primary session generation",
@@ -7607,6 +7704,8 @@ impl PrimaryRouterHandle {
             *current = Some(ActivePrimaryGeneration {
                 attempt,
                 identity,
+                #[cfg(windows)]
+                profile_binding,
                 writer: writer_stream,
                 reader_stop: Arc::clone(&reader_stop),
                 pending_quit: None,
@@ -7708,10 +7807,38 @@ impl PrimaryRouterHandle {
 
     fn is_current(&self, attempt: u32) -> bool {
         self.current.lock().map_or(true, |current| {
-            current
-                .as_ref()
-                .is_some_and(|active| active.attempt == attempt)
+            current.as_ref().is_some_and(|active| {
+                #[cfg(windows)]
+                let binding_is_owned = active.profile_binding.as_ref().is_none_or(|binding| {
+                    self.fs
+                        .as_ref()
+                        .and_then(Weak::upgrade)
+                        .is_some_and(|session| Arc::ptr_eq(binding, &session))
+                });
+                #[cfg(not(windows))]
+                let binding_is_owned = true;
+                active.attempt == attempt && binding_is_owned
+            })
         })
+    }
+
+    /// Test-only view of the actual active generation, never an external receipt.
+    #[cfg(all(test, windows))]
+    fn observed_profile_binding(
+        &self,
+        attempt: u32,
+        principal: RolePrincipal,
+    ) -> Option<(keld_guard::ProfileState, [u8; 32])> {
+        let current = self.current.lock().ok()?;
+        let active = current.as_ref()?;
+        if active.attempt != attempt || active.identity != PrimaryLinkIdentity::Role(principal) {
+            return None;
+        }
+        let binding = active.profile_binding.as_ref()?;
+        Some((
+            binding.admitted_profile?,
+            binding.verified.verified_sha256(),
+        ))
     }
 
     fn finish_tail(&self, phase: &'static str) -> Result<(), HostAppError> {
