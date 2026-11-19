@@ -62,6 +62,10 @@ const modes = [
   "request-error",
   "veto",
   "zero",
+  "zero-will-veto",
+  "zero-will-retry",
+  "zero-will-throw",
+  "zero-will-create",
   "multi",
   "missing-selection",
   "pre-ready",
@@ -137,7 +141,7 @@ for (const { facts, mode } of cases) {
       expect(child.stderr.toString()).toContain(
         "KELD-IPC-006: controlled original RequestClose failure",
       );
-    } else if (mode === "multi") {
+    } else if (mode === "zero-will-create" || mode === "multi") {
       expect(child.stderr.toString()).toContain(
         "KELD native menu Quit failed;",
       );

@@ -11,6 +11,7 @@ let handlers: LifecycleHandler | undefined;
 let admitted = true,
   requests = 0,
   terminals = 0;
+let replacementAppeared = false;
 const outbound: WindowRequest[] = [];
 let resolveClose: ((value: unknown) => void) | undefined;
 let reportRequest: (() => void) | undefined;
@@ -32,7 +33,7 @@ const source = {
       ? snapshot
       : undefined,
   all: () =>
-    mode === "zero"
+    mode?.startsWith("zero") && !replacementAppeared
       ? []
       : mode === "multi"
         ? [snapshot, { ...snapshot, window: { id: 8, incarnation: 259n } }]
@@ -80,12 +81,34 @@ if (mode === "observer-retires") {
 const { app } = await import("../src/app.ts");
 const { captureOriginalWindowQuitScope } = await import("../../api/src/app.ts");
 let before = 0;
+let willQuit = 0;
+let quitEvents = 0;
+const sequence: string[] = [];
 let nested: Promise<void> | undefined;
 app.on("before-quit", (event: unknown) => {
   before++;
+  sequence.push("before-quit");
   nested = app.quit();
   if (mode === "veto") (event as { preventDefault(): void }).preventDefault();
 });
+if (mode?.startsWith("zero-will")) {
+  app.on("will-quit", (event: unknown) => {
+    willQuit++;
+    sequence.push("will-quit");
+    if (mode === "zero-will-create") {
+      replacementAppeared = true;
+      return;
+    }
+    if (mode === "zero-will-throw" && willQuit === 1)
+      throw new Error("controlled will-quit listener failure");
+    if (mode === "zero-will-veto" || willQuit === 1)
+      (event as { preventDefault(): void }).preventDefault();
+  });
+  app.on("quit", () => {
+    quitEvents++;
+    sequence.push("quit");
+  });
+}
 const ready = app.whenReady();
 if (mode !== "pre-ready") await ready;
 assert.ok(handlers);
@@ -168,6 +191,35 @@ if (mode?.startsWith("scope-")) {
       1,
       "queued predecessor intent cannot run after terminal admission",
     );
+  } else if (
+    mode === "zero-will-veto" ||
+    mode === "zero-will-retry" ||
+    mode === "zero-will-throw"
+  ) {
+    await nested;
+    assert.equal(before, 1);
+    assert.equal(willQuit, 1, "will-quit must fire before terminal Quit");
+    assert.equal(terminals, 0, "preventDefault retains the Host and role");
+    assert.equal(quitEvents, 0, "a veto cannot emit quit");
+    handlers.onQuitRequested?.(session as unknown as LifecycleLink);
+    await nested;
+    assert.equal(before, 2, "retry must emit a fresh before-quit");
+    assert.equal(willQuit, 2, "retry must emit a fresh will-quit");
+    assert.equal(terminals, mode === "zero-will-veto" ? 0 : 1);
+    assert.equal(quitEvents, mode === "zero-will-veto" ? 0 : 1);
+    assert.deepEqual(
+      sequence,
+      mode === "zero-will-veto"
+        ? ["before-quit", "will-quit", "before-quit", "will-quit"]
+        : ["before-quit", "will-quit", "before-quit", "will-quit", "quit"],
+    );
+  } else if (mode === "zero-will-create") {
+    await assert.rejects(nested, /KELD-COMPAT-012/);
+    assert.deepEqual(sequence, ["before-quit", "will-quit"]);
+    assert.equal(willQuit, 1);
+    assert.equal(requests, 0);
+    assert.equal(terminals, 0, "a created window blocks terminal teardown");
+    assert.equal(quitEvents, 0);
   } else if (mode === "multi") {
     assert.ok(nested);
     await assert.rejects(nested, /KELD-COMPAT-012/);

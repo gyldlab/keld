@@ -7,6 +7,11 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const app = readFileSync(new URL("./app.ts", import.meta.url), "utf8");
+const cancelStart = app.indexOf("function emitCancelable(");
+const cancelEnd = app.indexOf(
+  "\n/** Electron event names and application listeners",
+  cancelStart,
+);
 const start = app.indexOf("interface QuitAttempt {");
 const end = app.indexOf(
   "\napiApp.onLastWindowClosed(onLastWindowClosed);",
@@ -14,12 +19,17 @@ const end = app.indexOf(
 );
 expect(start).toBeGreaterThan(0);
 expect(end).toBeGreaterThan(start);
-let code = app
-  .slice(start, end)
-  .replace(
-    "export function joinOriginalQuitBeforeClose",
-    "function joinOriginalQuitBeforeClose",
-  );
+expect(cancelStart).toBeGreaterThan(0);
+expect(cancelEnd).toBeGreaterThan(cancelStart);
+let code =
+  app.slice(cancelStart, cancelEnd) +
+  "\n" +
+  app
+    .slice(start, end)
+    .replace(
+      "export function joinOriginalQuitBeforeClose",
+      "function joinOriginalQuitBeforeClose",
+    );
 const mutation = process.env.KELD_QUIT_HANDOFF_MUTATION;
 if (mutation === "omit-handoff-resolve")
   code = code.replace("  attempt.resolve();", "");

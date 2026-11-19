@@ -59,6 +59,20 @@ function emit(event: string, ...args: unknown[]): boolean {
   return listenerFailed;
 }
 
+/** Listener failures have the same canceling effect as preventDefault. */
+function emitCancelable(eventName: string): boolean {
+  let prevented = false;
+  const event = {
+    get defaultPrevented(): boolean {
+      return prevented;
+    },
+    preventDefault(): void {
+      prevented = true;
+    },
+  };
+  return emit(eventName, event) || prevented;
+}
+
 /** Electron event names and application listeners have this single owner. */
 export function emitNativeAppEvent(event: string, ...args: unknown[]): void {
   emit(event, ...args);
@@ -117,6 +131,10 @@ function removeAppListener(event: string, listener: AppListener): void {
 // delivers this event and ends the application session 10 s later if it has not
 // requested quit by then (KEL-53 §4 "Profile handover", the quit deadline D).
 function onLastWindowClosed(): void {
+  // Only an admitted Quit suppresses this notification. A `before-quit`
+  // listener can close the final window synchronously and then veto Quit;
+  // suppressing at preflight entry would lose its `window-all-closed` event.
+  if (activeQuitAttempt?.closing) return;
   // GH531's Host wrote LastWindowClosed when the registry reached zero, but
   // a synchronous `closed` listener may construct a replacement BrowserWindow
   // before that event reaches this Bun role. Electron's native window list
@@ -151,6 +169,7 @@ interface QuitAttempt {
   readonly resolve: () => void;
   readonly reject: (error: unknown) => void;
   settled: boolean;
+  closing: boolean;
   handoff?: OriginalWindowQuitScope;
 }
 let activeQuitAttempt: QuitAttempt | undefined;
@@ -188,22 +207,14 @@ function requestQuitAfterBeforeEvent(
     resolve: resolveAttempt,
     reject: rejectAttempt,
     settled: false,
+    closing: false,
   };
   activeQuitAttempt = attempt;
-  let prevented = false;
-  const event = {
-    get defaultPrevented(): boolean {
-      return prevented;
-    },
-    preventDefault(): void {
-      prevented = true;
-    },
-  };
-  const listenerFailed = emit("before-quit", event);
-  if (prevented || listenerFailed) {
+  if (emitCancelable("before-quit")) {
     fulfillQuitAttempt(attempt);
     return promise;
   }
+  attempt.closing = true;
   const failed = (error: unknown): void => {
     if (attempt.settled) {
       // This request may fail after its genuine close fact already completed
@@ -281,8 +292,28 @@ function quit(): Promise<void> {
     } catch (error) {
       return Promise.reject(error);
     }
+    // The Host remains alive on will-quit veto, including after a previous
+    // close removed every window. A later app.quit() must start a fresh D2
+    // attempt and emit before-quit/will-quit again.
+    if (emitCancelable("will-quit")) return Promise.resolve();
+    // A synchronous will-quit listener may construct another native window.
+    // The prior zero-window census is no authority to force-close that window.
+    if (
+      nativeFacadeBootSelected &&
+      (!apiApp.isReady() ||
+        getWindowSnapshots().some((window) => !window.host_destroyed))
+    ) {
+      return Promise.reject(
+        new Error(
+          "KELD-COMPAT-012: a window appeared during will-quit; retry through its cancelable close path",
+        ),
+      );
+    }
     ignoreIfUnawaited(observeReady());
-    return apiApp.quit();
+    return apiApp.quit().then(() => {
+      // The terminal owner has accepted the Quit; no event on rejection/veto.
+      emit("quit");
+    });
   });
 }
 
