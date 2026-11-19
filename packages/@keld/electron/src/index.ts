@@ -14,6 +14,7 @@ import { app } from "./app";
 import { BrowserWindow } from "./browser-window";
 import { dialog } from "./dialog";
 import { nativeTheme, screen } from "./desktop.ts";
+import { session } from "./session.ts";
 
 import { runtimeProcessFactsSelected } from "@keld/kipc";
 import {
@@ -24,7 +25,7 @@ export { ELECTRON_VERSION_SHIM };
 
 installMainProcessFacts(process, runtimeProcessFactsSelected);
 
-export { app, BrowserWindow, dialog, nativeTheme, screen };
+export { app, BrowserWindow, dialog, nativeTheme, screen, session };
 export type { Display, DisplayRectangle } from "./desktop.ts";
 export type {
   MessageBoxOptions,
@@ -48,6 +49,7 @@ const electron = {
   app,
   BrowserWindow,
   dialog,
+  session,
   ...(screen === undefined ? {} : { nativeTheme, screen }),
 };
 export default electron;
