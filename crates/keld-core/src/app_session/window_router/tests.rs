@@ -1391,6 +1391,6 @@ fn window_router_failed_quit_reply_still_ends_managed_windows() -> TestResult {
 
 // This component uses actual Runtime/Bun principals and a controlled native port.
 // Other OSes retain their existing tests; this adds no cross-platform acceptance claim.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 #[path = "authenticated_tests.rs"]
 mod authenticated_tests;

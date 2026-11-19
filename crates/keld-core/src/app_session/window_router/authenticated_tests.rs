@@ -1,4 +1,4 @@
-//! Linux actual Runtime/Bun/HELLO identity and Window-port proof. Fake native
+//! Linux and Windows Runtime/Bun/HELLO identity and Window-port proof. Fake native
 //! results do not qualify native Init, OS containment, or a public Window source.
 //! The role imports packages/@keld/kipc/src/transport.ts and
 //! packages/@keld/api/src/window-codec.ts; assertions consume their actual bytes.
@@ -12,12 +12,17 @@ use keld_runtime::primary::{
     RoleOwner,
 };
 use keld_wv::{AppWindowCommand, AppWindowEvent, WebviewId, WindowSnapshot};
+#[cfg(target_os = "linux")]
 use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::atomic::Ordering;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::mpsc;
+#[cfg(target_os = "linux")]
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -25,6 +30,8 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const BOUND: Duration = Duration::from_secs(20);
 
 struct RoleProcess {
+    #[cfg(windows)]
+    _host_custody: keld_runtime::windows_job::WindowsHostDeathJob,
     supervisor: PrimaryRoleSupervisor,
     recovery: PrimaryRecoveryGate,
     listener: TcpListener,
@@ -32,6 +39,8 @@ struct RoleProcess {
 }
 impl RoleProcess {
     fn start() -> TestResult<Self> {
+        #[cfg(windows)]
+        let _host_custody = keld_runtime::windows_job::install_host_death_job()?;
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let script = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src/app_session/window_router/fixtures/authenticated_window_role.ts");
@@ -42,6 +51,8 @@ impl RoleProcess {
                 .env_remove("KELD_KIPC_TEST_HOOKS"),
         )?;
         Ok(Self {
+            #[cfg(windows)]
+            _host_custody,
             supervisor,
             recovery,
             listener,
@@ -96,6 +107,7 @@ fn command(control: &mut BufReader<TcpStream>, value: &str) -> TestResult {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn router_for_bound(
     bound: BoundPrimaryGeneration,
     owner: mpsc::Sender<DirectPrimaryOwnerCommand>,
@@ -128,6 +140,28 @@ fn router_for_bound(
         .handle
         .install_prepared_generation_with_identity(attempt, bound.into_stream(), identity)
         .map_err(|failure| failure.error)?;
+    Ok(router)
+}
+
+#[cfg(windows)]
+fn router_for_bound(
+    bound: BoundPrimaryGeneration,
+    owner: mpsc::Sender<DirectPrimaryOwnerCommand>,
+    windows: mpsc::Sender<AppWindowCommand>,
+) -> Result<PrimaryRouter, HostAppError> {
+    let router = PrimaryRouter::start_bound(
+        bound,
+        windows,
+        PlatformPrimaryOwnerHandle { command_tx: owner },
+        SessionShutdownState::new(),
+        None,
+        Some(true),
+        None,
+    )?;
+    assert!(
+        router.handle().uses_primary_writer(),
+        "actual bound Windows writer"
+    );
     Ok(router)
 }
 
@@ -182,11 +216,15 @@ fn create_from_native_result(
         );
     };
     assert_eq!((width, height, x, y), (640, 480, None, None));
-    handle.window_native_event(AppWindowEvent::WindowBuilt {
+    let built = AppWindowEvent::WindowBuilt {
         build,
         view: WebviewId(7),
         snapshot: native_snapshot(),
-    })?;
+    };
+    #[cfg(windows)]
+    publish_built_while_writer_is_reserved(handle, built)?;
+    #[cfg(not(windows))]
+    handle.window_native_event(built)?;
     // WorkerLink's state applier has decoded Created before the call's Promise
     // continuation. The separate direct-socket case owns exact wire-order proof.
     assert_eq!(
@@ -195,19 +233,58 @@ fn create_from_native_result(
     );
     Ok(())
 }
+
+#[cfg(windows)]
+fn publish_built_while_writer_is_reserved(
+    handle: &PrimaryRouterHandle,
+    built: AppWindowEvent,
+) -> TestResult {
+    let target = handle
+        .current_primary_writer_target()?
+        .expect("live writer link");
+    let occupied = handle.reserve_primary_value(
+        target.caller(),
+        Instant::now() + keld_ipc::APP_LINK_IO_DEADLINE,
+        "Window publisher held VALUE fixture",
+    )?;
+    let (observed, waits_for_capacity) = mpsc::sync_channel(1);
+    handle
+        .primary_writer_owner()?
+        .observe_next_capacity_wait_for_test(observed);
+    thread::scope(|scope| -> TestResult {
+        let publisher = scope.spawn(move || handle.window_native_event(built));
+        let waited = waits_for_capacity.recv_timeout(BOUND);
+        let transition_available = handle.shutdown.transition.try_lock().is_ok();
+        let current_available = handle.current.try_lock().is_ok();
+        let registry_available = handle
+            .windows
+            .as_ref()
+            .expect("window owner")
+            .try_lock()
+            .is_ok();
+        drop(occupied);
+        publisher.join().expect("bounded Window publisher joined")?;
+        waited.expect("native Window fact waited for the actual VALUE position");
+        assert!(
+            transition_available && current_available && registry_available,
+            "writer capacity must be awaited outside transition, current and Registry guards"
+        );
+        Ok(())
+    })
+}
 fn setter_requires_native_confirmation(
     control: &mut BufReader<TcpStream>,
     native: &mpsc::Receiver<AppWindowCommand>,
     handle: &PrimaryRouterHandle,
 ) -> TestResult {
     command(control, "SET-MAX")?;
-    assert_eq!(
+    assert!(matches!(
         native.recv_timeout(BOUND)?,
         AppWindowCommand::SetMaximized {
             view: WebviewId(7),
             maximized: true
         }
-    );
+    ));
     assert_eq!(read_control(control)?, "SET-MAX Accepted 1 false");
     handle.window_native_event(AppWindowEvent::WindowMaximized {
         view: WebviewId(7),
@@ -246,28 +323,30 @@ fn authenticated_primary_window_calls_use_actual_reader_and_host_facts() -> Test
     command(&mut control, "READY")?;
     assert_eq!(read_control(&mut control)?, "READY 00");
     create_from_native_result(&mut control, &native_rx, &handle)?;
+    command(&mut control, "SUBSCRIBE")?;
+    assert_eq!(read_control(&mut control)?, "SUBSCRIBE 1");
     setter_requires_native_confirmation(&mut control, &native_rx, &handle)?;
 
     command(&mut control, "STALE")?;
     assert_eq!(read_control(&mut control)?, "STALE KELD-CORE-038 2");
     assert!(native_rx.try_recv().is_err());
     command(&mut control, "HEALTHY")?;
-    assert_eq!(
+    assert!(matches!(
         native_rx.recv_timeout(BOUND)?,
         AppWindowCommand::SetFullScreen {
             view: WebviewId(7),
             full_screen: true
         }
-    );
+    ));
     assert_eq!(read_control(&mut control)?, "HEALTHY Accepted 2 true");
 
     // Product cleanup is asserted before the RoleProcess fallback Drop can run.
     command(&mut control, "WAIT-END")?;
     router.shutdown()?;
-    assert_eq!(
+    assert!(matches!(
         native_rx.try_recv().expect("actual shutdown teardown"),
         AppWindowCommand::DestroyWindow { view: WebviewId(7) }
-    );
+    ));
     assert!(handle.current.lock().expect("retired current").is_none());
     assert!(
         handle
@@ -327,10 +406,10 @@ fn authenticated_primary_close_verdicts_and_destroy_wait_for_ui_release() -> Tes
         "pending/veto/stale never request native destruction"
     );
     command(&mut control, "DESTROY-PAIR")?;
-    assert_eq!(
+    assert!(matches!(
         native_rx.recv_timeout(BOUND)?,
         AppWindowCommand::DestroyWindow { view: WebviewId(7) }
-    );
+    ));
     assert_eq!(read_control(&mut control)?, "DESTROY-WAIT AlreadyClosing 3");
     assert!(
         native_rx.try_recv().is_err(),
