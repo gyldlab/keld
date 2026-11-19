@@ -119,6 +119,8 @@ impl PrimaryRouterHandle {
                 .map_err(|_| {
                     app_detail("native publication failure", "window command owner ended")
                 })?;
+            // Seal the primary while the accepted Fatal still owns the transition.
+            self.shutdown.stop_reader();
             queued = true;
             Ok(())
         })?;

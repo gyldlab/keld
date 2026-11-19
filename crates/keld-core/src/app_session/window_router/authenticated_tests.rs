@@ -435,3 +435,7 @@ fn authenticated_primary_close_verdicts_and_destroy_wait_for_ui_release() -> Tes
     drop(role);
     Ok(())
 }
+
+#[cfg(windows)]
+#[path = "authenticated_tests/fatal_fence.rs"]
+mod fatal_fence;
