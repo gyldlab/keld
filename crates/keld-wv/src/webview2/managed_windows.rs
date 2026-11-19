@@ -298,13 +298,18 @@ impl<K: Ord + Copy, O> ManagedCustody<K, O> {
     /// the production caller and supplies the real Win32 `IsWindow` read.
     fn publish_staged_with<E>(
         &mut self,
+        mut native_owner_present: impl FnMut(K) -> bool,
         mut is_window: impl FnMut(isize) -> bool,
         mut send: impl FnMut(isize, Releasing, AppWindowEvent) -> Result<(), E>,
     ) -> Result<usize, E> {
         let mut published = 0;
         let mut first_error = None;
-        self.releasing.retain(|_, entry| {
-            if first_error.is_some() || !entry.staged || is_window(entry.hwnd) {
+        self.releasing.retain(|key, entry| {
+            if first_error.is_some()
+                || !entry.staged
+                || native_owner_present(*key)
+                || is_window(entry.hwnd)
+            {
                 return true;
             }
             // Retain the entry through the send. It leaves after either result;
@@ -324,9 +329,11 @@ impl<O> ManagedCustody<WindowId, O> {
     /// Call at the top of a later loop callback, before expiry and exit checks.
     pub(super) fn publish_staged<E>(
         &mut self,
+        native_owner_present: impl FnMut(WindowId) -> bool,
         send: impl FnMut(isize, Releasing, AppWindowEvent) -> Result<(), E>,
     ) -> Result<usize, E> {
         self.publish_staged_with(
+            native_owner_present,
             |hwnd| {
                 // SAFETY: the UI owner captured this HWND before dropping its
                 // own native custodian. This is a value-only query, never a

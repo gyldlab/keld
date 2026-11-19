@@ -24,6 +24,7 @@ fn parked_then_staged_then_native_absent_is_one_ordered_release() {
     assert_eq!((custody.len(), custody.is_empty()), (1, false));
     assert_eq!(
         custody.publish_staged_with(
+            |_| false,
             |_| {
                 native_reads += 1;
                 false
@@ -64,6 +65,7 @@ fn parked_then_staged_then_native_absent_is_one_ordered_release() {
     );
     assert_eq!(
         custody.publish_staged_with(
+            |_| false,
             |hwnd| {
                 assert_eq!(hwnd, 101);
                 true
@@ -82,6 +84,7 @@ fn parked_then_staged_then_native_absent_is_one_ordered_release() {
 
     assert_eq!(
         custody.publish_staged_with(
+            |_| false,
             |hwnd| {
                 assert_eq!(hwnd, 101);
                 false
@@ -105,6 +108,7 @@ fn parked_then_staged_then_native_absent_is_one_ordered_release() {
     );
     assert_eq!(
         custody.publish_staged_with(
+            |_| false,
             |_| panic!("retired entries must never query a recycled HWND"),
             |_, _, event| {
                 answers.push(event);
@@ -159,6 +163,7 @@ fn a_collision_preserves_the_original_answer_and_failed_build_stages() {
     assert_eq!(
         custody.publish_staged_with(
             |_| false,
+            |_| false,
             |_, _, event| {
                 answers.push(event);
                 Ok::<(), Infallible>(())
@@ -203,6 +208,7 @@ fn failed_publication_propagates_once_and_keeps_other_custody_visible() {
     assert_eq!(
         custody.publish_staged_with(
             |_| false,
+            |_| false,
             |_, _, event| {
                 attempts.push(event);
                 Err("coordinator gone")
@@ -225,6 +231,7 @@ fn failed_publication_propagates_once_and_keeps_other_custody_visible() {
     assert!(!custody.exit_ready(true, true));
     assert_eq!(
         custody.publish_staged_with(
+            |_| false,
             |_| false,
             |_, _, event| {
                 attempts.push(event);
@@ -364,6 +371,7 @@ fn completed_native_release_is_published_before_the_same_turn_expiry_check() {
     assert_eq!(
         custody.publish_staged_with(
             |_| false,
+            |_| false,
             |_, _, event| {
                 answers.push(event);
                 Ok::<(), Infallible>(())
@@ -411,7 +419,7 @@ fn exit_needs_terminal_barrier_and_an_empty_release_map() {
         "staged native custody still blocks exit"
     );
     assert_eq!(
-        custody.publish_staged_with(|_| false, |_, _, _| Ok::<(), Infallible>(())),
+        custody.publish_staged_with(|_| false, |_| false, |_, _, _| Ok::<(), Infallible>(())),
         Ok(1)
     );
     assert!(custody.exit_ready(true, true));
@@ -429,7 +437,7 @@ fn a_stale_destroyed_key_cannot_stage_a_distinct_successor() {
         StageResult::Staged { .. }
     ));
     assert_eq!(
-        custody.publish_staged_with(|_| false, |_, _, _| Ok::<(), Infallible>(())),
+        custody.publish_staged_with(|_| false, |_| false, |_, _, _| Ok::<(), Infallible>(())),
         Ok(1)
     );
     custody
@@ -441,6 +449,7 @@ fn a_stale_destroyed_key_cannot_stage_a_distinct_successor() {
     );
     assert_eq!(
         custody.publish_staged_with(
+            |_| false,
             |_| panic!("successor is not staged"),
             |_, _, _| Ok::<(), Infallible>(()),
         ),
@@ -450,4 +459,42 @@ fn a_stale_destroyed_key_cannot_stage_a_distinct_successor() {
         custody.entry(8),
         Some((808, Releasing::Destroy(WebviewId(41))))
     );
+}
+
+#[test]
+fn actual_destroyed_and_hwnd_absence_cannot_release_a_retained_selected_owner() {
+    let mut custody = ManagedCustody::<u8>::default();
+    let view = WebviewId(17);
+    custody
+        .park(3, 303, Releasing::Destroy(view), Instant::now())
+        .unwrap();
+    assert_eq!(
+        custody.stage_destroyed(3, || true),
+        StageResult::Staged { wake_posted: true }
+    );
+    let mut published = Vec::new();
+    assert_eq!(
+        custody.publish_staged_with(
+            |key| key == 3,
+            |_| false,
+            |_, _, event| {
+                published.push(event);
+                Ok::<(), Infallible>(())
+            }
+        ),
+        Ok(0)
+    );
+    assert!(custody.contains(3));
+    assert_eq!(
+        custody.publish_staged_with(
+            |_| false,
+            |_| false,
+            |_, _, event| {
+                published.push(event);
+                Ok::<(), Infallible>(())
+            }
+        ),
+        Ok(1)
+    );
+    assert_eq!(published, [AppWindowEvent::WindowReleased { view }]);
 }

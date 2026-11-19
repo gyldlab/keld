@@ -91,28 +91,38 @@ impl ManagedWindows {
         let events = &self.events;
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         let test_control = self.test_control.as_ref();
-        let result = self.custody.publish_staged(|hwnd, owed, event| {
-            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-            observe::teardown_confirmed(hwnd);
-            #[cfg(not(all(feature = "profile-test-hooks", debug_assertions)))]
-            let _ = hwnd;
-            match owed {
-                Releasing::Destroy(view) => {
-                    let result = send(events, event);
-                    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-                    observe::released(view.0);
-                    #[cfg(not(all(feature = "profile-test-hooks", debug_assertions)))]
-                    let _ = view;
-                    result
+        let views = &self.views;
+        let candidate = self.builder.candidate_window().map(tao::window::Window::id);
+        let result = self.custody.publish_staged(
+            |key| {
+                candidate == Some(key)
+                    || views
+                        .values()
+                        .any(|view| view.original.is_some() && view.window.id() == key)
+            },
+            |hwnd, owed, event| {
+                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                observe::teardown_confirmed(hwnd);
+                #[cfg(not(all(feature = "profile-test-hooks", debug_assertions)))]
+                let _ = hwnd;
+                match owed {
+                    Releasing::Destroy(view) => {
+                        let result = send(events, event);
+                        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                        observe::released(view.0);
+                        #[cfg(not(all(feature = "profile-test-hooks", debug_assertions)))]
+                        let _ = view;
+                        result
+                    }
+                    Releasing::FailedBuild { .. } => send_failure(
+                        events,
+                        event,
+                        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                        test_control,
+                    ),
                 }
-                Releasing::FailedBuild { .. } => send_failure(
-                    events,
-                    event,
-                    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-                    test_control,
-                ),
-            }
-        });
+            },
+        );
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         observe::releasing(self.custody.len());
         result.map(|_| ())

@@ -51,7 +51,7 @@ fn deferred_fifo_waits_for_release_and_a_buffered_destroy_revokes_head_admission
         StageResult::Staged { .. }
     ));
     assert_eq!(
-        custody.publish_staged_with(|_| false, |_, _, _| Ok::<(), Infallible>(())),
+        custody.publish_staged_with(|_| false, |_| false, |_, _, _| Ok::<(), Infallible>(())),
         Ok(1)
     );
     assert_eq!(
@@ -106,7 +106,7 @@ fn deferred_fifo_waits_for_release_and_a_buffered_destroy_revokes_head_admission
         StageResult::Staged { .. }
     ));
     assert_eq!(
-        custody.publish_staged_with(|_| false, |_, _, _| Ok::<(), Infallible>(())),
+        custody.publish_staged_with(|_| false, |_| false, |_, _, _| Ok::<(), Infallible>(())),
         Ok(1)
     );
     assert_eq!(custody.post_deferred_wake(false, false, now, || true), None);
@@ -135,7 +135,7 @@ fn a_failed_deferred_post_leaves_the_head_queued_and_supplies_its_own_recheck() 
         StageResult::Staged { .. }
     ));
     assert_eq!(
-        custody.publish_staged_with(|_| false, |_, _, _| Ok::<(), Infallible>(())),
+        custody.publish_staged_with(|_| false, |_| false, |_, _, _| Ok::<(), Infallible>(())),
         Ok(1)
     );
     assert_eq!(custody.next_deadline(now), None, "no release timer remains");
@@ -171,7 +171,7 @@ fn terminal_drain_pops_every_request_in_order_and_preserves_the_first_send_failu
         StageResult::Staged { .. }
     ));
     assert_eq!(
-        custody.publish_staged_with(|_| false, |_, _, _| Ok::<(), Infallible>(())),
+        custody.publish_staged_with(|_| false, |_| false, |_, _, _| Ok::<(), Infallible>(())),
         Ok(1)
     );
     assert_eq!(custody.post_deferred_wake(false, false, now, || true), None);
