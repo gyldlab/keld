@@ -496,19 +496,47 @@ mod tests {
         // The shared native builder must reconcile saved permissions and register
         // both live guards before first navigation can consume the witness.
         let engine = include_str!("webview2/view_build.rs");
-        let saved = engine
-            .find("reconcile_saved_media_permissions(&view.webview, deadline)?")
+        let (build, helpers) = engine
+            .split_once("fn reconcile_permissions(")
+            .expect("shared saved permission owner");
+        assert!(
+            helpers.contains("reconcile_saved_media_permissions(&self.view()?.webview, deadline)?"),
+            "saved permissions must use the candidate's actual view"
+        );
+        assert!(
+            helpers.contains(
+                "install_guarded_media_permissions(view, manifest, webview_media_principal(id))"
+            ),
+            "shared guard helper must return the native guard witness"
+        );
+        let saved = build
+            .find("self.reconcile_permissions(deadline)")
             .expect("saved media permission reconciliation exists");
-        let guard = engine
-            .find("let guard = install_guarded_media_permissions(")
-            .expect("engine installs the live permission guard");
-        let initial = engine
+        let split = build
+            .find("let navigation = match navigation {")
+            .expect("ordinary and original build split");
+        assert!(
+            saved < split,
+            "saved permission denial must precede either build path"
+        );
+
+        let guard = helpers
+            .find("let guard = Self::install_guard(&view.webview, id)?")
+            .expect("ordinary engine installs the live guard");
+        let initial = helpers
             .find("navigate_initial(&guard, &spec.initial)?")
             .expect("first navigation consumes the installed guard");
         assert!(
-            saved < guard && guard < initial,
-            "saved permission denial and live popup/media guards must precede initial navigation"
+            guard < initial,
+            "the live popup and media guards must precede ordinary navigation"
         );
+
+        let original = include_str!("webview2/view_build/original.rs");
+        let (attachment, install) = original
+            .split_once("original_view.install_on_ui(")
+            .expect("selected view installs the original owners");
+        assert!(attachment.contains("let guard = Self::install_guard(&view.webview, id)?"));
+        assert!(install.trim_start().starts_with("&guard,"));
     }
 
     use super::*;
