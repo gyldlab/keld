@@ -95,6 +95,9 @@ fn prepare_selected(
         .arg("--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\"")
         .arg("--define=__KELD_RUNTIME_PROCESS_FACTS__:true")
         .arg("--define=__KELD_WINDOWS_HOST__:true")
+        // The selected original route joins the GH481 snapshot replay. The
+        // public BOOT8 gate stays closed until that route is qualified.
+        .arg("--define=__KELD_WINDOWS_DESKTOP_SNAPSHOT__:true")
         .arg(facts.bun_argument()?)
         .arg("run")
         .arg(wrapper)

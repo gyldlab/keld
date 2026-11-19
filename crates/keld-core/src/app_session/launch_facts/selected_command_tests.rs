@@ -5,14 +5,15 @@ use crate::app_session::windows_primary_config;
 use keld_ipc::channel_table::{COMPAT_CONTROL, WINDOW};
 use keld_ipc::lifecycle::{LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse};
 use keld_ipc::link::{read_frame, write_frame};
+use keld_ipc::window::{DesktopFact, DesktopFacts, Rect, WindowEvent};
 use keld_ipc::{AppLinkDeadlines, CorrelationId, FrameKind};
 use keld_runtime::primary::{PrimaryRoleEvent, PrimaryRoleSupervisor};
 use keld_runtime::{RuntimeError, SupervisorOutcome};
 use serde_json::{Value, json};
 use std::error::Error;
-use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use std::{fs, io::Write};
 
 const BOUND: Duration = Duration::from_secs(15);
 const CHANGED_PROVIDER: &str = "node_modules/electron/dist/app-session-facts.d.ts";
@@ -29,7 +30,8 @@ const environment = {
 };
 "#;
 const ORIGINAL_PROBE: &str = r#"
-import { app } from "electron";
+import { windowsDesktopSnapshotSelected } from "../node_modules/@keld/kipc/transport.js";
+import { app, nativeTheme, screen } from "electron";
 const initial = {
   name: app.getName(),
   root: app.getAppPath(),
@@ -41,11 +43,17 @@ await app.whenReady();
 writeSync(1, "KELD_WINDOWS_COMMAND_PROBE " + JSON.stringify({
   environment, initial, locale: app.getLocale(),
   mainRoleVersion: process.versions.electron,
+  desktopSelected: windowsDesktopSnapshotSelected,
+  desktopPrimaryId: screen.getPrimaryDisplay().id,
+  desktopDark: nativeTheme.shouldUseDarkColors,
 }) + "\n");
 process.exit(17);
 "#;
 const ORDINARY_PROBE: &str = r#"
-writeSync(1, "KELD_WINDOWS_COMMAND_PROBE " + JSON.stringify(environment) + "\n");
+const { windowsDesktopSnapshotSelected } = await import(pathToFileURL(provider).href);
+writeSync(1, "KELD_WINDOWS_COMMAND_PROBE " + JSON.stringify({
+  environment, desktopSelected: windowsDesktopSnapshotSelected,
+}) + "\n");
 process.exit(0);
 "#;
 
@@ -73,6 +81,47 @@ fn expected_environment(facade: &str) -> Value {
         "facade": facade,
         "unrelated": "unrelated-value-probe",
     })
+}
+
+fn pinned_providers() -> PathBuf {
+    std::env::var_os("KELD_TEST_PINNED_WINDOWS_PROVIDERS")
+        .map(PathBuf::from)
+        .expect("the three qualified provider directories under node_modules")
+}
+
+fn replay_desktop_snapshot(stream: &mut impl Write) -> Result<(), Box<dyn Error>> {
+    let event = WindowEvent::DesktopSnapshot {
+        epoch: 1,
+        snapshot: Some(DesktopFacts {
+            primary_id: 41,
+            displays: vec![DesktopFact {
+                id: 41,
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 1280,
+                    height: 800,
+                },
+                work_area: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 1280,
+                    height: 760,
+                },
+                scale_factor: 1.25,
+            }],
+            should_use_dark_colors: false,
+        }),
+    };
+    write_frame(
+        stream,
+        FrameKind::Event,
+        0,
+        WINDOW.id(),
+        CorrelationId(0),
+        &keld_ipc::codec::encode(&event)?,
+    )?;
+    Ok(())
 }
 
 fn terminal(supervisor: &PrimaryRoleSupervisor) -> (SupervisorOutcome, Vec<PrimaryRoleEvent>) {
@@ -120,11 +169,10 @@ fn read_probe(supervisor: &PrimaryRoleSupervisor) -> Result<Value, Box<dyn Error
 fn selected_command_delivers_pinned_facts_and_rechecks_provider_before_successor()
 -> Result<(), Box<dyn Error>> {
     assert_probe_environment();
-    let providers = std::env::var_os("KELD_TEST_PINNED_WINDOWS_PROVIDERS")
-        .map(PathBuf::from)
-        .expect("the three qualified provider directories under node_modules");
-    let (_guard, source, root, entry) =
-        prepared_pinned_launch_source(&providers, &format!("{ENV_SAMPLE}{ORIGINAL_PROBE}"));
+    let (_guard, source, root, entry) = prepared_pinned_launch_source(
+        &pinned_providers(),
+        &format!("{ENV_SAMPLE}{ORIGINAL_PROBE}"),
+    );
     let prepared = prepare_selected(
         SelectedLaunch {
             root: &root,
@@ -174,6 +222,9 @@ fn selected_command_delivers_pinned_facts_and_rechecks_provider_before_successor
                 channel: channel.wire_id()
             }
         );
+        if channel.id() == WINDOW.id() {
+            replay_desktop_snapshot(&mut stream)?;
+        }
         write_frame(
             &mut stream,
             FrameKind::Reply,
@@ -230,20 +281,30 @@ fn selected_command_delivers_pinned_facts_and_rechecks_provider_before_successor
             },
             "locale": "fr-CA",
             "mainRoleVersion": "0.0.1",
+        "desktopSelected": true,
+        "desktopPrimaryId": 41,
+        "desktopDark": false,
         })
     );
     Ok(())
 }
 
 #[test]
-#[ignore = "requires Windows Bun and inherited command probe environment"]
+#[ignore = "requires Windows Bun, the qualified transport, and inherited command probe environment"]
 fn ordinary_command_still_scrubs_private_environment_and_preserves_ordinary_mode()
 -> Result<(), Box<dyn Error>> {
     assert_probe_environment();
     let guard = tempfile::tempdir()?;
     let root = guard.path().canonicalize()?;
     let entry = std::path::Path::new("ordinary.mjs");
-    fs::write(root.join(entry), format!("{ENV_SAMPLE}{ORDINARY_PROBE}"))?;
+    let provider = pinned_providers().join("@keld/kipc/transport.js");
+    let provider = serde_json::to_string(provider.to_str().expect("UTF-8 fixture path"))?;
+    fs::write(
+        root.join(entry),
+        format!(
+            "import {{ pathToFileURL }} from 'node:url';\nconst provider = {provider};\n{ENV_SAMPLE}{ORDINARY_PROBE}"
+        ),
+    )?;
     let supervisor = PrimaryRoleSupervisor::start(
         windows_primary_config(&root, entry, false, None, None)?.admission_timeout(BOUND),
     )?;
@@ -254,6 +315,9 @@ fn ordinary_command_still_scrubs_private_environment_and_preserves_ordinary_mode
             .iter()
             .any(|event| matches!(event, PrimaryRoleEvent::Spawned { attempt: 1, .. }))
     );
-    assert_eq!(read_probe(&supervisor)?, expected_environment("0"));
+    assert_eq!(
+        read_probe(&supervisor)?,
+        json!({ "environment": expected_environment("0"), "desktopSelected": false })
+    );
     Ok(())
 }
