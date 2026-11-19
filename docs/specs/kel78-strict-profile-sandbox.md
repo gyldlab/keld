@@ -1,7 +1,7 @@
 # Spec: strict-profile OS sandbox and native-addon-worker proof
 
 Status: approved
-Linear: KEL-78 · Owner: GYLDLAB · Updated: 2026-09-03
+Linear: KEL-78 · Owner: GYLDLAB · Updated: 2026-11-19
 
 Approval provenance: direct-session human authorization for the frozen Windows
 T3 contract is recorded in Linear comment
@@ -563,22 +563,12 @@ Electron `sandbox` / `appSandbox: "off"` while `requested` is `Strict` is
 returning an error: no replacement child. T1 implements this state machine
 without claiming OS containment.
 
-Capabilities / manifest: the approved [explicit-profile amendment](kel78-explicit-legacy-profile.md)
-selects root `keld.permissions.jsonc.profile`, with exactly `"strict"` or
-`"legacy"`; omission is no declared request, never implicit legacy. The parser
-and product admission integration remain unimplemented at this amendment's source
-baseline and belong to GH #588. No `keld.config.ts` alias, Electron `sandbox` /
-`appSandbox`, package-name branch, or failed strict proof may select a profile.
-The amendment owns presence-sensitive parsing, the security-forfeit matrix,
-reporting, migration acceptance, and the existing unverified evidence mapping.
-
-Wire/protocol: public kipc and `KELD_APP_LINK=<endpoint>#<64 hex chars>` are unchanged.
-The amendment's R1 composition correction reserves schema 3 for explicit-profile
-renderer boots and 4 for explicit-profile facade boots. Schema 1 remains the
-no-profile renderer format; GH #446's schema 2 remains the no-profile facade
-contract. R1's separate delegated design approval is recorded on #1120/KEL-78; it
-does not repurpose Ready's version. Producer/consumer and unsupported-version refusal
-remain a separate compiled-protocol review gate under KEL-96/KEL-102.
+Capabilities: approved #1120/KEL-78 selects root
+`keld.permissions.jsonc.profile` (`strict`/`legacy`); absence is unverified.
+No Electron, package-name, config.ts or failed-proof inference.
+GH #588 owns parser/admission/reporting/migration.
+Wire: kipc and `KELD_APP_LINK` unchanged; schemas 1/2 remain no-profile,
+3/4 explicit renderer/facade.
 
 ### Packaging and reporting
 
@@ -588,10 +578,7 @@ remain a separate compiled-protocol review gate under KEL-96/KEL-102.
 | `keld doctor` | same | same | same |
 | Scoreboard / release metadata | same | same | same |
 
-Renderer sandbox is a different column. The [explicit-profile amendment](kel78-explicit-legacy-profile.md#47-reporting-contract)
-distinguishes static declarations from actual admission, preserves KEL-74's
-approved unverified behavioral evidence, and keeps reserved build/release
-integration pending until those real commands consume the contract.
+Renderer sandbox is separate; KEL-74 evidence remains; product reporting pending.
 
 ## 5. Boundaries
 
