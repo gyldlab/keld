@@ -27,7 +27,7 @@ use super::original_callbacks::registration::Registration;
 use super::original_navigation::OriginalNavigation;
 use super::original_resource::{ResourceSession, ResourceView};
 use crate::original_call::LocalCallBudget;
-use crate::renderer_bridge::RendererBridgeEndpoint;
+use crate::renderer_bridge::{RendererBridgeEndpoint, RendererBridgeOutcome};
 use crate::resource_intake::RetainedByteCredit;
 use crate::resource_source::AdmittedWebAppSource;
 use crate::{WebviewId, WvError};
@@ -123,6 +123,28 @@ impl OriginalBridge {
         ) {
             self.fail("selected bridge wake failed");
         }
+    }
+
+    pub(super) fn is_installed(&self) -> bool {
+        self.message_registration.is_registered()
+            && self.dom_registration.is_registered()
+            && !self.installing.get()
+            && !self.retired.get()
+            && !self.faulted.get()
+            && !self.resource.actual_post_controller_closed()
+    }
+
+    /// The Host outcome owner reports actual inbox or ledger capacity.
+    /// The UI wake only requests service of the same retained startup.
+    pub(super) fn observe_capacity(&self, outcome: &RendererBridgeOutcome) -> bool {
+        if !matches!(outcome, RendererBridgeOutcome::ControlCapacity)
+            || self.retired.get()
+            || self.faulted.get()
+        {
+            return false;
+        }
+        self.wake();
+        true
     }
 
     pub(super) fn next_deadline(&self) -> Option<Instant> {

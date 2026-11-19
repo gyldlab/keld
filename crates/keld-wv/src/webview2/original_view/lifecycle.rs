@@ -38,6 +38,9 @@ impl OriginalView {
                 .retire_on_ui()
                 .map_err(|_| failure("selected callback retirement refused"))?;
         }
+        if let Some(bridge) = self.renderer_bridge()? {
+            bridge.retire_on_ui()?;
+        }
         if let Some(resource) = &self.resource {
             resource.retire_on_ui()?;
         }
@@ -54,10 +57,36 @@ impl OriginalView {
         if let Some(installer) = &self.installer {
             installer.controller_closed_on_ui();
         }
+        match self.renderer_bridge() {
+            Ok(Some(bridge)) => bridge.controller_closed_on_ui(),
+            Ok(None) => {}
+            Err(_) => self
+                .session
+                .latch_failure("selected renderer Close notification was borrowed", self.id),
+        }
+    }
+
+    fn release_drained_bridge(&self) -> bool {
+        let Ok(mut slot) = self.bridge.try_borrow_mut() else {
+            return false;
+        };
+        if slot
+            .as_ref()
+            .is_some_and(|bridge| Rc::strong_count(bridge) != 1 || !bridge.is_drained())
+        {
+            return false;
+        }
+        let bridge = slot.take();
+        drop(slot);
+        // The same bridge's ResourceView reference drops before testing the
+        // ResourceView's final native callback ownership below.
+        drop(bridge);
+        true
     }
 
     fn is_drained(&self) -> bool {
         self.retired.get()
+            && self.release_drained_bridge()
             && self.creator.native_storage_is_quiescent()
             && self
                 .resource

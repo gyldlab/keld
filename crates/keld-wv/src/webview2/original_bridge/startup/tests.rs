@@ -122,10 +122,10 @@ fn duplicate_or_foreign_dom_cannot_create_retry_or_renew_deadline() {
 }
 
 #[test]
-fn only_exact_current_binding_registration_settles_startup() {
+fn local_registration_and_capacity_wait_do_not_settle_startup() {
     let mut h = Bound::new();
     let now = Instant::now();
-    let state = StartupReceipt::new(&h.owner, h.lease.clone(), now).unwrap();
+    let mut state = StartupReceipt::new(&h.owner, h.lease.clone(), now).unwrap();
     let (other_owner, mut other_binding, other_lease) = Bound::bind(&h.source);
     other_binding.register(&other_owner, APP).unwrap();
     assert_eq!(
@@ -147,8 +147,37 @@ fn only_exact_current_binding_registration_settles_startup() {
         Some(now + RECEIPT_BOUND)
     );
     h.binding.register(&h.owner, APP).unwrap();
-    assert_eq!(state.next_deadline(&h.binding, &h.owner), None);
+    let deadline = now + RECEIPT_BOUND;
+    assert_eq!(state.next_deadline(&h.binding, &h.owner), Some(deadline));
     assert_eq!(state.next_bound(&h.binding, &h.owner, now), None);
+    assert!(!state.observe_registered_post_return(&h.binding, &h.owner, &h.lease, now));
+    // The same actual bounded request inbox can stay full after local input.
+    let (send, recv) = std::sync::mpsc::sync_channel(1);
+    let registered = || {
+        crate::original_call::request_for_lease(
+            h.lease.clone(),
+            0,
+            crate::renderer_bridge::RendererBridgeOperation::Registered,
+            Vec::new(),
+        )
+    };
+    send.try_send(registered()).unwrap();
+    assert!(matches!(
+        send.try_send(registered()),
+        Err(std::sync::mpsc::TrySendError::Full(_))
+    ));
+    assert_eq!(state.next_deadline(&h.binding, &h.owner), Some(deadline));
+    recv.try_recv().unwrap();
+    send.try_send(registered()).unwrap();
+    h.binding.registration_handed_off(&h.lease).unwrap();
+    assert_eq!(state.next_deadline(&h.binding, &h.owner), Some(deadline));
+    assert!(state.expired(&h.binding, &h.owner, deadline));
+    assert!(!state.observe_registered_post_return(&h.binding, &h.owner, &h.lease, deadline));
+    let before = deadline.checked_sub(Duration::from_nanos(1)).unwrap();
+    assert!(!state.observe_registered_post_return(&h.binding, &h.owner, &other_lease, before));
+    assert!(state.observe_registered_post_return(&h.binding, &h.owner, &h.lease, before));
+    assert!(!state.observe_registered_post_return(&h.binding, &h.owner, &h.lease, before));
+    assert_eq!(state.next_deadline(&h.binding, &h.owner), None);
     assert!(!state.expired(&h.binding, &h.owner, now + Duration::from_secs(9)));
 }
 

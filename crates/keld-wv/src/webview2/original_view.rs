@@ -9,13 +9,13 @@ use tao::event_loop::EventLoopProxy;
 
 use super::controller_custody::AdoptedControllerClose;
 use super::guarded_navigation::GuardInstalled;
-use super::original_bridge::{InstallStart, InstallStatus, PreloadInstaller};
+use super::original_bridge::{InstallStart, InstallStatus, OriginalBridge, PreloadInstaller};
 use super::original_callbacks::{NavigationCallbacks, Observation};
 use super::original_navigation::OriginalNavigation;
 use super::original_resource::{ResourceSession, ResourceView};
 use super::{ICoreWebView2Environment, View, WindowsLoopEvent};
 use crate::preload_image::AppPreloadImage;
-use crate::renderer_bridge::RendererRoleWitness;
+use crate::renderer_bridge::{RendererBridgeEndpoint, RendererBridgeOutcome, RendererRoleWitness};
 use crate::resource_intake::RetainedByteCredit;
 use crate::resource_source::AdmittedWebAppSource;
 use crate::{WebviewId, WvError};
@@ -29,6 +29,8 @@ pub(super) struct OriginalView {
     resource: Option<Rc<ResourceView>>,
     callbacks: Option<NavigationCallbacks>,
     installer: Option<PreloadInstaller>,
+    bridge: RefCell<Option<Rc<OriginalBridge>>>,
+    endpoint: Option<RendererBridgeEndpoint>,
     image: Arc<AppPreloadImage>,
     creator: RendererRoleWitness,
     retired: Cell<bool>,
@@ -41,6 +43,7 @@ pub(super) struct ViewInputs {
     pub(super) creator: RendererRoleWitness,
     pub(super) session: Rc<ResourceSession>,
     pub(super) renderer_lifetime: Option<crate::native_document::RendererLifetime>,
+    pub(super) endpoint: RendererBridgeEndpoint,
 }
 
 const METADATA_BYTES: usize = 8192;
@@ -78,6 +81,8 @@ impl OriginalView {
             resource: None,
             callbacks: None,
             installer: None,
+            bridge: RefCell::new(None),
+            endpoint: Some(inputs.endpoint),
             image: inputs.image,
             creator: inputs.creator,
             retired: Cell::new(false),
@@ -127,6 +132,13 @@ impl OriginalView {
         callbacks
             .install_on_ui(observer)
             .map_err(|_| failure("selected navigation subscriptions refused"))?;
+        let endpoint = self
+            .endpoint
+            .take()
+            .ok_or_else(|| failure("selected view lacks its actual endpoint"))?;
+        let bridge = OriginalBridge::prepare(Rc::clone(resource), endpoint, proxy.clone())?;
+        // The complete View owns this exact bridge before either native Add.
+        self.bridge.get_mut().insert(bridge).install_on_ui()?;
         match installer.begin_on_ui() {
             InstallStart::Returned(Ok(())) => Ok(()),
             InstallStart::OutcomeUnknown => {
@@ -146,10 +158,42 @@ impl OriginalView {
         self.id
     }
 
+    fn renderer_bridge(&self) -> Result<Option<Rc<OriginalBridge>>, WvError> {
+        self.bridge
+            .try_borrow()
+            .map(|slot| slot.as_ref().map(Rc::clone))
+            .map_err(|_| failure("selected renderer bridge is borrowed"))
+    }
+
+    pub(super) fn drive_renderer_on_ui(&self) -> Result<(), WvError> {
+        self.renderer_bridge()?
+            .map_or(Ok(()), |bridge| bridge.drive_on_ui())
+    }
+
+    pub(super) fn renderer_deadline(&self) -> Option<Instant> {
+        self.renderer_bridge().ok().flatten()?.next_deadline()
+    }
+
+    pub(super) fn observe_renderer_capacity(
+        &self,
+        outcome: &RendererBridgeOutcome,
+    ) -> Result<bool, WvError> {
+        Ok(self
+            .renderer_bridge()?
+            .is_some_and(|bridge| bridge.observe_capacity(outcome)))
+    }
+
     /// Acknowledging script installation creates no renderer readiness or
     /// permission to issue the first selected navigation.
     pub(super) fn preload_status(&self, now: Instant) -> InstallStatus {
-        if self.retired.get() || !self.creator.is_live() {
+        if self.retired.get()
+            || !self.creator.is_live()
+            || self
+                .renderer_bridge()
+                .ok()
+                .flatten()
+                .is_none_or(|bridge| !bridge.is_installed())
+        {
             return InstallStatus::Refused;
         }
         self.installer

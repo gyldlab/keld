@@ -111,9 +111,13 @@ impl StartupControl {
             }
         });
         match result {
-            PostResult::Returned(Ok(())) | PostResult::AlreadyReturned => {
+            PostResult::Returned(Ok(())) => {
+                if matches!(kind, StartupKind::Registered) {
+                    bridge.record_registered_post_return(&self.document)?;
+                }
                 self.dispose_if_quiescent()
             }
+            PostResult::AlreadyReturned => self.dispose_if_quiescent(),
             PostResult::Returned(Err(_)) => {
                 Err(failure("native startup CONTROL returned a failure"))
             }

@@ -141,6 +141,39 @@ impl OriginalBridge {
         Ok(())
     }
 
+    pub(super) fn record_registered_post_return(
+        &self,
+        lease: &CheckedNativeDocumentLease,
+    ) -> Result<(), WvError> {
+        let nav = self
+            .navigation
+            .try_borrow()
+            .map_err(|_| failure("AppRegistered return document owner borrowed"))?;
+        let mut state = self
+            .state
+            .try_borrow_mut()
+            .map_err(|_| failure("AppRegistered return state borrowed"))?;
+        let State {
+            startup, binding, ..
+        } = &mut *state;
+        if self.retired.get()
+            || self.faulted.get()
+            || !startup.as_mut().is_some_and(|receipt| {
+                receipt.observe_registered_post_return(
+                    binding,
+                    nav.document(),
+                    lease,
+                    std::time::Instant::now(),
+                )
+            })
+        {
+            return Err(failure(
+                "AppRegistered return missed its original startup cut",
+            ));
+        }
+        Ok(())
+    }
+
     /// Identity-only registration notice on the existing bounded endpoint.
     /// A full endpoint leaves the same native document notice pending.
     pub(super) fn flush_registration(&self) -> Result<(), WvError> {

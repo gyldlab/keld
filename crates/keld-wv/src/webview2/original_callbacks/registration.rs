@@ -60,8 +60,7 @@ impl Registration {
         self.phase.get() == Phase::Adding
     }
 
-    /// Test observer reads the same actual Add return, with no new receipt.
-    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    /// Read the same actual successful native Add return.
     pub(in crate::webview2) fn is_registered(&self) -> bool {
         self.phase.get() == Phase::Registered
     }

@@ -22,6 +22,7 @@ pub(super) struct StartupReceipt {
     initial_entered: bool,
     dom_observed: bool,
     retry_entered: bool,
+    registered_post_returned: bool,
 }
 
 impl StartupReceipt {
@@ -44,6 +45,7 @@ impl StartupReceipt {
             initial_entered: false,
             dom_observed: false,
             retry_entered: false,
+            registered_post_returned: false,
         })
     }
 
@@ -55,7 +57,30 @@ impl StartupReceipt {
     fn received(&self, binding: &OriginalBinding, owner: &NativeDocumentOwner) -> bool {
         self.document.belongs_to_owner(owner)
             && binding.current(owner) == Some(self.document.0.stamp())
-            && binding.registered()
+            && self.registered_post_returned
+    }
+
+    /// Only the charged AppRegistered operation supplies this actual native
+    /// return. Endpoint acceptance or local Registered alone cannot settle it.
+    pub(super) fn observe_registered_post_return(
+        &mut self,
+        binding: &OriginalBinding,
+        owner: &NativeDocumentOwner,
+        lease: &CheckedNativeDocumentLease,
+        now: Instant,
+    ) -> bool {
+        if self.registered_post_returned
+            || now >= self.deadline
+            || !self.document.same_binding(lease)
+            || !lease.belongs_to_owner(owner)
+            || binding.current(owner) != Some(lease.0.stamp())
+            || !binding.registered()
+            || binding.registration_notice().is_some()
+        {
+            return false;
+        }
+        self.registered_post_returned = true;
+        true
     }
 
     /// The actual same-view `DOMContentLoaded` adapter calls this after checking
@@ -102,6 +127,7 @@ impl StartupReceipt {
     ) -> Option<BoundEntry> {
         if !self.document.belongs_to_owner(owner)
             || binding.current(owner) != Some(self.document.0.stamp())
+            || binding.registered()
             || self.received(binding, owner)
             || now >= self.deadline
         {
