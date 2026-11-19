@@ -26,6 +26,8 @@ mod native_window;
 #[cfg(any(target_os = "macos", windows))]
 pub mod preload_image;
 pub mod profile;
+#[cfg(any(target_os = "macos", windows))]
+pub mod renderer_bridge;
 #[cfg(windows)]
 mod resource_intake;
 #[cfg(windows)]
