@@ -2,7 +2,9 @@
 //! Fixture identities and fake UI commands do not prove Runtime admission or native
 //! windows. Actual app-bound Subscribe admission and GH-446 Init remain separate.
 use super::super::window_registry::WindowOwner;
-use super::super::{BootstrapStream, PrimaryCallerContext, PrimaryRouterHandle};
+use super::super::{
+    ActivePrimaryGeneration, BootstrapStream, PrimaryCallerContext, PrimaryRouterHandle,
+};
 use super::{WindowSession, event, native_state, subscription_refusal};
 use keld_ipc::channel_table::{Authority, ReceiveClass};
 use keld_ipc::codec::{decode, encode};
@@ -262,16 +264,30 @@ fn verdict(
         correlation,
     )
 }
+fn take_fixture_writer(active: ActivePrimaryGeneration) -> TestResult<BootstrapStream> {
+    #[cfg(windows)]
+    {
+        let mut active = active;
+        active
+            .take_legacy_test_writer()
+            .ok_or_else(|| std::io::Error::other("legacy fixture writer is absent").into())
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(active.writer)
+    }
+}
+
 fn install_successor(fixture: &mut Fixture) -> TestResult {
     let successor = Fixture::new(None)?;
-    let server = successor
+    let active = successor
         .handle
         .current
         .lock()
         .map_err(|_| std::io::Error::other("successor lock poisoned"))?
         .take()
-        .ok_or_else(|| std::io::Error::other("successor active absent"))?
-        .writer;
+        .ok_or_else(|| std::io::Error::other("successor active absent"))?;
+    let server = take_fixture_writer(active)?;
     fixture.peer = successor.peer;
     fixture
         .handle
@@ -1148,14 +1164,14 @@ fn window_router_ui_terminal_cut_fences_successor_installation() -> TestResult {
         .retire_generation(1)
         .expect("retire old generation");
     let successor = Fixture::new(None)?;
-    let server = successor
+    let active = successor
         .handle
         .current
         .lock()
         .expect("successor fixture")
         .take()
-        .expect("server")
-        .writer;
+        .expect("server");
+    let server = take_fixture_writer(active)?;
     let mut peer = successor.peer;
     fixture
         .handle

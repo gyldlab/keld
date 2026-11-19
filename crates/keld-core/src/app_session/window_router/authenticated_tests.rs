@@ -123,7 +123,7 @@ fn router_for_bound(
         window_commands: windows,
         quit_drain_hooks: Arc::default(),
     };
-    let router = PrimaryRouter::finish_start(handle, None, attempt, Some(true), None, None)?;
+    let router = PrimaryRouter::finish_start(handle, None, attempt, Some(true), None)?;
     router
         .handle
         .install_prepared_generation_with_identity(attempt, bound.into_stream(), identity)

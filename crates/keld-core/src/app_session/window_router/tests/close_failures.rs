@@ -18,7 +18,6 @@ fn shutdown_host_writer(fixture: &Fixture) -> TestResult {
     current
         .as_ref()
         .ok_or_else(|| std::io::Error::other("host writer fixture is absent"))?
-        .writer
         .shutdown_app_link()?;
     Ok(())
 }
