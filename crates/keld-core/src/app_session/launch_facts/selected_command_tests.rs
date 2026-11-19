@@ -2,7 +2,7 @@
 use super::{SelectedLaunch, native, prepare_selected};
 use crate::app_session::graph_contract::tests::prepared_pinned_launch_source;
 use crate::app_session::windows_primary_config;
-use keld_ipc::channel_table::WINDOW;
+use keld_ipc::channel_table::{COMPAT_CONTROL, WINDOW};
 use keld_ipc::lifecycle::{LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse};
 use keld_ipc::link::{read_frame, write_frame};
 use keld_ipc::{AppLinkDeadlines, CorrelationId, FrameKind};
@@ -163,23 +163,26 @@ fn selected_command_delivers_pinned_facts_and_rechecks_provider_before_successor
     );
     let mut stream = bound.into_stream();
     stream.set_app_link_read_deadline(Some(BOUND))?;
-    let (header, message) = read_frame(&mut stream)?;
-    assert_eq!(header.kind, FrameKind::Call);
-    assert_eq!(header.channel, LIFECYCLE_CHANNEL);
-    assert_eq!(
-        keld_ipc::codec::decode::<LifecycleRequest>(&message)?,
-        LifecycleRequest::Subscribe {
-            channel: WINDOW.wire_id()
-        }
-    );
-    write_frame(
-        &mut stream,
-        FrameKind::Reply,
-        0,
-        LIFECYCLE_CHANNEL,
-        header.corr,
-        &keld_ipc::codec::encode(&LifecycleResponse::Subscribed)?,
-    )?;
+    for (channel, correlation) in [(WINDOW, 2), (COMPAT_CONTROL, 3)] {
+        let (header, message) = read_frame(&mut stream)?;
+        assert_eq!(header.kind, FrameKind::Call);
+        assert_eq!(header.channel, LIFECYCLE_CHANNEL);
+        assert_eq!(header.corr, CorrelationId(correlation));
+        assert_eq!(
+            keld_ipc::codec::decode::<LifecycleRequest>(&message)?,
+            LifecycleRequest::Subscribe {
+                channel: channel.wire_id()
+            }
+        );
+        write_frame(
+            &mut stream,
+            FrameKind::Reply,
+            0,
+            LIFECYCLE_CHANNEL,
+            header.corr,
+            &keld_ipc::codec::encode(&LifecycleResponse::Subscribed)?,
+        )?;
+    }
     // Change one byte in a nonexecuted, otherwise admitted provider member.
     // G1 already captured the real provider and cannot finish before Ready.
     let changed = root.join(CHANGED_PROVIDER);
