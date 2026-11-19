@@ -236,3 +236,17 @@ fn returns_normalized_public_pinned_url() {
         format!("https://github.com/gyldlab/keld/blob/{sha}/a%20b?download=1#L1")
     );
 }
+
+#[test]
+fn preserves_encoded_literals_in_a_pinned_github_filename() {
+    let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
+    let original = format!("https://github.com/gyldlab/keld/commit/{sha}");
+    let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denominator");
+    for filename in ["issue%23notes.md", "question%3Fnotes.md", "100%25ready.md"] {
+        let uri = format!("https://github.com/gyldlab/keld/blob/{sha}/docs/{filename}");
+        let json = valid_evidence_json().replace(&original, &uri);
+        let record = parse_evidence(json.as_bytes()).expect("literal filename remains a pin");
+        assert_eq!(record.evidence_uri(), uri);
+        score(&denom, &[record], AS_OF).expect("pinned filename is eligible for scoring");
+    }
+}

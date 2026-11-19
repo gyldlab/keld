@@ -38,9 +38,9 @@ pub(super) fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
             Some(url::Host::Ipv6(host)) => host.to_string(),
             None => String::new(),
         };
-        let path = decoded_policy_path(url.path(), trimmed)?;
         // Trailing FQDN dots are the same host (RFC 1034); compare once.
         let host = host.trim_end_matches('.').to_ascii_lowercase();
+        let path = decoded_policy_path(&host, url.path(), trimmed)?;
         if host_is_forbidden(&host) {
             return Err(EvidenceError::NonNormativeEvidence {
                 detail: format!("`{trimmed}` is not a public https location"),
@@ -84,18 +84,44 @@ pub(super) fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
 
 /// Decode each segment once for policy checks without allowing new segment
 /// boundaries, dot navigation, or nested escapes to acquire another meaning.
-fn decoded_policy_path(path: &str, original: &str) -> Result<String, EvidenceError> {
-    let mut segments = Vec::new();
-    for segment in path.split('/') {
+fn decoded_policy_path(host: &str, path: &str, original: &str) -> Result<String, EvidenceError> {
+    let raw_segments: Vec<_> = path.split('/').collect();
+    let pinned_github_blob = host == "github.com"
+        && matches!(raw_segments.as_slice(), ["", owner, repo, "blob", pin, _, ..]
+            if !owner.is_empty() && !repo.is_empty() && is_git_object_id(pin));
+    let mut segments = Vec::with_capacity(raw_segments.len());
+    for (index, &segment) in raw_segments.iter().enumerate() {
+        // Only the terminal filename of a commit-pinned GitHub blob may carry
+        // these literals. The canonical URL remains encoded when returned.
+        let literal_filename = pinned_github_blob && index + 1 == raw_segments.len();
         let decoded = percent_encoding::percent_decode_str(segment)
             .decode_utf8()
             .map_err(|_| EvidenceError::NonNormativeEvidence {
                 detail: format!("`{original}` has an invalid encoded path"),
             })?;
-        if matches!(decoded.as_ref(), "." | "..")
-            || decoded
-                .bytes()
-                .any(|b| matches!(b, b'/' | b'\\' | b'%' | b'?' | b'#') || b.is_ascii_control())
+        let malformed_escape = segment
+            .as_bytes()
+            .iter()
+            .enumerate()
+            .any(|(offset, &byte)| {
+                byte == b'%'
+                    && !segment
+                        .as_bytes()
+                        .get(offset + 1..offset + 3)
+                        .is_some_and(|pair| pair.iter().all(u8::is_ascii_hexdigit))
+            });
+        let nested_escape = decoded
+            .as_bytes()
+            .windows(3)
+            .any(|bytes| bytes[0] == b'%' && bytes[1..].iter().all(u8::is_ascii_hexdigit));
+        if malformed_escape
+            || nested_escape
+            || matches!(decoded.as_ref(), "." | "..")
+            || decoded.bytes().any(|b| {
+                matches!(b, b'/' | b'\\')
+                    || b.is_ascii_control()
+                    || (!literal_filename && matches!(b, b'%' | b'?' | b'#'))
+            })
         {
             return Err(EvidenceError::NonNormativeEvidence {
                 detail: format!("`{original}` has an ambiguous encoded path"),
@@ -240,11 +266,24 @@ fn host_is_forbidden(host: &str) -> bool {
 }
 
 fn ipv4_is_non_public(v4: Ipv4Addr) -> bool {
+    let [a, b, c, d] = v4.octets();
+    // IANA IPv4 Special-Purpose Address Registry: deny non-globally reachable
+    // blocks, plus multicast (not unicast evidence) and reserved space.
+    // 192.0.0.9 and .10 are the registry's globally reachable exceptions.
     v4.is_loopback()
-        || v4.is_unspecified()
         || v4.is_private()
         || v4.is_link_local()
         || ipv4_is_cgnat(v4)
+        || matches!(
+            [a, b, c],
+            [0 | 224..=255, _, _]
+                | [192, 0, 2]
+                | [192, 88, 99]
+                | [198, 18 | 19, _]
+                | [198, 51, 100]
+                | [203, 0, 113]
+        )
+        || ([a, b, c] == [192, 0, 0] && !matches!(d, 9 | 10))
 }
 
 /// RFC 6598 shared address space `100.64.0.0/10` (CGNAT).
