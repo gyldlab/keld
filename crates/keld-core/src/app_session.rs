@@ -6206,7 +6206,7 @@ enum QuitDrainEnd {
 type PrimaryReader = JoinHandle<Result<(), HostAppError>>;
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PrimaryLinkIdentity {
     Role(RolePrincipal),
     // Historical paired-stream component fixtures are not authenticated role

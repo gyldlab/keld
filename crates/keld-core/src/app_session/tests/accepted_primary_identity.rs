@@ -181,7 +181,7 @@ fn accepted_primary_identity_fences_caller_context_before_healthy_echo() {
     let caller = {
         let current = handle.current.lock().expect("current primary lease");
         let active = current.as_ref().expect("accepted generation installed");
-        assert!(active.identity == PrimaryLinkIdentity::Role(principal));
+        assert_eq!(active.identity, PrimaryLinkIdentity::Role(principal));
         PrimaryCallerContext {
             attempt: active.attempt,
             identity: active.identity,
@@ -268,7 +268,7 @@ fn dialog_nonce_is_owned_by_the_authenticated_current_generation() {
     let caller = {
         let current = handle.current.lock().expect("current primary lease");
         let active = current.as_ref().expect("accepted generation installed");
-        assert!(active.identity == PrimaryLinkIdentity::Role(principal));
+        assert_eq!(active.identity, PrimaryLinkIdentity::Role(principal));
         PrimaryCallerContext {
             attempt: active.attempt,
             identity: active.identity,

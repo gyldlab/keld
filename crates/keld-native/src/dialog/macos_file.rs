@@ -197,6 +197,10 @@ fn default_hint(panel: &NSSavePanel, hint: Option<&String>) {
 }
 
 impl MacFilePanel {
+    // One setup owner keeps the native ordering explicit: filter preflight,
+    // accessory installation, delegate attachment, content types, Save
+    // extension visibility, directory hint, then Open selection modes.
+    #[allow(clippy::too_many_lines)]
     fn finish_setup(
         panel: FilePanel,
         hint: Option<&String>,

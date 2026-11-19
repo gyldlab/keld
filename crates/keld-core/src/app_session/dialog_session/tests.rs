@@ -4,6 +4,7 @@ use super::{
 };
 use keld_ipc::window::{WindowGeneration, WindowId, WindowRef};
 use sha2::{Digest as _, Sha256};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 
 #[path = "publication_tests.rs"]
@@ -36,6 +37,23 @@ fn original(correlation: u32, nonce: u64) -> DialogOwner {
         attempt: 1,
         correlation: CorrelationId(correlation),
         nonce,
+        parent: Some(WindowRef {
+            id: WindowId(1),
+            incarnation: WindowGeneration(1),
+        }),
+    }
+}
+
+/// Fixture identity for tests that do not exercise protocol nonce matching.
+/// Allocate the nonce at runtime so static analysis does not mistake a test
+/// literal for cryptographic nonce material.
+fn fixture_original(correlation: u32) -> DialogOwner {
+    static NEXT_NONCE: AtomicU64 = AtomicU64::new(1);
+    DialogOwner {
+        identity: PrimaryLinkIdentity::Fixture,
+        attempt: 1,
+        correlation: CorrelationId(correlation),
+        nonce: NEXT_NONCE.fetch_add(1, Ordering::Relaxed),
         parent: Some(WindowRef {
             id: WindowId(1),
             incarnation: WindowGeneration(1),
@@ -116,7 +134,7 @@ fn dialog_cancel_at_capacity_keeps_distinct_original_and_cancel_correlations() {
     let terminal = session
         .complete(1, 9, MacDialogUiOutcome::Dismissed)
         .expect("OS callback modeled as already physically drained");
-    assert!(terminal == Some((first, Err(DialogFault::Cancelled))));
+    assert_eq!(terminal, Some((first, Err(DialogFault::Cancelled))));
     assert!(session.fully_drained());
     assert!(session.has_capacity());
     assert!(
@@ -162,15 +180,15 @@ fn dialog_committed_native_result_wins_before_late_cancel_and_role_retirement() 
             },
         )
         .expect("observed physical native completion");
-    assert!(
-        reply
-            == Some((
-                first,
-                Ok(DialogReplyV1::Message {
-                    response: 2,
-                    checkbox_checked: true,
-                })
-            ))
+    assert_eq!(
+        reply,
+        Some((
+            first,
+            Ok(DialogReplyV1::Message {
+                response: 2,
+                checkbox_checked: true,
+            })
+        ))
     );
     assert_eq!(
         session.cancel(first.identity, 1, 17, CorrelationId(99)),
@@ -250,7 +268,7 @@ fn delayed_poll_preserves_only_pre_cutoff_native_completion() {
         (None, true),
     ] {
         let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
-        let owner = original(1, 1);
+        let owner = fixture_original(1);
         session.reserve(owner, options(), WebviewId(3)).unwrap();
         assert_eq!(
             session
@@ -297,7 +315,7 @@ fn timely_open_result_survives_delayed_service_and_allows_next_save() {
     use std::time::Duration;
 
     let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
-    let open = original(1, 1);
+    let open = fixture_original(1);
     session
         .reserve_file(
             open,
@@ -342,7 +360,7 @@ fn timely_open_result_survives_delayed_service_and_allows_next_save() {
     assert_eq!(terminal_result, Ok(opened));
     assert!(session.fully_drained());
 
-    let save = original(2, 2);
+    let save = fixture_original(2);
     session
         .reserve_file(
             save,
@@ -377,7 +395,7 @@ fn deadline_arbitration_preserves_prior_cancel_and_retirement() {
     use std::time::Instant;
     for retired in [false, true] {
         let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
-        let owner = original(1, 1);
+        let owner = fixture_original(1);
         session.reserve(owner, options(), WebviewId(3)).unwrap();
         assert!(session.take_work().unwrap().is_some());
         let cutoff = Instant::now();
@@ -404,7 +422,7 @@ fn deadline_arbitration_preserves_prior_cancel_and_retirement() {
         if retired {
             assert!(result.is_none());
         } else {
-            assert!(result == Some((owner, Err(DialogFault::Cancelled))));
+            assert_eq!(result, Some((owner, Err(DialogFault::Cancelled))));
         }
         assert!(session.fully_drained());
     }
@@ -414,7 +432,7 @@ fn deadline_arbitration_preserves_prior_cancel_and_retirement() {
 fn cleanup_deadline_fails_without_releasing_custody_and_never_restarts() {
     use std::time::{Duration, Instant};
     let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
-    let owner = original(1, 1);
+    let owner = fixture_original(1);
     session.reserve(owner, options(), WebviewId(3)).unwrap();
     assert!(session.take_work().unwrap().is_some());
     let started = Instant::now();
@@ -445,7 +463,7 @@ fn cleanup_deadline_fails_without_releasing_custody_and_never_restarts() {
         .complete(owner.attempt, owner.nonce, MacDialogUiOutcome::Dismissed)
         .unwrap();
     assert!(session.fully_drained());
-    let next = original(2, 2);
+    let next = fixture_original(2);
     session.reserve(next, options(), WebviewId(3)).unwrap();
     assert!(
         session
@@ -459,7 +477,7 @@ fn cleanup_deadline_fails_without_releasing_custody_and_never_restarts() {
 fn cancel_and_retirement_start_their_owned_cleanup_clocks() {
     use std::time::{Duration, Instant};
     let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
-    let owner = original(1, 1);
+    let owner = fixture_original(1);
     session.reserve(owner, options(), WebviewId(3)).unwrap();
     let before = Instant::now();
     session
@@ -493,7 +511,7 @@ fn late_cleanup_poll_does_not_consume_newly_available_drain() {
     use std::cell::Cell;
     use std::time::{Duration, Instant};
     let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
-    let owner = original(1, 1);
+    let owner = fixture_original(1);
     session.reserve(owner, options(), WebviewId(3)).unwrap();
     let cutoff = Instant::now() + Duration::from_secs(10);
     session.begin_cleanup(owner, cutoff).unwrap();
@@ -540,7 +558,7 @@ fn poll_crossing_cleanup_cutoff_cannot_release_owner() {
     use std::cell::Cell;
     use std::time::{Duration, Instant};
     let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
-    let owner = original(1, 1);
+    let owner = fixture_original(1);
     session.reserve(owner, options(), WebviewId(3)).unwrap();
     let cutoff = Instant::now() + Duration::from_secs(10);
     session.begin_cleanup(owner, cutoff).unwrap();
