@@ -1,7 +1,10 @@
 # Original Windows bridge
-Owner/load: webview-windows-original-bridge/always.
-Extends ../AGENTS.md; GH1184.
+Owner/load: webview-windows-original-bridge/always. GH1184.
+Extends ../AGENTS.md. Use exact retained creating-STA View.
 
-- Only `installer.rs` may call `ICoreWebView2::AddScriptToExecuteOnDocumentCreated` on the retained creating-STA view and implement its raw completion handler. Keep counted, NUL-terminated UTF-16 through call return and callback or same-controller Close. Never dispose the input in-call.
-- The completion handler MUST check HRESULT and non-null script ID without scanning or retaining the ID. Post only the existing wake; no nested pump or unwind may cross the ABI.
-- Navigation requires successful native return and timely successful completion. A late, retired, or failed registration MUST NOT become ready.
+- installer.rs alone: AddScriptToExecuteOnDocumentCreated/raw completion. Hold counted NUL UTF-16 until return plus callback/same Close. Check callback HRESULT/non-null ID without scan or retention. Post only OriginalWake. Both timely live successes gate navigation.
+- callbacks.rs: top-view WebMessageReceived/DOMContentLoaded, QI/NavigationId. Verify sender identity. Hold token slots through add return, same Close and callback exit.
+- capture.rs: actual Source/WebMessageAsJson via bounded task strings. Precharge copies. Decode full outer JSON String then canonical envelope.
+- post/entry.rs alone: PostWebMessageAsString. Hold immutable charged NUL UTF-16 through return. Exact Core role/document/epoch fence enters Posting. Drop guards, call immediately. Only fixed ready:false uses RouteRetirementPermit. Delivery needs consumer receipt.
+
+No nested pump or ABI unwind.
