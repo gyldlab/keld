@@ -10,8 +10,10 @@ use keld_ipc::window::{Rect, WindowRequest, WindowResponse, WindowState};
 use keld_ipc::{ChannelId, SubscribeRefusal};
 use keld_wv::{BuildStage, WindowSnapshot};
 
+mod native_outcome;
 #[cfg(windows)]
 pub(super) mod original;
+use native_outcome::NativeOutcome;
 mod request;
 use request::{WindowRequestInput, WindowRequestOutcome, duplicate_correlation};
 
@@ -689,84 +691,20 @@ impl PrimaryRouterHandle {
         failed: &mut Option<u32>,
     ) -> Result<(), HostAppError> {
         let subscribed = session.subscribed;
-        let fact = match native_event {
-            AppWindowEvent::WindowBuilt {
-                build,
-                view,
-                snapshot,
-            } => {
-                let outcome = session
-                    .registry
-                    .native_built(build, view, native_state(snapshot));
+        let fact = match Self::prepare_window_native_locked(session, native_event)? {
+            NativeOutcome::Build(outcome) => {
                 return self.window_build_outcome_locked(current, subscribed, outcome, failed);
             }
-            AppWindowEvent::WindowBuildFailed { build, stage } => {
-                let outcome = session.registry.native_failed(build);
+            NativeOutcome::BuildFailed { outcome, stage } => {
                 return window_build_failed_locked(current, subscribed, outcome, stage, failed);
             }
-            AppWindowEvent::WindowCloseRequested { view } => {
-                return Self::window_native_close_locked(
-                    current,
-                    subscribed,
-                    session.registry.native_close(view),
-                    failed,
-                );
+            NativeOutcome::Close(outcome) => {
+                return Self::window_native_close_locked(current, subscribed, outcome, failed);
             }
-            AppWindowEvent::WindowReleased { view } => {
-                let outcome = session.registry.native_released(view);
+            NativeOutcome::Released(outcome) => {
                 return window_released_locked(current, subscribed, outcome, failed);
             }
-            AppWindowEvent::WindowBounds {
-                view,
-                x,
-                y,
-                width,
-                height,
-            } => session.registry.native_bounds(
-                view,
-                Rect {
-                    x,
-                    y,
-                    width,
-                    height,
-                },
-            ),
-            AppWindowEvent::WindowFocus { view, focused } => {
-                session.registry.native_focus(view, focused)
-            }
-            AppWindowEvent::WindowMaximized { view, maximized } => {
-                session.registry.native_maximized(view, maximized)
-            }
-            AppWindowEvent::WindowFullScreen { view, full_screen } => {
-                session.registry.native_full_screen(view, full_screen)
-            }
-            AppWindowEvent::NavigationReady | AppWindowEvent::LastWindowClosed => {
-                return Err(app_detail(
-                    "window native event",
-                    "legacy lifecycle fact entered managed registry dispatch",
-                ));
-            }
-            #[cfg(any(target_os = "macos", windows))]
-            AppWindowEvent::HostInitialized { .. } => {
-                return Err(app_detail(
-                    "window native event",
-                    "the first host Init milestone belongs only to the lifecycle coordinator",
-                ));
-            }
-            #[cfg(any(target_os = "macos", windows))]
-            AppWindowEvent::DialogFinished { .. } => {
-                return Err(app_detail(
-                    "window native event",
-                    "dialog completion must be dispatched by the event coordinator",
-                ));
-            }
-            #[cfg(windows)]
-            AppWindowEvent::HostWriterProgress => {
-                return Err(app_detail(
-                    "window native event",
-                    "writer progress belongs to the primary writer owner",
-                ));
-            }
+            NativeOutcome::Fact(fact) => fact,
         };
         match fact {
             FactOutcome::Event(fact) => owned_event(current, subscribed, fact, failed),
