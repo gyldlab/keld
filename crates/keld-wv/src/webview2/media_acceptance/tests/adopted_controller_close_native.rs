@@ -511,7 +511,7 @@ fn pre_loop_build_case(withhold: bool) -> Result<(), WvError> {
         || facts.injected_errors != u32::from(withhold)
         || late.calls != 0
         || retained != withhold
-        || parent_live != withhold
+        || (withhold && !parent_live)
         || phase? != "running"
         || !matches!(outcome, Err(WvError::Navigate(_)))
         || (withhold && !matches!(rejected_loop, Some(Err(WvError::ProfileSelection(_)))))

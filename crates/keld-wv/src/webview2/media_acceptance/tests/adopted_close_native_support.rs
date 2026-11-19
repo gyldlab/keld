@@ -147,7 +147,9 @@ pub(super) fn cleanup(
     let parent_live = is_window(capture.hwnd);
     let child_live = capture.children.iter().any(|hwnd| is_window(*hwnd));
     let already_retired = !parent_live && !child_live;
-    if parent_live {
+    // Pre-loop fixture cleanup observes the already-posted Tao destruction.
+    // Only the established managed fixture may use its emergency intervention.
+    if parent_live && witness.is_some() {
         // SAFETY: both queries only validate the retained fixture's original
         // owning UI thread before a possible cleanup intervention.
         let (owner, current) = unsafe {
