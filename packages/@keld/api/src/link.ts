@@ -67,6 +67,7 @@ import {
   encodeVarint,
   kipcError,
   linkError,
+  isCallError,
   nativeFacadeBootSelected,
   windowsDesktopSnapshotSelected,
   quitAndCloseLink,
@@ -119,7 +120,7 @@ export type LifecycleHandler = {
   onLinkDead: (err: Error) => void;
 };
 
-/** What the host may send this role besides replies to its own calls (GH-527 §4.7). */
+/** What the host may send this role besides replies to its own calls (GH-527 Â§4.7). */
 const LIFECYCLE_RECEIVE: WorkerReceiveTable = {
   eventChannels: [LIFECYCLE_CHANNEL],
   callReceivers: [{ policy: "echoReceiver" }],
@@ -154,6 +155,24 @@ export class LifecycleLink {
     return this.#windowSource;
   }
 
+  /** Internal recheck after deferred public readiness publication. */
+  desktopReadyFailure(): KeldCallError | undefined {
+    try {
+      if (this.#windowSource?.desktop() !== undefined) return undefined;
+      return linkError(
+        "KELD-IPC-005",
+        "Selected desktop Ready requires an available Host snapshot. Check the matched Host and SDK before restarting the role.",
+      );
+    } catch (error) {
+      return isCallError(error)
+        ? error
+        : linkError(
+            "KELD-IPC-005",
+            "Selected desktop state could not be read.",
+          );
+    }
+  }
+
   /**
    * Claim authenticated Host LastWindowClosed milestones pre-applied during
    * synchronous Destroy, after JS `closed` but before Destroy returns. The
@@ -180,7 +199,7 @@ export class LifecycleLink {
     // Bun. This hint does not grant window authority: the existing authenticated
     // primary link, host Subscribe admission and per-window owner still do that.
     const facadeWindows = nativeFacadeBootSelected;
-    const desktopSelected = facadeWindows && windowsDesktopSnapshotSelected;
+    const desktopSelected = windowsDesktopSnapshotSelected;
     const workerLink = await WorkerLink.open({
       link,
       receive: facadeWindows
@@ -200,14 +219,19 @@ export class LifecycleLink {
     if (windowSource) attachMirror(workerLink, windowSource);
     let rawReady = false;
     let replayComplete = !facadeWindows;
-    let readyPublished = false;
-    const maybePublishReady = (): void => {
-      if (!rawReady || !replayComplete || readyPublished) return;
-      readyPublished = true;
+    let readyFinished = false;
+    const maybePublishReady = (): KeldCallError | undefined => {
+      if (!rawReady || !replayComplete || readyFinished) return undefined;
+      readyFinished = true;
+      if (desktopSelected) {
+        const failure = session.desktopReadyFailure();
+        if (failure !== undefined) return failure;
+      }
       handlers.onReady();
+      return undefined;
     };
     // A lifecycle EVENT this role cannot decode ends the link (a throwing
-    // applier, §4.6) before any listener runs; the listener then dispatches it.
+    // applier, Â§4.6) before any listener runs; the listener then dispatches it.
     workerLink.setStateApplier(LIFECYCLE_CHANNEL, (payload) => {
       if (decodeEvent(payload) === "last-window-closed") {
         session.#appliedLastWindowClosed += 1;
@@ -216,7 +240,11 @@ export class LifecycleLink {
     workerLink.onEvent(LIFECYCLE_CHANNEL, (payload) => {
       if (decodeEvent(payload) === "ready") {
         rawReady = true;
-        maybePublishReady();
+        const failure = maybePublishReady();
+        if (failure !== undefined) {
+          session.close();
+          handlers.onLinkDead(failure);
+        }
       } else {
         session.#dispatchedLastWindowClosed += 1;
         // A native Destroy may already have claimed this Host milestone
@@ -271,12 +299,18 @@ export class LifecycleLink {
         // writes every replayed Created fact before its Subscribed reply on
         // this same authenticated link; call() applies them before settling.
         const request = Uint8Array.of(1, ...encodeVarint(WINDOW_CHANNEL));
+        let desktopAtReply = false;
         const reply = await workerLink.call(
           LIFECYCLE_CHANNEL,
           request,
           desktopSelected
             ? DESKTOP_SUBSCRIBE_DEADLINE_MS
             : APP_LINK_IO_DEADLINE_MS,
+          desktopSelected
+            ? () => {
+                desktopAtReply = windowSource.desktop() !== undefined;
+              }
+            : undefined,
         );
         if (reply.length !== 1 || reply[0] !== 1) {
           throw reply[0] === 2 && reply.length === 2
@@ -289,14 +323,15 @@ export class LifecycleLink {
                 "Host returned an invalid native window subscription reply",
               );
         }
-        if (desktopSelected && windowSource.desktop() === undefined) {
+        if (desktopSelected && !desktopAtReply) {
           throw linkError(
             "KELD-IPC-005",
-            "Host accepted the selected desktop subscription without an available snapshot. Check the matched Host and SDK before restarting the role.",
+            "Host acknowledged selected desktop Subscribe before an available snapshot. Check the matched Host and SDK before restarting the role.",
           );
         }
         replayComplete = true;
-        maybePublishReady();
+        const failure = maybePublishReady();
+        if (failure !== undefined) throw failure;
       } catch (error) {
         session.close();
         throw error;
@@ -348,7 +383,7 @@ export class LifecycleLink {
   /**
    * Sends the role's Quit without parking (PANEL-P2: `app.quit` returns
    * immediately) and closes the link once its REPLY or typed failure settles
-   * (GH-527 §4.9). Resolves on `LifecycleResponse::Quit`; a host ERR rejects
+   * (GH-527 Â§4.9). Resolves on `LifecycleResponse::Quit`; a host ERR rejects
    * with that error, any other REPLY with `KELD-IPC-003`. Concurrent calls
    * share one Quit.
    */

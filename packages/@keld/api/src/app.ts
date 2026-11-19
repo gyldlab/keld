@@ -17,6 +17,7 @@ import type {
 import {
   linkError,
   runtimeProcessFactsSelected,
+  windowsDesktopSnapshotSelected,
   stateMap,
   stateMapDelete,
   stateMapSet,
@@ -159,6 +160,16 @@ function onHostReady(): void {
   queueMicrotask(() => {
     nativeReadyQueued = false;
     if (hostReady || linkDead) return;
+    if (windowsDesktopSnapshotSelected) {
+      const failure = connectedLink
+        ? connectedLink.desktopReadyFailure()
+        : linkError("KELD-IPC-005", "Selected desktop Ready has no Host link.");
+      if (failure !== undefined) {
+        connectedLink?.close();
+        failReadyWaiters(failure);
+        return;
+      }
+    }
     hostReady = true;
     const waiters = readyWaiters;
     readyWaiters = [];

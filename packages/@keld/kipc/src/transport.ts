@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:9e9622bb0a840586b19e672878715347ba31bf9e3d32b078b03a030bb479270f
+// @keld/kipc-transport sha256:9181b1a28d71b9e237b6ec8e40383975d7c033de7af12e71f23d58bbe0506b9c
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -44,6 +44,7 @@ declare const __KELD_WINDOWS_DESKTOP_SNAPSHOT__: boolean;
 
 /** @internal Host-selected desktop facts capability; it grants no authority. */
 export const windowsDesktopSnapshotSelected =
+  nativeFacadeBootSelected &&
   typeof __KELD_WINDOWS_HOST__ === "boolean" &&
   __KELD_WINDOWS_HOST__ &&
   typeof __KELD_WINDOWS_DESKTOP_SNAPSHOT__ === "boolean" &&
@@ -310,6 +311,7 @@ export const FrameKind = {
 // Save the canonical owner's values for protected branches without changing
 // the public readonly object's descriptors or introducing wire literals.
 const stateEventKind = FrameKind.Event;
+const stateReplyKind = FrameKind.Reply;
 const stateErrKind = FrameKind.Err;
 
 export type FrameKindValue = (typeof FrameKind)[keyof typeof FrameKind];
@@ -2585,6 +2587,7 @@ function ringCopy(
 let workerLinkOpened = false;
 
 interface PendingAsyncCall {
+  beforeReply?: () => void;
   resolve: (bytes: Uint8Array) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -2822,11 +2825,16 @@ export class WorkerLink {
     }
   }
 
-  /** Same correlation and ring path, Promise-shaped, for non-blocking callers. */
+  /**
+   * Same correlation and ring path, Promise-shaped, for non-blocking callers.
+   * A framework-only reply checkpoint may read already-applied state. It runs
+   * before advancing past this exact successful response, never for an ERR.
+   */
   call(
     channel: number,
     payload: Uint8Array,
     deadlineMs: number,
+    beforeReply?: () => void,
   ): Promise<Uint8Array> {
     try {
       requireDeadline(deadlineMs);
@@ -2857,7 +2865,7 @@ export class WorkerLink {
           ),
         );
       }, deadlineMs);
-      this.#pending.set(corr, { resolve, reject, timer });
+      this.#pending.set(corr, { resolve, reject, timer, beforeReply });
       this.#post({ t: "call", corr, channel, payload, blocking: false });
     });
   }
@@ -3207,19 +3215,27 @@ export class WorkerLink {
 
   /** Applies one record's state fact; a throwing applier ends the link (§4.6). */
   #applyRecord(pos: number, header: FrameHeader): boolean {
-    if (header.kind !== stateEventKind) return true;
-    const applier = stateMapGet(this.#appliers, header.channel);
-    if (applier === undefined) return true;
+    const applier =
+      header.kind === stateEventKind
+        ? stateMapGet(this.#appliers, header.channel)
+        : undefined;
+    const checkpoint =
+      header.kind === stateReplyKind
+        ? stateMapGet(this.#pending, header.corr)?.beforeReply
+        : undefined;
+    if (applier === undefined && checkpoint === undefined) return true;
     this.#applying = true;
     try {
-      applier(ringCopy(this.#ring, this.#mask, pos + HEADER_LEN, header.len));
+      if (applier !== undefined)
+        applier(ringCopy(this.#ring, this.#mask, pos + HEADER_LEN, header.len));
+      else checkpoint?.();
       return true;
     } catch (err) {
       // A mirror that cannot apply a fact must not serve stale state: stop
       // delivery at this record and end the link.
       this.#deliveryStopAt = pos;
       this.#failLink(
-        `the state applier for channel ${header.channel} threw: ${stateFailureText(err)}`,
+        `the ${applier === undefined ? "reply checkpoint" : "state applier"} for channel ${header.channel} threw: ${stateFailureText(err)}`,
         stateFailureCode(err),
       );
       return false;
