@@ -361,6 +361,60 @@ fn install_reply(
 }
 
 impl PrimaryRouterHandle {
+    /// Forward Dock/AppleEvent Quit only to the already subscribed, Ready,
+    /// current original-app owner. `AppKit` has already canceled termination.
+    /// Bun's existing before-quit and GH531 RequestClose/CloseReply own veto.
+    pub(super) fn native_os_quit_requested(&self) -> Result<(), HostAppError> {
+        let _transition = self.shutdown.transition_guard();
+        if !self.shutdown.is_running() || !self.window_ready.load(super::Ordering::Acquire) {
+            return Ok(());
+        }
+        let mut current = self
+            .current
+            .lock()
+            .map_err(|_| app_detail("native OS Quit", "current generation lock poisoned"))?;
+        let Some(active) = current.as_ref() else {
+            return Ok(());
+        };
+        if active.reader_stop.load(super::Ordering::Acquire) {
+            return Ok(());
+        }
+        let attempt = active.attempt;
+        let selected =
+            self.windows
+                .as_ref()
+                .map_or(Ok::<bool, HostAppError>(false), |windows| {
+                    let windows = windows.lock().map_err(|_| {
+                        app_detail("native OS Quit", "original registry lock poisoned")
+                    })?;
+                    Ok(windows
+                        .original_menu_quit_selected(WindowOwner::new(active.identity, attempt)))
+                })?;
+        if !selected {
+            return Ok(());
+        }
+        let result = publish_quit_requested(
+            current
+                .as_mut()
+                .ok_or_else(|| app_detail("native OS Quit", "current generation disappeared"))?,
+        );
+        match result {
+            Ok(()) => Ok(()),
+            Err(source) => {
+                // A failed write never permits AppKit or another generation to
+                // infer a successful close. Preserve the exact error and retire
+                // the same current role through the existing shutdown owner.
+                let primary = app_ipc("native OS QuitRequested write", &source);
+                let retirement = self.retire_current_generation_locked(
+                    &mut current,
+                    attempt,
+                    "native OS Quit intent retired after failed write",
+                    "native OS Quit intent link close",
+                );
+                Err(super::append_app_cleanup(primary, [retirement]))
+            }
+        }
+    }
     fn original_menu_quit_selected(
         &self,
         caller: &PrimaryCallerContext,

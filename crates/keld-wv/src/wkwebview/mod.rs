@@ -1018,12 +1018,22 @@ impl WkWebViewEngine {
                     }
                     Event::UserEvent(WkUserEvent::NativeQuitRequested) => {
                         // An AppKit CloseRequested does not include the renderer's
-                        // close/preventDefault decision for legacy windows. Never
-                        // turn a native Quit into an unvetoable view destruction.
+                        // close/preventDefault decision for legacy windows. Core
+                        // may forward only a qualified selected original intent;
+                        // it never receives native authority to destroy a view.
                         native_quit.retain_unqualified_quit();
-                        eprintln!(
-                            "KELD-WV-004: native Quit retained; renderer-owned veto is not qualified for this window composition"
-                        );
+                        if let Err(error) = forward_native_quit_intent(&events) {
+                            main_owner_failure.get_or_insert(error);
+                            // A lost Core observer cannot give a renderer close
+                            // veto or native retirement receipt. Preserve the
+                            // actual windows on the retained-custody error path.
+                            // Treating transport loss as terminal_requested
+                            // would fall through to release_all below.
+                            resource_unproved = true;
+                            fatal_in_loop.store(true, Ordering::Release);
+                            *control_flow = ControlFlow::Exit;
+                            return;
+                        }
                     }
                     Event::WindowEvent {
                         window_id,
@@ -1258,9 +1268,11 @@ impl WkWebViewEngine {
             self.renderer_bridges = renderer_bridges;
         }
         stop_bridge.store(true, Ordering::Release);
-        let _ = bridge.join();
-        if let Some(renderer_bridge) = renderer_bridge {
-            let _ = renderer_bridge.join();
+        // A stopped channel is not proof that either worker ended normally.
+        // Join both even if the first panicked, before the profile is cleaned
+        // or a successful native Quit can be reported.
+        if let Err(error) = join_app_bridge_workers(bridge, renderer_bridge) {
+            tail_failure.get_or_insert(error);
         }
         if !drained {
             // Returning this failure is not a drain receipt. Core still owns
@@ -1526,6 +1538,36 @@ fn spawn_renderer_outcome_bridge(
         })
         .map_err(|error| {
             WvError::EventLoop(format!("failed to start renderer outcome bridge: {error}"))
+        })
+}
+
+fn join_app_bridge_workers(
+    app: thread::JoinHandle<()>,
+    renderer: Option<thread::JoinHandle<()>>,
+) -> Result<(), WvError> {
+    let app_panicked = app.join().is_err();
+    let renderer_panicked = renderer.is_some_and(|handle| handle.join().is_err());
+    match (app_panicked, renderer_panicked) {
+        (false, false) => Ok(()),
+        (true, false) => Err(WvError::EventLoop(String::from(
+            "macOS app wake bridge panicked during cleanup",
+        ))),
+        (false, true) => Err(WvError::EventLoop(String::from(
+            "macOS renderer outcome bridge panicked during cleanup",
+        ))),
+        (true, true) => Err(WvError::EventLoop(String::from(
+            "macOS app wake and renderer outcome bridges panicked during cleanup",
+        ))),
+    }
+}
+
+fn forward_native_quit_intent(events: &Sender<AppWindowEvent>) -> Result<(), WvError> {
+    events
+        .send(AppWindowEvent::NativeQuitRequested)
+        .map_err(|_| {
+            WvError::EventLoop(String::from(
+                "native Quit request could not reach its current Core owner",
+            ))
         })
 }
 
@@ -1839,6 +1881,116 @@ mod startup_tests {
         assert!(matches!(forwarded.as_slice(), [AppWindowCommand::Fatal]));
         assert!(terminal_intent.load(std::sync::atomic::Ordering::Acquire));
         assert!(fatal_outcome.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn app_bridge_cleanup_joins_both_workers_before_reporting_success() {
+        let (app_release, app_wait) = std::sync::mpsc::channel();
+        let (renderer_release, renderer_wait) = std::sync::mpsc::channel();
+        let (started, started_rx) = std::sync::mpsc::channel();
+        let app_started = started.clone();
+        let app = std::thread::spawn(move || {
+            app_started.send(()).expect("app worker announced");
+            app_wait.recv().expect("app worker released");
+        });
+        let renderer = std::thread::spawn(move || {
+            started.send(()).expect("renderer worker announced");
+            renderer_wait.recv().expect("renderer worker released");
+        });
+        started_rx.recv().expect("app worker entered");
+        started_rx.recv().expect("renderer worker entered");
+
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let joiner = std::thread::spawn(move || {
+            let result = super::join_app_bridge_workers(app, Some(renderer));
+            result_tx.send(result).expect("join result observed");
+        });
+        app_release
+            .send(())
+            .expect("release app after join started");
+        assert!(
+            matches!(
+                result_rx.recv_timeout(Duration::from_millis(50)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ),
+            "app completion alone cannot authorize cleanup before renderer joins"
+        );
+        renderer_release.send(()).expect("release renderer worker");
+        result_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("both actual worker joins complete")
+            .expect("normal worker completion is accepted");
+        joiner.join().expect("join owner");
+    }
+
+    #[test]
+    fn app_bridge_cleanup_rejects_panics_and_still_joins_the_other_worker() {
+        let app = std::thread::spawn(|| panic!("injected app wake bridge panic"));
+        let (release, waiting) = std::sync::mpsc::channel();
+        let (entered, seen) = std::sync::mpsc::channel();
+        let renderer = std::thread::spawn(move || {
+            entered.send(()).expect("renderer worker entered");
+            waiting.recv().expect("renderer worker release");
+        });
+        seen.recv().expect("renderer thread running");
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let joiner = std::thread::spawn(move || {
+            result_tx
+                .send(super::join_app_bridge_workers(app, Some(renderer)))
+                .expect("join result");
+        });
+        assert!(
+            matches!(
+                result_rx.recv_timeout(Duration::from_millis(50)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ),
+            "an app panic cannot skip the renderer join"
+        );
+        release.send(()).expect("renderer worker released");
+        let error = result_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("failure receipt after both joins")
+            .expect_err("app thread panic is a cleanup failure");
+        assert!(
+            error.to_string().contains("app wake bridge panicked"),
+            "{error}"
+        );
+        joiner.join().expect("join owner");
+
+        let app = std::thread::spawn(|| {});
+        let renderer = std::thread::spawn(|| panic!("injected renderer wake panic"));
+        let error = super::join_app_bridge_workers(app, Some(renderer))
+            .expect_err("renderer panic must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("renderer outcome bridge panicked"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn native_quit_observation_requires_live_core_and_never_sends_terminal_command() {
+        let (current, accepted) = std::sync::mpsc::channel();
+        super::forward_native_quit_intent(&current).expect("live Core observer");
+        assert!(matches!(
+            accepted.try_recv(),
+            Ok(super::AppWindowEvent::NativeQuitRequested)
+        ));
+        assert!(
+            accepted.try_recv().is_err(),
+            "one native OS intent sends only the observation, never Quit"
+        );
+
+        drop(accepted);
+        let failure = super::forward_native_quit_intent(&current)
+            .expect_err("missing Core owner cannot authorize native release");
+        assert!(
+            failure
+                .to_string()
+                .contains("could not reach its current Core owner"),
+            "{failure}"
+        );
     }
 }
 

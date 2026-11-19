@@ -5398,6 +5398,8 @@ fn coordinate_window_events(
                 nonce,
                 outcome,
             } => router.dialog_native_finished(attempt, nonce, outcome),
+            #[cfg(target_os = "macos")]
+            AppWindowEvent::NativeQuitRequested => router.native_os_quit_requested(),
             AppWindowEvent::LastWindowClosed if router.windows.is_none() => {
                 router.signal_last_window_closed().map(drop)
             }
