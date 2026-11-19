@@ -56,6 +56,14 @@ impl PreparedOriginalSource {
             versions: versions.clone(),
         })
     }
+
+    pub(super) fn launch_graph(&self) -> &Arc<AdmittedStageGraph> {
+        &self.graph
+    }
+
+    pub(super) fn launch_policy(&self) -> &ResolvedWindowCsp {
+        self.source.resolved_window_policy()
+    }
 }
 
 pub(super) struct OriginalLoadSelection {

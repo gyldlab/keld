@@ -579,3 +579,19 @@ pub(in crate::app_session) fn prepared_original_window_source(
         .expect("prepared verified original source");
     (fixture.owned, Arc::new(prepared), selected)
 }
+
+pub(in crate::app_session) fn prepared_original_launch_source() -> (
+    tempfile::TempDir,
+    crate::app_session::original_webapp::PreparedOriginalSource,
+    PathBuf,
+    &'static Path,
+) {
+    use crate::app_session::original_webapp::PreparedOriginalSource;
+    use std::sync::Arc;
+    let mut fixture = fixture_with_entry();
+    fixture.root = fixture.root.canonicalize().expect("verbatim fixture root");
+    let (graph, policy, _) = original_graph_and_policy(&fixture);
+    let source = PreparedOriginalSource::prepare(Arc::new(graph), policy, None)
+        .expect("prepare the same selected source");
+    (fixture.owned, source, fixture.root, Path::new(MAIN))
+}

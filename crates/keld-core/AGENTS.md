@@ -1,25 +1,10 @@
 # keld-core invariants
 
-Extends root `AGENTS.md`; this file owns the shipping host-session composition.
-
-- `app_session.rs` is the one no-flag lifecycle/router owner. It composes
-  runtime and webview primitives; it MUST NOT duplicate generation, Job, LPAC,
-  ACL, guard, or wire policy.
-- Windows production `unsafe` is limited to reviewed lease pipe state/flag and
-  cleanup-sentinel process acquire/image/wait in `app_session.rs`; KEL-135
-  Authenticode FFI is `keld-guard`'s (KEL-270 D4). Every call needs a local
-  `// SAFETY:` proof and independent unsafe/security review.
-- macOS KEL-135/T3 Core `unsafe` is limited to `SecCodeCopySelf` →
-  `SecRequirementCreateWithString` → `SecCodeCheckValidity` → `SecCodeCopyStaticCode` →
-  `SecCodeCopySigningInformation` and owned CF-reference conversion in
-  `src/macos_profile_identity.rs`. It accepts current-process code; identity
-  fields follow Apple-chain validation.
-  API or missing-fact failure is `KELD-WV-009`; no arbitrary code/path or
-  blanket `unsafe`. Every block needs a local `// SAFETY:` proof.
-- Startup remains resource-free until validated boot and immutable guard
-  preflight pass. Revocation, link close, child reap, window exit, and cleanup
-  errors remain ordered and independently observable.
-- Recovery and shutdown gates fail closed: a pre-attach revocation, accepted
-  shutdown, stale generation, or missing owner MUST NOT provision a successor.
-  Real platform tests and a mutation/negative control are required for changes
-  to these transitions.
+Extends root AGENTS.md for Host sessions.
+- `app_session.rs` owns no-flag lifecycle/routing. Reuse Runtime/WebView primitives. MUST NOT duplicate generation, Job, LPAC, ACL, Guard or wire policy.
+- Windows unsafe: reviewed lease-pipe state/flags and cleanup-sentinel process acquire/image/wait in `app_session.rs`. Guard owns KEL-135 Authenticode (KEL-270 D4).
+- Windows facts unsafe only in `src/app_session/launch_facts/windows_native.rs`: GetUserPreferredUILanguages, no-create SHGetKnownFolderPath (RoamingAppData/Documents), bounded reads, owned CoTaskMemFree. Own output before entry. No shutdown lock.
+- macOS KEL-135/T3 unsafe: only `src/macos_profile_identity.rs` may use SecCodeCopySelf, SecRequirementCreateWithString, SecCodeCheckValidity, SecStaticCodeCheckValidity, SecCodeCopySigningInformation, and owned CF-reference conversion. Current process only. Apple-chain validation precedes identity fields. API or missing-fact failure is KELD-WV-009. No arbitrary code/path or blanket unsafe.
+- Every unsafe block needs local `// SAFETY:`. Windows calls require independent unsafe/security review.
+- Startup is resource-free until validated boot and immutable Guard preflight pass. Keep revocation, link close, child reap, window exit and cleanup errors ordered and independently observable.
+- Pre-attach revocation, accepted shutdown, stale generation or missing owner MUST NOT provision a successor. Transition changes require real-platform tests and a mutation/negative control.

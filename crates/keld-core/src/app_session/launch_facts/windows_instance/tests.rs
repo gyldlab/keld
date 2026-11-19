@@ -1,11 +1,13 @@
 use super::{Election, acquire_at};
 use crate::SingleInstanceDeclaration;
+use crate::app_session::HostAppError;
 use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
 use windows_permissions::constants::{SeObjectType, SecurityInformation};
 use windows_permissions::wrappers::SetNamedSecurityInfo;
 
-fn fixture() -> (TempDir, SingleInstanceDeclaration) {
+pub(in crate::app_session) fn fixture() -> (TempDir, SingleInstanceDeclaration) {
     let root = tempfile::tempdir().expect("disposable election root");
     let descriptor = keld_guard::windows_owner_private_directory_security()
         .expect("existing current-user directory policy");
@@ -21,6 +23,13 @@ fn fixture() -> (TempDir, SingleInstanceDeclaration) {
     .expect("apply the private DACL to the fresh fixture root");
     let declaration = serde_json::from_str(r#"{"id":"con.example"}"#).expect("canonical ID");
     (root, declaration)
+}
+
+pub(in crate::app_session) fn elect_at_for_test(
+    root: &Path,
+    declaration: &SingleInstanceDeclaration,
+) -> Result<Election, HostAppError> {
+    acquire_at(root, declaration)
 }
 
 #[test]

@@ -58,4 +58,4 @@ fn election_error(phase: &'static str, detail: impl std::fmt::Display) -> HostAp
 
 #[cfg(test)]
 #[path = "windows_instance/tests.rs"]
-mod tests;
+pub(super) mod tests;
