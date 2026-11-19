@@ -357,7 +357,9 @@ export function installApp(
   >();
   const watches = new Map<string, number>();
   const activeWatches = new Set<string>();
-  let invoking: { call: number; bytes: number; watch: boolean } | undefined;
+  let invoking:
+    | { call: number; bytes: number; watch: boolean; retainedEffect: boolean }
+    | undefined;
   const post = (value: unknown) => native.postMessage(stringify(value));
   function reserve(bytes: number): void {
     if (bytes > MAX_RETAINED - charged)
@@ -405,6 +407,9 @@ export function installApp(
         if (invoking.watch && typeof value.path === "string")
           watches.set(value.path, invoking.call);
       }
+      // A native send may have taken effect even if postMessage throws. Mark
+      // custody only after all local encoding and request validation pass.
+      if (invoking) invoking.retainedEffect = true;
       post({
         v: 2,
         kind: "send",
@@ -450,6 +455,8 @@ export function installApp(
     const rows = listeners.get(topic) ?? [];
     rows.push({ fn, once, call: invoking?.call });
     listeners.set(topic, rows);
+    // Local registrations retain a real listener without a native send.
+    if (invoking) invoking.retainedEffect = true;
   }
   function remove(topic: string, fn: Listener): void {
     const rows = listeners.get(topic);
@@ -785,7 +792,12 @@ export function installApp(
       const state = { keys: 0, bytes: 0 };
       const args = call.args.map((value) => revive(value, 1, state));
       copyingCall = undefined;
-      invoking = { call: call.call, bytes: watch ? 1_024 : bytes, watch };
+      invoking = {
+        call: call.call,
+        bytes: watch ? 1_024 : bytes,
+        watch,
+        retainedEffect: false,
+      };
       entered = true;
       if (local) localCharges.set(call.call, bytes);
       apply(registry[call.method], undefined, args);
@@ -794,8 +806,12 @@ export function installApp(
         releaseCall(call.call);
       }
     } catch (error) {
-      if (!entered) {
+      // Entering an original function does not prove it retained a listener
+      // or sent a message. Rejecting its arguments before either effect must
+      // release the charge and page callback ownership, just like a copy fault.
+      if (!entered || !invoking?.retainedEffect) {
         charged -= reserved;
+        localCharges.delete(call.call);
         for (const id of callbackProxies.keys())
           if (!proxiesBefore.has(id)) callbackProxies.delete(id);
         releaseCall(call.call);

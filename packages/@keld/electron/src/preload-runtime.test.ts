@@ -339,6 +339,40 @@ describe("original preload runtime only", () => {
       f.restore();
     }
   });
+  test("effect-free oversized original sends do not exhaust retained bytes or block a later valid send", () => {
+    const f = fixture();
+    const originalError = console.error;
+    const failures: string[] = [];
+    console.error = (...parts: unknown[]) => {
+      failures.push(
+        parts
+          .map((part) => (part instanceof Error ? part.message : String(part)))
+          .join(" "),
+      );
+    };
+    try {
+      // Encoding fails before the original can post a native v2 send. A
+      // rejected call must not consume the 512 KiB document retention budget.
+      for (let i = 0; i < 65; i++) {
+        f.call("sendMessage", "rendererReq", "A".repeat(5_000));
+      }
+      expect(f.sends()).toHaveLength(0);
+      expect(failures).toHaveLength(65);
+      expect(failures.every((value) => value.includes("CodecLimit"))).toBe(
+        true,
+      );
+      f.call("sendMessage", "validTopic", "accepted");
+      expect(f.sends()).toHaveLength(1);
+      const sent = f.sends()[0]!;
+      expect(sent.channel).toBe("validTopic");
+      expect(
+        decodeEndpointArguments(new Uint8Array(sent.payload as number[])),
+      ).toEqual(["accepted"]);
+    } finally {
+      console.error = originalError;
+      f.restore();
+    }
+  });
   test("completed original requests reuse bounded callback capacity without synthetic cleanup", () => {
     const f = fixture();
     try {
