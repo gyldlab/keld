@@ -21,7 +21,7 @@ use crate::support::native_window::{
     NativeWindowObserver, await_no_native_windows, compile_native_window_census,
 };
 use crate::support::process::{
-    ProcessExitObserver, await_process_gone, parent_process, process_group, session_dirs_for,
+    ProcessExitObserver, SessionDirCensus, await_process_gone, parent_process, process_group,
 };
 
 #[path = "actual_auth_app/quit_diagnostics.rs"]
@@ -427,6 +427,7 @@ fn assert_product_cleanup(
     host: u32,
     host_image: &Path,
     session_dir: &Path,
+    sessions: &SessionDirCensus,
     observe_native_windows: bool,
 ) -> SmokeResult<()> {
     require(
@@ -444,10 +445,22 @@ fn assert_product_cleanup(
         "stock CLI left dev-stage root after public Quit",
     )?;
     require(
-        !session_dir.exists() && session_dirs_for(host).is_empty(),
+        !session_dir.exists() && sessions.dirs_for(host).is_empty(),
         "public Quit left owned app-link locator/session",
     )?;
     Ok(())
+}
+
+fn app_session_dir(app_ready: &Value) -> SmokeResult<PathBuf> {
+    let endpoint = Path::new(
+        app_ready["endpoint"]
+            .as_str()
+            .ok_or("missing ordinary app endpoint")?,
+    );
+    Ok(endpoint
+        .parent()
+        .ok_or("missing app endpoint parent")?
+        .to_path_buf())
 }
 
 fn assert_application_link_provenance(host: u32, bun: u32, app_ready: &Value) -> SmokeResult<()> {
@@ -555,6 +568,7 @@ fn run_case(
             "status":"starting-cli", "case":case.name,
         }))?,
     )?;
+    let sessions = SessionDirCensus::before_launch();
     let cli_child = Command::new(cli)
         .arg("dev")
         .current_dir(&project.root)
@@ -581,15 +595,7 @@ fn run_case(
     let windows = window.as_mut().map_or_else(Vec::new, |window| {
         window.expect_initial(host, "actual public auth stock Host window")
     });
-    let endpoint = PathBuf::from(
-        app_ready["endpoint"]
-            .as_str()
-            .ok_or("missing ordinary app endpoint")?,
-    );
-    let session_dir = endpoint
-        .parent()
-        .ok_or("missing app endpoint parent")?
-        .to_path_buf();
+    let session_dir = app_session_dir(&app_ready)?;
     assert_application_link_provenance(host, bun, &app_ready)?;
     require(
         page_ready["marker"] == "KEL89_AUTH_SMOKE_WINDOW",
@@ -630,6 +636,7 @@ fn run_case(
         host,
         &host_image,
         &session_dir,
+        &sessions,
         census.is_some(),
     )?;
     let active_terminal =

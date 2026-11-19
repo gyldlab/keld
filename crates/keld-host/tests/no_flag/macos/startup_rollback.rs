@@ -6,7 +6,7 @@ use crate::support::control::parse_pid;
 use crate::support::control::read_control_line;
 use crate::support::control::wait_child_output;
 use crate::support::native_window::{await_no_native_windows, native_windows};
-use crate::support::process::{await_process_gone, session_dirs_for};
+use crate::support::process::{SessionDirCensus, await_process_gone};
 use crate::support::product::ProductFixture;
 use crate::support::renderer::NavigationBlocker;
 use std::fs;
@@ -94,6 +94,7 @@ fn pre_ready_bun_crash_is_startup_failure_not_a_recovered_window() {
     let fixture = ProductFixture::new("t3-pre-ready-crash");
     let stage = fixture.stage();
     let attempt_marker = fixture.root.path().join("pre-ready-attempt");
+    let sessions = SessionDirCensus::before_launch();
     let mut child = Command::new(stage.host())
         .env("KELD_DEV_LEASE", "stdin-v1")
         .env("KELD_T3_CRASH_BEFORE_HELLO", "1")
@@ -118,7 +119,7 @@ fn pre_ready_bun_crash_is_startup_failure_not_a_recovered_window() {
         "pre-Ready crash restarted to breaker: {stderr}"
     );
     assert_eq!(native_windows(host_pid, TITLE), [] as [u32; 0]);
-    assert_eq!(session_dirs_for(host_pid), [] as [std::path::PathBuf; 0]);
+    assert_eq!(sessions.dirs_for(host_pid), [] as [std::path::PathBuf; 0]);
     let attempts = fs::read_dir(fixture.root.path())
         .expect("list pre-Ready attempts")
         .filter_map(Result::ok)
@@ -136,6 +137,7 @@ fn pre_ready_bun_crash_is_startup_failure_not_a_recovered_window() {
 fn dev_lease_loss_before_initial_bound_is_an_orderly_startup_cancellation() {
     let fixture = ProductFixture::new("lease-loss-before-bound");
     let stage = fixture.stage();
+    let sessions = SessionDirCensus::before_launch();
     let mut child = Command::new(stage.host())
         .env("KELD_DEV_LEASE", "stdin-v1")
         .stdin(Stdio::piped())
@@ -156,5 +158,5 @@ fn dev_lease_loss_before_initial_bound_is_an_orderly_startup_cancellation() {
     );
     assert!(!stderr.contains("KELD-"), "{stderr}");
     assert_eq!(native_windows(host_pid, TITLE), [] as [u32; 0]);
-    assert_eq!(session_dirs_for(host_pid), [] as [std::path::PathBuf; 0]);
+    assert_eq!(sessions.dirs_for(host_pid), [] as [std::path::PathBuf; 0]);
 }
