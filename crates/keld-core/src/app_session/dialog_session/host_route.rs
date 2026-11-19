@@ -1,9 +1,10 @@
+use super::super::app_ipc;
 #[cfg(any(not(windows), test))]
 use super::super::{encode, write_frame};
 use super::{
     ActivePrimaryGeneration, CallError, CorrelationId, DialogFault, DialogOwner, DialogReplyV1,
     DialogSession, DialogUiOutcome, DialogWorkOptions, HostAppError, PrimaryCallerContext,
-    PrimaryRouterHandle, WebviewId, WindowError, WindowOwner, app_detail, app_ipc,
+    PrimaryRouterHandle, WebviewId, WindowError, WindowOwner, app_detail,
 };
 #[cfg(any(not(windows), test))]
 use super::{FrameKind, with_primary_caller_locked};
