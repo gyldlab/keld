@@ -259,11 +259,7 @@ impl State {
         if !slot.receipt_live {
             slot.clear();
         }
-        // A correlated CONTROL may retain this exact physical observation after
-        // its source/native halves ended. Wake the existing storage recheck even
-        // when its prior UI unit remains outstanding; this grants no capacity.
-        let native = self.native_control_progress();
-        self.progress() || native
+        self.progress()
     }
 
     pub(super) fn release(&mut self, position: Position, reservation: bool) -> bool {
@@ -336,19 +332,6 @@ impl State {
             available = u8::MAX;
         }
         self.publish_progress(self.interest & available)
-    }
-
-    pub(super) fn native_control_progress(&mut self) -> bool {
-        let interested = self.interest & 128 != 0;
-        // Consume the actual release observation even when the existing unit
-        // UI marker is already outstanding. The synchronous publisher waits on
-        // this SAME bit/Condvar; it must not depend on dispatching that marker.
-        self.interest &= !128;
-        interested && self.completed_source_progress()
-    }
-
-    pub(super) fn native_control_interest_pending(&self) -> bool {
-        self.interest & 128 != 0
     }
 
     pub(super) fn retired(&mut self) -> bool {

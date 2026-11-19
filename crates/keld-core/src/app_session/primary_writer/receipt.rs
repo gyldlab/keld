@@ -23,32 +23,6 @@ impl WriteObservation {
     pub(in crate::app_session) fn same_record(&self, other: &Self) -> bool {
         self.position == other.position && Arc::ptr_eq(&self.shared, &other.shared)
     }
-    pub(in crate::app_session) fn is_quiesced(&self) -> Result<bool, WriterRefusal> {
-        Ok(!self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| WriterRefusal::Poisoned)?
-            .pending(self.position))
-    }
-
-    pub(in crate::app_session) fn register_quiescence_interest(&self) -> Result<(), WriterRefusal> {
-        let wake = {
-            let mut state = self
-                .shared
-                .state
-                .lock()
-                .map_err(|_| WriterRefusal::Poisoned)?;
-            if state.pending(self.position) {
-                state.register_interest(1 << (2 + self.position.index))
-            } else {
-                false
-            }
-        };
-        self.shared.wake(wake);
-        Ok(())
-    }
-
     /// Quiescence is not successful delivery. The original native I/O deadline
     /// remains with the packet. Expiry of an observer's clock, or a poisoned
     /// mutex, cannot prove that the physical call and its backing have returned.

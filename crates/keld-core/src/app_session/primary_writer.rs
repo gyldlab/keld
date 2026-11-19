@@ -32,7 +32,7 @@ use std::time::Instant;
 use keld_ipc::{ChannelId, CorrelationId, FrameHeader, FrameKind};
 use keld_wv::AppWindowCommand;
 
-use super::{HostAppError, PrimaryCallerContext, SessionShutdownState, app_detail};
+use super::{HostAppError, PrimaryCallerContext, app_detail};
 use queue::{Phase, State};
 
 pub(super) const POSITIONS: usize = 5;
@@ -190,58 +190,20 @@ impl PrimaryWriter {
         }
     }
 
-    /// Reserve before counting, encoding, or copying any framework frame bytes.
-    /// Callers must not hold transition/current/Registry while this may wait.
-    #[cfg(test)]
-    pub(super) fn reserve_value(
-        &self,
-        caller: &PrimaryCallerContext,
-        shutdown: &SessionShutdownState,
-        deadline: Instant,
-    ) -> Result<Reservation, WriterRefusal> {
-        self.reserve(Class::Value, Some((caller, shutdown)), deadline)
-    }
-
     /// Nonblocking counterpart for a settled native record's final admission.
     pub(super) fn try_reserve_value(
         &self,
         deadline: Instant,
     ) -> Result<Reservation, WriterRefusal> {
-        self.reserve(Class::Value, None, deadline)
+        self.reserve_waiting_serviced(Class::Value, false, deadline, || false, || Ok(()))
     }
 
-    /// Nonblocking reserved-control admission for one already settled record.
+    #[cfg(test)]
     pub(super) fn try_reserve_control(
         &self,
         deadline: Instant,
     ) -> Result<Reservation, WriterRefusal> {
-        self.reserve(Class::Control, None, deadline)
-    }
-
-    fn reserve(
-        &self,
-        class: Class,
-        wait: Option<(&PrimaryCallerContext, &SessionShutdownState)>,
-        deadline: Instant,
-    ) -> Result<Reservation, WriterRefusal> {
-        self.reserve_waiting(class, wait.is_some(), deadline, || {
-            wait.is_some_and(|(caller, shutdown)| {
-                caller
-                    .reader_stop
-                    .load(std::sync::atomic::Ordering::Acquire)
-                    || !shutdown.is_running()
-            })
-        })
-    }
-
-    fn reserve_waiting(
-        &self,
-        class: Class,
-        wait: bool,
-        deadline: Instant,
-        cancelled: impl Fn() -> bool,
-    ) -> Result<Reservation, WriterRefusal> {
-        self.reserve_waiting_serviced(class, wait, deadline, cancelled, || Ok(()))
+        self.reserve_waiting_serviced(Class::Control, false, deadline, || false, || Ok(()))
     }
 
     /// Existing source owners may release only already completed receipts here.

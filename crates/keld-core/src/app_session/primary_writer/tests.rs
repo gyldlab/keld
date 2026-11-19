@@ -8,8 +8,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
+mod capacity;
 mod quiescence;
 mod retirement_observation;
+mod routes;
 mod schedule;
 
 fn deadline() -> Instant {
@@ -83,7 +85,7 @@ fn positions_are_one_value_four_control_across_queue_and_retained_receipts() {
         Err(WriterRefusal::Full)
     ));
     assert!(matches!(
-        writer.reserve(Class::Control, None, deadline()),
+        writer.try_reserve_control(deadline()),
         Err(WriterRefusal::Full)
     ));
     let (position, packet) = writer
@@ -327,7 +329,7 @@ fn unit_progress_is_coalesced_and_class_specific_without_payload_or_route_ids() 
     let mut controls: Vec<_> = (0..4)
         .map(|_| {
             writer
-                .reserve(Class::Control, None, deadline())
+                .try_reserve_control(deadline())
                 .expect("control position")
         })
         .collect();

@@ -1,12 +1,12 @@
 //! Encoding and explicit value-free CONTROL classification.
 //! An arbitrary payload or a consumer-authored error can never obtain CONTROL.
 
+#[cfg(test)]
+use super::PrimaryWriter;
 use super::{
     Arc, CONTROL_BYTES, ChannelId, Class, CorrelationId, FrameHeader, FrameKind, HostAppError,
-    Instant, Packet, PreparedFrame, PrimaryWriter, Reservation, WriterLink, WriterRefusal,
+    Instant, Packet, PreparedFrame, Reservation, WriterLink, WriterRefusal,
 };
-#[cfg(test)]
-use super::{PrimaryCallerContext, SessionShutdownState};
 use keld_ipc::{CallError, LifecycleEvent, LifecycleResponse};
 
 /// Closed classification; strings, paths, values, and consumer errors are absent.
@@ -39,22 +39,8 @@ pub(in crate::app_session) enum ControlMessage {
     },
 }
 
+#[cfg(test)]
 impl PrimaryWriter {
-    #[cfg(test)]
-    pub(in crate::app_session) fn prepare_control(
-        &self,
-        caller: &PrimaryCallerContext,
-        shutdown: &SessionShutdownState,
-        target: Arc<WriterLink>,
-        message: ControlMessage,
-        deadline: Instant,
-    ) -> Result<PreparedFrame, HostAppError> {
-        let reservation = self
-            .reserve(Class::Control, Some((caller, shutdown)), deadline)
-            .map_err(|error| error.into_host_error("primary CONTROL reservation"))?;
-        message.encode(reservation, target)
-    }
-
     #[cfg(test)]
     pub(in crate::app_session) fn try_prepare_control(
         &self,
@@ -63,7 +49,7 @@ impl PrimaryWriter {
         deadline: Instant,
     ) -> Result<PreparedFrame, HostAppError> {
         let reservation = self
-            .reserve(Class::Control, None, deadline)
+            .try_reserve_control(deadline)
             .map_err(|error| error.into_host_error("primary CONTROL reservation"))?;
         message.encode(reservation, target)
     }
