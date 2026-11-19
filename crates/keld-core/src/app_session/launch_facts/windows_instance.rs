@@ -1,6 +1,6 @@
 //! One pre-spawn election for an admitted Windows original development launch.
 
-use std::io::TryLockError;
+use std::fs::TryLockError;
 use std::path::Path;
 
 use keld_update::WindowsInstanceLeaseFile;
