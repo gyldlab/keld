@@ -103,6 +103,7 @@ impl NativeBuild {
         // Any clone/preparation still has the original Controller candidate
         // behind it. Once View exists, the next operation stores it in place.
         let view = View {
+            original: None,
             window: Rc::clone(&controller.window),
             controller: controller.close.controller().clone(),
             close_custody: Rc::clone(&controller.close),
@@ -126,7 +127,6 @@ impl NativeBuild {
         }
     }
 
-    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
     pub(super) fn view_mut(&mut self) -> Result<&mut View, WvError> {
         match self.candidate.as_mut() {
             Some(BuildResources::View(view)) => Ok(view),

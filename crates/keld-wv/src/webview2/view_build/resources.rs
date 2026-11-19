@@ -44,7 +44,7 @@ impl BuildResources {
         match self {
             Self::Window(_) => true,
             Self::Controller(candidate) => candidate.close.close_on_ui(),
-            Self::View(view) => view.close_custody.close_on_ui(),
+            Self::View(view) => view.retire_on_ui(),
         }
     }
 }

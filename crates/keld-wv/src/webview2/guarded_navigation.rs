@@ -25,6 +25,12 @@ use crate::media::{media_permission_allowed, webview2_media_kind};
 /// [`install_guarded_media_permissions`] mints one.
 pub(super) struct GuardInstalled<'view>(&'view ICoreWebView2);
 
+impl<'view> GuardInstalled<'view> {
+    pub(super) const fn view(&self) -> &'view ICoreWebView2 {
+        self.0
+    }
+}
+
 pub(super) fn webview2_permission_state(allowed: bool) -> COREWEBVIEW2_PERMISSION_STATE {
     if allowed {
         COREWEBVIEW2_PERMISSION_STATE_ALLOW

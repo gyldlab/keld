@@ -29,7 +29,7 @@ use crate::resource_intake::{
 };
 use crate::resource_source::NativeNavigationUrl;
 
-type Observation = Rc<dyn Fn(Option<NativeNavigationContext>, OriginalNavigationFact)>;
+pub(super) type Observation = Rc<dyn Fn(Option<NativeNavigationContext>, OriginalNavigationFact)>;
 
 pub(in crate::webview2) mod boundary;
 mod lifetime;

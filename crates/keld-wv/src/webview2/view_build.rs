@@ -32,9 +32,11 @@ use crate::native_window::next_view_id;
 
 mod candidate;
 mod geometry;
+pub(super) mod original;
 mod resources;
 use geometry::correct_outer_frame;
 pub(super) use geometry::snapshot;
+use original::OriginalBuild;
 use resources::BuildResources;
 pub(super) use resources::{BuildFailure, BuildFailureDisposition, CompletedBuild};
 
@@ -71,6 +73,21 @@ enum BuildCompletion {
         id: WebviewId,
         snapshot: Option<crate::engine::WindowSnapshot>,
     },
+    OriginalPending {
+        build: u64,
+        id: WebviewId,
+        deadline: Instant,
+    },
+}
+
+enum BuildNavigation {
+    Ordinary(Option<InitialNavigation>),
+    Original(OriginalBuild),
+}
+
+enum BuildProgress {
+    Complete(CompletedBuild),
+    OriginalPending,
 }
 
 impl NativeBuild {
@@ -87,9 +104,44 @@ impl NativeBuild {
             &mut TestControl,
         >,
     ) -> Result<CompletedBuild, BuildFailure> {
+        let progress = self.build_navigation(
+            target,
+            proxy,
+            spec,
+            managed,
+            BuildNavigation::Ordinary(navigation),
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            test_control,
+        )?;
+        match progress {
+            BuildProgress::Complete(completed) => Ok(completed),
+            BuildProgress::OriginalPending => {
+                Err(BuildFailure::webview(candidate::candidate_error(
+                    "ordinary construction entered the selected preload path",
+                )))
+            }
+        }
+    }
+
+    fn build_navigation(
+        &mut self,
+        target: &EventLoopWindowTarget<WindowsLoopEvent>,
+        proxy: &EventLoopProxy<WindowsLoopEvent>,
+        spec: &WebviewSpec,
+        managed: Option<&ManagedBuild<'_>>,
+        navigation: BuildNavigation,
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))] test_control: Option<
+            &mut TestControl,
+        >,
+    ) -> Result<BuildProgress, BuildFailure> {
         if !self.candidate_is_empty() {
             return Err(BuildFailure::blocked(candidate::candidate_error(
                 "another construction candidate is still owned by this builder",
+            )));
+        }
+        if matches!(&navigation, BuildNavigation::Original(_)) && managed.is_none() {
+            return Err(BuildFailure::blocked(candidate::candidate_error(
+                "selected construction requires the managed native owner",
             )));
         }
         resources::contain_build(|| {
@@ -112,12 +164,15 @@ impl NativeBuild {
         proxy: &EventLoopProxy<WindowsLoopEvent>,
         spec: &WebviewSpec,
         managed: Option<&ManagedBuild<'_>>,
-        navigation: Option<InitialNavigation>,
+        navigation: BuildNavigation,
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))] mut test_control: Option<
             &mut TestControl,
         >,
-    ) -> Result<CompletedBuild, BuildFailure> {
-        let deadline = Instant::now() + PROFILE_LAUNCH_DEADLINE;
+    ) -> Result<BuildProgress, BuildFailure> {
+        let deadline = match &navigation {
+            BuildNavigation::Ordinary(_) => Instant::now() + PROFILE_LAUNCH_DEADLINE,
+            BuildNavigation::Original(original) => original.deadline,
+        };
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         let mut build_attempt = managed.and_then(|build| {
             test_control
@@ -249,6 +304,19 @@ impl NativeBuild {
         {
             self.view_mut().map_err(BuildFailure::webview)?.test_view_id = Some(id);
         }
+        let navigation = match navigation {
+            BuildNavigation::Ordinary(navigation) => navigation,
+            BuildNavigation::Original(inputs) => {
+                let build = managed.ok_or_else(|| {
+                    BuildFailure::webview(candidate::candidate_error(
+                        "selected build lost its managed native owner",
+                    ))
+                })?;
+                self.attach_original(id, deadline, build.create.build, inputs, proxy)
+                    .map_err(BuildFailure::webview)?;
+                return Ok(BuildProgress::OriginalPending);
+            }
+        };
         let view = self.view().map_err(BuildFailure::webview)?;
         Self::configure(view, id, spec, managed.map(|_| proxy), navigation)
             .map_err(BuildFailure::webview)?;
@@ -267,7 +335,7 @@ impl NativeBuild {
             }
         }
         self.completed = Some(BuildCompletion::Ready { id, snapshot });
-        Ok(CompletedBuild { id, snapshot })
+        Ok(BuildProgress::Complete(CompletedBuild { id, snapshot }))
     }
 
     fn reconcile_permissions(&mut self, deadline: Instant) -> Result<(), WvError> {
@@ -285,30 +353,8 @@ impl NativeBuild {
         managed_proxy: Option<&EventLoopProxy<WindowsLoopEvent>>,
         navigation: Option<InitialNavigation>,
     ) -> Result<(), WvError> {
-        #[cfg(not(all(feature = "media-acceptance", test)))]
-        let manifest = keld_guard::PermissionsManifest::default();
-        #[cfg(all(feature = "media-acceptance", test))]
-        let manifest = super::media_acceptance::fixture_manifest();
-        let guard = install_guarded_media_permissions(
-            &view.webview,
-            manifest,
-            webview_media_principal(id),
-        )?;
-        // SAFETY: settings and controller stay on the creating UI thread.
-        unsafe {
-            view.webview
-                .Settings()
-                .and_then(|settings| settings.SetAreDevToolsEnabled(cfg!(debug_assertions)))
-        }
-        .map_err(|error| WvError::Webview(format!("devtools setting: {error}")))?;
-        view.set_controller_bounds(view.window.inner_size())
-            .map_err(|error| WvError::Webview(format!("initial bounds: {error}")))?;
-        // SAFETY: the controller remains retained on its UI thread.
-        unsafe { view.controller.SetIsVisible(true) }
-            .map_err(|error| WvError::Webview(format!("initial visibility: {error}")))?;
-        if let Some(proxy) = managed_proxy {
-            install_controller_focus(&view.controller, id, proxy)?;
-        }
+        let guard = Self::install_guard(&view.webview, id)?;
+        Self::configure_guarded_shell(view, id, managed_proxy)?;
         if let Some(navigation) = navigation {
             install_app_navigation_handler(
                 &view.webview,
@@ -329,6 +375,40 @@ impl NativeBuild {
             view.window.set_visible(true);
         }
         let _ = view.return_focus_if_active();
+        Ok(())
+    }
+
+    fn install_guard(
+        view: &super::ICoreWebView2,
+        id: WebviewId,
+    ) -> Result<super::guarded_navigation::GuardInstalled<'_>, WvError> {
+        #[cfg(not(all(feature = "media-acceptance", test)))]
+        let manifest = keld_guard::PermissionsManifest::default();
+        #[cfg(all(feature = "media-acceptance", test))]
+        let manifest = super::media_acceptance::fixture_manifest();
+        install_guarded_media_permissions(view, manifest, webview_media_principal(id))
+    }
+
+    fn configure_guarded_shell(
+        view: &View,
+        id: WebviewId,
+        managed_proxy: Option<&EventLoopProxy<WindowsLoopEvent>>,
+    ) -> Result<(), WvError> {
+        // SAFETY: settings and controller stay on the creating UI thread.
+        unsafe {
+            view.webview
+                .Settings()
+                .and_then(|settings| settings.SetAreDevToolsEnabled(cfg!(debug_assertions)))
+        }
+        .map_err(|error| WvError::Webview(format!("devtools setting: {error}")))?;
+        view.set_controller_bounds(view.window.inner_size())
+            .map_err(|error| WvError::Webview(format!("initial bounds: {error}")))?;
+        // SAFETY: the controller remains retained on its UI thread.
+        unsafe { view.controller.SetIsVisible(true) }
+            .map_err(|error| WvError::Webview(format!("initial visibility: {error}")))?;
+        if let Some(proxy) = managed_proxy {
+            install_controller_focus(&view.controller, id, proxy)?;
+        }
         Ok(())
     }
 }

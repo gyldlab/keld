@@ -62,6 +62,7 @@ mod original_callbacks;
 mod original_load;
 mod original_navigation;
 mod original_resource;
+mod original_view;
 mod startup_retirement;
 mod view_build;
 mod view_host;
@@ -2497,6 +2498,7 @@ fn install_app_navigation_handler(
 
 /// One live webview and the host window it fills (v0: one per window).
 struct View {
+    original: Option<original_view::OriginalView>,
     // A dialog lease can keep this exact parent alive across a reentrant modal
     // pump. The existing release custodian still observes physical HWND teardown.
     window: Rc<Window>,
@@ -3365,9 +3367,11 @@ fn standalone_window_event(
 impl Drop for View {
     fn drop(&mut self) {
         // The shared custodian closes on this UI thread before Window drops.
-        let _ = self.close_custody.close_on_ui();
-        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-        t2_test_observation::native_release_step("view-drop.close-returned", None);
+        if self.original.is_none() {
+            let _ = self.close_custody.close_on_ui();
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            t2_test_observation::native_release_step("view-drop.close-returned", None);
+        }
     }
 }
 
