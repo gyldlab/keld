@@ -97,7 +97,9 @@ fn pending(builds: &[u64]) -> ManagedCustody<u32> {
                     height: 1,
                     x: None,
                     y: None,
+                    original: None,
                 },
+                false,
                 false,
             ),
             CreateAdmission::Queued,
@@ -129,6 +131,7 @@ fn managed_drops_precede_stop_and_deferred_refusal() {
     close_managed_resources(
         &mut views,
         &mut custody,
+        |_| true,
         || {
             state.commit();
             legacy.clear();
@@ -174,6 +177,7 @@ fn empty_managed_resources_leave_legacy_stop_before_drop() {
     close_managed_resources(
         &mut managed,
         &mut custody,
+        |_| true,
         || {
             state.commit();
             legacy.clear();
@@ -205,6 +209,7 @@ fn refusal_error_drains_once_after_close_and_preserves_native_custody() {
     let result = close_managed_resources(
         &mut views,
         &mut custody,
+        |_| true,
         || state.commit(),
         |event| {
             let build = failed_build(event);
@@ -257,6 +262,7 @@ fn only_a_latched_fault_runs_the_shared_stop_reaction() {
         close_managed_resources(
             &mut views,
             &mut custody,
+            |_| true,
             || state.commit(),
             |_| Ok::<(), ()>(()),
         )
@@ -278,5 +284,30 @@ fn only_a_latched_fault_runs_the_shared_stop_reaction() {
             ("arm", Phase::Stopping, true),
         ],
         "the existing first-fault owner invokes the same ordered stop reaction",
+    );
+}
+
+#[test]
+fn failed_selected_retirement_keeps_the_actual_view_in_the_managed_map() {
+    let state = State::new();
+    let mut views = BTreeMap::from([(1, state.resource("selected"))]);
+    let mut custody = ManagedCustody::<u32>::default();
+    close_managed_resources(
+        &mut views,
+        &mut custody,
+        |_| false,
+        || state.commit(),
+        |_| Ok::<(), ()>(()),
+    )
+    .unwrap();
+    assert!(views.contains_key(&1));
+    assert_eq!(*state.trace.borrow(), [("stop", Phase::Stopping, false)]);
+    drop(views);
+    assert_eq!(
+        *state.trace.borrow(),
+        [
+            ("stop", Phase::Stopping, false),
+            ("selected", Phase::Stopping, false)
+        ]
     );
 }

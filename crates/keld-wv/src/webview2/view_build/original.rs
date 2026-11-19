@@ -9,8 +9,8 @@ use super::super::original_bridge::InstallStatus;
 use super::super::original_callbacks::Observation;
 use super::super::original_view::{OriginalView, ViewInputs};
 use super::{
-    BuildCompletion, BuildFailure, BuildNavigation, BuildProgress, BuildResources, ManagedBuild,
-    NativeBuild, WebviewId, WindowsLoopEvent, WvError, candidate,
+    BuildCompletion, BuildFailure, BuildNavigation, BuildProgress, BuildResources, CompletedBuild,
+    ManagedBuild, NativeBuild, ProfileReleaseWait, WebviewId, WindowsLoopEvent, WvError, candidate,
 };
 use crate::engine::WebviewSpec;
 
@@ -21,12 +21,6 @@ pub(in crate::webview2) struct OriginalBuild {
     pub(in crate::webview2) inputs: ViewInputs,
     pub(in crate::webview2) observer: Observation,
     pub(in crate::webview2) deadline: Instant,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::webview2) enum OriginalPreloadProgress {
-    Pending,
-    Installed,
 }
 
 impl NativeBuild {
@@ -106,13 +100,26 @@ impl NativeBuild {
         }
     }
 
-    /// Consume only the actual script status of the exact pinned candidate.
-    /// The installed branch leaves this same View hidden and still owned here.
+    /// Complete native Create only after the retained View has real renderer
+    /// subscriptions and the script completion. This conveys no navigation,
+    /// document binding, renderer registration, or AppRegistered receipt.
     pub(in crate::webview2) fn resume_original_preload(
-        &self,
+        &mut self,
         expected_build: u64,
         now: Instant,
-    ) -> Result<OriginalPreloadProgress, BuildFailure> {
+        release: &ProfileReleaseWait,
+    ) -> Result<Option<CompletedBuild>, BuildFailure> {
+        super::resources::contain_build(|| {
+            self.complete_original_preload(expected_build, now, release)
+        })
+    }
+
+    fn complete_original_preload(
+        &mut self,
+        expected_build: u64,
+        now: Instant,
+        release: &ProfileReleaseWait,
+    ) -> Result<Option<CompletedBuild>, BuildFailure> {
         let id =
             pending_original_id(self.completed, expected_build).map_err(BuildFailure::blocked)?;
         let owner = self
@@ -131,8 +138,22 @@ impl NativeBuild {
             )));
         }
         match owner.preload_status(now) {
-            InstallStatus::Pending => Ok(OriginalPreloadProgress::Pending),
-            InstallStatus::Ready => Ok(OriginalPreloadProgress::Installed),
+            InstallStatus::Pending => Ok(None),
+            InstallStatus::Ready => {
+                let view = self.view().map_err(BuildFailure::webview)?;
+                view.window.set_visible(true);
+                let _ = view.return_focus_if_active();
+                let snapshot = Some(super::snapshot(view).map_err(BuildFailure::webview)?);
+                release.poll();
+                if let Some(fault) = release.fault() {
+                    return Err(BuildFailure::webview(super::super::profile_failure_with(
+                        crate::profile::ProfileErrorKind::LifecycleUnproven,
+                        fault.context(release.site),
+                    )));
+                }
+                self.completed = Some(BuildCompletion::Ready { id, snapshot });
+                Ok(Some(CompletedBuild { id, snapshot }))
+            }
             InstallStatus::Refused => Err(BuildFailure::webview(candidate::candidate_error(
                 "selected preload did not complete for its original creator and deadline",
             ))),

@@ -189,12 +189,12 @@ impl OriginalBridge {
         let Some(lease) = state.binding.registration_notice().cloned() else {
             return Ok(());
         };
-        if self.retired.get()
-            || !lease.belongs_to_owner(nav.document())
-            || nav.host_role().is_none_or(|role| !role.is_live())
-        {
+        if self.retired.get() || !lease.belongs_to_owner(nav.document()) {
             return Ok(());
         }
+        let Some(role) = nav.host_role().filter(|role| role.is_live()) else {
+            return Ok(());
+        };
         if state.startup.as_ref().is_none_or(|startup| {
             startup.expired(&state.binding, nav.document(), std::time::Instant::now())
         }) {
@@ -202,12 +202,13 @@ impl OriginalBridge {
                 "registration handoff reached its original deadline",
             ));
         }
-        let request = crate::original_call::request_for_lease(
+        let mut request = crate::original_call::request_for_lease(
             lease.clone(),
             0,
             RendererBridgeOperation::Registered,
             Vec::new(),
         );
+        request.role_witness = Some(role.clone());
         match self.endpoint.requests.try_send(request) {
             Ok(()) => state
                 .binding

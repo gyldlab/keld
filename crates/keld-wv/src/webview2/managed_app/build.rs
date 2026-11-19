@@ -11,7 +11,7 @@ use super::super::view_build::{
     BuildFailure, BuildFailureDisposition, CompletedBuild, ManagedBuild,
 };
 use super::super::{ProfileReleaseWait, WindowsLoopEvent};
-use super::{ManagedWindows, send, send_failure};
+use super::{ManagedWindows, SelectedCreate, send, send_failure};
 use crate::WvError;
 use crate::engine::{AppWindowEvent, LogicalSize, NavTarget, WebviewSpec};
 
@@ -20,7 +20,7 @@ impl ManagedWindows {
         &mut self,
         target: &EventLoopWindowTarget<WindowsLoopEvent>,
         release: &Rc<ProfileReleaseWait>,
-        create: DeferredCreate,
+        mut create: DeferredCreate<SelectedCreate>,
     ) -> Result<(), WvError> {
         let build = create.build;
         let spec = WebviewSpec {
@@ -31,15 +31,42 @@ impl ManagedWindows {
             },
             initial: NavTarget::Html(String::new()),
         };
+        let original = create.original.take();
+        let managed = ManagedBuild {
+            create: DeferredCreate {
+                build,
+                width: create.width,
+                height: create.height,
+                x: create.x,
+                y: create.y,
+                original: None,
+            },
+            release,
+            sender: self.receipt_sender.clone(),
+        };
+        if let Some(original) = original {
+            let original = match self.prepare_original_build(original, Instant::now()) {
+                Ok(original) => original,
+                Err(source) => return self.failed_build(build, BuildFailure::webview(source)),
+            };
+            return match self.builder.begin_original(
+                target,
+                &self.proxy,
+                &spec,
+                &managed,
+                original,
+                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                self.test_control.as_mut(),
+            ) {
+                Ok(()) => Ok(()),
+                Err(failure) => self.failed_build(build, failure),
+            };
+        }
         match self.builder.build(
             target,
             &self.proxy,
             &spec,
-            Some(&ManagedBuild {
-                create,
-                release,
-                sender: self.receipt_sender.clone(),
-            }),
+            Some(&managed),
             None,
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
             self.test_control.as_mut(),

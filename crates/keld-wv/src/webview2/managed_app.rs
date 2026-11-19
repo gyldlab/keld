@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use tao::event_loop::{ControlFlow, EventLoopProxy, EventLoopWindowTarget};
 use tao::platform::windows::WindowExtWindows as _;
-use tao::window::Fullscreen;
+use tao::window::{Fullscreen, WindowId};
 
 use super::activation_observer::ActivationObserver;
 use super::browser_instance::BrowserExitReceipt;
@@ -25,6 +25,10 @@ use super::{managed_test_control::TestControl, t2_test_observation as observe};
 
 mod build;
 mod observation;
+mod original;
+
+use original::SelectedCreate;
+pub(super) use original::SelectedRenderer;
 
 #[cfg(test)]
 #[path = "managed_app/tests/stop_order.rs"]
@@ -32,12 +36,13 @@ mod stop_order_tests;
 
 pub(super) struct ManagedWindows {
     views: BTreeMap<u32, View>,
-    custody: ManagedCustody,
+    custody: ManagedCustody<WindowId, SelectedCreate>,
     builder: NativeBuild,
     events: Sender<AppWindowEvent>,
     proxy: EventLoopProxy<WindowsLoopEvent>,
     activation_observer: Rc<ActivationObserver>,
     receipt_sender: Weak<Sender<BrowserExitReceipt>>,
+    renderer: Option<SelectedRenderer>,
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
     test_control: Option<TestControl>,
 }
@@ -58,6 +63,7 @@ impl ManagedWindows {
         proxy: EventLoopProxy<WindowsLoopEvent>,
         activation_observer: Rc<ActivationObserver>,
         receipt_sender: Weak<Sender<BrowserExitReceipt>>,
+        renderer: Option<SelectedRenderer>,
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))] test_control: Option<
             TestControl,
         >,
@@ -70,6 +76,7 @@ impl ManagedWindows {
             proxy,
             activation_observer,
             receipt_sender,
+            renderer,
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
             test_control,
         }
@@ -122,13 +129,15 @@ impl ManagedWindows {
     /// Stopping. Deferred refusals then observe that committed state.
     /// Parked answers remain owned until independent native retirement.
     pub(super) fn stop(&mut self, after_views_closed: impl FnOnce()) -> Result<(), WvError> {
+        let candidate_drained = self.builder.retire_candidate_on_ui();
+        let selected_stopped = self.stop_selected();
         let events = &self.events;
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         let test_control = self.test_control.as_ref();
-        let candidate_drained = self.builder.retire_candidate_on_ui();
         let stopped = close_managed_resources(
             &mut self.views,
             &mut self.custody,
+            |native| native.original.is_none() || native.retire_on_ui(),
             after_views_closed,
             |event| {
                 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -152,7 +161,7 @@ impl ManagedWindows {
                 "native stop retained an unresolved construction candidate",
             ));
         }
-        stopped
+        selected_stopped.and(stopped)
     }
 
     pub(super) fn has_build_candidate(&self) -> bool {
@@ -162,10 +171,10 @@ impl ManagedWindows {
     pub(super) fn exit_ready(&self, terminal: bool, barrier_ready: bool, faulted: bool) -> bool {
         // A failed actual Close is final for this controller. Fault exit
         // transfers an occupied candidate to the engine's retained run owner.
-        if terminal && faulted && self.has_build_candidate() {
+        if terminal && faulted && self.retains_native_app_run() {
             return true;
         }
-        !self.has_build_candidate() && self.custody.exit_ready(terminal, barrier_ready)
+        !self.retains_native_app_run() && self.custody.exit_ready(terminal, barrier_ready)
     }
 
     pub(super) fn command(
@@ -193,29 +202,49 @@ impl ManagedWindows {
                 original_application_name_for_user_agent,
                 original_create_start_by,
             } => {
+                let original = match (
+                    original_source,
+                    preload_image,
+                    original_role,
+                    original_application_name_for_user_agent,
+                    original_create_start_by,
+                ) {
+                    (None, None, None, None, None) => None,
+                    (Some(source), Some(image), Some(role), None, Some(start_by))
+                        if self.renderer.is_some() =>
+                    {
+                        Some(SelectedCreate {
+                            source,
+                            image,
+                            role,
+                            start_by,
+                        })
+                    }
+                    _ => {
+                        return send_failure(
+                            &self.events,
+                            AppWindowEvent::WindowBuildFailed {
+                                build,
+                                stage: crate::engine::BuildStage::Webview,
+                            },
+                            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                            self.test_control.as_ref(),
+                        );
+                    }
+                };
                 let create = DeferredCreate {
                     build,
                     width,
                     height,
                     x,
                     y,
+                    original,
                 };
-                if original_source.is_some()
-                    || preload_image.is_some()
-                    || original_role.is_some()
-                    || original_application_name_for_user_agent.is_some()
-                    || original_create_start_by.is_some()
-                {
-                    // Original inputs require the selected native builder and its
-                    // retained bridge. The ordinary builder cannot consume them.
-                    return send_failure(
-                        &self.events,
-                        create.failure_event(),
-                        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-                        self.test_control.as_ref(),
-                    );
-                }
-                match self.custody.admit(create, terminated || terminal_intent) {
+                match self.custody.admit(
+                    create,
+                    terminated || terminal_intent,
+                    self.has_build_candidate(),
+                ) {
                     CreateAdmission::Start(create) => self.build(target, release, create),
                     CreateAdmission::Queued => {
                         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -249,7 +278,9 @@ impl ManagedWindows {
                 )?;
                 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
                 observe::releasing(self.custody.len());
-                self.views.remove(&view.0);
+                if native.original.is_none() || native.retire_on_ui() {
+                    self.views.remove(&view.0);
+                }
                 Ok(())
             }
             AppWindowCommand::SetMaximized { view, maximized } if !terminated => {
@@ -289,7 +320,8 @@ impl ManagedWindows {
         release: &Rc<ProfileReleaseWait>,
         ending: bool,
     ) -> Result<(), WvError> {
-        if let Some(create) = self.custody.take_deferred_wake(ending) {
+        let building = self.has_build_candidate();
+        if let Some(create) = self.custody.take_deferred_wake(ending, building) {
             self.build(target, release, create)?;
         }
         Ok(())
@@ -297,14 +329,19 @@ impl ManagedWindows {
 
     pub(super) fn schedule(&mut self, control_flow: &mut ControlFlow, ending: bool) {
         let now = Instant::now();
-        let wake_retry = self.custody.post_deferred_wake(ending, now, || {
+        let building = self.has_build_candidate();
+        let wake_retry = self.custody.post_deferred_wake(ending, building, now, || {
             self.proxy
                 .send_event(WindowsLoopEvent::DeferredBuildWake)
                 .is_ok()
         });
-        for deadline in [self.custody.next_deadline(now), wake_retry]
-            .into_iter()
-            .flatten()
+        for deadline in [
+            self.custody.next_deadline(now),
+            wake_retry,
+            self.original_deadline(ending),
+        ]
+        .into_iter()
+        .flatten()
         {
             if !matches!(*control_flow, ControlFlow::WaitUntil(current) if current <= deadline) {
                 *control_flow = ControlFlow::WaitUntil(deadline);
@@ -316,13 +353,14 @@ impl ManagedWindows {
 /// One resource/queue sequence for the production stop path and pure Drop
 /// witnesses. The callback belongs to the existing terminal/fault authority;
 /// this helper neither commits policy nor arms a release barrier.
-fn close_managed_resources<V, K: Ord + Copy, E>(
+fn close_managed_resources<V, K: Ord + Copy, O, E>(
     views: &mut BTreeMap<u32, V>,
-    custody: &mut ManagedCustody<K>,
+    custody: &mut ManagedCustody<K, O>,
+    mut retire: impl FnMut(&V) -> bool,
     after_views_closed: impl FnOnce(),
     send: impl FnMut(AppWindowEvent) -> Result<(), E>,
 ) -> Result<(), E> {
-    views.clear();
+    views.retain(|_, native| !retire(native));
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
     observe::native_release_step("managed-stop.views-cleared", None);
     after_views_closed();

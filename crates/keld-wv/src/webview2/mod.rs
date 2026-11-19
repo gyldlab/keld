@@ -3394,6 +3394,7 @@ pub struct WebView2Engine {
     views: BTreeMap<u32, View>,
     startup_build: Option<view_build::NativeBuild>,
     retained_app_run: Option<RetainedAppRun>,
+    selected_renderer: Option<managed_app::SelectedRenderer>,
     /// One environment per engine: every webview shares its profile directory
     /// and browser process (`learn.microsoft.com`, `WebView2` process model).
     environment: ICoreWebView2Environment,
@@ -3434,6 +3435,38 @@ impl fmt::Debug for WebView2Engine {
             .field("running", &self.event_loop.is_none())
             .field("next_id", &self.next_id)
             .finish_non_exhaustive()
+    }
+}
+
+type SelectedNavigationObserver = dyn Fn(
+    crate::engine::NativeNavigationContext,
+    crate::engine::OriginalNavigationFact,
+) -> Result<(), WvError>;
+
+/// A unit wake for the existing selected renderer outcome receiver.
+#[derive(Clone)]
+pub struct RendererOutcomeWake(EventLoopProxy<WindowsLoopEvent>);
+
+impl std::fmt::Debug for RendererOutcomeWake {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result<()> {
+        formatter
+            .debug_struct("RendererOutcomeWake")
+            .finish_non_exhaustive()
+    }
+}
+
+impl RendererOutcomeWake {
+    /// Notify the UI after sending an actual outcome or closing its sender.
+    ///
+    /// # Errors
+    ///
+    /// Returns an event-loop error if the owning UI receiver is gone.
+    pub fn notify(&self) -> Result<(), WvError> {
+        self.0
+            .send_event(WindowsLoopEvent::OriginalWake)
+            .map_err(|_| {
+                WvError::EventLoop(String::from("selected renderer outcome wake was refused"))
+            })
     }
 }
 
@@ -3575,6 +3608,7 @@ impl WebView2Engine {
             app_window_created: false,
             startup_build: None,
             retained_app_run: None,
+            selected_renderer: None,
             view_build_attempt: startup_retirement::NativeViewBuild::NotAttempted,
             saved_permissions_reconciled: false,
             #[cfg(feature = "profile-test-hooks")]
@@ -3628,6 +3662,43 @@ impl WebView2Engine {
         // durable. Zero-controller sessions must use the same stop/idle chain.
         engine.mark_profile_running()?;
         Ok(engine)
+    }
+
+    /// Attach the one Core-created renderer endpoint before entering the app loop.
+    ///
+    /// The callback receives only actual selected navigation facts. Native Create
+    /// reports WindowBuilt independently of renderer registration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an absent outcome receiver, a repeated attachment,
+    /// or an engine whose startup candidate or event loop can no longer be used.
+    pub fn attach_selected_renderer(
+        &mut self,
+        endpoint: crate::renderer_bridge::RendererBridgeEndpoint,
+        observe_navigation: impl Fn(
+            crate::engine::NativeNavigationContext,
+            crate::engine::OriginalNavigationFact,
+        ) -> Result<(), WvError>
+        + 'static,
+    ) -> Result<RendererOutcomeWake, WvError> {
+        self.require_startup_build_retired()?;
+        if self.selected_renderer.is_some() {
+            return Err(WvError::EventLoop(String::from(
+                "selected renderer endpoint is already attached",
+            )));
+        }
+        let wake = RendererOutcomeWake(self.creation_event_loop()?.create_proxy());
+        self.selected_renderer = Some(
+            managed_app::SelectedRenderer::new(endpoint, Rc::new(observe_navigation)).ok_or_else(
+                || {
+                    WvError::EventLoop(String::from(
+                        "selected renderer endpoint lacks its actual outcome receiver",
+                    ))
+                },
+            )?,
+        );
+        Ok(wake)
     }
 
     /// Reports unresolved construction custody for the Host's terminal failure.
@@ -3996,6 +4067,7 @@ impl WebView2Engine {
             proxy.clone(),
             Rc::clone(&self.activation_observer),
             self.browser_exit_sender.clone(),
+            self.selected_renderer.take(),
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
             self.managed_test_control.take(),
         )));
@@ -4089,7 +4161,7 @@ impl WebView2Engine {
                 release_in_loop.exit_ready(),
                 release_in_loop.fault().is_some() || fatal_in_loop.load(Ordering::Acquire),
             ) {
-                exiting_with_candidate = managed.has_build_candidate();
+                exiting_with_candidate = managed.retains_native_app_run();
                 *control_flow = ControlFlow::Exit;
                 return;
             }
@@ -4190,6 +4262,11 @@ impl WebView2Engine {
                 }
                 _ => Ok(()),
             };
+            let operation = operation.and_then(|()| managed.drive_original(
+                &release_in_loop,
+                exit_requested || terminal_intent_in_loop.load(Ordering::Acquire)
+                    || release_in_loop.fault().is_some(),
+            ));
             if let Err(error) = operation {
                 eprintln!("KELD_WV_NATIVE_OWNER_FAILED {error}");
                 fatal_in_loop.store(true, Ordering::Release);
@@ -4225,7 +4302,7 @@ impl WebView2Engine {
                 release_in_loop.exit_ready(),
                 release_in_loop.fault().is_some() || fatal_in_loop.load(Ordering::Acquire),
             ) {
-                exiting_with_candidate = managed.has_build_candidate();
+                exiting_with_candidate = managed.retains_native_app_run();
                 *control_flow = ControlFlow::Exit;
                 if exiting_with_candidate {
                     return;
@@ -4265,9 +4342,9 @@ impl WebView2Engine {
         eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=app-bridge-retired");
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         t2_test_observation::loop_ended(release.armed_at.get().is_some());
-        if managed.borrow().has_build_candidate() {
+        if managed.borrow().retains_native_app_run() {
             let detail = release.fault().map_or(
-                "the native app loop left a build candidate without a retirement receipt",
+                "the native app loop left selected custody without a retirement receipt",
                 |fault| fault.context(release.site),
             );
             self.retained_app_run = Some(RetainedAppRun {
