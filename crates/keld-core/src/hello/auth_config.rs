@@ -1,7 +1,10 @@
 //! Literal-only static authentication configuration parsing, not config evaluation.
 //! Provider validation remains with keld-native.
 
+mod literal;
 mod source_scan;
+
+pub use self::literal::{LiteralConfigValue, StaticConfigError, literal_config_from_ts};
 
 use self::source_scan::{root_auth_slice, root_facade_property_slice};
 

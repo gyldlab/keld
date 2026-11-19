@@ -618,8 +618,8 @@ mod tests {
 
 mod auth_config;
 pub use self::auth_config::{
-    AuthConfigError, InitialWindowConfigError, auth_configuration_from_config_ts,
-    initial_window_from_config_ts,
+    AuthConfigError, InitialWindowConfigError, LiteralConfigValue, StaticConfigError,
+    auth_configuration_from_config_ts, initial_window_from_config_ts, literal_config_from_ts,
 };
 
 #[cfg(test)]
