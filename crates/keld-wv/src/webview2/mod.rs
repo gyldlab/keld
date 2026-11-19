@@ -705,6 +705,15 @@ fn known_local_app_data() -> Result<PathBuf, WvError> {
         return Ok(root);
     }
 
+    native_local_app_data()
+}
+
+/// Reads the current token's native local data folder without the WebView
+/// profile fixture override.
+///
+/// # Errors
+/// Returns a profile error if Windows cannot supply the current user's path.
+pub fn native_local_app_data() -> Result<PathBuf, WvError> {
     // SAFETY: this noninteractive known-folder query writes one COM-allocated
     // NUL-terminated path for the current process token. The allocation is
     // copied and freed exactly once below.

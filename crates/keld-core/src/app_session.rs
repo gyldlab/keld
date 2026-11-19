@@ -20,6 +20,9 @@ mod original_runtime_entry;
 #[cfg(windows)]
 mod original_webapp;
 #[cfg(windows)]
+#[path = "app_session/launch_facts/windows_instance.rs"]
+mod windows_instance_election;
+#[cfg(windows)]
 pub use self::original_runtime_entry::{
     ORIGINAL_RUNTIME_ENTRY_PATH, windows_original_entry_bootstrap_source,
 };
