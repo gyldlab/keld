@@ -78,7 +78,7 @@ pub const fn boot_schema(facade: bool, profile: Option<keld_guard::DeclaredProfi
 
 // Require an object without a Value round-trip that would erase duplicate keys.
 // The derived DTO remains the sole field/type parser at both closed boundaries.
-fn deserialize_object<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+pub(super) fn deserialize_object<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de>,
@@ -87,7 +87,7 @@ where
     impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for ObjectVisitor<T> {
         type Value = T;
         fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter.write_str("a closed boot-contract JSON object")
+            formatter.write_str("a closed JSON object")
         }
         fn visit_map<M: serde::de::MapAccess<'de>>(self, map: M) -> Result<T, M::Error> {
             T::deserialize(serde::de::value::MapAccessDeserializer::new(map))
@@ -248,9 +248,17 @@ pub(super) fn validate_relative_path(
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 pub(super) fn decode_digest(value: &str) -> Result<[u8; 32], HostAppError> {
+    decode_digest_for("permissions.content_sha256", value)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
+pub(super) fn decode_digest_for(
+    field: &'static str,
+    value: &str,
+) -> Result<[u8; 32], HostAppError> {
     let Some(hex) = value.strip_prefix(DIGEST_PREFIX) else {
         return Err(boot_error(
-            "permissions.content_sha256 must start with sha256:",
+            format!("{field} must start with sha256:"),
             "Regenerate the exact lowercase SHA-256 descriptor value.",
         ));
     };
@@ -261,7 +269,7 @@ pub(super) fn decode_digest(value: &str) -> Result<[u8; 32], HostAppError> {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
     {
         return Err(boot_error(
-            "permissions.content_sha256 must contain 64 lowercase hexadecimal digits",
+            format!("{field} must contain 64 lowercase hexadecimal digits"),
             "Regenerate the exact lowercase SHA-256 descriptor value.",
         ));
     }

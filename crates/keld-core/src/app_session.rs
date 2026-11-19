@@ -9,6 +9,8 @@ mod dialog_custody_contract;
 #[cfg(any(target_os = "macos", windows))]
 mod dialog_session;
 mod error;
+#[cfg(windows)]
+mod graph_document;
 #[cfg(any(windows, test))]
 mod graph_selection;
 mod profile_preflight;
@@ -19,10 +21,12 @@ mod window_registry;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod window_router;
 pub use self::error::HostAppError;
-#[cfg(any(windows, test))]
-pub use self::graph_selection::{SelectedRendererSource, validate_graph_relative_path};
 #[cfg(all(test, any(target_os = "macos", windows)))]
 use self::error::startup_resource_snapshot;
+#[cfg(windows)]
+pub use self::graph_document::{GRAPH_FILE, MAX_GRAPH_BYTES, validate_stage_graph_shape};
+#[cfg(any(windows, test))]
+pub use self::graph_selection::{SelectedRendererSource, validate_graph_relative_path};
 pub(crate) use self::profile_preflight::reject_diagnostic_profile;
 
 #[cfg(all(test, windows))]
