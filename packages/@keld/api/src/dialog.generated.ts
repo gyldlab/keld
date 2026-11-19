@@ -187,12 +187,31 @@ function fileOptions(
   return bytes;
 }
 function selectedFilePath(value: string): boolean {
+  if (Buffer.byteLength(value, "utf8") > 4096 || value.includes("\0"))
+    return false;
+  if (process.platform !== "win32") {
+    return (
+      value.startsWith("/") &&
+      !value.includes("\\") &&
+      !value.split("/").includes("..")
+    );
+  }
+  const drive = /^[A-Za-z]:[\\/]/.test(value);
+  if (!drive && !value.startsWith("\\\\")) return false;
+  const parts = value.slice(drive ? 3 : 2).split(/[\\/]/);
+  if (parts.at(-1) === "") parts.pop();
   return (
-    Buffer.byteLength(value, "utf8") <= 4096 &&
-    value.startsWith("/") &&
-    !value.includes("\0") &&
-    !value.includes("\\") &&
-    !value.split("/").includes("..")
+    (drive || parts.length >= 2) &&
+    parts.every(
+      (part) =>
+        part !== "" &&
+        part !== "." &&
+        part !== ".." &&
+        !/[ .]$/.test(part) &&
+        ![...part].some(
+          (ch) => ch.charCodeAt(0) < 32 || '<>:"|?*'.includes(ch),
+        ),
+    )
   );
 }
 

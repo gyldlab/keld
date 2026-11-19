@@ -8,6 +8,7 @@ crates/keld-guard/AGENTS.md	always	3840	guard-invariants	path:crates/keld-guard
 crates/keld-host/AGENTS.md	always	1536	host-invariants	path:crates/keld-host
 crates/keld-ipc/AGENTS.md	always	2624	ipc-invariants	path:crates/keld-ipc
 crates/keld-native/AGENTS.md	always	1536	native-invariants	path:crates/keld-native
+crates/keld-native/src/dialog/windows/AGENTS.md	always	1536	native-windows-dialog	path:crates/keld-native/src/dialog/windows
 crates/keld-runtime/AGENTS.md	always	2880	runtime-invariants	path:crates/keld-runtime
 crates/keld-update/AGENTS.md	always	1536	updater-invariants	path:crates/keld-update
 crates/keld-wv/AGENTS.md	always	4096	webview-invariants	path:crates/keld-wv

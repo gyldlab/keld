@@ -1,5 +1,5 @@
 use super::{
-    Arc, CorrelationId, Duration, GuardianOwnerCommand, MacDialogUiOutcome, PrimaryCallerContext,
+    Arc, CorrelationId, DialogUiOutcome, Duration, GuardianOwnerCommand, PrimaryCallerContext,
     WebviewId, options, original, with_manifest,
 };
 
@@ -74,7 +74,7 @@ fn terminal_custody_is_not_consumed_before_writer_lock_acquisition() {
     dialog.reserve(owner, options(), WebviewId(3)).unwrap();
     dialog.take_work().unwrap();
     dialog
-        .record_native_outcome(owner, MacDialogUiOutcome::Dismissed, None)
+        .record_native_outcome(owner, DialogUiOutcome::Dismissed, None)
         .unwrap();
     // Deterministically deny writer acquisition. Restoring complete-before-lock
     // consumes the terminal and fails the custody assertions below. This is a
@@ -89,7 +89,7 @@ fn terminal_custody_is_not_consumed_before_writer_lock_acquisition() {
         .is_err()
     );
     let error = handle
-        .dialog_native_finished(1, 9, MacDialogUiOutcome::Dismissed)
+        .dialog_native_finished(1, 9, DialogUiOutcome::Dismissed)
         .unwrap_err();
     assert!(
         error

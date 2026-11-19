@@ -174,6 +174,7 @@ pub(super) fn bridge_posted(observing: bool, command: AppWindowCommand) {
         AppWindowCommand::DestroyWindow { .. } => "DestroyWindow",
         AppWindowCommand::SetMaximized { .. } => "SetMaximized",
         AppWindowCommand::SetFullScreen { .. } => "SetFullScreen",
+        AppWindowCommand::DialogWake => "DialogWake",
         AppWindowCommand::Quit => "Quit",
         AppWindowCommand::Fatal => "Fatal",
     };

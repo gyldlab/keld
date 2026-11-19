@@ -1,5 +1,5 @@
 //! One authenticated primary generation's guarded native Message custody.
-//! The app-link reader owns admission; Tao owns the actual !Send `AppKit` sheet.
+//! The app-link reader owns admission; Tao owns the actual !Send native dialog.
 //! Both use the existing Runtime generation and `WindowRegistry` identities.
 
 use std::sync::Mutex;
@@ -15,7 +15,7 @@ use keld_native::dialog::{
     CancelDisposition, DialogReplyV1, MessageOptions, OpenDialogOptions, SaveDialogOptions,
 };
 use keld_wv::WebviewId;
-use keld_wv::wkwebview::{AppWindowCommand, AppWindowEvent, MacDialogUiOutcome};
+use keld_wv::{AppWindowCommand, AppWindowEvent, DialogUiOutcome};
 
 use super::dialog_custody::{CancelResult, DialogCustody, DialogOwner, ReserveError, TerminalKind};
 use super::window_registry::{WindowError, WindowOwner};
@@ -61,7 +61,7 @@ impl DialogFault {
                 "Use a positive, increasing dialog nonce and bounded, source-exact options."
             }
             Self::Unsupported => {
-                "Use a qualified macOS window-backed native dialog; parentless presentation is not yet admitted."
+                "Use a qualified visible window-backed native dialog; parentless presentation is not yet admitted."
             }
             Self::InvalidParent => {
                 "Pass one live, authentic BrowserWindow from the same role; never pass a numeric window id."
@@ -79,7 +79,7 @@ impl DialogFault {
                 "The original dialog was canceled; do not interpret dismissal as a button click."
             }
             Self::NativeFailure => {
-                "The macOS native presentation or callback failed; inspect the Host-owned native error and retry only as a new user action."
+                "The native presentation or callback failed; inspect the Host-owned native error and retry only as a new user action."
             }
         }
     }
@@ -115,6 +115,10 @@ struct DialogState {
     /// File paths are captured only after the actual native callback and
     /// physical sheet drain. No duplicate authority or new socket exists.
     file_result: Option<(DialogOwner, DialogReplyV1)>,
+    #[cfg(windows)]
+    parent: Option<WebviewId>,
+    #[cfg(windows)]
+    native_fault: Option<DialogFault>,
 }
 
 impl DialogState {
@@ -146,6 +150,10 @@ impl DialogSession {
                 pending: None,
                 cleanup_deadline: None,
                 file_result: None,
+                #[cfg(windows)]
+                parent: None,
+                #[cfg(windows)]
+                native_fault: None,
             }),
             wake,
         }
@@ -201,6 +209,11 @@ impl DialogSession {
                 ReserveError::Stale | ReserveError::InvalidTransition => DialogFault::NativeFailure,
             })?;
             state.cleanup_deadline = None;
+            #[cfg(windows)]
+            {
+                state.parent = Some(parent);
+                state.native_fault = None;
+            }
             state.pending = Some(DialogWork {
                 owner,
                 options,
@@ -208,7 +221,7 @@ impl DialogSession {
                 deadline: Instant::now() + DIALOG_NATIVE_DEADLINE,
             });
         }
-        if self.wake.send(AppWindowCommand::MacDialogWake).is_err() {
+        if self.wake.send(AppWindowCommand::DialogWake).is_err() {
             // The native owner never received the queue wake. Retire and drain
             // the reserved but never-presented effect without fabricating UI.
             if let Ok(mut state) = self.state.lock() {
@@ -249,7 +262,7 @@ impl DialogSession {
         match outcome {
             CancelResult::Requested => {
                 self.wake
-                    .send(AppWindowCommand::MacDialogWake)
+                    .send(AppWindowCommand::DialogWake)
                     .map_err(|_| DialogFault::NativeFailure)?;
                 Ok(CancelDisposition::Requested)
             }
@@ -259,7 +272,7 @@ impl DialogSession {
     }
 
     /// Role retirement tombstones the effect but retains the physical panel
-    /// until a genuine `AppKit` callback and invisibility release it.
+    /// until the native UI owner observes physical completion and releases it.
     pub(super) fn retire(&self, identity: PrimaryLinkIdentity, attempt: u32) {
         // A guarded FS-only role and a dialog-capable role with no admitted
         // panel must retire without inserting a gratuitous UI command into
@@ -275,7 +288,7 @@ impl DialogSession {
             false
         };
         if wake_needed {
-            let _ = self.wake.send(AppWindowCommand::MacDialogWake);
+            let _ = self.wake.send(AppWindowCommand::DialogWake);
         }
     }
 
@@ -300,6 +313,7 @@ impl DialogSession {
             .is_ok_and(|state| state.custody.active_owner().is_none())
     }
 
+    #[cfg(any(target_os = "macos", test))]
     pub(super) fn fully_drained(&self) -> bool {
         self.state
             .lock()
@@ -333,6 +347,7 @@ impl DialogSession {
         Ok(())
     }
 
+    #[cfg(any(target_os = "macos", test))]
     fn begin_cleanup(&self, owner: DialogOwner, deadline: Instant) -> Result<(), HostAppError> {
         let mut state = self
             .state
@@ -347,6 +362,7 @@ impl DialogSession {
     // Before accepting new callback/invisibility proof, enforce the cleanup
     // cutoff. A late poll has no proof invisibility occurred before the bound.
     // An error enters the existing fatal/retained-custody path, not quiescence.
+    #[cfg(any(target_os = "macos", test))]
     fn check_cleanup(
         &self,
         owner: DialogOwner,
@@ -369,6 +385,7 @@ impl DialogSession {
         Ok(())
     }
 
+    #[cfg(any(target_os = "macos", test))]
     fn poll_before_cleanup_deadline<T>(
         &self,
         owner: DialogOwner,
@@ -385,6 +402,7 @@ impl DialogSession {
 
     // A delayed poll is not a delayed callback. Preserve a timestamped native
     // completion strictly before the cutoff; expiry wins at/after the cutoff.
+    #[cfg(any(target_os = "macos", test))]
     fn expire_if_due(
         &self,
         owner: DialogOwner,
@@ -403,8 +421,8 @@ impl DialogSession {
         Ok(due)
     }
 
-    /// The Tao owner invokes this only after observing the actual `AppKit`
-    /// callback and physical sheet invisibility. Commit the terminal *before*
+    /// The Tao owner invokes this only after observing the actual native
+    /// result and physical dialog completion. Commit the terminal *before*
     /// posting its event to the Core coordinator. Otherwise a later Cancel
     /// could overtake a click already observed on the main thread while the
     /// event receiver was temporarily descheduled. This creates no new nonce
@@ -412,7 +430,7 @@ impl DialogSession {
     fn record_native_outcome(
         &self,
         owner: DialogOwner,
-        outcome: MacDialogUiOutcome,
+        outcome: DialogUiOutcome,
         file_result: Option<DialogReplyV1>,
     ) -> Result<(), HostAppError> {
         let mut state = self
@@ -423,18 +441,18 @@ impl DialogSession {
             return Ok(()); // Already retired or from an older physical owner.
         }
         match (outcome, file_result) {
-            (MacDialogUiOutcome::Selected { .. }, None) => {
+            (DialogUiOutcome::Selected { .. }, None) => {
                 state.custody.commit_native_result(owner);
             }
             (
-                MacDialogUiOutcome::FileResult,
+                DialogUiOutcome::FileResult,
                 Some(value @ (DialogReplyV1::Open { .. } | DialogReplyV1::Save { .. })),
             ) => {
                 if state.custody.commit_native_result(owner) {
                     state.file_result = Some((owner, value));
                 }
             }
-            (MacDialogUiOutcome::Dismissed | MacDialogUiOutcome::Failed, None) => {
+            (DialogUiOutcome::Dismissed | DialogUiOutcome::Failed, None) => {
                 state.custody.commit_native_failure(owner);
             }
             _ => {
@@ -453,7 +471,7 @@ impl DialogSession {
         &self,
         attempt: u32,
         nonce: u64,
-        outcome: MacDialogUiOutcome,
+        outcome: DialogUiOutcome,
     ) -> Result<Option<DialogTerminal>, HostAppError> {
         let mut state = self
             .state
@@ -471,6 +489,13 @@ impl DialogSession {
         // the outcome on the UI thread before sending this event. An observed
         // Cancel/expiry/retirement already owns the cause if it happened first.
         let file_result = state.file_result.take();
+        #[cfg(windows)]
+        let native_fault = state
+            .native_fault
+            .take()
+            .unwrap_or(DialogFault::NativeFailure);
+        #[cfg(not(windows))]
+        let native_fault = DialogFault::NativeFailure;
         let terminal = state
             .custody
             .take_original_terminal(owner)
@@ -478,7 +503,7 @@ impl DialogSession {
                 let result = match (kind, outcome) {
                     (
                         TerminalKind::NativeResult,
-                        MacDialogUiOutcome::Selected {
+                        DialogUiOutcome::Selected {
                             response,
                             checkbox_checked,
                         },
@@ -486,7 +511,7 @@ impl DialogSession {
                         response,
                         checkbox_checked,
                     }),
-                    (TerminalKind::NativeResult, MacDialogUiOutcome::FileResult) => {
+                    (TerminalKind::NativeResult, DialogUiOutcome::FileResult) => {
                         match file_result {
                             Some((retained_owner, value)) if retained_owner == owner => Ok(value),
                             _ => Err(DialogFault::NativeFailure),
@@ -495,7 +520,7 @@ impl DialogSession {
                     (TerminalKind::Cancelled, _) => Err(DialogFault::Cancelled),
                     (TerminalKind::Expired, _) => Err(DialogFault::Expired),
                     (TerminalKind::NativeFailure | TerminalKind::NativeResult, _) => {
-                        Err(DialogFault::NativeFailure)
+                        Err(native_fault)
                     }
                 };
                 (owner, result)
@@ -506,18 +531,28 @@ impl DialogSession {
                 "physical quiescence has no active effect",
             )
         })?;
+        #[cfg(windows)]
+        {
+            state.parent = None;
+        }
         drop(state);
         // A terminal native callback can be delivered after Tao's last tick;
         // this wake makes final close wait until the custody record is gone.
-        let _ = self.wake.send(AppWindowCommand::MacDialogWake);
+        let _ = self.wake.send(AppWindowCommand::DialogWake);
         Ok(terminal)
     }
 }
 
 mod host_route;
 
+#[cfg(target_os = "macos")]
 mod native_ui;
+#[cfg(target_os = "macos")]
 pub(super) use native_ui::DialogMainOwner;
+#[cfg(windows)]
+mod windows_ui;
+#[cfg(windows)]
+pub(super) use windows_ui::DialogMainOwner;
 
 #[cfg(test)]
 mod tests;

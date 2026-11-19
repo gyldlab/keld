@@ -202,7 +202,7 @@ impl NativeBuild {
             }
         }
         let view = View {
-            window,
+            window: Rc::new(window),
             controller,
             webview,
             hidden_for_minimize: std::cell::Cell::new(false),

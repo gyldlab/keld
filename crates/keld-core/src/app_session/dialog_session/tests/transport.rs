@@ -1,5 +1,5 @@
 //! Actual Core routing and socket faults, not native `AppKit` qualification.
-use super::{MacDialogUiOutcome, WebviewId, options, original, with_manifest};
+use super::{DialogUiOutcome, WebviewId, options, original, with_manifest};
 use crate::app_session::{GuardianOwnerCommand, PrimaryCallerContext};
 use keld_ipc::link::{AppLinkDeadlines as _, read_frame};
 use keld_ipc::{CorrelationId, codec::encode};
@@ -73,7 +73,7 @@ fn reused_original_correlation_closes_without_a_competing_terminal() {
             "retirement is not native quiescence"
         );
         handle
-            .dialog_native_finished(1, 9, MacDialogUiOutcome::Dismissed)
+            .dialog_native_finished(1, 9, DialogUiOutcome::Dismissed)
             .unwrap();
         assert!(
             dialog.fully_drained(),
@@ -94,7 +94,7 @@ fn terminal_writer_loss_retires_before_unlocked_owner_notification() {
         owner.parent = None; // Isolate transport from parent-registry acceptance.
         dialog.reserve(owner, options(), WebviewId(3)).unwrap();
         dialog.take_work().unwrap();
-        let outcome = MacDialogUiOutcome::Selected {
+        let outcome = DialogUiOutcome::Selected {
             response: 0,
             checkbox_checked: false,
         };
@@ -181,10 +181,10 @@ fn fresh_cancel_keeps_its_ack_separate_from_the_original_terminal() {
         }
     );
     dialog
-        .record_native_outcome(owner, MacDialogUiOutcome::Dismissed, None)
+        .record_native_outcome(owner, DialogUiOutcome::Dismissed, None)
         .unwrap();
     handle
-        .dialog_native_finished(1, 9, MacDialogUiOutcome::Dismissed)
+        .dialog_native_finished(1, 9, DialogUiOutcome::Dismissed)
         .unwrap();
     let (header, _) = read_frame(&mut peer).unwrap();
     assert_eq!(
@@ -231,7 +231,7 @@ fn cli_lease_loss_retires_pending_dialog_custody() {
     );
     assert!(!dialog.fully_drained());
     handle
-        .dialog_native_finished(1, 9, MacDialogUiOutcome::Dismissed)
+        .dialog_native_finished(1, 9, DialogUiOutcome::Dismissed)
         .unwrap();
     assert!(dialog.fully_drained());
 }
@@ -266,7 +266,7 @@ fn lifecycle_quit_retires_pending_dialog_custody() {
     );
     assert!(!dialog.fully_drained());
     handle
-        .dialog_native_finished(1, 9, MacDialogUiOutcome::Dismissed)
+        .dialog_native_finished(1, 9, DialogUiOutcome::Dismissed)
         .unwrap();
     assert!(dialog.fully_drained());
 }

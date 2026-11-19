@@ -1,7 +1,7 @@
 //! Actual terminal writer failure and existing generation-recovery owner.
 //! Native outcomes are supplied at the Core callback boundary; this is not OS UI proof.
 use super::{
-    DialogOwner, DialogSession, MacDialogUiOutcome, WebviewId, options, original, with_manifest,
+    DialogOwner, DialogSession, DialogUiOutcome, WebviewId, options, original, with_manifest,
 };
 use crate::app_session as app;
 use keld_ipc::codec::{decode, encode};
@@ -21,7 +21,7 @@ enum Fault {
     Retirement,
 }
 
-fn terminal_write_loss(fault: Fault, outcome: MacDialogUiOutcome) {
+fn terminal_write_loss(fault: Fault, outcome: DialogUiOutcome) {
     let (mut handle, _peer, guardian, ui) = app::tests::initial_ready_router_with_window_loop();
     let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
     let session = Arc::new(session);
@@ -124,7 +124,7 @@ fn terminal_write_loss(fault: Fault, outcome: MacDialogUiOutcome) {
     assert_successor_roundtrip(&handle);
 }
 
-fn prepare_terminal(session: &DialogSession, outcome: MacDialogUiOutcome) {
+fn prepare_terminal(session: &DialogSession, outcome: DialogUiOutcome) {
     // Parent admission/native presentation have separate tests. This cut owns
     // terminal publication only, so a parent lookup cannot mask the write fault.
     let owner = DialogOwner {
@@ -145,11 +145,11 @@ fn prepare_terminal(session: &DialogSession, outcome: MacDialogUiOutcome) {
 
 fn coordinate_terminal(
     handle: &app::PrimaryRouterHandle,
-    outcome: MacDialogUiOutcome,
+    outcome: DialogUiOutcome,
 ) -> std::thread::JoinHandle<Result<(), app::HostAppError>> {
     let (events, receive) = mpsc::channel();
     events
-        .send(app::AppWindowEvent::MacDialogFinished {
+        .send(app::AppWindowEvent::DialogFinished {
             attempt: 1,
             nonce: 1,
             outcome,
@@ -220,8 +220,8 @@ fn assert_successor_roundtrip(handle: &app::PrimaryRouterHandle) {
     );
 }
 
-fn selected() -> MacDialogUiOutcome {
-    MacDialogUiOutcome::Selected {
+fn selected() -> DialogUiOutcome {
+    DialogUiOutcome::Selected {
         response: 2,
         checkbox_checked: false,
     }
@@ -234,7 +234,7 @@ fn dialog_terminal_reply_write_loss_recovers_actual_successor() {
 
 #[test]
 fn dialog_terminal_error_write_loss_recovers_actual_successor() {
-    terminal_write_loss(Fault::None, MacDialogUiOutcome::Failed);
+    terminal_write_loss(Fault::None, DialogUiOutcome::Failed);
 }
 
 #[test]

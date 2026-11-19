@@ -208,7 +208,7 @@ pub(super) fn command(
         AppWindowCommand::Quit
         | AppWindowCommand::Fatal
         | AppWindowCommand::MacAuthWake
-        | AppWindowCommand::MacDialogWake => Ok(()),
+        | AppWindowCommand::DialogWake => Ok(()),
     }
 }
 

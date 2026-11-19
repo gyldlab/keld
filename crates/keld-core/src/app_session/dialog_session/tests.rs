@@ -1,11 +1,12 @@
 use super::{
     AppWindowCommand, CancelDisposition, CorrelationId, DialogFault, DialogOwner, DialogReplyV1,
-    DialogSession, MacDialogUiOutcome, MessageOptions, PrimaryLinkIdentity, WebviewId,
+    DialogSession, DialogUiOutcome, MessageOptions, PrimaryLinkIdentity, WebviewId,
 };
 use keld_ipc::window::{WindowGeneration, WindowId, WindowRef};
 use sha2::{Digest as _, Sha256};
 use std::sync::mpsc;
 
+#[cfg(target_os = "macos")]
 #[path = "publication_tests.rs"]
 mod publication;
 
@@ -89,7 +90,7 @@ fn dialog_cancel_at_capacity_keeps_distinct_original_and_cancel_correlations() {
     session
         .reserve(first, options(), WebviewId(3))
         .expect("one reservation");
-    assert_eq!(wake.try_recv(), Ok(AppWindowCommand::MacDialogWake));
+    assert_eq!(wake.try_recv(), Ok(AppWindowCommand::DialogWake));
     assert_eq!(
         session.pending_original_for(first.identity, first.attempt),
         Some(CorrelationId(7))
@@ -107,14 +108,14 @@ fn dialog_cancel_at_capacity_keeps_distinct_original_and_cancel_correlations() {
         session.cancel(first.identity, 1, 9, CorrelationId(8)),
         Ok(CancelDisposition::Requested),
     );
-    assert_eq!(wake.try_recv(), Ok(AppWindowCommand::MacDialogWake));
+    assert_eq!(wake.try_recv(), Ok(AppWindowCommand::DialogWake));
     assert!(session.take_work().expect("bounded pending work").is_some());
     assert!(!session.may_present(first).expect("tombstone"));
     session
-        .record_native_outcome(first, MacDialogUiOutcome::Dismissed, None)
+        .record_native_outcome(first, DialogUiOutcome::Dismissed, None)
         .expect("OS callback observed after cancellation");
     let terminal = session
-        .complete(1, 9, MacDialogUiOutcome::Dismissed)
+        .complete(1, 9, DialogUiOutcome::Dismissed)
         .expect("OS callback modeled as already physically drained");
     assert!(terminal == Some((first, Err(DialogFault::Cancelled))));
     assert!(session.fully_drained());
@@ -124,7 +125,7 @@ fn dialog_cancel_at_capacity_keeps_distinct_original_and_cancel_correlations() {
             .complete(
                 1,
                 9,
-                MacDialogUiOutcome::Selected {
+                DialogUiOutcome::Selected {
                     response: 0,
                     checkbox_checked: false,
                 }
@@ -145,7 +146,7 @@ fn dialog_committed_native_result_wins_before_late_cancel_and_role_retirement() 
     session
         .record_native_outcome(
             first,
-            MacDialogUiOutcome::Selected {
+            DialogUiOutcome::Selected {
                 response: 2,
                 checkbox_checked: true,
             },
@@ -156,7 +157,7 @@ fn dialog_committed_native_result_wins_before_late_cancel_and_role_retirement() 
         .complete(
             1,
             17,
-            MacDialogUiOutcome::Selected {
+            DialogUiOutcome::Selected {
                 response: 2,
                 checkbox_checked: true,
             },
@@ -179,14 +180,14 @@ fn dialog_committed_native_result_wins_before_late_cancel_and_role_retirement() 
     session.retire(first.identity, first.attempt);
     assert!(
         session
-            .complete(1, 17, MacDialogUiOutcome::Dismissed)
+            .complete(1, 17, DialogUiOutcome::Dismissed)
             .unwrap()
             .is_none()
     );
 }
 
 #[test]
-fn appkit_observed_native_click_is_terminal_before_event_coordinator_receives_it() {
+fn native_click_is_terminal_before_event_coordinator_receives_it() {
     let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
     let first = original(22, 25);
     session
@@ -199,7 +200,7 @@ fn appkit_observed_native_click_is_terminal_before_event_coordinator_receives_it
     session
         .record_native_outcome(
             first,
-            MacDialogUiOutcome::Selected {
+            DialogUiOutcome::Selected {
                 response: 2,
                 checkbox_checked: false,
             },
@@ -219,7 +220,7 @@ fn appkit_observed_native_click_is_terminal_before_event_coordinator_receives_it
         .complete(
             1,
             25,
-            MacDialogUiOutcome::Selected {
+            DialogUiOutcome::Selected {
                 response: 2,
                 checkbox_checked: false,
             },
@@ -266,7 +267,7 @@ fn delayed_poll_preserves_only_pre_cutoff_native_completion() {
         );
         assert!(session.check_cleanup(owner, || cleanup).is_err());
         assert!(!session.has_capacity());
-        let outcome = MacDialogUiOutcome::Selected {
+        let outcome = DialogUiOutcome::Selected {
             response: 0,
             checkbox_checked: false,
         };
@@ -310,7 +311,7 @@ fn timely_open_result_survives_delayed_service_and_allows_next_save() {
         )
         .unwrap();
     let work = session.take_work().unwrap().unwrap();
-    assert_eq!(work.owner, open);
+    assert!(work.owner == open);
     let tick = Duration::from_millis(1);
     let callback_at = work
         .deadline
@@ -332,14 +333,14 @@ fn timely_open_result_survives_delayed_service_and_allows_next_save() {
         .poll_before_cleanup_deadline(open, || serviced_at, || Ok(Some(opened.clone())))
         .unwrap();
     session
-        .record_native_outcome(open, MacDialogUiOutcome::FileResult, observed)
+        .record_native_outcome(open, DialogUiOutcome::FileResult, observed)
         .unwrap();
-    assert_eq!(
-        session
-            .complete(open.attempt, open.nonce, MacDialogUiOutcome::FileResult)
-            .unwrap(),
-        Some((open, Ok(opened)))
-    );
+    let (owner, result) = session
+        .complete(open.attempt, open.nonce, DialogUiOutcome::FileResult)
+        .unwrap()
+        .expect("original open terminal");
+    assert!(owner == open);
+    assert_eq!(result, Ok(opened));
     assert!(session.fully_drained());
 
     let save = original(2, 2);
@@ -355,20 +356,20 @@ fn timely_open_result_survives_delayed_service_and_allows_next_save() {
         )
         .unwrap();
     let work = session.take_work().unwrap().unwrap();
-    assert_eq!(work.owner, save);
+    assert!(work.owner == save);
     let saved = DialogReplyV1::Save {
         canceled: false,
         file_path: "/tmp/keld-picker-destination.txt".to_owned(),
     };
     session
-        .record_native_outcome(save, MacDialogUiOutcome::FileResult, Some(saved.clone()))
+        .record_native_outcome(save, DialogUiOutcome::FileResult, Some(saved.clone()))
         .unwrap();
-    assert_eq!(
-        session
-            .complete(save.attempt, save.nonce, MacDialogUiOutcome::FileResult)
-            .unwrap(),
-        Some((save, Ok(saved)))
-    );
+    let (owner, result) = session
+        .complete(save.attempt, save.nonce, DialogUiOutcome::FileResult)
+        .unwrap()
+        .expect("original save terminal");
+    assert!(owner == save);
+    assert_eq!(result, Ok(saved));
     assert!(session.fully_drained());
 }
 
@@ -393,7 +394,7 @@ fn deadline_arbitration_preserves_prior_cancel_and_retirement() {
                 .expire_if_due(owner, cutoff, Some(cutoff), cutoff)
                 .unwrap()
         );
-        let outcome = MacDialogUiOutcome::Selected {
+        let outcome = DialogUiOutcome::Selected {
             response: 0,
             checkbox_checked: false,
         };
@@ -442,7 +443,7 @@ fn cleanup_deadline_fails_without_releasing_custody_and_never_restarts() {
     // Genuine callback + invisibility is represented by complete, not by the timer.
     session.expire(owner).unwrap();
     session
-        .complete(owner.attempt, owner.nonce, MacDialogUiOutcome::Dismissed)
+        .complete(owner.attempt, owner.nonce, DialogUiOutcome::Dismissed)
         .unwrap();
     assert!(session.fully_drained());
     let next = original(2, 2);
@@ -504,9 +505,7 @@ fn late_cleanup_poll_does_not_consume_newly_available_drain() {
             || now,
             || {
                 polled.set(true);
-                Ok(Some(
-                    keld_native::dialog::macos_message::MacMessageOutcome::Dismissed,
-                ))
+                Ok(Some(DialogUiOutcome::Dismissed))
             },
         );
         assert!(result.is_err());
@@ -526,9 +525,7 @@ fn late_cleanup_poll_does_not_consume_newly_available_drain() {
         },
         || {
             polled.set(true);
-            Ok(Some(
-                keld_native::dialog::macos_message::MacMessageOutcome::Dismissed,
-            ))
+            Ok(Some(DialogUiOutcome::Dismissed))
         },
     );
     assert!(result.unwrap().is_some());
@@ -558,9 +555,7 @@ fn poll_crossing_cleanup_cutoff_cannot_release_owner() {
         },
         || {
             observed.set(true);
-            Ok(Some(
-                keld_native::dialog::macos_message::MacMessageOutcome::Dismissed,
-            ))
+            Ok(Some(DialogUiOutcome::Dismissed))
         },
     );
     assert!(observed.get());
@@ -572,4 +567,5 @@ fn poll_crossing_cleanup_cutoff_cannot_release_owner() {
     assert!(!session.fully_drained());
 }
 
+#[cfg(target_os = "macos")]
 mod transport;

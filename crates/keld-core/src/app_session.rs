@@ -2,11 +2,11 @@
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 mod boot_contract;
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_os = "macos", windows))]
 mod dialog_custody;
 #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
 mod dialog_custody_contract;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod dialog_session;
 mod error;
 mod profile_preflight;
@@ -4026,7 +4026,11 @@ fn run_direct_app_session(
         let observe_t2_release = std::env::var_os(keld_wv::TEST_WINDOWS_T2_OBSERVE_ENV).as_deref()
             == Some(std::ffi::OsStr::new("1"));
         #[cfg(windows)]
-        let window_result = engine.run_app_until_quit(
+        let mut dialog_presentation = router.handle.dialog.as_ref().map(|session| {
+            dialog_session::DialogMainOwner::new(Arc::clone(session), window_events_tx.clone())
+        });
+        #[cfg(windows)]
+        let window_result = engine.run_app_until_quit_with_dialog(
             window_commands_rx,
             window_events_tx,
             ready_trigger,
@@ -4047,7 +4051,18 @@ fn run_direct_app_session(
                 }
                 result
             },
+            &mut |parent, terminal| {
+                if let Some(dialog) = &mut dialog_presentation {
+                    dialog
+                        .drive(parent, terminal)
+                        .map_err(|error| keld_wv::WvError::EventLoop(error.to_string()))?;
+                }
+                Ok(())
+            },
         );
+        // Release the UI event sender before joining its Core receiver below.
+        #[cfg(windows)]
+        drop(dialog_presentation);
         #[cfg(target_os = "linux")]
         let window_result = engine.run_app_until_quit(window_commands_rx, window_events_tx);
         drop(window_commands_tx);
@@ -5060,8 +5075,8 @@ fn coordinate_window_events(
             AppWindowEvent::HostInitialized { .. } => {
                 accept_ready(AppReadyTrigger::HostInitialized).and_then(|()| publish_ready())
             }
-            #[cfg(target_os = "macos")]
-            AppWindowEvent::MacDialogFinished {
+            #[cfg(any(target_os = "macos", windows))]
+            AppWindowEvent::DialogFinished {
                 attempt,
                 nonce,
                 outcome,
@@ -6401,7 +6416,7 @@ struct PrimaryRouterHandle {
     #[cfg(target_os = "macos")]
     auth_commands: Option<SyncSender<AuthWork>>,
     /// One verified, immutable dialog policy and native effect custody owner.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     dialog: Option<Arc<dialog_session::DialogSession>>,
     guardian: PlatformPrimaryOwnerHandle,
     window_commands: Sender<AppWindowCommand>,
@@ -6485,7 +6500,7 @@ struct ActivePrimaryGeneration {
     /// is protected by the same current-generation/transition lock as the
     /// caller fence, and is reset only by installing a new Runtime generation.
     /// The dialog effect owner must not copy or independently advance it.
-    #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+    #[cfg(any(target_os = "macos", windows, all(test, target_os = "linux")))]
     dialog_nonce_high_water: u64,
     /// Correlation id of this generation's accepted-but-unanswered `Quit`
     /// while it waits for its FS drain (GH-527 §4.9). Set and cleared under
@@ -6494,7 +6509,7 @@ struct ActivePrimaryGeneration {
     pending_quit: Option<CorrelationId>,
 }
 
-#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+#[cfg(any(target_os = "macos", windows, all(test, target_os = "linux")))]
 impl ActivePrimaryGeneration {
     /// Admit each positive Message nonce at most once for this authenticated
     /// primary generation. The caller fence MUST run before invoking this.
@@ -6863,7 +6878,7 @@ impl PrimaryRouterHandle {
                 (false, false) => &[&keld_ipc::channel_table::AUTH],
             };
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if self.dialog.is_some() {
             return if self.fs.is_some() {
                 &[
@@ -6901,7 +6916,7 @@ impl PrimaryRouterHandle {
             ));
         };
         active.reader_stop.store(true, Ordering::Release);
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Some(dialog) = &self.dialog {
             dialog.retire(active.identity, active.attempt);
         }
@@ -6966,7 +6981,7 @@ impl PrimaryRouterHandle {
                 .take()
                 .map(|corr| (LIFECYCLE_CHANNEL, corr)),
         ];
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         let dialog_pending = self
             .dialog
             .as_ref()
@@ -6994,11 +7009,11 @@ impl PrimaryRouterHandle {
         write_best_effort_answers(
             &mut active.writer,
             pending.into_iter().flatten().chain(auth_pending).chain({
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", windows))]
                 {
                     dialog_pending.into_iter()
                 }
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(not(any(target_os = "macos", windows)))]
                 {
                     None.into_iter()
                 }
@@ -7521,7 +7536,7 @@ impl PrimaryRouterHandle {
         // Quit removes this generation outside retire_current_generation_locked,
         // so it must retire any live dialog custody here as well; otherwise a
         // pending native panel is never tombstoned and can block final drain.
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Some(dialog) = &self.dialog {
             dialog.retire(active.identity, active.attempt);
         }
@@ -7670,7 +7685,7 @@ impl PrimaryRouterHandle {
         let link = current_guard.as_mut().map_or(Ok(()), |active| {
             // This forced tail removes the generation directly, so retire the
             // dialog custody that retire_current_generation_locked would own.
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             if let Some(dialog) = &self.dialog {
                 dialog.retire(active.identity, active.attempt);
             }
@@ -7855,6 +7870,7 @@ impl PrimaryRouterHandle {
         )
     }
 
+    #[allow(clippy::too_many_lines)] // Keep guarded generation install/replay before reader spawn.
     fn install_prepared_generation_with_identity(
         &self,
         attempt: u32,
@@ -7919,7 +7935,7 @@ impl PrimaryRouterHandle {
                 profile_binding,
                 writer: writer_stream,
                 reader_stop: Arc::clone(&reader_stop),
-                #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+                #[cfg(any(target_os = "macos", windows, all(test, target_os = "linux")))]
                 dialog_nonce_high_water: 0,
                 pending_quit: None,
             });
@@ -8224,7 +8240,7 @@ impl PrimaryRouter {
             auth: None,
             #[cfg(target_os = "macos")]
             auth_commands: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             dialog: fs.map(|guard| {
                 Arc::new(dialog_session::DialogSession::new(
                     guard.verified.clone(),
@@ -8350,7 +8366,7 @@ impl PrimaryRouter {
             auth: None,
             #[cfg(target_os = "macos")]
             auth_commands: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             dialog: fs.map(|guard| {
                 Arc::new(dialog_session::DialogSession::new(
                     guard.verified.clone(),
@@ -8453,7 +8469,7 @@ impl PrimaryRouter {
             if let Some(active) = current.take() {
                 // Router shutdown takes the generation outside the shared
                 // retirement owner; tombstone dialog custody before dropping it.
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", windows))]
                 if let Some(dialog) = &self.handle.dialog {
                     dialog.retire(active.identity, active.attempt);
                 }
@@ -8904,7 +8920,7 @@ fn read_primary_frames(
             {
                 handle.enqueue_auth(attempt, header.corr(), &payload, reader_stop)?;
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             (FrameKind::Call, channel)
                 if channel == keld_ipc::channel_table::DIALOG.id()
                     && handle.shutdown.is_running() =>
