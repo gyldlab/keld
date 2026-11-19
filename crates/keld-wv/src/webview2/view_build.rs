@@ -13,6 +13,7 @@ use tao::platform::windows::WindowExtWindows as _;
 use tao::window::WindowBuilder;
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings2;
 use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::WindowsAndMessaging::{GetMenu, IsWindow};
 use windows::core::{HSTRING, Interface as _};
 
 use super::browser_instance::BrowserExitReceipt;
@@ -95,6 +96,28 @@ enum BuildProgress {
     Complete(CompletedBuild),
     OriginalPending,
 }
+
+/// Refuse a managed candidate before any native pump, geometry or controller work.
+fn check_managed_application_menu(
+    hwnd_is_valid: impl FnOnce() -> bool,
+    has_application_menu: impl FnOnce() -> bool,
+) -> Result<(), BuildFailure> {
+    if !hwnd_is_valid() {
+        return Err(BuildFailure::window(WvError::Window(String::from(
+            "managed application window has an invalid HWND",
+        ))));
+    }
+    if has_application_menu() {
+        return Err(BuildFailure::window(WvError::Window(String::from(
+            "managed application window has a native application menu",
+        ))));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "view_build/application_menu_tests.rs"]
+mod application_menu_tests;
 
 impl NativeBuild {
     /// Every build owns one absolute deadline, including every nested pump.
@@ -221,6 +244,14 @@ impl NativeBuild {
         let window = self.window().map_err(BuildFailure::webview)?;
         let hwnd = HWND(window.hwnd() as _);
         if let Some(build) = managed {
+            check_managed_application_menu(
+                // SAFETY: this hidden top-level Tao Window is already held by
+                // the build candidate on its creating thread. IsWindow only observes it.
+                || unsafe { IsWindow(Some(hwnd)) }.as_bool(),
+                // SAFETY: the same validated top-level HWND is still held and
+                // no pump/geometry occurs between reads. Compare the borrowed menu to null.
+                || !unsafe { GetMenu(hwnd) }.0.is_null(),
+            )?;
             correct_outer_frame(window, &build.create).map_err(BuildFailure::webview)?;
         }
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
