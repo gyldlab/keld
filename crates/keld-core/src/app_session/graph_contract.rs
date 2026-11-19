@@ -1302,4 +1302,4 @@ fn package_tree_fingerprint(files: &[GraphFile], prefix: &str) -> Result<[u8; 32
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

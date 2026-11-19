@@ -529,3 +529,45 @@ fn schema8_resource_handoff_binds_the_selected_document_and_guard_receipt() {
     let other_uri = locator.url_for(&asset, None).expect("asset URL");
     assert!(source.qualify_original_entry_uri(&other_uri).is_err());
 }
+
+pub(in crate::app_session) fn retained_original_window_resources() -> (
+    tempfile::TempDir,
+    std::sync::Arc<keld_wv::resource_source::AdmittedWebAppSource>,
+    std::sync::Arc<keld_wv::preload_image::AppPreloadImage>,
+) {
+    use keld_guard::verified_manifest::load_verified_manifest;
+    use std::sync::Arc;
+
+    const POLICY: &[u8] =
+        br#"{"profile":"legacy","windows":{"editor":{"web":{"csp":"original-editor-offline"}}}}"#;
+    let fixture = fixture_with_entry();
+    let graph = bind(&fixture, Some(&qualification())).expect("admitted retained graph fixture");
+    let path = fixture.owned.path().join("verified-policy.json");
+    fs::write(&path, POLICY).expect("fixture policy");
+    let verified = load_verified_manifest(
+        File::open(&path).expect("verified file handle"),
+        path,
+        Sha256::digest(POLICY).into(),
+    )
+    .expect("exact digest");
+    let source = graph
+        .prepare_windows_web_source(
+            verified
+                .resolve_unique_original_window_csp()
+                .expect("unique editor policy"),
+        )
+        .expect("retained resource owner");
+    let image = keld_wv::preload_image::AppPreloadBudget::default()
+        .reserve_window()
+        .expect("fixture preload budget")
+        .from_qualified_graph(
+            graph
+                .read_selected_preload_bytes(&fixture.root.join(PRELOAD))
+                .expect("exact selected bytes"),
+            Sha256::digest(PRELOAD_BYTES).into(),
+            Vec::new(),
+            [("fixture".to_owned(), "1.0.0".to_owned())].into(),
+        )
+        .expect("fixture preload image");
+    (fixture.owned, source, Arc::new(image))
+}

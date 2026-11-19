@@ -341,6 +341,140 @@ fn windows_authenticated_generations_bind_retained_admission_to_the_current_prin
     ));
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_original_window_native_admission_requires_current_runtime_caller_and_registry_entry() {
+    use super::super::PrimaryCallerContext;
+    use super::super::graph_contract::tests::retained_original_window_resources;
+    use super::super::window_registry::{CreateOutcome, OriginalWindowResources};
+    use keld_ipc::window::{WindowGeneration, WindowRef};
+    use std::sync::TryLockError;
+
+    let _custody = keld_runtime::windows_job::install_host_death_job()
+        .expect("install process-lifetime custody before starting a role");
+    let (_fixture, source, preload) = retained_original_window_resources();
+    let mut role = AcceptedRole::start(RoleOwner::Primary);
+    let (first, mut control) = role.bind();
+    let principal = first.principal();
+    let (guardian, _commands) = mpsc::channel();
+    let (window, _events) = mpsc::channel();
+    let router = PrimaryRouter::start_bound(
+        first,
+        window,
+        PlatformPrimaryOwnerHandle {
+            command_tx: guardian,
+        },
+        SessionShutdownState::new(),
+        None,
+        Some(true),
+    )
+    .expect("authenticated Windows primary router");
+    let handle = router.handle();
+    let (caller, window) = {
+        let _transition = handle.shutdown.transition_guard();
+        assert!(handle.mark_window_registry_ready_guarded().expect("ready"));
+        let current = handle.current.lock().expect("current owner");
+        let active = current.as_ref().expect("authenticated primary");
+        assert!(active.identity == PrimaryLinkIdentity::Role(principal));
+        let caller = PrimaryCallerContext {
+            identity: active.identity,
+            attempt: active.attempt,
+            reader_stop: Arc::clone(&active.reader_stop),
+        };
+        let created = handle
+            .windows
+            .as_ref()
+            .expect("window service")
+            .lock()
+            .expect("registry owner")
+            .create_original_for_caller(
+                &caller,
+                CorrelationId(1),
+                (640, 480),
+                (None, None),
+                OriginalWindowResources { source, preload },
+            )
+            .expect("selected original window admitted");
+        let CreateOutcome::Build { window, .. } = created else {
+            panic!("first original creation must reserve its own native window");
+        };
+        (caller, window)
+    };
+    let witness = handle
+        .renderer_role_witness_for_window(&caller, window)
+        .expect("actual Runtime primary witness");
+    let windows = handle.windows.as_ref().expect("window service");
+    let mut entered = 0;
+    assert!(witness.try_admit_native(&mut || {
+        entered += 1;
+        assert!(matches!(
+            handle.shutdown.transition.try_lock(),
+            Err(TryLockError::WouldBlock)
+        ));
+        assert!(matches!(
+            handle.current.try_lock(),
+            Err(TryLockError::WouldBlock)
+        ));
+        assert!(matches!(windows.try_lock(), Err(TryLockError::WouldBlock)));
+        true
+    }));
+    assert_eq!(entered, 1);
+    assert!(handle.shutdown.transition.try_lock().is_ok());
+    assert!(handle.current.try_lock().is_ok());
+    assert!(windows.try_lock().is_ok());
+    let foreign = PrimaryCallerContext {
+        reader_stop: Arc::new(AtomicBool::new(false)),
+        ..caller.clone()
+    };
+    let stale_window = WindowRef {
+        incarnation: WindowGeneration(window.incarnation.0 + 1),
+        ..window
+    };
+    for (context, reference) in [(&foreign, window), (&caller, stale_window)] {
+        let refused = handle.renderer_role_witness_for_window(context, reference);
+        assert!(
+            refused.is_none_or(|witness| !witness.try_admit_native(&mut || {
+                panic!("foreign Runtime allocation or window incarnation was admitted")
+            }))
+        );
+    }
+
+    writeln!(control.get_mut(), "CRASH").expect("crash first real Runtime role");
+    control.get_mut().flush().expect("flush crash");
+    let (second, _control) = role.bind();
+    let successor = second.principal();
+    assert_ne!(principal, successor);
+    handle.retire_generation(caller.attempt).expect("retire A");
+    handle
+        .install_generation_with_identity(
+            second.attempt(),
+            second.into_stream(),
+            PrimaryLinkIdentity::Role(successor),
+        )
+        .expect("install real Runtime successor");
+    assert!(!witness.try_admit_native(&mut || panic!("retired A reached native admission")));
+    let successor = {
+        let current = handle.current.lock().expect("current owner");
+        let active = current.as_ref().expect("authenticated successor");
+        PrimaryCallerContext {
+            identity: active.identity,
+            attempt: active.attempt,
+            reader_stop: Arc::clone(&active.reader_stop),
+        }
+    };
+    let foreign_window = handle.renderer_role_witness_for_window(&successor, window);
+    assert!(
+        foreign_window.is_none_or(|witness| !witness.try_admit_native(&mut || {
+            panic!("live successor entered predecessor's nonadoptable opening window")
+        }))
+    );
+    router.shutdown().expect("router cleanup");
+    assert!(matches!(
+        role.finish(),
+        Some(keld_runtime::SupervisorOutcome::Stopped)
+    ));
+}
+
 // The shared Message owner admits nonces on macOS and exposes that owner to
 // Linux Core fixtures. Windows does not have this dialog provider yet.
 #[cfg(any(target_os = "macos", target_os = "linux"))]

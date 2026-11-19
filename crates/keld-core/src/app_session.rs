@@ -22,6 +22,8 @@ pub use self::original_runtime_entry::{
     ORIGINAL_RUNTIME_ENTRY_PATH, windows_original_entry_bootstrap_source,
 };
 mod profile_preflight;
+#[cfg(windows)]
+mod renderer_role;
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 pub use self::boot_contract::boot_schema;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]

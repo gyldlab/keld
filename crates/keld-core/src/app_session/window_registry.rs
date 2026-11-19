@@ -17,6 +17,9 @@ use keld_wv::WebviewId;
 
 use super::PrimaryLinkIdentity;
 
+#[cfg(windows)]
+mod native_scope;
+
 /// Trusted caller metadata captured by the existing authenticated primary reader.
 /// Runtime identity and Core attempt fencing remain distinct fields.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -224,7 +227,15 @@ struct Entry {
     // Only admitted cold Destroy calls allocate this metadata. It carries no
     // stream or handle, and native Released is the sole completion input.
     destroy_calls: Vec<PendingWindowCall>,
+    #[cfg(windows)]
+    original: Option<native_scope::OriginalWindowBinding>,
     phase: Phase,
+}
+
+#[cfg(windows)]
+pub(super) struct OriginalWindowResources {
+    pub(super) source: std::sync::Arc<keld_wv::resource_source::AdmittedWebAppSource>,
+    pub(super) preload: std::sync::Arc<keld_wv::preload_image::AppPreloadImage>,
 }
 
 /// One physical native release can be delayed indefinitely. Do not permit an
@@ -290,6 +301,22 @@ impl WindowRegistry {
         x: Option<i32>,
         y: Option<i32>,
     ) -> Result<CreateOutcome, WindowError> {
+        self.create_with_resources(
+            PendingWindowCall { owner, correlation },
+            (width, height),
+            (x, y),
+            #[cfg(windows)]
+            None,
+        )
+    }
+    fn create_with_resources(
+        &mut self,
+        call: PendingWindowCall,
+        (width, height): (u32, u32),
+        (x, y): (Option<i32>, Option<i32>),
+        #[cfg(windows)] original: Option<native_scope::OriginalWindowBinding>,
+    ) -> Result<CreateOutcome, WindowError> {
+        let owner = call.owner;
         self.require_ready()?;
         if let Some(entry) = self.entries.values_mut().find(|entry| {
             entry.owner_live
@@ -297,6 +324,8 @@ impl WindowRegistry {
                 && entry.adoptable
                 && matches!(entry.phase, Phase::Open(_) | Phase::ClosePending(_, _))
         }) {
+            #[cfg(windows)]
+            native_scope::adopt_original_binding(entry, &original)?;
             entry.adoptable = false;
             return Ok(CreateOutcome::Adopted(entry.window));
         }
@@ -334,7 +363,9 @@ impl WindowRegistry {
                 dropped: 0,
                 last_close_seq: 0,
                 destroy_calls: Vec::new(),
-                phase: Phase::Opening(PendingWindowCall { owner, correlation }),
+                #[cfg(windows)]
+                original,
+                phase: Phase::Opening(call),
             },
         );
         // The checked incarnation is already unique for this session: reuse it as
@@ -427,6 +458,10 @@ impl WindowRegistry {
             }
         };
         entry.phase = Phase::Destroyed(None);
+        #[cfg(windows)]
+        {
+            entry.original = None;
+        }
         let live_call = call.filter(|_| entry.owner_live && !self.ending);
         let last_window =
             if self.deferred_last_window && live_call.is_some() && !self.has_live_windows() {
@@ -745,6 +780,10 @@ impl WindowRegistry {
             };
         }
         entry.phase = Phase::Destroyed(Some(view));
+        #[cfg(windows)]
+        {
+            entry.original = None;
+        }
         entry.adoptable = false;
         let dropped_facts = entry.dropped;
         entry.dropped = 0;

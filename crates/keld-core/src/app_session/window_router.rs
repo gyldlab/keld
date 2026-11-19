@@ -43,6 +43,28 @@ impl WindowSession {
             subscribed: None,
         }
     }
+
+    #[cfg(windows)]
+    pub(super) fn create_original_for_caller(
+        &mut self,
+        caller: &PrimaryCallerContext,
+        correlation: CorrelationId,
+        size: (u32, u32),
+        position: (Option<i32>, Option<i32>),
+        resources: super::window_registry::OriginalWindowResources,
+    ) -> Result<CreateOutcome, WindowError> {
+        self.registry
+            .create_original_for_caller(caller, correlation, size, position, resources)
+    }
+
+    #[cfg(windows)]
+    pub(super) fn current_original_binding(
+        &self,
+        caller: &PrimaryCallerContext,
+        window: keld_ipc::window::WindowRef,
+    ) -> bool {
+        self.registry.current_original_binding(caller, window)
+    }
     #[cfg(any(target_os = "macos", windows))]
     pub(super) fn admitted_dialog_view(
         &mut self,
