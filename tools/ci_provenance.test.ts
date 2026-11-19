@@ -972,8 +972,13 @@ function assertKEL270HygieneContext(job: Record<string, any>) {
   expect(steps[1].uses).toBe(
     "dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8",
   );
+  const selectedToolchain = (
+    Bun.TOML.parse(readFileSync("rust-toolchain.toml", "utf8")) as {
+      toolchain: { channel: string };
+    }
+  ).toolchain.channel;
   expect(steps[1].with).toEqual({
-    toolchain: "1.99.1",
+    toolchain: selectedToolchain,
     components: "rustfmt, clippy",
   });
   expect(Object.keys(steps[2]).sort()).toEqual(["name", "run", "shell"]);
@@ -1066,8 +1071,9 @@ unixOnlyKEL270Test(
     try {
       const startup = join(temporary, "attacker-init.sh");
       writeFileSync(startup, 'echo "STARTUP_EXECUTED"; exit 0\n');
-      const env = { ...process.env };
-      delete env.BASH_ENV;
+      // Inherited startup controls such as POSIXLY_CORRECT make Bash ignore
+      // BASH_ENV, so both children get only the PATH needed to find Bash.
+      const env = { PATH: process.env.PATH ?? "" };
       const body = 'echo "EVIDENCE_BODY_EXECUTED"; exit 73';
       const invoke = (environment: Record<string, string | undefined>) =>
         Bun.spawnSync(
