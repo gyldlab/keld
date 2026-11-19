@@ -320,7 +320,7 @@ impl<K: Ord + Copy, O> ManagedCustody<K, O> {
     }
 }
 
-impl ManagedCustody<WindowId> {
+impl<O> ManagedCustody<WindowId, O> {
     /// Call at the top of a later loop callback, before expiry and exit checks.
     pub(super) fn publish_staged<E>(
         &mut self,

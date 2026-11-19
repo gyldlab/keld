@@ -3448,7 +3448,7 @@ type SelectedNavigationObserver = dyn Fn(
 pub struct RendererOutcomeWake(EventLoopProxy<WindowsLoopEvent>);
 
 impl std::fmt::Debug for RendererOutcomeWake {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result<()> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("RendererOutcomeWake")
             .finish_non_exhaustive()
