@@ -368,9 +368,51 @@ fn windows_renderer_worker_error_precedes_the_core_progress_wake() {
             .reader_stop
             .load(std::sync::atomic::Ordering::Acquire)
     );
+
+    let completion = dispatch.completion();
+    let (events, received) = mpsc::channel();
+    events
+        .send(crate::app_session::AppWindowEvent::HostWriterProgress)
+        .expect("forward the observed window command as Core progress");
+    let failure = crate::app_session::coordinate_window_events(
+        &received,
+        &handle,
+        &handle.window_commands,
+        crate::app_session::AppReadyTrigger::NavigationReady,
+        |_| Ok(()),
+        None,
+        Some(&completion),
+    )
+    .expect_err("coordinator must see the actual error before worker exit");
+    assert!(
+        failure
+            .to_string()
+            .contains("original native outcome wake refused")
+    );
+    assert!(matches!(
+        fixture.events.try_recv(),
+        Ok(AppWindowCommand::Fatal)
+    ));
+    assert!(fixture.events.try_recv().is_err(), "one terminal command");
+    assert!(
+        caller
+            .reader_stop
+            .load(std::sync::atomic::Ordering::Acquire)
+    );
+    drop(completion);
+
     release_worker
         .send(())
         .expect("release the original worker");
+    let exact = dispatch
+        .finish_released()
+        .expect_err("same original dispatcher error");
+    assert_eq!(exact.phase, "renderer outcome wake");
+    assert!(
+        exact
+            .detail
+            .contains("original native outcome wake refused")
+    );
     fixture.router.shutdown().expect("router cleanup");
     assert!(matches!(
         role.finish(),

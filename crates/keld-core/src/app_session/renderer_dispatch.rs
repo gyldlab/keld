@@ -78,6 +78,24 @@ impl RendererOutcomes {
 }
 
 impl RendererDispatch {
+    /// Share observation of the same worker result with the event coordinator.
+    pub(super) fn completion(&self) -> Arc<OnceLock<Result<(), HostAppError>>> {
+        Arc::clone(&self.terminal)
+    }
+
+    /// Collect the worker after the native owner proved release and the event
+    /// coordinator released its observation of this exact result.
+    pub(super) fn finish_released(mut self) -> Result<(), HostAppError> {
+        let Some(worker) = self.worker.take() else {
+            return Ok(());
+        };
+        worker.join().map_err(|_| worker_panic())?;
+        Arc::try_unwrap(self.terminal)
+            .map_err(|_| app_detail("renderer dispatch", "terminal observer still owns result"))?
+            .into_inner()
+            .ok_or_else(|| app_detail("renderer dispatch", "worker returned without its result"))?
+    }
+
     pub(super) fn prepare() -> (Self, RendererBridgeEndpoint) {
         let (requests, receiver) = mpsc::sync_channel(1);
         let (outcomes, outcome_receiver) = mpsc::sync_channel(1);

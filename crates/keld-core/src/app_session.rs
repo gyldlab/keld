@@ -1475,6 +1475,7 @@ struct RetainedMacSession {
 struct RetainedWindowsSession {
     _engine: WebView2Engine,
     _dialog_main: Option<dialog_session::DialogMainOwner>,
+    _renderer_dispatch: Option<renderer_dispatch::RendererDispatch>,
     _router: PrimaryRouter,
     _primary_owner: DirectPrimaryOwner,
     _coordinator: JoinHandle<Result<(), HostAppError>>,
@@ -4126,6 +4127,16 @@ fn run_direct_app_session(
         let (window_events_tx, window_events_rx) = mpsc::channel();
         let router_handle = router.handle();
         let commands_for_events = window_commands_tx.clone();
+        #[cfg(windows)]
+        let mut renderer_plan = inputs
+            .original_source
+            .map(|_| renderer_dispatch::RendererDispatch::prepare());
+        #[cfg(windows)]
+        let renderer_completion = renderer_plan
+            .as_ref()
+            .map(|(dispatch, _)| dispatch.completion());
+        #[cfg(windows)]
+        let coordinator_renderer_completion = renderer_completion.clone();
         // The evidence seam's handover request, right after this session's `Ready` (the
         // recovery arm acknowledged): the shape of the coordinator's production request.
         #[cfg(all(debug_assertions, windows))]
@@ -4156,6 +4167,8 @@ fn run_direct_app_session(
                     on_ready,
                     #[cfg(windows)]
                     Some((&coordinator_deadline, pre_init_terminal)),
+                    #[cfg(windows)]
+                    coordinator_renderer_completion.as_deref(),
                 )
             })
             .map_err(|source| app_io("direct window event coordinator", &source))?;
@@ -4169,6 +4182,8 @@ fn run_direct_app_session(
         let mut _environment_descendant = None;
         #[cfg(windows)]
         let mut failed_native_engine = None;
+        #[cfg(windows)]
+        let mut renderer_dispatch = None;
         let engine = run_direct_startup_if_session_running(shutdown, || {
             #[cfg(windows)]
             let mut direct_engine = match prepared_engine.take() {
@@ -4191,6 +4206,27 @@ fn run_direct_app_session(
             }
             #[cfg(target_os = "linux")]
             let mut direct_engine = direct_engine;
+            #[cfg(windows)]
+            if let Some((mut dispatch, endpoint)) = renderer_plan.take() {
+                let observer = router.handle();
+                let attached = direct_engine
+                    .attach_selected_renderer(endpoint, move |context, fact| {
+                        observer
+                            .capture_original_navigation_fact(context, fact)
+                            .map_err(|error| WvError::EventLoop(error.to_string()))
+                    })
+                    .map_err(|error| app_detail("selected renderer attachment", error.to_string()))
+                    .and_then(|wake| dispatch.start(router.handle(), move || wake.notify()));
+                renderer_dispatch = Some(dispatch);
+                if let Err(error) = attached {
+                    if direct_engine.retains_failed_build() {
+                        failed_native_engine = Some(direct_engine);
+                    } else {
+                        prepared_engine = Some(direct_engine);
+                    }
+                    return Err(error);
+                }
+            }
             // A facade boot's first window belongs to the application's later
             // authenticated Create; a zero-window Init is the observable.
             if let Some(spec) = &spec {
@@ -4229,6 +4265,7 @@ fn run_direct_app_session(
                     *retained = Some(Box::new(RetainedWindowsSession {
                         _engine: engine,
                         _dialog_main: None,
+                        _renderer_dispatch: renderer_dispatch,
                         _router: router,
                         _primary_owner: primary_owner,
                         _coordinator: event_coordinator,
@@ -4301,9 +4338,18 @@ fn run_direct_app_session(
         #[cfg(windows)]
         if engine.retains_failed_build() {
             shutdown.stop_reader();
+            let window_error =
+                window_result.map_err(|source| app_detail("direct app window", source.to_string()));
+            let primary = match renderer_completion.as_deref().and_then(OnceLock::get) {
+                Some(Err(error)) => collapse_app_failures(error, [window_error]),
+                _ => window_error.err().unwrap_or_else(|| {
+                    app_detail("direct app window", "the UI loop still owns native state")
+                }),
+            };
             *retained = Some(Box::new(RetainedWindowsSession {
                 _engine: engine,
                 _dialog_main: dialog_presentation,
+                _renderer_dispatch: renderer_dispatch,
                 _router: router,
                 _primary_owner: primary_owner,
                 _coordinator: event_coordinator,
@@ -4314,10 +4360,7 @@ fn run_direct_app_session(
                 installed_package: None,
                 guard: None,
             }));
-            return Err(window_result.err().map_or_else(
-                || app_detail("direct app window", "the UI loop still owns a native build"),
-                |source| app_detail("direct app window", source.to_string()),
-            ));
+            return Err(primary);
         }
         // Release the UI event senders before joining their Core receiver.
         #[cfg(windows)]
@@ -4351,6 +4394,13 @@ fn run_direct_app_session(
             .join()
             .map_err(|_| app_detail("direct window event coordinator", "thread panicked"))
             .and_then(std::convert::identity);
+        #[cfg(windows)]
+        let renderer_result = {
+            drop(renderer_completion);
+            renderer_dispatch.map_or(Ok(()), renderer_dispatch::RendererDispatch::finish_released)
+        };
+        #[cfg(not(windows))]
+        let renderer_result = Ok(());
         let lease_result = take_direct_lease_error(lease_errors.as_ref());
         let router_result = router.shutdown();
         let owner_result = primary_owner.shutdown();
@@ -4367,6 +4417,7 @@ fn run_direct_app_session(
                         window_result
                             .map_err(|source| app_detail("direct app window", source.to_string())),
                         handover_result,
+                        renderer_result,
                         event_result,
                         router_result,
                     ],
@@ -4380,13 +4431,20 @@ fn run_direct_app_session(
                 let primary = app_detail("initial direct navigation", source.to_string());
                 Err(collapse_app_failures(
                     &primary,
-                    [lease_result, owner_result, router_result, event_result],
+                    [
+                        lease_result,
+                        owner_result,
+                        router_result,
+                        renderer_result,
+                        event_result,
+                    ],
                 ))
             }
             result => collapse_app_results([
                 lease_result,
                 result.map_err(|source| app_detail("direct app window", source.to_string())),
                 handover_result,
+                renderer_result,
                 event_result,
                 router_result,
                 owner_result,
@@ -5292,6 +5350,21 @@ fn receive_initial_milestone(
     }
 }
 
+#[cfg(windows)]
+fn stop_failed_renderer_dispatch(
+    router: &PrimaryRouterHandle,
+    commands: &Sender<AppWindowCommand>,
+) -> Result<(), HostAppError> {
+    let _transition = router.shutdown.transition_guard();
+    if router.shutdown.is_running() && !router.shutdown.reader_stop.load(Ordering::Acquire) {
+        commands
+            .send(AppWindowCommand::Fatal)
+            .map_err(|_| app_detail("renderer dispatch terminal", "window command owner ended"))?;
+        router.shutdown.stop_reader();
+    }
+    Ok(())
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn coordinate_window_events(
     events: &Receiver<AppWindowEvent>,
@@ -5300,6 +5373,7 @@ fn coordinate_window_events(
     #[cfg(any(target_os = "macos", windows))] ready_trigger: AppReadyTrigger,
     mut on_ready: impl FnMut(&PrimaryRouterHandle) -> Result<(), HostAppError>,
     #[cfg(any(target_os = "macos", windows))] init_watch: InitTerminalWatch<'_>,
+    #[cfg(windows)] renderer_terminal: Option<&OnceLock<Result<(), HostAppError>>>,
 ) -> Result<(), HostAppError> {
     #[cfg(any(target_os = "macos", windows))]
     let mut ready_signaled = false;
@@ -5346,7 +5420,26 @@ fn coordinate_window_events(
             // Registry windows own their count; never emit a legacy count.
             AppWindowEvent::LastWindowClosed => Ok(()),
             #[cfg(windows)]
-            AppWindowEvent::HostWriterProgress => router.service_primary_writer_progress(),
+            AppWindowEvent::HostWriterProgress => {
+                let progress = router.service_primary_writer_progress();
+                if let Some(Err(error)) = renderer_terminal.and_then(OnceLock::get) {
+                    let terminal = stop_failed_renderer_dispatch(router, commands);
+                    return Err(collapse_app_failures(error, [progress, terminal]));
+                }
+                match progress {
+                    Ok(()) if renderer_terminal.is_some() => {
+                        use window_router::NativePublicationDisposition;
+                        match router.service_original_navigation() {
+                            Ok(NativePublicationDisposition::Handled) => Ok(()),
+                            Ok(NativePublicationDisposition::FatalQueued(error)) => {
+                                return Err(error);
+                            }
+                            Err(error) => Err(error),
+                        }
+                    }
+                    result => result,
+                }
+            }
             #[cfg(all(windows, test))]
             event if !router.uses_primary_writer() => router.window_native_event(event),
             #[cfg(not(windows))]

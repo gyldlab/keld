@@ -166,6 +166,8 @@ fn coordinate_terminal(
             app::AppReadyTrigger::HostInitialized,
             |_| Ok(()),
             None,
+            #[cfg(windows)]
+            None,
         )
     })
 }
