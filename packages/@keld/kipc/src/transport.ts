@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:5cbc991f0852a194ad45fca002c9b41bdf1996810dcb857684d1027d28302c16
+// @keld/kipc-transport sha256:9e9622bb0a840586b19e672878715347ba31bf9e3d32b078b03a030bb479270f
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -37,6 +37,17 @@ declare const __KELD_RUNTIME_PROCESS_FACTS__: boolean;
 export const runtimeProcessFactsSelected =
   typeof __KELD_RUNTIME_PROCESS_FACTS__ !== "undefined" &&
   __KELD_RUNTIME_PROCESS_FACTS__ === true;
+
+// Captured by the qualified Windows Host before application imports.
+declare const __KELD_WINDOWS_HOST__: boolean;
+declare const __KELD_WINDOWS_DESKTOP_SNAPSHOT__: boolean;
+
+/** @internal Host-selected desktop facts capability; it grants no authority. */
+export const windowsDesktopSnapshotSelected =
+  typeof __KELD_WINDOWS_HOST__ === "boolean" &&
+  __KELD_WINDOWS_HOST__ &&
+  typeof __KELD_WINDOWS_DESKTOP_SNAPSHOT__ === "boolean" &&
+  __KELD_WINDOWS_DESKTOP_SNAPSHOT__;
 
 // The macOS guardian preloads this sidecar before application dependencies. These
 // immutable operations own §4.6 state/wake-drain/copy and Source failure; consumers

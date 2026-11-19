@@ -68,11 +68,16 @@ import {
   kipcError,
   linkError,
   nativeFacadeBootSelected,
+  windowsDesktopSnapshotSelected,
   quitAndCloseLink,
   stateByteLength,
   type KeldCallError,
   type WorkerReceiveTable,
 } from "@keld/kipc";
+
+// GH446: the selected caller has one absolute Subscribe deadline, separate
+// from native Init and the Host's aggregate writer settlement.
+const DESKTOP_SUBSCRIBE_DEADLINE_MS = 30_000;
 
 export type LifecycleEventName = "ready" | "last-window-closed";
 
@@ -175,6 +180,7 @@ export class LifecycleLink {
     // Bun. This hint does not grant window authority: the existing authenticated
     // primary link, host Subscribe admission and per-window owner still do that.
     const facadeWindows = nativeFacadeBootSelected;
+    const desktopSelected = facadeWindows && windowsDesktopSnapshotSelected;
     const workerLink = await WorkerLink.open({
       link,
       receive: facadeWindows
@@ -185,7 +191,10 @@ export class LifecycleLink {
         : LIFECYCLE_RECEIVE,
     });
     const windowSource = facadeWindows
-      ? new WindowSource((fact) => handlers.onWindowFact?.(fact))
+      ? new WindowSource(
+          (fact) => handlers.onWindowFact?.(fact),
+          desktopSelected,
+        )
       : undefined;
     const session = new LifecycleLink(workerLink, windowSource);
     if (windowSource) attachMirror(workerLink, windowSource);
@@ -265,7 +274,9 @@ export class LifecycleLink {
         const reply = await workerLink.call(
           LIFECYCLE_CHANNEL,
           request,
-          APP_LINK_IO_DEADLINE_MS,
+          desktopSelected
+            ? DESKTOP_SUBSCRIBE_DEADLINE_MS
+            : APP_LINK_IO_DEADLINE_MS,
         );
         if (reply.length !== 1 || reply[0] !== 1) {
           throw reply[0] === 2 && reply.length === 2
@@ -277,6 +288,12 @@ export class LifecycleLink {
                 "KELD-IPC-003",
                 "Host returned an invalid native window subscription reply",
               );
+        }
+        if (desktopSelected && windowSource.desktop() === undefined) {
+          throw linkError(
+            "KELD-IPC-005",
+            "Host accepted the selected desktop subscription without an available snapshot. Check the matched Host and SDK before restarting the role.",
+          );
         }
         replayComplete = true;
         maybePublishReady();
