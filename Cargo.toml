@@ -227,6 +227,8 @@ objc2-web-kit = { version = "=0.3.2", default-features = false }
 #   last release commit is old (2021), so human dependency/security review is
 #   mandatory and this pin is intentionally exact.
 windows-permissions = "=0.2.4"
+# Same COM types already selected by windows 0.61.3 and webview2-com 0.38.
+windows-core = "=0.61.2"
 
 [workspace.lints.rust]
 missing_docs = "warn"

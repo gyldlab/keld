@@ -56,6 +56,8 @@ mod managed_windows;
 pub(crate) mod media_acceptance;
 mod native_text;
 mod navigation_diagnostics;
+mod original_bootstrap;
+pub(crate) mod original_bridge;
 mod original_callbacks;
 mod original_load;
 mod original_navigation;

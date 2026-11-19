@@ -13,6 +13,7 @@
   },
   "exports": {
     ".": "./src/transport.ts",
+    "./endpoint-value-codec": "./src/endpoint-value-codec.ts",
     "./runtime-process-facts": "./src/runtime-process.generated.ts"
   },
   "files": [

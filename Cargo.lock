@@ -1720,6 +1720,7 @@ dependencies = [
  "tao 0.35.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "webview2-com",
  "windows",
+ "windows-core",
  "windows-permissions",
  "wry",
 ]

@@ -91,6 +91,8 @@ keld-update = { workspace = true }
 #   what this crate exists to provide. Same version wry pinned, so the
 #   macOS-side lockfile entry is unchanged.
 webview2-com = "0.38"
+# GH-1184: the SDK's implement macro names windows_core directly for the raw completion.
+windows-core = { workspace = true }
 # HWND/RECT/HRESULT constants (Win32_Foundation), atomic protected-DACL profile
 # directory creation (Win32_Security/FileSystem), and CoInitializeEx/
 # CoTaskMemFree (Win32_System_Com). Same crate+version webview2-com pins — an explicit path
