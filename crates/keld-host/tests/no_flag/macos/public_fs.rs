@@ -632,20 +632,14 @@ fn observe_recovery_actions(
     let (successor_boot, settled_reports, boot_count) =
         await_recovery_after_loss(observer, evidence, recovery.pending_handler, first.bun);
     assert_ne!(first.bun, successor_boot.pid);
-    assert_bun_cleanup_custody(
-        successor_boot.pid,
+    assert_recovery_successor_credentials(
+        &first_boot,
         first.guardian,
+        &successor_boot,
         host_pid,
+        prepared,
         &expected_bun_image,
-        prepared.stage.host(),
-    );
-    // Until every independent census above passes, fallback cleanup retains
-    // only the already-attributed G1 group. Ordinary HTTP data grants no custody.
-    cleanup.bun_group = Some(successor_boot.pid);
-    assert_retired_credentials(
-        &first_boot.app_link,
-        &successor_boot.app_link,
-        &prepared.stage,
+        cleanup,
     );
     observer.send_recovery_command(RecoveryCommand::Admit(successor_boot.pid));
     let ready = observer
@@ -727,6 +721,33 @@ fn observed_original_recovery(
         if error.kind() == std::io::ErrorKind::NotFound));
     assert_eq!(fs::read(&recovery.witness).expect("empty witness"), b"");
     (first_boot, first, initial_document)
+}
+
+fn assert_recovery_successor_credentials(
+    first_boot: &RecoveryBoot,
+    guardian: u32,
+    successor_boot: &RecoveryBoot,
+    host_pid: u32,
+    prepared: &PreparedLaunch,
+    expected_bun_image: &Path,
+    cleanup: &mut ShippingLaunchCleanup,
+) {
+    assert_bun_cleanup_custody(
+        successor_boot.pid,
+        guardian,
+        host_pid,
+        expected_bun_image,
+        prepared.stage.host(),
+    );
+    // Until every independent census above passes, fallback cleanup retains
+    // only the already-attributed G1 group. Ordinary HTTP data grants no custody.
+    cleanup.bun_group = Some(successor_boot.pid);
+    assert_retired_credentials(
+        &first_boot.app_link,
+        &successor_boot.app_link,
+        &prepared.stage,
+        expected_bun_image,
+    );
 }
 
 /// Independent old/new-root effects remain separate from reported G2 success.
@@ -816,6 +837,7 @@ fn assert_retired_credentials(
     old_link: &str,
     successor_link: &str,
     stage: &keld_cli::boot::DevBootStage,
+    admitted_bun_image: &Path,
 ) -> Output {
     const PROBE: &str = r#"
 const { parseAppLink, WriteQueue, DrainSignal, FrameKind, HANDSHAKE_CHANNEL, withIoDeadline } =
@@ -852,18 +874,15 @@ try {
     );
     // A separate hostile fixture consumes the canonical staged wire helpers.
     // It is not an application adapter or a second link in the public app.
-    let probe = Command::new("bun")
-        .args(["-e", PROBE])
-        .env(
-            "KELD_RECOVERY_PROBE_TRANSPORT",
-            stage.root().join("src/kipc-transport.ts"),
-        )
-        .env("KELD_RECOVERY_PROBE_OLD", old_link)
-        .env("KELD_RECOVERY_PROBE_FRESH", successor_link)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("isolated canonical stale-token probe");
+    let probe = stale_token_probe_command(
+        admitted_bun_image,
+        PROBE,
+        &stage.root().join("src/kipc-transport.ts"),
+        old_link,
+        successor_link,
+    )
+    .spawn()
+    .expect("isolated canonical stale-token probe");
     let output = wait_child_output(probe, EVENT_DEADLINE);
     assert!(
         output.status.success(),
@@ -871,6 +890,73 @@ try {
     );
     assert_eq!(output.stdout, b"RETIRED_TOKEN_SERVER_EOF_NO_REPLY\n");
     output
+}
+
+fn stale_token_probe_command(
+    admitted_bun_image: &Path,
+    script: &str,
+    transport: &Path,
+    old_link: &str,
+    successor_link: &str,
+) -> Command {
+    // Kernel process-image census in the caller, never PATH, selects the Bun
+    // that the admitted generation actually runs. Canonical input also rules
+    // out a late symlink alias to an unrelated executable.
+    assert!(admitted_bun_image.is_absolute(), "admitted Bun image path");
+    assert_eq!(
+        fs::canonicalize(admitted_bun_image).expect("observed Bun image remains readable"),
+        admitted_bun_image,
+        "stale-token probe image must be the canonical admitted executable"
+    );
+    let mut command = Command::new(admitted_bun_image);
+    command
+        .args(["-e", script])
+        .env("KELD_RECOVERY_PROBE_TRANSPORT", transport)
+        .env("KELD_RECOVERY_PROBE_OLD", old_link)
+        .env("KELD_RECOVERY_PROBE_FRESH", successor_link)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+#[test]
+fn stale_token_probe_never_selects_a_path_injected_bun() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let owned = tempfile::tempdir().expect("owned hostile PATH");
+    let marker = owned.path().join("fake-bun-executed");
+    let fake = owned.path().join("bun");
+    fs::write(
+        &fake,
+        b"#!/bin/sh\nprintf fake > \"$KELD_FAKE_BUN_MARKER\"\nprintf 'RETIRED_TOKEN_SERVER_EOF_NO_REPLY\\n'\n",
+    )
+    .expect("hostile executable");
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755))
+        .expect("make hostile executable runnable");
+    // A fixed harmless executable tests command selection without requiring a
+    // real app session; the product recovery still checks the genuine Bun wire.
+    let trusted = fs::canonicalize("/usr/bin/true").expect("OS-owned fixed test executable");
+    let mut command = stale_token_probe_command(
+        &trusted,
+        "not-run-by-true",
+        &owned.path().join("transport.ts"),
+        "old",
+        "fresh",
+    );
+    let output = wait_child_output(
+        command
+            .env("PATH", owned.path())
+            .env("KELD_FAKE_BUN_MARKER", &marker)
+            .spawn()
+            .expect("trusted executable launch"),
+        EVENT_DEADLINE,
+    );
+    assert!(
+        output.status.success(),
+        "pinned executable did not run: {output:?}"
+    );
+    assert!(output.stdout.is_empty(), "fake Bun supplied success output");
+    assert!(!marker.exists(), "ambient PATH binary was selected");
 }
 
 fn await_recovery_page(

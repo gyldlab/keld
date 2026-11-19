@@ -70,6 +70,8 @@ fn recover(
     let mut g1 = RecoveryGeneration::try_accept(&fixture.control, "G1").expect("G1 control");
     assert_eq!(parent_process(g1.guardian_pid), host);
     assert_eq!(process_group(g1.bun_pid), g1.bun_pid);
+    let g1_bun_image =
+        fs::canonicalize(super::process_image_path(g1.bun_pid)).expect("kernel G1 Bun executable");
     cleanup.record_authenticated_groups(process_group(host), process_group(g1.bun_pid));
     g1.writer.write_all(b"ADMIT\n").expect("admit G1");
     expect_record(&mut g1, "READY");
@@ -103,8 +105,18 @@ fn recover(
     assert_eq!(g1.guardian_pid, g2.guardian_pid);
     assert_eq!(parent_process(g2.guardian_pid), host);
     assert_eq!(process_group(g2.bun_pid), g2.bun_pid);
+    assert_eq!(
+        fs::canonicalize(super::process_image_path(g2.bun_pid)).expect("kernel G2 Bun executable"),
+        g1_bun_image,
+        "the recovered Bun must run the original verified executable"
+    );
     cleanup.record_authenticated_groups(process_group(host), process_group(g2.bun_pid));
-    let stale = super::assert_retired_credentials(&g1.app_link, &g2.app_link, &fixture.stage);
+    let stale = super::assert_retired_credentials(
+        &g1.app_link,
+        &g2.app_link,
+        &fixture.stage,
+        &g1_bun_image,
+    );
     eprintln!("KEL78_SCHEMA4_STALE_TOKEN_PROBE {stale:?}");
     eprintln!(
         "KEL78_SCHEMA4_GENERATIONS host={host} guardian={} g1={} g2={} endpoints_changed={} tokens_changed={}",

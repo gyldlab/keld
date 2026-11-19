@@ -3,9 +3,10 @@ use crate::support::TITLE;
 use crate::support::admission::{NativeAbsenceWatcher, PolicyReadFault};
 use crate::support::control::wait_child_output;
 use crate::support::control::wait_child_output_observing;
+use crate::support::dev_cycle::ShippingLaunchCleanup;
 use crate::support::invalid_stage::{InvalidBoot, InvalidPolicy};
 use crate::support::native_window::native_windows;
-use crate::support::process::{await_process_state, session_dirs_for};
+use crate::support::process::{await_process_state, process_exists, session_dirs_for};
 use crate::support::product::ProductFixture;
 use std::fs;
 use std::io::Write;
@@ -293,32 +294,46 @@ pub(crate) fn assert_invalid_stage_is_resource_free(
     } else {
         command.env_remove("KELD_DEV_LEASE");
     }
-    let mut child = command.spawn().expect("start suspended invalid host");
+    // The suspended shell can panic during state/census setup. Install its
+    // kill-and-reap owner before any assertion or another process spawn.
+    let mut host_owner =
+        ShippingLaunchCleanup::new(command.spawn().expect("start suspended invalid host"));
     // Retain the valid lease writer until the real host has exited. Legacy
     // callers still select the lease-less invalid-stage path above.
+    let child = host_owner.cli.as_mut().expect("suspended host owner");
     let _dev_lease = child.stdin.take();
     let host_pid = child.id();
     await_process_state(host_pid, 'T');
-    let native = watcher.spawn(host_pid);
+    // The watcher is a second independent process: its owner must also be
+    // installed before the waiting callback can panic.
+    let mut native_owner = ShippingLaunchCleanup::new(watcher.spawn(host_pid));
     let mut forbidden_control = false;
-    let output = wait_child_output_observing(child, EVENT_DEADLINE, || match listener.accept() {
-        Ok((mut stream, _)) => {
-            forbidden_control = true;
-            stream
-                .write_all(b"QUIT\n")
-                .expect("stop forbidden app through its owned lifecycle path");
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-        Err(error) => panic!("inspect invalid-stage control: {error}"),
-    });
+    let output = wait_child_output_observing(
+        host_owner.cli.take().expect("retained suspended host"),
+        EVENT_DEADLINE,
+        || match listener.accept() {
+            Ok((mut stream, _)) => {
+                forbidden_control = true;
+                stream
+                    .write_all(b"QUIT\n")
+                    .expect("stop forbidden app through its owned lifecycle path");
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => panic!("inspect invalid-stage control: {error}"),
+        },
+    );
     assert!(!forbidden_control, "{case}: Bun entered before preflight");
     assert!(
         !output.status.success(),
         "{case}: invalid boot became success"
     );
-    let native_output = native
-        .wait_with_output()
-        .expect("wait native absence watcher");
+    let native_output = wait_child_output(
+        native_owner
+            .cli
+            .take()
+            .expect("retained native absence watcher"),
+        EVENT_DEADLINE,
+    );
     assert!(
         native_output.status.success(),
         "{case}: watcher failed: {native_output:?}"
@@ -351,4 +366,54 @@ pub(crate) fn assert_invalid_stage_is_resource_free(
     );
     let _ = fs::remove_file(control_path);
     output
+}
+
+#[test]
+fn suspended_host_and_watcher_are_reaped_on_early_panic() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    let owned = tempfile::tempdir().expect("owned suspended process regression");
+    for after_watcher_spawn in [false, true] {
+        let marker = owned
+            .path()
+            .join(format!("unexpected-resume-{after_watcher_spawn}"));
+        let mut host_pid = None;
+        let mut watcher_pid = None;
+        let failure = catch_unwind(AssertUnwindSafe(|| {
+            let host_owner = ShippingLaunchCleanup::new(
+                Command::new("/bin/sh")
+                    .args(["-c", "kill -STOP $$; printf resumed > \"$1\"", "preflight"])
+                    .arg(&marker)
+                    .spawn()
+                    .expect("owned stopped host child"),
+            );
+            let pid = host_owner.cli.as_ref().expect("host handle").id();
+            host_pid = Some(pid);
+            await_process_state(pid, 'T');
+            assert!(after_watcher_spawn, "forced pre-watcher failure");
+            let watcher_owner = ShippingLaunchCleanup::new(
+                Command::new("/bin/sleep")
+                    .arg("60")
+                    .spawn()
+                    .expect("owned watcher child"),
+            );
+            watcher_pid = Some(watcher_owner.cli.as_ref().expect("watcher handle").id());
+            panic!("forced post-watcher failure");
+        }));
+        let original = failure.expect_err("forced failure must unwind");
+        let expected = if after_watcher_spawn {
+            "forced post-watcher failure"
+        } else {
+            "forced pre-watcher failure"
+        };
+        assert_eq!(original.downcast_ref::<&str>(), Some(&expected));
+        assert!(!process_exists(host_pid.expect("observed suspended host")));
+        if let Some(pid) = watcher_pid {
+            assert!(!process_exists(pid), "watcher survived an early failure");
+        }
+        assert!(
+            !marker.exists(),
+            "stopped host resumed into application work"
+        );
+    }
 }

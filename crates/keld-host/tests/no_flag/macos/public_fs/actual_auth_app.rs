@@ -3,9 +3,10 @@
 //! reuse its observer/image owners; no FS assertions or renderer input actions.
 use std::error::Error;
 use std::fs;
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -24,6 +25,9 @@ use crate::support::process::{
     ProcessExitObserver, await_process_gone, parent_process, process_group, session_dirs_for,
 };
 
+#[path = "actual_auth_app/custody_tests.rs"]
+#[cfg(test)]
+mod custody_tests;
 #[path = "actual_auth_app/quit_diagnostics.rs"]
 mod quit_diagnostics;
 use quit_diagnostics::wait_for_auth_cli_quit;
@@ -329,8 +333,24 @@ fn await_phases(
     observation: &Observation,
     project: &Path,
     case: &Case,
+    custody: &mut AuthCliCustody,
 ) -> SmokeResult<(Value, Value, Value, Vec<Value>)> {
-    let deadline = Instant::now() + EVENT_DEADLINE;
+    await_phases_until(
+        observation,
+        project,
+        case,
+        custody,
+        Instant::now() + EVENT_DEADLINE,
+    )
+}
+
+fn await_phases_until(
+    observation: &Observation,
+    project: &Path,
+    case: &Case,
+    custody: &mut AuthCliCustody,
+    deadline: Instant,
+) -> SmokeResult<(Value, Value, Value, Vec<Value>)> {
     let mut app_ready = None;
     let mut page_ready = None;
     let mut result = None;
@@ -338,10 +358,19 @@ fn await_phases(
     let mut diagnostic_phases = Vec::new();
     persist_phase_status(project, "waiting", &diagnostic_phases)?;
     while app_ready.is_none() || page_ready.is_none() || result.is_none() {
-        let report = match observation_time_left(deadline)
-            .and_then(|remaining| observation.reports.recv_timeout(remaining))
-        {
+        // Native OS lineage is independent of app JSON. The CLI has already
+        // started its Host in a distinct group; keep a cleanup receipt while
+        // waiting for the first authenticated app report, including timeout.
+        custody.capture_os_groups();
+        let report = match observation_time_left(deadline).and_then(|remaining| {
+            observation
+                .reports
+                .recv_timeout(remaining.min(Duration::from_millis(100)))
+        }) {
             Ok(report) => report,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline => {
+                continue;
+            }
             Err(error) => {
                 let status = match error {
                     std::sync::mpsc::RecvTimeoutError::Timeout => "timed-out",
@@ -536,6 +565,132 @@ fn observed_auth_family(app_ready: &Value, cli_pid: u32) -> SmokeResult<[u32; 4]
     Ok([host, guardian, bun, descendant])
 }
 
+/// Emergency custody for one CLI that this test actually spawned. Native
+/// process parentage and image paths, rather than unauthenticated HTTP reports,
+/// give a narrow fallback when a phase fails before app-ready is observed.
+struct AuthCliCustody {
+    launch: ShippingLaunchCleanup,
+    cli_pid: u32,
+    project_root: PathBuf,
+}
+
+struct OsProcessRow {
+    pid: u32,
+    parent: u32,
+    group: u32,
+    image: PathBuf,
+}
+
+impl AuthCliCustody {
+    fn new(cli: std::process::Child, project_root: &Path) -> Self {
+        let cli_pid = cli.id();
+        Self {
+            launch: ShippingLaunchCleanup::new(cli),
+            cli_pid,
+            project_root: project_root.to_path_buf(),
+        }
+    }
+
+    /// Only mark process groups whose leader belongs to this exact CLI ->
+    /// staged Host -> re-exec Guardian -> Bun tree. A missing/racing row grants
+    /// no authority; the CLI itself remains owned by the Child handle.
+    fn capture_os_groups(&mut self) -> Option<[u32; 3]> {
+        let output = Command::new("/bin/ps")
+            .args([
+                "-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "comm=",
+            ])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8(output.stdout).ok()?;
+        let rows: Vec<_> = stdout
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                Some(OsProcessRow {
+                    pid: fields.next()?.parse().ok()?,
+                    parent: fields.next()?.parse().ok()?,
+                    group: fields.next()?.parse().ok()?,
+                    image: fields.collect::<Vec<_>>().join(" ").into(),
+                })
+            })
+            .collect();
+        let test_group = rows.iter().find(|row| row.pid == std::process::id())?.group;
+        let stage_root = self.project_root.join(".keld/dev");
+        let host = rows.iter().find(|row| {
+            row.parent == self.cli_pid
+                && row.group == row.pid
+                && row.group > 1
+                && row.group != test_group
+                && fs::canonicalize(&row.image).is_ok_and(|image| {
+                    image.starts_with(&stage_root)
+                        && image.file_name().is_some_and(|name| name == "keld-host")
+                })
+        })?;
+        self.launch.host_group = Some(host.group);
+        let host_image = fs::canonicalize(&host.image).ok()?;
+        let guardian = rows.iter().find(|row| {
+            row.parent == host.pid
+                && row.group == host.group
+                && fs::canonicalize(&row.image).ok().as_deref() == Some(host_image.as_path())
+        })?;
+        let bun = rows.iter().find(|row| {
+            row.parent == guardian.pid
+                && row.group == row.pid
+                && row.group > 1
+                && row.group != test_group
+                && fs::canonicalize(&row.image).is_ok_and(|image| {
+                    image.is_file() && image.file_name().is_some_and(|name| name == "bun")
+                })
+        })?;
+        self.launch.bun_group = Some(bun.group);
+        Some([host.pid, guardian.pid, bun.pid])
+    }
+}
+
+impl Drop for AuthCliCustody {
+    fn drop(&mut self) {
+        // Include errors between spawn and the first await, or just after a
+        // phase timeout. The inner owner then kills/reaps this exact CLI and
+        // terminates only the independently established descendant groups.
+        if self.launch.cli.is_some() {
+            self.capture_os_groups();
+        }
+    }
+}
+
+fn start_auth_cli(project: &Project, cli: &Path, case: &Case) -> SmokeResult<AuthCliCustody> {
+    let stdout = fs::File::create(project.root.join("cli.stdout"))?;
+    let stderr = fs::File::create(project.root.join("cli.stderr"))?;
+    fs::write(
+        project.root.join("launch-status.json"),
+        serde_json::to_vec_pretty(&json!({
+            "status":"starting-cli", "case":case.name,
+        }))?,
+    )?;
+    let cli_child = Command::new(cli)
+        .arg("dev")
+        .process_group(0)
+        .current_dir(&project.root)
+        .env_remove("KELD_APP_LINK")
+        .env_remove("KELD_DEV_LEASE")
+        .env_remove("KELD_INTERNAL_MACOS_GUARDIAN_REGISTRATION")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()?;
+    let custody = AuthCliCustody::new(cli_child, &project.root);
+    fs::write(
+        project.root.join("launch-status.json"),
+        serde_json::to_vec_pretty(&json!({
+            "status":"cli-spawned", "case":case.name, "cliPid":custody.cli_pid,
+        }))?,
+    )?;
+    Ok(custody)
+}
+
 fn run_case(
     parent: &Path,
     repo: &Path,
@@ -547,35 +702,14 @@ fn run_case(
     let mut observation = Observation::bind();
     let project = Project::prepare(parent, repo, case, observation.port)?;
     let mut window = census.map(|path| NativeWindowObserver::arm_for_title(path, TITLE));
-    let stdout = fs::File::create(project.root.join("cli.stdout"))?;
-    let stderr = fs::File::create(project.root.join("cli.stderr"))?;
-    fs::write(
-        project.root.join("launch-status.json"),
-        serde_json::to_vec_pretty(&json!({
-            "status":"starting-cli", "case":case.name,
-        }))?,
-    )?;
-    let cli_child = Command::new(cli)
-        .arg("dev")
-        .current_dir(&project.root)
-        .env_remove("KELD_APP_LINK")
-        .env_remove("KELD_DEV_LEASE")
-        .env_remove("KELD_INTERNAL_MACOS_GUARDIAN_REGISTRATION")
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .spawn()?;
-    let cli_pid = cli_child.id();
-    let mut cleanup = ShippingLaunchCleanup::new(cli_child);
-    fs::write(
-        project.root.join("launch-status.json"),
-        serde_json::to_vec_pretty(&json!({
-            "status":"cli-spawned", "case":case.name, "cliPid":cli_pid,
-        }))?,
-    )?;
-    let (app_ready, page_ready, result, journal) = await_phases(&observation, &project.root, case)?;
+    let mut cleanup = start_auth_cli(&project, cli, case)?;
+    let cli_pid = cleanup.cli_pid;
+    let (app_ready, page_ready, result, journal) =
+        await_phases(&observation, &project.root, case, &mut cleanup)?;
     let [host, guardian, bun, descendant] = observed_auth_family(&app_ready, cli_pid)?;
-    cleanup.record_authenticated_groups(process_group(host), process_group(bun));
+    cleanup
+        .launch
+        .record_authenticated_groups(process_group(host), process_group(bun));
     let host_image = process_image_path(host);
     let boot = project.verify_stock_stage(&host_image, host_source, case)?;
     let windows = window.as_mut().map_or_else(Vec::new, |window| {
@@ -603,7 +737,11 @@ fn run_case(
     let bun_exit = ProcessExitObserver::arm(bun);
     let descendant_exit = ProcessExitObserver::arm(descendant);
     observation.quit.send(())?;
-    let cli_child = cleanup.cli.take().ok_or("missing retained CLI owner")?;
+    let cli_child = cleanup
+        .launch
+        .cli
+        .take()
+        .ok_or("missing retained CLI owner")?;
     let output = wait_for_auth_cli_quit(
         cli_child,
         &observation,
@@ -634,8 +772,8 @@ fn run_case(
     )?;
     let active_terminal =
         await_active_begin_terminal(&observation, case, bun, active_listener.is_some())?;
-    cleanup.host_group = None;
-    cleanup.bun_group = None; // disarm fallback only AFTER independently observed product cleanup
+    cleanup.launch.host_group = None;
+    cleanup.launch.bun_group = None; // disarm fallback only AFTER independently observed product cleanup
     observation.stop_and_join();
     Ok(
         json!({"case":case.name,"scope":if case.name == "active-begin-quit" { "active allowed Begin + public Quit owner cleanup only" } else { "negative actual public auth + public Quit only" }, "project":project.root,
