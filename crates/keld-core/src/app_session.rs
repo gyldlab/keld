@@ -1352,7 +1352,7 @@ fn validate_current_exe_stage() -> Result<ValidatedBootSelection, HostAppError> 
 }
 
 /// Top-level host-run failure. Worker failures remain the Send-compatible
-/// `HostAppError`; this wrapper can retain main-thread-only macOS custody.
+/// `HostAppError`; this wrapper can retain main-thread-only native custody.
 ///
 /// An owned unproved failure is fatal: the shipping Host reports it by borrow
 /// and retains the payload through its existing failed-process exit. It is not
@@ -1363,16 +1363,18 @@ pub struct HostRunFailure {
     error: HostAppError,
     #[cfg(target_os = "macos")]
     retained: Option<Box<RetainedMacSession>>,
+    #[cfg(windows)]
+    retained: Option<Box<RetainedWindowsSession>>,
 }
 impl HostRunFailure {
     /// Whether this failed run still owns unresolved main-thread resources.
     #[must_use]
     pub fn retains_main_custody(&self) -> bool {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             self.retained.is_some()
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             false
         }
@@ -1382,7 +1384,7 @@ impl From<HostAppError> for HostRunFailure {
     fn from(error: HostAppError) -> Self {
         Self {
             error,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             retained: None,
         }
     }
@@ -1421,6 +1423,24 @@ struct RetainedMacSession {
     _coordinator: JoinHandle<Result<(), HostAppError>>,
     _renderer: RendererDispatch,
     _commands: Sender<AppWindowCommand>,
+    guard: Option<GuardSnapshot>,
+}
+
+/// The Windows UI engine can still own a construction candidate after a fatal
+/// return. Keep the original senders, router and runtime owners through the
+/// shipping Host process exit instead of joining against that retained sender.
+#[cfg(windows)]
+struct RetainedWindowsSession {
+    _engine: WebView2Engine,
+    _dialog_main: Option<dialog_session::DialogMainOwner>,
+    _router: PrimaryRouter,
+    _primary_owner: DirectPrimaryOwner,
+    _coordinator: JoinHandle<Result<(), HostAppError>>,
+    _commands: Sender<AppWindowCommand>,
+    _events: Sender<AppWindowEvent>,
+    _lease_errors: Option<Receiver<HostAppError>>,
+    _families: keld_runtime::windows_job::WindowsPrimaryFamilies,
+    installed_package: Option<Box<keld_update::ActivePackageSelection>>,
     guard: Option<GuardSnapshot>,
 }
 
@@ -2111,8 +2131,9 @@ pub fn run_unprivileged(
         )
         .map_err(HostAppError::manifest)?;
         profile_preflight::validate_profile(schema, &verified, true)?;
-        run_app_direct(app, None, None, pre_init_terminal, host_death_job)
-            .map_err(HostRunFailure::from)
+        let mut retained = None;
+        run_app_direct(app, None, None, pre_init_terminal, host_death_job, &mut retained)
+            .map_err(|error| HostRunFailure { error, retained })
     }
     #[cfg(target_os = "linux")]
     {
@@ -2194,14 +2215,19 @@ pub fn run_guarded(
         profile_preflight::disclose_profile(profile, false)?;
         let guard_snapshot = GuardSnapshot::prepare_uncontained(verified, profile)
             .map_err(|source| HostAppError::fs_prepare(&source))?;
-        run_app_direct(
+        let mut retained = None;
+        let result = run_app_direct(
             app,
             Some(&guard_snapshot),
             original_source,
             pre_init_terminal,
             host_death_job,
-        )
-        .map_err(HostRunFailure::from)
+            &mut retained,
+        );
+        if let Some(session) = retained.as_mut() {
+            session.guard = Some(guard_snapshot);
+        }
+        result.map_err(|error| HostRunFailure { error, retained })
     }
     #[cfg(target_os = "macos")]
     {
@@ -3762,6 +3788,7 @@ fn run_app_direct(
     #[cfg(windows)] original_source: Option<Arc<original_webapp::PreparedOriginalSource>>,
     #[cfg(windows)] pre_init_terminal: fn(&HostAppError) -> !,
     #[cfg(windows)] host_death_job: &keld_runtime::windows_job::WindowsHostDeathJob,
+    #[cfg(windows)] retained: &mut Option<Box<RetainedWindowsSession>>,
 ) -> Result<(), HostAppError> {
     let AppBootSelection {
         root,
@@ -3776,7 +3803,7 @@ fn run_app_direct(
     // Held until the last session returns, so the installed version tree every
     // session runs from stays pinned through teardown.
     #[cfg(windows)]
-    let (installed_identity, _installed_package) = match mode {
+    let (installed_identity, mut installed_package) = match mode {
         WindowsBootMode::DevStage => (None, None),
         WindowsBootMode::DevelopmentGraph(_selection) => return Err(windows_graph_view_error()),
         WindowsBootMode::Installed { identity, active } => (Some(identity), Some(active)),
@@ -3848,7 +3875,13 @@ fn run_app_direct(
             dev_lease,
             #[cfg(all(debug_assertions, windows))]
             handover_at_ready,
+            #[cfg(windows)]
+            retained,
         );
+        #[cfg(windows)]
+        if let Some(session) = retained.as_mut() {
+            session.installed_package = installed_package.take();
+        }
         #[cfg(all(debug_assertions, windows))]
         let another_requested = session_seam.take_request();
         #[cfg(not(all(debug_assertions, windows)))]
@@ -3891,6 +3924,7 @@ fn run_direct_app_session(
     #[cfg(windows)] dev_lease: Option<WindowsDevLeaseMonitor>,
     #[cfg(target_os = "linux")] dev_lease: Option<DevHostLease>,
     #[cfg(all(debug_assertions, windows))] handover_at_ready: bool,
+    #[cfg(windows)] retained: &mut Option<Box<RetainedWindowsSession>>,
 ) -> Result<DirectSessionEnd, HostAppError> {
     #[cfg(target_os = "linux")]
     let direct_engine = WebKitGtkEngine::new()
@@ -4084,6 +4118,8 @@ fn run_direct_app_session(
         });
         #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
         let mut _environment_descendant = None;
+        #[cfg(windows)]
+        let mut failed_native_engine = None;
         let engine = run_direct_startup_if_session_running(shutdown, || {
             #[cfg(windows)]
             let mut direct_engine = match prepared_engine.take() {
@@ -4110,9 +4146,13 @@ fn run_direct_app_session(
             // authenticated Create; a zero-window Init is the observable.
             if let Some(spec) = &spec {
                 WINDOW_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
-                direct_engine
-                    .create_app(spec, window_events_tx.clone())
-                    .map_err(|source| app_detail("initial direct window", source.to_string()))?;
+                if let Err(source) = direct_engine.create_app(spec, window_events_tx.clone()) {
+                    #[cfg(windows)]
+                    if direct_engine.retains_failed_build() {
+                        failed_native_engine = Some(direct_engine);
+                    }
+                    return Err(app_detail("initial direct window", source.to_string()));
+                }
             }
             Ok(direct_engine)
         });
@@ -4134,6 +4174,24 @@ fn run_direct_app_session(
         let engine = match engine {
             Ok(engine) => engine,
             Err(primary) => {
+                #[cfg(windows)]
+                if let Some(engine) = failed_native_engine {
+                    shutdown.stop_reader();
+                    *retained = Some(Box::new(RetainedWindowsSession {
+                        _engine: engine,
+                        _dialog_main: None,
+                        _router: router,
+                        _primary_owner: primary_owner,
+                        _coordinator: event_coordinator,
+                        _commands: window_commands_tx,
+                        _events: window_events_tx,
+                        _lease_errors: lease_errors,
+                        _families: primary_families.clone(),
+                        installed_package: None,
+                        guard: None,
+                    }));
+                    return Err(primary);
+                }
                 drop(window_events_tx);
                 let event_result = event_coordinator
                     .join()
@@ -4155,13 +4213,15 @@ fn run_direct_app_session(
         let observe_t2_release = std::env::var_os(keld_wv::TEST_WINDOWS_T2_OBSERVE_ENV).as_deref()
             == Some(std::ffi::OsStr::new("1"));
         #[cfg(windows)]
+        let mut engine = engine;
+        #[cfg(windows)]
         let mut dialog_presentation = router.handle.dialog.as_ref().map(|session| {
             dialog_session::DialogMainOwner::new(Arc::clone(session), window_events_tx.clone())
         });
         #[cfg(windows)]
         let window_result = engine.run_app_until_quit_with_dialog(
             window_commands_rx,
-            window_events_tx,
+            window_events_tx.clone(),
             ready_trigger,
             || {
                 if ready_trigger == AppReadyTrigger::HostInitialized {
@@ -4189,9 +4249,30 @@ fn run_direct_app_session(
                 Ok(())
             },
         );
-        // Release the UI event sender before joining its Core receiver below.
         #[cfg(windows)]
-        drop(dialog_presentation);
+        if engine.retains_failed_build() {
+            shutdown.stop_reader();
+            *retained = Some(Box::new(RetainedWindowsSession {
+                _engine: engine,
+                _dialog_main: dialog_presentation,
+                _router: router,
+                _primary_owner: primary_owner,
+                _coordinator: event_coordinator,
+                _commands: window_commands_tx,
+                _events: window_events_tx,
+                _lease_errors: lease_errors,
+                _families: primary_families.clone(),
+                installed_package: None,
+                guard: None,
+            }));
+            return Err(window_result.err().map_or_else(
+                || app_detail("direct app window", "the UI loop still owns a native build"),
+                |source| app_detail("direct app window", source.to_string()),
+            ));
+        }
+        // Release the UI event senders before joining their Core receiver.
+        #[cfg(windows)]
+        drop((dialog_presentation, window_events_tx));
         #[cfg(target_os = "linux")]
         let window_result = engine.run_app_until_quit(window_commands_rx, window_events_tx);
         drop(window_commands_tx);

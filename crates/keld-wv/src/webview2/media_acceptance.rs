@@ -1184,7 +1184,7 @@ mod tests {
     /// The renderer-boot loop of every fixture here: Ready is the navigation milestone,
     /// so loop entry arms no Init watch.
     fn run_renderer_until_quit(
-        engine: WebView2Engine,
+        mut engine: WebView2Engine,
         commands: mpsc::Receiver<crate::AppWindowCommand>,
         events: mpsc::Sender<crate::AppWindowEvent>,
     ) -> Result<(), WvError> {

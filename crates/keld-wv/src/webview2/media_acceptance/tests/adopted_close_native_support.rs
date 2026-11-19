@@ -13,7 +13,7 @@ use windows::Win32::Foundation::{HANDLE, HWND, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::System::Threading::{GetCurrentThreadId, WaitForSingleObject};
 use windows::Win32::UI::WindowsAndMessaging::{DestroyWindow, GetWindowThreadProcessId, IsWindow};
 
-fn is_window(hwnd: HWND) -> bool {
+pub(super) fn is_window(hwnd: HWND) -> bool {
     // SAFETY: read-only query of a captured fixture HWND; no pointer is dereferenced.
     // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-iswindow
     unsafe { IsWindow(Some(hwnd)) }.as_bool()
@@ -139,7 +139,7 @@ impl Drop for ExitWitness {
 /// A cleanup intervention is independently ineligible, never an intended RED.
 pub(super) fn cleanup(
     capture: &NativeCapture,
-    witness: &mut ExitWitness,
+    mut witness: Option<&mut ExitWitness>,
     deadline: Instant,
 ) -> Result<bool, WvError> {
     // SAFETY: read only the parent/children captured while this fixture was live.
@@ -168,29 +168,36 @@ pub(super) fn cleanup(
     // Diagnostic state only; the native wait and eligibility decisions are unchanged.
     let mut reported = None;
     loop {
-        witness.drain(capture.browser_pid)?;
+        let raw_exit = if let Some(witness) = witness.as_mut() {
+            witness.drain(capture.browser_pid)?;
+            Some(witness.normal)
+        } else {
+            None
+        };
         // SAFETY: this exact SYNCHRONIZE handle was captured while alive.
         // https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject
         let process = unsafe { WaitForSingleObject(HANDLE(capture.browser.as_raw_handle()), 0) };
         // SAFETY: read-only retirement check of the captured fixture tree.
         let native_dead =
             !is_window(capture.hwnd) && capture.children.iter().all(|hwnd| !is_window(*hwnd));
-        let progress = (witness.normal, process, native_dead);
+        let progress = (raw_exit, process, native_dead);
         if reported != Some(progress) {
             eprintln!(
-                "KELD_ADOPTED_CLOSE_DIAG phase=cleanup-progress pid={} normal={} process={process:?} native_dead={native_dead}",
-                capture.browser_pid, witness.normal
+                "KELD_ADOPTED_CLOSE_DIAG phase=cleanup-progress pid={} normal={raw_exit:?} process={process:?} native_dead={native_dead}",
+                capture.browser_pid
             );
             reported = Some(progress);
         }
-        if process == WAIT_OBJECT_0 && witness.normal == 1 && native_dead {
+        if process == WAIT_OBJECT_0 && raw_exit.is_none_or(|normal| normal == 1) && native_dead {
             println!(
-                "KELD_ADOPTED_CLOSE_CLEANED pid={} normal_receipt=1 process_signaled=true native_hwnds=0 already_retired={already_retired}",
+                "KELD_ADOPTED_CLOSE_CLEANED pid={} normal_receipt={raw_exit:?} process_signaled=true native_hwnds=0 already_retired={already_retired}",
                 capture.browser_pid,
             );
             return Ok(already_retired);
         }
-        if !matches!(process, WAIT_OBJECT_0 | WAIT_TIMEOUT) || witness.normal > 1 {
+        if !matches!(process, WAIT_OBJECT_0 | WAIT_TIMEOUT)
+            || raw_exit.is_some_and(|normal| normal > 1)
+        {
             return Err(failure("independent native cleanup observation is invalid"));
         }
         if Instant::now() >= deadline {

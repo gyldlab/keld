@@ -155,8 +155,17 @@ impl ManagedWindows {
         stopped
     }
 
-    pub(super) fn exit_ready(&self, terminal: bool, barrier_ready: bool) -> bool {
-        self.builder.candidate_is_empty() && self.custody.exit_ready(terminal, barrier_ready)
+    pub(super) fn has_build_candidate(&self) -> bool {
+        !self.builder.candidate_is_empty()
+    }
+
+    pub(super) fn exit_ready(&self, terminal: bool, barrier_ready: bool, faulted: bool) -> bool {
+        // A failed actual Close is final for this controller. Fault exit
+        // transfers an occupied candidate to the engine's retained run owner.
+        if terminal && faulted && self.has_build_candidate() {
+            return true;
+        }
+        !self.has_build_candidate() && self.custody.exit_ready(terminal, barrier_ready)
     }
 
     pub(super) fn command(

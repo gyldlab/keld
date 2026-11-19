@@ -41,6 +41,7 @@ pub(in crate::webview2) struct BrowserExitFacts {
 struct State {
     active: bool,
     withhold: bool,
+    observe_pre_loop: bool,
     facts: Facts,
     browser_exit: BrowserExitFacts,
 }
@@ -61,6 +62,12 @@ impl Scope {
             };
         });
         Self
+    }
+
+    pub(in crate::webview2) fn enter_pre_loop(withhold: bool) -> Self {
+        let scope = Self::enter(withhold);
+        STATE.with_borrow_mut(|state| state.observe_pre_loop = true);
+        scope
     }
 
     pub(in crate::webview2) fn take_facts() -> Facts {
@@ -158,7 +165,7 @@ pub(in crate::webview2) fn before(
     managed: bool,
 ) -> bool {
     let observe = STATE.with_borrow_mut(|state| {
-        if !state.active || !managed {
+        if !state.active || !(managed || state.observe_pre_loop) {
             return false;
         }
         state.facts.calls += 1;

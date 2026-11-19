@@ -176,11 +176,3 @@ impl NativeBuild {
         Ok(completed.id)
     }
 }
-
-impl Drop for NativeBuild {
-    fn drop(&mut self) {
-        // The owning host gates normal release on a true retirement. The
-        // destructor keeps the existing Close-before-HWND order on fallback.
-        let _ = self.retire_candidate_on_ui();
-    }
-}

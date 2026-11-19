@@ -129,7 +129,7 @@ struct AppRun {
     witness_calls: u32,
 }
 
-fn run_managed(engine: backend::WebView2Engine, deadline: Instant) -> AppRun {
+fn run_managed(mut engine: backend::WebView2Engine, deadline: Instant) -> AppRun {
     let witness_calls = Cell::new(0_u32);
     let (commands, received) = mpsc::channel();
     let (events, received_events) = mpsc::channel();
@@ -270,7 +270,7 @@ fn case(withhold: bool) -> Result<Result<(), WvError>, WvError> {
         "KELD_ADOPTED_CLOSE_DIAG phase=cleanup-enter pid={}",
         capture.browser_pid
     );
-    let cleanup = native_support::cleanup(capture, &mut witness, deadline);
+    let cleanup = native_support::cleanup(capture, Some(&mut witness), deadline);
     eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=cleanup-return result={cleanup:?}");
     let retired_observer = witness.retire(capture.browser_pid);
     let final_browser_exit = adopted_close_control::Scope::browser_exit_facts();
@@ -326,5 +326,208 @@ fn windows_managed_close_result_failure_refuses_idle_after_native_retirement() -
         // Unproved cleanup is an outer error and prevents another native fixture.
         case(false)??;
         verdict
+    })
+}
+
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+fn partial_build_case(withhold: bool) -> Result<(), WvError> {
+    let root = profile_fixture_root("candidate-close");
+    std::fs::create_dir_all(&root).map_err(failure)?;
+    let deadline = Instant::now() + FIXTURE_DEADLINE;
+    let _com = backend::initialize_com_sta()?;
+    let control = adopted_close_control::Scope::enter(withhold);
+    let identity = ProfileIdentity::from_host_verified_parts([98; 32], "dev.keld.candidate-close")?;
+    let selection = WebProfileSelection::Persistent(identity);
+    let plan = backend::windows_profile_plan(&root, selection)?;
+    let mut engine = profile_fixture_engine(&root, selection)?;
+    let proxy = engine.creation_event_loop()?.create_proxy();
+    engine.managed_test_control =
+        Some(backend::managed_test_control::TestControl::for_failed_view_fixture(proxy)?);
+    let mut exit_witness = native_support::ExitWitness::new(&engine)?;
+    let (commands, received) = mpsc::channel();
+    let (events, driver_events) = mpsc::channel();
+    let witness_calls = Cell::new(0);
+    let (unretired_run, driver) = std::thread::scope(|scope| {
+        let driver_commands = commands.clone();
+        let driver = scope.spawn(move || -> Result<(), WvError> {
+            let mut guard = DriverGuard {
+                commands: &driver_commands,
+                completed: false,
+            };
+            let mut sent = false;
+            loop {
+                let observed = driver_events
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .map_err(failure)?;
+                match observed {
+                    AppWindowEvent::HostInitialized { .. } if !sent => {
+                        driver_commands
+                            .send(create_command(1, None))
+                            .map_err(failure)?;
+                        sent = true;
+                        if withhold {
+                            break;
+                        }
+                    }
+                    AppWindowEvent::WindowBuildFailed {
+                        build: 1,
+                        stage: BuildStage::Webview,
+                    } if sent && !withhold => {
+                        driver_commands
+                            .send(AppWindowCommand::Quit)
+                            .map_err(failure)?;
+                        break;
+                    }
+                    AppWindowEvent::WindowBuilt { .. }
+                    | AppWindowEvent::WindowBuildFailed { .. } => {
+                        return Err(failure(
+                            "fixture did not fail at the retained View build point",
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            guard.completed = true;
+            Ok(())
+        });
+        let outcome = engine.run_app_until_quit(
+            received,
+            events,
+            backend::AppReadyTrigger::HostInitialized,
+            || {},
+            |_| {
+                witness_calls.set(witness_calls.get() + 1);
+                Ok::<(), WvError>(())
+            },
+        );
+        (
+            outcome,
+            driver
+                .join()
+                .map_err(|_| failure("candidate driver panicked")),
+        )
+    });
+    let retained = engine.retains_failed_build();
+    let phase = raw_phase(&plan);
+    let facts = adopted_close_control::Scope::take_facts();
+    let capture = facts.capture.as_ref().ok_or_else(|| {
+        failure(format!(
+            "retained candidate Close capture unavailable: {:?}",
+            facts.capture_error
+        ))
+    })?;
+    // First sample the original HWND with the engine still owned by this
+    // caller. The recorded native Close succeeded even in the withheld cell.
+    let parent_live = native_support::is_window(capture.hwnd);
+    exit_witness.prepare_after_app(expected_close_fault(&unretired_run), witness_calls.get());
+    println!(
+        "KELD_NATIVE_CANDIDATE_EXIT withhold={withhold} retained={retained} parent_live={parent_live} phase={phase:?} calls={} observed_success={} injected={} witnesses={} result={unretired_run:?}",
+        facts.calls,
+        facts.native_successes,
+        facts.injected_errors,
+        witness_calls.get(),
+    );
+
+    // Fixture cleanup follows the product verdict. The independent observation
+    // recorded actual successful native Close, which permits ending test custody.
+    drop(engine);
+    native_support::cleanup(capture, Some(&mut exit_witness), deadline)?;
+    exit_witness.retire(capture.browser_pid)?;
+    let late = adopted_close_control::Scope::take_facts();
+    drop(control);
+    std::fs::remove_dir_all(&root).map_err(failure)?;
+
+    driver??;
+    if facts.calls != 1
+        || facts.native_successes != 1
+        || facts.injected_errors != u32::from(withhold)
+        || late.calls != 0
+    {
+        return Err(failure(
+            "candidate must observe one native Close and no retry",
+        ));
+    }
+    if retained != withhold || parent_live != withhold {
+        return Err(failure(
+            "terminal return lost the original unproved native candidate",
+        ));
+    }
+    require_product_verdict(withhold, &phase?, witness_calls.get(), &unretired_run)
+}
+
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+#[test]
+#[ignore = "actual managed construction candidate and one native Close on Windows"]
+fn windows_failed_candidate_close_retains_owner_on_bounded_terminal_exit() -> Result<(), WvError> {
+    run_with_watchdog(FIXTURE_DEADLINE, || {
+        partial_build_case(true)?;
+        partial_build_case(false)
+    })
+}
+
+fn pre_loop_build_case(withhold: bool) -> Result<(), WvError> {
+    let root = profile_fixture_root("candidate-pre-loop-close");
+    std::fs::create_dir_all(&root).map_err(failure)?;
+    let deadline = Instant::now() + FIXTURE_DEADLINE;
+    let _com = backend::initialize_com_sta()?;
+    let control = adopted_close_control::Scope::enter_pre_loop(withhold);
+    let identity =
+        ProfileIdentity::from_host_verified_parts([99; 32], "dev.keld.candidate-pre-loop-close")?;
+    let selection = WebProfileSelection::Persistent(identity);
+    let plan = backend::windows_profile_plan(&root, selection)?;
+    let mut engine = profile_fixture_engine(&root, selection)?;
+    let (events, _observed) = mpsc::channel();
+    let spec = crate::engine::WebviewSpec {
+        initial: crate::engine::NavTarget::Html(String::from("refuse\0initial")),
+        ..crate::engine::WebviewSpec::default()
+    };
+    let outcome = engine.create_app(&spec, events);
+    let retained = engine.retains_failed_build();
+    let rejected_loop = withhold.then(|| engine.run_until_closed());
+    let phase = raw_phase(&plan);
+    let facts = adopted_close_control::Scope::take_facts();
+    let capture = facts.capture.as_ref().ok_or_else(|| {
+        failure(format!(
+            "pre-loop Close capture unavailable: {:?}",
+            facts.capture_error
+        ))
+    })?;
+    let parent_live = native_support::is_window(capture.hwnd);
+    println!(
+        "KELD_NATIVE_CANDIDATE_PRELOOP withhold={withhold} retained={retained} parent_live={parent_live} phase={phase:?} calls={} observed_success={} injected={} result={outcome:?} loop={rejected_loop:?}",
+        facts.calls, facts.native_successes, facts.injected_errors,
+    );
+
+    // The test can drop this engine after independently observing successful
+    // native Close. This pre-loop path never installed a managed browser binding.
+    drop(engine);
+    native_support::cleanup(capture, None, deadline)?;
+    let late = adopted_close_control::Scope::take_facts();
+    drop(control);
+    std::fs::remove_dir_all(&root).map_err(failure)?;
+
+    if facts.calls != 1
+        || facts.native_successes != 1
+        || facts.injected_errors != u32::from(withhold)
+        || late.calls != 0
+        || retained != withhold
+        || parent_live != withhold
+        || phase? != "running"
+        || !matches!(outcome, Err(WvError::Navigate(_)))
+        || (withhold && !matches!(rejected_loop, Some(Err(WvError::ProfileSelection(_)))))
+    {
+        return Err(failure(
+            "pre-loop return lost the native candidate or the original failure",
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "actual pre-loop Windows Create failure and one native Close on the creating STA"]
+fn windows_failed_pre_loop_create_keeps_the_actual_candidate() -> Result<(), WvError> {
+    run_with_watchdog(FIXTURE_DEADLINE, || {
+        pre_loop_build_case(true)?;
+        pre_loop_build_case(false)
     })
 }

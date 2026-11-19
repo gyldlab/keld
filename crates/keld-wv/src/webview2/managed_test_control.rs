@@ -38,6 +38,18 @@ pub(super) struct TestControl {
 }
 
 impl TestControl {
+    #[cfg(all(test, feature = "media-acceptance"))]
+    pub(super) fn for_failed_view_fixture(
+        proxy: EventLoopProxy<WindowsLoopEvent>,
+    ) -> Result<Self, WvError> {
+        Ok(Self {
+            failure: failure::FailureControl::new(Some(failure::FailureSpec::parse("view")?)),
+            native_hold: None,
+            withhold_later_generation_receipt: false,
+            deferred_destroyed_proxy: proxy,
+        })
+    }
+
     /// The proxy belongs to this hook, not the browser wait or a dying HWND.
     pub(super) fn from_env(
         deferred_destroyed_proxy: EventLoopProxy<WindowsLoopEvent>,

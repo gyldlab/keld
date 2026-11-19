@@ -3380,6 +3380,7 @@ pub struct WebView2Engine {
     /// Drop controllers/windows before environments and the event loop.
     views: BTreeMap<u32, View>,
     startup_build: Option<view_build::NativeBuild>,
+    retained_app_run: Option<RetainedAppRun>,
     /// One environment per engine: every webview shares its profile directory
     /// and browser process (`learn.microsoft.com`, `WebView2` process model).
     environment: ICoreWebView2Environment,
@@ -3421,6 +3422,14 @@ impl fmt::Debug for WebView2Engine {
             .field("next_id", &self.next_id)
             .finish_non_exhaustive()
     }
+}
+
+/// One unresolved managed construction keeps its actual loop, map and release
+/// owner together through the Host's existing fatal-process disposition.
+struct RetainedAppRun {
+    _managed: Rc<RefCell<managed_app::ManagedWindows>>,
+    _release: Rc<ProfileReleaseWait>,
+    _event_loop: EventLoop<WindowsLoopEvent>,
 }
 
 impl WebView2Engine {
@@ -3552,6 +3561,7 @@ impl WebView2Engine {
             navigation_diagnostic: Arc::new(Mutex::new(FirstNavigationDiagnostic::new())),
             app_window_created: false,
             startup_build: None,
+            retained_app_run: None,
             view_build_attempt: startup_retirement::NativeViewBuild::NotAttempted,
             saved_permissions_reconciled: false,
             #[cfg(feature = "profile-test-hooks")]
@@ -3607,12 +3617,19 @@ impl WebView2Engine {
         Ok(engine)
     }
 
+    /// Reports unresolved construction custody for the Host's terminal failure.
+    /// The same engine must stay on this thread through the failed process exit.
+    #[must_use]
+    pub fn retains_failed_build(&self) -> bool {
+        self.retained_app_run.is_some()
+            || self
+                .startup_build
+                .as_ref()
+                .is_some_and(|builder| !builder.candidate_is_empty())
+    }
+
     fn require_startup_build_retired(&self) -> Result<(), WvError> {
-        if self
-            .startup_build
-            .as_ref()
-            .is_some_and(|builder| !builder.candidate_is_empty())
-        {
+        if self.retains_failed_build() {
             return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
                 "event loop setup cannot replace an unresolved native build candidate",
@@ -3628,7 +3645,7 @@ impl WebView2Engine {
     ///
     /// Returns [`WvError::EventLoop`] if the run loop was already started, or if
     /// tao reports a non-zero `run_return` status.
-    pub fn run_until_closed(mut self) -> Result<(), WvError> {
+    pub fn run_until_closed(&mut self) -> Result<(), WvError> {
         self.require_startup_build_retired()?;
         let Some(mut event_loop) = self.event_loop.take() else {
             return Err(WvError::EventLoop(String::from(
@@ -3796,6 +3813,7 @@ impl WebView2Engine {
         events: Sender<AppWindowEvent>,
     ) -> Result<WebviewId, WvError> {
         self.creation_event_loop()?;
+        self.require_startup_build_retired()?;
         if !app_window_slot_available(
             self.app_window_created,
             self.pending_app_events.is_some(),
@@ -3840,7 +3858,7 @@ impl WebView2Engine {
     /// its deadline, and [`WvError::EventLoop`] for duplicate run, fatal
     /// session command, or a non-zero tao exit.
     pub fn run_app_until_quit<E: fmt::Display>(
-        self,
+        &mut self,
         commands: Receiver<AppWindowCommand>,
         events: Sender<AppWindowEvent>,
         ready_trigger: AppReadyTrigger,
@@ -3864,7 +3882,7 @@ impl WebView2Engine {
     /// Reports the same lifecycle/release failures as `run_app_until_quit`, plus
     /// a failure from the existing Core dialog custody driver.
     pub fn run_app_until_quit_with_dialog<E: fmt::Display>(
-        self,
+        &mut self,
         commands: Receiver<AppWindowCommand>,
         events: Sender<AppWindowEvent>,
         ready_trigger: AppReadyTrigger,
@@ -3884,7 +3902,7 @@ impl WebView2Engine {
 
     #[allow(clippy::too_many_lines)] // native custody and terminal ordering share this UI-loop owner
     fn run_app_until_quit_inner<E: fmt::Display>(
-        mut self,
+        &mut self,
         commands: Receiver<AppWindowCommand>,
         events: Sender<AppWindowEvent>,
         ready_trigger: AppReadyTrigger,
@@ -3985,7 +4003,14 @@ impl WebView2Engine {
                 std::thread::park();
             }
         }
+        let managed_in_loop = Rc::clone(&managed);
+        let mut exiting_with_candidate = false;
         let code = event_loop.run_return(move |event, target, control_flow| {
+            if exiting_with_candidate {
+                *control_flow = ControlFlow::Exit;
+                return;
+            }
+            let managed = &managed_in_loop;
             if matches!(&event, Event::MainEventsCleared)
                 && let Some(drive) = dialog_drive.as_deref_mut()
             {
@@ -4046,7 +4071,12 @@ impl WebView2Engine {
             {
                 exit_requested = true;
             }
-            if managed.exit_ready(exit_requested, release_in_loop.exit_ready()) {
+            if managed.exit_ready(
+                exit_requested,
+                release_in_loop.exit_ready(),
+                release_in_loop.fault().is_some() || fatal_in_loop.load(Ordering::Acquire),
+            ) {
+                exiting_with_candidate = managed.has_build_candidate();
                 *control_flow = ControlFlow::Exit;
                 return;
             }
@@ -4177,8 +4207,16 @@ impl WebView2Engine {
             {
                 exit_requested = true;
             }
-            if managed.exit_ready(exit_requested, release_in_loop.exit_ready()) {
+            if managed.exit_ready(
+                exit_requested,
+                release_in_loop.exit_ready(),
+                release_in_loop.fault().is_some() || fatal_in_loop.load(Ordering::Acquire),
+            ) {
+                exiting_with_candidate = managed.has_build_candidate();
                 *control_flow = ControlFlow::Exit;
+                if exiting_with_candidate {
+                    return;
+                }
             } else {
                 release_in_loop.schedule(control_flow);
                 managed.schedule(control_flow,
@@ -4214,6 +4252,22 @@ impl WebView2Engine {
         eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=app-bridge-retired");
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         t2_test_observation::loop_ended(release.armed_at.get().is_some());
+        if managed.borrow().has_build_candidate() {
+            let detail = release.fault().map_or(
+                "the native app loop left a build candidate without a retirement receipt",
+                |fault| fault.context(release.site),
+            );
+            self.retained_app_run = Some(RetainedAppRun {
+                _release: release,
+                _managed: managed,
+                _event_loop: event_loop,
+            });
+            return Err(profile_failure_with(
+                ProfileErrorKind::LifecycleUnproven,
+                detail,
+            ));
+        }
+        drop(managed);
         if let Some(fault) = release.fault() {
             #[cfg(all(feature = "media-acceptance", test))]
             eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=app-fault-return fault={fault:?}");
@@ -4229,7 +4283,7 @@ impl WebView2Engine {
                 "Core queued a registry-window command on a renderer boot; refuse it before the UI queue",
             )))
         } else {
-            finish_app_run_flags(&self, &navigation_timed_out, &fatal, code)
+            finish_app_run_flags(self, &navigation_timed_out, &fatal, code)
         };
         self.finish_app_profile_release(&release, release_witness)?;
         scavenge_after_release(scavenge_root)?;
@@ -4435,6 +4489,7 @@ fn stop_app_wake_bridge(stop: &AtomicBool, bridge: thread::JoinHandle<()>) {
 impl WebEngine for WebView2Engine {
     fn create(&mut self, spec: &WebviewSpec) -> Result<WebviewId, WvError> {
         self.creation_event_loop()?;
+        self.require_startup_build_retired()?;
         self.view_build_attempt = startup_retirement::NativeViewBuild::Attempted;
         self.mark_profile_running()?;
         self.creation_event_loop()?;
@@ -4475,14 +4530,16 @@ impl WebEngine for WebView2Engine {
         match result {
             Ok(completed) => {
                 let result = builder.transfer_completed_into(&mut self.views, completed);
-                if result.is_err() {
-                    builder.retire_candidate_on_ui();
+                if result.is_err() && !builder.retire_candidate_on_ui() {
+                    eprintln!("KELD_WV_PRE_LOOP_CLOSE_UNPROVEN");
                 }
                 result
             }
             Err(failure) => {
-                if failure.disposition != view_build::BuildFailureDisposition::NotStarted {
-                    builder.retire_candidate_on_ui();
+                if failure.disposition != view_build::BuildFailureDisposition::NotStarted
+                    && !builder.retire_candidate_on_ui()
+                {
+                    eprintln!("KELD_WV_PRE_LOOP_CLOSE_UNPROVEN");
                 }
                 Err(failure.source)
             }

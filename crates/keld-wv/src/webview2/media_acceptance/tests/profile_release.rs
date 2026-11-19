@@ -50,7 +50,7 @@ fn windows_zero_controller_constructor_is_running() -> Result<(), WvError> {
 }
 
 pub(super) fn quit_without_controller(
-    engine: WebView2Engine,
+    mut engine: WebView2Engine,
     witness: impl FnOnce(Instant) -> Result<(), WvError>,
 ) -> Result<(), WvError> {
     let (commands, received) = mpsc::channel();
