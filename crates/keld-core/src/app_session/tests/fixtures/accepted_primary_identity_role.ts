@@ -6,7 +6,13 @@ import {
   ECHO_CHANNEL,
   LIFECYCLE_CHANNEL,
   DIALOG_CHANNEL,
+  runtimeProcessFactsSelected,
 } from "../../../../../../packages/@keld/kipc/src/transport.ts";
+import {
+  decodeRuntimeInitialized,
+  encodeRuntimeProcessInit,
+  snapshotRuntimeProcessFacts,
+} from "../../../../../../packages/@keld/kipc/src/runtime-process.generated.ts";
 import { encodeDialogRequest } from "../../../../../../packages/@keld/api/src/dialog.generated.ts";
 import {
   encodeEchoRequest,
@@ -26,6 +32,15 @@ const link = await WorkerLink.open({
   link: process.env.KELD_APP_LINK!,
   receive: { eventChannels: [LIFECYCLE_CHANNEL], callReceivers: [] },
 });
+if (runtimeProcessFactsSelected) {
+  decodeRuntimeInitialized(
+    await link.call(
+      LIFECYCLE_CHANNEL,
+      encodeRuntimeProcessInit(snapshotRuntimeProcessFacts(process.versions)),
+      5000,
+    ),
+  );
+}
 control.write("BOUND\n");
 for await (const command of lines) {
   if (command === "CRASH") process.exit(17);

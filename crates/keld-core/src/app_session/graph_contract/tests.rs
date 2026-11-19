@@ -485,25 +485,10 @@ fn schema8_boot_files_require_retained_stage_and_compiled_provider_identity() {
 
 #[test]
 fn schema8_resource_handoff_binds_the_selected_document_and_guard_receipt() {
-    use keld_guard::verified_manifest::load_verified_manifest;
     use keld_guard::{AdmittedRootUrl, RootRelativeComponents};
 
-    const POLICY: &[u8] =
-        br#"{"profile":"legacy","windows":{"editor":{"web":{"csp":"original-editor-offline"}}}}"#;
     let fixture = fixture_with_entry();
-    let graph = bind(&fixture, Some(&qualification())).expect("admitted retained graph fixture");
-    let permissions_path = fixture.owned.path().join("verified-policy.json");
-    fs::write(&permissions_path, POLICY).expect("fixture policy");
-    let digest: [u8; 32] = Sha256::digest(POLICY).into();
-    let verified = load_verified_manifest(
-        File::open(&permissions_path).expect("verified file handle"),
-        permissions_path,
-        digest,
-    )
-    .expect("exact digest");
-    let policy = verified
-        .resolve_unique_original_window_csp()
-        .expect("unique editor policy");
+    let (graph, policy, digest) = original_graph_and_policy(&fixture);
     let source = graph
         .prepare_windows_web_source(policy)
         .expect("retained resource owner");
@@ -530,32 +515,37 @@ fn schema8_resource_handoff_binds_the_selected_document_and_guard_receipt() {
     assert!(source.qualify_original_entry_uri(&other_uri).is_err());
 }
 
+fn original_graph_and_policy(
+    fixture: &Fixture,
+) -> (AdmittedStageGraph, keld_guard::ResolvedWindowCsp, [u8; 32]) {
+    use keld_guard::verified_manifest::load_verified_manifest;
+
+    const POLICY: &[u8] =
+        br#"{"profile":"legacy","windows":{"editor":{"web":{"csp":"original-editor-offline"}}}}"#;
+    let graph = bind(fixture, Some(&qualification())).expect("admitted retained graph fixture");
+    let path = fixture.owned.path().join("verified-policy.json");
+    fs::write(&path, POLICY).expect("fixture policy");
+    let digest = Sha256::digest(POLICY).into();
+    let manifest =
+        load_verified_manifest(File::open(&path).expect("retained manifest"), path, digest)
+            .expect("digest-verified manifest");
+    let policy = manifest
+        .resolve_unique_original_window_csp()
+        .expect("unique editor policy");
+    (graph, policy, digest)
+}
+
 pub(in crate::app_session) fn retained_original_window_resources() -> (
     tempfile::TempDir,
     std::sync::Arc<keld_wv::resource_source::AdmittedWebAppSource>,
     std::sync::Arc<keld_wv::preload_image::AppPreloadImage>,
 ) {
-    use keld_guard::verified_manifest::load_verified_manifest;
     use std::sync::Arc;
 
-    const POLICY: &[u8] =
-        br#"{"profile":"legacy","windows":{"editor":{"web":{"csp":"original-editor-offline"}}}}"#;
     let fixture = fixture_with_entry();
-    let graph = bind(&fixture, Some(&qualification())).expect("admitted retained graph fixture");
-    let path = fixture.owned.path().join("verified-policy.json");
-    fs::write(&path, POLICY).expect("fixture policy");
-    let verified = load_verified_manifest(
-        File::open(&path).expect("verified file handle"),
-        path,
-        Sha256::digest(POLICY).into(),
-    )
-    .expect("exact digest");
+    let (graph, policy, _) = original_graph_and_policy(&fixture);
     let source = graph
-        .prepare_windows_web_source(
-            verified
-                .resolve_unique_original_window_csp()
-                .expect("unique editor policy"),
-        )
+        .prepare_windows_web_source(policy)
         .expect("retained resource owner");
     let image = keld_wv::preload_image::AppPreloadBudget::default()
         .reserve_window()
@@ -570,4 +560,22 @@ pub(in crate::app_session) fn retained_original_window_resources() -> (
         )
         .expect("fixture preload image");
     (fixture.owned, source, Arc::new(image))
+}
+
+pub(in crate::app_session) fn prepared_original_window_source(
+    name: keld_wv::ApplicationNameForUserAgent,
+) -> (
+    tempfile::TempDir,
+    std::sync::Arc<crate::app_session::original_webapp::PreparedOriginalSource>,
+    PathBuf,
+) {
+    use crate::app_session::original_webapp::PreparedOriginalSource;
+    use std::sync::Arc;
+
+    let fixture = fixture_with_entry();
+    let (graph, policy, _) = original_graph_and_policy(&fixture);
+    let selected = fixture.root.join(PRELOAD);
+    let prepared = PreparedOriginalSource::prepare(Arc::new(graph), policy, Some(name))
+        .expect("prepared verified original source");
+    (fixture.owned, Arc::new(prepared), selected)
 }

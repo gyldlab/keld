@@ -10,6 +10,9 @@ use keld_ipc::window::{Rect, WindowRequest, WindowResponse, WindowState};
 use keld_ipc::{ChannelId, SubscribeRefusal};
 use keld_wv::{BuildStage, WindowSnapshot};
 
+#[cfg(windows)]
+pub(super) mod original;
+
 use super::window_registry::{
     AbandonedClose, BuildFailureOutcome, BuildOutcome, CloseOutcome, CreateOutcome, FactOutcome,
     NativeSetter, OwnedWindowEvent, ReleaseOutcome, SessionEffect, WindowError, WindowOwner,
@@ -32,6 +35,8 @@ const WINDOW_PAYLOAD_STORAGE_BYTES: usize = 64;
 pub(super) struct WindowSession {
     registry: WindowRegistry,
     native_supported: bool,
+    #[cfg(windows)]
+    original_selection: Option<std::sync::Arc<super::original_webapp::OriginalLoadSelection>>,
     // The one subscription owner is this live link, not the window instances.
     subscribed: Option<WindowOwner>,
 }
@@ -40,8 +45,19 @@ impl WindowSession {
         Self {
             registry: WindowRegistry::new(),
             native_supported,
+            #[cfg(windows)]
+            original_selection: None,
             subscribed: None,
         }
+    }
+
+    #[cfg(windows)]
+    pub(super) fn with_original_selection(
+        mut self,
+        selection: Option<std::sync::Arc<super::original_webapp::OriginalLoadSelection>>,
+    ) -> Self {
+        self.original_selection = selection;
+        self
     }
 
     #[cfg(windows)]

@@ -12,24 +12,39 @@ use super::{
     SessionShutdownState, with_primary_caller_locked,
 };
 
-struct CanonicalRendererRoleFence {
+pub(super) struct CanonicalRendererRoleScope {
     current: Weak<Mutex<Option<ActivePrimaryGeneration>>>,
     windows: Weak<Mutex<WindowSession>>,
     shutdown: SessionShutdownState,
     caller: PrimaryCallerContext,
+}
+
+impl CanonicalRendererRoleScope {
+    pub(super) fn for_window(self, window: WindowRef) -> RendererRoleWitness {
+        let stopped = Arc::clone(&self.caller.reader_stop);
+        RendererRoleWitness::with_fence(
+            stopped,
+            Arc::new(CanonicalRendererRoleFence { role: self, window }),
+        )
+    }
+}
+
+struct CanonicalRendererRoleFence {
+    role: CanonicalRendererRoleScope,
     window: WindowRef,
 }
 
 impl RendererRoleFence for CanonicalRendererRoleFence {
     fn try_admit_native(&self, admit: &mut dyn FnMut() -> bool) -> bool {
-        let (Some(current), Some(windows)) = (self.current.upgrade(), self.windows.upgrade())
+        let role = &self.role;
+        let (Some(current), Some(windows)) = (role.current.upgrade(), role.windows.upgrade())
         else {
             return false;
         };
         let mut accepted = false;
-        let result = with_primary_caller_locked(&current, &self.shutdown, &self.caller, |_| {
+        let result = with_primary_caller_locked(&current, &role.shutdown, &role.caller, |_| {
             if let Ok(windows) = windows.lock()
-                && windows.current_original_binding(&self.caller, self.window)
+                && windows.current_original_binding(&role.caller, self.window)
             {
                 // The callback commits only native-local state. Native I/O
                 // starts after this fence returns and all these guards drop.
@@ -42,28 +57,22 @@ impl RendererRoleFence for CanonicalRendererRoleFence {
 }
 
 impl PrimaryRouterHandle {
-    /// Captures the Runtime-authenticated caller and its admitted original window.
-    /// Native admission rechecks both because this witness may outlive either.
-    pub(super) fn renderer_role_witness_for_window(
+    /// Capture the Runtime caller and Registry before allocating an original
+    /// window identity. Native entry rechecks the finished witness binding.
+    pub(super) fn renderer_role_scope(
         &self,
         caller: &PrimaryCallerContext,
-        window: WindowRef,
-    ) -> Option<RendererRoleWitness> {
+    ) -> Option<CanonicalRendererRoleScope> {
         if !matches!(caller.identity, PrimaryLinkIdentity::Role(principal)
             if principal.owner() == RoleOwner::Primary)
         {
             return None;
         }
-        let owner = Arc::new(CanonicalRendererRoleFence {
+        Some(CanonicalRendererRoleScope {
             current: Arc::downgrade(&self.current),
             windows: Arc::downgrade(self.windows.as_ref()?),
             shutdown: self.shutdown.clone(),
             caller: caller.clone(),
-            window,
-        });
-        Some(RendererRoleWitness::with_fence(
-            Arc::clone(&caller.reader_stop),
-            owner,
-        ))
+        })
     }
 }

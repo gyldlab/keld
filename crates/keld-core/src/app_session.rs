@@ -18,6 +18,8 @@ mod graph_selection;
 #[cfg(windows)]
 mod original_runtime_entry;
 #[cfg(windows)]
+mod original_webapp;
+#[cfg(windows)]
 pub use self::original_runtime_entry::{
     ORIGINAL_RUNTIME_ENTRY_PATH, windows_original_entry_bootstrap_source,
 };
@@ -477,7 +479,7 @@ struct WindowsGraphSelection {
     graph: Arc<AdmittedStageGraph>,
     _version: Option<String>,
     _single_instance: Option<crate::SingleInstanceDeclaration>,
-    _application_name_for_user_agent: Option<keld_wv::ApplicationNameForUserAgent>,
+    application_name_for_user_agent: Option<keld_wv::ApplicationNameForUserAgent>,
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -1608,7 +1610,7 @@ fn validate_windows_boot_files_from(
             graph: Arc::new(graph),
             _version: selected.version,
             _single_instance: selected.single_instance,
-            _application_name_for_user_agent: selected.application_name_for_user_agent,
+            application_name_for_user_agent: selected.application_name_for_user_agent,
         }))
     } else {
         mode
@@ -2109,7 +2111,8 @@ pub fn run_unprivileged(
         )
         .map_err(HostAppError::manifest)?;
         profile_preflight::validate_profile(schema, &verified, true)?;
-        run_app_direct(app, None, pre_init_terminal, host_death_job).map_err(HostRunFailure::from)
+        run_app_direct(app, None, None, pre_init_terminal, host_death_job)
+            .map_err(HostRunFailure::from)
     }
     #[cfg(target_os = "linux")]
     {
@@ -2167,12 +2170,16 @@ pub fn run_guarded(
         let display_path = app.root.join(PERMISSIONS_FILE);
         let verified = load_verified_manifest(permissions_file, display_path, permissions_digest)
             .map_err(HostAppError::manifest)?;
-        let (profile, _original_source) = match &app.mode {
+        let (profile, original_source) = match &app.mode {
             WindowsBootMode::DevelopmentGraph(selection) => {
                 let (profile, policy) =
                     profile_preflight::validate_windows_graph_preflight(schema, &verified)?;
-                let source = selection.graph.prepare_windows_web_source(policy)?;
-                (profile, Some(source))
+                let source = original_webapp::PreparedOriginalSource::prepare(
+                    Arc::clone(&selection.graph),
+                    policy,
+                    selection.application_name_for_user_agent.clone(),
+                )?;
+                (profile, Some(Arc::new(source)))
             }
             WindowsBootMode::DevStage | WindowsBootMode::Installed { .. } => (
                 profile_preflight::validate_profile(schema, &verified, false)?,
@@ -2190,6 +2197,7 @@ pub fn run_guarded(
         run_app_direct(
             app,
             Some(&guard_snapshot),
+            original_source,
             pre_init_terminal,
             host_death_job,
         )
@@ -3447,6 +3455,8 @@ struct DirectSessionInputs<'a> {
     #[cfg(windows)]
     windows_profile_mode: WindowsProfileMode,
     #[cfg(windows)]
+    original_source: Option<&'a Arc<original_webapp::PreparedOriginalSource>>,
+    #[cfg(windows)]
     pre_init_terminal: fn(&HostAppError) -> !,
     #[cfg(windows)]
     host_death_job: &'a keld_runtime::windows_job::WindowsHostDeathJob,
@@ -3749,6 +3759,7 @@ fn spawn_windows_environment_descendant() -> Result<Option<std::process::Child>,
 fn run_app_direct(
     boot: AppBootSelection,
     guard_snapshot: Option<&GuardSnapshot>,
+    #[cfg(windows)] original_source: Option<Arc<original_webapp::PreparedOriginalSource>>,
     #[cfg(windows)] pre_init_terminal: fn(&HostAppError) -> !,
     #[cfg(windows)] host_death_job: &keld_runtime::windows_job::WindowsHostDeathJob,
 ) -> Result<(), HostAppError> {
@@ -3816,6 +3827,8 @@ fn run_app_direct(
         name: &name,
         entry_path: &entry_path,
         html: html.as_deref(),
+        #[cfg(windows)]
+        original_source: original_source.as_ref(),
         #[cfg(windows)]
         windows_profile_mode,
         #[cfg(windows)]
@@ -3941,12 +3954,21 @@ fn run_direct_app_session(
             return prestart_lease_result();
         };
         let (supervisor, recovery) = supervisor?;
-        let initial = match await_direct_bound_generation(
+        let initial = await_direct_bound_generation(
             &supervisor,
             &recovery,
             shutdown,
             Instant::now() + APP_LINK_IO_DEADLINE,
-        ) {
+        );
+        #[cfg(windows)]
+        let initial = initial.and_then(|bound| {
+            let selection = inputs
+                .original_source
+                .map(|source| source.bind_runtime(&bound).map(Arc::new))
+                .transpose()?;
+            Ok((bound, selection))
+        });
+        let initial = match initial {
             Ok(bound) => bound,
             Err(primary) => {
                 if !shutdown.is_running() {
@@ -3981,6 +4003,8 @@ fn run_direct_app_session(
                 return Err(collapse_app_failures(&primary, [cleanup]));
             }
         };
+        #[cfg(windows)]
+        let (initial, original_selection) = initial;
 
         if !shutdown.is_running() {
             let _ = recovery.deny();
@@ -4011,6 +4035,8 @@ fn run_direct_app_session(
             inputs.guard_snapshot,
             #[cfg(windows)]
             windows_native_support(ready_trigger, Some(&release_witness)),
+            #[cfg(windows)]
+            original_selection,
         )?;
         primary_owner.attach_router(router.handle())?;
         let lease_errors = start_direct_dev_lease_tail(dev_lease, router.handle())?;
@@ -8224,6 +8250,8 @@ struct MacBoundStart {
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct BoundSetup {
     window_native_support: Option<bool>,
+    #[cfg(windows)]
+    original_selection: Option<Arc<original_webapp::OriginalLoadSelection>>,
     #[cfg(target_os = "macos")]
     auth_startup: Option<(
         VerifiedManifest,
@@ -8360,6 +8388,8 @@ impl PrimaryRouter {
             fs.map(GuardSnapshot::take_initial_broker).transpose()?,
             1,
             None,
+            #[cfg(windows)]
+            None,
             #[cfg(test)]
             fs_worker_test_gate,
             #[cfg(target_os = "macos")]
@@ -8377,6 +8407,7 @@ impl PrimaryRouter {
         fs: Option<&GuardSnapshot>,
         #[cfg(target_os = "macos")] mac_start: MacBoundStart,
         #[cfg(windows)] window_native_support: Option<bool>,
+        #[cfg(windows)] original_selection: Option<Arc<original_webapp::OriginalLoadSelection>>,
     ) -> Result<Self, HostAppError> {
         Self::start_bound_with_fs_setup(
             bound,
@@ -8410,6 +8441,7 @@ impl PrimaryRouter {
             #[cfg(windows)]
             &BoundSetup {
                 window_native_support,
+                original_selection,
             },
         )
     }
@@ -8486,6 +8518,8 @@ impl PrimaryRouter {
             fs.map(GuardSnapshot::take_initial_broker).transpose()?,
             attempt,
             options.window_native_support,
+            #[cfg(windows)]
+            options.original_selection.clone(),
             #[cfg(test)]
             fs_worker_test_gate,
             #[cfg(target_os = "macos")]
@@ -8502,6 +8536,7 @@ impl PrimaryRouter {
         broker: Option<FsBroker>,
         attempt: u32,
         window_native_support: Option<bool>,
+        #[cfg(windows)] original_selection: Option<Arc<original_webapp::OriginalLoadSelection>>,
         #[cfg(test)] test_gate: Option<Arc<FsWorkerTestGate>>,
         #[cfg(target_os = "macos")] auth_startup: Option<(
             VerifiedManifest,
@@ -8509,8 +8544,16 @@ impl PrimaryRouter {
             Option<keld_native::auth::AsWorkerPort>,
         )>,
     ) -> Result<Self, HostAppError> {
-        handle.windows = window_native_support
-            .map(|supported| Arc::new(Mutex::new(window_router::WindowSession::new(supported))));
+        #[cfg(windows)]
+        if original_selection.is_some() && window_native_support != Some(true) {
+            return Err(windows_graph_view_error());
+        }
+        handle.windows = window_native_support.map(|supported| {
+            let session = window_router::WindowSession::new(supported);
+            #[cfg(windows)]
+            let session = session.with_original_selection(original_selection);
+            Arc::new(Mutex::new(session))
+        });
         #[cfg(target_os = "macos")]
         let auth_worker = auth_startup
             .map(|(verified, configuration, presentation)| {

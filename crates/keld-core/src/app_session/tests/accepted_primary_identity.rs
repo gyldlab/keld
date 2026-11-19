@@ -12,6 +12,10 @@ use std::net::{TcpListener, TcpStream};
 
 const BOUND: Duration = Duration::from_secs(20);
 
+#[cfg(windows)]
+#[path = "accepted_primary_identity/original_create.rs"]
+mod original_create;
+
 /// Actual role coordinator owns every Bun child/restart/reap, including unwind.
 struct AcceptedRole {
     supervisor: PrimaryRoleSupervisor,
@@ -21,10 +25,6 @@ struct AcceptedRole {
 
 impl AcceptedRole {
     fn start(owner: RoleOwner) -> Self {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("private fixture control");
-        listener.set_nonblocking(true).expect("bounded accept poll");
-        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/app_session/tests/fixtures/accepted_primary_identity_role.ts");
         let config = match owner {
             RoleOwner::Primary => PrimaryRoleConfig::primary("bun"),
             #[cfg(not(windows))]
@@ -32,6 +32,14 @@ impl AcceptedRole {
             #[cfg(windows)]
             RoleOwner::AppBound => panic!("app-bound fixture is unavailable on Windows"),
         };
+        Self::start_with_config(config)
+    }
+
+    fn start_with_config(config: PrimaryRoleConfig) -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("private fixture control");
+        listener.set_nonblocking(true).expect("bounded accept poll");
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/app_session/tests/fixtures/accepted_primary_identity_role.ts");
         let supervisor = PrimaryRoleSupervisor::start_with_bound_generations(
             config
                 .arg(script)
@@ -283,6 +291,7 @@ fn windows_authenticated_generations_bind_retained_admission_to_the_current_prin
         SessionShutdownState::new(),
         Some(&snapshot),
         None, // This fixture binds policy to generations without a native window.
+        None,
     )
     .expect("authenticated initial generation");
     let handle = router.handle();
@@ -367,6 +376,7 @@ fn windows_original_window_native_admission_requires_current_runtime_caller_and_
         SessionShutdownState::new(),
         None,
         Some(true),
+        None,
     )
     .expect("authenticated Windows primary router");
     let handle = router.handle();
@@ -401,8 +411,9 @@ fn windows_original_window_native_admission_requires_current_runtime_caller_and_
         (caller, window)
     };
     let witness = handle
-        .renderer_role_witness_for_window(&caller, window)
-        .expect("actual Runtime primary witness");
+        .renderer_role_scope(&caller)
+        .expect("actual Runtime primary witness")
+        .for_window(window);
     let windows = handle.windows.as_ref().expect("window service");
     let mut entered = 0;
     assert!(witness.try_admit_native(&mut || {
@@ -431,7 +442,9 @@ fn windows_original_window_native_admission_requires_current_runtime_caller_and_
         ..window
     };
     for (context, reference) in [(&foreign, window), (&caller, stale_window)] {
-        let refused = handle.renderer_role_witness_for_window(context, reference);
+        let refused = handle
+            .renderer_role_scope(context)
+            .map(|scope| scope.for_window(reference));
         assert!(
             refused.is_none_or(|witness| !witness.try_admit_native(&mut || {
                 panic!("foreign Runtime allocation or window incarnation was admitted")
@@ -462,7 +475,9 @@ fn windows_original_window_native_admission_requires_current_runtime_caller_and_
             reader_stop: Arc::clone(&active.reader_stop),
         }
     };
-    let foreign_window = handle.renderer_role_witness_for_window(&successor, window);
+    let foreign_window = handle
+        .renderer_role_scope(&successor)
+        .map(|scope| scope.for_window(window));
     assert!(
         foreign_window.is_none_or(|witness| !witness.try_admit_native(&mut || {
             panic!("live successor entered predecessor's nonadoptable opening window")
