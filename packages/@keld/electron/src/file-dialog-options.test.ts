@@ -45,13 +45,40 @@ test("Open option conformance keeps file+directory, multiple selection and four 
   ]);
 });
 
+function expectIndependentFilters(
+  normalized: readonly {
+    readonly name: string;
+    readonly extensions: readonly string[];
+  }[],
+  supplied: { name: string; extensions: string[] }[],
+): void {
+  expect(Object.isFrozen(normalized)).toBe(true);
+  expect(Object.isFrozen(supplied)).toBe(false);
+  expect(normalized).not.toBe(supplied);
+  const snapshot = structuredClone(normalized);
+  for (const [index, callerGroup] of supplied.entries()) {
+    const normalizedGroup = normalized[index];
+    if (!normalizedGroup) throw new Error("missing normalized filter group");
+    expect(normalizedGroup).not.toBe(callerGroup);
+    expect(normalizedGroup.extensions).not.toBe(callerGroup.extensions);
+    expect(Object.isFrozen(normalizedGroup)).toBe(true);
+    expect(Object.isFrozen(normalizedGroup.extensions)).toBe(true);
+    expect(Object.isFrozen(callerGroup)).toBe(false);
+    expect(Object.isFrozen(callerGroup.extensions)).toBe(false);
+    callerGroup.name = "Edited by caller";
+    callerGroup.extensions.push("edited");
+  }
+  supplied.pop();
+  expect(normalized).toStrictEqual(snapshot);
+}
+
 test("pinned draw.io 31.7.0 chooseFileEntry Open keeps its exact properties and filters", () => {
   // Webapp 24b76c2cbd55d88e354042e8d329a2e4708972bc, ElectronApp.js:1237-1252
   // (blob 25f4382cf65d1b5ccbbf3a1de480a1bad1efcb0b); Desktop bridge
   // 2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e, electron.js:4191-4200
   // (blob b57b5e2047710e829bfc25ab09f32b09ad2114d7). This models the
   // facade call with a saved .lastOpenDir, without opening a native panel.
-  const options = normalizeOpenDialogOptions({
+  const input = {
     defaultPath: "C:\\Users\\fixture\\Documents",
     filters: [
       {
@@ -63,8 +90,9 @@ test("pinned draw.io 31.7.0 chooseFileEntry Open keeps its exact properties and 
       { name: "All Files", extensions: ["*"] },
     ],
     properties: ["openFile"],
-  });
-  expect(options).toEqual({
+  };
+  const options = normalizeOpenDialogOptions(input);
+  expect(options).toStrictEqual({
     default_path: "C:\\Users\\fixture\\Documents",
     filters: [
       {
@@ -79,11 +107,12 @@ test("pinned draw.io 31.7.0 chooseFileEntry Open keeps its exact properties and 
   });
   expect(Object.isFrozen(options)).toBe(true);
   expect(Object.isFrozen(options.properties)).toBe(true);
-  expect(Object.isFrozen(options.filters)).toBe(true);
-  for (const group of options.filters) {
-    expect(Object.isFrozen(group)).toBe(true);
-    expect(Object.isFrozen(group.extensions)).toBe(true);
-  }
+  expect(options.properties).not.toBe(input.properties);
+  expect(Object.isFrozen(input.properties)).toBe(false);
+  input.properties.push("multiSelections");
+  expect(options.properties).toStrictEqual(["OpenFile"]);
+  expect(Object.isFrozen(input)).toBe(false);
+  expectIndependentFilters(options.filters, input.filters);
 });
 
 test("pinned draw.io 31.7.0 English PNG Save As keeps preferred-filter order and filename", () => {
@@ -91,7 +120,7 @@ test("pinned draw.io 31.7.0 English PNG Save As keeps preferred-filter order and
   // plus ElectronApp.js:126-129 adds PDF. English labels are from dia.txt at
   // that same pin, not universal labels. With a cached .lastSaveDir and the
   // normalized title diagram.png, the caller promotes PNG and joins with '/'.
-  const options = normalizeSaveDialogOptions({
+  const input = {
     defaultPath: "C:\\Users\\fixture\\Documents/diagram.png",
     filters: [
       { name: "Editable Bitmap Image (.png)", extensions: ["png"] },
@@ -100,8 +129,9 @@ test("pinned draw.io 31.7.0 English PNG Save As keeps preferred-filter order and
       { name: "HTML File (.html)", extensions: ["html"] },
       { name: "PDF (.pdf)", extensions: ["pdf"] },
     ],
-  });
-  expect(options).toEqual({
+  };
+  const options = normalizeSaveDialogOptions(input);
+  expect(options).toStrictEqual({
     default_path: "C:\\Users\\fixture\\Documents/diagram.png",
     filters: [
       { name: "Editable Bitmap Image (.png)", extensions: ["png"] },
@@ -113,11 +143,8 @@ test("pinned draw.io 31.7.0 English PNG Save As keeps preferred-filter order and
     security_scoped_bookmarks: false,
   });
   expect(Object.isFrozen(options)).toBe(true);
-  expect(Object.isFrozen(options.filters)).toBe(true);
-  for (const group of options.filters) {
-    expect(Object.isFrozen(group)).toBe(true);
-    expect(Object.isFrozen(group.extensions)).toBe(true);
-  }
+  expect(Object.isFrozen(input)).toBe(false);
+  expectIndependentFilters(options.filters, input.filters);
 });
 
 test("Save never grants security scope and preserves filename hint without writing it", () => {
