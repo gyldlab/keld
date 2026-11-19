@@ -185,7 +185,7 @@ impl ProfileReleaseWait {
         fault
     }
 
-    fn fail(&self, fault: ProfileReleaseFault) -> WvError {
+    pub(super) fn fail(&self, fault: ProfileReleaseFault) -> WvError {
         let first = self.latch_fault(fault);
         profile_failure_with(
             ProfileErrorKind::LifecycleUnproven,
