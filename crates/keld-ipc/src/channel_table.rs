@@ -485,7 +485,7 @@ mod tests {
     /// Criterion 1: the table lists exactly the allocated channels, with the
     /// spec §4.2 classes and authorities.
     #[test]
-    fn table_lists_exactly_echo_fs_and_lifecycle() {
+    fn table_lists_exactly_the_expected_channels() {
         let listed: Vec<_> = CHANNEL_TABLE
             .iter()
             .map(|entry| (entry.name(), entry.id().0, entry.class(), entry.authority()))
@@ -523,6 +523,12 @@ mod tests {
                     6,
                     ReceiveClass::GuardedCall,
                     Authority::Guarded(&["system.dialog"]),
+                ),
+                (
+                    "compat-control",
+                    7,
+                    ReceiveClass::HostCallWithEvents,
+                    Authority::HostInternal,
                 ),
             ]
         );
@@ -636,7 +642,7 @@ mod tests {
     fn real_table_matches_the_committed_allocation_baseline() {
         assert_eq!(
             BASELINE,
-            "echo 1\nfs 2\nlifecycle 3\nauth 4\nwindow 5\ndialog 6\n"
+            "echo 1\nfs 2\nlifecycle 3\nauth 4\nwindow 5\ndialog 6\ncompat-control 7\n"
         );
         assert_eq!(check_allocations(CHANNEL_TABLE, BASELINE), Ok(()));
     }
@@ -729,7 +735,7 @@ mod tests {
         for allocated in CHANNEL_TABLE {
             assert_eq!(entry(allocated.id()), Some(allocated));
         }
-        for unallocated in [0, 7, 9, u16::MAX] {
+        for unallocated in [0, 8, 9, u16::MAX] {
             assert_eq!(entry(ChannelId(unallocated)), None, "{unallocated}");
         }
     }
@@ -921,11 +927,18 @@ mod tests {
         }
         assert_eq!(
             waiters,
-            ["fs", "lifecycle", "auth", "window", "dialog"],
+            [
+                "fs",
+                "lifecycle",
+                "auth",
+                "window",
+                "dialog",
+                "compat-control"
+            ],
             "echo keeps its REPLY-only waiter"
         );
-        assert_eq!(receivers, ["lifecycle", "window"]);
-        for unallocated in [0, 7, 9, u16::MAX] {
+        assert_eq!(receivers, ["lifecycle", "window", "compat-control"]);
+        for unallocated in [0, 8, 9, u16::MAX] {
             assert_eq!(entry(ChannelId(unallocated)), None, "{unallocated}");
         }
         assert!(ReceiveClass::HostCallWithEvents.carries_host_events());
