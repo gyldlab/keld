@@ -829,10 +829,55 @@ with open(verifier_path, "rb") as source:
 if actual != expected:
     raise SystemExit("KEL-270 B-82 verifier SHA-256 mismatch")
 ' "$receipt_path" "$verifier_path"`;
+const githubShaShell = "${GITHUB_SHA:-}";
+const githubWorkspaceShell = "${GITHUB_WORKSPACE:?}";
+const approvedKEL270CheckoutCheck = String.raw`checkout_root="$(pwd -P)"
+if [[ ! "${githubShaShell}" =~ ^[0-9a-f]{40}$ ]] ||
+   [[ "$checkout_root" != "$(realpath -e -- "${githubWorkspaceShell}")" ]] ||
+   [[ "$checkout_root" != "$(git rev-parse --show-toplevel)" ]] ||
+   [[ "$GITHUB_SHA" != "$(git rev-parse --verify HEAD)" ]]; then
+  echo "KEL-270 B-82 checkout identity mismatch" >&2
+  exit 1
+fi
+require_checkout_file() {
+  local path="$1" mode kind object
+  read -r mode kind object _ <<< "$(git ls-tree "$GITHUB_SHA" -- "$path")"
+  if [[ ! -f "$path" || "$(realpath -e -- "$path")" != "$checkout_root/$path" ||
+        "$mode" != 100644 || "$kind" != blob ||
+        "$object" != "$(git hash-object --no-filters -- "$path")" ]]; then
+    echo "KEL-270 B-82 evidence file does not match checkout: $path" >&2
+    exit 1
+  fi
+}`;
+const approvedKEL270SourcePathsCheck = String.raw`# Bind all receipt-pinned sources to regular blobs in the expected checkout.
+python3 -I -S -c '
+import json, pathlib, subprocess, sys
+root = pathlib.Path.cwd()
+commit = sys.argv[2]
+with open(sys.argv[1], encoding="utf-8") as source:
+    paths = json.load(source)["published_file_sha256"]
+for name in paths:
+    relative = pathlib.PurePosixPath(name)
+    path = root / relative
+    if (relative.is_absolute() or ".." in relative.parts
+            or path.resolve(strict=True) != path or not path.is_file()):
+        raise SystemExit("KEL-270 B-82 evidence source outside canonical checkout")
+    row = subprocess.check_output([
+        "git", "--literal-pathspecs", "ls-tree",
+        "--format=%(objectmode) %(objecttype) %(objectname)", commit, "--", name,
+    ]).decode("ascii").split()
+    if (len(row) != 3 or row[:2] != ["100644", "blob"]
+            or row[2] != subprocess.check_output([
+                "git", "hash-object", "--no-filters", "--", name,
+            ]).decode("ascii").strip()):
+        raise SystemExit("KEL-270 B-82 evidence source does not match checkout")
+' "$receipt_path" "$GITHUB_SHA"`;
 const approvedKEL270EvidenceRun = String.raw`set -euo pipefail
+${approvedKEL270CheckoutCheck}
 # The receipt supplies all 15 source hashes. Pin its reviewed bytes in
 # protected CI so a candidate cannot repin both a source and its manifest.
 receipt_path=${trustedKEL270ReceiptPath}
+require_checkout_file "$receipt_path"
 if ! printf '%s  %s\n' \
   '${trustedKEL270ReceiptSha256}' \
   "$receipt_path" | sha256sum --check --status; then
@@ -844,7 +889,9 @@ fi
 # Clear runner-provided Python startup controls before the verifier and
 # its child processes; re-enable only safe-path and no-user-site flags.
 ${safePythonEnvironment}
+require_checkout_file "${trustedKEL270VerifierPath}"
 ${approvedKEL270VerifierIntegrityCheck}
+${approvedKEL270SourcePathsCheck}
 python3.12 -I -m venv "$RUNNER_TEMP/kel270-evidence-python"
 cat > "$RUNNER_TEMP/kel270-evidence-requirements.txt" <<'REQ'
 cryptography==50.0.2 \
@@ -860,6 +907,7 @@ REQ
   -r "$RUNNER_TEMP/kel270-evidence-requirements.txt"
 "$RUNNER_TEMP/kel270-evidence-python/bin/python" -I -B -c \
   'import cryptography; assert cryptography.__version__ == "50.0.2"'
+require_checkout_file "$verifier_path"
 "$RUNNER_TEMP/kel270-evidence-python/bin/python" -I -B \
   docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py --check
 `;
@@ -948,6 +996,76 @@ test("KEL-270 evidence rejects in-step untrusted execution and failure masking",
         ...steps.slice(3),
       ]),
     ).toThrow();
+  }
+});
+
+test("KEL-270 evidence preflight binds a clean Git checkout to its expected SHA", () => {
+  // This preflight targets the Ubuntu runner and uses GNU realpath.
+  if (process.platform !== "linux") return;
+
+  const temporary = mkdtempSync(join(tmpdir(), "keld270-checkout-binding-"));
+  const receipt = JSON.parse(readFileSync(trustedKEL270ReceiptPath, "utf8")) as {
+    published_file_sha256: Record<string, string>;
+  };
+  const git = (...args: string[]) => {
+    const result = Bun.spawnSync(
+      [
+        "git",
+        "-c",
+        "core.autocrlf=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        ...args,
+      ],
+      { cwd: temporary },
+    );
+    expect(result.exitCode).toBe(0);
+    return new TextDecoder().decode(result.stdout).trim();
+  };
+  try {
+    for (const name of [
+      trustedKEL270ReceiptPath,
+      ...Object.keys(receipt.published_file_sha256),
+    ]) {
+      const target = join(temporary, name);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, readFileSync(name));
+    }
+    git("init", "-q", "--object-format=sha1");
+    git("add", "-f", "--", "docs");
+    git(
+      "-c",
+      "user.name=KEL-270 test",
+      "-c",
+      "user.email=kel270-test@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "-qm",
+      "Add pinned evidence fixture",
+    );
+    const head = git("rev-parse", "HEAD");
+    expect(head).toMatch(/^[0-9a-f]{40}$/);
+    expect(git("status", "--porcelain")).toBe("");
+
+    const boundary = approvedKEL270EvidenceRun.indexOf(
+      "\npython3.12 -I -m venv",
+    );
+    expect(boundary).toBeGreaterThan(0);
+    const preflight = approvedKEL270EvidenceRun.slice(0, boundary);
+    const run = (sha: string) =>
+      Bun.spawnSync(["bash", "-c", preflight], {
+        cwd: temporary,
+        env: { ...process.env, GITHUB_WORKSPACE: temporary, GITHUB_SHA: sha },
+      });
+    expect(run(head).exitCode).toBe(0);
+    const incorrect = run("0".repeat(40));
+    expect(incorrect.exitCode).toBe(1);
+    expect(new TextDecoder().decode(incorrect.stderr)).toContain(
+      "KEL-270 B-82 checkout identity mismatch",
+    );
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
   }
 });
 
