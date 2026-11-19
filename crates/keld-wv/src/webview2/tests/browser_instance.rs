@@ -652,7 +652,7 @@ fn a_retained_view_callback_does_not_hide_disappearance_of_the_native_observer()
     let (sender, release) = owner(A, Some(alive_process_handle()));
     let native_observer_sender = Arc::new(sender);
     let retained_callback =
-        process_failed_handler(A, Arc::downgrade(&native_observer_sender), || Ok(()));
+        process_failed_handler(A, Arc::downgrade(&native_observer_sender), None, |_| Ok(()));
     assert_eq!(Arc::strong_count(&native_observer_sender), 1);
     drop(native_observer_sender);
     release.poll();
@@ -785,4 +785,111 @@ fn later_generation_control_keeps_first_credit_then_withholds_generation_three()
     );
     release.arm();
     assert_eq!(release.fault(), Some(ProfileReleaseFault::GraceExpired));
+}
+
+#[test]
+fn failing_original_wake_preserves_browser_exit_receipt_and_profile_wake() {
+    use crate::native_document::RendererLifetime;
+    use crate::webview2::WindowsLoopEvent;
+    let scope = RendererLifetime::default();
+    let (tx, rx) = mpsc::channel();
+    let tx = Arc::new(tx);
+    let profile_wake = Cell::new(false);
+    let result = super::dispatch_process_failure(
+        Some(&scope),
+        &Arc::downgrade(&tx),
+        A,
+        Ok(COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED),
+        &|event| match event {
+            WindowsLoopEvent::OriginalWake => Err(windows::Win32::Foundation::E_UNEXPECTED.into()),
+            WindowsLoopEvent::ProfileReleaseWake => {
+                profile_wake.set(true);
+                Ok(())
+            }
+            _ => panic!("unrelated wake"),
+        },
+    );
+    assert!(result.is_err());
+    assert!(scope.has_exited());
+    assert!(profile_wake.get());
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(BrowserExitReceipt::Abnormal {
+            instance: A,
+            source: BrowserExitSource::ProcessFailed
+        })
+    ));
+}
+
+#[test]
+fn top_level_renderer_loss_revokes_only_its_lease_before_the_original_wake() {
+    use crate::WebviewId;
+    use crate::native_document::{NativeCommitIdentity, NativeDocumentOwner, RendererLifetime};
+    use crate::resource_source::windows::tests::Fixture;
+    use crate::webview2::WindowsLoopEvent;
+    use std::num::NonZeroU64;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        COREWEBVIEW2_PROCESS_FAILED_KIND_FRAME_RENDER_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
+    };
+
+    let fixture = Fixture::new();
+    let source = fixture.source_arc();
+    let selected = RendererLifetime::default();
+    let other = RendererLifetime::default();
+    let lease = |view, lifetime: RendererLifetime| {
+        let mut owner = NativeDocumentOwner::for_windows_renderer(WebviewId(view), Some(lifetime));
+        owner.bind_source(&source).unwrap();
+        let attempt = owner.begin_host_load(source.source_id()).unwrap();
+        let stamp = owner
+            .commit_admitted(
+                attempt,
+                source.source_id(),
+                NativeCommitIdentity(NonZeroU64::new(u64::from(view)).unwrap()),
+            )
+            .unwrap();
+        let lease = owner.lease_for(stamp).unwrap();
+        (owner, lease)
+    };
+    let (_selected_owner, selected_lease) = lease(71, selected.clone());
+    let (_other_owner, other_lease) = lease(72, other);
+    assert!(selected_lease.is_current() && other_lease.is_current());
+    let (tx, rx) = mpsc::channel();
+    let tx = Arc::new(tx);
+    let sender = Arc::downgrade(&tx);
+    super::dispatch_process_failure(
+        Some(&selected),
+        &sender,
+        A,
+        Ok(COREWEBVIEW2_PROCESS_FAILED_KIND_FRAME_RENDER_PROCESS_EXITED),
+        &|_| panic!("frame loss must not retire the selected top-level view"),
+    )
+    .unwrap();
+    super::dispatch_process_failure(
+        None,
+        &sender,
+        A,
+        Ok(COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED),
+        &|_| panic!("ordinary or later views have no original-lifetime wake"),
+    )
+    .unwrap();
+    assert!(selected_lease.is_current() && other_lease.is_current());
+
+    let woke = Cell::new(false);
+    super::dispatch_process_failure(
+        Some(&selected),
+        &sender,
+        A,
+        Ok(COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED),
+        &|event| {
+            assert!(matches!(event, WindowsLoopEvent::OriginalWake));
+            assert!(!selected_lease.is_current());
+            assert!(other_lease.is_current());
+            assert!(!woke.replace(true));
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert!(woke.get());
+    assert!(matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
 }

@@ -158,7 +158,8 @@ impl ManagedWindows {
             .ok_or_else(|| failure("selected request producer already retired"))?;
         let endpoint =
             RendererBridgeEndpoint::shared_view(requests.clone(), renderer.admitted_channel);
-        if renderer.session.is_none() {
+        let first_original = renderer.session.is_none();
+        if first_original {
             renderer.session = Some(ResourceSession::new(
                 Arc::clone(&inputs.source),
                 self.proxy.clone(),
@@ -181,7 +182,8 @@ impl ManagedWindows {
                 image: inputs.image,
                 creator: inputs.role,
                 session,
-                renderer_lifetime: None,
+                renderer_lifetime: first_original
+                    .then(crate::native_document::RendererLifetime::default),
                 endpoint,
             },
             observer: Rc::new(move |context, fact| {

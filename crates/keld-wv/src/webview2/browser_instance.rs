@@ -153,21 +153,68 @@ fn queue_process_failed(
     Ok(true)
 }
 
+fn observe_document_process_loss(
+    renderer: &crate::native_document::RendererLifetime,
+    kind: Option<COREWEBVIEW2_PROCESS_FAILED_KIND>,
+) -> bool {
+    use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED;
+    if matches!(
+        kind,
+        None | Some(
+            COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED
+                | COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED
+        )
+    ) {
+        renderer.observe_exit();
+        true
+    } else {
+        false
+    }
+}
+
+fn dispatch_process_failure(
+    renderer: Option<&crate::native_document::RendererLifetime>,
+    sender: &Weak<Sender<BrowserExitReceipt>>,
+    instance: BrowserInstance,
+    observed: windows::core::Result<COREWEBVIEW2_PROCESS_FAILED_KIND>,
+    wake: &impl Fn(WindowsLoopEvent) -> windows::core::Result<()>,
+) -> windows::core::Result<()> {
+    let original_lost = renderer
+        .is_some_and(|scope| observe_document_process_loss(scope, observed.as_ref().ok().copied()));
+    // Preserve the independently owed browser-exit receipt even if the original UI wake fails.
+    let profile = observed.and_then(|kind| queue_process_failed(sender, instance, kind));
+    let original_wake = if original_lost {
+        wake(WindowsLoopEvent::OriginalWake)
+    } else {
+        Ok(())
+    };
+    if profile? {
+        wake(WindowsLoopEvent::ProfileReleaseWake)?;
+    }
+    original_wake
+}
+
 fn process_failed_handler(
     instance: BrowserInstance,
     sender: Weak<Sender<BrowserExitReceipt>>,
-    wake: impl Fn() -> windows::core::Result<()> + 'static,
+    renderer: Option<crate::native_document::RendererLifetime>,
+    wake: impl Fn(WindowsLoopEvent) -> windows::core::Result<()> + 'static,
 ) -> ICoreWebView2ProcessFailedEventHandler {
     ProcessFailedEventHandler::create(Box::new(move |_, args| {
-        let args = args.ok_or_else(|| windows::core::Error::from(E_POINTER))?;
         let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
         // SAFETY: WebView2 invokes this handler on its owning STA with live
         // event args. The writable output lives through the synchronous call.
         // https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2processfailedeventargs#processfailedkind
-        unsafe { args.ProcessFailedKind(&raw mut kind) }?;
-        if queue_process_failed(&sender, instance, kind)? {
-            wake()?;
-        }
+        let observed = args
+            .ok_or_else(|| windows::core::Error::from(E_POINTER))
+            .and_then(|args| unsafe { args.ProcessFailedKind(&raw mut kind) });
+        dispatch_process_failure(
+            renderer.as_ref(),
+            &sender,
+            instance,
+            observed.map(|()| kind),
+            &wake,
+        )?;
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         super::t2_test_observation::native_release_step("process-failed.body-return", Some(0));
         Ok(())
@@ -306,12 +353,13 @@ impl ProfileReleaseWait {
         &self,
         webview: &ICoreWebView2,
         sender: Weak<Sender<BrowserExitReceipt>>,
+        renderer: Option<crate::native_document::RendererLifetime>,
         proxy: EventLoopProxy<WindowsLoopEvent>,
     ) -> Result<(), WvError> {
         self.install_process_failed_with(|instance| {
-            let handler = process_failed_handler(instance, sender, move || {
+            let handler = process_failed_handler(instance, sender, renderer, move |event| {
                 proxy
-                    .send_event(WindowsLoopEvent::ProfileReleaseWake)
+                    .send_event(event)
                     .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
             });
             let mut token = 0_i64;

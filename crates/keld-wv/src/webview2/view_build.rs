@@ -306,6 +306,12 @@ impl NativeBuild {
                     build.release.install_process_failed(
                         &view.webview,
                         build.sender.clone(),
+                        match &navigation {
+                            BuildNavigation::Original(original) => {
+                                original.inputs.renderer_lifetime.clone()
+                            }
+                            BuildNavigation::Ordinary(_) => None,
+                        },
                         proxy.clone(),
                     )
                 })
