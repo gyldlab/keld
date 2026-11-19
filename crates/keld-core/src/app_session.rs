@@ -5340,7 +5340,19 @@ fn coordinate_window_events(
             AppWindowEvent::LastWindowClosed => Ok(()),
             #[cfg(windows)]
             AppWindowEvent::HostWriterProgress => router.service_primary_writer_progress(),
+            #[cfg(all(windows, test))]
+            event if !router.uses_primary_writer() => router.window_native_event(event),
+            #[cfg(not(windows))]
             event => router.window_native_event(event),
+            #[cfg(windows)]
+            event => {
+                use window_router::NativePublicationDisposition;
+                match router.window_native_event_ordered(event) {
+                    Ok(NativePublicationDisposition::Handled) => Ok(()),
+                    Ok(NativePublicationDisposition::FatalQueued(error)) => return Err(error),
+                    Err(error) => Err(error),
+                }
+            }
         };
         if let Err(error) = result {
             let _ = commands.send(AppWindowCommand::Fatal);
