@@ -15,6 +15,13 @@ import { BrowserWindow } from "./browser-window";
 import { dialog } from "./dialog";
 import { nativeTheme, screen } from "./desktop.ts";
 import { session } from "./session.ts";
+import { Menu } from "./menu.ts";
+import {
+  ClipboardItem,
+  clipboard,
+  nativeImage,
+  shell,
+} from "./unsupported-bindings.ts";
 
 import { runtimeProcessFactsSelected } from "@keld/kipc";
 import {
@@ -25,7 +32,19 @@ export { ELECTRON_VERSION_SHIM };
 
 installMainProcessFacts(process, runtimeProcessFactsSelected);
 
-export { app, BrowserWindow, dialog, nativeTheme, screen, session };
+export {
+  app,
+  BrowserWindow,
+  ClipboardItem,
+  clipboard,
+  dialog,
+  Menu,
+  nativeImage,
+  nativeTheme,
+  screen,
+  session,
+  shell,
+};
 export type { Display, DisplayRectangle } from "./desktop.ts";
 export type {
   MessageBoxOptions,
@@ -48,8 +67,13 @@ export { isCallError, type KeldCallError } from "@keld/kipc";
 const electron = {
   app,
   BrowserWindow,
+  ClipboardItem,
+  clipboard,
   dialog,
+  Menu,
+  nativeImage,
   session,
+  shell,
   ...(screen === undefined ? {} : { nativeTheme, screen }),
 };
 export default electron;

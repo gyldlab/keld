@@ -11,6 +11,39 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+function namedDesktopBindings(entry: string): string {
+  const path = JSON.stringify(entry);
+  return `
+import bindingAssert from 'node:assert/strict';
+import alias, { session, Menu, shell, ClipboardItem, clipboard, nativeImage } from ${path};
+import * as bindingNamespace from ${path};
+import { WorkerLink } from '@keld/kipc';
+let bindingCalls = 0;
+WorkerLink.open = async () => { bindingCalls++; throw new Error('unexpected Host link'); };
+for (const [name, member] of Object.entries({ session, Menu, shell, ClipboardItem, clipboard, nativeImage })) {
+  bindingAssert.equal(alias[name], member);
+  bindingAssert.ok(member, name);
+}
+bindingAssert.equal(Object.hasOwn(bindingNamespace, 'ipcMain'), false);
+bindingAssert.equal(Object.hasOwn(alias, 'ipcMain'), false);
+const bindingRefusal = (kind, member, ticket) => (error) => {
+  bindingAssert.deepEqual(
+    [error.name, error.code, error.kind, error.member, error.ticket],
+    ['UnsupportedMemberError', 'KELD-COMPAT-013', kind, member, ticket],
+  );
+  return true;
+};
+bindingAssert.throws(() => session.defaultSession, bindingRefusal('property', 'session.defaultSession', 'GH-553'));
+bindingAssert.throws(() => Menu.setApplicationMenu(null), bindingRefusal('method', 'Menu.setApplicationMenu(null)', 'GH-556'));
+await bindingAssert.rejects(shell.openExternal('https://example.invalid'), bindingRefusal('promise', 'shell.openExternal', 'GH-479'));
+await bindingAssert.rejects(clipboard.readText(), bindingRefusal('promise', 'clipboard.readText', 'GH-559'));
+bindingAssert.throws(() => nativeImage.createFromDataURL('data:,'), bindingRefusal('method', 'nativeImage.createFromDataURL', 'GH-559'));
+const bindingItem = new ClipboardItem({ 'text/plain': 'probe' });
+bindingAssert.throws(() => bindingItem.types, bindingRefusal('property', 'ClipboardItem.types', 'GH-559'));
+bindingAssert.equal(bindingCalls, 0);
+`;
+}
+
 // Package graph evidence only, not native Host or original-application acceptance.
 test("packed Electron uses one declared API/KIPC graph and all five aliases", () => {
   const root = mkdtempSync(join(tmpdir(), "keld-electron-artifacts-"));
@@ -77,14 +110,17 @@ for (const name of ['electron','electron/main','electron/renderer','electron/com
  const esm = await import(name); const cjs = require(name);
  assert.equal(esm.app, main.app); assert.equal(cjs.app, main.app);
  assert.equal(esm.default, main.default); assert.equal(cjs.default, main.default);
+ for (const name of ['session','Menu','shell','ClipboardItem','clipboard','nativeImage']) {
+  assert.equal(esm[name], main[name]); assert.equal(cjs[name], main[name]);
+ }
 }
-`,
+` + namedDesktopBindings("electron"),
     );
     for (const runtime of [process.execPath, "node"])
       success(run([runtime, "probe.mjs"], consumer));
     writeFileSync(
       join(consumer, "consumer.ts"),
-      `import electron, {type OpenDialogOptions, BrowserWindow} from 'electron'; const x: OpenDialogOptions = {}; void [electron, BrowserWindow, x];`,
+      `import electron, {type OpenDialogOptions, BrowserWindow, session, Menu, shell, ClipboardItem, clipboard, nativeImage} from 'electron'; const x: OpenDialogOptions = {}; void [electron, BrowserWindow, x, session, Menu, shell, ClipboardItem, clipboard, nativeImage];`,
     );
     writeFileSync(
       join(consumer, "tsconfig.json"),
@@ -146,10 +182,11 @@ test("source-copy staging preserves one resolvable declared graph", () => {
       );
     }
     writeFileSync(
-      join(root, "probe.ts"),
-      `import {isCallError as e} from './node_modules/@keld/electron/src/index.ts'; import {isCallError as k} from '@keld/kipc'; if(e !== k) throw Error('split transport');`,
+      join(root, "probe.mjs"),
+      `import {isCallError as e} from '@keld/electron'; import {isCallError as k} from '@keld/kipc'; if(e !== k) throw Error('split transport');` +
+        namedDesktopBindings("@keld/electron"),
     );
-    const p = Bun.spawnSync([process.execPath, join(root, "probe.ts")], {
+    const p = Bun.spawnSync([process.execPath, join(root, "probe.mjs")], {
       cwd: root,
       stdout: "pipe",
       stderr: "pipe",

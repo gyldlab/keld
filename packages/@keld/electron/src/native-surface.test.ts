@@ -45,9 +45,23 @@ test("menu.build-from-template today: no static template construction is exporte
   expectMissingMethod("Menu", "buildFromTemplate");
 });
 
-// Pinned menu.md: setApplicationMenu sets the actual macOS application menu.
+// Keep the GH566 corpus test identity. A linked method still refuses unless
+// the selected Windows Host explicitly attests application-menu absence.
 test("menu.set-application-menu today: no static application-menu setter is exported", () => {
-  expectMissingMethod("Menu", "setApplicationMenu");
+  expect(electron.default.Menu).toBe(electron.Menu);
+  try {
+    electron.Menu.setApplicationMenu(null);
+  } catch (error) {
+    expect(error).toMatchObject({
+      name: "UnsupportedMemberError",
+      code: "KELD-COMPAT-013",
+      member: "Menu.setApplicationMenu(null)",
+      ticket: "GH-556",
+      kind: "method",
+    });
+    return;
+  }
+  throw new Error("unselected Menu accepted setApplicationMenu(null)");
 });
 
 // Pinned menu-item.md: a recognized role suppresses the item click callback.

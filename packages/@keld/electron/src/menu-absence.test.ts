@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { resolve } from "node:path";
 
-const entry = resolve(import.meta.dir, "menu.ts");
+const entry = resolve(import.meta.dir, "index.ts");
 const facts = {
   schema: 8,
   kind: "development",
@@ -25,10 +25,12 @@ function observe(record: unknown, selected = true) {
       "--no-env-file",
       "--define=__KELD_WINDOWS_HOST__:" + selected,
       "--define=__KELD_RUNTIME_PROCESS_FACTS__:" + selected,
-      "--define=__KELD_HOST_LAUNCH_FACTS__:" + (JSON.stringify(record) ?? "undefined"),
+      "--define=__KELD_HOST_LAUNCH_FACTS__:" +
+        (JSON.stringify(record) ?? "undefined"),
       "-e",
       `globalThis["__KELD_HOST_LAUNCH_FACTS__"] = { schema: 8, windowsApplicationMenu: "absent-v1" };
-      const { Menu } = await import(${JSON.stringify(entry)});
+      const { Menu, default: alias } = await import(${JSON.stringify(entry)});
+      if (Menu !== alias.Menu) throw new Error("different Menu aliases");
       const observe = (action) => {
         try { return action() === undefined ? "void" : "unexpected value"; }
         catch (error) { return [error.code, error.name, error.member, error.ticket, error.kind]; }
@@ -62,14 +64,26 @@ test("the attested schema eight menu-null call returns void", () => {
   const child = observe({ ...facts, windowsApplicationMenu: "absent-v1" });
   expect(child.exitCode, child.stderr.toString()).toBe(0);
   expect(child.stderr.toString()).toBe("");
-  expect(JSON.parse(child.stdout.toString())).toEqual(["void", nonNull, constructor]);
+  expect(JSON.parse(child.stdout.toString())).toEqual([
+    "void",
+    nonNull,
+    constructor,
+  ]);
 });
 
 test("absent fact, unselected launch and ambient decoys leave the typed refusal", () => {
-  for (const child of [observe(facts), observe(undefined), observe(undefined, false)]) {
+  for (const child of [
+    observe(facts),
+    observe(undefined),
+    observe(undefined, false),
+  ]) {
     expect(child.exitCode, child.stderr.toString()).toBe(0);
     expect(child.stderr.toString()).toBe("");
-    expect(JSON.parse(child.stdout.toString())).toEqual([unqualified, nonNull, constructor]);
+    expect(JSON.parse(child.stdout.toString())).toEqual([
+      unqualified,
+      nonNull,
+      constructor,
+    ]);
   }
 });
 
