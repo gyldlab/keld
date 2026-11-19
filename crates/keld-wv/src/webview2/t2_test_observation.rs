@@ -168,6 +168,7 @@ pub(super) fn foreign_normal(current: super::browser_instance::BrowserInstance, 
 pub(super) fn bridge_command_name(command: &AppWindowCommand) -> &'static str {
     match command {
         AppWindowCommand::CreateWindow { .. } => "CreateWindow",
+        AppWindowCommand::LoadOriginal { .. } => "LoadOriginal",
         AppWindowCommand::DestroyWindow { .. } => "DestroyWindow",
         AppWindowCommand::SetMaximized { .. } => "SetMaximized",
         AppWindowCommand::SetFullScreen { .. } => "SetFullScreen",

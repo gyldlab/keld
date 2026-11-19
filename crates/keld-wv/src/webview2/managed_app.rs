@@ -204,6 +204,11 @@ impl ManagedWindows {
             AppWindowCommand::HostWriterProgress => {
                 send(&self.events, AppWindowEvent::HostWriterProgress)
             }
+            AppWindowCommand::LoadOriginal {
+                context,
+                query,
+                role,
+            } => self.load_original(context, &query, role, terminated || terminal_intent),
             AppWindowCommand::CreateWindow {
                 build,
                 width,

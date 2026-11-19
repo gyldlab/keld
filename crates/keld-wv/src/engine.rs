@@ -289,6 +289,16 @@ pub enum AppWindowCommand {
         #[cfg(windows)]
         original_create_start_by: Option<Instant>,
     },
+    /// Load the selected verified original entry on the admitted native View.
+    #[cfg(windows)]
+    LoadOriginal {
+        /// The exact Core operation and its mapped native View.
+        context: NativeNavigationContext,
+        /// The admitted selected entry's optional bounded query.
+        query: OriginalEntryQuery,
+        /// The authenticated current Runtime and its actual native role fence.
+        role: crate::renderer_bridge::RendererRoleWitness,
+    },
     /// Request a maximized state. A later native fact confirms its outcome.
     SetMaximized {
         /// Backend-owned view to mutate.

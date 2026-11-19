@@ -3,7 +3,10 @@
 
 use std::rc::Rc;
 
-use super::{NavigationCallbacks, OriginalView, PreloadInstaller, View, WvError, failure};
+use super::{
+    NativeLoadCall, NavigationCallbacks, OriginalNavigationFact, OriginalView, PreloadInstaller,
+    View, WvError, failure,
+};
 
 impl View {
     pub(in crate::webview2) fn retire_on_ui(&self) -> bool {
@@ -26,10 +29,19 @@ impl OriginalView {
             return Err(failure("selected producer retirement refused"));
         }
         self.retired.set(true);
-        self.navigation
-            .try_borrow_mut()
-            .map_err(|_| failure("selected retirement met a held document borrow"))?
-            .destroy();
+        let (context, previous) = {
+            let mut navigation = self
+                .navigation
+                .try_borrow_mut()
+                .map_err(|_| failure("selected retirement met a held document borrow"))?;
+            let context = navigation.host_context();
+            let previous = navigation.current_document().map(|lease| lease.stamp());
+            navigation.destroy();
+            (context, previous)
+        };
+        if let (Some(context), Some(observer)) = (context, &self.observer) {
+            observer(Some(context), OriginalNavigationFact::Revoked { previous });
+        }
         if let Some(installer) = &self.installer {
             installer.retire_on_ui();
         }
@@ -100,5 +112,9 @@ impl OriginalView {
                 .installer
                 .as_ref()
                 .is_none_or(PreloadInstaller::native_quiesced)
+            && self
+                .call
+                .as_ref()
+                .is_none_or(NativeLoadCall::native_quiesced)
     }
 }

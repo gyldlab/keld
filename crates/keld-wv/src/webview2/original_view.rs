@@ -11,16 +11,19 @@ use super::controller_custody::AdoptedControllerClose;
 use super::guarded_navigation::GuardInstalled;
 use super::original_bridge::{InstallStart, InstallStatus, OriginalBridge, PreloadInstaller};
 use super::original_callbacks::{NavigationCallbacks, Observation};
+use super::original_load::NativeLoadCall;
 use super::original_navigation::OriginalNavigation;
 use super::original_resource::{ResourceSession, ResourceView};
 use super::{ICoreWebView2Environment, View, WindowsLoopEvent};
 use crate::preload_image::AppPreloadImage;
 use crate::renderer_bridge::{RendererBridgeEndpoint, RendererBridgeOutcome, RendererRoleWitness};
+use crate::renderer_contract::NativeAttemptObservation;
 use crate::resource_intake::RetainedByteCredit;
 use crate::resource_source::AdmittedWebAppSource;
-use crate::{WebviewId, WvError};
+use crate::{NativeNavigationContext, OriginalNavigationFact, WebviewId, WvError};
 
 mod lifecycle;
+mod load;
 
 pub(super) struct OriginalView {
     id: WebviewId,
@@ -29,6 +32,9 @@ pub(super) struct OriginalView {
     resource: Option<Rc<ResourceView>>,
     callbacks: Option<NavigationCallbacks>,
     installer: Option<PreloadInstaller>,
+    call: Option<NativeLoadCall>,
+    observer: Option<Observation>,
+    observed_load_failure: Rc<Cell<Option<(NativeNavigationContext, NativeAttemptObservation)>>>,
     bridge: RefCell<Option<Rc<OriginalBridge>>>,
     endpoint: Option<RendererBridgeEndpoint>,
     image: Arc<AppPreloadImage>,
@@ -81,6 +87,9 @@ impl OriginalView {
             resource: None,
             callbacks: None,
             installer: None,
+            call: None,
+            observer: None,
+            observed_load_failure: Rc::new(Cell::new(None)),
             bridge: RefCell::new(None),
             endpoint: Some(inputs.endpoint),
             image: inputs.image,
@@ -129,8 +138,17 @@ impl OriginalView {
         )?);
 
         resource.install_on_ui()?;
+        let failure = Rc::clone(&self.observed_load_failure);
+        self.observer = Some(Rc::clone(&observer));
         callbacks
-            .install_on_ui(observer)
+            .install_on_ui(Rc::new(move |context, fact| {
+                if let (Some(context), OriginalNavigationFact::Failed { attempt, .. }) =
+                    (context, &fact)
+                {
+                    failure.set(Some((context, *attempt)));
+                }
+                observer(context, fact);
+            }))
             .map_err(|_| failure("selected navigation subscriptions refused"))?;
         let endpoint = self
             .endpoint
@@ -186,8 +204,14 @@ impl OriginalView {
     /// Acknowledging script installation creates no renderer readiness or
     /// permission to issue the first selected navigation.
     pub(super) fn preload_status(&self, now: Instant) -> InstallStatus {
+        if !self.creator.is_live() {
+            return InstallStatus::Refused;
+        }
+        self.installed_view_status(now)
+    }
+
+    fn installed_view_status(&self, now: Instant) -> InstallStatus {
         if self.retired.get()
-            || !self.creator.is_live()
             || self
                 .renderer_bridge()
                 .ok()

@@ -16,6 +16,9 @@ use crate::renderer_bridge::{
     RendererBridgeEndpoint, RendererBridgeOutcome, RendererBridgeRequest, RendererRoleWitness,
 };
 use crate::resource_source::AdmittedWebAppSource;
+use crate::{
+    NativeNavigationContext, NativeNavigationRefusal, OriginalEntryQuery, OriginalNavigationFact,
+};
 
 pub(super) struct SelectedCreate {
     pub(super) source: Arc<AdmittedWebAppSource>,
@@ -91,6 +94,40 @@ impl SelectedRenderer {
 }
 
 impl ManagedWindows {
+    pub(super) fn load_original(
+        &mut self,
+        context: NativeNavigationContext,
+        query: &OriginalEntryQuery,
+        role: RendererRoleWitness,
+        ending: bool,
+    ) -> Result<(), WvError> {
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or_else(|| failure("selected Load has no Host navigation observer"))?;
+        let view = self.views.get_mut(&context.view().0);
+        let fact = match view {
+            Some(view) if !self.custody.contains(view.window.id()) => {
+                match view.original.as_mut() {
+                    Some(original) if !ending => original.load_on_ui(context, query, role),
+                    Some(_) => Some(OriginalNavigationFact::Refused {
+                        error: NativeNavigationRefusal::Unavailable,
+                    }),
+                    None => Some(OriginalNavigationFact::Refused {
+                        error: NativeNavigationRefusal::MissingSource,
+                    }),
+                }
+            }
+            _ => Some(OriginalNavigationFact::Refused {
+                error: NativeNavigationRefusal::UnknownView,
+            }),
+        };
+        if let Some(fact) = fact {
+            (renderer.observe)(context, fact)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn prepare_original_build(
         &mut self,
         inputs: SelectedCreate,
@@ -227,6 +264,7 @@ impl ManagedWindows {
                 && !self.custody.contains(native.window.id())
                 && let Some(view) = &native.original
             {
+                view.expire_original_navigation(Instant::now())?;
                 view.drive_renderer_on_ui()?;
             }
         }
@@ -275,7 +313,7 @@ impl ManagedWindows {
                 self.views
                     .values()
                     .filter(|native| !self.custody.contains(native.window.id()))
-                    .filter_map(|native| native.original.as_ref()?.renderer_deadline()),
+                    .filter_map(|native| native.original.as_ref()?.original_deadline()),
             )
             .min()
     }
