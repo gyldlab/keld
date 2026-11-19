@@ -44,6 +44,10 @@ import {
   decodeWindowRequest,
   decodeWindowResponse,
 } from "../../api/src/window-codec.ts";
+import {
+  decodeDialogReply,
+  encodeDialogRequest,
+} from "../../api/src/dialog.generated.ts";
 
 const CORPUS_PATH = join(
   import.meta.dir,
@@ -52,7 +56,7 @@ const CORPUS_PATH = join(
 const STALL_LIMIT_MS = 5000;
 /** One owner, one digest: the Rust suite asserts this same constant. */
 const CORPUS_SHA256 =
-  "f4744a8bf81481d1a0753563cc871dce0e4f7ec1ea4cdcac4b4e4c231d45e79b";
+  "3ca414e30de36a328b4688d4c400ff34eeec7f46f7444df02acbe6df4515d1f4";
 /** Pre-auth policies may reaccept after a rejection; authenticated ones close. */
 const PRE_AUTH_POLICIES = new Set([
   "server-pre-auth-hello",
@@ -130,6 +134,10 @@ function policyByName(name: string): ReceivePolicy {
       return lifecycleReplyWaiter(Number(arg));
     case "privileged-fs-receiver":
       return privilegedCallReceiver(Number(arg));
+    case "privileged-dialog-receiver":
+      if (Number(arg) !== 6)
+        throw new Error("dialog channel must be allocated id 6");
+      return privilegedCallReceiver(6);
     case "primary-app-receiver":
       return primaryAppReceiver();
     case "reply-waiter": {
@@ -321,6 +329,7 @@ function stageTwo(
       // CALL (GH-527 §4.7); its ERR is the shared CallError.
       if (kind === FrameKind.Err) decodeCorpusCallError(payload);
       else if (channel === WINDOW_CHANNEL) decodeWindowResponse(payload);
+      else if (channel === 6) decodeDialogReply(payload);
       return;
     case "lifecycle-reply-waiter":
       if (kind === FrameKind.Err) decodeCorpusCallError(payload);
@@ -331,6 +340,15 @@ function stageTwo(
       // The privileged codec is KEL-102/T3's; the primary session's
       // per-channel codecs are proven by their own policies' rows.
       return;
+    case "privileged-dialog-receiver": {
+      // Native owns the full request decoder. This canonical positive Cancel
+      // vector must match the generated Bun request encoder byte-for-byte;
+      // the Rust keld-native dialog_wire test decodes the same fixture row.
+      const canonical = encodeDialogRequest({ variant: "Cancel", nonce: 1n });
+      if (!timingSafeEq(payload, canonical))
+        throw new Error("KELD-IPC-003: dialog Cancel payload differs");
+      return;
+    }
     default:
       throw new Error(`no stage-two rule for ${policyName}`);
   }

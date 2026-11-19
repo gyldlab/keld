@@ -204,6 +204,48 @@ fn cancel_uses_a_distinct_wire_variant_and_a_nonzero_nonce() {
 }
 
 #[test]
+fn canonical_ipc_dialog_call_and_reply_rows_use_native_codecs() {
+    // The KIPC Rust/Bun corpus tests authenticate the channel and correlation.
+    // Decode the exact same two positive payload rows with Native's production
+    // codecs without creating a copy of their policy or introducing an IPC cycle.
+    let corpus = include_str!("../../keld-ipc/tests/fixtures/receiver-semantics-v0.tsv");
+    let fixture_payload = |name: &str| {
+        let mut matches = corpus.lines().filter_map(|line| {
+            let columns: Vec<_> = line.split('\t').collect();
+            (columns.first() == Some(&name)).then(|| {
+                assert_eq!(columns.len(), 7);
+                assert_eq!(columns[4], "ok");
+                columns[3]
+            })
+        });
+        let hex = matches.next().expect("canonical Dialog row is present");
+        assert!(matches.next().is_none(), "Dialog row must be unique");
+        assert!(hex.len().is_multiple_of(2));
+        hex.as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| {
+                u8::from_str_radix(std::str::from_utf8(pair).expect("hex UTF-8"), 16)
+                    .expect("canonical fixture byte")
+            })
+            .collect::<Vec<u8>>()
+    };
+    let call = fixture_payload("dialog-call-valid");
+    assert_eq!(
+        decode_dialog_request(&call).expect("native validates Dialog CALL"),
+        DialogRequestV1::Cancel { nonce: 1 }
+    );
+    let reply = fixture_payload("dialog-reply-valid");
+    assert_eq!(
+        decode::<DialogReplyV1>(&reply).expect("native validates Dialog REPLY"),
+        DialogReplyV1::Cancel {
+            disposition: CancelDisposition::Requested
+        }
+    );
+}
+
+#[test]
 fn message_and_cancel_replies_have_distinct_canonical_payloads() {
     let message = DialogReplyV1::Message {
         response: 2,

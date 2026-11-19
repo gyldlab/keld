@@ -19,7 +19,7 @@ const CORPUS_PATH = join(
   "../../../../crates/keld-ipc/tests/fixtures/receiver-semantics-v0.tsv",
 );
 const CORPUS_SHA256 =
-  "f4744a8bf81481d1a0753563cc871dce0e4f7ec1ea4cdcac4b4e4c231d45e79b";
+  "3ca414e30de36a328b4688d4c400ff34eeec7f46f7444df02acbe6df4515d1f4";
 const SKIP_DIR_NAMES = new Set([".git", "node_modules", "target"]);
 const SKIP_REPO_DIRS = new Set([
   join(REPO_ROOT, ".keld-work"),

@@ -16,6 +16,17 @@ ping-echo-session	echo-receiver	4b49020a000001000900000000000000	-	ok	admit	0
 ping-any-channel	echo-receiver	4b49020a00002a000900000000000000	-	ok	admit	0
 ping-lifecycle	lifecycle-receiver	4b49020a000003000000000000000000	-	ok	admit	0
 fs-call-valid	privileged-fs-receiver:2	4b490201000002000300000004000000	deadbeef	ok	admit	1
+dialog-call-valid	privileged-dialog-receiver:6	4b490201000006000700000002000000	0101	ok	admit	1
+dialog-call-corr-zero	privileged-dialog-receiver:6	4b490201000006000000000002000000	0101	KELD-IPC-005	close	0
+dialog-call-wrong-channel	privileged-dialog-receiver:6	4b490201000002000700000002000000	0101	KELD-IPC-005	close	0
+dialog-call-truncated	privileged-dialog-receiver:6	4b490201000006000700000002000000	01	KELD-IPC-001	close	0
+dialog-reply-valid	reply-waiter:6:7	4b490202000006000700000002000000	0100	ok	admit	0
+dialog-reply-message-valid	reply-waiter:6:7	4b490202000006000700000003000000	000200	ok	admit	0
+dialog-reply-wrong-corr	reply-waiter:6:7	4b490202000006000800000002000000	0100	KELD-IPC-005	close	0
+dialog-reply-wrong-channel	reply-waiter:6:7	4b490202000003000700000002000000	0100	KELD-IPC-005	close	0
+dialog-reply-truncated	reply-waiter:6:7	4b490202000006000700000002000000	01	KELD-IPC-001	close	0
+dialog-err-valid	reply-waiter:6:7	4b490203000006000700000024000000	0d4b454c442d4755415244303031154b454c442d47554152443030313a2064656e696564	ok	admit	0
+dialog-err-malformed	reply-waiter:6:7	4b490203000006000700000001000000	00	KELD-IPC-003	close	0
 bad-magic	echo-receiver	58490201000001000700000000000000	-	KELD-IPC-002	close	0
 bad-version	echo-receiver	4b496301000001000700000000000000	-	KELD-IPC-002	close	0
 bad-kind	echo-receiver	4b4902c8000001000700000000000000	-	KELD-IPC-002	close	0
