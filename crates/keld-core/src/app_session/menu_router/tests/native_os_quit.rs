@@ -181,3 +181,60 @@ fn native_os_quit_failed_write_retires_exact_current_owner() {
         "failed write drops the same generation"
     );
 }
+
+#[test]
+fn fresh_successor_native_quit_follows_its_actual_ready_frame() {
+    let (mut router, mut first_peer, old_guardian, _ui) =
+        app::tests::initial_ready_router_with_window_loop();
+    first_peer
+        .set_app_link_deadlines(Some(Duration::from_secs(3)))
+        .expect("first peer deadline");
+    let _source = install_original(&mut router);
+    subscribe(&router, &mut first_peer);
+    ready(&router, &mut first_peer, old_guardian);
+    let first_owner = caller(&router);
+    router
+        .retire_generation(first_owner.attempt)
+        .expect("G1 current link and owner retire");
+    let (replacement, mut next_peer, _new_guardian, _next_ui) =
+        app::tests::initial_ready_router_with_window_loop();
+    next_peer
+        .set_app_link_deadlines(Some(Duration::from_secs(3)))
+        .expect("G2 peer deadline");
+    let mut successor = replacement
+        .current
+        .lock()
+        .expect("new generation")
+        .take()
+        .expect("new role");
+    successor.attempt = first_owner.attempt + 1;
+    *router.current.lock().expect("router current") = Some(successor);
+    subscribe(&router, &mut next_peer);
+
+    // Recovery is already armed. The existing Core Ready publisher writes
+    // one real Ready [0] on this G2 socket and does not re-arm Guardian.
+    router.signal_ready().expect("G2 actual Ready publisher");
+    let (ready_header, ready_bytes) = read_frame(&mut next_peer).expect("G2 Ready frame");
+    assert_eq!(
+        (ready_header.kind, ready_header.channel, ready_header.corr),
+        (FrameKind::Event, LIFECYCLE_CHANNEL, CorrelationId(0))
+    );
+    assert_eq!(ready_bytes, [0], "G2 must receive its own Ready first");
+
+    // A newly generated G2 intent is valid; the negative held-G1 fixture
+    // in GH451-buffered-native-intent-RED.md must distinguish the two.
+    router
+        .native_os_quit_requested()
+        .expect("fresh selected G2 native Quit");
+    let (quit_header, quit_bytes) =
+        read_frame(&mut next_peer).expect("fresh G2 native QuitRequested");
+    assert_eq!(
+        (quit_header.kind, quit_header.channel, quit_header.corr),
+        (FrameKind::Event, LIFECYCLE_CHANNEL, CorrelationId(0))
+    );
+    assert_eq!(quit_bytes, [2], "existing native intent unit");
+    assert_eq!(
+        decode::<LifecycleEvent>(&quit_bytes).expect("strict G2 event"),
+        LifecycleEvent::QuitRequested
+    );
+}
