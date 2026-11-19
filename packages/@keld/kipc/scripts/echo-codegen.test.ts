@@ -36,6 +36,8 @@ const generationOutputs = [
   "packages/@keld/kipc/src/transport.ts",
   "packages/@keld/api/src/dialog.generated.ts",
   "packages/@keld/kipc/src/runtime-process.generated.ts",
+  "packages/@keld/kipc/src/compat-control.generated.ts",
+  "packages/@keld/api/src/window-codec.ts",
 ];
 
 function withGeneratorCheckout(run: (root: string) => void): void {
@@ -72,6 +74,8 @@ function withGeneratorCheckout(run: (root: string) => void): void {
       "crates/keld-ipc/src/echo.rs",
       "crates/keld-ipc/src/lifecycle.rs",
       "crates/keld-ipc/src/channel_table.rs",
+      "crates/keld-ipc/src/compat_control.rs",
+      "crates/keld-ipc/src/window.rs",
       "crates/keld-native/src/fs.rs",
       "crates/keld-native/src/auth/mod.rs",
       "crates/keld-native/src/dialog.rs",
@@ -141,6 +145,24 @@ test("generation preserves valid unformatted manual transport bytes", () => {
     expect(result.stderr.toString()).toBe("");
     expect(result.exitCode).toBe(0);
     expect(readFileSync(path, "utf8").endsWith(manual)).toBe(true);
+    expect(runGenerator(root, "check").exitCode).toBe(0);
+  });
+});
+
+test("a Rust compat cap change makes the generated transport stale", () => {
+  withGeneratorCheckout((root) => {
+    const source = resolve(root, "crates/keld-ipc/src/compat_control.rs");
+    const original = readFileSync(source, "utf8");
+    const changed = original.replace(
+      "COMPAT_DATA_FRAME_BYTES: usize = 16_384",
+      "COMPAT_DATA_FRAME_BYTES: usize = 16_383",
+    );
+    expect(changed).not.toBe(original);
+    writeFileSync(source, changed);
+    const stale = runGenerator(root, "check");
+    expect(stale.exitCode).not.toBe(0);
+    expect(stale.stderr.toString()).toContain("compat frame limits are stale");
+    expect(runGenerator(root, "generate").exitCode).toBe(0);
     expect(runGenerator(root, "check").exitCode).toBe(0);
   });
 });

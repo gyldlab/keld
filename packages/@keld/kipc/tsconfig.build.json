@@ -7,6 +7,11 @@
     "rewriteRelativeImportExtensions": true,
     "rootDir": "src"
   },
-  "files": ["src/transport.ts", "src/runtime-process.generated.ts"],
+  "files": [
+    "src/transport.ts",
+    "src/endpoint-value-codec.ts",
+    "src/compat-control.generated.ts",
+    "src/runtime-process.generated.ts"
+  ],
   "include": []
 }

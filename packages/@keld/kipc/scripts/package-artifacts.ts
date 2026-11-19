@@ -129,6 +129,8 @@ async function pack(
       JSON.stringify(kipcManifest.exports) !==
         JSON.stringify({
           ".": "./src/transport.ts",
+          "./endpoint-value-codec": "./src/endpoint-value-codec.ts",
+          "./compat-control": "./src/compat-control.generated.ts",
           "./runtime-process-facts": "./src/runtime-process.generated.ts",
         })
     ) {

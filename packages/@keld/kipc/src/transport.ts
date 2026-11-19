@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:6b0b69e0c6d224ccf81043ca937f24e07e97630908b4459e0a203da896b45898
+// @keld/kipc-transport sha256:5cbc991f0852a194ad45fca002c9b41bdf1996810dcb857684d1027d28302c16
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -224,6 +224,12 @@ const MAGIC_BYTES = new Uint8Array([0x4b, 0x49]); // "KI", matches Rust `u16::fr
 export const PROTOCOL_VERSION = 2;
 /** Mirrors `keld_ipc::HEADER_LEN`. */
 export const HEADER_LEN = 16;
+// @generated-begin compat-frame-limits
+// crates/keld-ipc/src/compat_control.rs. Do not edit by hand.
+export const COMPAT_DATA_FRAME_BYTES = 16384;
+export const COMPAT_CONTROL_FRAME_BYTES = 4096;
+// @generated-end compat-frame-limits
+
 /** Control-plane frame payload cap — mirrors `keld_ipc::MAX_FRAME_LEN` (16 MiB). */
 export const MAX_FRAME_LEN = 16 * 1024 * 1024;
 // @generated-begin channel-table: packages/@keld/kipc/scripts/echo-codegen.ts from
@@ -242,6 +248,8 @@ export const AUTH_CHANNEL = 4;
 export const WINDOW_CHANNEL = 5;
 /** Channel `dialog` (`keld_ipc::channel_table::DIALOG`). */
 export const DIALOG_CHANNEL = 6;
+/** Channel `compat-control` (`keld_ipc::channel_table::COMPAT_CONTROL`). */
+export const COMPAT_CONTROL_CHANNEL = 7;
 /** An allocated channel id (`keld_ipc::channel_table::CHANNEL_TABLE`). */
 export type AllocatedChannel =
   | typeof ECHO_CHANNEL
@@ -249,7 +257,8 @@ export type AllocatedChannel =
   | typeof LIFECYCLE_CHANNEL
   | typeof AUTH_CHANNEL
   | typeof WINDOW_CHANNEL
-  | typeof DIALOG_CHANNEL;
+  | typeof DIALOG_CHANNEL
+  | typeof COMPAT_CONTROL_CHANNEL;
 /** Every allocated channel id, in table order. */
 export const ALLOCATED_CHANNELS: readonly AllocatedChannel[] = Object.freeze([
   ECHO_CHANNEL,
@@ -258,11 +267,13 @@ export const ALLOCATED_CHANNELS: readonly AllocatedChannel[] = Object.freeze([
   AUTH_CHANNEL,
   WINDOW_CHANNEL,
   DIALOG_CHANNEL,
+  COMPAT_CONTROL_CHANNEL,
 ]);
 /** Channels whose receive class carries host `EVENT`s (`ReceiveClass::carries_host_events`). */
 export const HOST_EVENT_CHANNELS: readonly AllocatedChannel[] = Object.freeze([
   LIFECYCLE_CHANNEL,
   WINDOW_CHANNEL,
+  COMPAT_CONTROL_CHANNEL,
 ]);
 // @generated-end channel-table
 /** Mirrors `keld_ipc::APP_LINK_IO_DEADLINE` (arch/02 §7). Bun has no `SO_RCVTIMEO`. */
@@ -690,6 +701,25 @@ export function validateReceivedHeader(
   if (policy.emptyPayload === true && header.len !== 0) {
     throw kipcError("KELD-IPC-005", "payload must be empty for this frame");
   }
+  if (header.channel === COMPAT_CONTROL_CHANNEL) {
+    switch (header.kind) {
+      case FrameKind.Call:
+      case FrameKind.Event:
+        if (header.len > COMPAT_DATA_FRAME_BYTES)
+          throw payloadTooLarge("compat DATA exceeds its frame budget");
+        break;
+      case FrameKind.Reply:
+      case FrameKind.Err:
+        if (header.len > COMPAT_CONTROL_FRAME_BYTES)
+          throw payloadTooLarge("compat control exceeds its frame budget");
+        break;
+      default:
+        throw kipcError(
+          "KELD-IPC-005",
+          "frame kind is not a compatibility carriage",
+        );
+    }
+  }
   return header;
 }
 
@@ -793,6 +823,7 @@ export class FrameReader {
   #pending: {
     resolve: (f: DecodedFrame) => void;
     reject: (e: Error) => void;
+    admitHeader: ((header: FrameHeader) => void) | undefined;
   } | null = null;
   #closed = false;
   #closeError: Error | null = null;
@@ -1029,6 +1060,7 @@ export class FrameReader {
     let header: FrameHeader;
     try {
       header = decodeHeader(this.#copyOut(HEADER_LEN));
+      this.#pending.admitHeader?.(header);
     } catch (err) {
       this.fail(
         err instanceof Error ? err : kipcError("KELD-IPC-002", String(err)),
@@ -1111,7 +1143,10 @@ export class FrameReader {
     pending?.resolve({ header, payload });
   }
 
-  readFrame(): Promise<DecodedFrame> {
+  /** Optionally admit the decoded header before allocating or copying the frame body. */
+  readFrame(
+    admitHeader?: (header: FrameHeader) => void,
+  ): Promise<DecodedFrame> {
     if (this.#closed) {
       return Promise.reject(
         this.#closeError ?? kipcError("KELD-IPC-001", "connection closed"),
@@ -1126,7 +1161,7 @@ export class FrameReader {
       );
     }
     return new Promise((resolve, reject) => {
-      this.#pending = { resolve, reject };
+      this.#pending = { resolve, reject, admitHeader };
       this.#ensureFrameDeadline();
       this.#tryResolve();
       if (this.#pending !== null && this.#ending !== null && !this.#closed)
@@ -2009,7 +2044,10 @@ export function selectInboundPolicy(
         : { policy: NO_FRAME_POLICY, action: "append" };
     case FrameKind.Call:
       return {
-        policy: table.callPolicies.get(header.channel) ?? NO_FRAME_POLICY,
+        policy:
+          header.channel === COMPAT_CONTROL_CHANNEL
+            ? NO_FRAME_POLICY
+            : (table.callPolicies.get(header.channel) ?? NO_FRAME_POLICY),
         action: "append",
       };
     default:
@@ -3473,6 +3511,21 @@ class TransportWorker {
   readonly #table: InboundTable;
   readonly #pending = new Map<number, PendingCallEntry>();
   readonly #reader = new FrameReader();
+  readonly #admitCompatHeader = (header: FrameHeader): void => {
+    if (header.kind === FrameKind.Ping) return;
+    const isReply =
+      header.kind === FrameKind.Reply || header.kind === FrameKind.Err;
+    const expectedChannel = isReply
+      ? this.#pending.get(header.corr)?.channel
+      : undefined;
+    if (
+      header.channel !== COMPAT_CONTROL_CHANNEL &&
+      expectedChannel !== COMPAT_CONTROL_CHANNEL
+    )
+      return;
+    const { policy } = selectInboundPolicy(header, this.#table, this.#pending);
+    validateReceivedHeader(policy, header);
+  };
   readonly #drain = new DrainSignal();
   readonly #header = new Uint8Array(HEADER_LEN);
   readonly #headerView = new DataView(this.#header.buffer);
@@ -3571,7 +3624,7 @@ class TransportWorker {
     for (;;) {
       let frame: DecodedFrame;
       try {
-        frame = await this.#reader.readFrame();
+        frame = await this.#reader.readFrame(this.#admitCompatHeader);
       } catch (err) {
         this.#end(STATE_CLOSED, errorText(err));
         process.exit(0);

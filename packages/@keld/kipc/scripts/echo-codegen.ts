@@ -46,6 +46,14 @@ const authGeneratedPath = resolve(
   repositoryRoot,
   "packages/@keld/api/src/auth.generated.ts",
 );
+const compatSourcePath = resolve(
+  repositoryRoot,
+  "crates/keld-ipc/src/compat_control.rs",
+);
+const compatGeneratedPath = resolve(
+  repositoryRoot,
+  "packages/@keld/kipc/src/compat-control.generated.ts",
+);
 
 const windowSourcePath = resolve(
   repositoryRoot,
@@ -182,7 +190,18 @@ export function assertEchoArtifactFresh(
 }
 
 // Native enum declaration grammar is shared; each target admits its own closed schema.
+const COMPAT_ENUMS = [
+  "ConsumerDisposition",
+  "DispatchCertainty",
+  "TerminalDisposition",
+  "CompatControlRequest",
+  "CompatControlEvent",
+  "CompatControlResponse",
+] as const;
+
+type CompatEnumName = (typeof COMPAT_ENUMS)[number];
 type NativeEnumName =
+  | CompatEnumName
   | "FsRequest"
   | "FsResponse"
   | "AuthRequest"
@@ -201,6 +220,10 @@ type NativeFieldType =
   | "Option<Vec<String>>"
   | "u64"
   | "u32"
+  | "CallError"
+  | "ConsumerDisposition"
+  | "TerminalDisposition"
+  | "DispatchCertainty"
   | "WindowRef"
   | "WindowState"
   | "Rect"
@@ -225,6 +248,57 @@ type NativeSchema = Readonly<
 >;
 
 const NATIVE_SCHEMAS: Readonly<Record<NativeEnumName, NativeSchema>> = {
+  ConsumerDisposition: {
+    Consumed: {},
+    NoListener: {},
+    Refused: { error: "CallError" },
+  },
+  DispatchCertainty: {
+    NotDispatched: {},
+    OutcomeUnknown: {},
+  },
+  TerminalDisposition: {
+    Consumed: {},
+    NoListener: {},
+    Stale: {},
+    Refused: { error: "CallError" },
+    RouteRetired: { certainty: "DispatchCertainty" },
+  },
+  CompatControlRequest: {
+    DeliverToCurrentMain: {
+      webview: "u32",
+      topic: "String",
+      payload: "Vec<u8>",
+    },
+    DeliverToOriginalDocument: {
+      webview: "u32",
+      navigation: "u32",
+      topic: "String",
+      payload: "Vec<u8>",
+    },
+    ReleaseConsumed: {
+      webview: "u32",
+      navigation: "u32",
+      message: "u32",
+      disposition: "ConsumerDisposition",
+    },
+  },
+  CompatControlEvent: {
+    RendererMessage: {
+      webview: "u32",
+      navigation: "u32",
+      message: "u32",
+      url: "String",
+      origin: "String",
+      topic: "String",
+      payload: "Vec<u8>",
+    },
+    DocumentRetired: { webview: "u32", navigation: "u32" },
+  },
+  CompatControlResponse: {
+    Deliver: { disposition: "TerminalDisposition" },
+    Released: {},
+  },
   LifecycleRequest: {
     Quit: {},
     Subscribe: { channel: "u16" },
@@ -327,16 +401,35 @@ const NATIVE_SCHEMAS: Readonly<Record<NativeEnumName, NativeSchema>> = {
   },
 };
 
+function compatFieldAttribute(
+  name: NativeEnumName,
+  field: string,
+): string | undefined {
+  if (name === "CompatControlRequest" && field === "topic")
+    return '        #[serde(deserialize_with = "deserialize_compat_topic")]';
+  if (name === "CompatControlRequest" && field === "payload")
+    return '        #[serde(deserialize_with = "deserialize_compat_payload")]';
+  if (
+    (name === "ConsumerDisposition" || name === "TerminalDisposition") &&
+    field === "error"
+  )
+    return '        #[serde(deserialize_with = "deserialize_compat_diagnostic")]';
+}
+
 function parseNativeEnum(
   lines: readonly string[],
   name: NativeEnumName,
 ): NativeVariant[] {
-  const canonicalName = name === "WindowEvent" ? "WindowEventValue" : name;
-  const ownedAlias =
+  const isCompat = COMPAT_ENUMS.some((candidate) => candidate === name);
+  const borrowed =
     name === "WindowEvent"
-      ? "pub type WindowEvent = WindowEventValue<String>;"
-      : undefined;
-  if (ownedAlias !== undefined) {
+      ? { parameters: "T", owned: "String" }
+      : name === "CompatControlEvent"
+        ? { parameters: "S, P", owned: "String, Vec<u8>" }
+        : undefined;
+  const canonicalName = borrowed ? name + "Value" : name;
+  if (borrowed) {
+    const ownedAlias = `pub type ${name} = ${canonicalName}<${borrowed.owned}>;`;
     const aliasDeclaration = new RegExp(
       "^\\s*(?:pub(?:\\([^)]*\\))?\\s+)?(?:enum|type)\\s+" + name + "\\b",
     );
@@ -361,10 +454,8 @@ function parseNativeEnum(
   if (starts.length !== 1)
     fail("native " + name + " requires exactly one public enum declaration");
   const start = starts[0];
-  const expected =
-    name === "WindowEvent"
-      ? "pub enum WindowEventValue<T> {"
-      : "pub enum " + name + " {";
+  const parameters = borrowed ? `<${borrowed.parameters}>` : "";
+  const expected = `pub enum ${canonicalName}${parameters} {`;
   if (lines[start] !== expected)
     fail("native " + name + " must use the rustfmt-normalized named enum form");
   let derives = 0;
@@ -374,7 +465,9 @@ function parseNativeEnum(
     if (line.startsWith("#[")) {
       const derive = name.startsWith("Window")
         ? /^#\[derive\(Debug, Clone(?:, Copy)?, PartialEq(?:, Eq)?, Serialize, Deserialize\)\]$/
-        : name.startsWith("Lifecycle") || name === "SubscribeRefusal"
+        : isCompat ||
+            name.startsWith("Lifecycle") ||
+            name === "SubscribeRefusal"
           ? /^#\[derive\(Debug, Clone(?:, Copy)?, PartialEq, Eq, Serialize, Deserialize\)\]$/
           : /^#\[derive\((?:(?:Debug|Clone), )?Serialize, Deserialize\)\]$/;
       if (!derive.test(line)) {
@@ -424,7 +517,7 @@ function parseNativeEnum(
           );
         }
       }
-      if (name.startsWith("Window")) {
+      if (name.startsWith("Window") || isCompat) {
         const expectedVariants = Object.keys(schema);
         for (const [index, variant] of variants.entries()) {
           const expected = Object.keys(schema[variant.name]);
@@ -434,7 +527,11 @@ function parseNativeEnum(
               (field, position) => field.name !== expected[position],
             )
           )
-            fail("window append-only variant/field order changed");
+            fail(
+              isCompat
+                ? "compat fixed variant/field order changed"
+                : "window append-only variant/field order changed",
+            );
         }
       }
       return variants;
@@ -473,7 +570,17 @@ function parseNativeEnum(
           continue;
         const pattern = name.startsWith("Window")
           ? /^        ([A-Za-z_][A-Za-z0-9_]*): (String|T|Vec<String>|u32|u64|WindowRef|WindowState|Rect|bool|Option<i32>|CloseVerdict|Option<u64>|Option<DesktopFacts>),$/
-          : /^        ([A-Za-z_][A-Za-z0-9_]*): (String|Vec<u8>|Vec<String>|Option<String>|Option<Vec<String>>|u64|u16|RuntimeProcessFacts|SubscribeRefusal),$/;
+          : isCompat
+            ? /^        ([A-Za-z_][A-Za-z0-9_]*): (String|Vec<u8>|S|P|u32|CallError|ConsumerDisposition|TerminalDisposition|DispatchCertainty),$/
+            : /^        ([A-Za-z_][A-Za-z0-9_]*): (String|Vec<u8>|Vec<String>|Option<String>|Option<Vec<String>>|u64|u16|RuntimeProcessFacts|SubscribeRefusal),$/;
+        if (isCompat && fieldLine.startsWith("        #[")) {
+          const nextField = pattern.exec(lines[index + 1] ?? "");
+          if (
+            nextField &&
+            fieldLine === compatFieldAttribute(name, nextField[1])
+          )
+            continue;
+        }
         const field = pattern.exec(fieldLine);
         if (!field)
           fail(
@@ -483,6 +590,11 @@ function parseNativeEnum(
               variantName +
               " has unsupported field syntax on source line " +
               (index + 1),
+          );
+        const requiredAttribute = compatFieldAttribute(name, field[1]);
+        if (requiredAttribute && lines[index - 1] !== requiredAttribute)
+          fail(
+            `native ${name}::${variantName}.${field[1]} requires its bounded deserializer`,
           );
         if (fields.some((candidate) => candidate.name === field[1]))
           fail(
@@ -494,6 +606,14 @@ function parseNativeEnum(
               field[1],
           );
         let rustType = field[2];
+        if (name === "CompatControlEvent") {
+          const owned = schema[variantName][field[1]];
+          const expected =
+            owned === "String" ? "S" : owned === "Vec<u8>" ? "P" : owned;
+          if (rustType !== expected)
+            fail("compat event field must use its canonical type: " + field[1]);
+          rustType = owned;
+        }
         if (
           name === "WindowEvent" &&
           field[1] === "native_url" &&
@@ -850,6 +970,331 @@ export function assertAuthArtifactFresh(
   }
 }
 
+const COMPAT_LIMITS = {
+  VALUE_MAX: "COMPAT_VALUE_BYTES",
+  TOPIC_MAX: "COMPAT_TOPIC_BYTES",
+  URL_MAX: "COMPAT_URL_BYTES",
+  ORIGIN_MAX: "COMPAT_ORIGIN_BYTES",
+  ERROR_CODE_MAX: "COMPAT_ERROR_CODE_BYTES",
+  ERROR_MESSAGE_MAX: "COMPAT_ERROR_MESSAGE_BYTES",
+  RETIRED_MAX: "COMPAT_DOCUMENT_RETIRED_FRAME_BYTES",
+} as const;
+
+const COMPAT_OPERATION_LIMITS: Readonly<
+  Record<string, { limit: string; detail: string } | undefined>
+> = {
+  ReleaseConsumed: {
+    limit: "CONTROL_MAX",
+    detail: "release exceeds control limit",
+  },
+  DocumentRetired: {
+    limit: "RETIRED_MAX",
+    detail: "retirement exceeds control limit",
+  },
+};
+
+function readCompatLimit(lines: readonly string[], source: string): number {
+  const declaration = new RegExp(
+    `^pub const ${source}: usize = ([0-9]+(?:_[0-9]+)*);$`,
+  );
+  const values = lines.flatMap((line) => {
+    const match = declaration.exec(line);
+    return match ? [Number(match[1].replaceAll("_", ""))] : [];
+  });
+  if (
+    values.length !== 1 ||
+    !Number.isSafeInteger(values[0]) ||
+    values[0] < 1 ||
+    values[0] > 0xffff_ffff
+  )
+    fail("compat requires one positive bounded Rust constant: " + source);
+  return values[0];
+}
+
+function compatTextLimit(field: string): string {
+  switch (field) {
+    case "topic":
+      return "TOPIC_MAX";
+    case "url":
+      return "URL_MAX";
+    case "origin":
+      return "ORIGIN_MAX";
+    default:
+      return fail("unsupported compat String field: " + field);
+  }
+}
+
+function compatTsFieldType(field: NativeField): string {
+  switch (field.rustType) {
+    case "u32":
+      return "number";
+    case "String":
+      return "string";
+    case "Vec<u8>":
+      return "Uint8Array";
+    case "CallError":
+      return "ErrorFields";
+    case "ConsumerDisposition":
+    case "TerminalDisposition":
+    case "DispatchCertainty":
+      return field.rustType;
+    default:
+      return fail("unsupported compat field type: " + field.rustType);
+  }
+}
+
+function compatEncodeField(field: NativeField): string {
+  const value = "value." + field.name;
+  switch (field.rustType) {
+    case "u32":
+      return `checkedIdentity(${value}, ${JSON.stringify(field.name)})`;
+    case "String":
+      return `checkedText(${value}, ${compatTextLimit(field.name)})`;
+    case "Vec<u8>":
+      return `...checkedBytes(${value})`;
+    case "CallError":
+      return `encodeDiagnostic(${value})`;
+    case "ConsumerDisposition":
+    case "TerminalDisposition":
+    case "DispatchCertainty":
+      return `encode${field.rustType}(${value})`;
+    default:
+      return fail("unsupported compat encode field type: " + field.rustType);
+  }
+}
+
+function compatDecodeField(field: NativeField): string {
+  const index = "wireBytes, at";
+  switch (field.rustType) {
+    case "u32":
+      return `readIdentity(${index})`;
+    case "String":
+      return `readText(${index}, ${compatTextLimit(field.name)})`;
+    case "Vec<u8>":
+      return `readBytes(${index})`;
+    case "CallError":
+      return `readDiagnostic(${index})`;
+    case "ConsumerDisposition":
+    case "TerminalDisposition":
+    case "DispatchCertainty":
+      return `decode${field.rustType}At(${index})`;
+    default:
+      return fail("unsupported compat decode field type: " + field.rustType);
+  }
+}
+
+const COMPAT_RUNTIME = `
+import {
+  COMPAT_CONTROL_FRAME_BYTES as CONTROL_MAX, COMPAT_DATA_FRAME_BYTES as DATA_MAX,
+  decodeCallError, decodePostcardStringAt, decodeVarint, encodeCallError,
+  encodePostcardString, encodeVarint, kipcError,
+} from "./transport.ts";
+
+type ErrorFields = ReturnType<typeof decodeCallError>;
+
+function invalid(detail: string): never {
+  throw kipcError("KELD-IPC-003", detail);
+}
+
+function concat(parts: readonly Uint8Array[], max: number): Uint8Array {
+  let count = 0;
+  for (const part of parts) {
+    count += part.byteLength;
+    if (count > max) return invalid("compat operation exceeds its frame budget");
+  }
+  const result = new Uint8Array(count);
+  let offset = 0;
+  for (const part of parts) {
+    result.set(part, offset);
+    offset += part.byteLength;
+  }
+  return result;
+}
+
+function checkedIdentity(value: number, field: string): Uint8Array {
+  if (!Number.isInteger(value) || value < 1 || value > 0xffffffff)
+    return invalid("invalid compat " + field + " identity");
+  return encodeVarint(value);
+}
+
+function checkedText(value: string, max: number): Uint8Array {
+  if (typeof value !== "string" || value.length > max)
+    return invalid("invalid compat text");
+  const bytes = encodePostcardString(value, "compat text");
+  const [length] = decodeVarint(bytes, 0);
+  if (length > max) return invalid("compat text exceeds field limit");
+  return bytes;
+}
+
+function checkedBytes(value: Uint8Array): [Uint8Array, Uint8Array] {
+  if (!(value instanceof Uint8Array) || value.byteLength > VALUE_MAX)
+    return invalid("invalid compat endpoint value bytes");
+  return [encodeVarint(value.byteLength), value];
+}
+
+function validCode(code: string): boolean {
+  return code.length > 5 && code.length <= ERROR_CODE_MAX &&
+    code.startsWith("KELD-") && !/[^A-Z0-9-]/.test(code);
+}
+
+function checkDiagnosticLength(bytes: Uint8Array, at: number): void {
+  const [codeLength, codeStart] = decodeVarint(bytes, at);
+  if (codeLength > ERROR_CODE_MAX) return invalid("compat diagnostic code exceeds field limit");
+  const [messageLength] = decodeVarint(bytes, codeStart + codeLength);
+  if (messageLength > ERROR_MESSAGE_MAX)
+    return invalid("compat diagnostic message exceeds field limit");
+}
+
+function encodeDiagnostic(value: ErrorFields): Uint8Array {
+  if (!value || typeof value !== "object" ||
+      typeof value.code !== "string" || !validCode(value.code) ||
+      typeof value.message !== "string" || value.message.length > ERROR_MESSAGE_MAX)
+    return invalid("compat diagnostic exceeds declared domain");
+  const bytes = encodeCallError(value.code, value.message);
+  checkDiagnosticLength(bytes, 0);
+  return bytes;
+}
+
+function readIdentity(bytes: Uint8Array, at: number): [number, number] {
+  const [value, next] = decodeVarint(bytes, at);
+  if (value === 0) return invalid("zero compat native identity");
+  return [value, next];
+}
+
+function readText(bytes: Uint8Array, at: number, max: number): [string, number] {
+  const [length] = decodeVarint(bytes, at);
+  if (length > max) return invalid("compat string exceeds declared bound");
+  return decodePostcardStringAt(bytes, at);
+}
+
+function readBytes(bytes: Uint8Array, at: number): [Uint8Array, number] {
+  const [count, start] = decodeVarint(bytes, at);
+  if (count > VALUE_MAX || count > bytes.byteLength - start)
+    return invalid("compat endpoint bytes exceed declared bound");
+  return [new Uint8Array(bytes.subarray(start, start + count)), start + count];
+}
+
+function readDiagnostic(bytes: Uint8Array, at: number): [ErrorFields, number] {
+  checkDiagnosticLength(bytes, at);
+  // A diagnostic is the final field of each closed operation that carries it.
+  const error = decodeCallError(bytes.subarray(at));
+  if (!validCode(error.code)) return invalid("invalid compat diagnostic code");
+  return [error, bytes.byteLength];
+}
+`;
+
+/** Projects the canonical compat DTOs and bounds into the TypeScript codec. */
+export function renderCompatControlBinding(rustSource: string): string {
+  const lines = rustSource.replaceAll("\r\n", "\n").split("\n");
+  if (lines.some((line) => /^\s*#!\[/.test(line)))
+    fail("native compat source-level attributes are not admitted");
+  const output = [
+    "// @generated by packages/@keld/kipc/scripts/echo-codegen.ts.",
+    "// Source: crates/keld-ipc/src/compat_control.rs. Do not edit by hand.",
+    ...Object.entries(COMPAT_LIMITS).map(
+      ([name, source]) => `const ${name} = ${readCompatLimit(lines, source)};`,
+    ),
+    COMPAT_RUNTIME,
+  ];
+  for (const name of COMPAT_ENUMS) {
+    const variants = parseNativeEnum(lines, name);
+    output.push(`export type ${name} =`);
+    for (const variant of variants) {
+      const fields = variant.fields
+        .map((field) => `; ${field.name}: ${compatTsFieldType(field)}`)
+        .join("");
+      output.push(`  | { variant: ${JSON.stringify(variant.name)}${fields} }`);
+    }
+    output[output.length - 1] += ";";
+    output.push("");
+
+    const isPublic = name.startsWith("CompatControl");
+    const max =
+      name === "CompatControlRequest" || name === "CompatControlEvent"
+        ? "DATA_MAX"
+        : "CONTROL_MAX";
+    output.push(
+      `${isPublic ? "export " : ""}function encode${name}(value: ${name}): Uint8Array {`,
+      "  if (!value || typeof value !== 'object') return invalid('compat variant is not an object');",
+      "  switch (value.variant) {",
+    );
+    for (const [tag, variant] of variants.entries()) {
+      const parts = [
+        `encodeVarint(${tag})`,
+        ...variant.fields.map(compatEncodeField),
+      ];
+      const budget = COMPAT_OPERATION_LIMITS[variant.name]?.limit ?? max;
+      output.push(
+        `    case ${JSON.stringify(variant.name)}: return concat([${parts.join(", ")}], ${budget});`,
+      );
+    }
+    output.push(
+      `    default: return invalid('unknown ${name} variant');`,
+      "  }",
+      "}",
+      "",
+      `function decode${name}At(wireBytes: Uint8Array, start: number): [${name}, number] {`,
+      "  const [tag, afterTag] = decodeVarint(wireBytes, start);",
+      "  switch (tag) {",
+    );
+    for (const [tag, variant] of variants.entries()) {
+      output.push(`    case ${tag}: {`);
+      const operationLimit = COMPAT_OPERATION_LIMITS[variant.name];
+      if (operationLimit)
+        output.push(
+          `      if (wireBytes.byteLength > ${operationLimit.limit}) return invalid(${JSON.stringify(operationLimit.detail)});`,
+        );
+      if (variant.fields.length > 0) output.push("      let at = afterTag;");
+      for (const field of variant.fields) {
+        output.push(
+          `      const [${field.name}, next_${field.name}] = ${compatDecodeField(field)};`,
+          `      at = next_${field.name};`,
+        );
+      }
+      const fields = variant.fields.map((field) => ", " + field.name).join("");
+      const end = variant.fields.length > 0 ? "at" : "afterTag";
+      output.push(
+        `      return [{ variant: ${JSON.stringify(variant.name)}${fields} }, ${end}];`,
+        "    }",
+      );
+    }
+    output.push(
+      `    default: return invalid('unknown ${name} tag');`,
+      "  }",
+      "}",
+      "",
+    );
+    if (isPublic) {
+      output.push(
+        `export function decode${name}(payload: Uint8Array): ${name} {`,
+        `  if (!(payload instanceof Uint8Array) || payload.byteLength > ${max})`,
+        "    return invalid('invalid compat frame envelope');",
+        `  const [value, after] = decode${name}At(payload, 0);`,
+        "  if (after !== payload.byteLength) return invalid('trailing bytes after compat frame');",
+        "  return value;",
+        "}",
+        "",
+      );
+    }
+  }
+  return formatGenerated(output.join("\n"), compatGeneratedPath);
+}
+
+/** Fails when the committed projection differs from the canonical Rust source. */
+export function assertCompatControlArtifactFresh(
+  rustSource: string,
+  artifact: Uint8Array,
+): void {
+  if (
+    !Buffer.from(artifact).equals(
+      Buffer.from(renderCompatControlBinding(rustSource)),
+    )
+  )
+    fail(
+      "committed compat-control.generated.ts is stale; run bun run echo:generate",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Channel-table target (GH-508 spec docs/specs/gh508-kipc-channel-table.md §4.3).
 //
@@ -1046,11 +1491,16 @@ function parseTableList(
     /^pub const CHANNEL_TABLE: &\[ChannelEntry\] = &\[(.*)\];$/.exec(
       lines[start],
     );
+  const wrappedLine =
+    lines[start] === "pub const CHANNEL_TABLE: &[ChannelEntry] ="
+      ? /^    &\[(.*)\];$/.exec(lines[start + 1] ?? "")
+      : null;
   let raw: string[];
   let consumed: number;
-  if (singleLine) {
-    raw = singleLine[1].split(",").map((name) => name.trim());
-    consumed = 1;
+  const inlineList = singleLine ?? wrappedLine;
+  if (inlineList) {
+    raw = inlineList[1].split(",").map((name) => name.trim());
+    consumed = singleLine ? 1 : 2;
   } else if (lines[start] === "pub const CHANNEL_TABLE: &[ChannelEntry] = &[") {
     raw = [];
     let index = start + 1;
@@ -1317,14 +1767,47 @@ export function unstampedTransport(transportSource: string): string {
     : transportSource;
 }
 
-/** The transport with a fresh channel-table region, restamped over its final bytes. */
+const COMPAT_FRAME_REGION_BEGIN = "// @generated-begin compat-frame-limits";
+const COMPAT_FRAME_REGION_END = "// @generated-end compat-frame-limits";
+
+function replaceCompatFrameRegion(
+  compatSource: string,
+  transportSource: string,
+): string {
+  const lines = compatSource.replaceAll("\r\n", "\n").split("\n");
+  const beginnings = transportSource.split(COMPAT_FRAME_REGION_BEGIN);
+  if (beginnings.length !== 2)
+    fail("transport.ts requires exactly one compat-frame-limits begin marker");
+  const [beginning, priorRegion] = beginnings;
+  const endings = priorRegion.split(COMPAT_FRAME_REGION_END);
+  if (endings.length !== 2 || beginning.includes(COMPAT_FRAME_REGION_END))
+    fail("transport.ts requires exactly one compat-frame-limits end marker");
+  const caps = ["COMPAT_DATA_FRAME_BYTES", "COMPAT_CONTROL_FRAME_BYTES"].map(
+    (name) => `export const ${name} = ${readCompatLimit(lines, name)};`,
+  );
+  const region = [
+    COMPAT_FRAME_REGION_BEGIN,
+    "// crates/keld-ipc/src/compat_control.rs. Do not edit by hand.",
+    ...caps,
+    COMPAT_FRAME_REGION_END,
+  ].join("\n");
+  return (
+    beginning + formatGenerated(region, transportPath).trimEnd() + endings[1]
+  );
+}
+
+/** The transport with fresh Rust-owned regions, restamped over the final bytes. */
 export function regenerateTransport(
   rustSource: string,
   transportSource: string,
+  compatSource: string,
 ): string {
   const region = renderChannelTableRegion(rustSource);
   return stampTransport(
-    replaceChannelTableRegion(unstampedTransport(transportSource), region),
+    replaceCompatFrameRegion(
+      compatSource,
+      replaceChannelTableRegion(unstampedTransport(transportSource), region),
+    ),
   );
 }
 
@@ -1685,6 +2168,8 @@ export function decodeRuntimeInitialized(payload:Uint8Array):void {
 function generate(): void {
   const fsGenerated = renderFsBinding(readFileSync(fsSourcePath, "utf8"));
   const authGenerated = renderAuthBinding(readFileSync(authSourcePath, "utf8"));
+  const compatSource = readFileSync(compatSourcePath, "utf8");
+  const compatGenerated = renderCompatControlBinding(compatSource);
   const dialogGenerated = renderDialogBinding(
     readFileSync(dialogSourcePath, "utf8"),
   );
@@ -1696,6 +2181,7 @@ function generate(): void {
   const regenerated = regenerateTransport(
     readFileSync(channelTableSourcePath, "utf8"),
     readFileSync(transportPath, "utf8"),
+    compatSource,
   );
   verifyTransportStamp(Buffer.from(regenerated), transportPath);
   outputs.push(
@@ -1707,6 +2193,7 @@ function generate(): void {
     },
     { path: fsGeneratedPath, source: fsGenerated },
     { path: authGeneratedPath, source: authGenerated },
+    { path: compatGeneratedPath, source: compatGenerated },
     { path: dialogGeneratedPath, source: dialogGenerated },
     { path: transportPath, source: regenerated },
     {
@@ -1723,6 +2210,11 @@ function generate(): void {
 }
 
 function check(): void {
+  const compatSource = readFileSync(compatSourcePath, "utf8");
+  assertCompatControlArtifactFresh(
+    compatSource,
+    readFileSync(compatGeneratedPath),
+  );
   const windowAdapter = readFileSync(windowCodecPath, "utf8");
   if (
     windowAdapter !==
@@ -1761,10 +2253,13 @@ function check(): void {
     }
     assertEchoArtifactFresh(rustSource, actual, path);
   }
+  const transport = readFileSync(transportPath, "utf8");
   assertChannelTableRegionFresh(
     readFileSync(channelTableSourcePath, "utf8"),
-    readFileSync(transportPath, "utf8"),
+    transport,
   );
+  if (replaceCompatFrameRegion(compatSource, transport) !== transport)
+    fail("compat frame limits are stale; run bun run echo:generate");
   try {
     verifyTransportStamp(
       readFileSync(transportPath),

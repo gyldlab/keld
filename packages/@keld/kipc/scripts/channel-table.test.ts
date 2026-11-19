@@ -58,6 +58,8 @@ export const AUTH_CHANNEL = 4;
 export const WINDOW_CHANNEL = 5;
 /** Channel \`dialog\` (\`keld_ipc::channel_table::DIALOG\`). */
 export const DIALOG_CHANNEL = 6;
+/** Channel \`compat-control\` (\`keld_ipc::channel_table::COMPAT_CONTROL\`). */
+export const COMPAT_CONTROL_CHANNEL = 7;
 /** An allocated channel id (\`keld_ipc::channel_table::CHANNEL_TABLE\`). */
 export type AllocatedChannel =
   | typeof ECHO_CHANNEL
@@ -65,7 +67,8 @@ export type AllocatedChannel =
   | typeof LIFECYCLE_CHANNEL
   | typeof AUTH_CHANNEL
   | typeof WINDOW_CHANNEL
-  | typeof DIALOG_CHANNEL;
+  | typeof DIALOG_CHANNEL
+  | typeof COMPAT_CONTROL_CHANNEL;
 /** Every allocated channel id, in table order. */
 export const ALLOCATED_CHANNELS: readonly AllocatedChannel[] = Object.freeze([
   ECHO_CHANNEL,
@@ -74,11 +77,13 @@ export const ALLOCATED_CHANNELS: readonly AllocatedChannel[] = Object.freeze([
   AUTH_CHANNEL,
   WINDOW_CHANNEL,
   DIALOG_CHANNEL,
+  COMPAT_CONTROL_CHANNEL,
 ]);
 /** Channels whose receive class carries host \`EVENT\`s (\`ReceiveClass::carries_host_events\`). */
 export const HOST_EVENT_CHANNELS: readonly AllocatedChannel[] = Object.freeze([
   LIFECYCLE_CHANNEL,
   WINDOW_CHANNEL,
+  COMPAT_CONTROL_CHANNEL,
 ]);
 // @generated-end channel-table`;
 
@@ -365,6 +370,12 @@ describe("criterion 8: the region is the render of channel_table.rs", () => {
           id: 6,
           receiveClass: "GuardedCall",
         },
+        {
+          rustName: "COMPAT_CONTROL",
+          name: "compat-control",
+          id: 7,
+          receiveClass: "HostCallWithEvents",
+        },
       ],
       hostEventClasses: ["HostCallWithEvents"],
     });
@@ -439,7 +450,7 @@ describe("criterion 8: the region is the render of channel_table.rs", () => {
       );
       return module.HOST_EVENT_CHANNELS as readonly number[];
     };
-    expect(await exportedEvents(widened)).toEqual([2, 3, 4, 5, 6]);
+    expect(await exportedEvents(widened)).toEqual([2, 3, 4, 5, 6, 7]);
     const narrowed = replaceOnce(
       tableSource,
       rule,
@@ -563,26 +574,31 @@ describe("criterion 9: the generator fails closed and names the source line", ()
 
   test("CHANNEL_TABLE must list every entry constant exactly once", () => {
     const list =
-      "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, LIFECYCLE, AUTH, WINDOW, DIALOG];";
+      "pub const CHANNEL_TABLE: &[ChannelEntry] =\n    &[ECHO, FS, LIFECYCLE, AUTH, WINDOW, DIALOG, COMPAT_CONTROL];";
     for (const [label, replacement, message] of [
       [
         "unlisted entry",
-        "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, AUTH, WINDOW, DIALOG];",
+        "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, AUTH, WINDOW, DIALOG, COMPAT_CONTROL];",
         "LIFECYCLE is not listed",
       ],
       [
         "unknown name",
-        "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, LIFECYCLE, AUTH, WINDOW, DIALOG, PROBE];",
+        "pub const CHANNEL_TABLE: &[ChannelEntry] =\n    &[ECHO, FS, LIFECYCLE, AUTH, WINDOW, DIALOG, COMPAT_CONTROL, PROBE];",
         "PROBE, which is not a parsed",
       ],
       [
         "listed twice",
-        "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, FS, LIFECYCLE, AUTH, WINDOW, DIALOG];",
+        "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, FS, LIFECYCLE, AUTH, WINDOW, DIALOG, COMPAT_CONTROL];",
         "FS more than once",
       ],
       [
         "computed list",
         "pub const CHANNEL_TABLE: &[ChannelEntry] = ENTRIES;",
+        "unsupported CHANNEL_TABLE",
+      ],
+      [
+        "wrapped computed list",
+        "pub const CHANNEL_TABLE: &[ChannelEntry] =\n    ENTRIES;",
         "unsupported CHANNEL_TABLE",
       ],
       ["missing list", "", "missing CHANNEL_TABLE"],
@@ -596,7 +612,7 @@ describe("criterion 9: the generator fails closed and names the source line", ()
     const wrapped = replaceOnce(
       tableSource,
       list,
-      "pub const CHANNEL_TABLE: &[ChannelEntry] = &[\n    ECHO,\n    FS,\n    LIFECYCLE,\n    AUTH,\n    WINDOW,\n    DIALOG,\n];",
+      "pub const CHANNEL_TABLE: &[ChannelEntry] = &[\n    ECHO,\n    FS,\n    LIFECYCLE,\n    AUTH,\n    WINDOW,\n    DIALOG,\n    COMPAT_CONTROL,\n];",
     );
     expect(renderChannelTableRegion(wrapped)).toBe(expectedRegion);
   });

@@ -12,6 +12,7 @@ import {
   ALLOCATED_CHANNELS,
   AUTH_CHANNEL,
   APP_LINK_IO_DEADLINE_MS,
+  COMPAT_CONTROL_CHANNEL,
   DrainSignal,
   DIALOG_CHANNEL,
   ECHO_CHANNEL,
@@ -267,6 +268,7 @@ describe("GH-527 receive policy mirrors", () => {
       AUTH_CHANNEL,
       WINDOW_CHANNEL,
       DIALOG_CHANNEL,
+      COMPAT_CONTROL_CHANNEL,
     ]);
     for (const channel of [
       ECHO_CHANNEL,
@@ -275,16 +277,17 @@ describe("GH-527 receive policy mirrors", () => {
       AUTH_CHANNEL,
       WINDOW_CHANNEL,
       DIALOG_CHANNEL,
+      COMPAT_CONTROL_CHANNEL,
     ]) {
       expect(isAllocatedChannel(channel)).toBe(true);
     }
-    for (const unallocated of [HANDSHAKE_CHANNEL, 7, 9, 0xffff, 2.5, -1]) {
+    for (const unallocated of [HANDSHAKE_CHANNEL, 8, 9, 0xffff, 2.5, -1]) {
       expect(isAllocatedChannel(unallocated)).toBe(false);
     }
     // Type-level negative control: if `replyWaiter` widened its parameter to
     // `number`, this directive would be unused and `bun run typecheck` fails.
-    // @ts-expect-error 7 is not an allocated channel
-    expect(() => replyWaiter(7, 7)).toThrow(
+    // @ts-expect-error 8 is not an allocated channel
+    expect(() => replyWaiter(8, 7)).toThrow(
       "KELD-IPC-005: channel is not allocated by the channel table",
     );
     for (const unallocated of [9, 0xffff]) {
@@ -307,6 +310,37 @@ describe("GH-527 receive policy mirrors", () => {
 });
 
 describe("FrameReader chunk queue", () => {
+  test("the admitted compat header budget rejects max plus one without reading a body", async () => {
+    for (const [kind, corr, max, policy] of [
+      [FrameKind.Event, 0, 16_384, eventReceiver(COMPAT_CONTROL_CHANNEL)],
+      [FrameKind.Reply, 7, 4_096, replyWaiter(COMPAT_CONTROL_CHANNEL, 7)],
+      [FrameKind.Err, 7, 4_096, replyWaiter(COMPAT_CONTROL_CHANNEL, 7)],
+    ] as const) {
+      const header = {
+        kind,
+        flags: 0,
+        channel: COMPAT_CONTROL_CHANNEL,
+        corr,
+        len: max,
+      };
+      expect(validateReceivedHeader(policy, header)).toEqual(header);
+      expect(() =>
+        validateReceivedHeader(policy, { ...header, len: max + 1, corr: 6 }),
+      ).toThrow("KELD-IPC-005");
+      const reader = new FrameReader();
+      const pending = reader.readFrame((received) => {
+        validateReceivedHeader(policy, received);
+      });
+      const sentinel = Uint8Array.of(0xab);
+      reader.push(encodeHeader({ ...header, len: max + 1 }));
+      expect(reader.pendingChunkCount()).toBe(0);
+      await expect(pending).rejects.toThrow("KELD-IPC-004");
+      reader.push(sentinel);
+      expect(reader.bufferedBytes()).toBe(0);
+      expect(sentinel).toEqual(Uint8Array.of(0xab));
+    }
+  });
+
   test("overlapping readFrame() rejects; the first waiter still gets the frame", async () => {
     const reader = new FrameReader();
     const first = reader.readFrame();

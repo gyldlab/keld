@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import {
+  COMPAT_CONTROL_CHANNEL,
   DEFAULT_REPLY_BYTES,
   DEFAULT_RING_BYTES,
   DEFAULT_RING_RECORDS,
@@ -355,6 +356,7 @@ describe("§4.7 per-frame policy selection", () => {
     callPolicies: new Map([
       [ECHO_CHANNEL, RECEIVE_POLICIES.echoReceiver],
       [2, privilegedCallReceiver(2)],
+      [COMPAT_CONTROL_CHANNEL, privilegedCallReceiver(COMPAT_CONTROL_CHANNEL)],
     ]),
   };
   const pending = new Map<number, PendingCallEntry>([
@@ -362,6 +364,10 @@ describe("§4.7 per-frame policy selection", () => {
     [11, { channel: LIFECYCLE_CHANNEL, blocking: true, abandoned: false }],
     [12, { channel: LIFECYCLE_CHANNEL, blocking: false, abandoned: true }],
     [13, { channel: 2, blocking: false, abandoned: false }],
+    [
+      14,
+      { channel: COMPAT_CONTROL_CHANNEL, blocking: false, abandoned: false },
+    ],
   ]);
 
   /** [frame, expected action or the KELD-IPC-005 detail its selected policy raises]. */
@@ -426,6 +432,11 @@ describe("§4.7 per-frame policy selection", () => {
       header(FrameKind.Event, 2, 0),
       "frame kind is not declared by the session policy",
     ],
+    [
+      "compat reply correlation on a different channel",
+      header(FrameKind.Reply, 2, 14),
+      "wrong channel for the session policy",
+    ],
     ["host echo CALL", header(FrameKind.Call, ECHO_CHANNEL, 77), "append"],
     [
       "host echo CALL with correlation 0",
@@ -436,6 +447,11 @@ describe("§4.7 per-frame policy selection", () => {
       "host CALL on a declared privileged channel",
       header(FrameKind.Call, 2, 5),
       "append",
+    ],
+    [
+      "host CALL on compat stays forbidden even if configured as privileged",
+      header(FrameKind.Call, COMPAT_CONTROL_CHANNEL, 5),
+      "frame kind is not declared by the session policy",
     ],
     [
       "host CALL on an undeclared channel",
