@@ -1529,6 +1529,7 @@ dependencies = [
  "keld-guard",
  "keld-ipc",
  "keld-runtime",
+ "keld-update",
  "rmcp",
  "rustix",
  "schemars",

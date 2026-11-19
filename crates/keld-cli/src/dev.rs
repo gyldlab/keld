@@ -363,7 +363,7 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
         } else {
             "keld-host"
         });
-    let stage = crate::boot::stage_dev_boot(project_root, &developer_host)
+    let stage = crate::boot::stage_dev_boot_for_project(project_root, &developer_host)
         .map_err(|error| DevError::Doctor(error.to_string()))?;
     let stage_root = stage.root().to_owned();
     let staged_host = stage.host().to_owned();

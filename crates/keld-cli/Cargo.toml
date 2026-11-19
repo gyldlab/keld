@@ -34,6 +34,8 @@ sha2 = { workspace = true }
 rustix = { workspace = true, features = ["process"] }
 
 [target.'cfg(windows)'.dependencies]
+# GH-1185 reuses the existing retained-file adapter for development graph staging.
+keld-update = { workspace = true }
 windows-permissions = { workspace = true }
 windows-sys = { workspace = true }
 

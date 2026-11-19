@@ -1,7 +1,11 @@
 //! Non-release owner-private boot stage compiler (KEL-96/T1a/T4).
 
-#[cfg(all(windows, test))]
+#[cfg(windows)]
 mod development_source;
+#[cfg(windows)]
+mod graph_capture;
+#[cfg(windows)]
+mod windows_graph;
 
 use std::fs;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -392,10 +396,62 @@ fn stage_dev_boot_platform(
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-#[allow(clippy::too_many_lines)] // one atomic staging transaction keeps cleanup and integrity checks contiguous
 fn stage_dev_boot_platform_with_owner_check<F>(
     project_root: &Path,
     developer_host: &Path,
+    owner_check: F,
+) -> Result<DevBootStage, BootCompileError>
+where
+    F: FnMut(&Path) -> Result<(), ProjectOwnershipError>,
+{
+    stage_dev_boot_platform_with_owner_check_and_graph(
+        project_root,
+        developer_host,
+        #[cfg(windows)]
+        None,
+        owner_check,
+    )
+}
+
+/// Ordinary developer entry selects graph8 only after the canonical captured
+/// authoring and independent compiled framework tuple have matched.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+pub(crate) fn stage_dev_boot_for_project(
+    project_root: &Path,
+    developer_host: &Path,
+) -> Result<DevBootStage, BootCompileError> {
+    #[cfg(windows)]
+    {
+        windows_graph::stage_for_project(project_root, developer_host)
+    }
+    #[cfg(not(windows))]
+    {
+        stage_dev_boot(project_root, developer_host)
+    }
+}
+
+/// The historical graph seam now takes the already qualified captured input.
+/// No serialized/project/runtime-env value can construct this carrier.
+#[cfg(windows)]
+fn stage_dev_boot_with_approved_graph(
+    project_root: &Path,
+    developer_host: &Path,
+    captured: &windows_graph::CapturedGraphInput,
+) -> Result<DevBootStage, BootCompileError> {
+    stage_dev_boot_platform_with_owner_check_and_graph(
+        project_root,
+        developer_host,
+        Some(captured),
+        ensure_current_principal_owns,
+    )
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+#[allow(clippy::too_many_lines)] // the one StageGuard transaction owns rollback and publication
+fn stage_dev_boot_platform_with_owner_check_and_graph<F>(
+    project_root: &Path,
+    developer_host: &Path,
+    #[cfg(windows)] graph: Option<&windows_graph::CapturedGraphInput>,
     mut owner_check: F,
 ) -> Result<DevBootStage, BootCompileError>
 where
@@ -410,12 +466,30 @@ where
     owner_check(&project_root)?;
     let config_path = project_root.join("keld.config.ts");
     owner_check(&config_path)?;
+    #[cfg(windows)]
+    let config = match graph.as_ref() {
+        Some(input) => input.config.clone(),
+        None => fs::read_to_string(config_path)
+            .map_err(|source| BootCompileError::new("project config", source.to_string()))?,
+    };
+    #[cfg(not(windows))]
     let config = fs::read_to_string(config_path)
         .map_err(|source| BootCompileError::new("project config", source.to_string()))?;
     let name = keld_core::title_from_config_ts(&config)
         .unwrap_or_else(|| keld_core::DEFAULT_HELLO_TITLE.to_owned());
     let entry = keld_core::entry_from_config_ts(&config)
         .unwrap_or_else(|| keld_core::DEFAULT_ENTRY.to_owned());
+    #[cfg(windows)]
+    let (name, entry) = graph.as_ref().map_or((name, entry), |input| {
+        (input.app.name.clone(), input.app.entry.clone())
+    });
+    #[cfg(windows)]
+    if graph.is_none() && windows_graph::source_declared(&config)? {
+        return Err(BootCompileError::new(
+            "graph source selection",
+            "rendererSource requires captured Windows graph qualification",
+        ));
+    }
     let facade = keld_core::initial_window_from_config_ts(&config)
         .map_err(|source| BootCompileError::new("project config", source.to_string()))?;
     // Linux must refuse an unsupported declaration before staging a bootable
@@ -445,10 +519,19 @@ where
     #[cfg(target_os = "macos")]
     let permissions_snapshot = ProjectPermissionsSource::open(&project_root)?.capture()?;
     #[cfg(windows)]
-    let permissions_snapshot = capture_windows_permissions(&project_root)?;
+    let ordinary_permissions;
+    #[cfg(windows)]
+    let permissions_snapshot = if let Some(input) = graph {
+        input.permissions.as_slice()
+    } else {
+        ordinary_permissions = capture_windows_permissions(&project_root)?;
+        ordinary_permissions.as_slice()
+    };
+    #[cfg(target_os = "macos")]
+    let permissions_snapshot = permissions_snapshot.as_slice();
     #[cfg(any(target_os = "macos", windows))]
     let declared_profile = {
-        let source = std::str::from_utf8(permissions_snapshot.as_slice()).map_err(|source| {
+        let source = std::str::from_utf8(permissions_snapshot).map_err(|source| {
             BootCompileError::new(
                 "permissions profile",
                 format!("policy is not UTF-8: {source}"),
@@ -479,10 +562,10 @@ where
         }
     };
     #[cfg(target_os = "macos")]
-    let permissions_bytes = permissions_snapshot.as_slice();
+    let permissions_bytes = permissions_snapshot;
     #[cfg(windows)]
     let permissions_bytes = if declared_profile.is_some() {
-        permissions_snapshot.as_slice()
+        permissions_snapshot
     } else {
         PERMISSIONS_BYTES
     };
@@ -490,15 +573,39 @@ where
     let permissions_bytes = PERMISSIONS_BYTES;
     let schema = keld_core::app_session::boot_schema(facade, declared_profile);
 
-    let entry_source = contained_source(&project_root, &entry, "entry")?;
-    let renderer_source = renderer
-        .as_deref()
-        .map(|relative| contained_source(&project_root, relative, "renderer"))
-        .transpose()?;
-    owner_check(&entry_source)?;
-    if let Some(source) = &renderer_source {
-        owner_check(source)?;
-    }
+    #[cfg(windows)]
+    let selected_graph = graph.is_some();
+    #[cfg(not(windows))]
+    let selected_graph = false;
+    let ordinary_sources = if selected_graph {
+        None
+    } else {
+        let entry_source = contained_source(&project_root, &entry, "entry")?;
+        let renderer_source = renderer
+            .as_deref()
+            .map(|relative| contained_source(&project_root, relative, "renderer"))
+            .transpose()?;
+        owner_check(&entry_source)?;
+        if let Some(source) = &renderer_source {
+            owner_check(source)?;
+        }
+        Some((entry_source, renderer_source))
+    };
+    #[cfg(windows)]
+    let (developer_host_path, mut host_source, host_source_metadata) = match graph.as_ref() {
+        Some(input) => {
+            let source = input
+                .host
+                .try_clone()
+                .map_err(|error| BootCompileError::new("qualified Host", error.to_string()))?;
+            let metadata = source
+                .metadata()
+                .map_err(|error| BootCompileError::new("qualified Host", error.to_string()))?;
+            (developer_host.to_path_buf(), source, metadata)
+        }
+        None => open_developer_executable(developer_host, "developer host")?,
+    };
+    #[cfg(not(windows))]
     let (developer_host_path, mut host_source, host_source_metadata) =
         open_developer_executable(developer_host, "developer host")?;
     #[cfg(not(target_os = "linux"))]
@@ -536,7 +643,9 @@ where
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let staged_host = root.join("keld-host");
     #[cfg(windows)]
-    let staged_host = root.join("keld-host.exe");
+    let host_leaf = "keld-host.exe";
+    #[cfg(windows)]
+    let staged_host = root.join(host_leaf);
     #[cfg(windows)]
     let source_digest = stage_developer_executable(
         &mut host_source,
@@ -559,35 +668,58 @@ where
         "launcher",
     )?;
 
-    stage_project_file(&root, &entry, &entry_source, "entry")?;
-    if let (Some(renderer), Some(source)) = (&renderer, &renderer_source) {
-        stage_project_file(&root, renderer, source, "renderer")?;
-    }
-    // Probe with two Path components. `join("src/kipc-transport.ts")` then
-    // `.is_file()` can miss a real sidecar on Windows (`/` is not the OS
-    // separator); `contained_source` still uses the same relative string as
-    // `entry` (`src/main.ts`), which `canonicalize` already accepts.
-    match fs::metadata(project_root.join("src").join("kipc-transport.ts")) {
-        Ok(metadata) if metadata.is_file() => {
-            let transport_source =
-                contained_source(&project_root, KIPC_TRANSPORT_REL, "kipc transport")?;
-            owner_check(&transport_source)?;
-            stage_project_file(
-                &root,
-                KIPC_TRANSPORT_REL,
-                &transport_source,
-                "kipc transport",
-            )?;
-        }
-        Ok(_) => {
+    #[cfg(windows)]
+    let _captured_tree = if let Some(input) = graph.as_ref() {
+        if source_digest != input.expected_host_sha256 {
             return Err(BootCompileError::new(
-                "kipc transport",
-                "target is not a regular file",
+                "qualified Host",
+                "copied Host differs from the independent tuple",
             ));
         }
-        Err(source) if source.kind() == io::ErrorKind::NotFound => {}
-        Err(source) => {
-            return Err(BootCompileError::new("kipc transport", source.to_string()));
+        Some(graph_capture::capture_complete_tree(
+            &project_root,
+            &input.root,
+            &root,
+            guard
+                .launch_guards
+                .last()
+                .ok_or_else(|| BootCompileError::new("retained stage", "root guard is absent"))?,
+            &mut owner_check,
+        )?)
+    } else {
+        None
+    };
+    if let Some((entry_source, renderer_source)) = ordinary_sources {
+        stage_project_file(&root, &entry, &entry_source, "entry")?;
+        if let (Some(renderer), Some(source)) = (&renderer, &renderer_source) {
+            stage_project_file(&root, renderer, source, "renderer")?;
+        }
+        // Probe with two Path components. `join("src/kipc-transport.ts")` then
+        // `.is_file()` can miss a real sidecar on Windows (`/` is not the OS
+        // separator); `contained_source` still uses the same relative string as
+        // `entry` (`src/main.ts`), which `canonicalize` already accepts.
+        match fs::metadata(project_root.join("src").join("kipc-transport.ts")) {
+            Ok(metadata) if metadata.is_file() => {
+                let transport_source =
+                    contained_source(&project_root, KIPC_TRANSPORT_REL, "kipc transport")?;
+                owner_check(&transport_source)?;
+                stage_project_file(
+                    &root,
+                    KIPC_TRANSPORT_REL,
+                    &transport_source,
+                    "kipc transport",
+                )?;
+            }
+            Ok(_) => {
+                return Err(BootCompileError::new(
+                    "kipc transport",
+                    "target is not a regular file",
+                ));
+            }
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(BootCompileError::new("kipc transport", source.to_string()));
+            }
         }
     }
     write_new_file(
@@ -596,45 +728,86 @@ where
         0o400,
         "permissions",
     )?;
-    let digest = Sha256::digest(permissions_bytes);
-    let mut descriptor = serde_json::json!({
-        "schema": schema,
-        "name": name,
-        "entry": entry,
-        "renderer": renderer,
-        "permissions": {
-            "file": PERMISSIONS_FILE,
-            "content_sha256": format!("sha256:{digest:x}"),
-        }
-    });
-    if facade {
-        let object = descriptor.as_object_mut().ok_or_else(|| {
-            BootCompileError::new("boot descriptor", "generated root is not an object")
-        })?;
-        object.insert(String::from("schema"), serde_json::Value::from(schema));
-        object.remove("renderer");
-    }
-    // Preserve the byte shape of legacy stages when no auth profile is configured.
-    // A configured-but-incomplete profile is nonempty and must be carried unchanged;
-    // Native owns the post-Allow missing-client decision.
-    if !auth_configuration.is_empty() {
-        let auth = serde_json::to_value(&auth_configuration).map_err(|source| {
-            BootCompileError::new("boot auth configuration", source.to_string())
-        })?;
-        match &mut descriptor {
-            serde_json::Value::Object(object) => {
-                object.insert(String::from("auth"), auth);
+    #[cfg(windows)]
+    let graph_descriptor = if let Some(input) = graph {
+        input.recheck()?;
+        let runtime_entry = keld_core::app_session::windows_original_entry_bootstrap_source(&entry)
+            .map_err(|source| BootCompileError::new("graph runtime entry", source.to_string()))?;
+        // Create the one canonical entry before the existing sole graph capture.
+        // A project-owned collision refuses; it is never overwritten or aliased.
+        write_new_file(
+            &root.join(keld_core::app_session::ORIGINAL_RUNTIME_ENTRY_PATH),
+            &runtime_entry,
+            0o600,
+            "graph runtime entry",
+        )?;
+        let graph_bytes = keld_core::app_session::make_graph_leaf_from_retained_root(
+            &root,
+            guard
+                .launch_guards
+                .last()
+                .ok_or_else(|| BootCompileError::new("retained stage", "root guard is absent"))?,
+            &input.approved,
+            &input.selected,
+            &entry,
+        )
+        .map_err(|error| BootCompileError::new("copied graph admission", error.to_string()))?;
+        input.recheck()?;
+        write_new_file(
+            &root.join(keld_core::app_session::GRAPH_FILE),
+            &graph_bytes,
+            0o400,
+            "graph leaf",
+        )?;
+        Some(input.compile(&graph_bytes)?)
+    } else {
+        None
+    };
+    #[cfg(not(windows))]
+    let graph_descriptor: Option<Vec<u8>> = None;
+    let descriptor = if let Some(descriptor) = graph_descriptor {
+        descriptor
+    } else {
+        let digest = Sha256::digest(permissions_bytes);
+        let mut descriptor = serde_json::json!({
+            "schema": schema,
+            "name": name,
+            "entry": entry,
+            "renderer": renderer,
+            "permissions": {
+                "file": PERMISSIONS_FILE,
+                "content_sha256": format!("sha256:{digest:x}"),
             }
-            _ => {
-                return Err(BootCompileError::new(
-                    "boot descriptor",
-                    "generated descriptor root is not an object",
-                ));
+        });
+        if facade {
+            let object = descriptor.as_object_mut().ok_or_else(|| {
+                BootCompileError::new("boot descriptor", "generated root is not an object")
+            })?;
+            object.insert(String::from("schema"), serde_json::Value::from(schema));
+            object.remove("renderer");
+        }
+        // Preserve the byte shape of legacy stages when no auth profile is configured.
+        // A configured-but-incomplete profile is nonempty and must be carried unchanged;
+        // Native owns the post-Allow missing-client decision.
+        if !auth_configuration.is_empty() {
+            let auth = serde_json::to_value(&auth_configuration).map_err(|source| {
+                BootCompileError::new("boot auth configuration", source.to_string())
+            })?;
+            match &mut descriptor {
+                serde_json::Value::Object(object) => {
+                    object.insert(String::from("auth"), auth);
+                }
+                _ => {
+                    return Err(BootCompileError::new(
+                        "boot descriptor",
+                        "generated descriptor root is not an object",
+                    ));
+                }
             }
         }
-    }
-    let descriptor = serde_json::to_vec(&descriptor)
-        .map_err(|source| BootCompileError::new("boot descriptor", source.to_string()))?;
+        serde_json::to_vec(&descriptor)
+            .map_err(|source| BootCompileError::new("boot descriptor", source.to_string()))?
+    };
     write_new_file(
         &root.join("keld.boot.json"),
         &descriptor,
@@ -659,13 +832,26 @@ where
     #[cfg(windows)]
     {
         verify_windows_stage_acl(&root)?;
-        let locked_digest = digest_file(&staged_host, "locked staged host")?;
+        let stage_dir = guard
+            .launch_guards
+            .last()
+            .ok_or_else(|| BootCompileError::new("retained stage", "root guard is absent"))?;
+        // Retain the no-follow leaf without write/delete sharing. The handle
+        // checked here must outlive the path-based launch and custody handoff.
+        let mut locked_host = keld_update::open_retained_graph_child(
+            stage_dir,
+            host_leaf,
+            keld_update::WindowsGraphChildKind::RegularFile,
+        )
+        .map_err(|error| BootCompileError::new("locked staged host", error.to_string()))?;
+        let locked_digest = digest_open_file(&mut locked_host, "locked staged host")?;
         if source_digest != locked_digest {
             return Err(BootCompileError::new(
                 "host copy integrity",
                 "locked staged host digest differs from the already-open source bytes",
             ));
         }
+        guard.launch_guards.push(locked_host);
     }
     #[cfg(windows)]
     let launch_guards = std::mem::take(&mut guard.launch_guards);
@@ -977,6 +1163,11 @@ fn copy_executable(source: &mut File, destination: &Path) -> Result<[u8; 32], Bo
 fn digest_file(path: &Path, kind: &'static str) -> Result<[u8; 32], BootCompileError> {
     let mut file =
         File::open(path).map_err(|error| BootCompileError::new(kind, error.to_string()))?;
+    digest_open_file(&mut file, kind)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn digest_open_file(file: &mut File, kind: &'static str) -> Result<[u8; 32], BootCompileError> {
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 16 * 1024];
     loop {
