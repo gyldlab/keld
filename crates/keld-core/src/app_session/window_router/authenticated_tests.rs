@@ -229,7 +229,7 @@ fn authenticated_primary_window_calls_use_actual_reader_and_host_facts() -> Test
     {
         let current = handle.current.lock().expect("installed actual generation");
         let active = current.as_ref().expect("authenticated current");
-        assert!(active.identity == PrimaryLinkIdentity::Role(principal));
+        assert_eq!(active.identity, PrimaryLinkIdentity::Role(principal));
         assert_eq!(active.attempt, attempt);
         assert!(!active.reader_stop.load(Ordering::Acquire));
     }

@@ -82,19 +82,19 @@ function submit(
   parent: WindowRef | null,
   options: MessageOptions,
 ): Promise<MessageBoxResult> {
-  return submitOnMac("Message", () => invokeMessageDialog(parent, options)).then(
-    (reply) => {
-      if (reply.variant !== "Message") {
-        throw new Error(
-          "KELD-IPC-003: native Message returned another operation's disposition",
-        );
-      }
-      return {
-        response: reply.response,
-        checkboxChecked: reply.checkbox_checked,
-      };
-    },
-  );
+  return submitOnMac("Message", () =>
+    invokeMessageDialog(parent, options),
+  ).then((reply) => {
+    if (reply.variant !== "Message") {
+      throw new Error(
+        "KELD-IPC-003: native Message returned another operation's disposition",
+      );
+    }
+    return {
+      response: reply.response,
+      checkboxChecked: reply.checkbox_checked,
+    };
+  });
 }
 
 /** The only public Message API; one-argument calls are allowed by Electron
@@ -159,16 +159,16 @@ export function showOpenDialog(
   const options = normalizeOpenDialogOptions(
     withParent ? input : parentOrOptions,
   );
-  return submitOnMac("Open", () => invokeFileDialog("Open", parent, options)).then(
-    (result): OpenDialogResult => {
-      if (result.variant !== "Open") {
-        throw new Error(
-          "KELD-IPC-003: native Open returned a different operation's result",
-        );
-      }
-      return { canceled: result.canceled, filePaths: result.file_paths };
-    },
-  );
+  return submitOnMac("Open", () =>
+    invokeFileDialog("Open", parent, options),
+  ).then((result): OpenDialogResult => {
+    if (result.variant !== "Open") {
+      throw new Error(
+        "KELD-IPC-003: native Open returned a different operation's result",
+      );
+    }
+    return { canceled: result.canceled, filePaths: result.file_paths };
+  });
 }
 
 /** Async Save returns the chosen destination only. It never writes a file or
@@ -194,16 +194,16 @@ export function showSaveDialog(
   const options = normalizeSaveDialogOptions(
     withParent ? input : parentOrOptions,
   );
-  return submitOnMac("Save", () => invokeFileDialog("Save", parent, options)).then(
-    (result): SaveDialogResult => {
-      if (result.variant !== "Save") {
-        throw new Error(
-          "KELD-IPC-003: native Save returned a different operation's result",
-        );
-      }
-      return { canceled: result.canceled, filePath: result.file_path };
-    },
-  );
+  return submitOnMac("Save", () =>
+    invokeFileDialog("Save", parent, options),
+  ).then((result): SaveDialogResult => {
+    if (result.variant !== "Save") {
+      throw new Error(
+        "KELD-IPC-003: native Save returned a different operation's result",
+      );
+    }
+    return { canceled: result.canceled, filePath: result.file_path };
+  });
 }
 
 export const dialog = Object.freeze({

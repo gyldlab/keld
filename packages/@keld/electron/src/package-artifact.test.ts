@@ -34,6 +34,31 @@ test("packed Electron uses one declared API/KIPC graph and all five aliases", ()
         packages,
       ),
     );
+    // Pack the exact declaration dependencies from the frozen producer install.
+    // A fresh offline consumer must not depend on a populated registry cache.
+    const declarations = Object.fromEntries(
+      ["@types/node", "undici-types"].map((name) => {
+        const installed = join(packages, "electron/node_modules", name);
+        const packed = run(
+          [
+            "npm",
+            "pack",
+            "--offline",
+            "--ignore-scripts",
+            "--json",
+            "--cache",
+            join(root, ".pack-cache"),
+            installed,
+          ],
+          root,
+        );
+        success(packed);
+        const [{ filename }] = JSON.parse(
+          new TextDecoder().decode(packed.stdout),
+        );
+        return [name, `file:../${filename}`];
+      }),
+    );
     const consumer = join(root, "consumer");
     mkdirSync(consumer);
     writeFileSync(
@@ -46,14 +71,22 @@ test("packed Electron uses one declared API/KIPC graph and all five aliases", ()
         overrides: {
           "@keld/api": "file:../keld-api-0.0.1.tgz",
           "@keld/kipc": "file:../keld-kipc-0.0.1.tgz",
-          "@types/node": "26.4.1",
-          "undici-types": "8.3.0",
+          ...declarations,
         },
       }),
     );
     success(
       run(
-        [process.execPath, "install", "--offline", "--ignore-scripts"],
+        [
+          "npm",
+          "install",
+          "--offline",
+          "--ignore-scripts",
+          "--no-audit",
+          "--no-fund",
+          "--cache",
+          join(consumer, ".npm-cache"),
+        ],
         consumer,
       ),
     );
