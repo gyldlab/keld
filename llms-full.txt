@@ -1495,9 +1495,11 @@ kind   := HELLO | CALL | REPLY | ERR | EVENT | STREAM_* | GRANT | PING
 payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 ```
 
-- **ERR payload (v0):** a postcard `CallError { code: String, message: String }`
-  (`crates/keld-ipc/src/call_error.rs`), written by `write_call_error` on the
-  channel and correlation id of the `CALL` being answered. `code` is the
+- **ERR payload (v0)** is a postcard `CallError { code: String, message: String }`
+  (`crates/keld-ipc/src/call_error.rs`). The direct path uses `write_call_error`.
+  Core's primary writer uses `encode_call_error_into` with reserved storage and
+  writes the `Err` frame. Both paths use the channel and correlation ID of the
+  `CALL` being answered. `code` is the
   registered `KELD-*` code owned by the crate that failed — `DenyReason::code()`
   for a guard denial, the broker's own code (`KELD-NATIVE-001` through
   `KELD-NATIVE-008` for the retained filesystem broker) for a post-allow,
