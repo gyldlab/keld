@@ -27,11 +27,11 @@ fn pending_native_preparation_retires_before_its_early_session_result_returns() 
         } else {
             Ok(DirectSessionEnd::Ordinary)
         };
-        let result =
+        let finished =
             finish_pending_direct_engine(Some(Prepared(Arc::clone(&drops))), result, |prepared| {
                 calls.fetch_add(1, Ordering::AcqRel);
                 assert_eq!(drops.load(Ordering::Acquire), 0);
-                drop(prepared);
+                assert!(Arc::ptr_eq(&prepared.0, &drops));
                 Ok(())
             });
         assert_eq!(calls.load(Ordering::Acquire), 1, "one native retirement");
@@ -40,8 +40,9 @@ fn pending_native_preparation_retires_before_its_early_session_result_returns() 
             1,
             "custody ends before result"
         );
-        assert_eq!(result.is_err(), failed);
-        if let Err(error) = result {
+        assert!(finished.retained.is_none());
+        assert_eq!(finished.result.is_err(), failed);
+        if let Err(error) = finished.result {
             assert!(error.to_string().contains("original startup failure"));
         }
     }
@@ -50,31 +51,48 @@ fn pending_native_preparation_retires_before_its_early_session_result_returns() 
 #[test]
 fn pending_native_retirement_failure_never_replaces_the_original_startup_failure() {
     let drops = Arc::new(AtomicUsize::new(0));
-    let result = finish_pending_direct_engine(
+    let finished = finish_pending_direct_engine(
         Some(Prepared(Arc::clone(&drops))),
         Err(app_detail("primary startup", "original startup failure")),
         |prepared| {
-            drop(prepared);
+            assert!(Arc::ptr_eq(&prepared.0, &drops), "same prepared owner");
+            assert_eq!(drops.load(Ordering::Acquire), 0);
             Err(app_detail("native startup retirement", "witness refused"))
         },
     );
+    assert_eq!(
+        drops.load(Ordering::Acquire),
+        0,
+        "failed witness dropped exact prepared custody"
+    );
+    let retained = finished
+        .retained
+        .expect("failed witness retains the prepared owner");
+    assert!(
+        Arc::ptr_eq(&retained.0, &drops),
+        "original owner reaches the failure"
+    );
+    let error = finished.result.expect_err("both failures remain visible");
+    assert_eq!(error.phase, "primary startup");
+    assert!(
+        error.to_string().contains("original startup failure"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("witness refused"), "{error}");
+    drop(retained);
     assert_eq!(drops.load(Ordering::Acquire), 1);
-    let error = result
-        .expect_err("both failures remain visible")
-        .to_string();
-    assert!(error.contains("original startup failure"), "{error}");
-    assert!(error.contains("witness refused"), "{error}");
 }
 
 #[test]
 fn transferred_engine_is_not_retired_again_and_handover_result_is_preserved() {
-    let result = finish_pending_direct_engine(
+    let finished = finish_pending_direct_engine(
         None::<Prepared>,
         Ok(DirectSessionEnd::Handover),
         |_| -> Result<(), HostAppError> { panic!("the native run already owns this engine") },
     );
+    assert!(finished.retained.is_none());
     assert_eq!(
-        result.expect("completed native run"),
+        finished.result.expect("completed native run"),
         DirectSessionEnd::Handover
     );
 }
@@ -82,21 +100,28 @@ fn transferred_engine_is_not_retired_again_and_handover_result_is_preserved() {
 #[test]
 fn a_cancelled_session_reports_failure_when_prepared_native_retirement_is_unproved() {
     let drops = Arc::new(AtomicUsize::new(0));
-    let result = finish_pending_direct_engine(
+    let finished = finish_pending_direct_engine(
         Some(Prepared(Arc::clone(&drops))),
         Ok(DirectSessionEnd::Ordinary),
         |prepared| {
-            drop(prepared);
+            assert!(Arc::ptr_eq(&prepared.0, &drops));
             Err(app_detail("native startup retirement", "witness refused"))
         },
     );
-    assert_eq!(drops.load(Ordering::Acquire), 1);
+    assert_eq!(drops.load(Ordering::Acquire), 0);
+    let retained = finished
+        .retained
+        .expect("cancelled session retains unproved custody");
+    assert!(Arc::ptr_eq(&retained.0, &drops));
     assert!(
-        result
+        finished
+            .result
             .expect_err("no silent cleanup error")
             .to_string()
             .contains("witness refused")
     );
+    drop(retained);
+    assert_eq!(drops.load(Ordering::Acquire), 1);
 }
 
 #[test]
@@ -142,12 +167,13 @@ fn delayed_native_startup_keeps_the_transition_and_a_later_stop_blocks_child_sta
     let child = run_direct_startup_if_session_running(&shutdown, || {
         child_started.fetch_add(1, Ordering::AcqRel);
     });
-    let result =
+    let finished =
         finish_pending_direct_engine(prepared, Ok(DirectSessionEnd::Ordinary), |prepared| {
-            drop(prepared);
+            assert!(Arc::ptr_eq(&prepared.0, &drops));
             Ok(())
         });
-    assert!(result.is_ok());
+    assert!(finished.result.is_ok());
+    assert!(finished.retained.is_none());
     assert_eq!(drops.load(Ordering::Acquire), 1);
     assert!(
         transition_held,

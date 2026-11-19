@@ -1505,6 +1505,16 @@ struct RetainedMacSession {
 #[cfg(windows)]
 struct RetainedWindowsSession {
     _engine: WebView2Engine,
+    _started: Option<RetainedWindowsStartedSession>,
+    _families: keld_runtime::windows_job::WindowsPrimaryFamilies,
+    _instance_lease: Option<keld_update::WindowsInstanceLeaseFile>,
+    installed_package: Option<Box<keld_update::ActivePackageSelection>>,
+    guard: Option<GuardSnapshot>,
+}
+
+/// These owners exist only if startup reached the direct application session.
+#[cfg(windows)]
+struct RetainedWindowsStartedSession {
     _dialog_main: Option<dialog_session::DialogMainOwner>,
     _renderer_dispatch: Option<renderer_dispatch::RendererDispatch>,
     _router: PrimaryRouter,
@@ -1513,10 +1523,6 @@ struct RetainedWindowsSession {
     _commands: Sender<AppWindowCommand>,
     _events: Sender<AppWindowEvent>,
     _lease_errors: Option<Receiver<HostAppError>>,
-    _families: keld_runtime::windows_job::WindowsPrimaryFamilies,
-    _instance_lease: Option<keld_update::WindowsInstanceLeaseFile>,
-    installed_package: Option<Box<keld_update::ActivePackageSelection>>,
-    guard: Option<GuardSnapshot>,
 }
 
 #[cfg(target_os = "linux")]
@@ -4340,14 +4346,16 @@ fn run_direct_app_session(
                     shutdown.stop_reader();
                     *retained = Some(Box::new(RetainedWindowsSession {
                         _engine: engine,
-                        _dialog_main: None,
-                        _renderer_dispatch: renderer_dispatch,
-                        _router: router,
-                        _primary_owner: primary_owner,
-                        _coordinator: event_coordinator,
-                        _commands: window_commands_tx,
-                        _events: window_events_tx,
-                        _lease_errors: lease_errors,
+                        _started: Some(RetainedWindowsStartedSession {
+                            _dialog_main: None,
+                            _renderer_dispatch: renderer_dispatch,
+                            _router: router,
+                            _primary_owner: primary_owner,
+                            _coordinator: event_coordinator,
+                            _commands: window_commands_tx,
+                            _events: window_events_tx,
+                            _lease_errors: lease_errors,
+                        }),
                         _families: primary_families.clone(),
                         _instance_lease: None,
                         installed_package: None,
@@ -4425,14 +4433,16 @@ fn run_direct_app_session(
             };
             *retained = Some(Box::new(RetainedWindowsSession {
                 _engine: engine,
-                _dialog_main: dialog_presentation,
-                _renderer_dispatch: renderer_dispatch,
-                _router: router,
-                _primary_owner: primary_owner,
-                _coordinator: event_coordinator,
-                _commands: window_commands_tx,
-                _events: window_events_tx,
-                _lease_errors: lease_errors,
+                _started: Some(RetainedWindowsStartedSession {
+                    _dialog_main: dialog_presentation,
+                    _renderer_dispatch: renderer_dispatch,
+                    _router: router,
+                    _primary_owner: primary_owner,
+                    _coordinator: event_coordinator,
+                    _commands: window_commands_tx,
+                    _events: window_events_tx,
+                    _lease_errors: lease_errors,
+                }),
                 _families: primary_families.clone(),
                 _instance_lease: None,
                 installed_package: None,
@@ -4532,13 +4542,24 @@ fn run_direct_app_session(
     })();
     #[cfg(windows)]
     {
-        finish_pending_direct_engine(prepared_engine, session_result, |mut engine| {
+        let finished = finish_pending_direct_engine(prepared_engine, session_result, |engine| {
             engine
                 .retire_unstarted_app(|deadline| release_witness.observe(deadline))
                 .map_err(|source| {
                     app_detail("Windows facade startup retirement", source.to_string())
                 })
-        })
+        });
+        if let Some(engine) = finished.retained {
+            *retained = Some(Box::new(RetainedWindowsSession {
+                _engine: engine,
+                _started: None,
+                _families: primary_families,
+                _instance_lease: None,
+                installed_package: None,
+                guard: None,
+            }));
+        }
+        finished.result
     }
     #[cfg(target_os = "linux")]
     {
@@ -4559,17 +4580,30 @@ fn build_windows_direct_engine(mode: WindowsProfileMode) -> Result<WebView2Engin
 /// A retained preparation has not transferred to the native loop. Retire it after
 /// the session body's existing router/primary cleanup, and preserve both errors.
 #[cfg(windows)]
-fn finish_pending_direct_engine<T>(
-    prepared: Option<T>,
+#[must_use = "retain unproved native preparation through the fatal Host result"]
+struct PendingEngineFinish<T> {
     result: Result<DirectSessionEnd, HostAppError>,
-    retire: impl FnOnce(T) -> Result<(), HostAppError>,
-) -> Result<DirectSessionEnd, HostAppError> {
-    let cleanup = prepared.map_or(Ok(()), retire);
-    match (result, cleanup) {
+    retained: Option<T>,
+}
+
+#[cfg(windows)]
+fn finish_pending_direct_engine<T>(
+    mut prepared: Option<T>,
+    result: Result<DirectSessionEnd, HostAppError>,
+    retire: impl FnOnce(&mut T) -> Result<(), HostAppError>,
+) -> PendingEngineFinish<T> {
+    let cleanup = prepared.as_mut().map_or(Ok(()), retire);
+    let retained = if cleanup.is_err() {
+        prepared.take()
+    } else {
+        None
+    };
+    let result = match (result, cleanup) {
         (Ok(end), Ok(())) => Ok(end),
         (Ok(_), Err(cleanup)) => Err(cleanup),
         (Err(primary), cleanup) => Err(append_app_cleanup(primary, [cleanup])),
-    }
+    };
+    PendingEngineFinish { result, retained }
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
