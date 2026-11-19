@@ -4,7 +4,7 @@ use super::{
     encode_event, encode_request, encode_response,
 };
 use crate::channel_table::COMPAT_CONTROL;
-use crate::codec::{decode, encode};
+use crate::codec::{decode, decode_borrowed, encode};
 use crate::frame::{CorrelationId, FrameHeader, FrameKind};
 use crate::link::read_validated_frame;
 use crate::receive::validate_received_header;
@@ -179,7 +179,7 @@ fn compat_body_checks_borrowed_fields_before_owning_them() {
     };
     let event_bytes = encode(&event).expect("physical fixture body");
     let borrowed: CompatControlEventValue<&str, &[u8]> =
-        decode(&event_bytes).expect("borrow event fields");
+        decode_borrowed(&event_bytes).expect("borrow event fields");
     let CompatControlEventValue::RendererMessage {
         payload: borrowed_payload,
         ..

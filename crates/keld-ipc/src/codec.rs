@@ -15,7 +15,12 @@ use crate::IpcError;
 ///
 /// Returns [`IpcError::Codec`] if the bytes are not valid postcard for `T`,
 /// or if bytes remain after `T`.
-pub fn decode<'payload, T: serde::Deserialize<'payload>>(
+pub fn decode<T: serde::de::DeserializeOwned>(payload: &[u8]) -> Result<T, IpcError> {
+    decode_borrowed(payload)
+}
+
+/// Decodes a borrowed payload with the same exact trailing-byte check.
+pub(crate) fn decode_borrowed<'payload, T: serde::Deserialize<'payload>>(
     payload: &'payload [u8],
 ) -> Result<T, IpcError> {
     let (value, rest) = take_from_bytes(payload).map_err(IpcError::Codec)?;

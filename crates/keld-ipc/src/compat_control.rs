@@ -12,7 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use crate::CallError;
 use crate::IpcError;
 use crate::call_error::CallErrorFields;
-use crate::codec::{decode, encode};
+use crate::codec::{decode, decode_borrowed, encode};
 use crate::frame::FrameKind;
 
 /// Host/app-link CALL and EVENT encoded payload budget.
@@ -386,7 +386,7 @@ pub fn decode_event(bytes: &[u8]) -> Result<CompatControlEvent, IpcError> {
     if bytes.len() > COMPAT_DATA_FRAME_BYTES {
         return Err(IpcError::PayloadTooLarge);
     }
-    let value: CompatControlEventValue<&str, &[u8]> = decode(bytes)?;
+    let value: CompatControlEventValue<&str, &[u8]> = decode_borrowed(bytes)?;
     if matches!(value, CompatControlEventValue::DocumentRetired { .. })
         && bytes.len() > COMPAT_DOCUMENT_RETIRED_FRAME_BYTES
     {
