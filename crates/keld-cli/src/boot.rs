@@ -1,5 +1,8 @@
 //! Non-release owner-private boot stage compiler (KEL-96/T1a/T4).
 
+#[cfg(all(windows, test))]
+mod development_source;
+
 use std::fs;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::fs::{File, OpenOptions};
