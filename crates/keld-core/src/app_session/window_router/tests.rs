@@ -788,6 +788,43 @@ fn window_router_role_loss_replays_before_subscribed_and_adopts_without_build() 
 }
 
 #[test]
+fn original_requests_refuse_before_any_native_dispatch_until_admission_is_joined() -> TestResult {
+    let mut fixture = Fixture::new(Some(true))?;
+    fixture.subscribe()?;
+    fixture.ready()?;
+    let window = fixture.build(1, 7)?;
+    let requests = [
+        WindowRequest::CreateWithPreload {
+            width: 640,
+            height: 480,
+            x: None,
+            y: None,
+            preload_absolute: "C:/app/preload.js".to_owned(),
+            additional_arguments: vec![],
+        },
+        WindowRequest::LoadUrl {
+            window,
+            uri: "file:///C:/app/index.html?q=1".to_owned(),
+        },
+        WindowRequest::DestroyOriginalDocument {
+            window,
+            document_generation: 1,
+        },
+    ];
+    for (correlation, request) in (2..).zip(requests) {
+        fixture.call(&request, correlation)?;
+        fixture.error(correlation, "KELD-CORE-042")?;
+        assert!(matches!(
+            fixture.commands.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+    }
+    let next_window = fixture.build(5, 8)?;
+    assert_ne!(window, next_window);
+    Ok(())
+}
+
+#[test]
 fn window_router_duplicate_live_correlation_closes_link_before_second_effect() -> TestResult {
     let mut fixture = Fixture::new(Some(true))?;
     fixture.subscribe()?;

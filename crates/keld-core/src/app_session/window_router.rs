@@ -560,6 +560,15 @@ impl PrimaryRouterHandle {
                     .close_reply(caller, window, close_seq, verdict);
                 self.window_close_result(active, correlation, outcome, failed)
             }
+            WindowRequest::CreateWithPreload { .. }
+            | WindowRequest::LoadUrl { .. }
+            | WindowRequest::DestroyOriginalDocument { .. } => call_error(
+                active,
+                correlation,
+                "KELD-CORE-042",
+                "KELD-CORE-042: Original-window admission is unavailable. Use a qualified native adapter.".to_owned(),
+                failed,
+            ),
             WindowRequest::Destroy { window } => {
                 match session
                     .registry
