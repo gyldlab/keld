@@ -4,7 +4,7 @@ use crate::app_session::primary_writer::{PrimaryWriteFailure, WriteReceipt, Writ
 use crate::app_session::window_router::WindowSession;
 use crate::app_session::{
     HostAppError, PrimaryCallerContext, PrimaryRouterHandle, app_detail, append_app_cleanup,
-    with_primary_caller_locked,
+    stop_direct_primary_after_failure, with_primary_caller_transition_locked,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -96,6 +96,25 @@ impl PrimaryRouterHandle {
         source_current: impl FnOnce(&WindowSession) -> bool,
         result: PublicationResult<()>,
     ) -> Result<NativePublicationDisposition, HostAppError> {
+        self.finish_native_publication_for(caller, source_current, result, false)
+    }
+
+    pub(super) fn finish_desktop_publication(
+        &self,
+        caller: &PrimaryCallerContext,
+        source_current: impl FnOnce(&WindowSession) -> bool,
+        result: PublicationResult<()>,
+    ) -> Result<NativePublicationDisposition, HostAppError> {
+        self.finish_native_publication_for(caller, source_current, result, true)
+    }
+
+    fn finish_native_publication_for(
+        &self,
+        caller: &PrimaryCallerContext,
+        source_current: impl FnOnce(&WindowSession) -> bool,
+        result: PublicationResult<()>,
+        selected_desktop: bool,
+    ) -> Result<NativePublicationDisposition, HostAppError> {
         let Err(PublicationError { cause, write }) = result else {
             return Ok(NativePublicationDisposition::Handled);
         };
@@ -108,37 +127,51 @@ impl PrimaryRouterHandle {
             };
         }
         let mut predicate = Some(source_current);
-        let mut queued = false;
-        with_primary_caller_locked(&self.current, &self.shutdown, caller, |_| {
-            let Some(windows) = &self.windows else {
-                return Ok(());
-            };
-            let windows = windows
-                .lock()
-                .map_err(|_| app_detail("native publication failure", "registry lock poisoned"))?;
-            let Some(predicate) = predicate.take() else {
-                return Err(app_detail(
-                    "native publication failure",
-                    "source predicate entered twice",
-                ));
-            };
-            if !predicate(&windows) {
-                return Ok(());
-            }
-            self.window_commands
-                .send(keld_wv::AppWindowCommand::Fatal)
-                .map_err(|_| {
-                    app_detail("native publication failure", "window command owner ended")
+        let mut terminal = None;
+        with_primary_caller_transition_locked(
+            &self.current,
+            &self.shutdown,
+            caller,
+            |transition, _| {
+                let Some(windows) = &self.windows else {
+                    return Ok(());
+                };
+                let windows = windows.lock().map_err(|_| {
+                    app_detail("native publication failure", "registry lock poisoned")
                 })?;
-            // Seal the primary while the accepted Fatal still owns the transition.
-            self.shutdown.stop_reader();
-            queued = true;
-            Ok(())
-        })?;
-        Ok(if queued {
-            NativePublicationDisposition::FatalQueued(cause)
-        } else {
-            NativePublicationDisposition::Handled
+                let Some(predicate) = predicate.take() else {
+                    return Err(app_detail(
+                        "native publication failure",
+                        "source predicate entered twice",
+                    ));
+                };
+                if !predicate(&windows) {
+                    return Ok(());
+                }
+                if selected_desktop {
+                    terminal = Some(stop_direct_primary_after_failure(
+                        self,
+                        transition,
+                        &self.window_commands,
+                    ));
+                    return Ok(());
+                }
+                self.window_commands
+                    .send(keld_wv::AppWindowCommand::Fatal)
+                    .map_err(|_| {
+                        app_detail("native publication failure", "window command owner ended")
+                    })?;
+                // Seal the primary while the accepted Fatal still owns the transition.
+                self.shutdown.stop_reader();
+                terminal = Some(Ok(()));
+                Ok(())
+            },
+        )?;
+        Ok(match terminal {
+            Some(cleanup) => {
+                NativePublicationDisposition::FatalQueued(append_app_cleanup(cause, [cleanup]))
+            }
+            None => NativePublicationDisposition::Handled,
         })
     }
 }

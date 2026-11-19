@@ -5722,21 +5722,29 @@ fn coordinate_window_events(
             .filter(|_| ready_trigger == AppReadyTrigger::HostInitialized && !init_seen.get());
         #[cfg(windows)]
         if selected_desktop {
-            let entered = init_watch
-                .and_then(|(clock, _)| clock.get())
-                .and_then(|deadline| deadline.checked_sub(keld_wv::INITIAL_MILESTONE_DEADLINE));
-            if let Some((target, error)) =
-                router.selected_desktop_startup_deadline(entered, Instant::now())?
+            let observe_entry = || {
+                let now = Instant::now();
+                let entry = init_watch
+                    .and_then(|(clock, _)| clock.get())
+                    .and_then(|deadline| deadline.checked_sub(keld_wv::INITIAL_MILESTONE_DEADLINE));
+                (now, entry)
+            };
+            let (now, entered) = observe_entry();
+            if let Some((target, correlation, error)) =
+                router.selected_desktop_startup_deadline(entered, now)?
             {
                 if !init_seen.get()
                     && let Some((_, terminal)) = until_init
                 {
-                    terminate_stalled_ui(router, terminal, error);
-                }
-                match stop_failed_desktop_subscription(router, &target, commands) {
-                    Ok(true) => return Err(error),
-                    Ok(false) => {}
-                    Err(cleanup) => return Err(append_app_cleanup(error, [Err(cleanup)])),
+                    if router.claim_desktop_ui_entry_timeout(&target, correlation, observe_entry)? {
+                        terminate_stalled_ui(router, terminal, error);
+                    }
+                } else {
+                    match stop_failed_desktop_subscription(router, &target, commands) {
+                        Ok(true) => return Err(error),
+                        Ok(false) => {}
+                        Err(cleanup) => return Err(append_app_cleanup(error, [Err(cleanup)])),
+                    }
                 }
             }
         }
@@ -10182,7 +10190,20 @@ fn with_primary_caller_locked(
     caller: &PrimaryCallerContext,
     dispatch: impl FnOnce(&mut Option<ActivePrimaryGeneration>) -> Result<(), HostAppError>,
 ) -> Result<(), HostAppError> {
-    let _transition = shutdown.transition_guard();
+    with_primary_caller_transition_locked(current, shutdown, caller, |_, current| dispatch(current))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn with_primary_caller_transition_locked(
+    current: &Mutex<Option<ActivePrimaryGeneration>>,
+    shutdown: &SessionShutdownState,
+    caller: &PrimaryCallerContext,
+    dispatch: impl FnOnce(
+        &SessionTransition,
+        &mut Option<ActivePrimaryGeneration>,
+    ) -> Result<(), HostAppError>,
+) -> Result<(), HostAppError> {
+    let transition = shutdown.transition_guard();
     let mut current = current
         .lock()
         .map_err(|_| app_detail("primary session generation", "generation lock poisoned"))?;
@@ -10202,7 +10223,7 @@ fn with_primary_caller_locked(
     {
         return Ok(());
     }
-    dispatch(&mut current)
+    dispatch(&transition, &mut current)
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]

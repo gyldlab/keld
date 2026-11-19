@@ -15,6 +15,8 @@ use std::io::{self, Read as _};
 use std::sync::{Mutex, atomic::AtomicBool, mpsc::Receiver};
 use std::time::Duration;
 
+mod watchdog;
+
 type TestError = Box<dyn std::error::Error>;
 
 struct DesktopFixture {
@@ -224,6 +226,7 @@ fn first_exact_sample_and_init_settle_desktop_before_original_subscribe() -> Res
 #[test]
 fn unavailable_init_preserves_the_first_correlation_and_never_replays() -> Result<(), TestError> {
     let mut fixture = DesktopFixture::new()?;
+    let recovery = watchdog::arm_runtime_recovery(&fixture)?;
     fixture.subscribe(41)?;
     let cut = fixture.pending_deadline();
     fixture.subscribe(42)?;
@@ -270,6 +273,10 @@ fn unavailable_init_preserves_the_first_correlation_and_never_replays() -> Resul
             .is_none()
     );
     assert!(!fixture.router.window_ready.load(Ordering::Acquire));
+    assert!(
+        !recovery.arm(),
+        "the sent 049 closes actual Runtime recovery"
+    );
     assert_eq!(
         fixture
             .commands
@@ -297,7 +304,8 @@ fn pre_loop_watchdog_observes_the_ten_second_cut_while_startup_owns_transition()
     let observed = result.recv_timeout(Duration::from_secs(2));
     drop(transition);
     watchdog.join().expect("watchdog retires");
-    let (target, error) = observed??.expect("absolute entry cutoff");
+    let (target, correlation, error) = observed??.expect("absolute entry cutoff");
+    assert_eq!(correlation, CorrelationId(41));
     assert!(target.matches(&fixture.caller));
     assert_eq!(error.code(), "KELD-CORE-037");
     assert!(error.to_string().contains("10 s"));
@@ -310,6 +318,7 @@ fn pre_loop_watchdog_observes_the_ten_second_cut_while_startup_owns_transition()
 fn expired_first_sample_budget_emits_no_partial_replay_or_subscriber_state() -> Result<(), TestError>
 {
     let mut fixture = DesktopFixture::new()?;
+    let recovery = watchdog::arm_runtime_recovery(&fixture)?;
     fixture.subscribe(41)?;
     let entered = Instant::now();
     fixture
@@ -350,6 +359,10 @@ fn expired_first_sample_budget_emits_no_partial_replay_or_subscriber_state() -> 
             .is_none()
     );
     assert!(!fixture.router.window_ready.load(Ordering::Acquire));
+    assert!(
+        !recovery.arm(),
+        "pre-write expiry closes actual Runtime recovery"
+    );
     fixture.worker.stop_and_join()?;
     Ok(())
 }

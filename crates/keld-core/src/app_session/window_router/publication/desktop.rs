@@ -11,8 +11,8 @@ use super::{NativePublicationDisposition, PublicationResult, WindowEmitter};
 use keld_ipc::IpcError;
 use keld_ipc::window::{DesktopFact, DesktopFacts, Rect, WindowEvent};
 use keld_wv::{AppDesktopCapture, AppDesktopFacts};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, TryLockError};
 use std::time::Instant;
 
 #[cfg(all(test, not(keld_core_native_renderer_main)))]
@@ -127,6 +127,12 @@ fn qualified_sample(facts: AppDesktopFacts) -> Option<DesktopFacts> {
         || display.bounds.height == 0
         || display.work_area.width == 0
         || display.work_area.height == 0
+        || display.work_area.x < display.bounds.x
+        || display.work_area.y < display.bounds.y
+        || i64::from(display.work_area.x) + i64::from(display.work_area.width)
+            > i64::from(display.bounds.x) + i64::from(display.bounds.width)
+        || i64::from(display.work_area.y) + i64::from(display.work_area.height)
+            > i64::from(display.bounds.y) + i64::from(display.bounds.height)
         || !display.scale_factor.is_finite()
         || display.scale_factor <= 0.0
     {
@@ -331,7 +337,7 @@ impl PrimaryRouterHandle {
         &self,
         loop_entry: Option<Instant>,
         now: Instant,
-    ) -> Result<Option<(Arc<WriterLink>, HostAppError)>, HostAppError> {
+    ) -> Result<Option<(Arc<WriterLink>, CorrelationId, HostAppError)>, HostAppError> {
         // Before entry, native preparation can still own the startup
         // transition. The watchdog observes this existing caller record
         // independently; the terminal owner revalidates it after Init.
@@ -353,6 +359,7 @@ impl PrimaryRouterHandle {
         if pending.clock.ui_entry_expired(loop_entry, now) {
             return Ok(Some((
                 Arc::clone(&pending.target),
+                pending.correlation,
                 app_detail(
                     "selected desktop UI entry",
                     "the native UI loop did not enter within 10 s of Subscribe",
@@ -362,10 +369,79 @@ impl PrimaryRouterHandle {
         if desktop.init_seen && now >= pending.clock.caller_deadline() {
             return Ok(Some((
                 Arc::clone(&pending.target),
+                pending.correlation,
                 app_ipc("desktop Subscribe deadline", &IpcError::Timeout),
             )));
         }
         Ok(None)
+    }
+
+    /// Claim the startup terminal on the exact pending reader. Native
+    /// preparation can still own transition, so this cut never waits for it.
+    pub(in crate::app_session) fn claim_desktop_ui_entry_timeout(
+        &self,
+        target: &Arc<WriterLink>,
+        correlation: CorrelationId,
+        observe_entry: impl FnOnce() -> (Instant, Option<Instant>),
+    ) -> Result<bool, HostAppError> {
+        let phase = "selected desktop UI entry";
+        let current = match self.current.try_lock() {
+            Ok(current) => current,
+            Err(TryLockError::WouldBlock) => return Ok(false),
+            Err(TryLockError::Poisoned(_)) => {
+                return Err(app_detail(phase, "current reader poisoned"));
+            }
+        };
+        let caller = target.caller();
+        if !self.shutdown.is_running()
+            || self.shutdown.reader_stop.load(Ordering::Acquire)
+            || self.pre_ready_link_failed.load(Ordering::Acquire)
+            || caller.attempt <= self.last_revoked_attempt.load(Ordering::Acquire)
+            || caller.reader_stop.load(Ordering::Acquire)
+            || current.as_ref().is_none_or(|active| {
+                active
+                    .writer_link
+                    .as_ref()
+                    .is_none_or(|link| !Arc::ptr_eq(link, target))
+            })
+        {
+            return Ok(false);
+        }
+        let Some(windows) = self.windows.as_ref() else {
+            return Ok(false);
+        };
+        let session = match windows.try_lock() {
+            Ok(session) => session,
+            Err(TryLockError::WouldBlock) => return Ok(false),
+            Err(TryLockError::Poisoned(_)) => {
+                return Err(app_detail(phase, "Registry lock poisoned"));
+            }
+        };
+        let Some(pending) = session
+            .desktop
+            .as_ref()
+            .filter(|desktop| !desktop.init_seen && desktop.matches_pending(target, correlation))
+            .and_then(|desktop| desktop.pending.as_ref())
+        else {
+            return Ok(false);
+        };
+        let (now, entered) = observe_entry();
+        if !pending.clock.ui_entry_expired(entered, now)
+            || !self.shutdown.is_running()
+            || self.pre_ready_link_failed.load(Ordering::Acquire)
+            || caller.attempt <= self.last_revoked_attempt.load(Ordering::Acquire)
+            || caller.reader_stop.load(Ordering::Acquire)
+            || self
+                .shutdown
+                .reader_stop
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return Ok(false);
+        }
+        // The current lock still orders this stop against exact link replacement.
+        caller.reader_stop.store(true, Ordering::Release);
+        Ok(true)
     }
 
     fn desktop_source(&self) -> Result<Option<DesktopSource>, HostAppError> {
@@ -446,7 +522,7 @@ impl PrimaryRouterHandle {
                     deadline,
                 })),
             Ok(_) => Ok(DesktopStartup::Waiting),
-            Err(error) => match self.finish_native_publication(
+            Err(error) => match self.finish_desktop_publication(
                 caller,
                 |session| source.matches(session),
                 Err(error),
