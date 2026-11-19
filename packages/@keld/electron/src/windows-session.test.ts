@@ -23,6 +23,7 @@ for (const mode of [
   "wrong-profile",
   "missing-policy",
   "invalidated",
+  "late-import",
 ]) {
   test(`Windows selected Session registration: ${mode}`, async () => {
     const child = Bun.spawn(
@@ -33,7 +34,9 @@ for (const mode of [
         "--define=__KELD_WINDOWS_HOST__:true",
         "--define=__KELD_WINDOWS_DESKTOP_SNAPSHOT__:true",
         `--define=__KELD_RUNTIME_PROCESS_FACTS__:${mode !== "wrong-profile"}`,
-        ...(mode === "selected" || mode === "invalidated"
+        ...(mode === "selected" ||
+        mode === "invalidated" ||
+        mode === "late-import"
           ? [`--define=__KELD_HOST_LAUNCH_FACTS__:${JSON.stringify(admitted)}`]
           : []),
         join(import.meta.dir, "windows-session.test-role.ts"),
@@ -60,6 +63,19 @@ for (const mode of [
         APP_LINK_IO_DEADLINE_MS,
       );
       assert.equal(exit, 0, `${stdout}\n${stderr}`);
+      const accepted = [
+        ...stderr.matchAll(
+          /Keld GH-553 session\.defaultSession\.webRequest\.(\w+):/g,
+        ),
+      ].map((record) => record[1]);
+      assert.deepEqual(
+        accepted,
+        mode === "selected"
+          ? ["onHeadersReceived", "onBeforeRequest", "onBeforeRequest"]
+          : mode === "late-import"
+            ? ["onBeforeRequest"]
+            : [],
+      );
     } finally {
       if (child.exitCode === null) child.kill();
       await child.exited;

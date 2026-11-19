@@ -40,16 +40,67 @@ const worker = {
   },
 };
 host.WorkerLink.open = async () => worker as unknown as host.WorkerLink;
-const diagnostics: string[] = [];
-console.warn = (message: string) => {
-  diagnostics.push(message);
-};
+if (mode === "late-import") {
+  const { app } = await import("@keld/api/internal/app");
+  await app.whenReady();
+  assert.equal(app.isReady(), true);
+  const warn = console.warn;
+  const ownKeys = Reflect.ownKeys;
+  const descriptor = Object.getOwnPropertyDescriptor;
+  const hasOwn = Object.hasOwn;
+  const isArray = Array.isArray;
+  let traps = 0;
+  const poison = () => {
+    traps += 1;
+    throw new Error("late Session reached application hook");
+  };
+  const poisonedWarn = Object.assign(poison, { bind: poison });
+  let invoked = 0;
+  try {
+    console.warn = poisonedWarn;
+    Reflect.ownKeys = poison;
+    Object.getOwnPropertyDescriptor = poison;
+    Object.hasOwn = poison;
+    Array.isArray = (value: unknown): value is unknown[] => poison();
+    const { session } = await import("./session.ts");
+    session.defaultSession.webRequest.onBeforeRequest(
+      { urls: ["file://*"] },
+      () => {
+        invoked += 1;
+      },
+    );
+  } finally {
+    console.warn = warn;
+    Reflect.ownKeys = ownKeys;
+    Object.getOwnPropertyDescriptor = descriptor;
+    Object.hasOwn = hasOwn;
+    Array.isArray = isArray;
+  }
+  assert.equal(traps, 0);
+  assert.equal(invoked, 0);
+  assert.equal(calls, 1);
+  process.exit(0);
+}
 
 const { app, session, default: alias } = await import("./index.ts");
-const refused = (error: unknown) =>
-  host.isCallError(error) && error.code === "KELD-COMPAT-013";
+const { UnsupportedMemberError } = await import("./unsupported.ts");
+const refused =
+  (kind: "property" | "method", member: string) => (error: unknown) => {
+    assert.ok(host.isCallError(error));
+    assert.equal(error.code, "KELD-COMPAT-013");
+    assert.equal(error.name, "UnsupportedMemberError");
+    assert.ok(error instanceof UnsupportedMemberError);
+    assert.ok("member" in error && "ticket" in error && "kind" in error);
+    assert.equal(error.member, member);
+    assert.equal(error.ticket, "GH-553");
+    assert.equal(error.kind, kind);
+    return true;
+  };
+const propertyRefused = refused("property", "session.defaultSession");
+const methodRefused = (method: string) =>
+  refused("method", `session.defaultSession.webRequest.${method}`);
 assert.equal(session, alias.session);
-assert.throws(() => session.defaultSession, refused);
+assert.throws(() => session.defaultSession, propertyRefused);
 await app.whenReady();
 assert.equal(app.isReady(), true);
 
@@ -58,17 +109,20 @@ const listener = () => {
   invoked += 1;
 };
 if (mode === "wrong-profile") {
-  assert.throws(() => session.defaultSession, refused);
+  assert.throws(() => session.defaultSession, propertyRefused);
 } else {
   const selected = session.defaultSession;
   assert.equal(session.defaultSession, selected);
   assert.ok(Object.isFrozen(selected.webRequest));
   const requests = selected.webRequest;
   if (mode === "missing-policy") {
-    assert.throws(() => requests.onHeadersReceived(listener), refused);
+    assert.throws(
+      () => requests.onHeadersReceived(listener),
+      methodRefused("onHeadersReceived"),
+    );
     assert.throws(
       () => requests.onBeforeRequest({ urls: ["file://*"] }, listener),
-      refused,
+      methodRefused("onBeforeRequest"),
     );
   } else if (mode === "invalidated") {
     applyDesktop!(Uint8Array.of(7, 0xad, 2, 0));
@@ -109,14 +163,8 @@ if (mode === "wrong-profile") {
       assert.throws(
         () =>
           Reflect.apply(requests.onBeforeRequest, requests, [input, listener]),
-        refused,
+        methodRefused("onBeforeRequest"),
       );
-    assert.deepEqual(
-      diagnostics.map(
-        (line) => line.match(/on(?:HeadersReceived|BeforeRequest)/)?.[0],
-      ),
-      ["onHeadersReceived", "onBeforeRequest", "onBeforeRequest"],
-    );
     for (const method of [
       "onBeforeSendHeaders",
       "onSendHeaders",
@@ -125,8 +173,7 @@ if (mode === "wrong-profile") {
       "onCompleted",
       "onErrorOccurred",
     ] as const)
-      assert.throws(() => requests[method](), refused);
-    assert.equal(diagnostics.length, 3);
+      assert.throws(() => requests[method](), methodRefused(method));
     assert.equal(
       reads,
       0,
@@ -140,4 +187,3 @@ assert.equal(
   1,
   "registrations issue zero IPC after the initial subscription",
 );
-if (mode !== "selected") assert.deepEqual(diagnostics, []);

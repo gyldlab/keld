@@ -2,27 +2,28 @@
 import { app, getDesktopSnapshot } from "@keld/api/internal/app";
 import {
   hostLaunchFacts,
-  linkError,
   stateFreeze,
+  stateOwnDescriptor,
+  stateHasOwn,
+  stateIsArray,
+  stateIsProxy,
+  stateOwnKeys,
+  stateWarn,
   windowsDesktopSnapshotSelected,
   windowsOriginalDevelopmentSelected,
 } from "@keld/kipc";
-import { isProxy } from "node:util/types";
+import { UnsupportedMemberError } from "./unsupported.ts";
 
 type Filter = { readonly urls?: readonly string[] };
 type Listener = (...args: never[]) => unknown;
 type RecordedMethod = "onHeadersReceived" | "onBeforeRequest";
 
-const descriptor = Object.getOwnPropertyDescriptor;
-const hasOwn = Object.hasOwn;
-const ownKeys = Reflect.ownKeys;
-const isArray = Array.isArray;
-const diagnostic = console.warn.bind(console);
-
 function refuse(member: string, detail: string): never {
-  throw linkError(
-    "KELD-COMPAT-013",
-    `session.defaultSession${member} is unavailable. GH-553 owns this contract. ${detail}`,
+  throw new UnsupportedMemberError(
+    member === "" ? "property" : "method",
+    `session.defaultSession${member}`,
+    "GH-553",
+    detail,
   );
 }
 
@@ -41,28 +42,28 @@ function validateRegistration(name: RecordedMethod, args: unknown[]): void {
   if (
     filter === null ||
     typeof filter !== "object" ||
-    isProxy(filter) ||
-    isArray(filter)
+    stateIsProxy(filter) ||
+    stateIsArray(filter)
   )
     registrationRefusal(
       name,
       "Use a filter with optional own data urls:string[].",
     );
-  const keys = ownKeys(filter);
+  const keys = stateOwnKeys(filter);
   if (keys.length === 0) return;
   if (keys.length !== 1 || keys[0] !== "urls")
     registrationRefusal(name, "The filter only accepts urls.");
-  const field = descriptor(filter, "urls");
-  if (field === undefined || !hasOwn(field, "value"))
+  const field = stateOwnDescriptor(filter, "urls");
+  if (field === undefined || !stateHasOwn(field, "value"))
     registrationRefusal(name, "Use a data array for urls.");
   const urls: unknown = field.value;
-  if (isProxy(urls) || !isArray(urls))
+  if (stateIsProxy(urls) || !stateIsArray(urls))
     registrationRefusal(name, "Use a data array for urls.");
   for (let index = 0; index < urls.length; index += 1) {
-    const entry = descriptor(urls, `${index}`);
+    const entry = stateOwnDescriptor(urls, `${index}`);
     if (
       entry === undefined ||
-      !hasOwn(entry, "value") ||
+      !stateHasOwn(entry, "value") ||
       typeof entry.value !== "string"
     )
       registrationRefusal(
@@ -86,7 +87,7 @@ function record(name: RecordedMethod, args: unknown[]): void {
   // The current live mirror is an availability check, never a policy decision.
   getDesktopSnapshot();
   validateRegistration(name, args);
-  diagnostic(
+  stateWarn(
     `Keld GH-553 session.defaultSession.webRequest.${name}: listener ignored; verified Host response CSP and resource confinement replace this hook.`,
   );
 }
