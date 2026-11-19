@@ -35,24 +35,25 @@ compatibility scores.
 
 ## 2. Spec refs
 
-- - [GH499 exact owner approval
-  6465227830](https://github.com/gyldlab/keld/issues/499#issuecomment-6465227830): reviewed contract at
-  `a584bb15ceedccc0bee17e9388000e5a37fdfcf8`, raw SHA256
-  `ef3c2a1ab04e2bb4a1bb515e3424ef2321d64cfb0709cc6c2c75dc0b6429f395`; exact implementation still has
-  independent gates. - [Approved contract A02/A13/§4.4/T2](https://github.com/gyldlab/keld/blob/a584bb15ceedcc
-  c0bee17e9388000e5a37fdfcf8/docs/specs/gh499-drawio-hand-authored-migration.md): two separately gated
-  categories, dirty-close and resource-entry/navigation/sender. This revision uses both categories. §4.4
-  permits the synchronous transport alternative, but its historical two-line async-dialog proposal does not
-  automatically approve the newly enumerated close-coordination bytes; this exact amendment/diff needs prime's
-  delegated approval. - [GH473 chosen truthful origin
-  6398386345](https://github.com/gyldlab/keld/issues/473#issuecomment-6398386345) and [bounded S1
-  authorization 6556536264](https://github.com/gyldlab/keld/issues/473#issuecomment-6556536264): exact
-  recorded main adjustment, native source identity, unchanged page/preload; neither authorizes unrelated
-  edits. - [GH499 reconciliation
-  6665421889](https://github.com/gyldlab/keld/issues/499#issuecomment-6665421889): older GH587/GH589/GH500
-  one-edit consumers and GH467 file-identity clauses remain distinct owner contracts. - [GH564
-  [#564 AC-10](gh564-macos-sync-message-box/index.md), [runtime facts](gh1404-macos-installed-original-runtime-facts.md),
-  architectures [03](../architecture/03-security.md), [04](../architecture/04-electron-compat.md) and
+- [GH499 exact owner approval 6465227830](https://github.com/gyldlab/keld/issues/499#issuecomment-6465227830):
+  reviewed contract at `a584bb15ceedccc0bee17e9388000e5a37fdfcf8`, raw SHA256
+  `ef3c2a1ab04e2bb4a1bb515e3424ef2321d64cfb0709cc6c2c75dc0b6429f395`; exact implementation
+  still has independent gates.
+- [Approved contract A02/A13/§4.4/T2](https://github.com/gyldlab/keld/blob/a584bb15ceedccc0bee17e9388000e5a37fdfcf8/docs/specs/gh499-drawio-hand-authored-migration.md):
+  two separately gated categories, dirty-close and resource-entry/navigation/sender. This revision
+  uses both categories. §4.4 permits the synchronous transport alternative, but its historical
+  two-line async-dialog proposal does not automatically approve the newly enumerated
+  close-coordination bytes; this exact amendment/diff needs prime's delegated approval.
+- [GH473 chosen truthful origin 6398386345](https://github.com/gyldlab/keld/issues/473#issuecomment-6398386345)
+  and [bounded S1 authorization 6556536264](https://github.com/gyldlab/keld/issues/473#issuecomment-6556536264):
+  exact recorded main adjustment, native source identity, unchanged page/preload; neither authorizes
+  unrelated edits.
+- [GH499 reconciliation 6665421889](https://github.com/gyldlab/keld/issues/499#issuecomment-6665421889):
+  older GH587/GH589/GH500 one-edit consumers and GH467 file-identity clauses remain distinct owner
+  contracts.
+- [#564 AC-10](gh564-macos-sync-message-box/acceptance.md#ac-10-exact-drawio-integration),
+  [runtime facts](gh1404-macos-installed-original-runtime-facts.md), architectures
+  [03](../architecture/03-security.md), [04](../architecture/04-electron-compat.md) and
   [05](../architecture/05-webview-and-native.md) retain their independent boundaries.
 
 ## 3. Acceptance criteria

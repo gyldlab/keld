@@ -113,37 +113,37 @@ Owns: section 3
 - **Given:** An automated migration tool may write a permissions manifest.
 - **When:** The migration tool analyzes, asks for acceptance or writes the config.
 - **Then:** automated migration writes legacy only after acceptance specific to the visible weaker-security choice. Analysis, cancellation, default answers, and generic write permission do not select legacy.
-- **Negative control:
+- **Negative control:**
   - **Single fault:** Write Legacy after analysis, cancellation or generic write consent.
   - **At-risk precondition:** The user did not accept the weaker-security choice.
-  - **Expected RED:** The migration output contains no new Legacy declaration.
+  - **Expected RED:** The no-declaration assertion fails: the migration output adds a Legacy declaration despite no specific acceptance. The healthy baseline leaves the declaration absent.
 
 ### AC-13: Scope preserved
 - **Given:** The first implementation targets the macOS primary Bun role.
 - **When:** A non-primary role or another platform requests Legacy.
 - **Then:** the first implementation qualifies only the macOS primary Bun role. Other roles and platforms cannot inherit a legacy qualification from it.
-- **Negative control:
+- **Negative control:**
   - **Single fault:** Allow another role or platform to inherit macOS qualification.
   - **At-risk precondition:** A non-primary role or unsupported target requests Legacy.
-  - **Expected RED:** The unsupported-combination refusal occurs before execution.
+  - **Expected RED:** The refusal-before-execution assertion fails: the unsupported role or platform is admitted or begins execution. The healthy baseline refuses before execution.
 
 ### AC-14: No alternate bypass
 - **Given:** Diagnostic and alternate execution entry points exist.
 - **When:** An alternate entry attempts to skip common profile preflight.
 - **Then:** diagnostic and alternate execution entry points cannot ignore an explicit profile and launch under a falsely declared state.
-- **Negative control:
+- **Negative control:**
   - **Single fault:** Skip profile preflight in a diagnostic or alternate entry.
   - **At-risk precondition:** An explicit profile is present and the alternate entry runs.
-  - **Expected RED:** The entry refuses before spawning the app.
+  - **Expected RED:** The refusal-before-spawn assertion fails: the alternate entry starts the app without common preflight. The healthy baseline refuses before spawning the app.
 
 ### AC-15: Behavioral evidence retained
 - **Given:** The product evidence board may contain unverified or mixed records.
 - **When:** The scorer aggregates evidence records.
 - **Then:** unverified records and the approved homogeneous/mixed-board scoring rules remain unchanged.
-- **Negative control:
+- **Negative control:**
   - **Single fault:** Promote unverified or mixed evidence to a qualified score.
   - **At-risk precondition:** The board contains unverified or mixed records.
-  - **Expected RED:** The scorer preserves labels and the no-percentage rule.
+  - **Expected RED:** The evidence-scoring assertion fails: an unverified label changes to qualified, or a percentage appears for a mixed board for which the approved rules prohibit it. The healthy baseline preserves the labels and the applicable no-percentage rule.
 
 ### AC-16: Existing authority preserved
 - **Given:** The manifest also contains existing grants and channel policies.

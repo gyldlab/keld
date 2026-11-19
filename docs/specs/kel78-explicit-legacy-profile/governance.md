@@ -10,9 +10,13 @@ No speedup or numeric overhead is claimed. If the integration materially changes
 
 ## 10. Open questions, blockers & unknowns
 
-### 10.1 Prior approval and R1 decisions
+### 10.1 Historical R1 approval and decisions
 
-Under the repository owner's continuing 2026-10-23 delegation, this revision approves the following target after independent review of the corrected technical content. The new R1 approval, not the old eba60d22 approval, covers the schema correction and the added public admission entry:
+Under the repository owner's 2026-10-23 delegation, the historical R1 approval covered
+the following target after independent review. The [historical R1 receipt in #1120](https://github.com/gyldlab/keld/pull/1120)
+pins review head `1ea0d6a0f25c93cea2f9f9630a96cbd1000a5f24` and specification SHA-256
+`7bc71cdedb79da9bf0ac51145b2a92fb0e41b5d04c4881817b3006c62a9e96af`. That approval, not the earlier
+`eba60d22` approval, covered the schema correction and the added public admission entry.
 
 1. Root `keld.permissions.jsonc.profile` is the sole authoring location.
 2. Only strict/legacy are configurable; absence remains unverified/default and never implies legacy.
@@ -22,10 +26,9 @@ Under the repository owner's continuing 2026-10-23 delegation, this revision app
 6. KEL-74's current unverified evidence/scoring contract is preserved; stale #586/#588 exclusions are superseded.
 7. The staged PR sequence and test matrix govern implementation; build/migrate integration is reported pending until those commands are real.
 
-No further user choice is requested. KEL-78 remains the profile owner; GH #446 remains the facade Ready
+This split revision is pending exact-content owner review. KEL-78 remains the profile owner; GH #446 remains the facade Ready
 owner. The independent review found and resolved the earlier literal-API obligations that contradicted
-`admit_uncontained`; AC-6/AC-7 and §4.5 now state the same routing rule. The reviewed content digest and new
-delegated approval are published on #1120/KEL-78, with the matrix correction handed to #446/#588. Each
+`admit_uncontained`; AC-6/AC-7 and §4.5 now state the same routing rule. The historical matrix correction was handed to #446/#588. Each
 implementation PR still requires independent review of its exact final public contract, permission boundary
 and compiled-boot seam. Design approval neither changes the explicit no-merge instruction nor supplies any
 implementation or OS evidence.

@@ -1,10 +1,14 @@
 # Spec: Explicit legacy compatibility profile
 
-- Status: approved
+- Status: draft
 - Tracker: KEL-78
 - Owner: GYLDLAB
 - Updated: 2026-11-19
 - Pin: d98675c1a3b2eabb19e3000705e178f84fd169b4
+
+This split revision is pending exact-content owner review. It does not inherit
+approval from the historical R1 revision. See [approval provenance](refs.md)
+and [the R1 decision record](governance.md#101-historical-r1-approval-and-decisions).
 
 ## 1. Goal & non-goals
 
@@ -92,4 +96,4 @@ The #586 specification PR and refreshed owning issue briefs record this reconcil
 | Unsafe | None expected | Reuse current platform mechanisms; new unsafe is separately gated |
 | Dependency | None expected | Reuse current parser/runtime/scorer |
 
-The specification and implementation PRs each require named independent security/architecture evidence on their exact final diff. The delegated design approval is recorded in the header and section 10; it does not replace these gates or constitute native proof. The specification PR is explicitly do-not-merge.
+The specification and implementation PRs each require named independent security/architecture evidence on their exact final diff. Section 10 records the historical R1 design approval. It does not approve this split, replace these gates, or constitute native proof. The specification PR is explicitly do-not-merge.

@@ -70,11 +70,11 @@ Owns: section 3
 ### AC-8: Bundled Bun is selected by validated absolute identity. Missing/replaced Bun and host
 - **Given:** The installed app must select its bundled Bun executable.
 - **When:** The Host resolves and starts Bun using the installed identity.
-- **Then:** Bundled Bun is selected by validated absolute identity. Missing/replaced Bun and hostile PATH/preload inputs cannot launch a substitute.
+- **Then:** The Host selects bundled Bun by validated absolute identity. If bundled Bun is missing or replaced, launch refuses and no substitute-start marker appears. A valid signature and matching designated requirement do not replace the sealed digest check. PATH, preload, and ambient Bun options cannot launch a substitute. Revalidate the generation before launch.
 - **Negative control:**
   - **Single fault:** Select a PATH-provided Bun instead of the pinned absolute path.
   - **At-risk precondition:** The installed Bun is missing or replaced.
-  - **Expected RED:** The hostile PATH marker is absent and launch refuses.
+  - **Expected RED:** The refusal or no-substitute assertion fails: launch proceeds or the substitute-start marker appears. The healthy baseline refuses launch and leaves that marker absent.
 
 ### AC-9: Each nested executable verifies before the containing bundle is signed; the final out
 - **Given:** The app bundle contains nested executables and resources before signing.

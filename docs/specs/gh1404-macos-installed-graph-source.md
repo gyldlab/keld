@@ -6,7 +6,9 @@ Updated: 2026-11-19
 Pin: d98675c1a3b2eabb19e3000705e178f84fd169b4
 
 This is the proposed original-content integration amendment to
-[GH-1404 macOS local packaging](gh1404-macos-local-app-packaging/index.md) §§4.3–4.6, A12 and A14.
+[GH-1404 macOS local packaging design](gh1404-macos-local-app-packaging/design.md#43-configuration-and-first-build-surface)
+§§4.3–4.6 and
+[acceptance](gh1404-macos-local-app-packaging/acceptance.md) #1404 AC-12 and #1404 AC-14.
 The user already authorized the local ad-hoc goal and routine technical decisions.
 The exact source/boot/graph extension below still needs independent root review and
 recorded delegated spec approval before implementation. No native acceptance is

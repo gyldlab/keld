@@ -4,7 +4,7 @@ Owns: sections 5–6
 
 ## 5. Boundaries
 
-The approved design below is the implementation boundary. Publishing this specification does not implement it; #588 still requires an integrated specification base, a winning implementation claim, and the independent gates below.
+The historical R1 design below defines the proposed implementation boundary for this split; the split still requires exact-content owner review. Publishing this specification does not implement it; #588 still requires an integrated specification base, a winning implementation claim, and the independent gates below.
 
 | Area | Expected files/owners |
 |---|---|
@@ -24,7 +24,7 @@ No new production unsafe operation or dependency is required by this design. If 
 
 ## 6. Tasks
 
-P0 completed: the owner-approved specification and review decision are recorded.
+Historical R1 completed P0 at the recorded exact revision. The split revision has not completed exact-content owner review.
 
 ### T-1: land parser, boot version and verified Host selection
 - **Blocked by:** none

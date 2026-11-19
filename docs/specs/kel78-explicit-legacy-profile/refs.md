@@ -10,24 +10,22 @@ Source baseline: 3503a8aa383427dcf50ccbf6653c4298e7fb8aad.
 
 
 
-Approval provenance: on 2026-10-23 the repository owner explicitly delegated the remaining decisions and
-publication of the reviewed specification to the issue agent. This amendment records that new delegated
-design decision under KEL-78; the earlier Windows T3 and unverified-vocabulary approvals did not approve
-these new details. The exact committed content and independent review evidence are recorded on KEL-78 and
-the specification PR. This approval does not waive implementation tests, native qualification, independent
-review gates, or the explicit do-not-merge instruction.
+Historical approval provenance: on 2026-10-23 the repository owner delegated the remaining decisions and
+publication of the reviewed specification to the issue agent. The Windows T3 and unverified-vocabulary
+approvals did not cover the R1 schema correction. The earlier specification approval bound
+`eba60d2215a7fa2543b3673e20cd90fa7dbde555`, not R1.
 
-R1 revision: the previous approval binds `eba60d2215a7fa2543b3673e20cd90fa7dbde555`, not these revised
-bytes. Cross-contract reconciliation against approved Ready PR #657 at
-`bb43e474577297f0792740676994aa153e5df1dd` found that both specifications assigned incompatible meanings to
-schema 2. R1 preserves Ready's version and separates the profile-bearing combinations in §4.4. The narrow
-uncontained-admission and receipt-dependency clarifications preserve the decisions already recorded on
-KEL-78. Under the continuing owner delegation, R1's technical content was independently reviewed through the
-permission-model, public-API and compiled-contract lenses with no surviving blocker; its exact committed
-bytes and review receipts are recorded on #1120/KEL-78. This is a new design approval, not inherited
-approval of changed bytes, runtime implementation or native proof. Current main
-`f19c8847787aaf0e9a14e07c0af008fc5a4c2a1f` still implements only schema 1. The PR remains draft and do-not-
-merge. [S21][S22]
+The [historical R1 receipt in #1120](https://github.com/gyldlab/keld/pull/1120) identifies review head
+`1ea0d6a0f25c93cea2f9f9630a96cbd1000a5f24` and specification SHA-256
+`7bc71cdedb79da9bf0ac51145b2a92fb0e41b5d04c4881817b3006c62a9e96af`. R1 preserved the approved
+Ready PR #657 `bb43e474577297f0792740676994aa153e5df1dd` schema 2 and separated the profile-bearing
+combinations in §4.4. The independent permission-model, public-API and compiled-contract review
+applied to those exact historical bytes. At the recorded review, main
+`f19c8847787aaf0e9a14e07c0af008fc5a4c2a1f` implemented schema 1 only. [S21][S22]
+
+This split revision is pending exact-content owner review. Historical approval does not waive
+implementation tests, native qualification, independent review gates, or the explicit do-not-merge
+instruction.
 
 | Concern | Governing owner and source | This amendment changes |
 |---|---|---|
