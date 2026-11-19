@@ -316,7 +316,7 @@ fn full_dialog_result_retirement_sends_exactly_one_original_terminal() {
 fn replace_with_equal_number(
     router: &PrimaryRouterHandle,
 ) -> (PrimaryCallerContext, keld_ipc::BootstrapStream) {
-    let (server, mut successor_peer) = crate::app_session::tests::primary_test_stream_pair();
+    let (server, successor_peer) = crate::app_session::tests::primary_test_stream_pair();
     successor_peer
         .set_app_link_deadlines(Some(Duration::from_secs(3)))
         .expect("bounded successor pipe observer");
