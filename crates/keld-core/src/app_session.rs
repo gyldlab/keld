@@ -260,6 +260,8 @@ const SESSION_CLI_LEASE_LOST: u8 = 2;
 /// "Profile handover", step 3c). Claimed only by the handover, on the main thread.
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const SESSION_HANDOVER: u8 = 3;
+#[cfg(windows)]
+const SESSION_DESKTOP_UI_ENTRY_TIMEOUT: u8 = 4;
 
 /// The quit deadline D of KEL-53 §4 *Margin and deadlines*: how long the application
 /// has, after the host wrote `LastWindowClosed` at a profile handover, to request
@@ -2632,17 +2634,34 @@ impl SessionShutdownState {
         self.reserve_guarded(cause) && self.accept_reserved_guarded(cause)
     }
 
-    fn reserve_guarded(&self, cause: u8) -> bool {
-        let claimed = self
-            .reserved_cause
+    fn reserve_cause(&self, cause: u8) -> bool {
+        self.reserved_cause
             .compare_exchange(SESSION_RUNNING, cause, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok();
+            .is_ok()
+    }
+
+    fn reserve_guarded(&self, cause: u8) -> bool {
+        let claimed = self.reserve_cause(cause);
         if claimed {
             self.tail_ended.store(false, Ordering::Release);
             self.stop_reader();
             self.changed.notify_all();
         }
         claimed
+    }
+
+    /// The exact pre-entry watchdog may own the current reader without
+    /// transition. Compete with CLI EOF on the same first-cause reservation
+    /// before either terminal path can change the reader stop flag.
+    #[cfg(windows)]
+    fn claim_desktop_ui_entry_terminal(&self) -> bool {
+        if self.reader_stop.load(Ordering::Acquire)
+            || !self.reserve_cause(SESSION_DESKTOP_UI_ENTRY_TIMEOUT)
+        {
+            return false;
+        }
+        self.reader_stop.store(true, Ordering::Release);
+        self.accept_reserved_guarded(SESSION_DESKTOP_UI_ENTRY_TIMEOUT)
     }
 
     fn accept_reserved_guarded(&self, cause: u8) -> bool {

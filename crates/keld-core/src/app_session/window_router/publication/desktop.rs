@@ -431,11 +431,7 @@ impl PrimaryRouterHandle {
             || self.pre_ready_link_failed.load(Ordering::Acquire)
             || caller.attempt <= self.last_revoked_attempt.load(Ordering::Acquire)
             || caller.reader_stop.load(Ordering::Acquire)
-            || self
-                .shutdown
-                .reader_stop
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_err()
+            || !self.shutdown.claim_desktop_ui_entry_terminal()
         {
             return Ok(false);
         }

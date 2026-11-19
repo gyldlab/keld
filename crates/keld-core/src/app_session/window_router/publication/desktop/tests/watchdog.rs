@@ -4,6 +4,7 @@ use super::super::{DesktopSubscribeClock, qualified_sample};
 use super::{DesktopFixture, TestError, sample};
 use crate::app_session::{
     AppReadyTrigger, AppWindowCommand, DirectPrimaryOwnerCommand, HostAppError,
+    SESSION_CLI_LEASE_LOST, SESSION_DESKTOP_UI_ENTRY_TIMEOUT, SessionShutdownState,
     coordinate_window_events, tests::primary_test_stream_pair,
 };
 use keld_ipc::CorrelationId;
@@ -108,12 +109,34 @@ fn coordinator_closes_pre_entry_timeout_while_native_holds_subscribe_progress()
             .reader_stop
             .load(std::sync::atomic::Ordering::Acquire)
     );
+    assert_eq!(
+        fixture.router.shutdown.cause(),
+        SESSION_DESKTOP_UI_ENTRY_TIMEOUT
+    );
     Ok(())
 }
 
 fn terminal_fixture(error: &HostAppError) -> ! {
     assert!(error.to_string().contains("10 s"), "{error}");
     std::panic::panic_any(error.code())
+}
+
+#[test]
+fn cli_eof_reservation_wins_before_its_reader_stop_is_visible() {
+    let shutdown = SessionShutdownState::new();
+    let _native_transition = shutdown.transition_guard();
+    assert!(shutdown.reserve_cause(SESSION_CLI_LEASE_LOST));
+    assert!(
+        !shutdown.reader_stop.load(Ordering::Acquire),
+        "EOF has claimed its cause and has not reached the stop store"
+    );
+    assert!(
+        !shutdown.claim_desktop_ui_entry_terminal(),
+        "an earlier EOF reservation wins even while its reader stop is unset"
+    );
+    assert!(!shutdown.reader_stop.load(Ordering::Acquire));
+    assert!(shutdown.accept_reserved_guarded(SESSION_CLI_LEASE_LOST));
+    assert_eq!(shutdown.cause(), SESSION_CLI_LEASE_LOST);
 }
 
 #[test]
