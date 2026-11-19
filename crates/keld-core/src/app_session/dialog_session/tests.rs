@@ -232,7 +232,14 @@ fn delayed_poll_preserves_only_pre_cutoff_native_completion() {
     let cutoff = Instant::now();
     let tick = Duration::from_millis(1);
     for (completed_at, expected_expiry) in [
-        (Some(cutoff - tick), false),
+        (
+            Some(
+                cutoff
+                    .checked_sub(tick)
+                    .expect("fixture completion instant before cutoff"),
+            ),
+            false,
+        ),
         (Some(cutoff), true),
         (Some(cutoff + tick), true),
         (None, true),
@@ -331,7 +338,9 @@ fn cleanup_deadline_fails_without_releasing_custody_and_never_restarts() {
         .unwrap();
     assert!(
         session
-            .check_cleanup(owner, || cutoff - Duration::from_nanos(1))
+            .check_cleanup(owner, || cutoff
+                .checked_sub(Duration::from_nanos(1))
+                .expect("fixture cleanup instant before cutoff"))
             .is_ok()
     );
     assert!(session.check_cleanup(owner, || cutoff).is_err());
@@ -423,7 +432,11 @@ fn late_cleanup_poll_does_not_consume_newly_available_drain() {
     let polled = Cell::new(false);
     let result = session.poll_before_cleanup_deadline(
         owner,
-        || cutoff - Duration::from_nanos(1),
+        || {
+            cutoff
+                .checked_sub(Duration::from_nanos(1))
+                .expect("fixture cleanup instant before cutoff")
+        },
         || {
             polled.set(true);
             Ok(Some(
@@ -451,7 +464,9 @@ fn poll_crossing_cleanup_cutoff_cannot_release_owner() {
             if observed.get() {
                 cutoff
             } else {
-                cutoff - Duration::from_nanos(1)
+                cutoff
+                    .checked_sub(Duration::from_nanos(1))
+                    .expect("fixture cleanup instant before cutoff")
             }
         },
         || {

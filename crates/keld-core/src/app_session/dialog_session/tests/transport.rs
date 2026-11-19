@@ -1,4 +1,4 @@
-//! Actual Core routing and socket faults, not native AppKit qualification.
+//! Actual Core routing and socket faults, not native `AppKit` qualification.
 use super::{MacDialogUiOutcome, WebviewId, options, original, with_manifest};
 use crate::app_session::{GuardianOwnerCommand, PrimaryCallerContext};
 use keld_ipc::link::{AppLinkDeadlines as _, read_frame};
