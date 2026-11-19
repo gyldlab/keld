@@ -801,11 +801,11 @@ test("tree census rechecks a 300-file count after enumeration", async () => {
 const trustedKEL270ReceiptPath =
   "docs/engineering/evidence/kel270-catalogue-admission-v2/review-receipt.json";
 const trustedKEL270ReceiptSha256 =
-  "c0c4ffb4c738d0d5d8b26e199a2d7593a0d8d5685f672b8af8e5737d17d7c1c9";
+  "7b9e858738d51665120d4690929d13b1ab0ee7f80b0e6d82d6bb093ffcff0c42";
 const trustedKEL270VerifierPath =
   "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py";
 const trustedKEL270VerifierSha256 =
-  "eff04319abf7df5aa4b384f611f067c0538ee6535b8e1de26b14e47c38003bbe";
+  "9ac3f00c1c2db790f3d98ab24d32ee74396438bcb17d3ca23b8a34a24721290a";
 const safePythonEnvironment = [
   'for variable in "${!PYTHON@}"; do',
   '  unset "$variable"',

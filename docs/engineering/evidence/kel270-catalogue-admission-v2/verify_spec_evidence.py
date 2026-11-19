@@ -120,7 +120,7 @@ def strict_json(data: bytes) -> dict:
     return json.loads(data, object_pairs_hook=strict_pairs)
 
 
-def run_script(name: str, mode: str, directory: pathlib.Path | None = None) -> subprocess.CompletedProcess[str]:
+def run_script(name: str, directory: pathlib.Path | None = None) -> subprocess.CompletedProcess[str]:
     args = [sys.executable, "-I", "-B", str((directory or HERE) / name), "--check"]
     return subprocess.run(args, capture_output=True, text=True, check=False)
 
@@ -287,7 +287,7 @@ def check_mutations() -> None:
         vector = isolated / "identity-vectors.json"
         original = vector.read_bytes()
         vector.write_bytes(original + b"\n")
-        golden_mutant = run_script(SCRIPTS[0], "--check", isolated)
+        golden_mutant = run_script(SCRIPTS[0], isolated)
         if golden_mutant.returncode == 0 or "stale golden identity-vectors" not in golden_mutant.stderr:
             raise ValueError("golden-vector mutation did not fail")
         vector.write_bytes(original)
@@ -295,7 +295,7 @@ def check_mutations() -> None:
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         receipt["definition_reports"]["capacity"]["sha256"] = "0" * 64
         receipt_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
-        capacity_mutant = run_script(SCRIPTS[1], "--check", isolated)
+        capacity_mutant = run_script(SCRIPTS[1], isolated)
         if capacity_mutant.returncode == 0 or "generated capacity report differs" not in capacity_mutant.stderr:
             raise ValueError("capacity-report digest mutation did not fail")
         # A false acceptance with a null result preserves the pinned report
@@ -318,7 +318,7 @@ def check() -> None:
     before = subprocess.check_output(["git", "status", "--porcelain"], cwd=REPO)
     receipt = verify_receipt()
     for name, section in ((SCRIPTS[0], "identity"), (SCRIPTS[1], "capacity")):
-        run = run_script(name, "--check")
+        run = run_script(name)
         if run.returncode != 0:
             raise ValueError(f"{name} failed: {run.stdout} {run.stderr}")
         if receipt["definition_reports"][section]["passed"] <= 0:

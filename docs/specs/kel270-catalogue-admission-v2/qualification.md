@@ -83,6 +83,7 @@ All rows below are NOT_RUN. Source inspection is not native test evidence. Each 
 | UAC/profile | Use elevated, filtered, low, high, service, AppContainer, or UIAccess token | Separate native result for each cell |
 | Folder origin | Substitute environment or request destination | Writes remain absent at injected location |
 | Managed discovery | Present valid managed provenance with valid direct candidate | Zero feed requests and no direct-writer handle |
+| Release-channel eligibility (D-89) | Inject a same-policy sibling, another channel or incomplete census | No new authority or protected publication; retained state and fences unchanged |
 | Established loss | Remove generation while retaining anchor | CorruptOrMissing, no embedded-root bootstrap |
 | Enrollment crash | Kill after every anchor/generation publication boundary | Pending or matching established state, never false first use |
 | Stale permit | Advance generation before admission lock succeeds | Old permit cannot create any installation-specific parent |
@@ -442,8 +443,8 @@ No design approval or release approval is recorded by this draft.
 
 - **Status:** open
 - **Owner:** Repository CI/security maintainer with the trusted-base authority.
-- **Impact:** The standalone non-mutating evidence check and its two
-  failure mutants pass locally. They cannot become a hosted required
+- **Impact:** The standalone non-mutating evidence check and its negative
+  controls recorded in E-80 pass locally. They cannot become a hosted required
   CI gate through this normal specification PR. CI provenance prohibits
   edits to `.github/workflows/ci.yml`, `justfile` and CI executors.
   Its 15 published SHA-256 values come from a receipt in the incoming

@@ -250,7 +250,7 @@ PROPOSED: Prepare the new metadata graph privately before changing established s
 The same bounded client verifies it from the directive-bound replacement root.
 Download and authenticate the exact candidate and finite rollback binding.
 The recovery directive replaces planned-transition authority. It does not require an unavailable U1 signature.
-Do not run candidate code during preparation.
+Apply D-90's manual reader and drain gates. Never run candidate code during preparation.
 Require a compatible rollback artifact before admitting any change.
 An old Host that cannot consume the new identity/recovery view does not satisfy that requirement.
 
@@ -418,7 +418,7 @@ Reject a stale directive or a changed replacement without changing the establish
 | Before manual journal, no pointer, ordinary orphan, blob-only residue, intent or third committed N-2 | Complete D-24 ordinary and committed-history retirement before any manual journal or pointer. Refuse held or ambiguous objects. |
 | Initial `admitted`, pointer present or absent, target withdrawn | Require D-64's no-effect proof for `FreshAbsent`, or separately provenance-qualified `ExactEmptyScaffold`. Reread terminal `aborted`; clear only a matching pointer. |
 | Initial `creation-armed` or ambiguous scaffold | Preserve the pointer and journal for KEL-53 operator disposition. Never infer no-effect from apparent absence. |
-| `prepared`, old metadata current, directive valid | Reverify the original authorization and all source/policy bindings, then commit or refuse. |
+| `prepared`, old metadata current, directive valid | Reverify authorization, all source/policy bindings and D-90's manual gates; commit or refuse. |
 | `prepared`, old metadata current, directive expired | Verify no trust or application effect. Durably mark `aborted`. Retire present exact-or-partial planned preparation only with expected owner/DACL, regular non-reparse type and no protected references under a D-23 intent. Clear the pointer after old-state verification. |
 | `prepared`, new metadata current | Match the recorded destination generation. Advance the journal without repeating the epoch change. |
 | `aborted`, old metadata current, intent present, both journal digests null | Verify the sealed prewrite plan, matching attempt, protected old state, pending pointer, and every listed object's owner, DACL, type and unreachability. Bind and reread the exact intent digest before deletion. |
@@ -465,8 +465,8 @@ Preserve original data for forensic or user-data recovery. Do not claim automati
 The legacy v1 bridge remains conditional on its own admissible signer and compatibility evidence.
 Absence of that evidence blocks the legacy cell. It does not block independent fresh-v2 qualification.
 No result in fresh-v2 qualification can mark manual recovery, legacy migration, or compromise recovery complete.
-Recovery does not silently change another channel's installed provenance.
-An incompatible other-channel policy remains refused until that channel completes its own authenticated transition.
+D-89 forbids channel switches. Any sibling or uncertain membership blocks new mutation; retain evidence and fences.
+Never delete, relabel or catch up a sibling.
 
 ### D-68: Locate and bound one pending repository operation
 
@@ -474,8 +474,8 @@ PROPOSED: The existing KEL-53 writer owns `pending-operation.json` at the protec
 Its closed canonical JSON fields are `schema,repositoryId,appId,ownerSid,kind,attemptId`.
 The schema is `keld.repository-pending-operation/v1`. Its maximum size is 2,048 bytes.
 Identity fields use the exact established anchor values. The attempt ID uses D-64's random lowercase hexadecimal encoding.
-The kind is exactly `initial-admission` or `manual-recovery`.
-It selects exactly `admissions/<attemptId>.json` or `recoveries/<attemptId>.json`. No pointer contains a caller path.
+The kind is `initial-admission`, `manual-recovery`, or `planned-transition`.
+It selects exactly `admissions/<attemptId>.json`, `recoveries/<attemptId>.json`, or D-85's `transitions/<attemptId>.json`, respectively. No caller path is accepted.
 
 Allow one pending operation per repository. Publish and reread its complete journal before publishing the pointer.
 Publish and reread the pointer before the first installation effect or manual trust switch.
@@ -493,7 +493,7 @@ No abandoned prepared successor at the required next sequence may remain.
 Keep current/LKG evidence after pointer removal. Do not garbage-collect reachable policy objects.
 With no pointer, census the bounded journal ledger before any repository mutation, including ordinary refresh and new admission.
 An unreferenced initial `admitted` journal requires D-64's authenticated no-effect abort. Preserve its D-9 evidence until terminal readback.
-Only a proved zero-effect, unreferenced manual `prepared` journal permits bounded cleanup. Ambiguous state halts.
+Manual zero-effect orphan cleanup uses D-65; planned orphans use D-85/D-86. Ambiguous state halts.
 Keep at most one pending journal and one completed journal for diagnosis per repository.
 If cleanup fails, refuse the next attempt. Do not grow the store through repeated attempts.
 Add process-termination cuts before and after pointer publication, after terminal readback, and during pointer removal.

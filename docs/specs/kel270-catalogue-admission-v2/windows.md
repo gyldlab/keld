@@ -98,6 +98,8 @@ Discovery returns exactly one disposition:
 | PartialOrUncertain | Refuse and retain diagnosis evidence |
 | ConflictingIdentity | Refuse without copying, merging, deleting, or relabeling state |
 
+Read-only preflight refuses a wrong channel, sibling or incomplete membership before network or writer acquisition (D-89/D-90).
+A missing channel-specific root cannot prove sole membership; repeat the check under the repository lease before issuing a permit.
 Evaluate all required discovery entries before returning FreshAbsent. An absent provenance file alone does not prove freshness. Inaccessible, corrupt, foreign, or unexpected objects do not mean absence. Recheck the disposition after obtaining the installation lease.
 An empty canonical root with only matching D-48 identity, owner and DACL is `PartialOrUncertain`, not qualified `ExactEmptyScaffold`.
 That observation cannot distinguish a prior pre-journal installer crash from a legitimately older empty root.
@@ -106,7 +108,7 @@ No such producer is commissioned. Refuse this cell; never fabricate origin proof
 
 ### D-44: Protected acquisition namespace
 
-Use one repository namespace for one commissioned app across channels, signer rotations, and origin changes.
+Use one repository namespace for the commissioned app across signer rotations and origin changes. A different release channel refuses; it cannot bootstrap a new floor.
 The repository identifier is the authenticated opaque 32-byte D-WIRE value. Its genesis and continuity authority come from the repository policy.
 Require the Host, repository policy, and existing anchor to name the same appId before mutation.
 First enrollment records that verified appId. A different app refuses instead of sharing or resetting the repository.

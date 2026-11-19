@@ -3,7 +3,7 @@
 - Status: draft
 - Tracker: KEL-270
 - Owner: Monish Khandelwal, specification sign-off
-- Updated: 2026-11-17
+- Updated: 2026-11-18
 - Pin: ec29b7ce2b155a8c98f96036cbb9c54488b5c302
 
 ## 1. Goal & non-goals
@@ -22,6 +22,7 @@ This proposal starts from the current main pin above. It does not change that PR
 
 Non-goals:
 
+- Windows MVP supports one commissioned release channel only. No channel switching, side-by-side channels (even under one policy), or automatic catch-up. See D-89.
 - No replacement installer, updater service, browser registry, or cryptographic protocol.
 - No machine-seamless installation or direct takeover of managed installations.
 - No in-place security claim after suspected system compromise.

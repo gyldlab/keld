@@ -71,7 +71,7 @@ The client caps remaining lifetime against its fixed refresh time. The release s
 
 PROPOSED: `RepositoryId` contains 32 opaque commissioned bytes. It does not contain a channel, key, SPKI, URL, or policy digest. The signed Host expectation binds this ID and exact repository-policy digest. The identity part owns the repository-policy codec.
 
-Profile 1 assigns exactly one app ID to each repository ID. Cross-app repository sharing is unsupported. Require exact equality between Host appId, RepositoryPolicy appId, and enrollment-anchor appId. A mismatch refuses before metadata loading. Channels, origins, signing keys, and SPKIs still share that app's existing repository floors.
+Profile 1 assigns exactly one app ID to each repository ID. Cross-app repository sharing is unsupported. Require exact equality between Host appId, RepositoryPolicy appId, and enrollment-anchor appId. A mismatch refuses before metadata loading. Keep that app's floors across origin, key and SPKI changes. Another release channel refuses under D-89; it cannot obtain fresh floors.
 
 The Windows part owns these OS-derived paths:
 
@@ -254,35 +254,30 @@ unreferenced blob objects absent before sealing a new recovery prewrite inventor
 If source identity, generation epoch or ownership is ambiguous,
 refuse recovery without creating its journal or pending pointer.
 
-Before creating any N+1 successor, including D-65 manual recovery, make capacity
-while holding the exclusive metadata lease. At current N, protect N and its
-immediate predecessor N-1. If a third committed N-2 exists, retire it first.
-An unexpected fourth generation MUST halt without deletion.
-Authenticate N, N-1, anchor and every protected owner. Refuse any D-68
-pointer, foreign intent, prepared N+1 or foreign file. For a new
-retirement, authenticate present N-2 and prove it is not current,
-predecessor, pending, selected LKG or held by another owner. A historical
-digest alone is not a live N-2 reference. A live consumer blocks deletion.
-For a retained matching committed intent, authenticate its old state and
-owner census; only intent-listed objects may already be absent.
+Before N+1 (including D-65), hold the exclusive lease; authenticate N, the established anchor and all protected owners.
+Genesis (N=1): require null previous digest and generation bytes matching current and the anchor's initial digest; no generation 0.
+For N>1 authenticate N-1 against N's previous digest. Missing or mismatched history halts; never re-enroll.
+Refuse any fourth generation, D-68 pointer, foreign intent, prepared N+1 or foreign file; no deletion.
+At N>=3 retire a present N-2 first. For new retirement authenticate N-2; prove it is not current,
+predecessor, pending or held by active LKG recovery or another live owner. Live holds block deletion;
+historical digests alone do not (D-88, [integration](integration.md)).
+On resume authenticate the matching committed intent, old state and owner census; only listed objects may be absent.
 
 For new retirement, compute the exact N-2 digest and exclusive blob list.
 Publish, flush and reread D-23's committed-history intent before deletion.
 For resumed retirement, reuse the authenticated intent and its exact list.
 Keep N, N-1 and their blobs pinned through retained handles. For each listed
 object, recheck bytes, regular non-reparse type, owner SID, DACL, and full
-unreachability from N, N-1, anchor, LKG, previous LKG and other protected
-owners. Delete through the verified retained parent only. An absent listed
+unreachability from N, N-1, anchor, active LKG recovery and all other live
+metadata owners, excluding audit-only completed references. Delete through the
+verified retained parent only. An absent listed
 object counts as previously retired only under the unchanged durable intent.
 Recheck current N, N-1, anchor and all owners after each crash or deletion.
 Never retire N-2 without the matching intent; never delete an unlisted object.
 Once N-2 and its exclusive blobs are absent, remove and verify the intent.
 Only then may ordinary publication or D-65 prepare N+1. Resume a retained intent
 before accepting any new root or role. An ambiguous record or reference halts.
-Before retirement the three slots can hold N-2, N-1 and N. After
-retirement they can hold N-1, N and one prepared N+1. Root catch-up
-MUST retire before each advancing root transition. D-65 MUST finish this
-retirement before its manual journal or D-68 pointer.
+The three slots change from N-2/N-1/N to N-1/N/prepared N+1. Retire before each advancing root and before D-65's manual journal or D-68 pointer.
 
 For D-65 manual recovery only, a verified expired `prepared` journal,
 matching D-68 pending pointer, protected old `current` and terminal
@@ -395,9 +390,9 @@ Before the first installation effect, acquire leases in this order:
 3. Browser profile.
 
 After every wait, check the monotonic deadline and all role expiry values. Check the store sequence and selected catalogue again under the metadata lease. Keep that lease across comparison and the first installation effect. The native owner consumes the one-shot permit on the admitted worker.
-For the final effect check, observe fresh OS UTC separately from the fixed
-protocol refresh timestamp. Refuse if a signed role has expired during the
-lease wait, even when the monotonic admission deadline remains open.
+At every authority-use check apply D-88
+[integration](integration.md):
+check fresh UTC and refresh UTC plus checked monotonic elapsed against expiry.
 
 A fresh install has no existing bootstrap lock. Consume the private one-shot permit when entering the effectful operation. Hold the metadata lease. Next, persist and read back the admission record outside the installation tree. Then create the scaffold and exclusive bootstrap lock. Recheck ownership.
 Keep the metadata lease until the durable record and exclusive bootstrap ownership exist. The recovery part owns the admission record. No installation-tree creation precedes its durable readback.
@@ -405,6 +400,9 @@ Keep the metadata lease until the durable record and exclusive bootstrap ownersh
 A new refresh can replace expired acquisition evidence before publication. It must independently select the same catalogue and package tuple. Withdrawal refuses. Changed bytes require selection and package verification to restart. Do not extend the old deadline. Do not fetch metadata during an admitted commit or rollback.
 
 ### D-27: Freeze the store boundary
+
+Planned policy changes use integration D-84 through D-87 and its distinct private capability.
+They do not call `rebootstrap` or reset metadata trust, epoch or floors.
 
 PROPOSED: The following names are owner-local design types. They are not existing public APIs. The patch must retain the standard client as protocol owner.
 

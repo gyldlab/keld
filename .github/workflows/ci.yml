@@ -921,7 +921,7 @@ jobs:
           # protected CI so a candidate cannot repin both a source and its manifest.
           receipt_path=docs/engineering/evidence/kel270-catalogue-admission-v2/review-receipt.json
           if ! printf '%s  %s\n' \
-            'c0c4ffb4c738d0d5d8b26e199a2d7593a0d8d5685f672b8af8e5737d17d7c1c9' \
+            '7b9e858738d51665120d4690929d13b1ab0ee7f80b0e6d82d6bb093ffcff0c42' \
             "$receipt_path" | sha256sum --check --status; then
             echo "KEL-270 B-82 trusted receipt SHA-256 mismatch" >&2
             exit 1

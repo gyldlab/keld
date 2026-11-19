@@ -114,6 +114,9 @@ These are required native acceptance cases, not results of the synthetic identit
 
 ### AC-4: Joined migration and recovery preserve one complete state
 
+For changed policy digests, integration D-87 adds mandatory joined crash and rollback controls.
+D-89 requires sole-channel positives and zero-effect sibling, wrong-channel and census/race refusals. Its future mechanisms are non-gating.
+
 - **Given:** An admitted predecessor has browser data and a last-known-good artifact.
 - **When:** An authorized identity transition fails after each named durable cut.
 - **Then:** Recovery yields the complete old state, complete new state, or explicit pending recovery. Browser data and the application floor remain intact. Mixed identity fields never permit ordinary launch.
@@ -161,6 +164,8 @@ With N+1 absent, require a complete owner census and durable D-23 `ordinary-blob
 After verified cleanup, a different authenticated N+1 successor MUST remain writable.
 As separate faults, omit the intent, alter blob bytes or owner, add a live reference, or introduce a pending pointer.
 Each fault MUST refuse deletion and new publication. Cut after intent readback, every deletion, and intent removal.
+From valid established N=1 with null previous digest and anchor/current naming the same authenticated bytes, publish generation 2 without a generation-0 read, write or retirement. Its previous digest MUST bind generation 1.
+Mutate the anchor digest, previous digest or anchor state separately at N=1; require no successor publication or deletion. At N=2, independently remove or alter generation 1; refuse before generation 3 and keep current unchanged, never treating lost history as genesis.
 Run actual Windows process-death and physical power-loss cases separately; synthetic cuts do not qualify either.
 
 ### AC-22: Established state cannot become first use through partial loss
@@ -193,6 +198,8 @@ Run actual Windows process-death and physical power-loss cases separately; synth
   - **At-risk precondition:** The fixed refresh time equals the timestamp expiry.
   - **Expected RED:** The metadata client accepts the expired boundary.
 
+- **Authority-use expiry cases (NOT_RUN):** Capture UTC 100, expiry 110; elapsed 11 and fresh UTC 105 must refuse despite the clock remaining above its floor. Equality, forward UTC expiry and addition overflow also refuse. Remove only elapsed-time expiry enforcement: the rollback case must become RED. A nonexpired role under both clocks remains a positive control.
+
 ### AC-25: Incomplete target streams produce no authority
 
 - **Given:** A valid metadata graph and a correctly authenticated target description.
@@ -206,8 +213,8 @@ Run actual Windows process-death and physical power-loss cases separately; synth
 ### AC-26: Repository changes cannot reset its trust state
 
 - **Given:** One repository ID with an established root and role floors.
-- **When:** Channel, origin, signing key, SPKI, or policy version changes.
-- **Then:** The adapter opens the same repository ledger. It requires an authenticated policy successor where applicable.
+- **When:** Origin, signing key, SPKI, policy version or the requested release channel changes.
+- **Then:** Eligible same-channel changes retain the ledger and require an authenticated successor where applicable. A different channel refuses without creating or resetting a ledger.
 - **Negative control:**
   - **Single fault:** Include the current policy digest in the ledger namespace.
   - **At-risk precondition:** A genuine successor Host carries a new repository policy.
@@ -347,6 +354,8 @@ A future `ExactEmptyScaffold` positive requires separately commissioned origin p
 - **When:** One source, destination, operation, issuer, profile, epoch, expiry, or consent binding differs.
 - **Then:** Recovery refuses before mutation of established metadata or installation state.
 - The verifier also refuses an ordinary application signer before a recovery authorization exists.
+- With an otherwise valid manual directive, substitute one installed reader that ignores the D-68 pointer: D-90 MUST refuse before preparation.
+- Hold one old-generation launch live across the seal, including on pre-switch restart: protected current MUST NOT change until its retirement or drain is verified. A new admission racing the seal MUST NOT escape it.
 - **Negative control:**
   - **Single fault:** Omit the source update-key comparison.
   - **At-risk precondition:** A valid directive names another installation key under the same publisher.
@@ -476,3 +485,9 @@ A future `ExactEmptyScaffold` positive requires separately commissioned origin p
   - **Single fault:** Mark one native case passed using only a JSON fixture check.
   - **At-risk precondition:** The native case requires actual Windows handles or signed artifacts.
   - **Expected RED:** The evidence review rejects the unsupported qualification.
+
+Metadata retirement qualification (NOT_RUN): keep installed LKG unchanged while
+refreshing N to N+1 after retiring N-2; audit-only provenance must not block it.
+An actual admitted N-2 borrower or pending journal must block retirement until
+its terminal release, including restart. Removing only live-owner checks must
+make that retention assertion RED; LKG package/manifest/binding bytes stay intact.

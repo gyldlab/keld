@@ -53,7 +53,9 @@ Run AC-1 and every malformed enum, OID, size, and cross-version case.
 
 - **Blocked by:** T-1, T-23, T-42, T-81
 
-Implement D-3 through D-9 with the existing owners. Run AC-2 through AC-4.
+Implement D-3 through D-9 and integration D-84 through D-87 with the existing owners.
+Implement only the single commissioned release channel. T-2 must not add channel switching, sibling migration or side-by-side operation.
+Run AC-2 through AC-4, including the exact planned-policy repository fence and cross-store cuts.
 Keep the legacy support cell disabled until its bridge and joined recovery evidence pass.
 
 ## 6. Tasks: Metadata
@@ -122,6 +124,7 @@ Extend the existing source and metadata owners. Run AC-41, AC-42, and AC-43 agai
 ### T-42: Integrate one-shot admission
 - **Blocked by:** T-41, T-1, T-60, T-23
 
+Enforce D-89/D-90 in fresh admission, established mutation and restart through the existing repository owner. No per-channel stores or parallel leases.
 Join the approved codecs, metadata generation, native custody, and recovery journal. Run AC-44 and AC-45 with controlled subprocess boundaries.
 
 ### T-43: Qualify installed behavior
@@ -139,9 +142,12 @@ Use commissioned production policy and signed artifacts. Run the full applicable
 | `crates/keld-update/src/windows_baseline/initialize.rs` | Consume one-shot admission before any initialization effect |
 | `crates/keld-update/src/windows_baseline/initialize/publication.rs` | Accept the retained validated TAR through publication |
 | Existing KEL-53 metadata integration owner | Enrollment, generation, metadata lease, and retained readback |
-| `crates/keld-host/src/windows_initial_install.rs` | Thin commissioned-policy adapter after upstream gates pass |
+| `crates/keld-host/src/windows_initial_install.rs` (product pin #1531, not this specification's main baseline) | Thin commissioned-policy adapter after upstream gates pass |
 
-The current Host refuses unconditionally. The new adapter cannot replace that refusal before authority commissioning and its required checks. The first code slice can strengthen token and retained-source ownership while keeping the Host closed.
+T-43 must first record the exact implementation-base commit, the accepted Host entry or its reviewed equivalent, and its refusal before opening the request, creating a scaffold, or calling protected publication.
+The refusal is verified at product pin `7ff41173d28d58ae61ccbb3382d055c8ef9c9c97`; the named module is absent at main baseline `16a9545ccc417b72b2f0508520c360f9fd5e2ced`.
+If that owner has not landed or been reconciled on the implementation base, block Host integration; do not create a parallel entry.
+The adapter cannot replace that refusal before authority commissioning and its required checks. The first code slice can strengthen token and retained-source ownership while keeping the Host closed.
 That slice still needs approved specification scope and its unsafe/public-API/security review gates. No native tests, physical power-loss tests, production signatures, release approval, or merge occurred in this work.
 
 ## 6. Tasks: Recovery
@@ -192,7 +198,8 @@ Record all remaining implementation gates without declaring them passed.
 
 - **Blocked by:** T-80
 
-The release/security owner records actual profile, issuer, repository, catalogue, and independent recovery policy evidence.
+The release/security owner records the sole release-wide channel, profile, issuer, repository, catalogue and independent recovery policy evidence.
+Pin the channel in the authenticated distribution/Host configuration independently of the incoming candidate. No fixture default, first-writer enrollment choice or new wire enum.
 Commission and pin the durable recovery-only profile OID and issuer policy,
 not the daily-rotating leaf SPKI. Verify separate signing permissions and custody,
 application-signer and dual-profile refusal, changed-leaf-SPKI continuity
