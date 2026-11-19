@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-#[cfg(test)]
+#[cfg(all(test, not(keld_core_native_renderer_main)))]
 mod tests;
 
 #[derive(Default)]
@@ -332,33 +332,41 @@ impl PrimaryRouterHandle {
         &self,
         loop_entry: Option<Instant>,
         now: Instant,
-    ) -> Result<(), HostAppError> {
-        let _transition = self.shutdown.transition_guard();
+    ) -> Result<Option<(Arc<WriterLink>, HostAppError)>, HostAppError> {
+        // Before entry, native preparation can still own the startup
+        // transition. The watchdog observes this existing caller record
+        // independently; the terminal owner revalidates it after Init.
         let Some(windows) = self.windows.as_ref() else {
-            return Ok(());
+            return Ok(None);
         };
         let session = windows
             .lock()
             .map_err(|_| app_detail("desktop startup deadline", "Registry lock poisoned"))?;
         let Some(desktop) = session.desktop.as_ref() else {
-            return Ok(());
+            return Ok(None);
         };
         let Some(pending) = desktop.pending.as_ref().filter(|pending| {
             !pending.target.caller().reader_stop.load(Ordering::Acquire)
                 && self.shutdown.is_running()
         }) else {
-            return Ok(());
+            return Ok(None);
         };
         if pending.clock.ui_entry_expired(loop_entry, now) {
-            return Err(app_detail(
-                "selected desktop UI entry",
-                "the native UI loop did not enter within 10 s of Subscribe",
-            ));
+            return Ok(Some((
+                Arc::clone(&pending.target),
+                app_detail(
+                    "selected desktop UI entry",
+                    "the native UI loop did not enter within 10 s of Subscribe",
+                ),
+            )));
         }
         if desktop.init_seen && now >= pending.clock.caller_deadline() {
-            return Err(app_ipc("desktop Subscribe deadline", &IpcError::Timeout));
+            return Ok(Some((
+                Arc::clone(&pending.target),
+                app_ipc("desktop Subscribe deadline", &IpcError::Timeout),
+            )));
         }
-        Ok(())
+        Ok(None)
     }
 
     fn desktop_source(&self) -> Result<Option<DesktopSource>, HostAppError> {
@@ -413,12 +421,13 @@ impl PrimaryRouterHandle {
             return Ok(DesktopStartup::Waiting);
         };
         let caller = source.target.caller();
-        let turn = self.claim_window_publication(source.deadline, Some(caller));
+        let mut turn = None;
         let result: PublicationResult<bool> = (|| {
-            let Some(turn) = turn
-                .as_ref()
-                .map_err(|error| app_detail("desktop settlement", error.to_string()))?
-            else {
+            if Instant::now() >= source.deadline {
+                return Err(app_ipc("desktop Subscribe settlement", &IpcError::Timeout).into());
+            }
+            turn = self.claim_window_publication(source.deadline, Some(caller))?;
+            let Some(turn) = turn.as_ref() else {
                 return Ok(false);
             };
             let emitter = WindowEmitter {

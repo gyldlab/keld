@@ -5486,6 +5486,40 @@ fn stop_failed_renderer_dispatch(
     commands: &Sender<AppWindowCommand>,
 ) -> Result<(), HostAppError> {
     let transition = router.shutdown.transition_guard();
+    stop_direct_primary_after_failure(router, &transition, commands)
+}
+
+#[cfg(windows)]
+fn stop_failed_desktop_subscription(
+    router: &PrimaryRouterHandle,
+    target: &Arc<primary_writer::WriterLink>,
+    commands: &Sender<AppWindowCommand>,
+) -> Result<bool, HostAppError> {
+    let transition = router.shutdown.transition_guard();
+    let current = router
+        .current
+        .lock()
+        .map_err(|_| app_detail("desktop Subscribe deadline", "current owner poisoned"))?;
+    if !router.shutdown.is_running()
+        || current.as_ref().is_none_or(|active| {
+            active.reader_stop.load(Ordering::Acquire)
+                || active
+                    .writer_link
+                    .as_ref()
+                    .is_none_or(|link| !Arc::ptr_eq(link, target))
+        })
+    {
+        return Ok(false);
+    }
+    stop_direct_primary_after_failure(router, &transition, commands).map(|()| true)
+}
+
+#[cfg(windows)]
+fn stop_direct_primary_after_failure(
+    router: &PrimaryRouterHandle,
+    transition: &SessionTransition,
+    commands: &Sender<AppWindowCommand>,
+) -> Result<(), HostAppError> {
     if !router.shutdown.is_running() {
         return Ok(());
     }
@@ -5691,16 +5725,19 @@ fn coordinate_window_events(
             let entered = init_watch
                 .and_then(|(clock, _)| clock.get())
                 .and_then(|deadline| deadline.checked_sub(keld_wv::INITIAL_MILESTONE_DEADLINE));
-            if let Err(error) = router.selected_desktop_startup_deadline(entered, Instant::now()) {
+            if let Some((target, error)) =
+                router.selected_desktop_startup_deadline(entered, Instant::now())?
+            {
                 if !init_seen.get()
                     && let Some((_, terminal)) = until_init
                 {
                     terminate_stalled_ui(router, terminal, error);
                 }
-                return Err(append_app_cleanup(
-                    error,
-                    [stop_failed_renderer_dispatch(router, commands)],
-                ));
+                match stop_failed_desktop_subscription(router, &target, commands) {
+                    Ok(true) => return Err(error),
+                    Ok(false) => {}
+                    Err(cleanup) => return Err(append_app_cleanup(error, [Err(cleanup)])),
+                }
             }
         }
         #[cfg(windows)]
