@@ -299,10 +299,13 @@ impl ResourceView {
             .navigation
             .try_borrow()
             .map_err(|_| failure("resource navigation owner is busy"))?;
-        self.require_bound_owner(&nav)
+        self.is_bound_owner_live(&nav)
+            .then_some(())
+            .ok_or_else(|| failure("resource guard installation lost its live view or session"))
     }
 
-    fn require_bound_owner(&self, navigation: &OriginalNavigation) -> Result<(), WvError> {
+    // The final Core role fence may call this predicate. Keep both outcomes allocation-free.
+    fn is_bound_owner_live(&self, navigation: &OriginalNavigation) -> bool {
         let registered = self.session.state.try_borrow().is_ok_and(|state| {
             state
                 .views
@@ -314,19 +317,13 @@ impl ResourceView {
             && document.view() == self.id
             && !document.renderer_exited()
             && document.generation().is_some();
-        if self.retired.get()
-            || self.controller_closed.get()
-            || !self.close.is_open()
-            || self.session.retiring.get()
-            || self.session.fault.get().is_some()
-            || !registered
-            || !observer_live
-        {
-            return Err(failure(
-                "resource guard installation lost its live view or session",
-            ));
-        }
-        Ok(())
+        !self.retired.get()
+            && !self.controller_closed.get()
+            && self.close.is_open()
+            && !self.session.retiring.get()
+            && self.session.fault.get().is_none()
+            && registered
+            && observer_live
     }
 
     /// All parts come from the same native binding retained during installation.
@@ -339,7 +336,7 @@ impl ResourceView {
     pub(super) fn holds_live_load_owner(&self, navigation: &OriginalNavigation) -> bool {
         self.handler_token.get().is_some()
             && !self.install_in_progress.get()
-            && self.require_bound_owner(navigation).is_ok()
+            && self.is_bound_owner_live(navigation)
     }
 
     pub(super) fn is_drained(&self) -> bool {
