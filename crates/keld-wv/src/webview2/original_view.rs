@@ -138,14 +138,14 @@ impl OriginalView {
         )?);
 
         resource.install_on_ui()?;
-        let failure = Rc::clone(&self.observed_load_failure);
+        let observed_failure = Rc::clone(&self.observed_load_failure);
         self.observer = Some(Rc::clone(&observer));
         callbacks
             .install_on_ui(Rc::new(move |context, fact| {
                 if let (Some(context), OriginalNavigationFact::Failed { attempt, .. }) =
                     (context, &fact)
                 {
-                    failure.set(Some((context, *attempt)));
+                    observed_failure.set(Some((context, *attempt)));
                 }
                 observer(context, fact);
             }))

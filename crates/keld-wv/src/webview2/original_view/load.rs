@@ -196,7 +196,8 @@ mod tests {
 
     #[test]
     fn inline_failure_suppresses_only_the_exact_original_attempt() {
-        let source = Fixture::new().source_arc();
+        let fixture = Fixture::new();
+        let source = fixture.source_arc();
         let mut owner = NativeDocumentOwner::new(WebviewId(71));
         owner.bind_source(&source).unwrap();
         let first = owner.begin_host_load(source.source_id()).unwrap();
