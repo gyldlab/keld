@@ -88,7 +88,7 @@ fn retained_directory(path: &Path) -> File {
 }
 
 struct Fixture {
-    _owned: tempfile::TempDir,
+    owned: tempfile::TempDir,
     root: PathBuf,
     held: File,
     selected: SelectedRendererSource,
@@ -141,7 +141,7 @@ impl Fixture {
         )
         .expect("independent selected source data");
         Self {
-            _owned: owned,
+            owned,
             root,
             held,
             selected,
@@ -481,4 +481,51 @@ fn schema8_boot_files_require_retained_stage_and_compiled_provider_identity() {
             || message.contains("no independently qualified Windows target/provider"),
         "{message}"
     );
+}
+
+#[test]
+fn schema8_resource_handoff_binds_the_selected_document_and_guard_receipt() {
+    use keld_guard::verified_manifest::load_verified_manifest;
+    use keld_guard::{AdmittedRootUrl, RootRelativeComponents};
+
+    const POLICY: &[u8] =
+        br#"{"profile":"legacy","windows":{"editor":{"web":{"csp":"original-editor-offline"}}}}"#;
+    let fixture = fixture_with_entry();
+    let graph = bind(&fixture, Some(&qualification())).expect("admitted retained graph fixture");
+    let permissions_path = fixture.owned.path().join("verified-policy.json");
+    fs::write(&permissions_path, POLICY).expect("fixture policy");
+    let digest: [u8; 32] = Sha256::digest(POLICY).into();
+    let verified = load_verified_manifest(
+        File::open(&permissions_path).expect("verified file handle"),
+        permissions_path,
+        digest,
+    )
+    .expect("exact digest");
+    let policy = verified
+        .resolve_unique_original_window_csp()
+        .expect("unique editor policy");
+    let source = graph
+        .prepare_windows_web_source(policy)
+        .expect("retained resource owner");
+    assert_eq!(source.window_key(), "editor");
+    assert_eq!(source.verified_manifest_sha256(), digest);
+
+    let code_root = fixture
+        .root
+        .join("client/assets")
+        .canonicalize()
+        .expect("real code root");
+    let locator = AdmittedRootUrl::from_normalized_drive_path(&code_root).expect("local drive");
+    let document =
+        RootRelativeComponents::from_graph_path("nested/editor.html").expect("entry path");
+    let entry_uri = locator
+        .url_for(&document, Some("test=%252f"))
+        .expect("entry URL");
+    let query = source
+        .qualify_original_entry_uri(&entry_uri)
+        .expect("exact selected entry");
+    assert_eq!(query.as_optional_str(), Ok(Some("test=%252f")));
+    let asset = RootRelativeComponents::from_graph_path("styles.css").expect("included asset path");
+    let other_uri = locator.url_for(&asset, None).expect("asset URL");
+    assert!(source.qualify_original_entry_uri(&other_uri).is_err());
 }

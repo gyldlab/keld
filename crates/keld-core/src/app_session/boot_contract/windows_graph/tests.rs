@@ -182,7 +182,9 @@ fn schema8_preflight_requires_verified_explicit_legacy_and_one_window_policy() {
             load_verified_manifest(File::open(&path).expect("owned file"), path.clone(), digest)
                 .expect("verified policy");
         assert_eq!(
-            validate_windows_graph_preflight(WINDOWS_GRAPH_BOOT_SCHEMA, &manifest).ok(),
+            validate_windows_graph_preflight(WINDOWS_GRAPH_BOOT_SCHEMA, &manifest)
+                .map(|(profile, _policy)| profile)
+                .ok(),
             expected
         );
         assert!(validate_windows_graph_preflight(4, &manifest).is_err());

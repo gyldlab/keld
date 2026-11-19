@@ -472,7 +472,7 @@ enum WindowsBootMode {
 #[cfg(windows)]
 #[derive(Debug)]
 struct WindowsGraphSelection {
-    _graph: Arc<AdmittedStageGraph>,
+    graph: Arc<AdmittedStageGraph>,
     _version: Option<String>,
     _single_instance: Option<crate::SingleInstanceDeclaration>,
     _application_name_for_user_agent: Option<keld_wv::ApplicationNameForUserAgent>,
@@ -1603,7 +1603,7 @@ fn validate_windows_boot_files_from(
             &selected.source,
         )?;
         WindowsBootMode::DevelopmentGraph(Box::new(WindowsGraphSelection {
-            _graph: Arc::new(graph),
+            graph: Arc::new(graph),
             _version: selected.version,
             _single_instance: selected.single_instance,
             _application_name_for_user_agent: selected.application_name_for_user_agent,
@@ -2165,13 +2165,17 @@ pub fn run_guarded(
         let display_path = app.root.join(PERMISSIONS_FILE);
         let verified = load_verified_manifest(permissions_file, display_path, permissions_digest)
             .map_err(HostAppError::manifest)?;
-        let profile = match &app.mode {
-            WindowsBootMode::DevelopmentGraph(_) => {
-                profile_preflight::validate_windows_graph_preflight(schema, &verified)?
+        let (profile, _original_source) = match &app.mode {
+            WindowsBootMode::DevelopmentGraph(selection) => {
+                let (profile, policy) =
+                    profile_preflight::validate_windows_graph_preflight(schema, &verified)?;
+                let source = selection.graph.prepare_windows_web_source(policy)?;
+                (profile, Some(source))
             }
-            WindowsBootMode::DevStage | WindowsBootMode::Installed { .. } => {
-                profile_preflight::validate_profile(schema, &verified, false)?
-            }
+            WindowsBootMode::DevStage | WindowsBootMode::Installed { .. } => (
+                profile_preflight::validate_profile(schema, &verified, false)?,
+                None,
+            ),
         };
         if matches!(&app.mode, WindowsBootMode::Installed { .. })
             && profile == keld_guard::ProfileState::Legacy

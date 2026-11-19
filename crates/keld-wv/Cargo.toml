@@ -74,6 +74,8 @@ wry = { version = "0.56.1", features = ["devtools"] }
 tao_windows = { package = "tao", version = "=0.35.3", path = "../../vendor/tao-0.35.3-keld" }
 getrandom = { workspace = true }
 windows-permissions = { workspace = true }
+# GH-1185 uses the common retained Windows file adapter for verified resources.
+keld-update = { workspace = true }
 # --- Dependency review (KEL-65 / AGENTS.md gate) ---
 # Name: webview2-com 0.38 (was probe-only; now the whole Windows backend)
 # Purpose: direct WebView2 COM — environment/controller creation, the

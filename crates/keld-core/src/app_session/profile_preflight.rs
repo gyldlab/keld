@@ -26,7 +26,7 @@ pub(crate) fn reject_diagnostic_profile(
 pub(super) fn validate_windows_graph_preflight(
     schema: u8,
     verified: &keld_guard::verified_manifest::VerifiedManifest,
-) -> Result<ProfileState, HostAppError> {
+) -> Result<(ProfileState, keld_guard::ResolvedWindowCsp), HostAppError> {
     if schema != super::boot_contract::WINDOWS_GRAPH_BOOT_SCHEMA
         || verified.manifest().declared_profile() != Some(keld_guard::DeclaredProfile::Legacy)
     {
@@ -37,10 +37,10 @@ pub(super) fn validate_windows_graph_preflight(
     }
     let profile =
         keld_guard::admit_uncontained(ProfileState::Legacy).map_err(HostAppError::admission)?;
-    verified
+    let policy = verified
         .resolve_unique_original_window_csp()
         .map_err(HostAppError::manifest)?;
-    Ok(profile)
+    Ok((profile, policy))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]

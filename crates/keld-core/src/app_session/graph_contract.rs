@@ -20,6 +20,7 @@ use super::graph_selection::{
 };
 use super::{HostAppError, read_bounded, target_error};
 
+mod resources;
 mod windows;
 mod windows_boot;
 pub(super) use windows::open_relative_file as open_windows_boot_member;

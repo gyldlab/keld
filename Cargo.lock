@@ -1706,6 +1706,7 @@ dependencies = [
  "block2",
  "getrandom 0.4.3",
  "keld-guard",
+ "keld-update",
  "nix",
  "objc2",
  "objc2-app-kit",

@@ -19,11 +19,19 @@ mod engine;
 mod error;
 mod hello;
 mod media;
+#[cfg(windows)]
+mod native_document;
 #[cfg(any(target_os = "macos", windows))]
 mod native_window;
 #[cfg(any(target_os = "macos", windows))]
 pub mod preload_image;
 pub mod profile;
+#[cfg(windows)]
+mod resource_intake;
+#[cfg(windows)]
+pub mod resource_source;
+#[cfg(windows)]
+pub use engine::OriginalEntryQuery;
 #[cfg(target_os = "macos")]
 mod startup;
 #[cfg(test)]

@@ -129,6 +129,125 @@ pub struct WebviewSpec {
     pub initial: NavTarget,
 }
 
+/// An application query admitted by Core for the one GH459 original index.
+/// The actual URI/path and source are selected by the authenticated Host, not
+/// carried into the native command or used as any document/IPC principal.
+/// Only cold original-load commands own this bounded heap payload; ordinary
+/// GUI events retain no query allocation. The UI borrow ends after native capture.
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OriginalEntryQuery {
+    text: Option<Box<str>>,
+}
+
+#[cfg(windows)]
+impl OriginalEntryQuery {
+    /// Accept the bounded original query without interpreting or decoding it.
+    ///
+    /// # Errors
+    /// Rejects overlong, fragment-bearing and control-character input.
+    pub fn new(query: &str) -> Result<Self, &'static str> {
+        Self::from_optional_query(Some(query))
+    }
+
+    /// Preserve whether the original URI carried a query delimiter.
+    ///
+    /// An absent query and an explicitly empty query have different native
+    /// navigation spellings and must not be conflated when binding a request.
+    ///
+    /// # Errors
+    /// Rejects overlong, fragment-bearing and control-character input.
+    pub fn from_optional_query(query: Option<&str>) -> Result<Self, &'static str> {
+        if let Some(query) = query {
+            Self::validate(query)?;
+        }
+        Ok(Self {
+            text: query.map(Into::into),
+        })
+    }
+
+    fn validate(query: &str) -> Result<(), &'static str> {
+        if query.len() > 2048 || query.chars().any(|c| c == '#' || c.is_control()) {
+            return Err("invalid original source query");
+        }
+        Ok(())
+    }
+
+    /// Borrow the exact originally admitted query without allocation/truncation.
+    ///
+    /// # Errors
+    /// Refuses absent or internally invalid storage; no partial query is returned.
+    pub fn as_str(&self) -> Result<&str, &'static str> {
+        self.as_optional_str()?
+            .ok_or("original source query absent")
+    }
+
+    /// Borrow the exact query and preserve an absent versus empty query.
+    ///
+    /// # Errors
+    /// Refuses internally invalid bounded storage; no partial query is returned.
+    pub fn as_optional_str(&self) -> Result<Option<&str>, &'static str> {
+        if let Some(query) = self.text.as_deref() {
+            Self::validate(query)?;
+        }
+        Ok(self.text.as_deref())
+    }
+}
+
+#[cfg(all(test, windows))]
+mod original_entry_query_tests {
+    use super::OriginalEntryQuery;
+
+    #[test]
+    fn only_cold_query_payload_owns_indirection_and_hot_commands_stay_small() {
+        assert!(std::mem::size_of::<super::AppWindowCommand>() <= 256);
+        assert!(std::mem::size_of::<OriginalEntryQuery>() <= 2 * std::mem::size_of::<usize>());
+        let query = OriginalEntryQuery::new("appLang=?").expect("valid UTF8");
+        let owned = query.clone();
+        drop(query);
+        assert_eq!(owned.as_str(), Ok("appLang=?"));
+        assert!(
+            OriginalEntryQuery {
+                text: Some("#".into())
+            }
+            .as_str()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn bounded_query_keeps_exact_utf8_without_grant_or_truncation() {
+        let max = "x".repeat(2048);
+        assert_eq!(
+            OriginalEntryQuery::new(&max).unwrap().as_str(),
+            Ok(max.as_str())
+        );
+        assert!(OriginalEntryQuery::new(&(max + "x")).is_err());
+        for denied in ["#", "key=bad\u{0000}value", "line\nfeed"] {
+            assert!(OriginalEntryQuery::new(denied).is_err(), "{denied:?}");
+            assert!(OriginalEntryQuery::from_optional_query(Some(denied)).is_err());
+        }
+        assert_eq!(
+            OriginalEntryQuery::new("appLang=fr&queryObj=%257b")
+                .unwrap()
+                .as_str(),
+            Ok("appLang=fr&queryObj=%257b")
+        );
+    }
+
+    #[test]
+    fn absent_and_explicit_empty_query_remain_distinct() {
+        let absent = OriginalEntryQuery::from_optional_query(None).unwrap();
+        let empty = OriginalEntryQuery::from_optional_query(Some("")).unwrap();
+        assert_ne!(absent, empty);
+        assert_eq!(absent.as_optional_str(), Ok(None));
+        assert_eq!(empty.as_optional_str(), Ok(Some("")));
+        assert!(absent.as_str().is_err());
+        assert_eq!(empty.as_str(), Ok(""));
+        assert_eq!(absent.clone().as_optional_str(), Ok(None));
+    }
+}
+
 /// Command delivered from the primary app-link owner to the platform UI loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppWindowCommand {
