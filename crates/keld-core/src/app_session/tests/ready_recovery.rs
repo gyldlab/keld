@@ -1,5 +1,5 @@
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-fn primary_test_stream_pair() -> (BootstrapStream, BootstrapStream) {
+pub(in crate::app_session) fn primary_test_stream_pair() -> (BootstrapStream, BootstrapStream) {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         std::os::unix::net::UnixStream::pair().expect("primary stream pair")

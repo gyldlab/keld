@@ -69,6 +69,103 @@ fn dialog_guard_denial_never_allocates_or_wakes_native_owner() {
     assert!(receive.try_recv().is_err());
 }
 
+// Exercise the actual primary reader and constructor-owned native sessions.
+// Removing either the channel registration or its reader dispatch arm must fail
+// the correlated Guard ERR; direct handler tests cannot prove that connection.
+// The paired-stream fixture proves routing, not Runtime admission or native UI.
+#[test]
+fn primary_reader_routes_dialog_guard_denial_and_keeps_link_healthy() {
+    let channel = keld_ipc::channel_table::DIALOG.id();
+    use crate::app_session as app;
+    use keld_ipc::codec::{decode, encode};
+    use keld_ipc::echo::{EchoRequest, EchoResponse};
+    use keld_ipc::frame::FrameKind;
+    use keld_ipc::link::{AppLinkDeadlines as _, read_frame, write_frame};
+    use std::time::Duration;
+
+    let (source, _source_wake, _temp) = with_manifest(r#"{"app":{"system":[]}}"#);
+    let snapshot = app::GuardSnapshot::prepare(source.verified.clone())
+        .expect("prepare the existing immutable Guard snapshot");
+    let (server, mut peer) = app::tests::primary_test_stream_pair();
+    peer.set_app_link_deadlines(Some(Duration::from_secs(3)))
+        .expect("bounded wire observations");
+    let (window_tx, window_rx) = mpsc::channel();
+    let (guardian_tx, _guardian_rx) = mpsc::channel();
+    let router = app::PrimaryRouter::start_with_fs_test_gate(
+        server,
+        window_tx,
+        app::PlatformPrimaryOwnerHandle {
+            command_tx: guardian_tx,
+        },
+        app::SessionShutdownState::new(),
+        Some(&snapshot),
+        None,
+    )
+    .expect("start the actual guarded primary reader");
+
+    let observed = (|| {
+        // Guard must refuse before the dialog decoder sees this malformed
+        // body. A fabricated success or generic decoder error is not the oracle.
+        write_frame(
+            &mut peer,
+            FrameKind::Call,
+            0,
+            channel,
+            CorrelationId(47),
+            &[255],
+        )?;
+        let denied = read_frame(&mut peer)?;
+        let echo = encode(&EchoRequest {
+            message: "healthy after native Guard denial".to_owned(),
+            count: 9,
+        })?;
+        write_frame(
+            &mut peer,
+            FrameKind::Call,
+            0,
+            keld_ipc::ECHO_CHANNEL,
+            CorrelationId(48),
+            &echo,
+        )?;
+        Ok::<_, keld_ipc::IpcError>((denied, read_frame(&mut peer)?))
+    })();
+    // Join the real reader/FS worker before asserting, including for a missing
+    // route mutation which causes a bounded read failure instead of a reply.
+    let cleanup = router.shutdown();
+    let ((denied_header, denied_body), (echo_header, echo_body)) =
+        observed.expect("native CALL must reach its Guard and preserve the primary link");
+    cleanup.expect("join the actual primary reader and filesystem worker");
+    assert_eq!(
+        (
+            denied_header.kind,
+            denied_header.channel,
+            denied_header.corr
+        ),
+        (FrameKind::Err, channel, CorrelationId(47))
+    );
+    assert_eq!(
+        decode::<keld_ipc::CallError>(&denied_body)
+            .expect("canonical typed Guard refusal")
+            .code,
+        "KELD-GUARD001"
+    );
+    assert_eq!(
+        (echo_header.kind, echo_header.channel, echo_header.corr),
+        (FrameKind::Reply, keld_ipc::ECHO_CHANNEL, CorrelationId(48))
+    );
+    assert_eq!(
+        decode::<EchoResponse>(&echo_body).expect("healthy follow-up response"),
+        EchoResponse {
+            message: "healthy after native Guard denial".to_owned(),
+            count: 9,
+        }
+    );
+    assert!(
+        window_rx.try_recv().is_err(),
+        "denial must not wake native UI"
+    );
+}
+
 #[test]
 fn retiring_fs_only_generation_without_a_dialog_must_not_enqueue_native_ui_wake() {
     let (session, native, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);

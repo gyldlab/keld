@@ -8772,7 +8772,7 @@ fn read_primary_frames(
                             auth.admission(attempt, corr)
                         });
                 }
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", windows))]
                 if entry.id() == keld_ipc::channel_table::DIALOG.id() {
                     // Unlike a new Message, Cancel must remain decodable when
                     // the original physically retained panel is at capacity.
