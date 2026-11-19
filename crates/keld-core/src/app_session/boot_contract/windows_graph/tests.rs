@@ -151,8 +151,8 @@ fn schema8_refuses_unknown_null_position_and_duplicate_fields() {
 }
 
 #[test]
-fn schema8_profile_admission_requires_verified_explicit_legacy() {
-    use crate::app_session::profile_preflight::validate_windows_graph_profile;
+fn schema8_preflight_requires_verified_explicit_legacy_and_one_window_policy() {
+    use crate::app_session::profile_preflight::validate_windows_graph_preflight;
     use keld_guard::ProfileState;
     use keld_guard::verified_manifest::load_verified_manifest;
     use sha2::{Digest as _, Sha256};
@@ -161,8 +161,19 @@ fn schema8_profile_admission_requires_verified_explicit_legacy() {
     let directory = tempfile::tempdir().expect("owned policy fixture");
     let path = directory.path().join("keld.permissions.jsonc");
     for (policy, expected) in [
-        (r#"{"profile":"legacy"}"#, Some(ProfileState::Legacy)),
-        (r#"{"profile":"strict"}"#, None),
+        (
+            r#"{"profile":"legacy","windows":{"editor":{"web":{"csp":"original-editor-offline"}}}}"#,
+            Some(ProfileState::Legacy),
+        ),
+        (
+            r#"{"profile":"strict","windows":{"editor":{"web":{"csp":"original-editor-offline"}}}}"#,
+            None,
+        ),
+        (r#"{"profile":"legacy"}"#, None),
+        (
+            r#"{"profile":"legacy","windows":{"one":{"web":{"csp":"original-editor-offline"}},"two":{"web":{"csp":"original-editor-offline"}}}}"#,
+            None,
+        ),
         ("{}", None),
     ] {
         fs::write(&path, policy).expect("fixture policy");
@@ -171,9 +182,9 @@ fn schema8_profile_admission_requires_verified_explicit_legacy() {
             load_verified_manifest(File::open(&path).expect("owned file"), path.clone(), digest)
                 .expect("verified policy");
         assert_eq!(
-            validate_windows_graph_profile(WINDOWS_GRAPH_BOOT_SCHEMA, &manifest).ok(),
+            validate_windows_graph_preflight(WINDOWS_GRAPH_BOOT_SCHEMA, &manifest).ok(),
             expected
         );
-        assert!(validate_windows_graph_profile(4, &manifest).is_err());
+        assert!(validate_windows_graph_preflight(4, &manifest).is_err());
     }
 }

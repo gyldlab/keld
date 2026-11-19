@@ -23,7 +23,7 @@ pub(crate) fn reject_diagnostic_profile(
 }
 
 #[cfg(windows)]
-pub(super) fn validate_windows_graph_profile(
+pub(super) fn validate_windows_graph_preflight(
     schema: u8,
     verified: &keld_guard::verified_manifest::VerifiedManifest,
 ) -> Result<ProfileState, HostAppError> {
@@ -35,7 +35,12 @@ pub(super) fn validate_windows_graph_profile(
             "Use the qualified development graph and its explicit Legacy policy.",
         ));
     }
-    keld_guard::admit_uncontained(ProfileState::Legacy).map_err(HostAppError::admission)
+    let profile =
+        keld_guard::admit_uncontained(ProfileState::Legacy).map_err(HostAppError::admission)?;
+    verified
+        .resolve_unique_original_window_csp()
+        .map_err(HostAppError::manifest)?;
+    Ok(profile)
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]

@@ -2167,7 +2167,7 @@ pub fn run_guarded(
             .map_err(HostAppError::manifest)?;
         let profile = match &app.mode {
             WindowsBootMode::DevelopmentGraph(_) => {
-                profile_preflight::validate_windows_graph_profile(schema, &verified)?
+                profile_preflight::validate_windows_graph_preflight(schema, &verified)?
             }
             WindowsBootMode::DevStage | WindowsBootMode::Installed { .. } => {
                 profile_preflight::validate_profile(schema, &verified, false)?
