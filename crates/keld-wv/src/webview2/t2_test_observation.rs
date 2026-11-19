@@ -172,6 +172,7 @@ pub(super) fn bridge_command_name(command: &AppWindowCommand) -> &'static str {
         AppWindowCommand::SetMaximized { .. } => "SetMaximized",
         AppWindowCommand::SetFullScreen { .. } => "SetFullScreen",
         AppWindowCommand::DialogWake => "DialogWake",
+        AppWindowCommand::HostWriterProgress => "HostWriterProgress",
         AppWindowCommand::Quit => "Quit",
         AppWindowCommand::Fatal => "Fatal",
     }

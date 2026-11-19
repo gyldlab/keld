@@ -317,6 +317,9 @@ pub enum AppWindowCommand {
     /// command contains no caller-minted window pointer or payload.
     #[cfg(any(target_os = "macos", windows))]
     DialogWake,
+    /// Ask the Core writer owner to inspect capacity and completion.
+    #[cfg(windows)]
+    HostWriterProgress,
 }
 
 /// Physical native dialog outcome observed on its UI owner. The
@@ -360,6 +363,9 @@ pub enum AppWindowEvent {
     },
     /// The primary-window count transitioned from one to zero.
     LastWindowClosed,
+    /// The Core writer owner has local progress to inspect.
+    #[cfg(windows)]
+    HostWriterProgress,
     /// The native build completed; this snapshot is read from the built window.
     WindowBuilt {
         /// The host correlation from `CreateWindow`.

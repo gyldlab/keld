@@ -23,6 +23,8 @@ mod original_webapp;
 pub use self::original_runtime_entry::{
     ORIGINAL_RUNTIME_ENTRY_PATH, windows_original_entry_bootstrap_source,
 };
+#[cfg(all(test, windows))]
+mod primary_writer;
 mod profile_preflight;
 #[cfg(windows)]
 mod renderer_role;

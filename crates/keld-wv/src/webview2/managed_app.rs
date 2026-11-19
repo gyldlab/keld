@@ -178,6 +178,9 @@ impl ManagedWindows {
     ) -> Result<(), WvError> {
         match command {
             AppWindowCommand::DialogWake => Ok(()),
+            AppWindowCommand::HostWriterProgress => {
+                send(&self.events, AppWindowEvent::HostWriterProgress)
+            }
             AppWindowCommand::CreateWindow {
                 build,
                 width,

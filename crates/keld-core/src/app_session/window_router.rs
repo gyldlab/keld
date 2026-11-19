@@ -922,6 +922,13 @@ impl PrimaryRouterHandle {
                     "dialog completion must be dispatched by the event coordinator",
                 ));
             }
+            #[cfg(windows)]
+            AppWindowEvent::HostWriterProgress => {
+                return Err(app_detail(
+                    "window native event",
+                    "writer progress belongs to the primary writer owner",
+                ));
+            }
         };
         match fact {
             FactOutcome::Event(fact) => owned_event(current, subscribed, fact, failed),
