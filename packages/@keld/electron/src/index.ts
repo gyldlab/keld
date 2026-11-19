@@ -13,6 +13,7 @@
 import { app } from "./app";
 import { BrowserWindow } from "./browser-window";
 import { dialog } from "./dialog";
+import { nativeTheme, screen } from "./desktop.ts";
 
 import { runtimeProcessFactsSelected } from "@keld/kipc";
 import {
@@ -23,7 +24,8 @@ export { ELECTRON_VERSION_SHIM };
 
 installMainProcessFacts(process, runtimeProcessFactsSelected);
 
-export { app, BrowserWindow, dialog };
+export { app, BrowserWindow, dialog, nativeTheme, screen };
+export type { Display, DisplayRectangle } from "./desktop.ts";
 export type {
   MessageBoxOptions,
   MessageBoxResult,
@@ -42,5 +44,10 @@ export type {
 } from "./browser-window";
 export { isCallError, type KeldCallError } from "@keld/kipc";
 
-const electron = { app, BrowserWindow, dialog };
+const electron = {
+  app,
+  BrowserWindow,
+  dialog,
+  ...(screen === undefined ? {} : { nativeTheme, screen }),
+};
 export default electron;

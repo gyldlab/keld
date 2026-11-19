@@ -40,6 +40,8 @@ const state = {
 
 function fact(event: WindowEvent, dispatch = true): WindowEvent {
   const decoded = source.decode(encodeWindowEvent(event));
+  if (decoded.variant === "DesktopSnapshot")
+    throw new Error("expected a window fact");
   source.apply(decoded);
   if (dispatch) source.dispatch(decoded);
   return decoded;

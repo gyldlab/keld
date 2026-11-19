@@ -29,7 +29,7 @@ import type {
   WindowRequest,
   WindowResponse,
 } from "./window-codec.ts";
-import type { WindowSnapshot } from "./window-source.ts";
+import type { DesktopSnapshot, WindowSnapshot } from "./window-source.ts";
 import { WindowCloseReceipts } from "./window-close-receipts.ts";
 
 import {
@@ -140,6 +140,27 @@ function onWindowFact(fact: WindowEvent): void {
       }
     }
   }
+}
+
+/** Internal read of the selected role's already-applied desktop facts. */
+export function getDesktopSnapshot(): DesktopSnapshot {
+  if (linkDead) throw linkDead;
+  if (
+    !windowsDesktopSnapshotSelected ||
+    !hostReady ||
+    !connectedLink?.windowSource
+  )
+    throw linkError(
+      "KELD-CORE-040",
+      "Desktop facts require selected Host Ready and desktop replay.",
+    );
+  const snapshot = connectedLink.windowSource.desktop();
+  if (snapshot === undefined)
+    throw linkError(
+      "KELD-CORE-049",
+      "The native desktop snapshot is unavailable. Correct the Host display or appearance capture and relaunch.",
+    );
+  return snapshot;
 }
 
 /** Only delivered Host close records, never merely mirror-applied frames. */
