@@ -1,9 +1,9 @@
 /** The four GH565 link-time rows needed by the Windows original main. */
 import {
-  stateDefineProperty,
   stateFreeze,
   stateIsArray,
-  stateObjectEntries,
+  stateOwnDescriptor,
+  stateOwnKeys,
   stateTypeErrorConstructor,
 } from "@keld/kipc";
 import {
@@ -50,6 +50,21 @@ function invalidClipboardItem(): never {
   );
 }
 
+function hasEnumerableStringKey(items: object): boolean {
+  const keys = stateOwnKeys(items);
+  let found = false;
+  // Match Object.keys admission without reading any enumerable payload.
+  for (let index = 0; index < keys.length; index++) {
+    const key = keys[index];
+    if (
+      typeof key === "string" &&
+      stateOwnDescriptor(items, key)?.enumerable === true
+    )
+      found = true;
+  }
+  return found;
+}
+
 /** A local snapshot under GH565 AC8. GH559 owns native payload access. */
 export class ClipboardItem {
   readonly #payload: Readonly<Record<string, unknown>>;
@@ -57,15 +72,9 @@ export class ClipboardItem {
   constructor(items: Readonly<Record<string, unknown>>) {
     if (items === null || typeof items !== "object" || stateIsArray(items))
       invalidClipboardItem();
-    const entries = stateObjectEntries<unknown>(items);
-    if (entries.length === 0) invalidClipboardItem();
-    const payload = { __proto__: null } as Record<string, unknown>;
-    for (let index = 0; index < entries.length; index++) {
-      const entry = entries[index]!;
-      const descriptor = { __proto__: null, value: entry[1], enumerable: true };
-      stateDefineProperty(payload, entry[0], descriptor);
-    }
-    this.#payload = stateFreeze(payload);
+    if (!hasEnumerableStringKey(items)) invalidClipboardItem();
+    // The own spread reads each enumerable string or symbol payload once.
+    this.#payload = stateFreeze({ ...items });
   }
 
   get types(): never {

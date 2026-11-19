@@ -16,6 +16,7 @@ const poison = () => {
   throw new ActualError("unexpected late GH565 hook");
 };
 const hooksToReplace = [
+  [Reflect, "ownKeys"],
   [Object, "entries"],
   [Object, "keys"],
   [Object, "getOwnPropertyDescriptor"],

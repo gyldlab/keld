@@ -144,6 +144,42 @@ test("ClipboardItem AC8 snapshots each own enumerable payload once", async () =>
   ).toThrow(sourceFailure);
 });
 
+test("ClipboardItem AC8 mixed keys snapshot each enumerable getter once", () => {
+  const symbol = Symbol("enumerable MIME sidecar");
+  const reads: (string | symbol)[] = [];
+  new ClipboardItem({
+    get "text/plain"() {
+      reads.push("text/plain");
+      return "text";
+    },
+    get [symbol]() {
+      reads.push(symbol);
+      return "sidecar";
+    },
+  });
+  expect(reads).toEqual(["text/plain", symbol]);
+});
+
+test("ClipboardItem AC8 propagates an enumerable symbol getter failure", () => {
+  const symbol = Symbol("throwing MIME sidecar");
+  const failure = new Error("enumerable symbol payload read");
+  let calls = 0;
+  let thrown: unknown;
+  try {
+    new ClipboardItem({
+      "text/plain": "text",
+      get [symbol]() {
+        calls++;
+        throw failure;
+      },
+    });
+  } catch (error) {
+    thrown = error;
+  }
+  expect(thrown).toBe(failure);
+  expect(calls).toBe(1);
+});
+
 test("late four-binding import ignores poisoned hooks and opens zero Host links", () => {
   const fixture = resolve(
     import.meta.dir,
