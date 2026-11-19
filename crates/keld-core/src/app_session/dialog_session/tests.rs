@@ -75,7 +75,6 @@ fn dialog_guard_denial_never_allocates_or_wakes_native_owner() {
 // The paired-stream fixture proves routing, not Runtime admission or native UI.
 #[test]
 fn primary_reader_routes_dialog_guard_denial_and_keeps_link_healthy() {
-    let channel = keld_ipc::channel_table::DIALOG.id();
     use crate::app_session as app;
     use keld_ipc::codec::{decode, encode};
     use keld_ipc::echo::{EchoRequest, EchoResponse};
@@ -83,6 +82,7 @@ fn primary_reader_routes_dialog_guard_denial_and_keeps_link_healthy() {
     use keld_ipc::link::{AppLinkDeadlines as _, read_frame, write_frame};
     use std::time::Duration;
 
+    let channel = keld_ipc::channel_table::DIALOG.id();
     let (source, _source_wake, _temp) = with_manifest(r#"{"app":{"system":[]}}"#);
     let snapshot = app::GuardSnapshot::prepare(source.verified.clone())
         .expect("prepare the existing immutable Guard snapshot");
