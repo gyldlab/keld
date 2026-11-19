@@ -29,6 +29,7 @@ impl<T> NativePosition<T> {
     }
     /// Scoped read of this same retained operation. Nothing can borrow its body
     /// after the closure; an in-call position is never observed as empty.
+    #[cfg(test)]
     pub(super) fn observe<R>(&self, read: impl FnOnce(Option<&T>) -> R) -> Result<R, WvError> {
         let owned = self.custody.replace(Custody::NativeEntry);
         if matches!(&owned, Custody::NativeEntry) {
