@@ -82,7 +82,8 @@ existing contracts remain the source of truth, including bounds and typed refusa
 - **Negative control:**
   - **Single fault:** Allow a reopened preload leaf to bypass the selected digest witness.
   - **At-risk precondition:** A source is changed after qualification but before construction.
-  - **Expected RED:** The existing changed-source and wrong-digest oracles reject construction.
+  - **Expected RED:** The changed-source test fails if construction proceeds. The separate
+    wrong-digest test must still verify refusal.
 
 ### AC-4: a stale reply cannot enter the successor document
 
@@ -99,14 +100,16 @@ existing contracts remain the source of truth, including bounds and typed refusa
 ### AC-5: missing or forged lifecycle evidence cannot admit success
 
 - **Given:** A current native source, bind receipt and role lifecycle own admission.
-- **When:** A bind receipt is missing, late, forged or duplicated, or a role fails.
+- **When:** A bind receipt is missing, late, forged or duplicated, a source
+  fails, a role crashes, or the window closes.
 - **Then:** Missing/late bind receipt, forged/duplicate receipt, source failure, role crash and
    window close end through existing typed failure/revocation and W2 cleanup. No success,
    replay credit or document is fabricated. A healthy successor still works.
 - **Negative control:**
   - **Single fault:** Admit a stale bind receipt as the current document's receipt.
   - **At-risk precondition:** A new document exists while an old receipt is still pending.
-  - **Expected RED:** The stale-bind and healthy-successor oracles detect false admission.
+  - **Expected RED:** The stale-bind test fails if admission succeeds. Verify healthy
+    successor behavior in a separate positive test.
 
 ### AC-6: genuine unchanged editor performs the ten XML workflows
 
@@ -118,7 +121,9 @@ existing contracts remain the source of truth, including bounds and typed refusa
 - **Negative control:**
   - **Single fault:** Remove the original selected preload from the test candidate.
   - **At-risk precondition:** The genuine first page loads and requires the preload.
-  - **Expected RED:** The first-inline or genuine XML workflow oracle fails.
+  - **Expected RED:** The first-inline test fails if the page does not observe the
+    selected preload. This does not replace native evidence for each of the ten
+    XML workflows, including dialogs and on-disk XML readback.
 
 ## 4. Design
 
