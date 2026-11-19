@@ -204,7 +204,12 @@ impl WebProfileSelection {
     }
 }
 
-fn validate_canonical_app_id(value: &str) -> Result<(), ProfileError> {
+/// Validates the canonical application identifier used by profile and package metadata.
+///
+/// # Errors
+/// Refuses an empty or overlong identifier, invalid separators or characters,
+/// and segments that do not start and end with a lowercase letter or digit.
+pub fn validate_canonical_app_id(value: &str) -> Result<(), ProfileError> {
     if value.is_empty() || value.len() > 255 || !value.is_ascii() {
         return Err(ProfileError::new(ProfileErrorKind::InvalidAppId));
     }

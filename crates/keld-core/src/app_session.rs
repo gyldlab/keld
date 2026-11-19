@@ -10,6 +10,8 @@ mod dialog_custody_contract;
 mod dialog_session;
 mod error;
 #[cfg(windows)]
+mod graph_contract;
+#[cfg(windows)]
 mod graph_document;
 #[cfg(any(windows, test))]
 mod graph_selection;
@@ -29,6 +31,13 @@ mod window_router;
 pub use self::error::HostAppError;
 #[cfg(all(test, any(target_os = "macos", windows)))]
 use self::error::startup_resource_snapshot;
+#[cfg(windows)]
+pub use self::graph_contract::{
+    AdmittedStageGraph, ApprovedGraphCaptureInput, WindowsDistributionQualification,
+    make_graph_leaf_from_retained_root, qualified_windows_distribution,
+    read_windows_bound_graph_from_retained_root, verify_provider_trees_from_retained_root,
+    windows_graph_target,
+};
 #[cfg(windows)]
 pub use self::graph_document::{GRAPH_FILE, MAX_GRAPH_BYTES, validate_stage_graph_shape};
 #[cfg(any(windows, test))]

@@ -8,7 +8,10 @@
 use serde::{Deserialize, Serialize};
 
 mod identity;
-pub use identity::{AppleStoreUuid, EphemeralProfile, ProfileIdentity, WebProfileSelection};
+pub use identity::{
+    AppleStoreUuid, EphemeralProfile, ProfileIdentity, WebProfileSelection,
+    validate_canonical_app_id,
+};
 use identity::{decode_lower_hex, encode_lower_hex};
 
 mod error;

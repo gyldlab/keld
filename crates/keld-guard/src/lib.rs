@@ -29,6 +29,15 @@ mod jsonc;
 mod manifest_profile;
 mod probe;
 mod unique_json;
+
+/// Parses a JSON document with unique object keys at all depths.
+///
+/// # Errors
+/// Refuses malformed JSON, duplicate object keys and trailing input.
+#[cfg(windows)]
+pub fn parse_unique_json(text: &str) -> Result<serde_json::Value, serde_json::Error> {
+    unique_json::parse(text)
+}
 pub mod verified_manifest;
 #[cfg(windows)]
 mod windows_authenticode;

@@ -884,7 +884,7 @@ fn validate_facade_root_member_token(
         && matches!(
             &token.kind,
             ConfigToken::Word(key) | ConfigToken::Text(key)
-                if matches!(key.as_str(), "initialWindow" | "renderer" | "auth" | "profile")
+                if matches!(key.as_str(), "initialWindow" | "renderer" | "rendererSource" | "auth" | "profile")
         )
     {
         return Err(auth_config_error(

@@ -93,6 +93,11 @@ impl SelectedRendererSource {
     pub fn preload_sha256(&self) -> [u8; 32] {
         self.preload_sha256
     }
+
+    #[cfg(windows)]
+    pub(super) fn full_entry(&self) -> PathBuf {
+        self.root.join(&self.entry)
+    }
 }
 
 /// Apply the single GH499 component/length grammar at both CLI capture and

@@ -1,7 +1,7 @@
 //! Shared graph-v1 shape and path admission. Filesystem authority is separate.
 
 use super::boot_contract::{decode_digest_for, deserialize_object};
-use super::graph_selection::relative_path;
+use super::graph_selection::{SelectedRendererSource, relative_path};
 use super::{HostAppError, target_error};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -11,6 +11,8 @@ pub const GRAPH_FILE: &str = "keld.stage-graph.json";
 /// Maximum serialized graph length.
 pub const MAX_GRAPH_BYTES: usize = 8 * 1024 * 1024;
 pub(super) const MAX_FILES: usize = 32_768;
+pub(super) const MAX_ENTRIES: usize = 65_536;
+pub(super) const MAX_SELECTED_PRELOAD_BYTES: usize = 512 * 1024;
 pub(super) const GRAPH_SCHEMA: &str = "keld.stage.graph/v1";
 const RESERVED_GRAPH_ROOTS: [&str; 5] = [
     "keld-host",
@@ -136,6 +138,49 @@ pub(super) fn validate_graph_files(files: &[GraphFile]) -> Result<(), HostAppErr
 /// Refuses malformed, oversized, incomplete, unordered, or colliding graph data.
 pub fn validate_stage_graph_shape(bytes: &[u8]) -> Result<(), HostAppError> {
     validate_graph_shape(bytes).map(|_| ())
+}
+
+pub(super) fn verify_selected_rows(
+    graph: &GraphDocument,
+    selected: &SelectedRendererSource,
+) -> Result<(), HostAppError> {
+    let root = selected
+        .root()
+        .to_str()
+        .ok_or_else(|| graph_error("selected entry", "non UTF-8 root"))?;
+    let relative = selected
+        .entry()
+        .to_str()
+        .ok_or_else(|| graph_error("selected entry", "non UTF-8 entry"))?;
+    let selected_entry = format!("{root}/{relative}");
+    if graph
+        .files
+        .binary_search_by(|row| row.path.as_str().cmp(&selected_entry))
+        .is_err()
+    {
+        return Err(graph_error(
+            "selected entry",
+            "missing from the admitted graph",
+        ));
+    }
+    let preload = selected
+        .preload_path()
+        .to_str()
+        .ok_or_else(|| graph_error("selected preload", "non UTF-8 path"))?;
+    let preload_index = graph
+        .files
+        .binary_search_by(|row| row.path.as_str().cmp(preload))
+        .map_err(|_| graph_error("selected preload", "missing from the admitted graph"))?;
+    let row = &graph.files[preload_index];
+    if row.size > MAX_SELECTED_PRELOAD_BYTES as u64
+        || parse_sha(&row.sha256)? != selected.preload_sha256()
+    {
+        return Err(graph_error(
+            "selected preload",
+            "size or digest differs from boot pin",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(all(test, windows))]

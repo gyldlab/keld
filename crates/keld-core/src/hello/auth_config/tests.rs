@@ -1,6 +1,28 @@
 use super::auth_configuration_from_config_ts;
 
 #[test]
+fn renderer_source_presence_uses_the_existing_exported_root_scanner() {
+    use super::renderer_source_declared_from_config_ts as declared;
+    assert_eq!(
+        declared("export default {rendererSource:{root:'web',entry:'index.html'}}"),
+        Ok(true)
+    );
+    assert_eq!(
+        declared("export default {nested:{rendererSource:{}},name:'rendererSource'}"),
+        Ok(false)
+    );
+    for invalid in [
+        "export default {rendererSource:{},rendererSource:{}}",
+        "export default {...dynamic}",
+        "export default {async rendererSource(){return {}}}",
+        "export default {get rendererSource(){return {}}}",
+        "export default {['rendererSource']:{}}",
+    ] {
+        assert!(declared(invalid).is_err(), "{invalid}");
+    }
+}
+
+#[test]
 fn static_auth_literal_preserves_credentials_and_redirect() {
     let config = auth_configuration_from_config_ts(
         r#"
