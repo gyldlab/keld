@@ -187,7 +187,44 @@ pub(crate) struct TaskLedger {
     retained_bytes: usize,
 }
 
+/// Read-only scalars from the existing ticket; no reservation or release authority.
+#[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+pub(crate) struct TaskObservation {
+    phase: Phase,
+    pub(crate) worker_active: bool,
+    pub(crate) queued_read: bool,
+    pub(crate) delivery_active: bool,
+    pub(crate) retained_bytes: usize,
+    pub(crate) ledger_retained_bytes: usize,
+    pub(crate) ledger_tasks: usize,
+}
+
+#[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+impl TaskObservation {
+    pub(crate) const fn stopped(&self) -> bool {
+        matches!(self.phase, Phase::Stopped)
+    }
+
+    pub(crate) const fn terminal(&self) -> bool {
+        matches!(self.phase, Phase::Terminal)
+    }
+}
+
 impl TaskLedger {
+    #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+    pub(crate) fn observe_ticket(&self, ticket: TaskTicket) -> Option<TaskObservation> {
+        let task = self.current(ticket).ok()?;
+        Some(TaskObservation {
+            phase: task.phase,
+            worker_active: task.worker_active,
+            queued_read: task.queued_read,
+            delivery_active: task.delivery_active,
+            retained_bytes: task.retained_bytes,
+            ledger_retained_bytes: self.retained_bytes,
+            ledger_tasks: self.tasks.len(),
+        })
+    }
+
     pub(crate) fn new(limits: IntakeLimits) -> Self {
         Self {
             limits,

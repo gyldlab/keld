@@ -112,6 +112,133 @@ impl AdmittedWebAppSource {
     }
 }
 
+/// Immutable actual native URL or source-qualified native origin metadata.
+/// Explicit aliases share the allocation and retain source-wide byte credit.
+pub(crate) struct NativeNavigationUrl {
+    allocation: Arc<NavigationUrlAllocation>,
+    _alias_credit: Option<crate::resource_intake::RetainedByteCredit>,
+}
+
+struct NavigationUrlAllocation {
+    text: String,
+    credit: crate::resource_intake::RetainedByteCredit,
+}
+
+impl NativeNavigationUrl {
+    /// Borrow the qualified native metadata without allocating or releasing credit.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.allocation.text
+    }
+
+    /// Observe whether two credited carriers retain the same URL allocation.
+    /// This is storage identity only: it does not establish source authority,
+    /// native document liveness, or permission to publish for a current role.
+    #[must_use]
+    pub fn same_allocation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.allocation, &other.allocation)
+    }
+
+    /// Observe the existing URL allocation's actual source-account charge.
+    /// This is storage custody only, never source/document/route authority.
+    #[cfg(windows)]
+    pub(crate) fn charged_to(&self, account: &Arc<AtomicUsize>) -> bool {
+        self.allocation.credit.covers(account, 1)
+    }
+
+    /// Admit another shared URL alias against the same source budget.
+    /// The extra queue/event slot stays charged until this alias is dropped.
+    ///
+    /// # Errors
+    /// Refuses a full shared retained-byte account before creating an alias.
+    pub fn try_clone(&self) -> Result<Self, crate::engine::NativeNavigationRefusal> {
+        let credit = self
+            .allocation
+            .credit
+            .reserve_more(navigation_url_slot_charge())
+            .map_err(|_| crate::engine::NativeNavigationRefusal::RetainedByteLimit)?;
+        Ok(Self {
+            allocation: Arc::clone(&self.allocation),
+            _alias_credit: Some(credit),
+        })
+    }
+
+    // Native URL strings and qualified native-origin tuples share one bounded
+    // formatting/reservation owner. The caller supplies native UTF16 units.
+    pub(crate) fn capture_bounded(
+        actual: impl std::fmt::Display,
+        units: usize,
+        account: &Arc<AtomicUsize>,
+    ) -> Result<Self, crate::resource_intake::IntakeReject> {
+        use crate::resource_intake::RetainedByteCredit;
+        use crate::resource_intake::{IntakeReject, ORIGINAL_WEBAPP_LIMITS, worst_case_charge};
+        use std::fmt::Write as _;
+        if units == 0 || units > ORIGINAL_WEBAPP_LIMITS.max_url_utf16_units {
+            return Err(IntakeReject::MetadataLimit);
+        }
+        let buffer = units
+            .checked_mul(4)
+            .ok_or(IntakeReject::RetainedByteLimit)?;
+        let copies = units
+            .checked_mul(2)
+            .ok_or(IntakeReject::RetainedByteLimit)?;
+        let overhead = std::mem::size_of::<NavigationUrlAllocation>()
+            .checked_add(4 * std::mem::size_of::<usize>())
+            .and_then(|bytes| bytes.checked_add(navigation_url_slot_charge()))
+            .ok_or(IntakeReject::RetainedByteLimit)?;
+        let charged = worst_case_charge(0, copies, overhead, ORIGINAL_WEBAPP_LIMITS)?;
+        // Existing source-wide account, reserved before any owned UTF8 copy.
+        let credit = RetainedByteCredit::reserve(account, charged)?;
+        let mut text = String::new();
+        text.try_reserve_exact(buffer)
+            .map_err(|_| IntakeReject::RetainedByteLimit)?;
+        let mut writer = BoundedNavigationUrl {
+            text,
+            limit: buffer,
+        };
+        write!(&mut writer, "{actual}").map_err(|_| IntakeReject::MetadataLimit)?;
+        Ok(Self {
+            allocation: Arc::new(NavigationUrlAllocation {
+                text: writer.text,
+                credit,
+            }),
+            _alias_credit: None,
+        })
+    }
+}
+
+fn navigation_url_slot_charge() -> usize {
+    std::mem::size_of::<crate::engine::AppWindowEvent>() + 4 * std::mem::size_of::<usize>()
+}
+
+// The precharged buffer may never grow through a formatting fallback.
+struct BoundedNavigationUrl {
+    text: String,
+    limit: usize,
+}
+impl std::fmt::Write for BoundedNavigationUrl {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        if value.len() > self.limit.saturating_sub(self.text.len()) {
+            return Err(std::fmt::Error);
+        }
+        self.text.push_str(value);
+        Ok(())
+    }
+}
+impl std::fmt::Debug for NativeNavigationUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("NativeNavigationUrl")
+            .field(&self.as_str())
+            .finish()
+    }
+}
+impl PartialEq for NativeNavigationUrl {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+impl Eq for NativeNavigationUrl {}
+
 pub(crate) fn valid_response_policy(policy: &VerifiedResourceResponsePolicy) -> bool {
     !policy.response_header().trim().is_empty()
         && policy.response_header().len() <= 4096
