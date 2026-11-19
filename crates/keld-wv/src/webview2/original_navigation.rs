@@ -167,10 +167,15 @@ impl OriginalNavigation {
         let deadline = now
             .checked_add(crate::INITIAL_MILESTONE_DEADLINE)
             .ok_or(NativeNavigationRefusal::Unavailable)?;
-        let attempt = self
-            .document
-            .begin_host_load(self.source.source_id())
-            .map_err(|_| NativeNavigationRefusal::Unavailable)?;
+        let attempt = match self.document.begin_host_load(self.source.source_id()) {
+            Ok(attempt) => attempt,
+            Err(crate::native_document::DocumentFailure::Exhausted) => {
+                self.active = None;
+                self.page_pending = None;
+                return Err(NativeNavigationRefusal::Unavailable);
+            }
+            Err(_) => return Err(NativeNavigationRefusal::Unavailable),
+        };
         if !prepared.admit_native_call() {
             self.document.fail_attempt(attempt);
             self.active = None;
@@ -350,17 +355,21 @@ impl OriginalNavigation {
         &mut self,
         native_id: NonZeroU64,
         success: bool,
+        now: Instant,
     ) -> Option<Result<NativeCommittedStamp, &'static str>> {
         let active = self.active.as_mut()?;
-        if active.native_id != Some(native_id) {
+        if active.native_id != Some(native_id) || active.finish_observed {
             return None;
+        }
+        if now >= active.deadline {
+            self.fail_active();
+            return Some(Err(
+                "Host native navigation finished after its original deadline",
+            ));
         }
         if !success {
             self.fail_active();
             return Some(Err("Host native navigation failed"));
-        }
-        if active.finish_observed {
-            return None;
         }
         let result = self
             .document
@@ -375,7 +384,7 @@ impl OriginalNavigation {
         Some(result)
     }
 
-    pub(super) fn expire_uncommitted(&mut self, now: Instant) -> bool {
+    pub(super) fn expire_unfinished(&mut self, now: Instant) -> bool {
         if self.document.renderer_exited()
             || self.next_deadline().is_some_and(|deadline| now >= deadline)
         {
@@ -414,10 +423,10 @@ impl OriginalNavigation {
     }
 
     pub(super) fn next_deadline(&self) -> Option<Instant> {
-        if self.document.current_stamp().is_some() {
-            return None;
-        }
-        self.active.as_ref().map(|active| active.deadline)
+        self.active
+            .as_ref()
+            .filter(|active| !active.finish_observed)
+            .map(|active| active.deadline)
     }
 
     /// Borrow the sole document owner; no parallel owner is minted for the bridge.

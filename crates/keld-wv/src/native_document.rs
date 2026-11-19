@@ -275,6 +275,11 @@ impl NativeDocumentOwner {
         }
     }
 
+    #[cfg(all(test, windows))]
+    pub(crate) fn exhaust_next_attempt_for_test(&mut self) {
+        self.next_attempt = u64::MAX;
+    }
+
     /// Host-qualified full-document load: revoke the old commit BEFORE native
     /// engine loading begins. Checked increment belongs only to this owner.
     pub(crate) fn begin_host_load(

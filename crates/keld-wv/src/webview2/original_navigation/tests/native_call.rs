@@ -244,7 +244,10 @@ fn successful_qualification_records_once_and_never_renews_startup_bound() {
         .unwrap()
         .expect("first commit publishes once");
     assert_eq!(h.navigation.qualified_at(), Some(qualified));
-    assert_eq!(h.navigation.next_deadline(), None);
+    assert_eq!(
+        h.navigation.next_deadline(),
+        Some(h.now + crate::INITIAL_MILESTONE_DEADLINE)
+    );
     let duplicate = qualified + std::time::Duration::from_secs(3);
     assert_eq!(
         h.navigation

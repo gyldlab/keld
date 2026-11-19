@@ -295,7 +295,7 @@ fn install_completed(
                             state.host_context(),
                             attempt,
                             previous,
-                            state.navigation_completed(id, success.as_bool()),
+                            state.navigation_completed(id, success.as_bool(), Instant::now()),
                         )
                     };
                     match result {

@@ -110,7 +110,7 @@ fn native_id_nonce_selected_response_and_content_commit_are_all_required() {
     assert!(document.belongs_to_source(&h.fixture.source_arc()));
     assert!(document.is_current());
     assert_eq!(
-        h.navigation.navigation_completed(id(41), true),
+        h.navigation.navigation_completed(id(41), true, h.now),
         Some(Ok(stamp))
     );
 }
@@ -172,7 +172,7 @@ fn same_uri_child_cannot_preempt_or_replace_real_top_level_response() {
             .expect("first commit publishes once");
         assert!(h.navigation.current_document().unwrap().is_current());
         assert_eq!(
-            h.navigation.navigation_completed(id(50), true),
+            h.navigation.navigation_completed(id(50), true, h.now),
             Some(Ok(committed))
         );
     }
@@ -227,7 +227,7 @@ fn same_uri_prior_host_attempt_cannot_satisfy_successor_nonce_or_lease() {
                 .expect("fresh Host request must still qualify")
                 .expect("first commit publishes once");
             assert_eq!(
-                h.navigation.navigation_completed(id(61), true),
+                h.navigation.navigation_completed(id(61), true, h.now),
                 Some(Ok(committed))
             );
         }
@@ -386,7 +386,10 @@ fn b_revokes_a_and_late_a_response_or_failure_cannot_borrow_b() {
         .expect("first commit publishes once");
     assert!(!h.navigation.document_served(a_ticket, a_resource, h.now));
     assert!(!h.navigation.fail_attempt(a_resource.attempt));
-    assert_eq!(h.navigation.navigation_completed(id(52), false), None);
+    assert_eq!(
+        h.navigation.navigation_completed(id(52), false, h.now),
+        None
+    );
     assert_eq!(h.navigation.current_document().unwrap().stamp().0, b_stamp);
     assert!(!h.navigation.begin_post(&a));
 }
@@ -457,14 +460,70 @@ fn matched_commit_and_finish_each_publish_once_per_attempt() {
             Ok(None)
         );
         assert_eq!(
-            h.navigation.navigation_completed(id(native), true),
+            h.navigation.navigation_completed(id(native), true, h.now),
             Some(Ok(stamp))
         );
-        assert_eq!(h.navigation.navigation_completed(id(native), true), None);
+        assert_eq!(
+            h.navigation.navigation_completed(id(native), true, h.now),
+            None
+        );
         assert_eq!(
             h.navigation.content_loading(id(native), &uri, false, h.now),
             Ok(None)
         );
         assert_eq!(h.navigation.current_document().unwrap().stamp().0, stamp);
     }
+}
+
+#[test]
+fn committed_original_without_finish_expires_on_its_initial_deadline() {
+    let mut h = Harness::new();
+    let (_, document) = h.committed(91);
+    let deadline = h.now + crate::INITIAL_MILESTONE_DEADLINE;
+    assert_eq!(h.navigation.next_deadline(), Some(deadline));
+    assert!(
+        !h.navigation
+            .expire_unfinished(deadline - std::time::Duration::from_nanos(1))
+    );
+    assert!(document.is_current());
+    assert!(h.navigation.expire_unfinished(deadline));
+    assert!(!document.is_current());
+    assert!(h.navigation.next_deadline().is_none());
+    assert_eq!(
+        h.navigation.navigation_completed(id(91), true, deadline),
+        None
+    );
+}
+
+#[test]
+fn completion_at_the_deadline_is_failure_and_a_timely_finish_never_expires() {
+    let mut late = Harness::new();
+    let (_, expired) = late.committed(92);
+    let deadline = late.now + crate::INITIAL_MILESTONE_DEADLINE;
+    assert!(matches!(
+        late.navigation.navigation_completed(id(92), true, deadline),
+        Some(Err(_))
+    ));
+    assert!(!expired.is_current());
+
+    let mut timely = Harness::new();
+    let (_, document) = timely.committed(93);
+    let deadline = timely.now + crate::INITIAL_MILESTONE_DEADLINE;
+    assert!(matches!(
+        timely.navigation.navigation_completed(
+            id(93),
+            true,
+            deadline - std::time::Duration::from_nanos(1)
+        ),
+        Some(Ok(_))
+    ));
+    assert_eq!(timely.navigation.next_deadline(), None);
+    assert!(!timely.navigation.expire_unfinished(deadline));
+    assert_eq!(
+        timely
+            .navigation
+            .navigation_completed(id(93), false, deadline),
+        None
+    );
+    assert!(document.is_current());
 }

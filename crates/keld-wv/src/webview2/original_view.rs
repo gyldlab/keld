@@ -17,10 +17,9 @@ use super::original_resource::{ResourceSession, ResourceView};
 use super::{ICoreWebView2Environment, View, WindowsLoopEvent};
 use crate::preload_image::AppPreloadImage;
 use crate::renderer_bridge::{RendererBridgeEndpoint, RendererBridgeOutcome, RendererRoleWitness};
-use crate::renderer_contract::NativeAttemptObservation;
 use crate::resource_intake::RetainedByteCredit;
 use crate::resource_source::AdmittedWebAppSource;
-use crate::{NativeNavigationContext, OriginalNavigationFact, WebviewId, WvError};
+use crate::{OriginalNavigationFact, WebviewId, WvError};
 
 mod lifecycle;
 mod load;
@@ -34,7 +33,7 @@ pub(super) struct OriginalView {
     installer: Option<PreloadInstaller>,
     call: Option<NativeLoadCall>,
     observer: Option<Observation>,
-    observed_load_failure: Rc<Cell<Option<(NativeNavigationContext, NativeAttemptObservation)>>>,
+    inflight_load: Rc<Cell<Option<load::InFlightLoad>>>,
     bridge: RefCell<Option<Rc<OriginalBridge>>>,
     endpoint: Option<RendererBridgeEndpoint>,
     image: Arc<AppPreloadImage>,
@@ -89,7 +88,7 @@ impl OriginalView {
             installer: None,
             call: None,
             observer: None,
-            observed_load_failure: Rc::new(Cell::new(None)),
+            inflight_load: Rc::new(Cell::new(None)),
             bridge: RefCell::new(None),
             endpoint: Some(inputs.endpoint),
             image: inputs.image,
@@ -138,14 +137,13 @@ impl OriginalView {
         )?);
 
         resource.install_on_ui()?;
-        let observed_failure = Rc::clone(&self.observed_load_failure);
+        let inflight_load = Rc::clone(&self.inflight_load);
         self.observer = Some(Rc::clone(&observer));
         callbacks
-            .install_on_ui(Rc::new(move |context, fact| {
-                if let (Some(context), OriginalNavigationFact::Failed { attempt, .. }) =
-                    (context, &fact)
-                {
-                    observed_failure.set(Some((context, *attempt)));
+            .install_on_ui(Rc::new(move |context, mut fact| {
+                if let Some(mut inflight) = inflight_load.get() {
+                    inflight.observe_failure(context, &mut fact);
+                    inflight_load.set(Some(inflight));
                 }
                 observer(context, fact);
             }))
