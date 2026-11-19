@@ -1,6 +1,11 @@
 /** GH481 S1 synchronous desktop reads from the selected role's local mirror. */
 import { getDesktopSnapshot } from "@keld/api/internal/app";
-import { linkError, windowsDesktopSnapshotSelected } from "@keld/kipc";
+import {
+  linkError,
+  stateDefineProperty,
+  stateFreeze,
+  windowsDesktopSnapshotSelected,
+} from "@keld/kipc";
 
 /** Electron logical desktop coordinates. */
 export interface DisplayRectangle {
@@ -30,27 +35,39 @@ function copyDisplay(
 }
 
 export const screen = windowsDesktopSnapshotSelected
-  ? Object.freeze({
+  ? stateFreeze({
       getAllDisplays(): Display[] {
-        return getDesktopSnapshot().displays.map(copyDisplay);
+        const { displays } = getDesktopSnapshot();
+        const copies: Display[] = [];
+        for (let index = 0; index < displays.length; index += 1) {
+          // Do not call application-replaceable array methods or indexed setters
+          // with the retained mirror or its copies.
+          stateDefineProperty(copies, index, {
+            __proto__: null,
+            value: copyDisplay(displays[index]!),
+            enumerable: true,
+            configurable: true,
+            writable: true,
+          } as PropertyDescriptor);
+        }
+        return copies;
       },
       getPrimaryDisplay(): Display {
         const snapshot = getDesktopSnapshot();
-        const primary = snapshot.displays.find(
-          (display) => display.id === snapshot.primary_id,
+        for (let index = 0; index < snapshot.displays.length; index += 1) {
+          const display = snapshot.displays[index]!;
+          if (display.id === snapshot.primary_id) return copyDisplay(display);
+        }
+        throw linkError(
+          "KELD-IPC-005",
+          "Admitted desktop primary identity is missing.",
         );
-        if (primary === undefined)
-          throw linkError(
-            "KELD-IPC-005",
-            "Admitted desktop primary identity is missing.",
-          );
-        return copyDisplay(primary);
       },
     })
   : undefined;
 
 export const nativeTheme = windowsDesktopSnapshotSelected
-  ? Object.freeze({
+  ? stateFreeze({
       get shouldUseDarkColors(): boolean {
         return getDesktopSnapshot().should_use_dark_colors;
       },

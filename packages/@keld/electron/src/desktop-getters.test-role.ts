@@ -73,6 +73,58 @@ if (mode === "unselected") {
   assert.equal(screen.getPrimaryDisplay().workArea.y, 24);
   assert.equal(nativeTheme.shouldUseDarkColors, false);
   assert.equal(Reflect.set(nativeTheme, "shouldUseDarkColors", true), false);
+  assert.ok(Object.isFrozen(nativeTheme));
+  const appearance = Object.getOwnPropertyDescriptor(
+    nativeTheme,
+    "shouldUseDarkColors",
+  );
+  assert.equal(appearance?.set, undefined);
+  assert.equal(appearance?.configurable, false);
+
+  if (mode === "poisoned-array-methods") {
+    const map = Object.getOwnPropertyDescriptor(Array.prototype, "map")!;
+    const find = Object.getOwnPropertyDescriptor(Array.prototype, "find")!;
+    const first = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+    let hooks = 0;
+    let primaryCopy: ReturnType<typeof screen.getPrimaryDisplay>;
+    let allCopies: ReturnType<typeof screen.getAllDisplays>;
+    try {
+      Object.defineProperties(Array.prototype, {
+        map: {
+          value() {
+            hooks += 1;
+            return [];
+          },
+        },
+        find: {
+          value() {
+            hooks += 1;
+            return primary;
+          },
+        },
+        0: {
+          configurable: true,
+          set() {
+            hooks += 1;
+          },
+        },
+      });
+      primaryCopy = screen.getPrimaryDisplay();
+      allCopies = screen.getAllDisplays();
+    } finally {
+      Object.defineProperty(Array.prototype, "map", map);
+      Object.defineProperty(Array.prototype, "find", find);
+      if (first) Object.defineProperty(Array.prototype, "0", first);
+      else Reflect.deleteProperty(Array.prototype, "0");
+    }
+    assert.equal(hooks, 0, "array hooks must not see the retained snapshot");
+    assert.equal(primaryCopy.workArea.y, 24);
+    assert.deepEqual(allCopies, [primaryCopy]);
+    assert.notEqual(allCopies[0]!.bounds, primaryCopy.bounds);
+    allCopies[0]!.workArea.y = 222;
+    primaryCopy.workArea.y = 333;
+    assert.equal(screen.getAllDisplays()[0]!.workArea.y, 24);
+  }
   if (mode === "invalidated") {
     windows.get(transport.WINDOW_CHANNEL)!(Uint8Array.of(7, 0xad, 2, 0));
     for (const read of [

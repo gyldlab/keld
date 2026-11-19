@@ -3,7 +3,12 @@ import { join } from "node:path";
 import { test } from "bun:test";
 import { APP_LINK_IO_DEADLINE_MS, withIoDeadline } from "@keld/kipc";
 
-for (const mode of ["selected", "unselected", "invalidated"]) {
+for (const mode of [
+  "selected",
+  "unselected",
+  "invalidated",
+  "poisoned-array-methods",
+]) {
   test(`Windows first-ready desktop getters: ${mode}`, async () => {
     const child = Bun.spawn(
       [
