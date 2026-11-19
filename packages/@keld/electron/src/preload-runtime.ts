@@ -668,6 +668,18 @@ export function installApp(
       );
       return;
     }
+    if (
+      !ready &&
+      (data.method === "request" || data.method === "sendMessage")
+    ) {
+      // The isolated original Function must not enter without its admitted
+      // Bun route. Native might refuse before invoking the app-world handler,
+      // leaving no terminal callback to release this page's snapshot.
+      dom.dispatchEvent(
+        new CustomEvent(PAGE_REFUSAL_EVENT, { detail: data.call }),
+      );
+      return;
+    }
     if (!credential || !registry || !processPublished || !nativeRegistered) {
       console.error(
         "KELD-COMPAT-103: early page request refused without retention",

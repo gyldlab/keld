@@ -136,6 +136,53 @@ function fixture(seed?: string, bound = true, routeReady = true) {
 }
 
 describe("original preload runtime only", () => {
+  test("page request snapshots are released before native when the registered app route is not ready", () => {
+    const f = fixture(undefined, true, false);
+    try {
+      // The page may be ready while native Bun registration/route is not.
+      // Native need not invoke the original app handler for these requests;
+      // without this early page refusal the 31st two-callback call fails.
+      const pageApi = f.page.electron as Record<
+        string,
+        (...args: unknown[]) => void
+      >;
+      for (let i = 0; i < 80; i++)
+        pageApi.request(
+          { action: "isFullscreen" },
+          () => {},
+          () => {},
+        );
+      pageApi.sendMessage("telemetry", "not-ready");
+      expect(f.pageMessages).toHaveLength(0);
+      expect(f.sends()).toHaveLength(0);
+
+      // Pure local listener registration has no native DATA send dependency.
+      const received: unknown[] = [];
+      f.call("registerMsgListener", "local", (value: unknown) => {
+        received.push(value);
+      });
+      expect(f.pageMessages).toHaveLength(1);
+      expect(f.sends()).toHaveLength(0);
+
+      (f.app.__keldAppRouteState as (document: string, ready: boolean) => void)(
+        token,
+        true,
+      );
+      expect(f.event("local", ["ready"]).disposition).toEqual({
+        status: "consumed",
+      });
+      expect(received).toEqual(["ready"]);
+      f.call(
+        "request",
+        { action: "isFullscreen" },
+        () => {},
+        () => {},
+      );
+      expect(f.sends()).toHaveLength(1);
+    } finally {
+      f.restore();
+    }
+  });
   test("unavailable current event is explicitly refused and only current readiness permits listener entry", () => {
     const f = fixture(undefined, true, false);
     try {
