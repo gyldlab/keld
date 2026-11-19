@@ -428,3 +428,57 @@ fn provider_preflight_uses_independent_pinned_subtree_receipts() {
         "{error}"
     );
 }
+
+#[test]
+fn schema8_boot_files_require_retained_stage_and_compiled_provider_identity() {
+    use crate::app_session::{
+        BOOT_FILE, PERMISSIONS_FILE, WindowsBootMode, validate_windows_boot_files,
+        validate_windows_boot_files_from,
+    };
+
+    const POLICY: &[u8] = br#"{"profile":"legacy"}"#;
+    let fixture = fixture_with_entry();
+    let graph = fixture.compile().expect("valid inert graph");
+    Fixture::write(&fixture.root, GRAPH_FILE, &graph);
+    Fixture::write(&fixture.root, PERMISSIONS_FILE, POLICY);
+    let boot = serde_json::json!({
+        "schema": 8,
+        "name": "Editor",
+        "entry": MAIN,
+        "permissions":{
+            "file":PERMISSIONS_FILE,
+            "content_sha256":format!("sha256:{:x}", Sha256::digest(POLICY)),
+        },
+        "graph":{
+            "file":GRAPH_FILE,
+            "content_sha256":format!("sha256:{:x}", Sha256::digest(&graph)),
+        },
+        "rendererSource":{"root":"client/assets","entry":"nested/editor.html"},
+        "preload":{"path": PRELOAD,"content_sha256":format!("sha256:{:x}", Sha256::digest(PRELOAD_BYTES))},
+    });
+    Fixture::write(&fixture.root, BOOT_FILE, boot.to_string().as_bytes());
+    let Err(path_only) =
+        validate_windows_boot_files(fixture.root.clone(), WindowsBootMode::DevStage)
+    else {
+        panic!("a pathname is not source custody");
+    };
+    assert!(
+        path_only
+            .to_string()
+            .contains("requires a retained owner-private stage directory")
+    );
+
+    let Err(retained) = validate_windows_boot_files_from(
+        fixture.root.clone(),
+        WindowsBootMode::DevStage,
+        Some(&fixture.held),
+    ) else {
+        panic!("fixture is unqualified");
+    };
+    let message = retained.to_string();
+    assert!(
+        message.contains("external provider identity differs")
+            || message.contains("no independently qualified Windows target/provider"),
+        "{message}"
+    );
+}

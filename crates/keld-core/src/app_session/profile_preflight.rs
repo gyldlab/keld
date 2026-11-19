@@ -22,6 +22,22 @@ pub(crate) fn reject_diagnostic_profile(
     Ok(())
 }
 
+#[cfg(windows)]
+pub(super) fn validate_windows_graph_profile(
+    schema: u8,
+    verified: &keld_guard::verified_manifest::VerifiedManifest,
+) -> Result<ProfileState, HostAppError> {
+    if schema != super::boot_contract::WINDOWS_GRAPH_BOOT_SCHEMA
+        || verified.manifest().declared_profile() != Some(keld_guard::DeclaredProfile::Legacy)
+    {
+        return Err(super::boot_error(
+            "Windows development graph boot requires schema 8 and an explicit Legacy permission manifest",
+            "Use the qualified development graph and its explicit Legacy policy.",
+        ));
+    }
+    keld_guard::admit_uncontained(ProfileState::Legacy).map_err(HostAppError::admission)
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 pub(super) fn validate_profile(
     schema: u8,

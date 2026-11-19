@@ -22,6 +22,7 @@ use super::{HostAppError, read_bounded, target_error};
 
 mod windows;
 mod windows_boot;
+pub(super) use windows::open_relative_file as open_windows_boot_member;
 use windows::{
     ObjectMetadata, RetainedRoot, borrow_retained_root, census_directory, file_metadata,
     missing_configuration_reference, open_relative_file, path_metadata, root_identity,

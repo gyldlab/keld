@@ -456,6 +456,8 @@ enum ValidatedInitialWindow {
 enum WindowsBootMode {
     /// A valid dev lease routed boot to the owner-private stage validator.
     DevStage,
+    /// BOOT8 validated against the retained owner-private development root.
+    DevelopmentGraph(Box<WindowsGraphSelection>),
     /// KEL-53 selected the installed package that holds the KEL-135-verified host.
     Installed {
         /// The identity verified at boot; it alone selects the persistent profile.
@@ -465,6 +467,15 @@ enum WindowsBootMode {
         /// far larger than the dev variant.
         active: Box<keld_update::ActivePackageSelection>,
     },
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
+struct WindowsGraphSelection {
+    _graph: Arc<AdmittedStageGraph>,
+    _version: Option<String>,
+    _single_instance: Option<crate::SingleInstanceDeclaration>,
+    _application_name_for_user_agent: Option<keld_wv::ApplicationNameForUserAgent>,
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -1539,9 +1550,9 @@ fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppErro
             "root must be a real directory, not a file or reparse point",
         ));
     }
-    validate_windows_dev_stage_acl(&root)
+    let directory = retain_windows_dev_stage_root(&root)
         .map_err(|source| target_error("app root DACL", source.to_string()))?;
-    validate_windows_boot_files(root, WindowsBootMode::DevStage)
+    validate_windows_boot_files_from(root, WindowsBootMode::DevStage, Some(&directory))
 }
 
 /// Opens the strict descriptor and its fixed targets beneath `root`, the dev stage
@@ -1555,13 +1566,55 @@ fn validate_windows_boot_files(
     root: PathBuf,
     mode: WindowsBootMode,
 ) -> Result<ValidatedBootSelection, HostAppError> {
-    let boot_file = open_relative_file_windows(&root, Path::new(BOOT_FILE), "boot descriptor")?;
+    validate_windows_boot_files_from(root, mode, None)
+}
+
+#[cfg(windows)]
+fn validate_windows_boot_files_from(
+    root: PathBuf,
+    mode: WindowsBootMode,
+    directory: Option<&File>,
+) -> Result<ValidatedBootSelection, HostAppError> {
+    let open = |relative: &Path, phase: &'static str| match directory {
+        Some(held) => graph_contract::open_windows_boot_member(held, relative, phase),
+        None => open_relative_file_windows(&root, relative, phase),
+    };
+    let boot_file = open(Path::new(BOOT_FILE), "boot descriptor")?;
     let boot_bytes = read_bounded(boot_file, MAX_BOOT_BYTES, "boot descriptor")?;
     let parsed = parse_boot_bytes(&boot_bytes)?;
-    let entry_file = open_relative_file_windows(&root, &parsed.entry, "entry")?;
+    let mode = if let Some(selected) = parsed.windows_graph {
+        if !matches!(mode, WindowsBootMode::DevStage) {
+            return Err(boot_error(
+                "schema 8 is restricted to Windows development stages",
+                "Use the installed descriptor for an installed application.",
+            ));
+        }
+        let directory = directory.ok_or_else(|| {
+            boot_error(
+                "schema 8 requires a retained owner-private stage directory",
+                "Start the application from the qualified CLI development launcher.",
+            )
+        })?;
+        let graph = read_windows_bound_graph_from_retained_root(
+            &root,
+            directory,
+            selected.graph_sha256,
+            &parsed.entry,
+            &selected.source,
+        )?;
+        WindowsBootMode::DevelopmentGraph(Box::new(WindowsGraphSelection {
+            _graph: Arc::new(graph),
+            _version: selected.version,
+            _single_instance: selected.single_instance,
+            _application_name_for_user_agent: selected.application_name_for_user_agent,
+        }))
+    } else {
+        mode
+    };
+    let entry_file = open(&parsed.entry, "entry")?;
     let initial_window = match parsed.initial {
         InitialWindow::Renderer(renderer) => {
-            let renderer_file = open_relative_file_windows(&root, &renderer, "renderer")?;
+            let renderer_file = open(&renderer, "renderer")?;
             let html = read_target(renderer_file, "renderer")?;
             std::str::from_utf8(&html).map_err(|source| {
                 target_error("renderer", format!("HTML is not UTF-8: {source}"))
@@ -1570,8 +1623,7 @@ fn validate_windows_boot_files(
         }
         InitialWindow::None => ValidatedInitialWindow::None,
     };
-    let permissions_file =
-        open_relative_file_windows(&root, Path::new(PERMISSIONS_FILE), "permissions file")?;
+    let permissions_file = open(Path::new(PERMISSIONS_FILE), "permissions file")?;
     Ok(ValidatedBootSelection {
         schema: parsed.schema,
         app: AppBootSelection {
@@ -1601,6 +1653,11 @@ fn validate_windows_boot_files(
 /// full-control allow ACE.
 #[cfg(windows)]
 pub fn validate_windows_dev_stage_acl(root: &Path) -> io::Result<()> {
+    retain_windows_dev_stage_root(root).map(|_| ())
+}
+
+#[cfg(windows)]
+fn retain_windows_dev_stage_root(root: &Path) -> io::Result<File> {
     use std::os::windows::fs::OpenOptionsExt as _;
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -1611,7 +1668,8 @@ pub fn validate_windows_dev_stage_acl(root: &Path) -> io::Result<()> {
     options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
     options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
     let directory = options.open(root)?;
-    keld_guard::validate_windows_owner_private_directory(&directory)
+    keld_guard::validate_windows_owner_private_directory(&directory)?;
+    Ok(directory)
 }
 
 /// Prepared Windows dev-stage cleanup owner that survives the terminal CLI.
@@ -2107,7 +2165,14 @@ pub fn run_guarded(
         let display_path = app.root.join(PERMISSIONS_FILE);
         let verified = load_verified_manifest(permissions_file, display_path, permissions_digest)
             .map_err(HostAppError::manifest)?;
-        let profile = profile_preflight::validate_profile(schema, &verified, false)?;
+        let profile = match &app.mode {
+            WindowsBootMode::DevelopmentGraph(_) => {
+                profile_preflight::validate_windows_graph_profile(schema, &verified)?
+            }
+            WindowsBootMode::DevStage | WindowsBootMode::Installed { .. } => {
+                profile_preflight::validate_profile(schema, &verified, false)?
+            }
+        };
         if matches!(&app.mode, WindowsBootMode::Installed { .. })
             && profile == keld_guard::ProfileState::Legacy
         {
@@ -3696,6 +3761,7 @@ fn run_app_direct(
     #[cfg(windows)]
     let (installed_identity, _installed_package) = match mode {
         WindowsBootMode::DevStage => (None, None),
+        WindowsBootMode::DevelopmentGraph(_selection) => return Err(windows_graph_view_error()),
         WindowsBootMode::Installed { identity, active } => (Some(identity), Some(active)),
     };
     let html = match initial_window {
@@ -3785,6 +3851,14 @@ fn run_app_direct(
             }
         }
     }
+}
+
+#[cfg(windows)]
+fn windows_graph_view_error() -> HostAppError {
+    app_detail(
+        "Windows development graph startup",
+        "this Host build has no original-window resource owner",
+    )
 }
 
 /// One full application session: the Bun primary, the router, the window and its UI

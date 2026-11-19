@@ -7,6 +7,11 @@ use serde::{Deserialize, Deserializer};
 
 use super::{AuthConfiguration, DIGEST_PREFIX, HostAppError, MAX_BOOT_BYTES, PERMISSIONS_FILE};
 
+#[cfg(windows)]
+mod windows_graph;
+#[cfg(windows)]
+pub(super) use windows_graph::{WINDOWS_GRAPH_BOOT_SCHEMA, WindowsGraphBoot};
+
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -59,6 +64,8 @@ pub(super) struct ParsedBoot {
     pub(super) initial: InitialWindow,
     pub(super) permissions_digest: [u8; 32],
     pub(super) auth_configuration: AuthConfiguration,
+    #[cfg(windows)]
+    pub(super) windows_graph: Option<WindowsGraphBoot>,
 }
 
 /// Selects the exact compiled contract from window ownership and the sole manifest declaration.
@@ -131,6 +138,10 @@ pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError>
             "Write exactly one closed JSON boot object.",
         )
     })?;
+    #[cfg(windows)]
+    if probe.schema == WINDOWS_GRAPH_BOOT_SCHEMA {
+        return windows_graph::parse(text);
+    }
     let (name, entry, renderer, permissions, auth_configuration) = match probe.schema {
         1 | 3 => {
             let document: BootDocument = serde_json::from_str(text).map_err(|source| {
@@ -199,6 +210,8 @@ pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError>
         initial,
         permissions_digest,
         auth_configuration,
+        #[cfg(windows)]
+        windows_graph: None,
     })
 }
 
