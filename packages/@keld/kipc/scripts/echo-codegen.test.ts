@@ -35,6 +35,7 @@ const generationOutputs = [
   "packages/@keld/api/src/auth.generated.ts",
   "packages/@keld/kipc/src/transport.ts",
   "packages/@keld/api/src/dialog.generated.ts",
+  "packages/@keld/kipc/src/runtime-process.generated.ts",
 ];
 
 function withGeneratorCheckout(run: (root: string) => void): void {
@@ -69,6 +70,7 @@ function withGeneratorCheckout(run: (root: string) => void): void {
       ...generationOutputs,
       "packages/@keld/kipc/scripts/echo-codegen.ts",
       "crates/keld-ipc/src/echo.rs",
+      "crates/keld-ipc/src/lifecycle.rs",
       "crates/keld-ipc/src/channel_table.rs",
       "crates/keld-native/src/fs.rs",
       "crates/keld-native/src/auth/mod.rs",

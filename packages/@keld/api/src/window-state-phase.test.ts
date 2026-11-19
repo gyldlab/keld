@@ -144,6 +144,14 @@ console.log("PASS staged same canonical capture");
       join(repo, "packages/@keld/kipc/src/transport.ts"),
       join(stage, "kipc-transport.ts"),
     );
+    // Keep the generated metadata codec on this stage's one transport.
+    writeFileSync(
+      join(stage, "kipc-runtime-process.ts"),
+      readFileSync(
+        join(repo, "packages/@keld/kipc/src/runtime-process.generated.ts"),
+        "utf8",
+      ).replaceAll('"@keld/kipc"', '"./kipc-transport.ts"'),
+    );
     // run() fixes cwd to stage; use the same portable module specifier as the
     // staged imports instead of a platform-specific absolute filesystem path.
     const preload = await run([
@@ -169,10 +177,12 @@ console.log("PASS staged same canonical capture");
       if (!file.endsWith(".ts") || file.includes("test")) continue;
       writeFileSync(
         join(stage, file),
-        readFileSync(join(apiRoot, file), "utf8").replaceAll(
-          "@keld/kipc",
-          "./kipc-transport.ts",
-        ),
+        readFileSync(join(apiRoot, file), "utf8")
+          .replaceAll(
+            '"@keld/kipc/runtime-process-facts"',
+            '"./kipc-runtime-process.ts"',
+          )
+          .replaceAll('"@keld/kipc"', '"./kipc-transport.ts"'),
       );
       direct = direct.replaceAll(
         JSON.stringify(join(apiRoot, file)),

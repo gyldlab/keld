@@ -150,12 +150,16 @@ import {createHash} from "node:crypto";
 import {readFileSync, realpathSync, statSync} from "node:fs";
 import {fileURLToPath, pathToFileURL} from "node:url";
 import * as api from "@keld/api";
-import {app} from "@keld/api/internal/app";
+import {app, bootHostSelectedEntry} from "@keld/api/internal/app";
+import {encodeRuntimeProcessInit, decodeRuntimeProcessInit, snapshotRuntimeProcessFacts} from "@keld/kipc/runtime-process-facts";
 import {encodeDialogRequest} from "@keld/api/internal/dialog-codec";
 import * as installedLink from "@keld/api/internal/link";
 import * as kipc from "@keld/kipc";
 import "@keld/api/internal/window-codec";
 assert.equal(api.app, app);
+assert.equal(typeof bootHostSelectedEntry, "function");
+assert.equal(kipc.runtimeProcessFactsSelected, false);
+assert.deepEqual(Object.entries(decodeRuntimeProcessInit(encodeRuntimeProcessInit(snapshotRuntimeProcessFacts({bun: "proof"}))).versions), [["bun","proof"]]);
 assert.equal(api.app, createRequire(import.meta.url)("@keld/api").app);
 assert.deepEqual(Array.from(encodeDialogRequest({variant: "Cancel", nonce: 1n})), [1, 1]);
 for (const name of ["FrameReader", "DrainSignal", "RECEIVE_POLICIES", "isCallError"])

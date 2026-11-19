@@ -1,3 +1,4 @@
+import { isMainThread, parentPort } from "node:worker_threads";
 /**
  * Backend-independent application lifecycle over the canonical app-link.
  *
@@ -15,6 +16,7 @@ import type {
 } from "./dialog.generated.ts";
 import {
   linkError,
+  runtimeProcessFactsSelected,
   stateMap,
   stateMapDelete,
   stateMapSet,
@@ -28,6 +30,60 @@ import type {
 } from "./window-codec.ts";
 import type { WindowSnapshot } from "./window-source.ts";
 import { WindowCloseReceipts } from "./window-close-receipts.ts";
+
+import {
+  encodeRuntimeProcessInit,
+  snapshotRuntimeProcessFacts,
+} from "@keld/kipc/runtime-process-facts";
+let runtimeInitPayload: Uint8Array | undefined;
+/** Internal cold preload entry: captures before any link attempt or user entry. */
+export function preloadRuntimeProcessFacts(versions: unknown): Promise<void> {
+  if (!runtimeProcessFactsSelected)
+    return Promise.reject(
+      linkError(
+        "KELD-IPC-005",
+        "Runtime facts require trusted Host launch selection.",
+      ),
+    );
+  if (linkPromise !== undefined || runtimeInitPayload !== undefined)
+    return Promise.reject(
+      linkError(
+        "KELD-IPC-005",
+        "Runtime facts must precede the role's one link attempt.",
+      ),
+    );
+  runtimeInitPayload = encodeRuntimeProcessInit(
+    snapshotRuntimeProcessFacts(versions),
+  );
+  return ensureLink().then(() => undefined);
+}
+
+/**
+ * Host-owned entry graph for runtimes where CLI --preload and application
+ * entry do not share the same module cache. A previously verified loader is
+ * supplied by the Host's admitted boot path, never read from mutable argv or
+ * environment. The real Init ACK and subscriptions must finish before user
+ * modules are evaluated, and both phases use this module's one app instance.
+ *
+ * This introduces no alternate link or permission source: the original
+ * trusted launch define, Host-minted endpoint and WorkerLink remain mandatory.
+ */
+export async function bootHostSelectedEntry(
+  loadVerifiedEntry: () => Promise<unknown>,
+): Promise<void> {
+  if (!isMainThread || parentPort !== null)
+    throw linkError(
+      "KELD-IPC-005",
+      "Host-selected runtime entry must execute in the role main thread.",
+    );
+  if (typeof loadVerifiedEntry !== "function")
+    throw linkError(
+      "KELD-IPC-005",
+      "Host-selected runtime entry requires a verified loader function.",
+    );
+  await preloadRuntimeProcessFacts(process.versions);
+  await loadVerifiedEntry();
+}
 
 export type Unsubscribe = () => void;
 
@@ -53,7 +109,7 @@ export function hasObservedHostReady(): boolean {
 let linkDead: Error | undefined;
 let readyWaiters: ReadyWaiter[] = [];
 /**
- * The role's one link attempt (GH-527 §4.2: a realm opens one link). Never
+ * The role's one link attempt (GH-527 Â§4.2: a realm opens one link). Never
  * reset: a failed connect, or a link that died before Ready, stays the answer,
  * so every later `whenReady` or `quit` rethrows that same typed error instead
  * of retrying into `KELD-IPC-005`.
@@ -165,16 +221,20 @@ function ensureLink(): Promise<LifecycleLink> {
       ),
     );
   }
-  linkPromise = LifecycleLink.connect(envLink, {
-    onReady: onHostReady,
-    onLastWindowClosed,
-    onConnected: (session) => {
-      connectedLink = session;
+  linkPromise = LifecycleLink.connect(
+    envLink,
+    {
+      onReady: onHostReady,
+      onLastWindowClosed,
+      onConnected: (session) => {
+        connectedLink = session;
+      },
+      onWindowFact,
+      onApplicationCall: dispatchApplicationCall,
+      onLinkDead: failReadyWaiters,
     },
-    onWindowFact,
-    onApplicationCall: dispatchApplicationCall,
-    onLinkDead: failReadyWaiters,
-  }).catch((err: unknown) => {
+    runtimeInitPayload,
+  ).catch((err: unknown) => {
     // The first connect failure is sticky: its typed error answers every
     // later `whenReady` and `quit`.
     if (err instanceof Error) linkDead ??= err;

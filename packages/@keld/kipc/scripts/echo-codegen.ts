@@ -47,6 +47,15 @@ const authGeneratedPath = resolve(
   "packages/@keld/api/src/auth.generated.ts",
 );
 
+const runtimeSourcePath = resolve(
+  repositoryRoot,
+  "crates/keld-ipc/src/lifecycle.rs",
+);
+const runtimeGeneratedPath = resolve(
+  repositoryRoot,
+  "packages/@keld/kipc/src/runtime-process.generated.ts",
+);
+
 type StructName = (typeof STRUCT_NAMES)[number];
 type SupportedRustType = "String" | "u32";
 
@@ -165,14 +174,23 @@ export function assertEchoArtifactFresh(
 
 // Native enum declaration grammar is shared; each target admits its own closed schema.
 type NativeEnumName =
-  "FsRequest" | "FsResponse" | "AuthRequest" | "AuthResponse";
+  | "FsRequest"
+  | "FsResponse"
+  | "AuthRequest"
+  | "AuthResponse"
+  | "LifecycleRequest"
+  | "LifecycleResponse"
+  | "SubscribeRefusal";
 type NativeFieldType =
   | "String"
   | "Vec<u8>"
   | "Vec<String>"
   | "Option<String>"
   | "Option<Vec<String>>"
-  | "u64";
+  | "u64"
+  | "u16"
+  | "RuntimeProcessFacts"
+  | "SubscribeRefusal";
 interface NativeField {
   name: string;
   rustType: NativeFieldType;
@@ -186,6 +204,23 @@ type NativeSchema = Readonly<
 >;
 
 const NATIVE_SCHEMAS: Readonly<Record<NativeEnumName, NativeSchema>> = {
+  LifecycleRequest: {
+    Quit: {},
+    Subscribe: { channel: "u16" },
+    Init: { runtime_process_facts: "RuntimeProcessFacts" },
+  },
+  LifecycleResponse: {
+    Quit: {},
+    Subscribed: {},
+    SubscribeRefused: { reason: "SubscribeRefusal" },
+    Initialized: {},
+  },
+  SubscribeRefusal: {
+    UnknownChannel: {},
+    NotSubscribable: {},
+    GuardedNotSupported: {},
+    RoleNotAdmitted: {},
+  },
   FsRequest: {
     Read: { path: "String" },
     Write: { path: "String", bytes: "Vec<u8>" },
@@ -225,11 +260,11 @@ function parseNativeEnum(
     const line = lines[index];
     if (line.length === 0 || /^\/\/\/(?: |$)/.test(line)) continue;
     if (line.startsWith("#[")) {
-      if (
-        !/^#\[derive\((?:(?:Debug|Clone), )?Serialize, Deserialize\)\]$/.test(
-          line,
-        )
-      ) {
+      const derive =
+        name.startsWith("Lifecycle") || name === "SubscribeRefusal"
+          ? /^#\[derive\(Debug, Clone(?:, Copy)?, PartialEq, Eq, Serialize, Deserialize\)\]$/
+          : /^#\[derive\((?:(?:Debug|Clone), )?Serialize, Deserialize\)\]$/;
+      if (!derive.test(line)) {
         fail(
           "native " +
             name +
@@ -303,7 +338,7 @@ function parseNativeEnum(
         if (fieldLine.length === 0 || /^        \/\/\/(?: |$)/.test(fieldLine))
           continue;
         const field =
-          /^        ([A-Za-z_][A-Za-z0-9_]*): (String|Vec<u8>|Vec<String>|Option<String>|Option<Vec<String>>|u64),$/.exec(
+          /^        ([A-Za-z_][A-Za-z0-9_]*): (String|Vec<u8>|Vec<String>|Option<String>|Option<Vec<String>>|u64|u16|RuntimeProcessFacts|SubscribeRefusal),$/.exec(
             fieldLine,
           );
         if (!field)
@@ -671,7 +706,7 @@ export function assertAuthArtifactFresh(
 }
 
 // ---------------------------------------------------------------------------
-// Channel-table target (GH-508 spec docs/specs/gh508-kipc-channel-table.md §4.3).
+// Channel-table target (GH-508 spec docs/specs/gh508-kipc-channel-table.md Â§4.3).
 //
 // Reads the Rust channel table and rewrites one delimited region of the single
 // staged transport file. Rust compilation (`validate_table`) is the validator
@@ -1219,6 +1254,100 @@ export function renderDialogBinding(rustSource: string): string {
   return formatGenerated(DIALOG_RUNTIME, dialogGeneratedPath);
 }
 
+/** Generate the private cold Init codec from the owning lifecycle declarations. */
+export function renderRuntimeProcessBinding(rustSource: string): string {
+  const lines = rustSource.split(/\r?\n/);
+  const requests = parseNativeEnum(lines, "LifecycleRequest");
+  const responses = parseNativeEnum(lines, "LifecycleResponse");
+  parseNativeEnum(lines, "SubscribeRefusal");
+  const declaration =
+    /pub struct RuntimeProcessFacts \{\s*\/\/\/[^\n]*\n\s*#\[serde\(deserialize_with = "deserialize_runtime_versions"\)\]\s*pub versions: BTreeMap<String, String>,\s*\}/g;
+  if ([...rustSource.matchAll(declaration)].length !== 1)
+    fail("RuntimeProcessFacts must retain its bounded owning versions map");
+  const limits = [
+    "MAX_RUNTIME_PROCESS_FACTS_PAYLOAD",
+    "MAX_RUNTIME_VERSION_ENTRIES",
+    "MAX_RUNTIME_VERSION_BYTES",
+  ].map((name) => {
+    const matches = [
+      ...rustSource.matchAll(
+        new RegExp("(?:pub )?const " + name + ": usize = ([0-9_]+);", "g"),
+      ),
+    ];
+    if (matches.length !== 1)
+      return fail("runtime facts require one owning bound " + name);
+    return Number(matches[0][1].replaceAll("_", ""));
+  });
+  if (limits.join() !== "8448,32,8192")
+    fail("runtime facts bounds differ from the approved owning contract");
+  const init = requests.findIndex((v) => v.name === "Init"),
+    ack = responses.findIndex((v) => v.name === "Initialized");
+  return formatGenerated(
+    `// @generated by echo-codegen.ts from keld-ipc/src/lifecycle.rs; do not edit.
+import { decodeVarint, decodePostcardStringAt, encodeVarint, encodePostcardString, kipcError } from "@keld/kipc";
+import { isProxy } from "node:util/types";
+export const MAX_RUNTIME_PROCESS_FACTS_PAYLOAD = ${limits[0]};
+const MAX_ENTRIES = ${limits[1]};
+const MAX_TEXT_BYTES = ${limits[2]};
+const INIT = ${init};
+const INITIALIZED = ${ack};
+export interface RuntimeProcessFacts { readonly versions: Readonly<Record<string,string>> }
+function invalid():never { throw kipcError("KELD-IPC-003","Runtime facts require 1..32 own nonempty string entries within 8192 UTF-8 bytes. Correct the trusted preload capture."); }
+/** Copy actual role-main metadata before application entry; no getters or authority. */
+export function snapshotRuntimeProcessFacts(value:unknown):RuntimeProcessFacts {
+ if(value===null || typeof value!=="object" || isProxy(value)) return invalid();
+ const keys=Reflect.ownKeys(value);
+ if(keys.length===0 || keys.length>MAX_ENTRIES) return invalid();
+ const versions:Record<string,string>=Object.create(null);
+ let bytes=0;
+ for(const key of keys){
+  if(typeof key!=="string" || key.length===0 || key.includes("\\0")) return invalid();
+  const descriptor=Object.getOwnPropertyDescriptor(value,key);
+  if(!descriptor || !("value" in descriptor) || typeof descriptor.value!=="string" || descriptor.value.length===0 || descriptor.value.includes("\\0")) return invalid();
+  bytes+=Buffer.byteLength(key,"utf8")+Buffer.byteLength(descriptor.value,"utf8");
+  if(bytes>MAX_TEXT_BYTES) return invalid();
+  versions[key]=descriptor.value;
+ }
+ return Object.freeze({versions:Object.freeze(versions)});
+}
+/** Synchronous private payload snapshot in the same BTreeMap order as Rust. */
+export function encodeRuntimeProcessInit(facts:RuntimeProcessFacts):Uint8Array {
+ const snapshot=snapshotRuntimeProcessFacts(facts.versions);
+ const keys=Object.keys(snapshot.versions).sort((a,b)=>Buffer.compare(Buffer.from(a),Buffer.from(b)));
+ const parts:Uint8Array[]=[encodeVarint(INIT),encodeVarint(keys.length)];
+ for(const key of keys) parts.push(encodePostcardString(key),encodePostcardString(snapshot.versions[key]));
+ const bytes=Buffer.concat(parts);
+ if(bytes.byteLength>MAX_RUNTIME_PROCESS_FACTS_PAYLOAD) return invalid();
+ return bytes;
+}
+/** Strict semantic decoder shared by contract fixtures; no link admission authority. */
+export function decodeRuntimeProcessInit(payload:Uint8Array):RuntimeProcessFacts {
+ if(!(payload instanceof Uint8Array) || payload.byteLength>MAX_RUNTIME_PROCESS_FACTS_PAYLOAD) return invalid();
+ const [tag,at]=decodeVarint(payload,0);
+ if(tag!==INIT) return invalid();
+ const [count,begin]=decodeVarint(payload,at);
+ if(count===0 || count>MAX_ENTRIES) return invalid();
+ let offset=begin,bytes=0;
+ const versions:Record<string,string>=Object.create(null);
+ for(let i=0;i<count;i++){
+  const [key,next]=decodePostcardStringAt(payload,offset);
+  const [value,end]=decodePostcardStringAt(payload,next);
+  bytes+=Buffer.byteLength(key,"utf8")+Buffer.byteLength(value,"utf8");
+  if(!key || !value || key.includes("\\0") || value.includes("\\0") || bytes>MAX_TEXT_BYTES || Object.hasOwn(versions,key)) return invalid();
+  versions[key]=value;offset=end;
+ }
+ if(offset!==payload.byteLength) return invalid();
+ return Object.freeze({versions:Object.freeze(versions)});
+}
+/** Only this acknowledgement opens qualified application entry. */
+export function decodeRuntimeInitialized(payload:Uint8Array):void {
+ if(payload.byteLength!==1 || payload[0]!==INITIALIZED) invalid();
+}
+`,
+    runtimeGeneratedPath,
+  );
+}
+
 function generate(): void {
   const fsGenerated = renderFsBinding(readFileSync(fsSourcePath, "utf8"));
   const authGenerated = renderAuthBinding(readFileSync(authSourcePath, "utf8"));
@@ -1236,6 +1365,12 @@ function generate(): void {
   );
   verifyTransportStamp(Buffer.from(regenerated), transportPath);
   outputs.push(
+    {
+      path: runtimeGeneratedPath,
+      source: renderRuntimeProcessBinding(
+        readFileSync(runtimeSourcePath, "utf8"),
+      ),
+    },
     { path: fsGeneratedPath, source: fsGenerated },
     { path: authGeneratedPath, source: authGenerated },
     { path: dialogGeneratedPath, source: dialogGenerated },
@@ -1247,6 +1382,11 @@ function generate(): void {
 }
 
 function check(): void {
+  if (
+    readFileSync(runtimeGeneratedPath, "utf8") !==
+    renderRuntimeProcessBinding(readFileSync(runtimeSourcePath, "utf8"))
+  )
+    fail("runtime facts binding is stale; run bun run echo:generate");
   if (
     !Buffer.from(readFileSync(dialogGeneratedPath)).equals(
       Buffer.from(renderDialogBinding(readFileSync(dialogSourcePath, "utf8"))),

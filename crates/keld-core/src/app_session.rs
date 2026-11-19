@@ -8951,6 +8951,14 @@ fn read_primary_frames(
                     continue;
                 };
                 match request {
+                    LifecycleRequest::Init { .. } => {
+                        return Err(app_ipc(
+                            "late runtime Init",
+                            &IpcError::Protocol {
+                                detail: "runtime Init is accepted only by authenticated role admission",
+                            },
+                        ));
+                    }
                     LifecycleRequest::Subscribe { channel } => {
                         handle.subscribe_window(caller, header.corr(), channel)?;
                     }

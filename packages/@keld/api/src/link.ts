@@ -33,6 +33,7 @@ export {
   type ReceivePolicy,
 } from "@keld/kipc";
 
+import { decodeRuntimeInitialized } from "@keld/kipc/runtime-process-facts";
 import { resolveEchoCall } from "./echo-call.ts";
 import {
   decodeDialogReply,
@@ -113,7 +114,7 @@ export type LifecycleHandler = {
   onLinkDead: (err: Error) => void;
 };
 
-/** What the host may send this role besides replies to its own calls (GH-527 §4.7). */
+/** What the host may send this role besides replies to its own calls (GH-527 Â§4.7). */
 const LIFECYCLE_RECEIVE: WorkerReceiveTable = {
   eventChannels: [LIFECYCLE_CHANNEL],
   callReceivers: [{ policy: "echoReceiver" }],
@@ -168,6 +169,7 @@ export class LifecycleLink {
   static async connect(
     link: string,
     handlers: LifecycleHandler,
+    runtimeInitPayload?: Uint8Array,
   ): Promise<LifecycleLink> {
     // A verified schema-two Host sets the role hint before the Guardian spawns
     // Bun. This hint does not grant window authority: the existing authenticated
@@ -196,7 +198,7 @@ export class LifecycleLink {
       handlers.onReady();
     };
     // A lifecycle EVENT this role cannot decode ends the link (a throwing
-    // applier, §4.6) before any listener runs; the listener then dispatches it.
+    // applier, Â§4.6) before any listener runs; the listener then dispatches it.
     workerLink.setStateApplier(LIFECYCLE_CHANNEL, (payload) => {
       if (decodeEvent(payload) === "last-window-closed") {
         session.#appliedLastWindowClosed += 1;
@@ -237,6 +239,22 @@ export class LifecycleLink {
       }
     });
     handlers.onConnected?.(session);
+    if (runtimeInitPayload !== undefined) {
+      try {
+        // The ordinary allocator yields correlation 1: no Subscribe or app call
+        // precedes this private admission handshake on the same WorkerLink.
+        decodeRuntimeInitialized(
+          await workerLink.call(
+            LIFECYCLE_CHANNEL,
+            runtimeInitPayload,
+            APP_LINK_IO_DEADLINE_MS,
+          ),
+        );
+      } catch (error) {
+        session.close();
+        throw error;
+      }
+    }
     if (windowSource) {
       try {
         // Postcard LifecycleRequest::Subscribe { channel } discriminant=1.
@@ -313,7 +331,7 @@ export class LifecycleLink {
   /**
    * Sends the role's Quit without parking (PANEL-P2: `app.quit` returns
    * immediately) and closes the link once its REPLY or typed failure settles
-   * (GH-527 §4.9). Resolves on `LifecycleResponse::Quit`; a host ERR rejects
+   * (GH-527 Â§4.9). Resolves on `LifecycleResponse::Quit`; a host ERR rejects
    * with that error, any other REPLY with `KELD-IPC-003`. Concurrent calls
    * share one Quit.
    */

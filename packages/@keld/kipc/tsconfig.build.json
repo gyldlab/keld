@@ -4,9 +4,9 @@
     "noEmit": false,
     "noEmitOnError": true,
     "declaration": true,
-    "emitDeclarationOnly": true,
+    "rewriteRelativeImportExtensions": true,
     "rootDir": "src"
   },
-  "files": ["src/transport.ts"],
+  "files": ["src/transport.ts", "src/runtime-process.generated.ts"],
   "include": []
 }

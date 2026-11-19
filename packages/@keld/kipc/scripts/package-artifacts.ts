@@ -127,7 +127,10 @@ async function pack(
       JSON.stringify(apiManifest.exports) !== JSON.stringify(apiExports) ||
       apiManifest.dependencies?.["@keld/kipc"] !== "link:../kipc" ||
       JSON.stringify(kipcManifest.exports) !==
-        JSON.stringify({ ".": "./src/transport.ts" })
+        JSON.stringify({
+          ".": "./src/transport.ts",
+          "./runtime-process-facts": "./src/runtime-process.generated.ts",
+        })
     ) {
       throw new Error("Unexpected source package exports or KIPC dependency");
     }

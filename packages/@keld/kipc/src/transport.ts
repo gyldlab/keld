@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:74bcbfa86c7a2c14e1416f55a990606add93e5a9a688ff8c0d26e34f9426af1c
+// @keld/kipc-transport sha256:6b0b69e0c6d224ccf81043ca937f24e07e97630908b4459e0a203da896b45898
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -31,6 +31,12 @@ import { isProxy } from "node:util/types";
 /** @internal Host-selected launch mode captured by the qualified native preload. */
 export const nativeFacadeBootSelected =
   process.env.KELD_NATIVE_WINDOW_FACADE === "1";
+
+/** @internal Trusted Host selection; metadata never grants a principal or Ready. */
+declare const __KELD_RUNTIME_PROCESS_FACTS__: boolean;
+export const runtimeProcessFactsSelected =
+  typeof __KELD_RUNTIME_PROCESS_FACTS__ !== "undefined" &&
+  __KELD_RUNTIME_PROCESS_FACTS__ === true;
 
 // The macOS guardian preloads this sidecar before application dependencies. These
 // immutable operations own §4.6 state/wake-drain/copy and Source failure; consumers

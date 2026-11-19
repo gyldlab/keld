@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit"
   },
   "exports": {
-    ".": "./src/transport.ts"
+    ".": "./src/transport.ts",
+    "./runtime-process-facts": "./src/runtime-process.generated.ts"
   },
   "files": [
     "src"

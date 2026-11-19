@@ -53,7 +53,14 @@ test("packed Electron uses one declared API/KIPC graph and all five aliases", ()
     );
     success(
       run(
-        [process.execPath, "install", "--offline", "--ignore-scripts"],
+        [
+          process.execPath,
+          "install",
+          "--offline",
+          "--ignore-scripts",
+          "--linker",
+          "hoisted",
+        ],
         consumer,
       ),
     );
