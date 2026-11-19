@@ -3607,6 +3607,20 @@ impl WebView2Engine {
         Ok(engine)
     }
 
+    fn require_startup_build_retired(&self) -> Result<(), WvError> {
+        if self
+            .startup_build
+            .as_ref()
+            .is_some_and(|builder| !builder.candidate_is_empty())
+        {
+            return Err(profile_failure_with(
+                ProfileErrorKind::LifecycleUnproven,
+                "event loop setup cannot replace an unresolved native build candidate",
+            ));
+        }
+        Ok(())
+    }
+
     /// Runs the event loop until the user closes the last window, then
     /// returns so the caller can tear down host-owned app-link state.
     ///
@@ -3615,6 +3629,7 @@ impl WebView2Engine {
     /// Returns [`WvError::EventLoop`] if the run loop was already started, or if
     /// tao reports a non-zero `run_return` status.
     pub fn run_until_closed(mut self) -> Result<(), WvError> {
+        self.require_startup_build_retired()?;
         let Some(mut event_loop) = self.event_loop.take() else {
             return Err(WvError::EventLoop(String::from(
                 "run loop already started; call run_until_closed once",
@@ -3877,6 +3892,7 @@ impl WebView2Engine {
         release_witness: impl FnOnce(Instant) -> Result<(), E>,
         mut dialog_drive: Option<&mut WindowsDialogDriver<'_>>,
     ) -> Result<(), WvError> {
+        self.require_startup_build_retired()?;
         let Some(mut event_loop) = self.event_loop.take() else {
             return Err(WvError::EventLoop(String::from(
                 "run loop already started; call run_app_until_quit once",
@@ -3936,12 +3952,15 @@ impl WebView2Engine {
         };
         let release = Rc::new(release.with_loop_wake(proxy.clone())?);
         let release_in_loop = Rc::clone(&release);
-        let managed = Rc::new(RefCell::new(managed_app::ManagedWindows::new(
+        let builder = self.startup_build.take().unwrap_or_else(|| {
             view_build::NativeBuild::new(
                 self.environment.clone(),
                 self.next_id,
                 self.saved_permissions_reconciled,
-            ),
+            )
+        });
+        let managed = Rc::new(RefCell::new(managed_app::ManagedWindows::new(
+            builder,
             events.clone(),
             proxy.clone(),
             Rc::clone(&self.activation_observer),
