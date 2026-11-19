@@ -189,9 +189,11 @@ fn on_time_native_first_init_survives_delayed_coordinator_and_disarms_deadline()
     };
     let (send, events) = mpsc::channel();
     send.send(first).expect("queue genuine timely UI event");
-    assert_eq!(
-        receive_initial_milestone(&events, Some(&clock)),
-        InitialMilestoneReceive::Event(first),
+    assert!(
+        matches!(
+            receive_initial_milestone(&events, Some(&clock)),
+            InitialMilestoneReceive::Event(AppWindowEvent::HostInitialized { observed_at }) if observed_at == on_time
+        ),
         "coordinator descheduling must not transform timely native Init into timeout"
     );
     send.send(AppWindowEvent::LastWindowClosed)

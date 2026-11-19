@@ -5422,7 +5422,7 @@ fn initial_milestone_poll(until: Option<Instant>, now: Instant) -> Duration {
 /// well as an empty queue. A genuine on-time UI first turn keeps its native
 /// timestamp even when this worker is descheduled before observing the event.
 #[cfg(any(target_os = "macos", windows))]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 enum InitialMilestoneReceive {
     Event(AppWindowEvent),
     Again,
