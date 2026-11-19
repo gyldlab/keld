@@ -3,8 +3,8 @@
 use super::super::window_registry::Teardown;
 use super::{
     ActivePrimaryGeneration, AppWindowCommand, CloseOutcome, CorrelationId, CreateOutcome,
-    HostAppError, IpcError, NativeSetter, Ordering, PrimaryRouterHandle, WindowError,
-    WindowRequest, WindowResponse, WindowSession, app_detail, app_ipc, decode, owner,
+    HostAppError, IpcError, NativeSetter, Ordering, OwnedWindowEvent, PrimaryRouterHandle,
+    WindowError, WindowRequest, WindowResponse, WindowSession, app_detail, app_ipc, decode, owner,
     report_abandoned,
 };
 
@@ -16,6 +16,8 @@ pub(super) enum WindowRequestInput {
 
 pub(super) enum WindowRefusal {
     Registry(WindowError),
+    #[cfg(windows)]
+    OriginalPreload(HostAppError),
     Fixed {
         code: &'static str,
         message: &'static str,
@@ -23,16 +25,61 @@ pub(super) enum WindowRefusal {
 }
 
 impl WindowRefusal {
-    const fn fixed(code: &'static str, message: &'static str) -> Self {
+    pub(super) const fn fixed(code: &'static str, message: &'static str) -> Self {
         Self::Fixed { code, message }
     }
 
     pub(super) fn into_parts(self) -> (&'static str, String) {
         match self {
             Self::Registry(error) => (error.code(), error.to_string()),
+            #[cfg(windows)]
+            Self::OriginalPreload(error) => (
+                "KELD-CORE-051",
+                format!(
+                    "KELD-CORE-051: {error}; use the exact original preload and bounded captured arguments"
+                ),
+            ),
             Self::Fixed { code, message } => (code, message.to_owned()),
         }
     }
+}
+
+pub(super) enum CloseReplyPublication {
+    Reply {
+        response: WindowResponse,
+        fact: Option<OwnedWindowEvent>,
+    },
+    Teardown(Teardown),
+}
+
+pub(super) fn prepare_close_reply(
+    close: CloseOutcome,
+) -> Result<CloseReplyPublication, HostAppError> {
+    let (response, fact) = match close {
+        CloseOutcome::Requested {
+            close_seq,
+            fact: Some(fact),
+        } => (WindowResponse::CloseRequested { close_seq }, Some(fact)),
+        CloseOutcome::Merged { close_seq } => (WindowResponse::Merged { close_seq }, None),
+        CloseOutcome::AlreadyClosing => (WindowResponse::AlreadyClosing, None),
+        CloseOutcome::Vetoed => (WindowResponse::ReplyApplied, None),
+        CloseOutcome::Stale => {
+            eprintln!(
+                "KELD-CORE-038: stale close reply ignored; answer the current close_seq once"
+            );
+            (WindowResponse::ReplyStale, None)
+        }
+        CloseOutcome::Teardown(teardown) => return Ok(CloseReplyPublication::Teardown(teardown)),
+        CloseOutcome::Requested { fact: None, .. }
+        | CloseOutcome::Unmapped
+        | CloseOutcome::Exhausted => {
+            return Err(app_detail(
+                "window close reply",
+                "admitted call returned a native-only close outcome",
+            ));
+        }
+    };
+    Ok(CloseReplyPublication::Reply { response, fact })
 }
 
 pub(super) enum WindowRequestOutcome {
@@ -214,7 +261,7 @@ impl PrimaryRouterHandle {
         Ok(WindowRequestOutcome::Reply(WindowResponse::Accepted))
     }
 
-    fn send_window_request_command(
+    pub(super) fn send_window_request_command(
         &self,
         command: AppWindowCommand,
         phase: &'static str,

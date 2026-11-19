@@ -5,14 +5,23 @@
 //! because retirement re-enters it to fence the old owner. No native handle,
 //! frame parser, output queue, principal or subscription policy is minted here.
 
+#[cfg(any(not(windows), test))]
+use keld_ipc::ChannelId;
+use keld_ipc::SubscribeRefusal;
 use keld_ipc::channel_table::{Authority, ReceiveClass};
 use keld_ipc::window::{Rect, WindowRequest, WindowResponse, WindowState};
-use keld_ipc::{ChannelId, SubscribeRefusal};
 use keld_wv::{BuildStage, WindowSnapshot};
 
 mod native_outcome;
 #[cfg(windows)]
+mod publication;
+#[cfg(windows)]
+mod publication_turn;
+#[cfg(windows)]
+pub(super) use publication::{NativePublicationDisposition, PublicationError, PublicationResult};
+#[cfg(windows)]
 pub(super) mod original;
+#[cfg(any(not(windows), test))]
 use native_outcome::NativeOutcome;
 mod request;
 use request::{WindowRequestInput, WindowRequestOutcome, duplicate_correlation};
@@ -26,8 +35,11 @@ use super::{
     ActivePrimaryGeneration, AppWindowCommand, AppWindowEvent, CallError, CorrelationId, FrameKind,
     HostAppError, IpcError, LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleResponse, Ordering,
     PrimaryCallerContext, PrimaryRouterHandle, app_detail, app_ipc, append_app_cleanup,
-    collapse_app_results, decode, encode, with_primary_caller_locked, write_frame,
+    collapse_app_results, decode, with_primary_caller_locked,
 };
+
+#[cfg(any(not(windows), test))]
+use super::{encode, write_frame};
 
 // Current maximum payloads: WindowEvent Created = 50 bytes, WindowResponse
 // Created/Adopted = 16, LifecycleResponse SubscribeRefused = 2. The literal
@@ -43,6 +55,8 @@ pub(super) struct WindowSession {
     original_selection: Option<std::sync::Arc<super::original_webapp::OriginalLoadSelection>>,
     // The one subscription owner is this live link, not the window instances.
     subscribed: Option<WindowOwner>,
+    #[cfg(windows)]
+    publication: publication_turn::WindowPublicationState,
 }
 impl WindowSession {
     pub(super) fn new(native_supported: bool) -> Self {
@@ -52,6 +66,8 @@ impl WindowSession {
             #[cfg(windows)]
             original_selection: None,
             subscribed: None,
+            #[cfg(windows)]
+            publication: publication_turn::WindowPublicationState::default(),
         }
     }
 
@@ -131,9 +147,31 @@ fn subscription_refusal(
         None
     }
 }
+fn window_subscribe_refusal(
+    channel: u16,
+    primary: bool,
+    has_registry: bool,
+) -> Option<SubscribeRefusal> {
+    let entry = keld_ipc::channel_table::CHANNEL_TABLE
+        .iter()
+        .find(|entry| entry.wire_id() == channel);
+    let refusal = entry.map_or(Some(SubscribeRefusal::UnknownChannel), |entry| {
+        subscription_refusal(
+            entry.class(),
+            entry.authority(),
+            entry.id() == LIFECYCLE_CHANNEL,
+            primary,
+        )
+    });
+    refusal.or_else(|| {
+        (channel != keld_ipc::channel_table::WINDOW.wire_id() || !has_registry)
+            .then_some(SubscribeRefusal::NotSubscribable)
+    })
+}
 fn owner(active: &ActivePrimaryGeneration) -> WindowOwner {
     WindowOwner::new(active.identity, active.attempt)
 }
+#[cfg(any(not(windows), test))]
 fn active_owner(
     current: &mut Option<ActivePrimaryGeneration>,
     expected: WindowOwner,
@@ -142,6 +180,7 @@ fn active_owner(
         .as_mut()
         .filter(|active| owner(active) == expected && !active.reader_stop.load(Ordering::Acquire))
 }
+#[cfg(any(not(windows), test))]
 fn write_payload(
     active: &mut ActivePrimaryGeneration,
     kind: FrameKind,
@@ -150,11 +189,16 @@ fn write_payload(
     payload: &[u8],
     failed: &mut Option<u32>,
 ) -> Result<(), HostAppError> {
-    write_frame(&mut active.writer, kind, 0, channel, correlation, payload).map_err(|source| {
+    #[cfg(windows)]
+    let stream = active.legacy_writer_mut()?;
+    #[cfg(not(windows))]
+    let stream = &mut active.writer;
+    write_frame(stream, kind, 0, channel, correlation, payload).map_err(|source| {
         *failed = Some(active.attempt);
         app_ipc("window ordered writer", &source)
     })
 }
+#[cfg(any(not(windows), test))]
 fn window_reply(
     active: &mut ActivePrimaryGeneration,
     correlation: CorrelationId,
@@ -173,6 +217,7 @@ fn window_reply(
         failed,
     )
 }
+#[cfg(any(not(windows), test))]
 fn lifecycle_reply(
     active: &mut ActivePrimaryGeneration,
     correlation: CorrelationId,
@@ -191,6 +236,7 @@ fn lifecycle_reply(
         failed,
     )
 }
+#[cfg(any(not(windows), test))]
 fn call_error(
     active: &mut ActivePrimaryGeneration,
     correlation: CorrelationId,
@@ -212,6 +258,7 @@ fn call_error(
         failed,
     )
 }
+#[cfg(any(not(windows), test))]
 fn event(
     active: &mut ActivePrimaryGeneration,
     fact: keld_ipc::window::WindowEvent,
@@ -231,6 +278,7 @@ fn event(
         failed,
     )
 }
+#[cfg(any(not(windows), test))]
 fn owned_event(
     current: &mut Option<ActivePrimaryGeneration>,
     subscribed: Option<WindowOwner>,
@@ -244,6 +292,7 @@ fn owned_event(
     }
     Ok(())
 }
+#[cfg(any(not(windows), test))]
 fn owned_reply(
     current: &mut Option<ActivePrimaryGeneration>,
     subscribed: Option<WindowOwner>,
@@ -257,6 +306,7 @@ fn owned_reply(
     }
     Ok(())
 }
+#[cfg(any(not(windows), test))]
 fn last_window_locked(
     current: &mut Option<ActivePrimaryGeneration>,
     subscribed: Option<WindowOwner>,
@@ -284,6 +334,7 @@ fn last_window_locked(
     Ok(())
 }
 
+#[cfg(any(not(windows), test))]
 fn window_build_failed_locked(
     current: &mut Option<ActivePrimaryGeneration>,
     subscribed: Option<WindowOwner>,
@@ -292,45 +343,25 @@ fn window_build_failed_locked(
     failed: &mut Option<u32>,
 ) -> Result<(), HostAppError> {
     if outcome.diagnostic {
-        eprintln!(
-            "KELD-CORE-041: ignored unexpected native build failure; inspect the UI build correlation"
-        );
+        native_outcome::report_ignored_build_failure();
     }
     if let Some(call) = outcome.call
         && subscribed == Some(call.owner)
         && let Some(active) = active_owner(current, call.owner)
     {
-        let stage = match stage {
-            BuildStage::Window => "window",
-            BuildStage::Webview => "webview",
-        };
-        call_error(
-            active,
-            call.correlation,
-            "KELD-CORE-041",
-            format!(
-                "KELD-CORE-041: native {stage} creation failed. Inspect the UI owner's typed error and correct the requested window resources."
-            ),
-            failed,
-        )?;
+        let (code, message) = native_outcome::build_refusal(stage).into_parts();
+        call_error(active, call.correlation, code, message, failed)?;
     }
     last_window_locked(current, subscribed, outcome.last_window, failed)
 }
+#[cfg(any(not(windows), test))]
 fn window_released_locked(
     current: &mut Option<ActivePrimaryGeneration>,
     subscribed: Option<WindowOwner>,
     outcome: ReleaseOutcome,
     failed: &mut Option<u32>,
 ) -> Result<(), HostAppError> {
-    if outcome.diagnostic {
-        eprintln!("KELD-CORE-038: unexpected native release; inspect UI teardown ordering");
-    }
-    if outcome.dropped_facts != 0 {
-        eprintln!(
-            "window teardown dropped {} native facts",
-            outcome.dropped_facts
-        );
-    }
+    native_outcome::report_release(&outcome);
     if let Some(fact) = outcome.fact {
         owned_event(current, subscribed, fact, failed)?;
     }
@@ -400,6 +431,7 @@ impl PrimaryRouterHandle {
         }
         Ok(())
     }
+    #[cfg(any(not(windows), test))]
     fn finish_window_write(
         &self,
         current: &mut Option<ActivePrimaryGeneration>,
@@ -428,38 +460,41 @@ impl PrimaryRouterHandle {
         correlation: CorrelationId,
         channel: u16,
     ) -> Result<(), HostAppError> {
+        #[cfg(all(windows, not(test)))]
+        {
+            self.subscribe_window_ordered(caller, correlation, channel)
+        }
+        #[cfg(any(not(windows), test))]
+        {
+            #[cfg(windows)]
+            if self.uses_primary_writer() {
+                return self.subscribe_window_ordered(caller, correlation, channel);
+            }
+            self.subscribe_window_legacy(caller, correlation, channel)
+        }
+    }
+    #[cfg(any(not(windows), test))]
+    fn subscribe_window_legacy(
+        &self,
+        caller: &PrimaryCallerContext,
+        correlation: CorrelationId,
+        channel: u16,
+    ) -> Result<(), HostAppError> {
         let mut failed = None;
         let result = with_primary_caller_locked(&self.current, &self.shutdown, caller, |current| {
             let result = (|| {
                 let active = current.as_mut().ok_or_else(|| {
                     app_detail("window Subscribe", "validated generation disappeared")
                 })?;
-                let entry = keld_ipc::channel_table::CHANNEL_TABLE
-                    .iter()
-                    .find(|entry| entry.wire_id() == channel);
-                let refusal = entry.map_or(Some(SubscribeRefusal::UnknownChannel), |entry| {
-                    subscription_refusal(
-                        entry.class(),
-                        entry.authority(),
-                        entry.id() == LIFECYCLE_CHANNEL,
-                        caller.identity.is_primary(),
-                    )
-                });
-                if let Some(reason) = refusal {
+                if let Some(reason) = window_subscribe_refusal(
+                    channel,
+                    caller.identity.is_primary(),
+                    self.windows.is_some(),
+                ) {
                     return lifecycle_reply(
                         active,
                         correlation,
                         LifecycleResponse::SubscribeRefused { reason },
-                        &mut failed,
-                    );
-                }
-                if channel != keld_ipc::channel_table::WINDOW.wire_id() || self.windows.is_none() {
-                    return lifecycle_reply(
-                        active,
-                        correlation,
-                        LifecycleResponse::SubscribeRefused {
-                            reason: SubscribeRefusal::NotSubscribable,
-                        },
                         &mut failed,
                     );
                 }
@@ -501,6 +536,26 @@ impl PrimaryRouterHandle {
         }
     }
     pub(super) fn dispatch_window(
+        &self,
+        caller: &PrimaryCallerContext,
+        correlation: CorrelationId,
+        payload: &[u8],
+    ) -> Result<(), HostAppError> {
+        #[cfg(all(windows, not(test)))]
+        {
+            self.dispatch_window_ordered(caller, correlation, payload)
+        }
+        #[cfg(any(not(windows), test))]
+        {
+            #[cfg(windows)]
+            if self.uses_primary_writer() {
+                return self.dispatch_window_ordered(caller, correlation, payload);
+            }
+            self.dispatch_window_legacy(caller, correlation, payload)
+        }
+    }
+    #[cfg(any(not(windows), test))]
+    fn dispatch_window_legacy(
         &self,
         caller: &PrimaryCallerContext,
         correlation: CorrelationId,
@@ -582,6 +637,7 @@ impl PrimaryRouterHandle {
             })
             .map_err(|_| app_detail(phase, "UI command owner is unavailable"))
     }
+    #[cfg(any(not(windows), test))]
     fn window_close_call_locked(
         &self,
         active: &mut ActivePrimaryGeneration,
@@ -589,42 +645,24 @@ impl PrimaryRouterHandle {
         outcome: CloseOutcome,
         failed: &mut Option<u32>,
     ) -> Result<(), HostAppError> {
-        let response = match outcome {
-            CloseOutcome::Requested {
-                close_seq,
-                fact: Some(fact),
-            } => {
-                event(active, fact.event, failed)?;
-                WindowResponse::CloseRequested { close_seq }
+        match request::prepare_close_reply(outcome)? {
+            request::CloseReplyPublication::Reply { response, fact } => {
+                if let Some(fact) = fact {
+                    event(active, fact.event, failed)?;
+                }
+                window_reply(active, correlation, response, failed)
             }
-            CloseOutcome::Merged { close_seq } => WindowResponse::Merged { close_seq },
-            CloseOutcome::AlreadyClosing => WindowResponse::AlreadyClosing,
-            CloseOutcome::Vetoed => WindowResponse::ReplyApplied,
-            CloseOutcome::Stale => {
-                eprintln!(
-                    "KELD-CORE-038: stale close reply ignored; answer the current close_seq once"
-                );
-                WindowResponse::ReplyStale
-            }
-            CloseOutcome::Teardown(teardown) => {
-                // T6 acknowledges the verdict before issuing physical teardown.
-                // Closing already committed: reply loss must not strand its view.
+            request::CloseReplyPublication::Teardown(teardown) => {
+                // The close already committed. Even an unknown acknowledgement
+                // cannot strand its physical view.
                 let acknowledgement =
                     window_reply(active, correlation, WindowResponse::ReplyApplied, failed);
                 let release = self.send_window_teardown(teardown, "window teardown");
-                return collapse_app_results([acknowledgement, release]);
+                collapse_app_results([acknowledgement, release])
             }
-            CloseOutcome::Requested { fact: None, .. }
-            | CloseOutcome::Unmapped
-            | CloseOutcome::Exhausted => {
-                return Err(app_detail(
-                    "window close reply",
-                    "admitted call returned a native-only close outcome",
-                ));
-            }
-        };
-        window_reply(active, correlation, response, failed)
+        }
     }
+    #[cfg(any(not(windows), test))]
     fn window_build_outcome_locked(
         &self,
         current: &mut Option<ActivePrimaryGeneration>,
@@ -641,48 +679,26 @@ impl PrimaryRouterHandle {
                 self.send_window_teardown(teardown, "window late-build cleanup")
             }
             BuildOutcome::Ignored => {
-                eprintln!(
-                    "KELD-CORE-041: ignored unexpected native build result; inspect the UI build correlation"
-                );
+                native_outcome::report_ignored_build();
                 Ok(())
             }
         }
     }
+    #[cfg(any(not(windows), test))]
     fn window_native_close_locked(
         current: &mut Option<ActivePrimaryGeneration>,
         subscribed: Option<WindowOwner>,
         outcome: CloseOutcome,
         failed: &mut Option<u32>,
     ) -> Result<(), HostAppError> {
-        match outcome {
-            CloseOutcome::Requested {
-                fact: Some(fact), ..
-            } => owned_event(current, subscribed, fact, failed),
-            CloseOutcome::Unmapped => {
-                eprintln!(
-                    "KELD-CORE-038: native close references an unmapped view; inspect UI event ordering"
-                );
-                Ok(())
-            }
-            CloseOutcome::Exhausted => {
-                eprintln!(
-                    "KELD-CORE-039: native close_seq exhausted; destroy the window or end the session"
-                );
-                Ok(())
-            }
-            CloseOutcome::AlreadyClosing
-            | CloseOutcome::Merged { .. }
-            | CloseOutcome::Requested { fact: None, .. } => Ok(()),
-            CloseOutcome::Teardown(_) | CloseOutcome::Vetoed | CloseOutcome::Stale => {
-                Err(app_detail(
-                    "window native close",
-                    "registry returned a call-only close outcome",
-                ))
-            }
+        if let Some(fact) = native_outcome::report_native_close(outcome)? {
+            owned_event(current, subscribed, fact, failed)?;
         }
+        Ok(())
     }
     // Caller owns transition -> current -> windows. This dispatch performs the
     // registry transition and its ordered effects without changing lock custody.
+    #[cfg(any(not(windows), test))]
     fn window_native_event_locked(
         &self,
         session: &mut WindowSession,
@@ -706,21 +722,23 @@ impl PrimaryRouterHandle {
             }
             NativeOutcome::Fact(fact) => fact,
         };
-        match fact {
-            FactOutcome::Event(fact) => owned_event(current, subscribed, fact, failed),
-            FactOutcome::Unmapped => {
-                eprintln!(
-                    "KELD-CORE-038: native state references an unmapped view; inspect UI event ordering"
-                );
-                Ok(())
-            }
-            FactOutcome::Coalesced | FactOutcome::Suppressed | FactOutcome::Dropped => Ok(()),
+        if let Some(fact) = native_outcome::report_native_fact(fact) {
+            owned_event(current, subscribed, fact, failed)?;
         }
+        Ok(())
     }
+    #[cfg(any(not(windows), test))]
     pub(super) fn window_native_event(
         &self,
         native_event: AppWindowEvent,
     ) -> Result<(), HostAppError> {
+        #[cfg(windows)]
+        if self.uses_primary_writer() {
+            return match self.window_native_event_ordered(native_event)? {
+                NativePublicationDisposition::Handled => Ok(()),
+                NativePublicationDisposition::FatalQueued(error) => Err(error),
+            };
+        }
         let mut failed = None;
         let result = {
             let _transition = self.shutdown.transition_guard();

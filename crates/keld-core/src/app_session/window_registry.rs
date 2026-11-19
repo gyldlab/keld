@@ -19,6 +19,10 @@ use super::PrimaryLinkIdentity;
 
 #[cfg(windows)]
 mod native_scope;
+#[cfg(windows)]
+mod publication;
+#[cfg(windows)]
+pub(super) use publication::{ClosingCleanup, fixed_event_window};
 
 /// Trusted caller metadata captured by the existing authenticated primary reader.
 /// Runtime identity and Core attempt fencing remain distinct fields.
@@ -251,6 +255,24 @@ pub(super) const MAX_PENDING_DESTROYS_PER_WINDOW: usize = 64;
 /// Never turn the functional proposal into merge approval without GH1149 AC5.
 pub(super) const PROPOSED_MAX_CUMULATIVE_WINDOW_IDS: usize = 1024;
 impl Entry {
+    fn created_snapshot(&self, owner: WindowOwner) -> Option<WindowEvent> {
+        match self.phase {
+            Phase::Open(native) | Phase::ClosePending(native, _)
+                if self.owner_live && self.owner == owner =>
+            {
+                Some(WindowEvent::Created {
+                    window: self.window,
+                    state: native.state,
+                    pending_close: match self.phase {
+                        Phase::ClosePending(_, close_seq) => Some(close_seq),
+                        _ => None,
+                    },
+                })
+            }
+            _ => None,
+        }
+    }
+
     fn view(&self) -> Option<WebviewId> {
         match self.phase {
             Phase::Open(native) | Phase::ClosePending(native, _) | Phase::Closing(Some(native)) => {
@@ -881,24 +903,11 @@ impl WindowRegistry {
             entry.adoptable = matches!(entry.phase, Phase::Open(_));
         }
     }
+    #[cfg(any(not(windows), test))]
     pub(super) fn replay(&self, owner: WindowOwner) -> impl Iterator<Item = WindowEvent> + '_ {
         self.entries
             .values()
-            .filter_map(move |entry| match entry.phase {
-                Phase::Open(native) | Phase::ClosePending(native, _)
-                    if entry.owner_live && entry.owner == owner =>
-                {
-                    Some(WindowEvent::Created {
-                        window: entry.window,
-                        state: native.state,
-                        pending_close: match entry.phase {
-                            Phase::ClosePending(_, close_seq) => Some(close_seq),
-                            _ => None,
-                        },
-                    })
-                }
-                _ => None,
-            })
+            .filter_map(move |entry| entry.created_snapshot(owner))
     }
     /// Parent reports this once after the UI fact source has physically drained.
     pub(super) fn take_destroyed_fact_drops(&mut self) -> u64 {

@@ -1,9 +1,10 @@
 //! Apply each native receipt once in the existing Registry before publication.
 
+use super::request::WindowRefusal;
 use super::{
     AppWindowEvent, BuildFailureOutcome, BuildOutcome, BuildStage, CloseOutcome, FactOutcome,
-    HostAppError, PrimaryRouterHandle, Rect, ReleaseOutcome, WindowSession, app_detail,
-    native_state,
+    HostAppError, OwnedWindowEvent, PrimaryRouterHandle, Rect, ReleaseOutcome, WindowSession,
+    app_detail, native_state,
 };
 
 pub(super) enum NativeOutcome {
@@ -15,6 +16,80 @@ pub(super) enum NativeOutcome {
     Close(CloseOutcome),
     Released(ReleaseOutcome),
     Fact(FactOutcome),
+}
+
+pub(super) fn build_refusal(stage: BuildStage) -> WindowRefusal {
+    let message = match stage {
+        BuildStage::Window => {
+            "KELD-CORE-041: native window creation failed. Inspect the UI owner's typed error and correct the requested window resources."
+        }
+        BuildStage::Webview => {
+            "KELD-CORE-041: native webview creation failed. Inspect the UI owner's typed error and correct the requested window resources."
+        }
+    };
+    WindowRefusal::fixed("KELD-CORE-041", message)
+}
+
+pub(super) fn report_ignored_build() {
+    eprintln!(
+        "KELD-CORE-041: ignored unexpected native build result; inspect the UI build correlation"
+    );
+}
+
+pub(super) fn report_ignored_build_failure() {
+    eprintln!(
+        "KELD-CORE-041: ignored unexpected native build failure; inspect the UI build correlation"
+    );
+}
+
+pub(super) fn report_release(outcome: &ReleaseOutcome) {
+    if outcome.diagnostic {
+        eprintln!("KELD-CORE-038: unexpected native release; inspect UI teardown ordering");
+    }
+    if outcome.dropped_facts != 0 {
+        eprintln!(
+            "window teardown dropped {} native facts",
+            outcome.dropped_facts
+        );
+    }
+}
+
+pub(super) fn report_native_close(
+    outcome: CloseOutcome,
+) -> Result<Option<OwnedWindowEvent>, HostAppError> {
+    match outcome {
+        CloseOutcome::Requested { fact, .. } => Ok(fact),
+        CloseOutcome::Unmapped => {
+            eprintln!(
+                "KELD-CORE-038: native close references an unmapped view; inspect UI event ordering"
+            );
+            Ok(None)
+        }
+        CloseOutcome::Exhausted => {
+            eprintln!(
+                "KELD-CORE-039: native close_seq exhausted; destroy the window or end the session"
+            );
+            Ok(None)
+        }
+        CloseOutcome::AlreadyClosing | CloseOutcome::Merged { .. } => Ok(None),
+        CloseOutcome::Teardown(_) | CloseOutcome::Vetoed | CloseOutcome::Stale => Err(app_detail(
+            "window native close",
+            "registry returned a call-only close outcome",
+        )),
+    }
+}
+
+pub(super) fn report_native_fact(fact: FactOutcome) -> Option<OwnedWindowEvent> {
+    match fact {
+        FactOutcome::Event(fact) => Some(fact),
+        FactOutcome::Unmapped => {
+            eprintln!(
+                "KELD-CORE-038: native state references an unmapped view; inspect UI event ordering"
+            );
+            None
+        }
+        FactOutcome::Coalesced | FactOutcome::Suppressed | FactOutcome::Dropped => None,
+    }
 }
 
 impl PrimaryRouterHandle {
@@ -81,6 +156,13 @@ impl PrimaryRouterHandle {
                 return Err(app_detail(
                     "window native event",
                     "dialog completion must be dispatched by the event coordinator",
+                ));
+            }
+            #[cfg(windows)]
+            AppWindowEvent::HostWriterProgress => {
+                return Err(app_detail(
+                    "window native event",
+                    "writer progress must be dispatched by the event coordinator",
                 ));
             }
         })

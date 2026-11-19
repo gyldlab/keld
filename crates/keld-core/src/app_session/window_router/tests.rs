@@ -72,6 +72,12 @@ impl Fixture {
         let active = current
             .as_ref()
             .ok_or_else(|| std::io::Error::other("active fixture is absent"))?;
+        #[cfg(windows)]
+        let reader = active
+            .legacy_test_writer()
+            .ok_or_else(|| std::io::Error::other("legacy fixture writer is absent"))?
+            .try_clone()?;
+        #[cfg(not(windows))]
         let reader = active.writer.try_clone()?;
         reader.set_app_link_read_deadline(Some(super::super::APP_LINK_READER_POLL))?;
         Ok(reader)
