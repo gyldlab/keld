@@ -4053,7 +4053,7 @@ impl WebView2Engine {
             .loop_setup_started();
         let navigation_diagnostic = Arc::clone(&self.navigation_diagnostic);
         let terminal_intent_in_loop = Arc::clone(&terminal_intent);
-        let mut desktop = self
+        let mut desktop: Option<desktop_session::DesktopSession> = self
             .desktop_observation_selected
             .then(desktop_session::DesktopSession::default);
         let mut views = std::mem::take(&mut self.views);

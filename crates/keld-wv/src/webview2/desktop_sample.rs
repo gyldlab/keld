@@ -12,8 +12,7 @@
 //! - `target`: `GetDisplayConfigBufferSizes`, [QueryDisplayConfig] (active paths),
 //!   [DisplayConfigGetDeviceInfo] (source/target names only).
 //! - `appearance`: [TextScaleFactor], [HighContrast] and [RegGetValueW] for the
-//!   user's `AppsUseLightTheme` DWORD only; balanced RoInitialize/RoUninitialize on
-//!   the same UI thread. No setting is changed or handle exposed.
+//!   user's `AppsUseLightTheme` DWORD only. No setting is changed or handle exposed.
 //!
 //! [EnumThreadWindows]: https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-enumthreadwindows
 //! [GetDpiForWindow]: https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-getdpiforwindow

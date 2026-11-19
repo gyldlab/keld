@@ -1170,6 +1170,7 @@ mod tests {
     mod adopted_controller_close_native;
     mod build_identity;
     mod controller_custody_native;
+    mod desktop_first_init;
     mod exit_wake_retirement;
     mod first_navigation;
     mod profile_release;
