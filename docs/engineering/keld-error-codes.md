@@ -268,6 +268,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Renderer bridge request rejected, or ended without a reply; until GH-1095 lands this code is also returned after application dispatch
 - fix: Never resend the call automatically. Until GH-1095 lands, treat it as possibly run whatever the detail says. Invoke only the declared Keld renderer API with a valid payload, one call at a time, and never supply stale document state, undeclared channels, oversized payloads, or page-selected authority. Do not reload the document to recover.
 
+## KELD-WV-014
+
+- crate: keld-wv
+- message: Original preload source was refused
+- fix: Restore the independently pinned package image and create the window again. Use the source-refusal detail to diagnose the failure.
+
 ## KELD-CLI-010
 
 - crate: keld-cli

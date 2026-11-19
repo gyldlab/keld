@@ -21,6 +21,8 @@ mod hello;
 mod media;
 #[cfg(any(target_os = "macos", windows))]
 mod native_window;
+#[cfg(any(target_os = "macos", windows))]
+pub mod preload_image;
 pub mod profile;
 #[cfg(target_os = "macos")]
 mod startup;

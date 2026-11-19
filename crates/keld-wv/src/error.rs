@@ -48,6 +48,11 @@ pub enum WvError {
         /// Sanitized rejection detail; never contains endpoint/token/authority material.
         detail: String,
     },
+    /// Immutable original preload source admission failed before execution.
+    AppPreloadSource {
+        /// Sanitized reason; never includes filesystem or endpoint authority.
+        detail: String,
+    },
     /// Persistent profile identity, namespace, state, or ownership failed closed.
     ProfileSelection(ProfileError),
 }
@@ -108,6 +113,11 @@ impl fmt::Display for WvError {
                 f,
                 "KELD-WV-011: renderer bridge request rejected — {detail}. \
                  Reload the current main-frame document and invoke only the declared Keld renderer API."
+            ),
+            Self::AppPreloadSource { detail } => write!(
+                f,
+                "KELD-WV-014: original preload source refused — {detail}. \
+                 Restore the independently pinned package image and create the window again."
             ),
             Self::ProfileSelection(source) => source.fmt(f),
         }
