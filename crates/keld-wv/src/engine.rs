@@ -31,6 +31,45 @@ use std::time::Instant;
 #[cfg(any(target_os = "macos", windows))]
 use tao::event::{Event, StartCause};
 
+/// Immutable application metadata appended to the native engine user agent.
+///
+/// This cold value grants no authority and cannot replace the engine user agent.
+/// Shared by macOS configuration and Windows qualified original views.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApplicationNameForUserAgent(Box<str>);
+
+impl ApplicationNameForUserAgent {
+    /// Validates 1..=256 visible ASCII bytes, permitting only internal spaces.
+    ///
+    /// # Errors
+    /// Returns [`WvError::Webview`] for empty, oversized, non-ASCII or control
+    /// text, or a leading/trailing space. Supply a bounded literal app label.
+    pub fn new(value: String) -> Result<Self, WvError> {
+        if value.is_empty()
+            || value.len() > 256
+            || value.starts_with(' ')
+            || value.ends_with(' ')
+            || value
+                .bytes()
+                .any(|byte| !byte.is_ascii_graphic() && byte != b' ')
+        {
+            return Err(WvError::Webview(String::from(
+                "applicationNameForUserAgent must contain 1..=256 visible ASCII bytes with internal spaces only; remove leading/trailing spaces, controls and non-ASCII text",
+            )));
+        }
+        Ok(Self(value.into_boxed_str()))
+    }
+
+    /// Borrows the validated metadata without allocating or granting authority.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+mod application_name_for_user_agent_tests;
+
 /// Logical (DPI-independent) size in points.
 ///
 /// On macOS these are `NSWindow` points. `backingScaleFactor` maps them to
