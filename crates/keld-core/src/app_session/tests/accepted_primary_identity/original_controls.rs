@@ -317,3 +317,63 @@ fn windows_original_control_release_moves_one_capacity_marker_to_the_renderer_en
         std::thread::yield_now();
     }
 }
+
+#[test]
+fn windows_renderer_worker_error_precedes_the_core_progress_wake() {
+    let _custody = keld_runtime::windows_job::install_host_death_job()
+        .expect("install process-lifetime custody");
+    let mut role = primary_role();
+    let (bound, _control) = role.bind();
+    let fixture = start_control_router(bound);
+    let handle = fixture.router.handle();
+    let caller = current_caller(&handle);
+    let (mut dispatch, endpoint) =
+        crate::app_session::renderer_dispatch::RendererDispatch::prepare();
+    let release_worker = dispatch.hold_after_failure_for_test();
+    let (refused, refusal) = mpsc::sync_channel(1);
+    dispatch
+        .start(handle.clone(), move || {
+            let _ = refused.try_send(());
+            Err(keld_wv::WvError::EventLoop(String::from(
+                "original native outcome wake refused",
+            )))
+        })
+        .expect("retain actual renderer worker");
+
+    drop(endpoint); // Actual request disconnect runs the worker's terminal wake.
+    refusal
+        .recv_timeout(super::BOUND)
+        .expect("worker entered the native outcome wake");
+    let command = fixture
+        .events
+        .recv_timeout(std::time::Duration::from_secs(3))
+        .expect("existing Core wake observed worker failure without a native outcome");
+    assert!(matches!(command, AppWindowCommand::HostWriterProgress));
+    let error = dispatch
+        .poll_finished()
+        .expect_err("original terminal failure must already be observable on first wake");
+    assert_eq!(error.code, "KELD-CORE-037");
+    assert_eq!(error.phase, "renderer outcome wake");
+    assert!(
+        error
+            .detail
+            .contains("original native outcome wake refused")
+    );
+    assert!(
+        fixture.events.try_recv().is_err(),
+        "worker did not emit Fatal"
+    );
+    assert!(
+        !caller
+            .reader_stop
+            .load(std::sync::atomic::Ordering::Acquire)
+    );
+    release_worker
+        .send(())
+        .expect("release the original worker");
+    fixture.router.shutdown().expect("router cleanup");
+    assert!(matches!(
+        role.finish(),
+        Some(keld_runtime::SupervisorOutcome::Stopped)
+    ));
+}

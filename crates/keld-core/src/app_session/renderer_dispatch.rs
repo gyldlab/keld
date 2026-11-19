@@ -10,6 +10,7 @@ use keld_wv::WvError;
 use keld_wv::renderer_bridge::{
     RendererBridgeEndpoint, RendererBridgeOutcome, RendererBridgeRequest,
 };
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -19,8 +20,10 @@ type Wake = dyn Fn() -> Result<(), WvError> + Send + Sync;
 pub(super) struct RendererDispatch {
     input: Arc<Mutex<RendererInput>>,
     outcomes: Arc<RendererOutcomes>,
-    worker: Option<JoinHandle<Result<(), HostAppError>>>,
-    terminal: Option<Result<(), HostAppError>>,
+    worker: Option<JoinHandle<()>>,
+    terminal: Arc<OnceLock<Result<(), HostAppError>>>,
+    #[cfg(test)]
+    after_failure: Option<Receiver<()>>,
 }
 
 struct RendererInput {
@@ -89,7 +92,9 @@ impl RendererDispatch {
                     wake: OnceLock::new(),
                 }),
                 worker: None,
-                terminal: None,
+                terminal: Arc::new(OnceLock::new()),
+                #[cfg(test)]
+                after_failure: None,
             },
             RendererBridgeEndpoint::new(
                 requests,
@@ -119,35 +124,62 @@ impl RendererDispatch {
         compat.attach_renderer_outcomes(&self.outcomes)?;
         let input = Arc::clone(&self.input);
         let outcomes = Arc::clone(&self.outcomes);
+        let terminal = Arc::clone(&self.terminal);
+        #[cfg(test)]
+        let after_failure = self.after_failure.take();
         self.worker = Some(
             thread::Builder::new()
                 .name(String::from("keld-core-renderer-dispatch"))
-                .spawn(move || run(&input, &outcomes, &router))
+                .spawn(move || {
+                    let result = catch_unwind(AssertUnwindSafe(|| run(&input, &outcomes, &router)))
+                        .unwrap_or_else(|_| Err(worker_panic()));
+                    let failed = result.is_err();
+                    // Publish failure before its Core progress wake. The inbox
+                    // guard is gone even when the original input remains.
+                    let _ = terminal.set(result);
+                    if failed {
+                        compat.wake_renderer_failure();
+                        #[cfg(test)]
+                        if let Some(after_failure) = after_failure {
+                            let _ = after_failure.recv();
+                        }
+                    }
+                })
                 .map_err(|error| app_io("renderer dispatch thread", &error))?,
         );
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(in crate::app_session) fn hold_after_failure_for_test(&mut self) -> mpsc::Sender<()> {
+        let (resume, held) = mpsc::channel();
+        self.after_failure = Some(held);
+        resume
+    }
+
     /// A successful terminal observation means every producer disconnected,
     /// the actual inbox drained, and the sole outcome sender closed.
     /// On fault the source and the original failure remain in this owner.
-    pub(super) fn poll_finished(&mut self) -> Result<bool, HostAppError> {
+    pub(super) fn poll_finished(&mut self) -> Result<bool, &HostAppError> {
         if self
             .worker
             .as_ref()
             .is_some_and(|worker| worker.is_finished())
             && let Some(worker) = self.worker.take()
+            && worker.join().is_err()
         {
-            self.terminal = Some(worker.join().unwrap_or_else(|_| {
-                Err(app_detail("renderer dispatch", "original worker panicked"))
-            }));
+            self.terminal.get_or_init(|| Err(worker_panic()));
         }
-        match &self.terminal {
+        match self.terminal.get() {
             Some(Ok(())) => Ok(true),
-            Some(Err(error)) => Err(app_detail("renderer dispatch", error.to_string())),
+            Some(Err(error)) => Err(error),
             None => Ok(false),
         }
     }
+}
+
+fn worker_panic() -> HostAppError {
+    app_detail("renderer dispatch", "original worker panicked")
 }
 
 fn run(
@@ -168,5 +200,6 @@ fn run(
         router.observe_registered_renderer(request)?;
         drop(input.active.take()); // only after disposition on this same source
     }
+    drop(input);
     outcomes.close()
 }

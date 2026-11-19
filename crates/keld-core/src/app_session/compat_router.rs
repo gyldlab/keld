@@ -41,6 +41,12 @@ impl CompatSession {
             })
     }
 
+    /// Wake the existing Core progress owner after the dispatcher retains its
+    /// exact failure. This wake has no terminal, capacity or recovery authority.
+    pub(super) fn wake_renderer_failure(&self) {
+        let _ = self.writer.completed_source_progress();
+    }
+
     fn forward_native_capacity(&self) -> Result<(), HostAppError> {
         if let Some(owner) = self.renderer_outcomes.get().and_then(Weak::upgrade)
             && self.backing_released.swap(false, Ordering::AcqRel)
