@@ -7,7 +7,7 @@ use std::process::Command;
 
 use keld_core::{
     DEFAULT_ENTRY, DEFAULT_RENDERER, initial_window_from_config_ts, read_config_entry,
-    read_config_renderer,
+    read_config_renderer, renderer_from_config_ts,
 };
 use keld_runtime::primary::strip_verbatim_prefix;
 use schemars::JsonSchema;
@@ -46,7 +46,11 @@ pub(crate) fn facade_mode_for_project(root: &Path) -> Result<bool, String> {
             ));
         }
     };
-    initial_window_from_config_ts(&config)
+    facade_mode_for_config(&config)
+}
+
+fn facade_mode_for_config(config: &str) -> Result<bool, String> {
+    initial_window_from_config_ts(config)
         .map_err(|error| format!("{BOOT_CONFIG_CODE}: {error} {BOOT_CONFIG_FIX}"))
 }
 
@@ -132,10 +136,32 @@ fn display_project_path(path: &Path) -> String {
 /// Runs environment checks for local development.
 #[must_use]
 pub fn run_checks(project_root: Option<&Path>) -> Vec<Check> {
-    let mut checks = vec![check_bun(), check_project_layout(project_root)];
+    run_checks_with_captured_config(project_root, None)
+}
+
+/// Inputs already validated by the retained Windows graph preparation.
+#[derive(Clone, Copy)]
+pub(crate) struct CapturedProjectConfig<'a> {
+    pub(crate) source: &'a str,
+    pub(crate) entry: &'a str,
+    pub(crate) profile: keld_guard::DeclaredProfile,
+}
+
+pub(crate) fn run_checks_with_captured_config(
+    project_root: Option<&Path>,
+    captured: Option<CapturedProjectConfig<'_>>,
+) -> Vec<Check> {
+    let mut checks = vec![
+        check_bun(),
+        check_project_layout(project_root, captured.map(|config| config.entry)),
+    ];
     if let Some(root) = project_root {
-        checks.push(check_renderer(root));
-        checks.push(check_security_profile(root));
+        checks.push(check_renderer(root, captured.map(|config| config.source)));
+        checks.push(if let Some(config) = captured {
+            profile_check(Some(config.profile))
+        } else {
+            check_security_profile(root)
+        });
     }
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
@@ -145,7 +171,7 @@ pub fn run_checks(project_root: Option<&Path>) -> Vec<Check> {
 }
 
 fn check_security_profile(root: &Path) -> Check {
-    use keld_guard::{DeclaredProfile, ManifestError};
+    use keld_guard::ManifestError;
 
     let path = root.join("keld.permissions.jsonc");
     let manifest = match keld_guard::load_manifest(&path) {
@@ -169,7 +195,13 @@ fn check_security_profile(root: &Path) -> Check {
             };
         }
     };
-    let (ok, detail, error) = match manifest.declared_profile() {
+    profile_check(manifest.declared_profile())
+}
+
+fn profile_check(profile: Option<keld_guard::DeclaredProfile>) -> Check {
+    use keld_guard::DeclaredProfile;
+
+    let (ok, detail, error) = match profile {
         None => (
             true,
             "no profile selected; a default run would be unverified; runtime admission not performed".to_owned(),
@@ -269,7 +301,7 @@ fn check_bun() -> Check {
     }
 }
 
-fn check_project_layout(project_root: Option<&Path>) -> Check {
+fn check_project_layout(project_root: Option<&Path>, captured_entry: Option<&str>) -> Check {
     let Some(root) = project_root else {
         return Check {
             label: "project",
@@ -279,10 +311,13 @@ fn check_project_layout(project_root: Option<&Path>) -> Check {
             error: None,
         };
     };
-    let has_config = root.join("keld.config.ts").is_file();
+    let has_config = captured_entry.is_some() || root.join("keld.config.ts").is_file();
     // Match the boot compiler's entry resolver, not a hard-coded template
     // location. Real facade apps often have no src/main.ts or index.html.
-    let entry = read_config_entry(root).unwrap_or_else(|| DEFAULT_ENTRY.to_owned());
+    let entry = captured_entry.map_or_else(
+        || read_config_entry(root).unwrap_or_else(|| DEFAULT_ENTRY.to_owned()),
+        str::to_owned,
+    );
     let has_main = renderer_path_problem(&entry).is_none() && root.join(&entry).is_file();
     let shown = display_project_path(root);
     if has_config && has_main {
@@ -310,8 +345,10 @@ fn check_project_layout(project_root: Option<&Path>) -> Check {
     }
 }
 
-fn check_renderer(root: &Path) -> Check {
-    match facade_mode_for_project(root) {
+fn check_renderer(root: &Path, captured_source: Option<&str>) -> Check {
+    let facade =
+        captured_source.map_or_else(|| facade_mode_for_project(root), facade_mode_for_config);
+    match facade {
         Ok(true) => {
             #[cfg(not(any(target_os = "macos", windows)))]
             {
@@ -357,7 +394,9 @@ fn check_renderer(root: &Path) -> Check {
             };
         }
     }
-    let renderer = read_config_renderer(root).unwrap_or_else(|| DEFAULT_RENDERER.to_owned());
+    let renderer = captured_source
+        .map_or_else(|| read_config_renderer(root), renderer_from_config_ts)
+        .unwrap_or_else(|| DEFAULT_RENDERER.to_owned());
     let rel = renderer.trim();
     let reason = renderer_path_problem(&renderer).or_else(|| {
         if root.join(rel).is_file() {

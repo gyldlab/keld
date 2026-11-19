@@ -180,7 +180,23 @@ fn absent_production_qualification_refuses_before_stage() {
 fn qualified_fixture_copies_non_default_source_and_emits_closed_boot8() {
     let f = Fixture::new();
     write(&f.project, ".git/inert-history", b"not source");
-    let stage = f.stage().expect("internal fixture qualification only");
+    let input = prepare_with_qualification(&f.project, &f.host, Some(&qualified()))
+        .expect("fixture qualification preparation")
+        .expect("selected graph");
+    let checks = crate::doctor::run_checks_with_captured_config(
+        Some(&f.project),
+        Some(input.doctor_config()),
+    );
+    assert_eq!(
+        checks.iter().map(|check| check.label).collect::<Vec<_>>(),
+        ["bun", "project", "renderer", "security_profile", "webview"],
+    );
+    for label in ["project", "renderer", "security_profile"] {
+        assert!(checks.iter().any(|check| check.label == label && check.ok));
+    }
+    let stage = input
+        .stage(&f.host)
+        .expect("internal fixture qualification only");
     let boot_bytes = fs::read(stage.root().join("keld.boot.json")).expect("published boot");
     let boot: serde_json::Value = serde_json::from_slice(&boot_bytes).expect("closed descriptor");
     assert_eq!(boot.as_object().expect("root").len(), 7);

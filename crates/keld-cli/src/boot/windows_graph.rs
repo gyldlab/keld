@@ -1,9 +1,9 @@
 //! Windows development graph selection. Project pins are integrity data;
 //! only the separately compiled framework tuple selects qualified providers.
 
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{Read as _, Seek as _, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use keld_core::app_session::{ApprovedGraphCaptureInput, SelectedRendererSource};
 use keld_update::{
@@ -116,7 +116,8 @@ impl CapturedAuthoring {
 /// The one captured input crosses into boot.rs only after source/Host/framework
 /// checks. It is not application-controlled serialized approval.
 #[derive(Debug)]
-pub(super) struct CapturedGraphInput {
+pub(crate) struct CapturedGraphInput {
+    project: PathBuf,
     pub(super) config: String,
     pub(super) app: DevelopmentAppConfig,
     pub(super) selected: SelectedRendererSource,
@@ -130,6 +131,18 @@ pub(super) struct CapturedGraphInput {
 }
 
 impl CapturedGraphInput {
+    pub(crate) fn doctor_config(&self) -> crate::doctor::CapturedProjectConfig<'_> {
+        crate::doctor::CapturedProjectConfig {
+            source: &self.config,
+            entry: &self.app.entry,
+            profile: keld_guard::DeclaredProfile::Legacy,
+        }
+    }
+
+    pub(crate) fn stage(&self, developer_host: &Path) -> Result<DevBootStage, BootCompileError> {
+        super::stage_dev_boot_with_approved_graph(&self.project, developer_host, self)
+    }
+
     pub(super) fn recheck(&self) -> Result<(), BootCompileError> {
         for captured in &self.authoring {
             captured.verify_metadata()?;
@@ -281,24 +294,24 @@ fn capture_host(
 }
 
 fn capture_input(
-    project: &Path,
+    project: PathBuf,
+    root: File,
+    build_file: CapturedAuthoring,
+    build: &str,
     developer_host: &Path,
     qualified: Option<&QualifiedWindowsFramework>,
 ) -> Result<CapturedGraphInput, BootCompileError> {
-    let root = open_windows_launch_guard(project)?;
-    ensure_current_principal_owns(project)?;
-    let mut config_file = CapturedAuthoring::open(&root, project, "keld.config.ts")?;
+    ensure_current_principal_owns(&project)?;
+    let mut config_file = CapturedAuthoring::open(&root, &project, "keld.config.ts")?;
     let config = config_file.text()?;
     if !source_declared(&config)? {
         return Err(error(
             "graph source selection",
-            "rendererSource changed after graph selection",
+            "rendererSource and graphSource must appear together",
         ));
     }
-    let mut build_file = CapturedAuthoring::open(&root, project, "keld.build.ts")?;
-    let build = build_file.text()?;
-    let (app, graph) = parse_development_graph(&config, &build)?;
-    let (permission_file, permissions) = capture_permissions(&root, project)?;
+    let (app, graph) = parse_development_graph(&config, build)?;
+    let (permission_file, permissions) = capture_permissions(&root, &project)?;
     let qualified = qualified.ok_or_else(|| error(
         "framework qualification",
         "this CLI has no independently qualified Windows Host/provider tuple; project hashes cannot approve a distribution",
@@ -320,7 +333,7 @@ fn capture_input(
 
     let (host_parent, host) = capture_host(developer_host, qualified)?;
     keld_core::app_session::verify_provider_trees_from_retained_root(
-        project,
+        &project,
         &root,
         &qualified.provider_trees,
     )
@@ -331,6 +344,7 @@ fn capture_input(
         expected_package_trees: qualified.provider_trees,
     };
     let captured = CapturedGraphInput {
+        project,
         config,
         app,
         selected,
@@ -346,60 +360,65 @@ fn capture_input(
     Ok(captured)
 }
 
-pub(super) fn stage_for_project(
+pub(crate) fn prepare_for_project(
+    project: &Path,
+    developer_host: &Path,
+) -> Result<Option<CapturedGraphInput>, BootCompileError> {
+    prepare_with_qualification(project, developer_host, qualified_framework().as_ref())
+}
+
+fn prepare_with_qualification(
+    project: &Path,
+    developer_host: &Path,
+    qualified: Option<&QualifiedWindowsFramework>,
+) -> Result<Option<CapturedGraphInput>, BootCompileError> {
+    // Ordinary dev ignores unrelated packaging inputs. A closed graph signal
+    // changes lanes before either doctor or staging can use the bare reader.
+    let Ok(project) = project.canonicalize() else {
+        return Ok(None);
+    };
+    let Ok(root) = open_windows_launch_guard(&project) else {
+        return Ok(None);
+    };
+    let Ok(Some(mut build_file)) =
+        CapturedAuthoring::open_optional(&root, &project, "keld.build.ts")
+    else {
+        return Ok(None);
+    };
+    let Ok(build) = build_file.text() else {
+        return Ok(None);
+    };
+    if !keld_core::literal_config_from_ts(&build)
+        .is_ok_and(|fields| fields.contains_key("graphSource"))
+    {
+        return Ok(None);
+    }
+    capture_input(project, root, build_file, &build, developer_host, qualified).map(Some)
+}
+
+#[cfg(test)]
+fn stage_for_project(
     project: &Path,
     developer_host: &Path,
 ) -> Result<DevBootStage, BootCompileError> {
     stage_with_qualification(project, developer_host, qualified_framework().as_ref())
 }
 
+#[cfg(test)]
 fn stage_with_qualification(
     project: &Path,
     developer_host: &Path,
     qualified: Option<&QualifiedWindowsFramework>,
 ) -> Result<DevBootStage, BootCompileError> {
-    let project = project
-        .canonicalize()
-        .map_err(|source| error("project root", source))?;
-    ensure_current_principal_owns(&project)?;
-    let path = project.join("keld.config.ts");
-    ensure_current_principal_owns(&path)?;
-    // Probe using the ordinary reader so existing bare projects retain their
-    // config behavior. Selected projects read authoritative bytes only from
-    // captured handles and cannot fall back if the selection changes.
-    let probe = fs::read_to_string(path).map_err(|source| error("project config", source))?;
-    if source_declared(&probe)? {
-        let input = capture_input(&project, developer_host, qualified)?;
-        return super::stage_dev_boot_with_approved_graph(&project, developer_host, &input);
+    match prepare_with_qualification(project, developer_host, qualified)? {
+        Some(graph) => graph.stage(developer_host),
+        None => super::stage_dev_boot(project, developer_host),
     }
-    if build_declares_graph(&project) {
-        return Err(error(
-            "graph source selection",
-            "rendererSource and graphSource must appear together",
-        ));
-    }
-    super::stage_dev_boot(&project, developer_host)
 }
 
 pub(super) fn source_declared(config: &str) -> Result<bool, BootCompileError> {
     keld_core::renderer_source_declared_from_config_ts(config)
         .map_err(|source| error("graph source selection", source))
-}
-
-fn build_declares_graph(project: &Path) -> bool {
-    // Ordinary dev historically ignores packaging inputs. A readable,
-    // complete graph declaration is the only unpaired build signal.
-    let Ok(root) = open_windows_launch_guard(project) else {
-        return false;
-    };
-    let Ok(Some(mut build)) = CapturedAuthoring::open_optional(&root, project, "keld.build.ts")
-    else {
-        return false;
-    };
-    build.text().is_ok_and(|source| {
-        keld_core::literal_config_from_ts(&source)
-            .is_ok_and(|fields| fields.contains_key("graphSource"))
-    })
 }
 
 #[cfg(test)]

@@ -413,22 +413,8 @@ where
     )
 }
 
-/// Ordinary developer entry selects graph8 only after the canonical captured
-/// authoring and independent compiled framework tuple have matched.
-#[cfg(any(target_os = "macos", target_os = "linux", windows))]
-pub(crate) fn stage_dev_boot_for_project(
-    project_root: &Path,
-    developer_host: &Path,
-) -> Result<DevBootStage, BootCompileError> {
-    #[cfg(windows)]
-    {
-        windows_graph::stage_for_project(project_root, developer_host)
-    }
-    #[cfg(not(windows))]
-    {
-        stage_dev_boot(project_root, developer_host)
-    }
-}
+#[cfg(windows)]
+pub(crate) use windows_graph::prepare_for_project as prepare_windows_dev_graph;
 
 /// The historical graph seam now takes the already qualified captured input.
 /// No serialized/project/runtime-env value can construct this carrier.

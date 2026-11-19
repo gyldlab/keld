@@ -349,7 +349,6 @@ pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
-    doctor_or_err(project_root)?;
     let cli_executable = std::env::current_exe()?;
     let developer_host = cli_executable
         .parent()
@@ -363,8 +362,29 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
         } else {
             "keld-host"
         });
-    let stage = crate::boot::stage_dev_boot_for_project(project_root, &developer_host)
+    #[cfg(windows)]
+    let captured_graph = crate::boot::prepare_windows_dev_graph(project_root, &developer_host)
         .map_err(|error| DevError::Doctor(error.to_string()))?;
+    #[cfg(windows)]
+    let stage = if let Some(graph) = captured_graph {
+        report_checks(
+            crate::doctor::run_checks_with_captured_config(
+                Some(project_root),
+                Some(graph.doctor_config()),
+            )
+            .into_iter(),
+        )?;
+        graph.stage(&developer_host)
+    } else {
+        doctor_or_err(project_root)?;
+        crate::boot::stage_dev_boot(project_root, &developer_host)
+    };
+    #[cfg(not(windows))]
+    let stage = {
+        doctor_or_err(project_root)?;
+        crate::boot::stage_dev_boot(project_root, &developer_host)
+    };
+    let stage = stage.map_err(|error| DevError::Doctor(error.to_string()))?;
     let stage_root = stage.root().to_owned();
     let staged_host = stage.host().to_owned();
     #[cfg(windows)]
