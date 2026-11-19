@@ -19,6 +19,14 @@ fn write_error(
     .map_err(|source| app_ipc("dialog correlated refusal", &source))
 }
 
+fn write_fault(
+    active: &mut ActivePrimaryGeneration,
+    correlation: CorrelationId,
+    fault: DialogFault,
+) -> Result<(), HostAppError> {
+    write_error(active, correlation, &fault.call_error())
+}
+
 fn write_reply(
     active: &mut ActivePrimaryGeneration,
     correlation: CorrelationId,
@@ -88,21 +96,13 @@ impl PrimaryRouterHandle {
                 return Err(primary);
             }
             if !active.identity.is_primary() {
-                return write_error(
-                    active,
-                    correlation,
-                    &DialogFault::InvalidRequest.call_error(),
-                );
+                return write_fault(active, correlation, DialogFault::InvalidRequest);
             }
             if let Err(denied) = dialog.authorize() {
                 return write_error(active, correlation, &denied);
             }
             let Ok(request) = keld_native::dialog::decode_dialog_request(payload) else {
-                return write_error(
-                    active,
-                    correlation,
-                    &DialogFault::InvalidRequest.call_error(),
-                );
+                return write_fault(active, correlation, DialogFault::InvalidRequest);
             };
             match request {
                 keld_native::dialog::DialogRequestV1::Cancel { nonce } => {
@@ -110,7 +110,7 @@ impl PrimaryRouterHandle {
                         Ok(disposition) => {
                             write_reply(active, correlation, &DialogReplyV1::Cancel { disposition })
                         }
-                        Err(reason) => write_error(active, correlation, &reason.call_error()),
+                        Err(reason) => write_fault(active, correlation, reason),
                     }
                 }
                 keld_native::dialog::DialogRequestV1::Message {
@@ -121,29 +121,21 @@ impl PrimaryRouterHandle {
                     let Some(parent) = parent else {
                         // Parentless modal requires its separately approved
                         // deferred CFRunLoop service, never an in-Tao runModal.
-                        return write_error(
-                            active,
-                            correlation,
-                            &DialogFault::Unsupported.call_error(),
-                        );
+                        return write_fault(active, correlation, DialogFault::Unsupported);
                     };
                     let owner = WindowOwner::new(active.identity, active.attempt);
                     let view = match self.dialog_parent_view(owner, parent) {
                         Ok(view) => view,
                         Err(reason) => {
-                            return write_error(active, correlation, &reason.call_error());
+                            return write_fault(active, correlation, reason);
                         }
                     };
                     if !dialog.has_capacity() {
-                        return write_error(active, correlation, &DialogFault::Busy.call_error());
+                        return write_fault(active, correlation, DialogFault::Busy);
                     }
                     let previous = active.dialog_nonce_high_water;
                     if !active.accept_dialog_nonce(nonce) {
-                        return write_error(
-                            active,
-                            correlation,
-                            &DialogFault::InvalidRequest.call_error(),
-                        );
+                        return write_fault(active, correlation, DialogFault::InvalidRequest);
                     }
                     let effect_owner = DialogOwner {
                         identity: active.identity,
@@ -156,7 +148,7 @@ impl PrimaryRouterHandle {
                         // No effect was admitted on failure. Another original
                         // cannot race while the existing current writer is held.
                         active.dialog_nonce_high_water = previous;
-                        return write_error(active, correlation, &reason.call_error());
+                        return write_fault(active, correlation, reason);
                     }
                     Ok(())
                 }

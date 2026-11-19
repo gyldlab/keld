@@ -570,12 +570,10 @@ impl DialogMainOwner {
                 };
                 self.notify(owner, outcome)?;
                 self.active = None;
-            } else {
-                if expired {
-                    panel.request_cancel().map_err(|source| {
-                        app_detail("native dialog expired", source.to_string())
-                    })?;
-                }
+            } else if expired {
+                panel
+                    .request_cancel()
+                    .map_err(|source| app_detail("native dialog expired", source.to_string()))?;
             }
         }
         let next = self.active.as_ref().map(|(_, _, _, deadline)| {
