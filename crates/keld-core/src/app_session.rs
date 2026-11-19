@@ -5421,11 +5421,13 @@ fn coordinate_window_events(
             AppWindowEvent::LastWindowClosed => Ok(()),
             #[cfg(windows)]
             AppWindowEvent::HostWriterProgress => {
-                let progress = router.service_primary_writer_progress();
+                let acknowledgment = router.acknowledge_primary_writer_progress();
                 if let Some(Err(error)) = renderer_terminal.and_then(OnceLock::get) {
                     let terminal = stop_failed_renderer_dispatch(router, commands);
-                    return Err(collapse_app_failures(error, [progress, terminal]));
+                    return Err(collapse_app_failures(error, [acknowledgment, terminal]));
                 }
+                let progress =
+                    acknowledgment.and_then(|()| router.service_primary_writer_continuations());
                 match progress {
                     Ok(()) if renderer_terminal.is_some() => {
                         use window_router::NativePublicationDisposition;

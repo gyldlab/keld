@@ -1,4 +1,4 @@
-use super::{assert_save, fixture, fixture_observed, progress, settle};
+use super::{assert_save, fixture, fixture_observed, progress, settle, source_pointer};
 use crate::app_session::dialog_session::{
     DialogFault, DialogOwner, DialogReplyV1, DialogUiOutcome, DialogWorkOptions, WebviewId,
 };
@@ -7,10 +7,51 @@ use keld_ipc::link::read_frame;
 use keld_ipc::{CallError, CorrelationId, FrameKind};
 use keld_native::dialog::{CancelDisposition, DialogRequestV1};
 use std::io::Read as _;
+use std::sync::OnceLock;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[test]
+fn observed_renderer_failure_precedes_pending_dialog_publication() {
+    use crate::app_session::{
+        AppReadyTrigger, AppWindowEvent, app_detail, coordinate_window_events,
+    };
+
+    fixture(|router, _peer, _writer, _events| {
+        settle(router);
+        let original = source_pointer(router);
+        let terminal = OnceLock::from(Err(app_detail(
+            "renderer dispatch fixture",
+            "original renderer outcome failed",
+        )));
+        let (events, received) = mpsc::channel();
+        events
+            .send(AppWindowEvent::HostWriterProgress)
+            .expect("deliver the coalesced Core progress");
+        let failure = coordinate_window_events(
+            &received,
+            router,
+            &router.window_commands,
+            AppReadyTrigger::NavigationReady,
+            |_| Ok(()),
+            None,
+            Some(&terminal),
+        )
+        .expect_err("renderer terminal must stop the coordinator");
+        assert!(
+            failure
+                .to_string()
+                .contains("original renderer outcome failed")
+        );
+        assert_eq!(
+            source_pointer(router),
+            original,
+            "the actual pending Dialog source must remain outside the writer"
+        );
+    });
+}
 
 #[test]
 fn duplicate_correlation_closes_exact_link_before_fresh_admission() {

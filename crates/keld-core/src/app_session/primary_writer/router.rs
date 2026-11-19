@@ -70,14 +70,27 @@ impl PrimaryRouterHandle {
         )
     }
 
-    pub(in crate::app_session) fn service_primary_writer_progress(
+    pub(in crate::app_session) fn acknowledge_primary_writer_progress(
         &self,
     ) -> Result<(), HostAppError> {
         self.primary_writer_owner()?
             .acknowledge_progress()
-            .map_err(|error| error.into_host_error("primary writer progress"))?;
+            .map_err(|error| error.into_host_error("primary writer progress"))
+    }
+
+    pub(in crate::app_session) fn service_primary_writer_continuations(
+        &self,
+    ) -> Result<(), HostAppError> {
         self.service_renderer_native_capacity()?;
         self.service_dialog_writer_progress()
+    }
+
+    #[cfg(test)]
+    pub(in crate::app_session) fn service_primary_writer_progress(
+        &self,
+    ) -> Result<(), HostAppError> {
+        self.acknowledge_primary_writer_progress()?;
+        self.service_primary_writer_continuations()
     }
 
     /// Capture only the already admitted exact stream while the original caller
