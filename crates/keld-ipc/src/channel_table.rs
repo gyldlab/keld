@@ -96,7 +96,7 @@ impl ReceiveClass {
 #[non_exhaustive]
 pub enum Authority {
     /// Session control carried on the host-minted link. The renderer topic
-    /// still requires the existing WebView principal guard for compat delivery.
+    /// still requires the existing `WebView` principal guard for compat delivery.
     HostInternal,
     /// Every call is evaluated by `keld-guard` against one of these manifest
     /// capability names. They are `keld_guard::capability` constants, never
