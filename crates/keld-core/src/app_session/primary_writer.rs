@@ -2,13 +2,27 @@
 //! Positions remain charged while encoding, queued, writing, and awaiting receipt.
 //! The only payload FIFO is the fixed five-entry array in `queue`.
 
+mod capacity;
+mod failure;
+mod filesystem;
 mod frame;
+mod observation;
 mod progress;
 mod queue;
 mod receipt;
+mod retained;
+mod router;
 mod worker;
+
+pub(super) use failure::{
+    FailureDisposition, PrimaryReadyFailure, PrimaryWriteFailure, PrimaryWriterFailure,
+    RetiredWriterFailure,
+};
 pub(super) use frame::ControlMessage;
+pub(in crate::app_session) use observation::DeferredPrimaryWrite;
 pub(super) use receipt::{WriteObservation, WriteReceipt};
+pub(super) use retained::RetainedWrite;
+pub(super) use router::admit_locked;
 pub(super) use worker::{PrimaryWriterWorker, WriterLink};
 
 use std::sync::mpsc::{Sender, TrySendError};

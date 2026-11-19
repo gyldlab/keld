@@ -48,12 +48,19 @@ pub(in crate::app_session) fn initial_ready_router_with_window_loop() -> (
     let (command_tx, command_rx) = mpsc::channel();
     let (window_tx, window_rx) = mpsc::channel();
     let handle = PrimaryRouterHandle {
+        #[cfg(windows)]
+        primary_writer: None,
         current: Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
+            #[cfg(windows)]
+            writer_link: None,
             identity: PrimaryLinkIdentity::Fixture,
             #[cfg(windows)]
             profile_binding: None,
             attempt: 1,
+            #[cfg(not(windows))]
             writer: server,
+            #[cfg(windows)]
+            writer: Some(server),
             reader_stop: Arc::new(AtomicBool::new(false)),
             #[cfg(any(target_os = "macos", target_os = "linux", windows))]
             dialog_nonce_high_water: 0,
@@ -133,6 +140,8 @@ fn failed_successor_ready_replay_requests_its_retired_attempt_restart() {
     // same transition used by teardown. Once teardown wins afterward, a
     // late successor is closed without publishing current or a reader.
     let mut router = PrimaryRouter {
+        #[cfg(windows)]
+        primary_writer_worker: None,
         handle: handle.clone(),
         fs_worker: None,
         #[cfg(target_os = "macos")]
@@ -165,6 +174,8 @@ fn failed_successor_ready_replay_cannot_restart_after_router_teardown() {
         .expect_err("closed g2 replay");
     assert_eq!(failure.retired_after_failed_ready, Some(2));
     let mut router = PrimaryRouter {
+        #[cfg(windows)]
+        primary_writer_worker: None,
         handle: handle.clone(),
         fs_worker: None,
         #[cfg(target_os = "macos")]
@@ -230,6 +241,8 @@ fn failed_ready_restart_overlapping_router_teardown_has_only_serial_outcomes() {
     });
     let teardown_start = std::sync::Arc::clone(&start);
     let mut router = PrimaryRouter {
+        #[cfg(windows)]
+        primary_writer_worker: None,
         handle: handle.clone(),
         fs_worker: None,
         #[cfg(target_os = "macos")]
@@ -278,6 +291,8 @@ fn failed_bound_restart_rejects_unowned_or_terminal_transitions() {
         handle.last_revoked_attempt.store(1, Ordering::Release);
         handle.retire_generation(1).expect("retire g1");
         let mut failure = PrimaryGenerationFailure {
+            #[cfg(windows)]
+            writer_failure: None,
             error: app_detail("lifecycle event", "forced failed replay"),
             retired_after_failed_ready: Some(2),
         };
@@ -290,11 +305,13 @@ fn failed_bound_restart_rejects_unowned_or_terminal_transitions() {
             "successor" | "misordered" => {
                 let (writer, _peer) = primary_test_stream_pair();
                 *handle.current.lock().expect("generation lock") = Some(ActivePrimaryGeneration {
+                    #[cfg(windows)]
+                    writer_link: None,
                     identity: PrimaryLinkIdentity::Fixture,
                     #[cfg(windows)]
                     profile_binding: None,
                     attempt: if case == "successor" { 3 } else { 1 },
-                    writer,
+                    writer: Some(writer),
                     reader_stop: Arc::new(AtomicBool::new(false)),
                     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
                     dialog_nonce_high_water: 0,

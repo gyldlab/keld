@@ -3,7 +3,7 @@
 use super::super::{BootstrapStream, PrimaryRouterHandle, app_io};
 use super::{
     Arc, HostAppError, Instant, Mutex, Packet, Position, PrimaryCallerContext, PrimaryWriter,
-    Shared, WriteCompletion, WriterRefusal, app_detail,
+    Shared, WriteCompletion, WriterRefusal, app_detail, failure,
 };
 use keld_ipc::AppLinkDeadlines as _;
 use std::io::{self, Write};
@@ -80,9 +80,10 @@ pub(in crate::app_session) struct PrimaryWriterWorker {
 }
 impl PrimaryWriterWorker {
     pub(in crate::app_session) fn start(
-        router: PrimaryRouterHandle,
+        mut router: PrimaryRouterHandle,
     ) -> Result<(PrimaryWriter, Self), HostAppError> {
         let writer = PrimaryWriter::new(router.window_commands.clone());
+        router.primary_writer = Some(writer.clone());
         let shared = Arc::clone(&writer.shared);
         let join = thread::Builder::new()
             .name("keld-core-primary-writer".to_owned())
@@ -265,9 +266,16 @@ fn run(shared: &Arc<Shared>, router: &PrimaryRouterHandle) -> Result<(), HostApp
         // dequeue, timeout, role replacement, or before this drop over-admits.
         drop(packet);
         let retirement = if outcome == WriteCompletion::OutcomeUnknown {
-            target
-                .shutdown()
-                .map_err(|source| app_io("failed original writer link close", &source))
+            // Record the exact failing link before making its completion
+            // observable. This worker never waits on the recovery owner.
+            super::super::collapse_app_results([
+                target
+                    .shutdown()
+                    .map_err(|source| app_io("failed original writer link close", &source)),
+                router.record_primary_write_failure(
+                    &failure::PrimaryWriteFailure::returned_unknown(shared, Arc::clone(&target)),
+                ),
+            ])
         } else {
             Ok(())
         };

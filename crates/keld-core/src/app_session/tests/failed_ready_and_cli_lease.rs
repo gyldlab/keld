@@ -12,12 +12,19 @@ fn failed_initial_ready_write_denies_recovery_before_successor() {
     let (guardian_tx, guardian_rx) = mpsc::channel();
     let (window_tx, _window_rx) = mpsc::channel();
     let handle = PrimaryRouterHandle {
+        #[cfg(windows)]
+        primary_writer: None,
         current: Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
+            #[cfg(windows)]
+            writer_link: None,
             identity: PrimaryLinkIdentity::Fixture,
             attempt: 1,
+            #[cfg(not(windows))]
             writer: server,
+            #[cfg(windows)]
+            writer: Some(server),
             reader_stop: Arc::new(AtomicBool::new(false)),
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            #[cfg(any(target_os = "macos", target_os = "linux", windows))]
             dialog_nonce_high_water: 0,
             pending_quit: None,
         }))),

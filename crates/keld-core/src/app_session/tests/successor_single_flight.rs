@@ -129,10 +129,17 @@ fn successor_drain_test_router(
     let (window_tx, window_rx) = mpsc::channel();
     let (guardian_tx, _guardian_rx) = mpsc::channel();
     let handle = PrimaryRouterHandle {
+        #[cfg(windows)]
+        primary_writer: None,
         current: Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
+            #[cfg(windows)]
+            writer_link: None,
             identity: PrimaryLinkIdentity::Fixture,
             attempt: 1,
+            #[cfg(not(windows))]
             writer: g1_server,
+            #[cfg(windows)]
+            writer: Some(g1_server),
             reader_stop: Arc::new(AtomicBool::new(false)),
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             dialog_nonce_high_water: 0,

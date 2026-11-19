@@ -143,9 +143,14 @@ fn fs_worker_reply_write_failure_retires_generation_and_notifies_owner() {
     drop(peer);
     let reader_stop = Arc::new(AtomicBool::new(false));
     let current = Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
+        #[cfg(windows)]
+        writer_link: None,
         identity: PrimaryLinkIdentity::Fixture,
         attempt: 1,
+        #[cfg(not(windows))]
         writer: server,
+        #[cfg(windows)]
+        writer: Some(server),
         reader_stop: Arc::clone(&reader_stop),
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         dialog_nonce_high_water: 0,
@@ -155,6 +160,8 @@ fn fs_worker_reply_write_failure_retires_generation_and_notifies_owner() {
     let (window_tx, window_rx) = mpsc::channel();
     let shutdown = SessionShutdownState::new();
     let handle = PrimaryRouterHandle {
+        #[cfg(windows)]
+        primary_writer: None,
         current: Arc::clone(&current),
         readers: Arc::new(Mutex::new(HashMap::new())),
         pending_echo: Arc::new(Mutex::new(None)),
@@ -286,9 +293,14 @@ fn successor_install_does_not_wait_for_retired_fs_recovery_ack() {
     drop(g1_peer);
     let reader_stop = Arc::new(AtomicBool::new(false));
     let current = Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
+        #[cfg(windows)]
+        writer_link: None,
         identity: PrimaryLinkIdentity::Fixture,
         attempt: 1,
+        #[cfg(not(windows))]
         writer: g1_server,
+        #[cfg(windows)]
+        writer: Some(g1_server),
         reader_stop: Arc::clone(&reader_stop),
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         dialog_nonce_high_water: 0,
@@ -298,6 +310,8 @@ fn successor_install_does_not_wait_for_retired_fs_recovery_ack() {
     let (window_tx, window_rx) = mpsc::channel();
     let (commands, receiver) = mpsc::sync_channel(1);
     let handle = PrimaryRouterHandle {
+        #[cfg(windows)]
+        primary_writer: None,
         current: Arc::clone(&current),
         readers: Arc::new(Mutex::new(HashMap::new())),
         pending_echo: Arc::new(Mutex::new(None)),

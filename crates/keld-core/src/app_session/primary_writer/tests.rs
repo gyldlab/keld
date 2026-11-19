@@ -19,7 +19,11 @@ fn target(router: &PrimaryRouterHandle) -> Arc<WriterLink> {
     let current = router.current.lock().expect("fixture current");
     let active = current.as_ref().expect("fixture active");
     WriterLink::new(
-        active.writer.try_clone().expect("exact pipe"),
+        active
+            .legacy_test_writer()
+            .expect("fixture writer")
+            .try_clone()
+            .expect("exact pipe"),
         PrimaryCallerContext {
             attempt: active.attempt,
             identity: active.identity,

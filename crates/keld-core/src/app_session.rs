@@ -23,7 +23,11 @@ mod original_webapp;
 pub use self::original_runtime_entry::{
     ORIGINAL_RUNTIME_ENTRY_PATH, windows_original_entry_bootstrap_source,
 };
-#[cfg(all(test, windows))]
+#[cfg(windows)]
+mod lifecycle_writer;
+#[cfg(windows)]
+mod primary_reader_failure;
+#[cfg(windows)]
 mod primary_writer;
 mod profile_preflight;
 #[cfg(windows)]
@@ -293,11 +297,20 @@ struct DevHostLease {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+#[derive(Default)]
+struct SessionTransition {
+    #[cfg(windows)]
+    failed_writer: Option<primary_writer::RetiredWriterFailure>,
+    #[cfg(windows)]
+    pending_ready: Option<lifecycle_writer::PendingReady>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 #[derive(Clone)]
 struct SessionShutdownState {
     cause: Arc<AtomicU8>,
     reserved_cause: Arc<AtomicU8>,
-    transition: Arc<Mutex<()>>,
+    transition: Arc<Mutex<SessionTransition>>,
     /// Paired with `transition`: notified on every successful reserve and at the end of
     /// a claimant's tail, for the handover's bounded waits on the main thread.
     changed: Arc<Condvar>,
@@ -583,6 +596,8 @@ impl GuardSnapshot {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct FsDispatchState {
+    #[cfg(windows)]
+    terminal_write: Option<FsTerminalWrite>,
     accepting: bool,
     prepared_attempt: Option<u32>,
     in_flight: usize,
@@ -596,6 +611,12 @@ struct FsDispatchState {
 struct PendingFsCall {
     attempt: u32,
     correlation: CorrelationId,
+}
+
+#[cfg(windows)]
+struct FsTerminalWrite {
+    pending: PendingFsCall,
+    completion: primary_writer::WriteObservation,
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -624,6 +645,8 @@ impl FsDispatchState {
             in_flight: 0,
             call_outstanding: false,
             pending_call: None,
+            #[cfg(windows)]
+            terminal_write: None,
             failed_write_attempt: None,
         }
     }
@@ -710,6 +733,8 @@ impl FsDispatchSession {
         }
         Ok(Some(FsInFlight {
             session: Arc::clone(self),
+            #[cfg(windows)]
+            caller: None,
             pending_call,
         }))
     }
@@ -884,6 +909,8 @@ impl FsDispatchSession {
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct FsInFlight {
     session: Arc<FsDispatchSession>,
+    #[cfg(windows)]
+    caller: Option<PrimaryCallerContext>,
     pending_call: Option<PendingFsCall>,
 }
 
@@ -1254,9 +1281,15 @@ impl Drop for FsInFlight {
                 state.pending_call = None;
                 state.call_outstanding = false;
             } else if state.pending_call.is_none() {
-                // Generation retirement may clear correlation metadata while
-                // this lease still owns the global single-flight slot.
-                state.call_outstanding = false;
+                #[cfg(windows)]
+                let writer_pending = state.terminal_write.is_some();
+                #[cfg(not(windows))]
+                let writer_pending = false;
+                // Retirement can clear correlation metadata before its
+                // physical terminal settles. That exact lease retains credit.
+                if !writer_pending {
+                    state.call_outstanding = false;
+                }
             }
         }
         if state.in_flight == 0 {
@@ -2361,7 +2394,7 @@ impl SessionShutdownState {
         Self {
             cause: Arc::new(AtomicU8::new(SESSION_RUNNING)),
             reserved_cause: Arc::new(AtomicU8::new(SESSION_RUNNING)),
-            transition: Arc::new(Mutex::new(())),
+            transition: Arc::new(Mutex::new(SessionTransition::default())),
             changed: Arc::new(Condvar::new()),
             reader_stop: Arc::new(AtomicBool::new(false)),
             generation_reader_stops: Arc::new(Mutex::new(Vec::new())),
@@ -2575,7 +2608,7 @@ impl SessionShutdownState {
         self.reserve_guarded(SESSION_CLI_LEASE_LOST)
     }
 
-    fn transition_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+    fn transition_guard(&self) -> std::sync::MutexGuard<'_, SessionTransition> {
         match self.transition.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -5305,6 +5338,8 @@ fn coordinate_window_events(
             }
             // Registry windows own their count; never emit a legacy count.
             AppWindowEvent::LastWindowClosed => Ok(()),
+            #[cfg(windows)]
+            AppWindowEvent::HostWriterProgress => router.service_primary_writer_progress(),
             event => router.window_native_event(event),
         };
         if let Err(error) = result {
@@ -5975,6 +6010,16 @@ enum DirectPrimaryOwnerCommand {
     ArmRecovery(RecoveryArm, mpsc::SyncSender<Result<(), String>>),
     DenyRecovery,
     FailGeneration(u32, mpsc::SyncSender<Result<(), String>>),
+    #[cfg(windows)]
+    FailPrimaryReader(
+        primary_reader_failure::PrimaryReadFailure,
+        mpsc::SyncSender<Result<(), String>>,
+    ),
+    #[cfg(windows)]
+    FailPrimaryWriter(
+        primary_writer::PrimaryWriterFailure,
+        mpsc::SyncSender<Result<(), String>>,
+    ),
     FailRetiredGeneration(u32, mpsc::SyncSender<Result<(), String>>),
     PrepareAcceptedShutdown(mpsc::SyncSender<Result<(), String>>),
     Shutdown(mpsc::SyncSender<Result<(), String>>),
@@ -6000,7 +6045,11 @@ impl DirectPrimaryOwner {
             .name("keld-core-direct-primary-owner".to_owned())
             .spawn(move || {
                 let mut router: Option<PrimaryRouterHandle> = None;
+                #[cfg(windows)]
+                let mut initial_failure = primary_reader_failure::PendingInitialReadFailure::default();
                 loop {
+                    #[cfg(windows)]
+                    initial_failure.expire();
                     // These are separate channels, so preserve the generation
                     // owner's causal order explicitly at the fan-in: revoke
                     // authority before installing a queued successor stream.
@@ -6048,6 +6097,25 @@ impl DirectPrimaryOwner {
                         if let Err(error) =
                             router.apply_generation_update(PrimaryOwnerUpdate::Bound(bound))
                         {
+                            #[cfg(windows)]
+                            match router.consume_bound_writer_failure(
+                                attempt,
+                                &error,
+                                |attempt| { supervisor.restart_generation(attempt); },
+                                || { let _ = recovery.deny(); },
+                            ) {
+                                Ok(Some(primary_writer::FailureDisposition::Ignored
+                                    | primary_writer::FailureDisposition::RestartRequested)) => continue,
+                                Err(cleanup) => {
+                                    let primary = append_app_cleanup(error.into(), [
+                                        Err(app_detail("retained primary writer recovery", cleanup)),
+                                    ]);
+                                    return Err(terminate_direct_primary_owner(
+                                        primary, &recovery, &supervisor, &window_commands, &shutdown,
+                                    ));
+                                }
+                                Ok(None | Some(primary_writer::FailureDisposition::RecoveryDenied)) => {}
+                            }
                             if restart_failed_bound_generation(router, attempt, &error, |attempt| {
                                 supervisor.restart_generation(attempt);
                             }) {
@@ -6096,6 +6164,10 @@ impl DirectPrimaryOwner {
                             let result = if router.is_some() {
                                 Err(String::from("primary router was already attached"))
                             } else {
+                                #[cfg(windows)]
+                                initial_failure.attached(&attached, |attempt| {
+                                    supervisor.restart_generation(attempt);
+                                });
                                 router = Some(*attached);
                                 Ok(())
                             };
@@ -6112,6 +6184,30 @@ impl DirectPrimaryOwner {
                         }
                         Ok(DirectPrimaryOwnerCommand::DenyRecovery) => {
                             let _ = recovery.deny();
+                        }
+                        #[cfg(windows)]
+                        Ok(DirectPrimaryOwnerCommand::FailPrimaryReader(failure, reply)) => {
+                            if let Some(router) = &router {
+                                let result = router.apply_primary_read_failure(&failure, |attempt| {
+                                    supervisor.restart_generation(attempt);
+                                }).map(|_| ());
+                                let _ = reply.send(result);
+                            } else {
+                                initial_failure.retain(failure, reply);
+                            }
+                        }
+                        #[cfg(windows)]
+                        Ok(DirectPrimaryOwnerCommand::FailPrimaryWriter(failure, reply)) => {
+                            let result = router.as_ref().ok_or_else(|| {
+                                String::from("primary router has not attached")
+                            }).and_then(|router| {
+                                router.apply_primary_writer_failure(
+                                    &failure,
+                                    |attempt| { supervisor.restart_generation(attempt); },
+                                    || { let _ = recovery.deny(); },
+                                )
+                            }).map(|_| ());
+                            let _ = reply.send(result);
                         }
                         Ok(DirectPrimaryOwnerCommand::FailGeneration(attempt, reply)) => {
                             if direct_link_failure_restarts(router.as_ref(), attempt) {
@@ -6537,7 +6633,22 @@ fn receive_direct_owner_reply(
     phase: &'static str,
     owner_exit_is_success: bool,
 ) -> Result<(), HostAppError> {
-    match reply_rx.recv_timeout(DIRECT_PRIMARY_OWNER_REPLY_DEADLINE) {
+    receive_direct_owner_reply_until(
+        reply_rx,
+        phase,
+        owner_exit_is_success,
+        Instant::now() + DIRECT_PRIMARY_OWNER_REPLY_DEADLINE,
+    )
+}
+
+#[cfg(any(target_os = "linux", windows))]
+fn receive_direct_owner_reply_until(
+    reply_rx: &Receiver<Result<(), String>>,
+    phase: &'static str,
+    owner_exit_is_success: bool,
+    deadline: Instant,
+) -> Result<(), HostAppError> {
+    match reply_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
         Ok(Ok(())) => Ok(()),
         Ok(Err(detail)) => Err(app_detail(phase, detail)),
         Err(RecvTimeoutError::Timeout) => Err(app_detail(
@@ -6558,6 +6669,8 @@ fn receive_direct_owner_reply(
 #[derive(Debug)]
 struct PrimaryGenerationFailure {
     error: HostAppError,
+    #[cfg(windows)]
+    writer_failure: Option<primary_writer::PrimaryWriterFailure>,
     #[cfg(any(target_os = "linux", windows))]
     retired_after_failed_ready: Option<u32>,
 }
@@ -6567,6 +6680,8 @@ impl From<HostAppError> for PrimaryGenerationFailure {
     fn from(error: HostAppError) -> Self {
         Self {
             error,
+            #[cfg(windows)]
+            writer_failure: None,
             #[cfg(any(target_os = "linux", windows))]
             retired_after_failed_ready: None,
         }
@@ -6604,6 +6719,8 @@ type PlatformPrimaryOwnerHandle = DirectPrimaryOwnerHandle;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 #[derive(Clone)]
 struct PrimaryRouterHandle {
+    #[cfg(windows)]
+    primary_writer: Option<primary_writer::PrimaryWriter>,
     current: Arc<Mutex<Option<ActivePrimaryGeneration>>>,
     readers: Arc<Mutex<HashMap<u32, PrimaryReader>>>,
     #[cfg(target_os = "macos")]
@@ -6650,6 +6767,16 @@ struct PrimaryRouterHandle {
 struct QuitDrainTestHooks {
     stall: Option<(SyncSender<()>, Receiver<()>)>,
     end: Option<SyncSender<QuitDrainEnd>>,
+    #[cfg(windows)]
+    ready_written: Option<(SyncSender<()>, Receiver<()>)>,
+    #[cfg(windows)]
+    last_window_written: Option<(SyncSender<Instant>, Receiver<()>)>,
+    #[cfg(windows)]
+    ready_failure_wait: Option<SyncSender<()>>,
+    #[cfg(windows)]
+    quit_ready_wait: Option<SyncSender<()>>,
+    #[cfg(windows)]
+    retirement_prepared: Option<(SyncSender<()>, Receiver<()>)>,
     // Only the macOS CLI-publication fixture reads this slot.
     #[cfg(target_os = "macos")]
     cli_acceptance: Option<(SyncSender<()>, Receiver<()>)>,
@@ -6708,12 +6835,17 @@ struct PrimaryCallerContext {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct ActivePrimaryGeneration {
+    #[cfg(windows)]
+    writer_link: Option<Arc<primary_writer::WriterLink>>,
     attempt: u32,
     identity: PrimaryLinkIdentity,
     // The same retained admission/policy object, associated only at real bind.
     #[cfg(windows)]
     profile_binding: Option<Arc<FsDispatchSession>>,
+    #[cfg(not(windows))]
     writer: BootstrapStream,
+    #[cfg(all(windows, test))]
+    writer: Option<BootstrapStream>,
     reader_stop: Arc<AtomicBool>,
     /// The authenticated current primary role owns this sequence. Its value
     /// is protected by the same current-generation/transition lock as the
@@ -6741,6 +6873,87 @@ impl ActivePrimaryGeneration {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+struct RetiredPrimaryLink {
+    active: ActivePrimaryGeneration,
+    cleanup: Result<(), HostAppError>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+impl RetiredPrimaryLink {
+    fn close(self, phase: &'static str) -> Result<(), HostAppError> {
+        collapse_app_results([
+            self.cleanup,
+            finish_link_shutdown(self.active.shutdown_app_link(), phase),
+        ])
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+impl ActivePrimaryGeneration {
+    fn shutdown_app_link(&self) -> io::Result<()> {
+        #[cfg(windows)]
+        if let Some(target) = &self.writer_link {
+            return target.shutdown();
+        }
+        #[cfg(not(windows))]
+        {
+            self.writer.shutdown_app_link()
+        }
+        #[cfg(all(windows, test))]
+        {
+            self.writer
+                .as_ref()
+                .ok_or(io::ErrorKind::NotConnected)?
+                .shutdown_app_link()
+        }
+        #[cfg(all(windows, not(test)))]
+        {
+            Err(io::ErrorKind::NotConnected.into())
+        }
+    }
+
+    fn legacy_writer_mut(&mut self) -> Result<&mut BootstrapStream, HostAppError> {
+        #[cfg(not(windows))]
+        {
+            Ok(&mut self.writer)
+        }
+        #[cfg(all(windows, test))]
+        {
+            self.writer.as_mut().ok_or_else(|| {
+                app_detail(
+                    "legacy primary write",
+                    "the authenticated primary uses the physical writer",
+                )
+            })
+        }
+        #[cfg(all(windows, not(test)))]
+        {
+            Err(app_detail(
+                "legacy primary write",
+                "the authenticated primary uses the physical writer",
+            ))
+        }
+    }
+
+    #[cfg(all(windows, test))]
+    fn take_legacy_test_writer(&mut self) -> Option<BootstrapStream> {
+        self.writer.take()
+    }
+
+    #[cfg(test)]
+    fn legacy_test_writer(&self) -> Option<&BootstrapStream> {
+        #[cfg(not(windows))]
+        {
+            Some(&self.writer)
+        }
+        #[cfg(windows)]
+        {
+            self.writer.as_ref()
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 struct PendingPrimaryEcho {
     attempt: u32,
@@ -6765,6 +6978,10 @@ struct PrimaryEchoCall {
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 impl PrimaryRouterHandle {
     fn signal_ready(&self) -> Result<(), HostAppError> {
+        #[cfg(windows)]
+        if self.uses_primary_writer() {
+            return self.signal_ready_with_writer();
+        }
         let arm_reply = {
             let _transition = self.shutdown.transition_guard();
             if !self.shutdown.is_running() {
@@ -6829,6 +7046,10 @@ impl PrimaryRouterHandle {
     /// (`complete_profile_handover`), so an earlier close of the last window, after
     /// which the application kept running windowless, never starts D.
     fn signal_last_window_closed(&self) -> Result<Instant, HostAppError> {
+        #[cfg(windows)]
+        if self.uses_primary_writer() {
+            return self.signal_last_window_with_writer();
+        }
         let _transition = self.shutdown.transition_guard();
         self.last_window_closed.store(true, Ordering::Release);
         self.write_event_guarded(LifecycleEvent::LastWindowClosed)?;
@@ -6945,7 +7166,7 @@ impl PrimaryRouterHandle {
             .store(correlation.0, Ordering::Release);
 
         if let Err(source) = write_frame(
-            &mut active.writer,
+            active.legacy_writer_mut()?,
             FrameKind::Call,
             0,
             ECHO_CHANNEL,
@@ -7122,11 +7343,21 @@ impl PrimaryRouterHandle {
         pending_detail: &'static str,
         link_phase: &'static str,
     ) -> Result<(), HostAppError> {
+        self.revoke_current_generation_locked(current, attempt, pending_detail)?
+            .map_or(Ok(()), |retired| retired.close(link_phase))
+    }
+
+    fn revoke_current_generation_locked(
+        &self,
+        current: &mut Option<ActivePrimaryGeneration>,
+        attempt: u32,
+        pending_detail: &'static str,
+    ) -> Result<Option<RetiredPrimaryLink>, HostAppError> {
         if current
             .as_ref()
             .is_none_or(|active| active.attempt != attempt)
         {
-            return Ok(());
+            return Ok(None);
         }
         let Some(active) = current.take() else {
             return Err(app_detail(
@@ -7135,6 +7366,10 @@ impl PrimaryRouterHandle {
             ));
         };
         active.reader_stop.store(true, Ordering::Release);
+        #[cfg(windows)]
+        if let Some(writer) = &self.primary_writer {
+            writer.role_retired();
+        }
         #[cfg(any(target_os = "macos", windows))]
         if let Some(dialog) = &self.dialog {
             dialog.retire(active.identity, active.attempt);
@@ -7154,7 +7389,7 @@ impl PrimaryRouterHandle {
             .map_or(Ok(()), |auth| auth.retire(attempt));
         #[cfg(not(target_os = "macos"))]
         let auth_retirement = Ok(());
-        collapse_app_results([
+        let cleanup = collapse_app_results([
             window_retirement,
             auth_retirement,
             self.fail_pending_echo_for_attempt(attempt, pending_detail),
@@ -7162,8 +7397,8 @@ impl PrimaryRouterHandle {
                 .as_ref()
                 .and_then(Weak::upgrade)
                 .map_or(Ok(()), |fs| fs.retire_pending_call_for_attempt(attempt)),
-            finish_link_shutdown(active.writer.shutdown_app_link(), link_phase),
-        ])
+        ]);
+        Ok(Some(RetiredPrimaryLink { active, cleanup }))
     }
 
     /// Answers `attempt`'s pending role calls on ERR-declaring channels with
@@ -7225,8 +7460,11 @@ impl PrimaryRouterHandle {
         };
         #[cfg(not(target_os = "macos"))]
         let auth_pending = std::iter::empty();
+        let Ok(writer) = active.legacy_writer_mut() else {
+            return;
+        };
         write_best_effort_answers(
-            &mut active.writer,
+            writer,
             pending.into_iter().flatten().chain(auth_pending).chain({
                 #[cfg(any(target_os = "macos", windows))]
                 {
@@ -7322,11 +7560,10 @@ impl PrimaryRouterHandle {
             let Some(active) = current.as_mut().filter(|active| active.attempt == attempt) else {
                 return QuitDrainEnd::GenerationGone;
             };
-            if !write_best_effort_answers(
-                &mut active.writer,
-                [(header.channel(), header.corr())],
-                &error,
-            ) {
+            let Ok(writer) = active.legacy_writer_mut() else {
+                return QuitDrainEnd::GenerationGone;
+            };
+            if !write_best_effort_answers(writer, [(header.channel(), header.corr())], &error) {
                 return QuitDrainEnd::AnswerLost;
             }
         }
@@ -7383,6 +7620,10 @@ impl PrimaryRouterHandle {
     }
 
     fn has_outstanding_fs_call(&self, attempt: u32) -> bool {
+        #[cfg(windows)]
+        if self.uses_primary_writer() {
+            return self.has_outstanding_fs_call_owned(attempt);
+        }
         let _transition = self.shutdown.transition_guard();
         let Some(fs) = self.fs.as_ref().and_then(Weak::upgrade) else {
             return self.fs.is_some();
@@ -7465,7 +7706,7 @@ impl PrimaryRouterHandle {
         if active.attempt != attempt {
             return Ok(None);
         }
-        let Err(primary) = write(&mut active.writer) else {
+        let Err(primary) = write(active.legacy_writer_mut()?) else {
             #[cfg(test)]
             {
                 drop(current);
@@ -7560,7 +7801,7 @@ impl PrimaryRouterHandle {
         };
         let attempt = active.attempt;
         if let Err(source) = write_frame(
-            &mut active.writer,
+            active.legacy_writer_mut()?,
             FrameKind::Event,
             0,
             LIFECYCLE_CHANNEL,
@@ -7575,6 +7816,8 @@ impl PrimaryRouterHandle {
                 "failed lifecycle event link close",
             );
             return Err(PrimaryGenerationFailure {
+                #[cfg(windows)]
+                writer_failure: None,
                 #[cfg(any(target_os = "linux", windows))]
                 retired_after_failed_ready: (retirement.is_ok()
                     && matches!(event, LifecycleEvent::Ready))
@@ -7765,10 +8008,7 @@ impl PrimaryRouterHandle {
         ));
         let link_close = collapse_app_results([
             window_retirement,
-            finish_link_shutdown(
-                active.writer.shutdown_app_link(),
-                "lifecycle Quit link close",
-            ),
+            finish_link_shutdown(active.shutdown_app_link(), "lifecycle Quit link close"),
         ]);
         current_guard.take();
         drop(current_guard);
@@ -7796,7 +8036,7 @@ impl PrimaryRouterHandle {
         })?;
         active.pending_quit = None;
         write_frame(
-            &mut active.writer,
+            active.legacy_writer_mut()?,
             FrameKind::Reply,
             0,
             LIFECYCLE_CHANNEL,
@@ -7845,6 +8085,10 @@ impl PrimaryRouterHandle {
     /// [`SESSION_HANDOVER`] (KEL-53 §4 "Profile handover", step 3c). One body for both
     /// causes; the gate admits either reserved cause and the tail runs once.
     fn cli_lease_lost(&self) -> Result<(), HostAppError> {
+        #[cfg(windows)]
+        if self.uses_primary_writer() {
+            return self.cli_lease_lost_with_writer();
+        }
         let reserved = self.shutdown.reserved_cause.load(Ordering::Acquire);
         if !is_forced_cause(reserved) || self.shutdown.tail_started.load(Ordering::Acquire) {
             return Ok(());
@@ -7913,7 +8157,7 @@ impl PrimaryRouterHandle {
                     active.identity,
                     active.attempt,
                 )),
-                finish_link_shutdown(active.writer.shutdown_app_link(), link_phase),
+                finish_link_shutdown(active.shutdown_app_link(), link_phase),
             ])
         });
         current_guard.take();
@@ -8133,7 +8377,12 @@ impl PrimaryRouterHandle {
             .map_err(|source| app_io("primary session writer deadline", &source))?;
 
         let reader_stop;
+        #[cfg(windows)]
+        let writer_replay;
         {
+            #[cfg(windows)]
+            let mut transition = self.shutdown.transition_guard();
+            #[cfg(not(windows))]
             let _transition = self.shutdown.transition_guard();
             if !self.shutdown.is_running() || self.shutdown.reader_stop.load(Ordering::Acquire) {
                 let _ = writer_stream.shutdown_app_link();
@@ -8167,12 +8416,61 @@ impl PrimaryRouterHandle {
                 .into());
             }
             reader_stop = self.shutdown.register_generation_reader();
+            #[cfg(windows)]
+            self.clear_primary_writer_failure_guarded_for_bind(&mut transition);
+            #[cfg(all(windows, test))]
+            let legacy_writer;
+            #[cfg(windows)]
+            let writer_link = if self.uses_primary_writer() {
+                #[cfg(test)]
+                {
+                    legacy_writer = None;
+                }
+                Some(primary_writer::WriterLink::new(
+                    writer_stream,
+                    PrimaryCallerContext {
+                        attempt,
+                        identity,
+                        reader_stop: Arc::clone(&reader_stop),
+                    },
+                )?)
+            } else {
+                #[cfg(test)]
+                {
+                    legacy_writer = Some(writer_stream);
+                    None
+                }
+                #[cfg(not(test))]
+                {
+                    return Err(app_detail(
+                        "exact primary writer stream",
+                        "session writer is unavailable",
+                    )
+                    .into());
+                }
+            };
+            #[cfg(windows)]
+            {
+                writer_replay = writer_link.as_ref().map(|target| {
+                    (
+                        Arc::clone(target),
+                        self.window_ready.load(Ordering::Acquire),
+                        self.windows.is_none() && self.last_window_closed.load(Ordering::Acquire),
+                        Instant::now() + APP_LINK_IO_DEADLINE,
+                    )
+                });
+            }
             *current = Some(ActivePrimaryGeneration {
+                #[cfg(windows)]
+                writer_link,
                 attempt,
                 identity,
                 #[cfg(windows)]
                 profile_binding,
+                #[cfg(not(windows))]
                 writer: writer_stream,
+                #[cfg(all(windows, test))]
+                writer: legacy_writer,
                 reader_stop: Arc::clone(&reader_stop),
                 #[cfg(any(target_os = "macos", windows, all(test, target_os = "linux")))]
                 dialog_nonce_high_water: 0,
@@ -8182,12 +8480,22 @@ impl PrimaryRouterHandle {
             // Publication and retained replay are one transition with live
             // window delivery. Start the reader only after replay, so a call
             // cannot overtake Ready or observe the same Close via both paths.
-            if self.window_ready.load(Ordering::Acquire) {
-                self.write_event_guarded(LifecycleEvent::Ready)?;
+            #[cfg(windows)]
+            let legacy_replay = writer_replay.is_none();
+            #[cfg(not(windows))]
+            let legacy_replay = true;
+            if legacy_replay {
+                if self.window_ready.load(Ordering::Acquire) {
+                    self.write_event_guarded(LifecycleEvent::Ready)?;
+                }
+                if self.windows.is_none() && self.last_window_closed.load(Ordering::Acquire) {
+                    self.write_event_guarded(LifecycleEvent::LastWindowClosed)?;
+                }
             }
-            if self.windows.is_none() && self.last_window_closed.load(Ordering::Acquire) {
-                self.write_event_guarded(LifecycleEvent::LastWindowClosed)?;
-            }
+        }
+        #[cfg(windows)]
+        if let Some((target, ready, last_window, deadline)) = writer_replay {
+            self.replay_retained_lifecycle(target, ready, last_window, deadline)?;
         }
         let handle = self.clone();
         let caller = PrimaryCallerContext {
@@ -8199,6 +8507,10 @@ impl PrimaryRouterHandle {
             .name(format!("keld-core-primary-router-{attempt}"))
             .spawn(move || {
                 let mut result = read_primary_frames(&mut stream, &handle, &caller);
+                #[cfg(windows)]
+                if handle.uses_primary_writer() {
+                    return handle.finish_primary_reader_result(&caller, result);
+                }
                 if result.is_err()
                     && let Err(cleanup) = handle.fail_pending_echo_for_attempt(
                         attempt,
@@ -8228,6 +8540,10 @@ impl PrimaryRouterHandle {
     }
 
     fn retire_generation(&self, attempt: u32) -> Result<(), HostAppError> {
+        #[cfg(windows)]
+        if self.uses_primary_writer() {
+            return self.retire_generation_with_writer(attempt);
+        }
         {
             let _transition = self.shutdown.transition_guard();
             if !self.shutdown.is_running() {
@@ -8339,6 +8655,8 @@ impl PrimaryRouterHandle {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct PrimaryRouter {
+    #[cfg(windows)]
+    primary_writer_worker: Option<primary_writer::PrimaryWriterWorker>,
     handle: PrimaryRouterHandle,
     fs_worker: Option<FsWorker>,
     #[cfg(target_os = "macos")]
@@ -8458,6 +8776,8 @@ impl PrimaryRouter {
         fs_worker_test_gate: Option<Arc<FsWorkerTestGate>>,
     ) -> Result<Self, HostAppError> {
         let handle = PrimaryRouterHandle {
+            #[cfg(windows)]
+            primary_writer: None,
             current: Arc::new(Mutex::new(None)),
             readers: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(target_os = "macos")]
@@ -8500,6 +8820,8 @@ impl PrimaryRouter {
             None,
             #[cfg(windows)]
             None,
+            #[cfg(all(windows, test))]
+            false,
             #[cfg(test)]
             fs_worker_test_gate,
             #[cfg(target_os = "macos")]
@@ -8588,6 +8910,8 @@ impl PrimaryRouter {
         let attempt = bound.attempt();
         let stream = bound.into_stream();
         let handle = PrimaryRouterHandle {
+            #[cfg(windows)]
+            primary_writer: None,
             current: Arc::new(Mutex::new(None)),
             readers: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(target_os = "macos")]
@@ -8630,6 +8954,8 @@ impl PrimaryRouter {
             options.window_native_support,
             #[cfg(windows)]
             options.original_selection.clone(),
+            #[cfg(all(windows, test))]
+            true,
             #[cfg(test)]
             fs_worker_test_gate,
             #[cfg(target_os = "macos")]
@@ -8647,6 +8973,7 @@ impl PrimaryRouter {
         attempt: u32,
         window_native_support: Option<bool>,
         #[cfg(windows)] original_selection: Option<Arc<original_webapp::OriginalLoadSelection>>,
+        #[cfg(all(windows, test))] physical_writer: bool,
         #[cfg(test)] test_gate: Option<Arc<FsWorkerTestGate>>,
         #[cfg(target_os = "macos")] auth_startup: Option<(
             VerifiedManifest,
@@ -8670,6 +8997,16 @@ impl PrimaryRouter {
                 AuthWorker::start(&mut handle, verified, configuration, presentation)
             })
             .transpose()?;
+        #[cfg(all(windows, not(test)))]
+        let physical_writer = true;
+        #[cfg(windows)]
+        let primary_writer_worker = if physical_writer {
+            let (writer, worker) = primary_writer::PrimaryWriterWorker::start(handle.clone())?;
+            handle.primary_writer = Some(writer);
+            Some(worker)
+        } else {
+            None
+        };
         let fs_worker = if let Some(broker) = broker {
             Some(FsWorker::start(
                 &mut handle,
@@ -8682,6 +9019,8 @@ impl PrimaryRouter {
             None
         };
         Ok(Self {
+            #[cfg(windows)]
+            primary_writer_worker,
             handle,
             fs_worker,
             #[cfg(target_os = "macos")]
@@ -8741,7 +9080,7 @@ impl PrimaryRouter {
                 if let Some(auth) = &self.handle.auth {
                     let _ = auth.retire(active.attempt);
                 }
-                let _ = active.writer.shutdown_app_link();
+                let _ = active.shutdown_app_link();
             }
             (fs_close, pending)
         };
@@ -8756,6 +9095,10 @@ impl PrimaryRouter {
             Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
         };
         let mut results = vec![fs_quiesce, pending];
+        #[cfg(windows)]
+        if let Some(worker) = &mut self.primary_writer_worker {
+            results.push(worker.stop_and_join());
+        }
         for (_, reader) in readers {
             results.push(
                 reader
@@ -8960,7 +9303,29 @@ fn run_fs_work_item(
     let Some(outcome) = outcome else {
         return Ok(None);
     };
-    match outcome? {
+    let outcome = outcome?;
+    #[cfg(windows)]
+    if handle.uses_primary_writer() {
+        return handle.submit_fs_terminal_owned(admitted, attempt, |reservation, target| {
+            match outcome {
+                Ok(response) => reservation.encode_value(
+                    target,
+                    FrameKind::Reply,
+                    FS_CHANNEL,
+                    correlation,
+                    &response,
+                    keld_ipc::MAX_FRAME_LEN,
+                ),
+                Err(error) => reservation.encode_error_value(
+                    target,
+                    FS_CHANNEL,
+                    correlation,
+                    &CallError::from(&error),
+                ),
+            }
+        });
+    }
+    match outcome {
         Ok(response) => {
             let reply =
                 encode(&response).map_err(|source| app_ipc("filesystem response", &source))?;
@@ -9055,6 +9420,15 @@ fn read_primary_frames(
                         | io::ErrorKind::ConnectionAborted
                 ) =>
             {
+                #[cfg(windows)]
+                if handle.uses_primary_writer() {
+                    if let Some(failure) =
+                        primary_reader_failure::PrimaryReadFailure::observed(caller, source.kind())
+                    {
+                        handle.report_primary_read_failure(failure)?;
+                    }
+                    return Ok(());
+                }
                 if !handle.is_current(attempt) {
                     return Ok(());
                 }
@@ -9104,6 +9478,19 @@ fn read_primary_frames(
         if admission == GuardedCallAdmission::AtCapacity {
             // The shared reader consumed the complete bounded frame under its
             // original clock. It admitted no call and the body is never decoded.
+            #[cfg(windows)]
+            if handle.uses_primary_writer() {
+                handle.submit_primary_control(
+                    caller,
+                    primary_writer::ControlMessage::Capacity {
+                        channel: header.channel(),
+                        correlation: header.corr(),
+                    },
+                    Instant::now() + APP_LINK_IO_DEADLINE,
+                    "guarded call capacity refusal",
+                )?;
+                continue;
+            }
             with_primary_caller_writer(&handle.current, &handle.shutdown, caller, |writer| {
                 keld_ipc::write_call_error(
                     writer,
@@ -9131,6 +9518,11 @@ fn read_primary_frames(
                 handle.finish_pending_echo(attempt, header.corr(), PrimaryEchoReply::Err(error))?;
             }
             (FrameKind::Call, ECHO_CHANNEL) if handle.shutdown.is_running() => {
+                #[cfg(windows)]
+                if handle.uses_primary_writer() {
+                    handle.reply_primary_echo_owned(caller, header.corr(), &payload)?;
+                    continue;
+                }
                 dispatch_primary_echo(
                     &handle.current,
                     &handle.shutdown,
@@ -9143,8 +9535,29 @@ fn read_primary_frames(
                 // Admission and enqueue share retirement's transition: an admitted
                 // work item cannot be overtaken by its native retirement command.
                 let _transition = handle.shutdown.transition_guard();
+                #[cfg(windows)]
+                if handle.uses_primary_writer() {
+                    let current = handle.current.lock().map_err(|_| {
+                        app_detail("filesystem admission", "generation lock poisoned")
+                    })?;
+                    if current.as_ref().is_none_or(|active| {
+                        active
+                            .writer_link
+                            .as_ref()
+                            .is_none_or(|link| !link.matches(caller))
+                            || caller.reader_stop.load(Ordering::Acquire)
+                    }) {
+                        continue;
+                    }
+                }
                 let work =
                     prepare_fs_work_guarded(handle, attempt, header.corr(), &payload, reader_stop)?;
+                #[cfg(windows)]
+                let work = {
+                    let mut work = work;
+                    work.admitted.caller = Some(caller.clone());
+                    work
+                };
                 let commands = handle.fs_worker_commands.as_ref().ok_or_else(|| {
                     app_detail(
                         "filesystem worker submission",
@@ -9188,7 +9601,7 @@ fn read_primary_frames(
             }
             (FrameKind::Call, LIFECYCLE_CHANNEL) => {
                 let mut request = None;
-                with_primary_caller_writer(&handle.current, &handle.shutdown, caller, |_| {
+                with_primary_caller_locked(&handle.current, &handle.shutdown, caller, |_| {
                     request = Some(
                         decode::<LifecycleRequest>(&payload)
                             .map_err(|source| app_ipc("lifecycle request", &source))?,
@@ -9211,6 +9624,11 @@ fn read_primary_frames(
                         handle.subscribe_window(caller, header.corr(), channel)?;
                     }
                     LifecycleRequest::Quit => {
+                        #[cfg(windows)]
+                        if handle.uses_primary_writer() {
+                            handle.lifecycle_quit_with_writer(caller, header.corr(), reader)?;
+                            return Ok(());
+                        }
                         let reply = encode(&LifecycleResponse::Quit)
                             .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
                         handle.lifecycle_quit(attempt, header.corr(), &reply, reader)?;
@@ -9219,6 +9637,19 @@ fn read_primary_frames(
                 }
             }
             (FrameKind::Ping, _) => {
+                #[cfg(windows)]
+                if handle.uses_primary_writer() {
+                    handle.submit_primary_control(
+                        caller,
+                        primary_writer::ControlMessage::Ping {
+                            channel: header.channel(),
+                            correlation: header.corr(),
+                        },
+                        Instant::now() + APP_LINK_IO_DEADLINE,
+                        "primary session Ping",
+                    )?;
+                    continue;
+                }
                 let _transition = handle.shutdown.transition_guard();
                 let mut writer = handle.current.lock().map_err(|_| {
                     app_detail("primary session generation", "generation lock poisoned")
@@ -9233,7 +9664,7 @@ fn read_primary_frames(
                     return Ok(());
                 }
                 write_frame(
-                    &mut active.writer,
+                    active.legacy_writer_mut()?,
                     FrameKind::Ping,
                     0,
                     header.channel(),
@@ -9349,7 +9780,7 @@ fn with_primary_caller_writer(
         let active = current.as_mut().ok_or_else(|| {
             app_detail("primary caller", "validated current generation disappeared")
         })?;
-        write(&mut active.writer)
+        write(active.legacy_writer_mut()?)
     })
 }
 
