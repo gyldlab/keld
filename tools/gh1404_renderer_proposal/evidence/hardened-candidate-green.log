@@ -1,0 +1,20 @@
+PASS ordinary numeric coordinates render unchanged
+PASS valid numeric strings use numeric geometry
+PASS valid negative positions and zero rotation render
+PASS null rotation uses the original zero-rotation default
+PASS large finite font and native SVG center position remain accepted
+PASS ordinary multiline text retains each line and its baseline
+PASS valid clip coordinates retain original finite clipping geometry
+PASS font size multiplied by scale cannot emit Infinitypx
+PASS centered text y times scale cannot emit Infinity
+PASS multiline line-height arithmetic cannot emit NaN or Infinity
+PASS second text-line position cannot overflow after a finite first line
+PASS finite positions cannot overflow when adding renderer text offset
+PASS clip anchor subtraction cannot overflow after a finite input check
+PASS converted rich label retains its native SVG child
+PASS malformed rotation has no new rendered label or injected transform
+PASS invalid reused geometry hides old text and recovers without hurting a sibling
+PASS invalid converted-rich SVG child recovers without losing its sibling
+PASS invalid then full repaint of a new value never leaks the old label
+PASS nonfinite composite geometry and zero scale refuse
+CANDIDATE_GREEN: 19/19 passed

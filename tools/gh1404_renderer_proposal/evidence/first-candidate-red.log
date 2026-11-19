@@ -1,0 +1,69 @@
+PASS ordinary numeric coordinates render unchanged
+PASS valid numeric strings use numeric geometry
+PASS valid negative positions and zero rotation render
+PASS null rotation uses the original zero-rotation default
+PASS large finite font and native SVG center position remain accepted
+PASS ordinary multiline text retains each line and its baseline
+PASS valid clip coordinates retain original finite clipping geometry
+FAIL font size multiplied by scale cannot emit Infinitypx invalid native font-size=Infinitypx
+
+1 !== 0
+
+FAIL centered text y times scale cannot emit Infinity invalid centered y=Infinity
+
+1 !== 0
+
+FAIL multiline line-height arithmetic cannot emit NaN or Infinity invalid multiline y=-Infinity
+
+2 !== 0
+
+FAIL second text-line position cannot overflow after a finite first line second-line y=Infinity
+
+2 !== 0
+
+FAIL finite positions cannot overflow when adding renderer text offset invalid offset x=Infinity
+
+1 !== 0
+
+FAIL clip anchor subtraction cannot overflow after a finite input check invalid clip coordinates=[null,-2,1.6e+308,10]
++ actual - expected
+
++ [
++   -Infinity,
++   -2,
++   1.6e+308,
++   10
++ ]
+- undefined
+
+PASS converted rich label retains its native SVG child
+PASS malformed rotation has no new rendered label or injected transform
+PASS invalid reused geometry hides old text and recovers without hurting a sibling
+PASS invalid converted-rich SVG child recovers without losing its sibling
+PASS invalid then full repaint of a new value never leaks the old label
+PASS nonfinite composite geometry and zero scale refuse
+node:internal/assert/utils:146
+  throw error;
+  ^
+
+AssertionError [ERR_ASSERTION]: renderer proposal fails a behavioral regression
+
+6 !== 0
+
+    at Object.<anonymous> (/Users/centillionaire/WORK/keld/.keld-work/worktrees/gh1404-renderer-product-20261120/tools/gh1404_renderer_proposal/render_probe.cjs:355:10)
+    at Module._compile (node:internal/modules/cjs/loader:1968:14)
+    at Object..js (node:internal/modules/cjs/loader:2108:10)
+    at Module.load (node:internal/modules/cjs/loader:1690:32)
+    at Module._load (node:internal/modules/cjs/loader:1480:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:261:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:171:5)
+    at node:internal/main/run_main_module:33:47 {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: 6,
+  expected: 0,
+  operator: 'strictEqual',
+  diff: 'simple'
+}
+
+Node.js v26.13.0

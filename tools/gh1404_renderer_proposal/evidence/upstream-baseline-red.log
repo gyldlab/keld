@@ -1,0 +1,65 @@
+PASS ordinary numeric coordinates render unchanged
+FAIL valid numeric strings use numeric geometry Expected values to be strictly equal:
+
+'12007' !== '127'
+
+PASS valid negative positions and zero rotation render
+PASS null rotation uses the original zero-rotation default
+PASS large finite font and native SVG center position remain accepted
+PASS ordinary multiline text retains each line and its baseline
+PASS valid clip coordinates retain original finite clipping geometry
+FAIL font size multiplied by scale cannot emit Infinitypx invalid native font-size=Infinitypx
+
+1 !== 0
+
+FAIL centered text y times scale cannot emit Infinity invalid centered y=Infinity
+
+1 !== 0
+
+FAIL multiline line-height arithmetic cannot emit NaN or Infinity invalid multiline y=-Infinity
+
+2 !== 0
+
+FAIL second text-line position cannot overflow after a finite first line second-line y=Infinity
+
+2 !== 0
+
+FAIL finite positions cannot overflow when adding renderer text offset invalid offset x=Infinity
+
+1 !== 0
+
+FAIL clip anchor subtraction cannot overflow after a finite input check invalid clip coordinates=[null,-2,1.6e+308,10]
++ actual - expected
+
++ [
++   -Infinity,
++   -2,
++   1.6e+308,
++   10
++ ]
+- undefined
+
+PASS converted rich label retains its native SVG child
+FAIL malformed rotation has no new rendered label or injected transform Expected values to be strictly equal:
++ actual - expected
+
++ undefined
+- false
+
+FAIL invalid reused geometry hides old text and recovers without hurting a sibling Expected values to be strictly equal:
+
+1 !== 0
+
+FAIL invalid converted-rich SVG child recovers without losing its sibling Expected values to be strictly equal:
+
+1 !== 0
+
+FAIL invalid then full repaint of a new value never leaks the old label Expected values to be strictly equal:
+
+1 !== 0
+
+FAIL nonfinite composite geometry and zero scale refuse Expected values to be strictly equal:
+
+1 !== 0
+
+BASELINE_RED: 7/19 passed

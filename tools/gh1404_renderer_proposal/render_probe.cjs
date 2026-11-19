@@ -90,8 +90,13 @@ function canvasWith(plainText) {
     createElement: (name) => doc.createElement(name),
     updateFont: () => {},
     addTextBackground: () => {},
-    // Upstream mxSvgCanvas2D.format returns a number, not a string.
-    format: (value) => Math.round(value * 100) / 100,
+    // Upstream mxSvgCanvas2D.format rounds using toFixed, including large floats.
+    format: (value) => parseFloat(parseFloat(value).toFixed(2)),
+    createClip: (...values) => {
+      canvas.clipArguments = values;
+      return values;
+    },
+    setClip: (node, values) => { node.clipArguments = values; },
     plainText,
   };
   return { canvas, svg, doc };
@@ -145,6 +150,90 @@ const cases = [
     draw(canvas, 'DEFAULT-ROTATION', null);
     assert.equal(collect(svg, 'text')[0].textContent, 'DEFAULT-ROTATION');
     assert.equal(svg.firstChild.getAttribute('transform'), null);
+  }],
+  ['large finite font and native SVG center position remain accepted', () => {
+    const { canvas, svg } = canvasWith(plainText);
+    canvas.state.scale = 2;
+    canvas.state.fontSize = 1e307;
+    draw(canvas, 'LARGE-FINITE', 0, null, [0, 0, 0, 0]);
+    const text = collect(svg, 'text');
+    assert.equal(text.length, 1);
+    assert.equal(text[0].textContent, 'LARGE-FINITE');
+    assert.equal(svg.firstChild.getAttribute('font-size'), '2e+307px');
+    assert(Number.isFinite(Number(text[0].getAttribute('y'))));
+  }],
+  ['ordinary multiline text retains each line and its baseline', () => {
+    const { canvas, svg } = canvasWith(plainText);
+    canvas.state.fontSize = 12;
+    draw(canvas, 'FIRST\nSECOND');
+    const text = collect(svg, 'text');
+    assert.deepEqual(text.map((node) => node.textContent), ['FIRST', 'SECOND']);
+    assert.deepEqual(text.map((node) => node.getAttribute('y')), ['118', '132']);
+  }],
+  ['valid clip coordinates retain original finite clipping geometry', () => {
+    const { canvas, svg } = canvasWith(plainText);
+    canvas.plainText(120, 120, 150, 50, 'CLIPPED', 'right',
+      'middle', false, '', true, 0, null);
+    assert.equal(collect(svg, 'text')[0].textContent, 'CLIPPED');
+    assert.deepEqual(canvas.clipArguments, [-32, 93, 154, 54]);
+  }],
+  ['font size multiplied by scale cannot emit Infinitypx', () => {
+    const { canvas, svg } = canvasWith(plainText);
+    canvas.state.scale = 2;
+    canvas.state.fontSize = 1e308;
+    const returned = draw(canvas, 'OVERFLOW-FONT', 0, null, [0, 0, 0, 0]);
+    assert.equal(collect(svg, 'text').length, 0,
+      `invalid native font-size=${svg.firstChild?.getAttribute('font-size')}`);
+    assert.equal(returned, false);
+    assert.equal(svg.childNodes.length, 0);
+  }],
+  ['centered text y times scale cannot emit Infinity', () => {
+    const { canvas, svg } = canvasWith(plainText);
+    canvas.state.scale = 2;
+    canvas.state.fontSize = 4e307;
+    const returned = draw(canvas, 'OVERFLOW-CENTER', 0, null,
+      [0, 8e307, 0, 0]);
+    assert.equal(collect(svg, 'text').length, 0,
+      `invalid centered y=${collect(svg, 'text')[0]?.getAttribute('y')}`);
+    assert.equal(returned, false);
+  }],
+  ['multiline line-height arithmetic cannot emit NaN or Infinity', () => {
+    const { canvas, svg } = canvasWith(plainText);
+    canvas.state.fontSize = 1.6e308;
+    const returned = draw(canvas, 'FIRST\nSECOND', 0, null,
+      [0, 0, 0, 0]);
+    assert.equal(collect(svg, 'text').length, 0,
+      `invalid multiline y=${collect(svg, 'text')[0]?.getAttribute('y')}`);
+    assert.equal(returned, false);
+  }],
+  ['second text-line position cannot overflow after a finite first line', () => {
+    const { canvas, svg } = canvasWith(plainText);
+    canvas.state.scale = 2;
+    canvas.state.fontSize = 3e307;
+    const returned = draw(canvas, 'FIRST\nSECOND', 0, null,
+      [0, 8e307, 0, 0]);
+    assert.equal(collect(svg, 'text').length, 0,
+      'second-line y=' + collect(svg, 'text')[1]?.getAttribute('y'));
+    assert.equal(returned, false);
+  }],
+  ['finite positions cannot overflow when adding renderer text offset', () => {
+    const { canvas, svg } = canvasWith(plainText);
+    canvas.textOffset = 1e308;
+    const returned = draw(canvas, 'OVERFLOW-OFFSET', 0, null,
+      [1e308, 0, 0, 0]);
+    assert.equal(collect(svg, 'text').length, 0,
+      `invalid offset x=${collect(svg, 'text')[0]?.getAttribute('x')}`);
+    assert.equal(returned, false);
+  }],
+  ['clip anchor subtraction cannot overflow after a finite input check', () => {
+    const { canvas, svg } = canvasWith(plainText);
+    canvas.state.scale = 2;
+    const returned = canvas.plainText(-8e307, 0, 8e307, 3,
+      'OVERFLOW-CLIP', 'right', 'top', false, '', true, 0, null);
+    assert.equal(canvas.clipArguments, undefined,
+      `invalid clip coordinates=${JSON.stringify(canvas.clipArguments)}`);
+    assert.equal(collect(svg, 'text').length, 0);
+    assert.equal(returned, false);
   }],
   ['converted rich label retains its native SVG child', () => {
     const { canvas, svg, doc } = canvasWith(plainText);
@@ -234,13 +323,26 @@ const cases = [
 
 let failures = 0;
 let validFailures = 0;
-for (const [i, [name, test]] of cases.entries()) {
+const baselineMustPass = new Set([
+  'ordinary numeric coordinates render unchanged',
+  'valid negative positions and zero rotation render',
+  'null rotation uses the original zero-rotation default',
+  'large finite font and native SVG center position remain accepted',
+  'ordinary multiline text retains each line and its baseline',
+  'valid clip coordinates retain original finite clipping geometry',
+  'converted rich label retains its native SVG child',
+]);
+for (const [name, test] of cases) {
   try {
     test();
     console.log('PASS', name);
   } catch (error) {
     failures++;
-    if (i === 0 || i === 2 || i === 3 || i === 4) validFailures++;
+    // Baseline deliberately retains the historical numeric-string defect.
+    // Only independently unchanged valid-input behavior must pass upstream.
+    if (baselineMustPass.has(name)) {
+      validFailures++;
+    }
     console.log('FAIL', name, error.message);
   }
 }

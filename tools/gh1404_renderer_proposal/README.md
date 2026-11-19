@@ -58,6 +58,68 @@ node; that wider ownership case needs approval and independent verification.
 A valid
 zero-rotation/full-alpha update also clears stale transform/opacity.
 
+### Follow-up: actual finite-input overflow in the first candidate
+
+The initial source-only commit `10e279957ce30078e42deab66eebcd726a223bd4`
+checked that individual numbers were finite but did not check *all computed*
+native SVG outputs. On the pinned upstream source with its first candidate
+guard, `x=y=w=h=0`, `scale=2`, `fontSize=1e308` emitted a live
+`font-size="Infinitypx"`. A separate centered example emitted
+`y="Infinity"`, real two-line text emitted non-finite Y values, and
+finite individual inputs could overflow after adding `textOffset` or
+computing a clip anchor. The first candidate passes **13 of the 19** source
+tests, with six derived-overflow regressions failing. Original pinned
+upstream passes **7/19**, and the revised inert candidate passes **19/19**.
+
+The revision calculates line height, text height, and initial center/bottom
+baseline before touching the SVG node; the renderer reuses those same
+computed values for actual drawing. It also checks the scaled font size,
+every line's bounded endpoint (including the last line), rendered offsets,
+clip rectangle and the block-overflow shift where the content width is
+already known. This prevents the tested non-finite attributes. Ordinary
+multiline text, large but finite fonts, numeric strings, original clipping
+and existing rich native SVG children still pass.
+
+The guard does not compute browser-derived `getBBox()` width in
+`adjustBlockTextOverflow`, so its dynamic rich-text shift, HTML
+`foreignObject`, text backgrounds and all export variants remain unproved.
+The installed G1 labels' finite off-screen AX bounds
+`(31777,-345,18614,10)` are a **different unresolved geometry problem**.
+This guard does not prove those labels will move into the viewport.
+G3's `-EDIT-OK` save followed unverified keyboard input; it is not proof
+that the serializer changes the cell value incorrectly.
+
+### Source-only verification receipt (20 November 2026)
+
+The source input, first-candidate output and revised output are all
+reproducible using the commands below; no local installed app was used.
+The failure logs retain actual `Infinitypx`, `Infinity` and `NaN` SVG
+attributes observed from the pinned function.
+
+| Input | Source-level oracle | Shell exit |
+| --- | --- | --- |
+| Upstream pinned Draw.io | **7/19** passed; original numeric-string defect and invalid-geometry failures visible | 0 (`--baseline` expects RED) |
+| First candidate at `10e279957` | **13/19** passed; all six new derived-overflow tests fail | 1 |
+| Corrected inert candidate | **19/19** passed; finite large font, clip and multiline positive controls retained | 0 |
+
+- Original `mxSvgCanvas2D.js` SHA-256:
+  `0daef9812e3b8c530bc9556791ffaea53fe9a57091a86534bd909ca31e4485b3`.
+- Corrected unified source patch SHA-256:
+  `8b575a9dd1fe673bb1e9d3a428248424fdf6c99d5ca27c3777d2c31a891b1618`.
+- Corrected candidate JavaScript SHA-256:
+  `1d6351d9ffe1c0e6d26339bcc5bc96edffb6e3b0c5a75fc09ca0eaebe9ad0ff3`.
+- `evidence/upstream-baseline-red.log` SHA-256:
+  `efa0e733b9e6fa61a38f485950f436fe4fb29d87c8381767f65f732e4436e19f`.
+- `evidence/first-candidate-red.log` SHA-256:
+  `f432796a37ebfa3f5877bc4bc04c7eb4b1cec3f2328dc97b9aa1be662a6e7157`.
+- `evidence/hardened-candidate-green.log` SHA-256:
+  `421597548cfde528cd0176ad58b7fd1ff6429883068199b5518946fb027509e4`.
+
+The corrected patch passed `git apply --check --whitespace=error`, was
+applied and reversed against an independent temporary copy, and recovered
+the original bytes exactly. A one-byte source change caused deterministic
+SHA refusal. The generated source passed `node --check`.
+
 Approval decisions still owned by the user/product/source owner:
 
 1. **Source-input authority.** Existing GH-499/GH-1404 approval preserves the

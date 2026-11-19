@@ -2,7 +2,8 @@
 """Inert candidate renderer diff against one pinned upstream draw.io source.
 
 The candidate is never written into an installed app or KELD production path.
-Use stdout with --source or --patch; verify the source digest first.
+Stdout emits candidate JavaScript by default, or a diff with --patch.
+Both forms verify the upstream source digest first.
 """
 
 from __future__ import annotations
@@ -44,14 +45,89 @@ REPLACEMENT = """mxSvgCanvas2D.prototype.plainText = function(x, y, w, h, str, a
 
 	if (valid)
 	{
-		var sx = Number(s.scale);
-		var xx = Number(x), yy = Number(y);
-		var ww = Number(w), hh = Number(h);
-		valid = isFinite(xx * sx) && isFinite(yy * sx) &&
-			isFinite(ww * sx) && isFinite(hh * sx) &&
-			isFinite(xx + ww) && isFinite(yy + hh) &&
-			isFinite(yy + Number(s.fontSize)) &&
+		x = Number(x); y = Number(y); w = Number(w); h = Number(h);
+		rotation = Number(rotation);
+		valid = isFinite(x + w) && isFinite(y + h) &&
+			isFinite(y + Number(s.fontSize)) &&
 			isFinite(Number(s.rotation) + Number(rotation));
+	}
+
+	var size = Number(s.fontSize);
+	var tr = s.transform || '';
+	var lines, lh, textHeight, cy;
+	if (valid)
+	{
+		// Calculate the actual baseline before modifying an SVG node.
+		// Reuse this layout below so the gate checks what is rendered.
+		lines = str.split('\\n');
+		var rawLineHeight = size * mxConstants.LINE_HEIGHT;
+		lh = Math.round(rawLineHeight);
+		textHeight = (blockTextHeight != null) ? blockTextHeight :
+			size + (lines.length - 1) * lh;
+		cy = (blockTextHeight != null) ? y : y + size - 1;
+
+		if (valign == mxConstants.ALIGN_MIDDLE)
+		{
+			if (overflow == 'fill')
+			{
+				cy -= h / 2;
+			}
+			else
+			{
+				var dy = ((this.matchHtmlAlignment && clip && h > 0) ?
+					Math.min(textHeight, h) : textHeight) / 2;
+				cy -= dy;
+			}
+		}
+		else if (valign == mxConstants.ALIGN_BOTTOM)
+		{
+			if (overflow == 'fill')
+			{
+				cy -= h;
+			}
+			else
+			{
+				var dy = (this.matchHtmlAlignment && clip && h > 0) ?
+					Math.min(textHeight, h) : textHeight;
+				cy -= dy + 1;
+			}
+		}
+
+		var scale = Number(s.scale);
+		var offset = Number(this.textOffset);
+		var lastLineY = cy + (lines.length - 1) * lh;
+		valid = isFinite(rawLineHeight) && isFinite(lh) &&
+			isFinite(textHeight) && isFinite(cy) && isFinite(lastLineY) &&
+			isFinite(size * scale) && isFinite(x * scale) &&
+			isFinite(y * scale) && isFinite(w * scale) &&
+			isFinite(h * scale) && isFinite(x * scale + offset) &&
+			isFinite(cy * scale + offset) &&
+			isFinite(lastLineY * scale + offset);
+
+		if (valid && clip && w > 0 && h > 0)
+		{
+			var clipX = x, clipY = y;
+			if (align == mxConstants.ALIGN_CENTER) clipX -= w / 2;
+			else if (align == mxConstants.ALIGN_RIGHT) clipX -= w;
+			if (overflow != 'fill')
+			{
+				if (valign == mxConstants.ALIGN_MIDDLE) clipY -= h / 2;
+				else if (valign == mxConstants.ALIGN_BOTTOM) clipY -= h;
+			}
+			valid = isFinite(clipX * scale - 2) &&
+				isFinite(clipY * scale - 2) &&
+				isFinite(w * scale + 4) && isFinite(h * scale + 4);
+		}
+
+		if (valid && blockTextHeight != null && clip &&
+			(align == mxConstants.ALIGN_CENTER ||
+				align == mxConstants.ALIGN_RIGHT) &&
+			htmlContentWidth != null && htmlContentWidth > w)
+		{
+			var shift = (Number(htmlContentWidth) - w) /
+				((align == mxConstants.ALIGN_CENTER) ? 2 : 1);
+			valid = isFinite(shift) && isFinite((x + shift) * scale + offset);
+		}
 	}
 
 	if (!valid)
@@ -79,8 +155,43 @@ REPLACEMENT = """mxSvgCanvas2D.prototype.plainText = function(x, y, w, h, str, a
 			node.appendChild(node.mxRendererParkedSvgText.firstChild);
 		delete node.mxRendererParkedSvgText;
 	}
-	x = Number(x); y = Number(y); w = Number(w); h = Number(h);
-	rotation = Number(rotation);
+"""
+
+# Original layout is moved before any SVG mutation to validate its derived
+# floating-point values once; subsequent painting reuses the same variables.
+LAYOUT_ANCHOR = """	var lines = str.split('\\n');
+	var lh = Math.round(size * mxConstants.LINE_HEIGHT);
+	var textHeight = (blockTextHeight != null) ? blockTextHeight :
+		size + (lines.length - 1) * lh;
+
+	// For block mode, y offsets on child elements already include baseline
+	var cy = (blockTextHeight != null) ? y : y + size - 1;
+
+	if (valign == mxConstants.ALIGN_MIDDLE)
+	{
+		if (overflow == 'fill')
+		{
+			cy -= h / 2;
+		}
+		else
+		{
+			var dy = ((this.matchHtmlAlignment && clip && h > 0) ? Math.min(textHeight, h) : textHeight) / 2;
+			cy -= dy;
+		}
+	}
+	else if (valign == mxConstants.ALIGN_BOTTOM)
+	{
+		if (overflow == 'fill')
+		{
+			cy -= h;
+		}
+		else
+		{
+			var dy = (this.matchHtmlAlignment && clip && h > 0) ?
+				Math.min(textHeight, h) : textHeight;
+			cy -= dy + 1;
+		}
+	}
 """
 
 # Reused nodes must not preserve an old invalid or stale transform/opacity
@@ -94,8 +205,7 @@ TRANSFORM_ANCHOR = """	if (tr.length > 0)
 	{
 		node.setAttribute('opacity', s.alpha);
 	}
-
-	var lines = str.split('\\n');"""
+"""
 TRANSFORM_REPLACEMENT = """	if (tr.length > 0)
 	{
 		node.setAttribute('transform', tr);
@@ -113,8 +223,7 @@ TRANSFORM_REPLACEMENT = """	if (tr.length > 0)
 	{
 		node.removeAttribute('opacity');
 	}
-
-	var lines = str.split('\\n');"""
+"""
 
 
 def main() -> None:
@@ -133,10 +242,14 @@ def main() -> None:
     begin = candidate.index("mxSvgCanvas2D.prototype.plainText = function(")
     end = candidate.index("\n};", begin)
     owner = candidate[begin:end]
+    if owner.count(LAYOUT_ANCHOR) != 1:
+        parser.error("plainText baseline layout region does not match the pin")
     if owner.count(TRANSFORM_ANCHOR) != 1:
         parser.error("plainText transform/opacity region does not match the pin")
     candidate = (candidate[:begin] +
-                 owner.replace(TRANSFORM_ANCHOR, TRANSFORM_REPLACEMENT, 1) +
+                 owner.replace(TRANSFORM_ANCHOR, TRANSFORM_REPLACEMENT, 1)
+                 .replace(LAYOUT_ANCHOR, "", 1)
+                 .replace("\tvar size = s.fontSize;\n\tvar tr = s.transform || '';\n", "", 1) +
                  candidate[end:])
     if args.patch:
         sys.stdout.writelines(difflib.unified_diff(
