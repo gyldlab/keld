@@ -19,6 +19,7 @@ pub mod bootstrap;
 pub mod call_error;
 pub mod channel_table;
 pub mod codec;
+pub mod compat_control;
 pub mod echo;
 pub mod frame;
 pub mod guard_dispatch;
@@ -58,7 +59,7 @@ pub use bootstrap::{
     WindowsNamedPipeBootstrapListener, WindowsNamedPipeBootstrapStream,
     connect_windows_lifecycle_rendezvous_until,
 };
-pub use call_error::{CallError, write_call_error};
+pub use call_error::{CallError, encode_call_error_into, write_call_error};
 pub use echo::{ECHO_CHANNEL, EchoRequest, EchoResponse};
 pub use frame::{ChannelId, CorrelationId, FrameHeader, FrameKind, HeaderError};
 pub use lifecycle::{
