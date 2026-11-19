@@ -172,6 +172,46 @@ Reuse the existing document, permission, writer, ledger and ownership boundaries
   - **At-risk precondition:** Both qualified receipts reach the join while later native fences remain independent.
   - **Expected RED:** The owner reports readiness from two distinct leases.
 
+### AC-16: Partial publication preserves an eligible survivor
+
+- **Given:** The Registry accepted BuildOk and the original link received Created. The same native view remains Open.
+- **When:** Cause recoverable role loss before binding in one run and after written binding in another. Hold the Create reply before admission. Release the old publication turn before the authenticated successor subscribes.
+- **Then:** The original link receives zero correlated success frames. The same WindowRef and physical view survive. The successor receives one Created and one binding for that view in its ordered replay. It receives no old reply.
+- **Negative control:**
+  - **Single fault:** Treat the partially published Open entry as Opening at original role retirement.
+  - **At-risk precondition:** The Host grants recovery. The view has no independent close or release, and the successor's Subscribe succeeds.
+  - **Expected RED:** The same WindowRef and view fail to appear together in successor replay.
+
+### AC-17: Session end releases a partially published view
+
+- **Given:** The Registry accepted BuildOk and the original link received Created. Use both partial-publication cuts from AC-16.
+- **When:** The Host accepts session end instead of recoverable role loss while the original Create reply remains unadmitted.
+- **Then:** The original link receives zero correlated success frames. The Registry changes the same entry to Closing and issues one teardown command for its view. Observe the checked native release separately. The entry never enters replay.
+- **Negative control:**
+  - **Single fault:** Omit the Registry's per-entry teardown command for this Open window.
+  - **At-risk precondition:** Observe the exact Core command boundary before terminal native cleanup can mask the omission.
+  - **Expected RED:** Core issues no DestroyWindow command for that view. Later release cannot satisfy this command check.
+
+### AC-18: An unproved reply remains with its original writer
+
+- **Given:** The original writer has positive Created and binding receipts. It has admitted the Create reply for the same exact correlation.
+- **When:** The actual writer reports an unknown reply outcome. Recover only through an authenticated successor that the existing Runtime admits.
+- **Then:** Preserve the original outcome and its custody. Record any old-link bytes independently. If recovery is admitted and the view remains eligible, replay one fresh Created and binding for its same pair. Never complete or retry the old reply on the successor.
+- **Negative control:**
+  - **Single fault:** Reissue the original correlation as a successful reply when the successor subscribes.
+  - **At-risk precondition:** The original writer retained the unknown outcome. The same view can replay. The successor uses a distinct correlation during the observation.
+  - **Expected RED:** The successor link carries a reply for the retired original call.
+
+### AC-19: Unproved binding cannot authorize a Create reply
+
+- **Given:** The original writer has a positive Created receipt. The selected binding has no positive write receipt.
+- **When:** Exercise the reply decision in the existing publication owner. Use an owner probe if actual write failure first retires the caller.
+- **Then:** The owner never offers correlated Create success for that binding. Its writer-failure and native-custody dispositions remain independent.
+- **Negative control:**
+  - **Single fault:** Omit the positive binding receipt check at the reply decision.
+  - **At-risk precondition:** The source and correlation are otherwise eligible. A positive binding receipt exercises the successful admission path separately.
+  - **Expected RED:** The origin offers correlated success without a proved binding.
+
 ## 4. Design
 
 ### D-1: Physical association on WINDOW
@@ -193,13 +233,23 @@ Check the 21-byte received limit for detected ordinal 12 before field decode. Co
 
 ### D-2: Publication and replay
 
-Use the actual WindowBuilt result and existing publication turn. Send Created, binding, then the correlated Create reply. Recheck the exact entry, physical view and role at final admission.
+Use the actual WindowBuilt result and existing publication turn. Send Created and then binding. Require positive write receipts for both before admitting the correlated Create reply. Recheck the exact entry, physical view and role at final admission.
 
 Send the whole Created census first in recovery under the existing Subscribe turn. Send each permitted document observation after its own qualified binding. Complete replay before the acknowledgment. Duplicate Subscribe remains idempotent. Only qualified Open or ClosePending entries can participate. Adopt preserves exact association.
 
 The Registry can replay a surviving association independently of the retired caller. The current successor remains unregistered until fresh qualified commit and registration. Require separate GH1404 ownership for surviving-document route recovery.
 
-Preserve the original writer outcome if publication fails or its receipt is unproved. Withhold correlated success. Keep the old link and its charges in their own retirement path. Reuse the existing primary writer throughout.
+Preserve the original writer outcome if publication fails or its receipt is unproved. Withhold later correlated success. If the reply write was attempted and its outcome is unknown, keep the exact writer's failure custody. An unknown receipt provides no proof of delivery. Never reissue the original success from replay.
+
+Accepted BuildOk changes Opening to Open before publication. After Created or after binding, a publication failure does not itself change that native phase. If the Host grants role recovery, keep the checked Open view and its WindowRef for the authenticated successor's ordered replay.
+
+A pending close follows the existing [abandoned-close rule](https://github.com/gyldlab/keld/blob/9a1559f3c0a5b7174144b6351d6a86985628dbb7/docs/specs/gh531-window-registry-close-state-machine.md#L809-L810) before replay. An independently Closing or Destroyed entry stays outside replay.
+
+If the Host accepts session end, move the same Open view to Closing and wait for its checked native release through normal teardown. Session end supplies no replay. If role loss or session end wins while the entry is still Opening, use the late-build cleanup from AC-13. An unproved native handoff cannot qualify for replay.
+
+These cuts inherit GH531's [BuildOk and Opening rules](https://github.com/gyldlab/keld/blob/9a1559f3c0a5b7174144b6351d6a86985628dbb7/docs/specs/gh531-window-registry-close-state-machine.md#L769-L779).
+
+The [Open retirement rules](https://github.com/gyldlab/keld/blob/9a1559f3c0a5b7174144b6351d6a86985628dbb7/docs/specs/gh531-window-registry-close-state-machine.md#L791-L794) own recovery and session end. The existing primary writer retains the old link and its charges.
 
 ### D-3: Mirror, applied state and deferred dispatch
 
@@ -247,7 +297,7 @@ Use the existing Rust WINDOW receive owner, Core Registry and primary writer. Up
 ### T-4: Qualify selected delivery and retirement
 
 - **Blocked by:** T-2, T-3, B-2
-- Join approved GH540 DATA and CONTROL using the existing Guard, writer and ledger. Run AC-1 through AC-15 on one exact Windows Host, CLI and SDK tuple.
+- Join approved GH540 DATA and CONTROL using the existing Guard, writer and ledger. Run AC-1 through AC-19 on one exact Windows Host, CLI and SDK tuple.
 
 ## 7. Test plan & evidence
 
