@@ -13,6 +13,8 @@ pub(super) struct DevelopmentAppConfig {
     pub(super) version: String,
     pub(super) entry: String,
     pub(super) renderer_source: RendererSourceConfig,
+    pub(super) single_instance: Option<keld_core::SingleInstanceDeclaration>,
+    pub(super) application_name_for_user_agent: Option<keld_core::ApplicationNameForUserAgent>,
 }
 
 /// Application-selected paths, never a source or native permission grant.
@@ -215,6 +217,22 @@ pub(super) fn parse_development_graph(
         ));
     }
     let renderer_source = parse_renderer_source(&mut app)?;
+    let single_instance = keld_core::single_instance_from_config_ts(app_source)
+        .map_err(|error| BootCompileError::new(phase, error.to_string()))?;
+    if single_instance
+        .as_ref()
+        .is_some_and(|declaration| declaration.id() != id)
+    {
+        return Err(BootCompileError::new(
+            phase,
+            "singleInstance.id must equal the canonical application id",
+        ));
+    }
+    let application_name_for_user_agent =
+        keld_core::application_name_for_user_agent_from_config_ts(app_source)
+            .map_err(|error| BootCompileError::new(phase, error.to_string()))?;
+    app.remove("singleInstance");
+    app.remove("applicationNameForUserAgent");
     closed(&app, phase)?;
 
     let phase = "development keld.build.ts";
@@ -227,6 +245,8 @@ pub(super) fn parse_development_graph(
             version,
             entry,
             renderer_source,
+            single_instance,
+            application_name_for_user_agent,
         },
         graph,
     ))
@@ -270,6 +290,74 @@ mod tests {
         assert_eq!(graph.provider_trees, [[0xcc; 32], [0xdd; 32], [0xee; 32]]);
         assert_eq!(graph.preload.path, "bootstrap/app-preload.cjs");
         assert_eq!(graph.preload.sha256, [0xff; 32]);
+    }
+
+    #[test]
+    fn preserves_optional_metadata_independently_and_keeps_exact_version() {
+        let before = "rendererSource:";
+        let single = "singleInstance:{id:'dev.example.editor'},";
+        let suffix = "applicationNameForUserAgent:'Editor 31.7.0',";
+        for (single_field, suffix_field, expected_id, expected_suffix) in [
+            ("", "", None, None),
+            (single, "", Some("dev.example.editor"), None),
+            ("", suffix, None, Some("Editor 31.7.0")),
+            (
+                single,
+                suffix,
+                Some("dev.example.editor"),
+                Some("Editor 31.7.0"),
+            ),
+        ] {
+            let source = APP.replace(
+                before,
+                &format!("version:'31.7.0',{single_field}{suffix_field}{before}"),
+            );
+            let (app, _) = parse_development_graph(&source, &build()).expect("optional metadata");
+            assert_eq!(app.version, "31.7.0");
+            assert_eq!(
+                app.single_instance.as_ref().map(|value| value.id()),
+                expected_id
+            );
+            assert_eq!(
+                app.application_name_for_user_agent
+                    .as_ref()
+                    .map(|value| value.as_str()),
+                expected_suffix,
+            );
+        }
+    }
+
+    #[test]
+    fn reports_typed_staging_errors_for_invalid_metadata() {
+        for (field, expected) in [
+            (
+                "singleInstance:{id:'dev.elsewhere.editor'},",
+                "singleInstance.id must equal",
+            ),
+            (
+                "singleInstance:{id:'Dev.example.editor'},",
+                "invalid singleInstance declaration",
+            ),
+            (
+                "singleInstance:{id:'dev.example.editor',extra:'value'},",
+                "invalid singleInstance declaration",
+            ),
+            (
+                "applicationNameForUserAgent:' Editor',",
+                "invalid applicationNameForUserAgent",
+            ),
+            (
+                "applicationNameForUserAgent:{label:'Editor'},",
+                "invalid applicationNameForUserAgent",
+            ),
+        ] {
+            let source = APP.replace("rendererSource:", &format!("{field}rendererSource:"));
+            let error = parse_development_graph(&source, &build()).expect_err(field);
+            assert!(
+                matches!(error, BootCompileError::Staging { phase: "development keld.config.ts", detail } if detail.contains(expected)),
+                "wrong staging error for {field}",
+            );
+        }
     }
 
     #[test]
