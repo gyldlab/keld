@@ -115,7 +115,7 @@ impl AdmittedWebAppSource {
 
 /// Immutable actual native URL or source-qualified native origin metadata.
 /// Explicit aliases share the allocation and retain source-wide byte credit.
-pub(crate) struct NativeNavigationUrl {
+pub struct NativeNavigationUrl {
     allocation: Arc<NavigationUrlAllocation>,
     _alias_credit: Option<crate::resource_intake::RetainedByteCredit>,
 }

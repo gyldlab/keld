@@ -41,7 +41,9 @@ mod resource_intake;
 #[cfg(windows)]
 pub mod resource_source;
 #[cfg(windows)]
-pub use engine::{NativeNavigationContext, OriginalEntryQuery, OriginalNavigationFact};
+pub use engine::{
+    NativeNavigationContext, NativeNavigationRefusal, OriginalEntryQuery, OriginalNavigationFact,
+};
 #[cfg(target_os = "macos")]
 mod startup;
 #[cfg(test)]
