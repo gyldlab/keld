@@ -46,6 +46,7 @@ fn selected_record_serializes_exact_same_graph_policy_and_optional_facts() {
             "root": root.to_str().expect("verbatim root"),
             "version": "31.7.0-selected",
             "locale": "fr-CA",
+            "windowsApplicationMenu": "absent-v1",
             "paths": {
                 "appData": r"D:\Observed\Roaming",
                 "userData": r"D:\Observed\Roaming\Exact λ",

@@ -238,3 +238,59 @@ test("truncated verbatim drive roots refuse without consulting inherited string 
   expect(reads).toBe(0);
   expect(captureHostLaunchFacts(facts, true)?.root).toBe(facts.root);
 });
+
+test("Windows schema eight freezes the exact own application menu absence", () => {
+  const input = { ...facts, windowsApplicationMenu: "absent-v1" };
+  const child = observe(input);
+  expect(child.exitCode, child.stderr.toString()).toBe(0);
+  expect(child.stderr.toString()).toBe("");
+  expect(JSON.parse(child.stdout.toString())).toEqual({
+    facts: input,
+    owned: true,
+  });
+  const captured = captureHostLaunchFacts(input, true)!;
+  input.windowsApplicationMenu = "changed";
+  expect(Object.getOwnPropertyDescriptor(captured, "windowsApplicationMenu")).toEqual({
+    value: "absent-v1",
+    enumerable: true,
+    writable: false,
+    configurable: false,
+  });
+});
+
+test("Windows menu absence refuses foreign, older and malformed own data", () => {
+  const { originalResourcePolicy: _policy, singleInstance: _verdict, ...legacy } = facts;
+  const attested = { ...facts, windowsApplicationMenu: "absent-v1" };
+  for (const child of [
+    observe(attested, false),
+    observe(attested, true, false),
+    observe(attested, true, true, false),
+    observe({ ...legacy, schema: 3, windowsApplicationMenu: "absent-v1" }),
+  ]) {
+    expect(child.exitCode).not.toBe(0);
+    expect(child.stderr.toString()).toContain("KELD-IPC-029");
+    expect(child.stdout.toString()).toBe("");
+  }
+  for (const value of [undefined, null, true, "", "absent-v2", ["absent-v1"]]) {
+    expect(() => captureHostLaunchFacts({ ...facts, windowsApplicationMenu: value }, true))
+      .toThrow("KELD-IPC-029");
+  }
+});
+
+test("Windows menu absence never reads an accessor or inherits a fact", () => {
+  let reads = 0;
+  const accessor = Object.defineProperty({ ...facts }, "windowsApplicationMenu", {
+    get() {
+      reads++;
+      return "absent-v1";
+    },
+  });
+  expect(() => captureHostLaunchFacts(accessor, true)).toThrow("KELD-IPC-029");
+  expect(reads).toBe(0);
+  const inherited = Object.assign(
+    Object.create({ windowsApplicationMenu: "absent-v1" }),
+    facts,
+  );
+  expect(captureHostLaunchFacts(inherited, true)?.windowsApplicationMenu).toBeUndefined();
+  expect(captureHostLaunchFacts(facts, true)?.windowsApplicationMenu).toBeUndefined();
+});

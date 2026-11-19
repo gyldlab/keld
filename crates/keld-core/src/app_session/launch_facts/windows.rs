@@ -145,6 +145,7 @@ struct OriginalFacts<'a> {
     locale: Option<String>,
     paths: LaunchDirectories,
     original_resource_policy: OriginalResourcePolicyDescriptor,
+    windows_application_menu: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     single_instance: Option<SingleInstanceFact>,
 }
@@ -175,6 +176,8 @@ impl<'a> OriginalFacts<'a> {
             locale: None,
             paths: LaunchDirectories::default(),
             original_resource_policy: policy,
+            // Both managed Create routes enforce the held HWND's menu invariant.
+            windows_application_menu: "absent-v1",
             single_instance: None,
         };
         facts.encode()?;

@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:0934a08ed8076de1a902039b6bd48f8d3eca8040856e4980a3b1ea2f4511e34e
+// @keld/kipc-transport sha256:92987f3443d57331cfd0d37b5ccda34ba4c3a5bd2495ee744963ce702ab765bf
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -84,6 +84,7 @@ export interface WindowsOriginalDevelopmentHostLaunchFacts {
   readonly paths: Readonly<Partial<Record<LaunchPathName, string>>>;
   readonly originalResourcePolicy: HostOriginalResourcePolicy;
   readonly singleInstance?: HostSingleInstanceFact;
+  readonly windowsApplicationMenu?: "absent-v1";
 }
 
 interface LaunchFactsIntrinsics {
@@ -321,7 +322,7 @@ function bindLaunchFactsCapture(intrinsic: LaunchFactsIntrinsics) {
     const fields = launchFactsFields(
       value,
       ["schema", "kind", "name", "root", "paths", "originalResourcePolicy"],
-      ["version", "locale", "singleInstance"],
+      ["version", "locale", "singleInstance", "windowsApplicationMenu"],
     );
     const { schema, kind, name, root } = fields;
     if (
@@ -338,6 +339,12 @@ function bindLaunchFactsCapture(intrinsic: LaunchFactsIntrinsics) {
       intrinsic.descriptor(fields, "singleInstance") !== undefined
         ? captureSingleInstanceFact(fields.singleInstance)
         : undefined;
+    let windowsApplicationMenu: WindowsOriginalDevelopmentHostLaunchFacts["windowsApplicationMenu"];
+    if (intrinsic.descriptor(fields, "windowsApplicationMenu") !== undefined) {
+      if (fields.windowsApplicationMenu !== "absent-v1")
+        return invalidLaunchFacts();
+      windowsApplicationMenu = fields.windowsApplicationMenu;
+    }
     const captured =
       freezeLaunchFacts<WindowsOriginalDevelopmentHostLaunchFacts>({
         schema,
@@ -351,6 +358,7 @@ function bindLaunchFactsCapture(intrinsic: LaunchFactsIntrinsics) {
         ...(version === undefined ? {} : { version }),
         ...(locale === undefined ? {} : { locale }),
         ...(singleInstance === undefined ? {} : { singleInstance }),
+        ...(windowsApplicationMenu === undefined ? {} : { windowsApplicationMenu }),
       });
     const json = intrinsic.stringify(captured);
     if (
