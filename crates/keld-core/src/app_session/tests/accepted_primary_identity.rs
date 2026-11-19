@@ -13,6 +13,9 @@ use std::net::{TcpListener, TcpStream};
 const BOUND: Duration = Duration::from_secs(20);
 
 #[cfg(windows)]
+#[path = "accepted_primary_identity/original_controls.rs"]
+mod original_controls;
+#[cfg(windows)]
 #[path = "accepted_primary_identity/original_create.rs"]
 mod original_create;
 

@@ -2,6 +2,8 @@
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 mod boot_contract;
+#[cfg(windows)]
+mod compat_router;
 #[cfg(any(test, target_os = "macos", windows))]
 mod dialog_custody;
 #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
@@ -9017,6 +9019,12 @@ impl PrimaryRouter {
         #[cfg(windows)]
         let primary_writer_worker = if physical_writer {
             let (writer, worker) = primary_writer::PrimaryWriterWorker::start(handle.clone())?;
+            if let Some(windows) = &handle.windows {
+                windows
+                    .lock()
+                    .map_err(|_| app_detail("compat CONTROL owner", "Window owner lock poisoned"))?
+                    .bind_compat_writer(&writer)?;
+            }
             handle.primary_writer = Some(writer);
             Some(worker)
         } else {

@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex, Weak};
 
 use keld_ipc::window::WindowRef;
 use keld_runtime::primary::RoleOwner;
-use keld_wv::renderer_bridge::{RendererRoleFence, RendererRoleWitness};
+use keld_wv::renderer_bridge::{
+    NativeControlReservation, RendererControlOwner, RendererRoleFence, RendererRoleWitness,
+};
 
 use super::window_router::WindowSession;
 use super::{
@@ -22,10 +24,8 @@ pub(super) struct CanonicalRendererRoleScope {
 impl CanonicalRendererRoleScope {
     pub(super) fn for_window(self, window: WindowRef) -> RendererRoleWitness {
         let stopped = Arc::clone(&self.caller.reader_stop);
-        RendererRoleWitness::with_fence(
-            stopped,
-            Arc::new(CanonicalRendererRoleFence { role: self, window }),
-        )
+        let owner = Arc::new(CanonicalRendererRoleFence { role: self, window });
+        RendererRoleWitness::with_fence(stopped, owner.clone()).with_controls(owner)
     }
 }
 
@@ -36,23 +36,74 @@ struct CanonicalRendererRoleFence {
 
 impl RendererRoleFence for CanonicalRendererRoleFence {
     fn try_admit_native(&self, admit: &mut dyn FnMut() -> bool) -> bool {
+        // The callback commits only native-local state. Native I/O starts
+        // after this fence returns and all these guards drop.
+        self.with_live_scope(|_| admit()).unwrap_or(false)
+    }
+}
+
+impl CanonicalRendererRoleFence {
+    fn with_live_scope<T>(&self, admit: impl FnOnce(&WindowSession) -> T) -> Option<T> {
         let role = &self.role;
-        let (Some(current), Some(windows)) = (role.current.upgrade(), role.windows.upgrade())
-        else {
-            return false;
-        };
-        let mut accepted = false;
-        let result = with_primary_caller_locked(&current, &role.shutdown, &role.caller, |_| {
+        let (current, windows) = (role.current.upgrade()?, role.windows.upgrade()?);
+        let mut admitted = None;
+        with_primary_caller_locked(&current, &role.shutdown, &role.caller, |_| {
             if let Ok(windows) = windows.lock()
                 && windows.current_original_binding(&role.caller, self.window)
             {
-                // The callback commits only native-local state. Native I/O
-                // starts after this fence returns and all these guards drop.
-                accepted = admit();
+                admitted = Some(admit(&windows));
             }
             Ok(())
-        });
-        result.is_ok() && accepted
+        })
+        .ok()?;
+        admitted
+    }
+
+    /// Serialize observations on the same physical producer even after the
+    /// creating caller stops. This cut cannot authorize native effects.
+    fn with_physical_scope<T>(&self, observe: impl FnOnce(&mut WindowSession) -> T) -> Option<T> {
+        let current = self.role.current.upgrade()?;
+        let windows = self.role.windows.upgrade()?;
+        let _transition = self.role.shutdown.transition_guard();
+        let _current = current.lock().ok()?;
+        let mut windows = windows.lock().ok()?;
+        windows.compat()?;
+        Some(observe(&mut windows))
+    }
+}
+
+impl RendererControlOwner for CanonicalRendererRoleFence {
+    fn has_native_view_scope(&self) -> bool {
+        self.with_physical_scope(|windows| windows.native_view_scope_status(self.window).is_some())
+            .unwrap_or(false)
+    }
+
+    fn close_native_offers(&self) -> bool {
+        self.with_physical_scope(|windows| windows.close_native_view_offers(self.window))
+            .unwrap_or(false)
+    }
+
+    fn native_storage_is_quiescent(&self) -> bool {
+        self.with_physical_scope(|windows| {
+            windows.native_view_scope_status(self.window) == Some(true)
+                && windows
+                    .compat()
+                    .is_some_and(|compat| compat.native_storage_is_quiescent(self.window))
+        })
+        .unwrap_or(false)
+    }
+
+    fn try_reserve_native_control(
+        &self,
+        encoded_bytes: usize,
+        accounted_bytes: usize,
+    ) -> Option<NativeControlReservation> {
+        self.with_live_scope(|windows| {
+            windows
+                .compat()?
+                .reserve_native_control(self.window, encoded_bytes, accounted_bytes)
+        })
+        .flatten()
     }
 }
 

@@ -53,6 +53,8 @@ pub(super) struct WindowSession {
     native_supported: bool,
     #[cfg(windows)]
     original_selection: Option<std::sync::Arc<super::original_webapp::OriginalLoadSelection>>,
+    #[cfg(windows)]
+    compat: Option<std::sync::Arc<super::compat_router::CompatSession>>,
     // The one subscription owner is this live link, not the window instances.
     subscribed: Option<WindowOwner>,
     #[cfg(windows)]
@@ -65,6 +67,8 @@ impl WindowSession {
             native_supported,
             #[cfg(windows)]
             original_selection: None,
+            #[cfg(windows)]
+            compat: None,
             subscribed: None,
             #[cfg(windows)]
             publication: publication_turn::WindowPublicationState::default(),
@@ -112,6 +116,43 @@ impl WindowSession {
         window: keld_ipc::window::WindowRef,
     ) -> bool {
         self.registry.current_original_binding(caller, window)
+    }
+    #[cfg(windows)]
+    pub(super) fn bind_compat_writer(
+        &mut self,
+        writer: &super::primary_writer::PrimaryWriter,
+    ) -> Result<(), HostAppError> {
+        if self.original_selection.is_none() {
+            return Ok(());
+        }
+        if self.compat.is_some() {
+            return Err(app_detail(
+                "compat CONTROL owner",
+                "session writer is already bound",
+            ));
+        }
+        self.compat = Some(std::sync::Arc::new(
+            super::compat_router::CompatSession::new(writer.clone()),
+        ));
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    pub(super) fn compat(&self) -> Option<&std::sync::Arc<super::compat_router::CompatSession>> {
+        self.compat.as_ref()
+    }
+
+    #[cfg(windows)]
+    pub(super) fn native_view_scope_status(
+        &self,
+        window: keld_ipc::window::WindowRef,
+    ) -> Option<bool> {
+        self.registry.native_view_scope_status(window)
+    }
+
+    #[cfg(windows)]
+    pub(super) fn close_native_view_offers(&mut self, window: keld_ipc::window::WindowRef) -> bool {
+        self.registry.close_native_view_offers(window)
     }
     #[cfg(any(target_os = "macos", windows))]
     pub(super) fn admitted_dialog_view(
