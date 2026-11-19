@@ -122,7 +122,7 @@
       ],
       "test_path": "packages/@keld/electron/src/native-surface.test.ts",
       "test_name": "menu.set-application-menu today: no static application-menu setter is exported",
-      "negative_control": "Current baseline: adding Menu.setApplicationMenu function fails this absent-method case. After GH-480 inversion: not installing actual macOS menu with the host owner fails."
+      "negative_control": "Allowing an unqualified Menu.setApplicationMenu(null) call to return normally fails the typed-refusal check. After GH-480 inversion, failure to install the actual macOS menu through the Host owner fails the native check."
     },
     {
       "operation_id": "menu-item.role-overrides-click",
