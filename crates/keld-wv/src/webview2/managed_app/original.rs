@@ -46,11 +46,12 @@ impl SelectedRenderer {
     }
 
     fn retains_resources(&self) -> bool {
-        self.pending.is_some()
+        !self.outcomes_closed
+            || self.pending.is_some()
             || self
                 .session
                 .as_ref()
-                .is_some_and(|session| !self.outcomes_closed || !session.is_drained())
+                .is_some_and(|session| !session.is_drained())
     }
 
     /// Attach the exact received value before classification or a native turn.
@@ -259,4 +260,40 @@ impl ManagedWindows {
 
 fn failure(detail: &'static str) -> WvError {
     super::super::profile_failure_with(crate::profile::ProfileErrorKind::LifecycleUnproven, detail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Instant, Rc, RendererBridgeEndpoint, RendererBridgeOutcome, SelectedRenderer};
+    use std::sync::mpsc::sync_channel;
+
+    #[test]
+    fn renderer_receiver_waits_for_actual_terminal_disconnect() {
+        let (requests, _requests_received) = sync_channel(1);
+        let (send, outcomes) = sync_channel(2);
+        let endpoint = RendererBridgeEndpoint::new(requests, outcomes, 1);
+        let mut renderer = SelectedRenderer::new(endpoint, Rc::new(|_, _| Ok(()))).unwrap();
+        renderer.retire_by = Some(Instant::now());
+        send.try_send(RendererBridgeOutcome::ControlCapacity)
+            .unwrap();
+        send.try_send(RendererBridgeOutcome::ControlCapacity)
+            .unwrap();
+        drop(send);
+
+        renderer.receive_outcome().unwrap();
+        assert!(renderer.pending.is_some());
+        renderer.receive_outcome().unwrap(); // Cannot replace the occupied owner.
+        assert!(renderer.retains_resources());
+        let _ = renderer.pending.take();
+        renderer.receive_outcome().unwrap();
+        assert!(renderer.pending.is_some());
+        let _ = renderer.pending.take();
+        assert!(
+            renderer.retains_resources(),
+            "emptiness is not producer retirement"
+        );
+        renderer.receive_outcome().unwrap();
+        assert!(renderer.outcomes_closed);
+        assert!(!renderer.retains_resources());
+    }
 }

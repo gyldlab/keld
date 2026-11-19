@@ -3705,6 +3705,10 @@ impl WebView2Engine {
     /// The same engine must stay on this thread through the failed process exit.
     #[must_use]
     pub fn retains_failed_build(&self) -> bool {
+        self.selected_renderer.is_some() || self.retains_native_build()
+    }
+
+    fn retains_native_build(&self) -> bool {
         self.retained_app_run.is_some()
             || self
                 .startup_build
@@ -3713,7 +3717,7 @@ impl WebView2Engine {
     }
 
     fn require_startup_build_retired(&self) -> Result<(), WvError> {
-        if self.retains_failed_build() {
+        if self.retains_native_build() {
             return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
                 "event loop setup cannot replace an unresolved native build candidate",
@@ -4067,7 +4071,6 @@ impl WebView2Engine {
             proxy.clone(),
             Rc::clone(&self.activation_observer),
             self.browser_exit_sender.clone(),
-            self.selected_renderer.take(),
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
             self.managed_test_control.take(),
         )));
@@ -4087,6 +4090,9 @@ impl WebView2Engine {
             loop {
                 std::thread::park();
             }
+        }
+        if let Some(renderer) = self.selected_renderer.take() {
+            managed.borrow_mut().attach_selected_renderer(renderer);
         }
         let managed_in_loop = Rc::clone(&managed);
         let mut exiting_with_candidate = false;

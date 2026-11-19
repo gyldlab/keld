@@ -63,7 +63,6 @@ impl ManagedWindows {
         proxy: EventLoopProxy<WindowsLoopEvent>,
         activation_observer: Rc<ActivationObserver>,
         receipt_sender: Weak<Sender<BrowserExitReceipt>>,
-        renderer: Option<SelectedRenderer>,
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))] test_control: Option<
             TestControl,
         >,
@@ -76,10 +75,15 @@ impl ManagedWindows {
             proxy,
             activation_observer,
             receipt_sender,
-            renderer,
+            renderer: None,
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
             test_control,
         }
+    }
+
+    /// The engine installs its one endpoint after fallible loop setup.
+    pub(super) fn attach_selected_renderer(&mut self, renderer: SelectedRenderer) {
+        self.renderer = Some(renderer);
     }
 
     /// Called at the top of a later native turn, before expiry and exit checks.
