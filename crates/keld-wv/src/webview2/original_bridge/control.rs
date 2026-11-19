@@ -140,7 +140,7 @@ impl Drop for DriveTurn<'_> {
 }
 
 impl OriginalBridge {
-    pub(super) fn drive_on_ui(&self) -> Result<(), WvError> {
+    pub(in crate::webview2) fn drive_on_ui(&self) -> Result<(), WvError> {
         if self.callback_depth.get().is_none() {
             self.fail("original bridge lost callback depth");
             return Err(failure("original bridge lost callback depth"));
