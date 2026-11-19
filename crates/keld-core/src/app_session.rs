@@ -2086,7 +2086,13 @@ pub fn run_guarded(
         profile_preflight::disclose_profile(profile, false)?;
         let guard_snapshot = GuardSnapshot::prepare_uncontained(verified, profile)
             .map_err(|source| HostAppError::fs_prepare(&source))?;
-        run_app_direct(app, Some(&guard_snapshot), pre_init_terminal, host_death_job).map_err(HostRunFailure::from)
+        run_app_direct(
+            app,
+            Some(&guard_snapshot),
+            pre_init_terminal,
+            host_death_job,
+        )
+        .map_err(HostRunFailure::from)
     }
     #[cfg(target_os = "macos")]
     {
