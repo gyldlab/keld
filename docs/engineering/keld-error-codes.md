@@ -1072,6 +1072,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: This Host session has reached its cumulative distinct-window admission capacity, including destroyed window identities
 - fix: Start a fresh Host session to mint further window identities. Do not retry Create within this session, recycle a retired identity, or bypass the native admission limit. The candidate numeric capacity remains unapproved pending GH1149.
 
+## KELD-CORE-049
+
+- crate: keld-core
+- message: The Host's native desktop display or appearance snapshot is unavailable
+- fix: Correct the native display or appearance capture error reported by the Host and relaunch.
+
 ## KELD-CORE-050
 
 - crate: keld-core
