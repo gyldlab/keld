@@ -1,4 +1,4 @@
-//! Admit bounded actual Source and one complete WebView2 JSON String.
+//! Admit bounded actual Source and one complete `WebView2` JSON String.
 use std::cell::Cell;
 
 use super::super::native_text::{read_task_text, read_task_text_admitted};

@@ -1,4 +1,4 @@
-//! One selected Windows bridge retained on its actual ResourceView.
+//! One selected Windows bridge retained on its actual `ResourceView`.
 #![deny(unsafe_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -59,7 +59,7 @@ pub(super) struct OriginalBridge {
 }
 
 impl OriginalBridge {
-    /// The caller attaches this Rc to the existing OriginalView before any
+    /// The caller attaches this Rc to the existing `OriginalView` before any
     /// subscription. The sole outcome receiver remains with its Host owner.
     pub(super) fn prepare(
         resource: Rc<ResourceView>,

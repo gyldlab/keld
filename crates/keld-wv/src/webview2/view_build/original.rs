@@ -1,4 +1,4 @@
-//! The original preload runs inside the existing retained NativeBuild candidate.
+//! The original preload runs inside the existing retained `NativeBuild` candidate.
 #![forbid(unsafe_code)]
 
 use std::rc::Rc;
@@ -120,7 +120,7 @@ impl NativeBuild {
 
     /// Complete native Create only after the retained View has real renderer
     /// subscriptions and the script completion. This conveys no navigation,
-    /// document binding, renderer registration, or AppRegistered receipt.
+    /// document binding, renderer registration, or `AppRegistered` receipt.
     pub(in crate::webview2) fn resume_original_preload(
         &mut self,
         expected_build: u64,

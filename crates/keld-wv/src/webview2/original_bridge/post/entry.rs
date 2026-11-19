@@ -1,4 +1,4 @@
-//! The sole WebView2 post entry. The typed carrier retains its storage charge.
+//! The sole `WebView2` post entry. The typed carrier retains its storage charge.
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use super::{EntryCommit, PostAuthority, PostPhase, PostResult, PreparedControl};

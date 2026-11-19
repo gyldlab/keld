@@ -60,7 +60,7 @@ impl StartupReceipt {
             && self.registered_post_returned
     }
 
-    /// Only the charged AppRegistered operation supplies this actual native
+    /// Only the charged `AppRegistered` operation supplies this actual native
     /// return. Endpoint acceptance or local Registered alone cannot settle it.
     pub(super) fn observe_registered_post_return(
         &mut self,

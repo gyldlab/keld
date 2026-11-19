@@ -708,7 +708,7 @@ fn known_local_app_data() -> Result<PathBuf, WvError> {
     native_local_app_data()
 }
 
-/// Reads the current token's native local data folder without the WebView
+/// Reads the current token's native local data folder without the `WebView`
 /// profile fixture override.
 ///
 /// # Errors
@@ -3667,7 +3667,7 @@ impl WebView2Engine {
     /// Attach the one Core-created renderer endpoint before entering the app loop.
     ///
     /// The callback receives only actual selected navigation facts. Native Create
-    /// reports WindowBuilt independently of renderer registration.
+    /// reports `WindowBuilt` independently of renderer registration.
     ///
     /// # Errors
     ///

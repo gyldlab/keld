@@ -65,7 +65,7 @@ fn failure(detail: &'static str) -> WvError {
 }
 
 impl OriginalView {
-    /// The containing NativeBuild candidate stores this before any identity
+    /// The containing `NativeBuild` candidate stores this before any identity
     /// observation, subscription, or script registration on the actual View.
     pub(super) fn prepare(inputs: ViewInputs, id: WebviewId) -> Result<Self, WvError> {
         if !inputs.creator.is_live() || !inputs.creator.has_native_view_scope() {

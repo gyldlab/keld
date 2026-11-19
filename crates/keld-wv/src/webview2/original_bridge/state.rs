@@ -44,7 +44,7 @@ impl State {
 }
 
 impl OriginalBridge {
-    /// Only the real selected ContentLoading commit can supply this attempt,
+    /// Only the real selected `ContentLoading` commit can supply this attempt,
     /// lease and qualification timestamp. Entropy is outside interior guards.
     pub(super) fn synchronize_commit(&self) -> Result<(), WvError> {
         if self.retired.get() || self.faulted.get() {
