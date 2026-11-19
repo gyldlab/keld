@@ -315,13 +315,15 @@ mod tests {
             let (app, _) = parse_development_graph(&source, &build()).expect("optional metadata");
             assert_eq!(app.version, "31.7.0");
             assert_eq!(
-                app.single_instance.as_ref().map(|value| value.id()),
+                app.single_instance
+                    .as_ref()
+                    .map(keld_core::SingleInstanceDeclaration::id),
                 expected_id
             );
             assert_eq!(
                 app.application_name_for_user_agent
                     .as_ref()
-                    .map(|value| value.as_str()),
+                    .map(keld_core::ApplicationNameForUserAgent::as_str),
                 expected_suffix,
             );
         }
@@ -370,7 +372,7 @@ mod tests {
         let (app, _) = parse_development_graph(&source, &build()).expect("bounded version");
         assert_eq!(app.version, exact);
         assert_eq!(app.entry, "boot.ts");
-        for bad in ["".to_owned(), r"a\u0000".to_owned(), exact + "x"] {
+        for bad in [String::new(), r"a\u0000".to_owned(), exact + "x"] {
             let source = APP.replace("name:", &format!("version:'{bad}', name:"));
             assert!(parse_development_graph(&source, &build()).is_err());
         }
