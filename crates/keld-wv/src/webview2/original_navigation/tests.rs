@@ -82,7 +82,8 @@ impl Harness {
         );
         self.navigation
             .content_loading(id(native), &uri, false, self.now)
-            .unwrap();
+            .unwrap()
+            .expect("first commit publishes once");
         (uri, self.navigation.current_document().unwrap())
     }
 }
@@ -102,7 +103,8 @@ fn native_id_nonce_selected_response_and_content_commit_are_all_required() {
     let stamp = h
         .navigation
         .content_loading(id(41), &uri, false, h.now)
-        .unwrap();
+        .unwrap()
+        .expect("first commit publishes once");
     assert_eq!(stamp.generation.get(), 2);
     let document = h.navigation.current_document().unwrap();
     assert!(document.belongs_to_source(&h.fixture.source_arc()));
@@ -166,7 +168,8 @@ fn same_uri_child_cannot_preempt_or_replace_real_top_level_response() {
         let committed = h
             .navigation
             .content_loading(id(50), &uri, false, h.now)
-            .expect("only the real top-level response permits commit");
+            .expect("only the real top-level response permits commit")
+            .expect("first commit publishes once");
         assert!(h.navigation.current_document().unwrap().is_current());
         assert_eq!(
             h.navigation.navigation_completed(id(50), true),
@@ -221,7 +224,8 @@ fn same_uri_prior_host_attempt_cannot_satisfy_successor_nonce_or_lease() {
             let committed = h
                 .navigation
                 .content_loading(id(61), &new_uri, false, h.now)
-                .expect("fresh Host request must still qualify");
+                .expect("fresh Host request must still qualify")
+                .expect("first commit publishes once");
             assert_eq!(
                 h.navigation.navigation_completed(id(61), true),
                 Some(Ok(committed))
@@ -367,7 +371,8 @@ fn b_revokes_a_and_late_a_response_or_failure_cannot_borrow_b() {
     let a_ticket = h.serve(109, a_resource, &a_uri, &a_header);
     h.navigation
         .content_loading(id(52), &a_uri, false, h.now)
-        .unwrap();
+        .unwrap()
+        .expect("first commit publishes once");
     let a = h.navigation.current_document().unwrap();
 
     let (_, b_uri, b_header, b_resource) = h.begin(Some("fresh=1"));
@@ -377,7 +382,8 @@ fn b_revokes_a_and_late_a_response_or_failure_cannot_borrow_b() {
     let b_stamp = h
         .navigation
         .content_loading(id(53), &b_uri, false, h.now)
-        .unwrap();
+        .unwrap()
+        .expect("first commit publishes once");
     assert!(!h.navigation.document_served(a_ticket, a_resource, h.now));
     assert!(!h.navigation.fail_attempt(a_resource.attempt));
     assert_eq!(h.navigation.navigation_completed(id(52), false), None);
@@ -433,3 +439,32 @@ fn callback_reentry_before_post_admission_suppresses_the_call() {
 }
 
 mod native_call;
+
+#[test]
+fn matched_commit_and_finish_each_publish_once_per_attempt() {
+    let mut h = Harness::new();
+    for native in [71, 72] {
+        let (_, uri, header, lease) = h.begin(None);
+        h.start(native, &uri, &header);
+        h.serve(usize::try_from(native).unwrap(), lease, &uri, &header);
+        let stamp = h
+            .navigation
+            .content_loading(id(native), &uri, false, h.now)
+            .unwrap()
+            .expect("first native commit");
+        assert_eq!(
+            h.navigation.content_loading(id(native), &uri, false, h.now),
+            Ok(None)
+        );
+        assert_eq!(
+            h.navigation.navigation_completed(id(native), true),
+            Some(Ok(stamp))
+        );
+        assert_eq!(h.navigation.navigation_completed(id(native), true), None);
+        assert_eq!(
+            h.navigation.content_loading(id(native), &uri, false, h.now),
+            Ok(None)
+        );
+        assert_eq!(h.navigation.current_document().unwrap().stamp().0, stamp);
+    }
+}

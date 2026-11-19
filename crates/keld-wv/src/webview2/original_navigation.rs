@@ -32,6 +32,7 @@ struct HostAttempt {
     context: Option<NativeNavigationContext>,
     role: Option<RendererRoleWitness>,
     qualified_at: Option<Instant>,
+    finish_observed: bool,
     deadline: Instant,
     native_id: Option<NonZeroU64>,
     requested: Option<TaskTicket>,
@@ -158,6 +159,7 @@ impl OriginalNavigation {
             context,
             role,
             qualified_at: None,
+            finish_observed: false,
             deadline,
             native_id: None,
             requested: None,
@@ -279,7 +281,7 @@ impl OriginalNavigation {
         uri: &str,
         is_error: bool,
         now: Instant,
-    ) -> Result<NativeCommittedStamp, &'static str> {
+    ) -> Result<Option<NativeCommittedStamp>, &'static str> {
         let Some(active) = &self.active else {
             self.document.unexpected_mainframe_commit();
             return Err("unattributed native main-frame commit");
@@ -299,21 +301,24 @@ impl OriginalNavigation {
             self.fail_active();
             return Err("unqualified native main-frame commit");
         }
-        let result = self
+        let had_commit = active.qualified_at.is_some();
+        let stamp = self
             .document
             .commit_admitted(
                 active.attempt,
                 self.source.source_id(),
                 NativeCommitIdentity(native_id),
             )
-            .map_err(|_| "native document owner refused commit");
-        if result.is_ok() {
-            self.page_pending = None;
-            if let Some(active) = &mut self.active {
-                active.qualified_at.get_or_insert(now);
-            }
+            .map_err(|_| "native document owner refused commit")?;
+        if had_commit {
+            return Ok(None);
         }
-        result
+        self.page_pending = None;
+        self.active
+            .as_mut()
+            .ok_or("qualified commit lost its attempt")?
+            .qualified_at = Some(now);
+        Ok(Some(stamp))
     }
 
     /// Late A completion cannot fail or finish a newer B attempt.
@@ -322,7 +327,7 @@ impl OriginalNavigation {
         native_id: NonZeroU64,
         success: bool,
     ) -> Option<Result<NativeCommittedStamp, &'static str>> {
-        let active = self.active.as_ref()?;
+        let active = self.active.as_mut()?;
         if active.native_id != Some(native_id) {
             return None;
         }
@@ -330,12 +335,17 @@ impl OriginalNavigation {
             self.fail_active();
             return Some(Err("Host native navigation failed"));
         }
+        if active.finish_observed {
+            return None;
+        }
         let result = self
             .document
             .current_stamp()
             .filter(|stamp| stamp.native_commit == NativeCommitIdentity(native_id))
             .ok_or("native completion preceded qualified document");
-        if result.is_err() {
+        if result.is_ok() {
+            active.finish_observed = true;
+        } else {
             self.fail_active();
         }
         Some(result)

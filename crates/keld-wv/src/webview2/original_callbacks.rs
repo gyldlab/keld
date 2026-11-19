@@ -192,24 +192,30 @@ fn install_loading(
                     }
                     let id = NonZeroU64::new(id).ok_or(E_INVALIDARG)?;
                     let uri = source_uri(sender)?;
-                    let source = state
-                        .try_borrow()
-                        .map_err(|_| E_UNEXPECTED)?
-                        .source()
-                        .clone();
-                    let native_url = NativeNavigationUrl::capture_bounded(
-                        &uri,
-                        uri.encode_utf16().count(),
-                        &source.retained_credit_account(),
-                    )
-                    .map_err(|_| E_INVALIDARG)?;
-                    let (stamp, document) = {
-                        let mut state = state.try_borrow_mut().map_err(|_| E_UNEXPECTED)?;
-                        let stamp = state
+                    let (stamp, document, native_url) = {
+                        let mut navigation = state.try_borrow_mut().map_err(|_| E_UNEXPECTED)?;
+                        // A duplicate must still pass the real callback identity and URI checks,
+                        // but cannot allocate another URL alias or publish another commit.
+                        let native_url = if navigation.qualified_at().is_none() {
+                            Some(
+                                NativeNavigationUrl::capture_bounded(
+                                    &uri,
+                                    uri.encode_utf16().count(),
+                                    &navigation.source().retained_credit_account(),
+                                )
+                                .map_err(|_| E_INVALIDARG)?,
+                            )
+                        } else {
+                            None
+                        };
+                        let Some(stamp) = navigation
                             .content_loading(id, &uri, error.as_bool(), Instant::now())
-                            .map_err(|_| E_INVALIDARG)?;
-                        let document = state.current_document().ok_or(E_UNEXPECTED)?;
-                        (stamp, document)
+                            .map_err(|_| E_INVALIDARG)?
+                        else {
+                            return Ok(());
+                        };
+                        let document = navigation.current_document().ok_or(E_UNEXPECTED)?;
+                        (stamp, document, native_url.ok_or(E_UNEXPECTED)?)
                     };
                     observe(
                         failure.context,

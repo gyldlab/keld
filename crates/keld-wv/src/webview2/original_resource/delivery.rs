@@ -126,10 +126,12 @@ impl ResourceSession {
         }
         let can_deliver = view.is_live_resource(pending.lease)
             && !pending.cancelled.load(Ordering::Acquire)
-            && pending
-                .completed
-                .as_ref()
-                .is_some_and(|result| result.result.is_ok())
+            && pending.completed.as_ref().is_some_and(|result| {
+                matches!(
+                    &result.result,
+                    Ok(_) | Err(ResourceSourceError::MissingFile)
+                )
+            })
             && self
                 .state
                 .borrow_mut()
@@ -138,15 +140,19 @@ impl ResourceSession {
         if !can_deliver {
             return self.refuse_pending(pending);
         }
-        let Some(native) = pending.native.as_mut() else {
-            return true;
-        };
-        let Some(Ok(body)) = pending
+        let body = match pending
             .completed
             .as_ref()
             .map(|completed| &completed.result)
-        else {
-            return self.refuse_pending(pending);
+        {
+            Some(Ok(body)) => body,
+            Some(Err(ResourceSourceError::MissingFile)) => {
+                return self.refuse_pending_with(pending, native::Refusal::NotFound);
+            }
+            _ => return self.refuse_pending(pending),
+        };
+        let Some(native) = pending.native.as_mut() else {
+            return true;
         };
         let policy = pending.document.then(|| pending.source.response_policy());
         native.response = match native::response(&native.environment, body, policy) {
@@ -191,6 +197,10 @@ impl ResourceSession {
     }
 
     pub(super) fn refuse_pending(&self, pending: &mut Pending) -> bool {
+        self.refuse_pending_with(pending, native::Refusal::Forbidden)
+    }
+
+    fn refuse_pending_with(&self, pending: &mut Pending, reason: native::Refusal) -> bool {
         if pending
             .view
             .upgrade()
@@ -202,13 +212,7 @@ impl ResourceSession {
         let Some(native) = pending.native.as_ref() else {
             return true;
         };
-        if native::refuse(
-            &native.environment,
-            &native.args,
-            native::Refusal::Forbidden,
-        )
-        .is_err()
-        {
+        if native::refuse(&native.environment, &native.args, reason).is_err() {
             if let Some(view) = pending.view.upgrade() {
                 view.emergency_close("native deferred refusal failed");
                 return view.controller_closed.get();
@@ -218,6 +222,16 @@ impl ResourceSession {
                 pending.view_id,
             );
             return false;
+        }
+        // Response creation and installation may have reentered. Only a current
+        // accepted request can complete with a graph-member absence observation.
+        if matches!(reason, native::Refusal::NotFound)
+            && !pending
+                .view
+                .upgrade()
+                .is_some_and(|view| self.may_continue(&view, pending))
+        {
+            return self.refuse_pending(pending);
         }
         self.complete_installed(pending)
     }

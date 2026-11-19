@@ -41,7 +41,9 @@ impl Drop for Admission<'_> {
 }
 
 impl ResourceView {
-    pub(super) fn install_callback_and_filters(self: &Rc<Self>) -> Result<(), crate::WvError> {
+    pub(super) fn install_callback_and_document_filter(
+        self: &Rc<Self>,
+    ) -> Result<(), crate::WvError> {
         let view = Rc::downgrade(self);
         let environment = self.environment.clone();
         let close = Rc::downgrade(&self.close);
@@ -124,9 +126,7 @@ impl ResourceView {
             .map_err(|_| failure("cannot register the native resource callback"))?;
         self.handler_token.set(Some(token));
         native::add_filter(&self.core, false)
-            .map_err(|_| failure("cannot install the document file resource filter"))?;
-        self.session.ensure_worker_filter(self)?;
-        Ok(())
+            .map_err(|_| failure("cannot install the document file resource filter"))
     }
 
     fn reserve(&self, native_identity: usize) -> Result<Admission<'_>, native::Refusal> {

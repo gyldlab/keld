@@ -63,3 +63,16 @@ fn windows_failed_navigation_burns_the_guarded_view_identity() -> Result<(), WvE
         Ok(())
     })
 }
+
+#[test]
+#[ignore = "real WebView2 controllers sharing one environment; requires the claimed Windows desktop"]
+fn windows_retired_candidate_cannot_borrow_an_existing_resource_filter() -> Result<(), WvError> {
+    run_with_watchdog(FIXTURE_DEADLINE, || {
+        with_engine(|engine| {
+            crate::webview2::original_resource::install_test::reentrant_retirement(
+                engine,
+                &blank_spec(),
+            )
+        })
+    })
+}

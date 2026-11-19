@@ -266,26 +266,60 @@ impl ResourceView {
     /// The complete View already retains this exact `Rc`. Failure cannot discard
     /// its guard, emergency deferral, Close owner, or shared resource credits.
     pub(super) fn install_on_ui(self: &Rc<Self>) -> Result<(), WvError> {
+        self.install_with(Self::install_callback_and_document_filter)
+    }
+
+    fn install_with(
+        self: &Rc<Self>,
+        subscribe_document: impl FnOnce(&Rc<Self>) -> Result<(), WvError>,
+    ) -> Result<(), WvError> {
         if self.install_attempted.replace(true) {
             return Err(failure(
                 "native resource installation was already attempted",
             ));
         }
-        if self.retired.get()
-            || self.controller_closed.get()
-            || self.session.retiring.get()
-            || self.session.fault.get().is_some()
-        {
-            return Err(failure("native resource owner is already retiring"));
-        }
+        self.require_install_owner()?;
         self.install_in_progress.set(true);
-        let installed = self.install_callback_and_filters();
+        let installed = subscribe_document(self)
+            .and_then(|()| self.session.ensure_worker_filter(self))
+            .and_then(|()| self.require_install_owner());
         if installed.is_err() {
             self.emergency_close("resource guard installation failed");
         }
         self.install_in_progress.set(false);
         self.release_closed_registration();
         installed
+    }
+
+    /// Reentrant native registration can retire the candidate even when a different
+    /// view already supplies the environment filter. Never credit that other view
+    /// as proof that this callback target survived.
+    fn require_install_owner(&self) -> Result<(), WvError> {
+        let registered = self.session.state.try_borrow().is_ok_and(|state| {
+            state
+                .views
+                .get(&self.id.0)
+                .is_some_and(|slot| std::ptr::eq(slot.as_ptr(), self))
+        });
+        let observer_live = self.navigation.try_borrow().is_ok_and(|nav| {
+            let document = nav.document();
+            document.view() == self.id
+                && !document.renderer_exited()
+                && document.generation().is_some()
+        });
+        if self.retired.get()
+            || self.controller_closed.get()
+            || !self.close.is_open()
+            || self.session.retiring.get()
+            || self.session.fault.get().is_some()
+            || !registered
+            || !observer_live
+        {
+            return Err(failure(
+                "resource guard installation lost its live view or session",
+            ));
+        }
+        Ok(())
     }
 
     pub(super) fn is_drained(&self) -> bool {
@@ -343,3 +377,6 @@ impl ResourceView {
                 .is_ok_and(|nav| nav.is_current_resource(lease))
     }
 }
+
+#[cfg(all(test, feature = "media-acceptance"))]
+pub(in crate::webview2) mod install_test;

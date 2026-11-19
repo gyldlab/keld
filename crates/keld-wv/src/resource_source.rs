@@ -19,6 +19,7 @@ pub(crate) enum ResourceSourceError {
     WrongAuthority,
     InvalidPath,
     AbsentAsset,
+    MissingFile,
     FileNotRegular,
     EscapingFile,
     SourceChanged,

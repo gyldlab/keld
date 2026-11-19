@@ -33,6 +33,7 @@ pub(super) struct CapturedRequest {
 #[derive(Clone, Copy)]
 pub(super) enum Refusal {
     Forbidden,
+    NotFound,
     TooLarge,
     Capacity,
 }
@@ -41,6 +42,7 @@ impl Refusal {
     fn parts(self) -> (i32, windows::core::PCWSTR) {
         match self {
             Self::Forbidden => (403, w!("Forbidden")),
+            Self::NotFound => (404, w!("Not Found")),
             Self::TooLarge => (413, w!("Content Too Large")),
             Self::Capacity => (503, w!("Service Unavailable")),
         }

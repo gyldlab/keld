@@ -23,6 +23,16 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
+// Only the retained opener is authoritative for absence of a graph-admitted
+// member. Namespace, identity, policy and unlisted-asset failures remain distinct.
+fn open_refusal(error: &std::io::Error) -> ResourceSourceError {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        ResourceSourceError::MissingFile
+    } else {
+        ResourceSourceError::EscapingFile
+    }
+}
+
 impl AdmittedWebAppSource {
     /// Consume Core's retained selected directory, immutable graph inventory and
     /// opaque Guard policy after its complete graph and Legacy-profile checks.
@@ -265,12 +275,12 @@ impl AdmittedWebAppSource {
             let parent = directories.last().unwrap_or(&self.webapp_root);
             directories.push(
                 open_retained_graph_child(parent, component, WindowsGraphChildKind::Directory)
-                    .map_err(|_| ResourceSourceError::EscapingFile)?,
+                    .map_err(|error| open_refusal(&error))?,
             );
         }
         let parent = directories.last().unwrap_or(&self.webapp_root);
         let file = open_retained_graph_child(parent, leaf, WindowsGraphChildKind::RegularFile)
-            .map_err(|_| ResourceSourceError::EscapingFile)?;
+            .map_err(|error| open_refusal(&error))?;
         let before = retained_graph_metadata(&file).map_err(|_| ResourceSourceError::Io)?;
         if !before.is_file() {
             return Err(ResourceSourceError::FileNotRegular);

@@ -95,6 +95,10 @@ impl AdoptedControllerClose {
         &self.controller
     }
 
+    pub(in crate::webview2) fn is_open(&self) -> bool {
+        matches!(self.state.get(), CloseState::Open)
+    }
+
     /// Observe the actual completed Close without entering or retrying COM.
     pub(in crate::webview2) fn actual_closed(&self) -> bool {
         self.state.get().actual_closed()

@@ -19,7 +19,11 @@ impl ResourceSession {
                     .views
                     .get(&owner.0)
                     .and_then(std::rc::Weak::upgrade)
-                    .is_some_and(|view| !view.controller_closed.get());
+                    .is_some_and(|owner| {
+                        !owner.retired.get()
+                            && !owner.controller_closed.get()
+                            && owner.close.is_open()
+                    });
                 return if live {
                     Ok(())
                 } else {

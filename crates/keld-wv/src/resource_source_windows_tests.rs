@@ -457,3 +457,23 @@ fn oversize_inventory_does_not_refuse_an_unrequested_source_asset() {
         Some(ResourceSourceError::TooLarge)
     );
 }
+
+#[test]
+fn absent_captured_member_is_distinct_from_unlisted_and_non_regular() {
+    let fixture = Fixture::new();
+    let member = fixture.root.join(ENTRY);
+    fs::remove_file(&member).expect("remove the known selected leaf");
+    assert_eq!(
+        fixture.read(ENTRY).err(),
+        Some(ResourceSourceError::MissingFile)
+    );
+    assert_eq!(
+        fixture.read("views/unknown.html").err(),
+        Some(ResourceSourceError::AbsentAsset)
+    );
+    fs::create_dir(member).expect("a directory now occupies the captured leaf");
+    assert_eq!(
+        fixture.read(ENTRY).err(),
+        Some(ResourceSourceError::EscapingFile)
+    );
+}

@@ -182,7 +182,8 @@ fn first_challenge_keeps_exact_load_caller_instead_of_view_creator() {
     h.serve(181, resource, &uri, &header);
     h.navigation
         .content_loading(id(81), &uri, false, h.now)
-        .unwrap();
+        .unwrap()
+        .expect("first commit publishes once");
     assert!(h.navigation.host_role().unwrap().same_role(&role_b));
 }
 
@@ -239,13 +240,17 @@ fn successful_qualification_records_once_and_never_renews_startup_bound() {
     let qualified = h.now + std::time::Duration::from_secs(1);
     h.navigation
         .content_loading(id(83), &uri, false, qualified)
-        .unwrap();
+        .unwrap()
+        .expect("first commit publishes once");
     assert_eq!(h.navigation.qualified_at(), Some(qualified));
     assert_eq!(h.navigation.next_deadline(), None);
     let duplicate = qualified + std::time::Duration::from_secs(3);
-    h.navigation
-        .content_loading(id(83), &uri, false, duplicate)
-        .unwrap();
+    assert_eq!(
+        h.navigation
+            .content_loading(id(83), &uri, false, duplicate)
+            .unwrap(),
+        None
+    );
     assert_eq!(
         h.navigation.qualified_at(),
         Some(qualified),
