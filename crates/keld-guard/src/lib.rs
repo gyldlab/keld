@@ -94,7 +94,8 @@ pub use windows_machine::{
     validate_windows_install_directory, validate_windows_install_file,
     validate_windows_machine_ancestor_directory, validate_windows_machine_directory,
     validate_windows_machine_file, validate_windows_machine_volume_anchor,
-    windows_acl_entries_equal, windows_initiating_logon_time, windows_install_directory_security,
+    validate_windows_user_service_ancestor, windows_acl_entries_equal,
+    windows_initiating_logon_time, windows_install_directory_security,
     windows_install_file_security,
 };
 
@@ -102,6 +103,7 @@ pub use windows_machine::{
 pub use windows_owner_private::{
     validate_windows_owner_private_directory, validate_windows_owner_private_file,
     windows_owner_private_directory_security, windows_owner_private_file_security,
+    windows_user_service_directory_security,
 };
 
 use std::collections::BTreeMap;

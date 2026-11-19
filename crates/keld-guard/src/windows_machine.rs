@@ -362,8 +362,14 @@ fn seal(object: &mut File, directory: bool) -> io::Result<()> {
     validate(object, directory)
 }
 
-fn trusted(sid: &Sid) -> io::Result<bool> {
-    for text in [SYSTEM, ADMINISTRATORS, TRUSTED_INSTALLER] {
+fn trusted(sid: &Sid, user: Option<&Sid>) -> io::Result<bool> {
+    if user == Some(sid) {
+        return Ok(true);
+    }
+    for text in [SYSTEM, ADMINISTRATORS]
+        .into_iter()
+        .chain(user.is_none().then_some(TRUSTED_INSTALLER))
+    {
         let expected: LocalBox<Sid> = text.parse()?;
         if sid == expected.as_ref() {
             return Ok(true);
@@ -373,17 +379,35 @@ fn trusted(sid: &Sid) -> io::Result<bool> {
 }
 
 fn validate_anchor_descriptor(descriptor: &SecurityDescriptor) -> io::Result<()> {
+    validate_ancestor_access(descriptor, None)
+}
+
+/// Checks the current user's native service root or shared Keld directory.
+/// Only the current user, SYSTEM and Administrators may mutate these ancestors.
+///
+/// # Errors
+/// Refuses reparses, unknown ACE forms and any unexpected owner or effective write grant.
+pub fn validate_windows_user_service_ancestor(object: &File) -> io::Result<()> {
+    ensure_kind(object, true)?;
+    let user = current_process_sid()?;
+    let security = descriptor(object)?;
+    validate_ancestor_access(&security, Some(&user))
+}
+
+fn validate_ancestor_access(descriptor: &SecurityDescriptor, user: Option<&Sid>) -> io::Result<()> {
     let owner = descriptor
         .owner()
         .ok_or_else(|| io::Error::other("volume anchor owner absent"))?;
-    if !trusted(owner)? {
+    if !trusted(owner, user)? {
         return Err(io::Error::other("volume anchor has an untrusted owner"));
     }
     let dacl = descriptor
         .dacl()
         .ok_or_else(|| io::Error::other("volume anchor DACL absent"))?;
     // FILE_ADD_SUBDIRECTORY = 4. FILE_ADD_FILE aliases WRITE_DATA and is excluded.
-    let permitted = (AccessRights::FileGenericRead | AccessRights::FileGenericExecute).bits() | 4;
+    let extra = if user.is_none() { 4 } else { 0 };
+    let permitted =
+        (AccessRights::FileGenericRead | AccessRights::FileGenericExecute).bits() | extra;
     let ordinary_flags = AceFlags::ContainerInherit
         | AceFlags::ObjectInherit
         | AceFlags::NoPropagateInherit
@@ -408,7 +432,7 @@ fn validate_anchor_descriptor(descriptor: &SecurityDescriptor) -> io::Result<()>
         {
             continue;
         }
-        if !trusted(sid)? && ace.mask().bits() & !permitted != 0 {
+        if !trusted(sid, user)? && ace.mask().bits() & !permitted != 0 {
             return Err(io::Error::other(format!(
                 "volume anchor grants mutation to {sid}"
             )));
@@ -420,6 +444,26 @@ fn validate_anchor_descriptor(descriptor: &SecurityDescriptor) -> io::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_service_ancestor_allows_shared_read_but_refuses_foreign_creation_and_ownership() {
+        let user = current_process_sid().expect("current Windows user");
+        let sid = user.to_string();
+        for (owner, rights, valid) in [
+            (&sid[..], "FR", true),
+            (&sid[..], "0x4", false),
+            ("BU", "FR", false),
+        ] {
+            let descriptor: LocalBox<SecurityDescriptor> =
+                format!("O:{owner}D:P(A;;FA;;;{sid})(A;;{rights};;;BU)")
+                    .parse()
+                    .expect("user service fixture descriptor");
+            assert_eq!(
+                validate_ancestor_access(&descriptor, Some(&user)).is_ok(),
+                valid
+            );
+        }
+    }
 
     #[test]
     fn token_identity_comparison_distinguishes_system_and_other_users() {

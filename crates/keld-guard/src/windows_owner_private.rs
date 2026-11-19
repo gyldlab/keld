@@ -28,6 +28,17 @@ pub fn windows_owner_private_directory_security() -> io::Result<LocalBox<Securit
     .parse()
 }
 
+/// Builds the shared per-user Keld directory descriptor for atomic creation.
+///
+/// # Errors
+/// Refuses an unreadable process user or an invalid descriptor.
+pub fn windows_user_service_directory_security() -> io::Result<LocalBox<SecurityDescriptor>> {
+    let current = current_process_sid()?;
+    let sid = ConvertSidToStringSid(&current)?;
+    let sid = sid.to_string_lossy();
+    format!("O:{sid}D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)").parse()
+}
+
 /// Builds the canonical inherited current-user regular-file descriptor.
 ///
 /// This is suitable only beneath a validated owner-private directory.

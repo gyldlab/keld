@@ -439,16 +439,55 @@ pub(crate) fn create_directory_relative_with_profile(
     component: &str,
     profile: keld_guard::WindowsInstallProtectionProfile,
 ) -> io::Result<File> {
-    let (mut name, length) = validated_relative_name(component)?;
+    create_directory_relative_protected(parent, component, DirectoryProtection::Install(profile))
+}
+
+#[derive(Clone, Copy)]
+enum DirectoryProtection {
+    Install(keld_guard::WindowsInstallProtectionProfile),
+    SharedService,
+    InstancePrivate,
+}
+
+pub(crate) fn create_instance_directory(parent: &File, component: &str) -> io::Result<File> {
+    let protection = if component == "Keld" {
+        DirectoryProtection::SharedService
+    } else {
+        DirectoryProtection::InstancePrivate
+    };
+    create_directory_relative_protected(parent, component, protection)
+}
+
+fn create_directory_relative_protected(
+    parent: &File,
+    component: &str,
+    protection: DirectoryProtection,
+) -> io::Result<File> {
+    let (mut name, length) = if matches!(protection, DirectoryProtection::Install(_)) {
+        validated_relative_name(component)?
+    } else {
+        keld_guard::validate_fs_component(component).map_err(io::Error::other)?;
+        encode_relative_name(component)?
+    };
     let mut unicode_name = UNICODE_STRING {
         Length: length,
         MaximumLength: length,
         Buffer: name.as_mut_ptr(),
     };
-    if profile == keld_guard::WindowsInstallProtectionProfile::MachineSystem {
+    let profile = match protection {
+        DirectoryProtection::Install(profile) => Some(profile),
+        DirectoryProtection::InstancePrivate => {
+            Some(keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate)
+        }
+        DirectoryProtection::SharedService => None,
+    };
+    if profile == Some(keld_guard::WindowsInstallProtectionProfile::MachineSystem) {
         keld_guard::require_windows_system_token()?;
     }
-    let security = keld_guard::windows_install_directory_security(profile)?;
+    let security = match profile {
+        Some(profile) => keld_guard::windows_install_directory_security(profile)?,
+        None => keld_guard::windows_user_service_directory_security()?,
+    };
     let attributes = OBJECT_ATTRIBUTES {
         Length: u32::try_from(size_of::<OBJECT_ATTRIBUTES>()).map_err(io::Error::other)?,
         RootDirectory: parent.as_raw_handle().cast(),
@@ -510,7 +549,10 @@ pub(crate) fn create_directory_relative_with_profile(
             "directory creation did not report a new directory",
         ));
     }
-    keld_guard::validate_windows_install_directory(&directory, profile)?;
+    match profile {
+        Some(profile) => keld_guard::validate_windows_install_directory(&directory, profile)?,
+        None => keld_guard::validate_windows_user_service_ancestor(&directory)?,
+    }
     Ok(directory)
 }
 
@@ -520,7 +562,13 @@ pub(crate) fn create_file_relative_with_profile(
     component: &str,
     profile: keld_guard::WindowsInstallProtectionProfile,
 ) -> io::Result<File> {
-    create_file_relative_with_profile_sharing(parent, component, profile, FILE_SHARE_READ)
+    create_file_relative_with_profile_sharing(
+        parent,
+        component,
+        profile,
+        FILE_SHARE_READ,
+        WRITE_DAC,
+    )
 }
 
 /// Creates a protected regular file whose returned handle shares with no opener.
@@ -529,7 +577,17 @@ pub(crate) fn create_file_relative_exclusive_with_profile(
     component: &str,
     profile: keld_guard::WindowsInstallProtectionProfile,
 ) -> io::Result<File> {
-    create_file_relative_with_profile_sharing(parent, component, profile, 0)
+    create_file_relative_with_profile_sharing(parent, component, profile, 0, WRITE_DAC)
+}
+
+pub(crate) fn create_instance_lease_file(parent: &File) -> io::Result<File> {
+    create_file_relative_with_profile_sharing(
+        parent,
+        "lease",
+        keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        0,
+    )
 }
 
 fn create_file_relative_with_profile_sharing(
@@ -537,6 +595,7 @@ fn create_file_relative_with_profile_sharing(
     component: &str,
     profile: keld_guard::WindowsInstallProtectionProfile,
     share_mode: u32,
+    extra_access: u32,
 ) -> io::Result<File> {
     let (mut name, length) = validated_relative_name(component)?;
     let mut unicode_name = UNICODE_STRING {
@@ -563,7 +622,7 @@ fn create_file_relative_with_profile_sharing(
         Information: 0,
     };
     let mut handle = ptr::null_mut();
-    let access = FILE_GENERIC_READ | FILE_GENERIC_WRITE | READ_CONTROL | SYNCHRONIZE | WRITE_DAC;
+    let access = FILE_GENERIC_READ | FILE_GENERIC_WRITE | READ_CONTROL | SYNCHRONIZE | extra_access;
     // SAFETY: parent, the validated single-component name, explicit guard-owned
     // descriptor and output slots remain live for this synchronous relative create.
     // The fixed FILE_CREATE/non-directory/no-reparse options prevent open/truncate,
@@ -1001,6 +1060,10 @@ fn validated_relative_name(component: &str) -> io::Result<(Vec<u16>, u16)> {
     }
     keld_guard::validate_windows_package_paths(&[component])
         .map_err(|detail| io::Error::new(io::ErrorKind::InvalidInput, detail))?;
+    encode_relative_name(component)
+}
+
+fn encode_relative_name(component: &str) -> io::Result<(Vec<u16>, u16)> {
     let mut name = Vec::new();
     name.try_reserve_exact(component.len())
         .map_err(io::Error::other)?;

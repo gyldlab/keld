@@ -15,6 +15,20 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 #[test]
+fn instance_lease_refuses_a_reparse_parent_before_private_child_creation() {
+    let fixture = tempfile::tempdir().expect("owned fixture");
+    let parent = super::support::retained_directory(fixture.path());
+    let local = create_directory_relative(&parent, "local").expect("owner-private local root");
+    drop(local);
+    let outside = fixture.path().join("outside");
+    std::fs::create_dir(&outside).expect("outside directory");
+    let root = fixture.path().join("local");
+    super::support::junction(&root.join("Keld"), &outside);
+    assert!(crate::WindowsInstanceLeaseFile::open(&root, "test.app").is_err());
+    assert!(!outside.join("InstanceLocks").exists());
+}
+
+#[test]
 fn relative_creation_protects_and_retains_new_directory_objects() {
     let fixture = tempfile::tempdir().expect("fixture");
     let parent = OpenOptions::new()

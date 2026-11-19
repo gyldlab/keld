@@ -43,6 +43,8 @@ mod windows_baseline;
 mod windows_extraction;
 #[cfg(windows)]
 mod windows_fs;
+#[cfg(windows)]
+mod windows_instance_lease;
 
 #[cfg(test)]
 mod tests;
@@ -95,6 +97,8 @@ pub use windows_extraction::{
 };
 #[cfg(windows)]
 pub use windows_fs::strict_graph_directory_names;
+#[cfg(windows)]
+pub use windows_instance_lease::WindowsInstanceLeaseFile;
 
 /// Release channels supported by update feeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
