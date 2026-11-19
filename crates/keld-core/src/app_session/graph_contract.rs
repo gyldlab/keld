@@ -1252,6 +1252,13 @@ impl AdmittedStageGraph {
     }
 }
 
+impl keld_runtime::primary::RoleSourceRecheck for AdmittedStageGraph {
+    fn recheck(&self) -> std::io::Result<()> {
+        // The role preparer checks this same graph before every generation.
+        AdmittedStageGraph::recheck(self).map_err(std::io::Error::other)
+    }
+}
+
 fn verify_provider_rows(rows: &[GraphFile], expected: &[[u8; 32]; 3]) -> Result<(), HostAppError> {
     for (index, (prefix, _)) in PACKAGES.iter().enumerate() {
         if package_tree_fingerprint(rows, prefix)? != expected[index] {

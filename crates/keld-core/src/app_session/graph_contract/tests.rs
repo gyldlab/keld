@@ -367,9 +367,11 @@ fn retained_root_and_original_digest_are_checked_before_graph_admission() {
 
 #[test]
 fn retained_graph_rechecks_file_bytes_and_same_byte_preload_replacements() {
+    use keld_runtime::primary::RoleSourceRecheck;
+
     let fixture = fixture_with_entry();
     let graph = bind(&fixture, Some(&qualification())).expect("retained inert source");
-    graph.recheck().expect("unchanged actual graph");
+    RoleSourceRecheck::recheck(&graph).expect("unchanged graph before the role attempt");
     let preload = fixture.root.join(PRELOAD);
     assert_eq!(
         graph
@@ -384,7 +386,7 @@ fn retained_graph_rechecks_file_bytes_and_same_byte_preload_replacements() {
     );
 
     fs::write(fixture.root.join(MAIN), b"// changed source").expect("change the actual fixture");
-    let error = graph.recheck().expect_err("the original entry changed");
+    let error = RoleSourceRecheck::recheck(&graph).expect_err("the original entry changed");
     assert!(error.to_string().contains("file size"), "{error}");
     fs::write(
         fixture.root.join(MAIN),
