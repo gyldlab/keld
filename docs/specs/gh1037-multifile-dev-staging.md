@@ -52,67 +52,39 @@ graph admission, renderer delivery and other-platform staging remain unchanged.
   `0f5128462d1329ad1945e6639c1956d38242dd4f`. Shipping no-flag Host and the stock
   stage producer ran on macOS26.5.1/build25F80, Darwin25.5.0 arm64, Bun1.4.4.
 
-### Verified current behavior
+### Historical observations and current diagnostic contract
 
-The normal produced stage omits an original `src/sibling.ts`. Its entry's static
-import cannot complete startup: the actual Host exits1 with
-`KELD-CORE-037`/`KELD-RUNTIME-003`
-before its initial authenticated generation binds. The Guardian error path does
-not expose raw Bun loader text, so that text remains unavailable. A separate
-**test-only** stage with identical entry bytes and bootstrap setup, with only
-that sibling injected0400, completes real HELLO/Ready/Echo/Quit and cleanup.
-That counterweight establishes a causal diagnostic; it is unsupported production
-packaging and cannot be counted as a supported app launch.
+FACT (E-1): at the recorded source, the stock stage omitted `src/sibling.ts`.
+The Host exited1 before initial authentication. A separate stage injected only
+that sibling0400 into identical entry/bootstrap bytes. HELLO/Ready/Echo/Quit and
+cleanup then passed. This is an unsupported diagnostic, not supported packaging.
+The original report contained CORE037/RUNTIME003, without raw Bun loader text.
+The later E-4 correction permits the direct CORE037 report without nested003.
 
-The independent generic renderer-mode fixture actually reports `about:blank`
-at native window-load. Its stylesheet callback is pending with the fallback
-color11-22-33, its relative image errors with naturalWidth0, and inline controls
-load with width3/color19-73-109. The original CSS would yield7-31-91 and the SVG
-width7. Pending is not relabelled eventual error. This is the **schema-one inline
-HTML path**, not the unrun Drawio facade/schema-four `BrowserWindow.loadURL`
-path. It proves no Drawio resource failure or product-corpus outcome.
-The operative cause is that base, not file absence: the reflected `href`/`src`
-stay the unresolved raw values, and an uncommitted diagnostic run that also
-copied both files into the stage produced a byte-identical snapshot.
+FACT (E-2): the schema-one inline renderer reported `about:blank` at window-load.
+CSS remained pending with fallback11-22-33, and the relative SVG errored at width0.
+Inline controls loaded at width3/color19-73-109. Expected external values were
+width7/color7-31-91. Pending is not eventual error. Copying both assets into the
+stage left the snapshot unchanged. This is not Drawio/schema-four loadURL proof.
 
-The first fixture revision0f13b7f failed0/2/EXIT101; its unsupported raw-stderr
-assumption and all-callbacks reporter were corrected in retained later commits.
-The changed-source verification passed2/2. Both attempts remain in the evidence
-archive; a later pass does not replace the original failed result.
+The first0f13b7f attempt failed0/2/EXIT101. Its raw-stderr assumption and
+all-callbacks reporter were corrected. The later3fd5 result passed2/2.
+Both results remain distinct. The old159 predicate also passed two faulty
+HTML controls that omitted href or src. Those false passes exposed weak oracles,
+not a refutation of the recorded native baseline.
 
-External [review6543505060](https://github.com/gyldlab/keld/issues/1037#issuecomment-6543505060)
-found that the later159 renderer predicate did not enforce its relative-resource
-claims. Two actual old159 HTML-only one-fault controls confirmed this: removing
-only the stylesheet href assignment, or separately only the image src assignment,
-still passed the unchanged Rust predicate and inline controls. This does not
-falsify the independently recorded native baseline above; it does falsify that
-predicate's ability to guard the probe.
-
-The R1 correction records live DOM attribute presence/value, reflected href/src,
-node insertion/type/owner, document readiness and actual resource effects.
-Dedicated predicates require both relative target assignments and the exact
-measured inline-document baseline, separately from inline positives. DOM
-assignment/insertion is not claimed to be a network request, and CSS pending
-remains pending. At source `4d929512ff972788c41d59a7ef98c42a691d85d4`,
-[R1 verification](https://github.com/gyldlab/keld/issues/1037#issuecomment-6543683166)
-passed eight pure predicate cases and the healthy native renderer. Each actual
-href/src omission failed its dedicated target oracle while inline controls and
-orderly lifecycle cleanup passed. The restored healthy-following case passed.
-These controlled failures are retained separately from the two old159 false
-passes and the earlier3fd2/2 result. External exact-head re-review remains required.
-
-A later adversarial review reproduced four findings natively. Deleting the
-stylesheet listeners left a byte-identical pending snapshot that still passed;
-a `<base>` change was blamed on the target oracle; README blamed staging rather
-than the base for unloaded renderer assets; and the sibling case asserted less
-than this section states. The R2 correction routes every element through one
-fixture observer that alone mints pending, so a bypassed target reports
-UNOBSERVED, and a data-URL stylesheet control through that observer must load.
-Base-resolved reflections are document-baseline fields, read only for an
-assigned attribute. The sibling case now asserts exit1 plus both codes. On the
-same macOS26.5.1/25F80 arm64 Mac with Bun1.4.4, ten pure and both native cases
-pass. Deleting the observer listeners, bypassing it for the stylesheet, or
-omitting href or src fails; a `<base>` change fails only the document baseline.
+FACT (E-2): R1 records DOM attributes, reflections, insertion, type and owner.
+It checks actual resource effects separately from inline controls. DOM assignment
+does not prove a request. Eight pure cases and native healthy controls passed.
+Each href/src omission failed its target oracle after orderly cleanup.
+R2 then exposed deleted stylesheet listeners, misclassified base changes,
+README's incorrect copying explanation, and incomplete sibling assertions.
+Its shared observer alone mints pending. Bypassed observation reports UNOBSERVED.
+A data-URL stylesheet positive control must load. Reflections belong to the
+document baseline only after target assignment. Ten pure and two native cases
+passed. Listener deletion, observer bypass and target omissions failed.
+A base change failed the document baseline. E-4 supersedes R2's both-codes rule.
+These historical results do not qualify the current head or close review gates.
 
 ## 3. Acceptance criteria
 
@@ -242,7 +214,7 @@ transaction or authenticity against a malicious same-user writer.
 
 ### Isolated macOS stage prerequisite
 
-The live project must not be an ancestor of the produced stage. A fresh Bun 1.4.4 control repeated the owning KEL-75
+The live project must not be an ancestor of the produced stage. The E-3 Bun 1.4.4 control repeated the owning KEL-75
 observation: a staged import reached live project `node_modules`, `tsconfig.json` paths and `package.json` imports
 even with `--no-install --no-env-file`. The same three imports failed from an isolated placement before either
 target or entry executed, while captured relative source still ran. This is resolver evidence, not a shipping Host
@@ -414,6 +386,35 @@ actual produced-stage identity and causal recovery. Renderer and other-OS qualif
 slices.
 
 ## 7. Test plan & evidence
+
+### E-1: Historical sibling counterweight
+- **Run:** FACT: source `3fd5edf8f286ecb99e8f688dca08a0065a7f95bd`, [executor receipt](https://github.com/gyldlab/keld/issues/1037#issuecomment-6543050436).
+- **n:** Two native cases passed, with three Host arms across sibling and renderer observations.
+- **Environment:** macOS26.5.1/25F80, Darwin25.5.0 arm64, Bun1.4.4, source-built debug Host.
+- **Limits:** Receipt attribution, not a new run. Injected sibling is unsupported. Raw loader stderr unavailable.
+  Reproduction selector: `cargo test -p keld-host --test no_flag_macos multifile_staging -- --nocapture --test-threads=1`.
+  Use the pinned checkout and its build prerequisites. Count selected cases, not command exit alone.
+### E-2: Historical renderer calibration and falsifiers
+- **Run:** FACT: [R1 receipt](https://github.com/gyldlab/keld/issues/1037#issuecomment-6543683166) at `4d929512ff972788c41d59a7ef98c42a691d85d4`; [R2 receipt](https://github.com/gyldlab/keld/issues/1037#issuecomment-6546612116) at `67d0eeed7e3af604d8ef297c7d512a1d2bff83ea`.
+- **n:** R1:8 pure passes, healthy1/1, each omission0/1, restored1/1. R2:12 healthy passes, with separate mutation outcomes in receipt.
+- **Environment:** Same macOS26.5.1 arm64 and Bun1.4.4 as E-1.
+- **Limits:** Neither renderer resource delivery nor Drawio acceptance. Historical mutations are not new-head proof.
+  Reproduction selector: `cargo test -p keld-host --test no_flag_macos multifile_staging::shipping_stage_enforces -- --nocapture --test-threads=1`.
+  Apply only the receipt's named single fault in an isolated checkout, then restore exact source.
+### E-3: Historical isolation qualification
+- **Run:** FACT: [publication receipt](https://github.com/gyldlab/keld/pull/1352#issuecomment-6551515046) at `78ad148ca6400c39117b6cda4ab74b686d51afad`.
+- **n:** CLI132 passed/1 ignored, lifecycle2 passed, app/quit1 passed, workspace1708 passed/17 skipped. The [prior control](https://github.com/gyldlab/keld/issues/1037#issuecomment-6550270910) reports three live-ancestor successes, three isolated refusals and one captured-relative success.
+- **Environment:** Native macOS arm64, Bun1.4.4, source hashes recorded in the publication receipt.
+- **Limits:** The enclosing terminal exit was unavailable. No inferred exit0, graph admission or new-head qualification.
+  Reproduction: `cargo test -p keld-cli --lib -- --test-threads=1` includes namespace tests and `staged_entry_cannot_resolve_live_project_ancestors`.
+  This is a source-derived reproduction entry point, not the original ad-hoc resolver script. That script is not reproduced here.
+### E-4: Later sibling diagnostic correction
+- **Run:** FACT: [failure analysis](https://github.com/gyldlab/keld/issues/1037#issuecomment-6554180467), correction `ece7af459294dc4c4d656924a3eb3e30bcee5e7b`, tested composition `cc01073e9f86131a46c10dc4469a7989560501ab`.
+- **n:** [Published PR record](https://github.com/gyldlab/keld/pull/1352) reports original-oracle1 RED, corrected selection13/13, and full suite1709 passed/17 skipped.
+- **Environment:** Native macOS arm64, Bun1.4.4, repository toolchain at the tested composition.
+- **Limits:** Historical reported execution only. Full-log SHA256 is `eebf7714cd0e693761669019ead2cdf072cf52a0fec110991fc9061b94670132`.
+  Reproduction uses E-1's selector at this composition. The observer requires one same-line CORE037 initial-unbound termination with `listener=1 child=1 window=0`.
+  Nested RUNTIME003 is optional. No retry, production error-order change or arbitrary-nonzero acceptance is implied.
 
 AC-1 and AC-2: convert the current normal-stage sibling observation to actual supported
 startup only in the implementation that makes it pass; keep the injected stage
