@@ -47,6 +47,15 @@ const authGeneratedPath = resolve(
   "packages/@keld/api/src/auth.generated.ts",
 );
 
+const windowSourcePath = resolve(
+  repositoryRoot,
+  "crates/keld-ipc/src/window.rs",
+);
+const windowCodecPath = resolve(
+  repositoryRoot,
+  "packages/@keld/api/src/window-codec.ts",
+);
+
 const runtimeSourcePath = resolve(
   repositoryRoot,
   "crates/keld-ipc/src/lifecycle.rs",
@@ -178,6 +187,9 @@ type NativeEnumName =
   | "FsResponse"
   | "AuthRequest"
   | "AuthResponse"
+  | "WindowRequest"
+  | "WindowResponse"
+  | "WindowEvent"
   | "LifecycleRequest"
   | "LifecycleResponse"
   | "SubscribeRefusal";
@@ -188,6 +200,15 @@ type NativeFieldType =
   | "Option<String>"
   | "Option<Vec<String>>"
   | "u64"
+  | "u32"
+  | "WindowRef"
+  | "WindowState"
+  | "Rect"
+  | "bool"
+  | "Option<i32>"
+  | "CloseVerdict"
+  | "Option<u64>"
+  | "Option<DesktopFacts>"
   | "u16"
   | "RuntimeProcessFacts"
   | "SubscribeRefusal";
@@ -221,6 +242,68 @@ const NATIVE_SCHEMAS: Readonly<Record<NativeEnumName, NativeSchema>> = {
     GuardedNotSupported: {},
     RoleNotAdmitted: {},
   },
+  WindowRequest: {
+    Create: { width: "u32", height: "u32", x: "Option<i32>", y: "Option<i32>" },
+    SetMaximized: { window: "WindowRef", maximized: "bool" },
+    SetFullScreen: { window: "WindowRef", full_screen: "bool" },
+    RequestClose: { window: "WindowRef" },
+    CloseReply: {
+      window: "WindowRef",
+      close_seq: "u64",
+      verdict: "CloseVerdict",
+    },
+    Destroy: { window: "WindowRef" },
+    CreateWithPreload: {
+      width: "u32",
+      height: "u32",
+      x: "Option<i32>",
+      y: "Option<i32>",
+      preload_absolute: "String",
+      additional_arguments: "Vec<String>",
+    },
+    LoadUrl: { window: "WindowRef", uri: "String" },
+    DestroyOriginalDocument: {
+      window: "WindowRef",
+      document_generation: "u32",
+    },
+  },
+  WindowResponse: {
+    Created: { window: "WindowRef" },
+    Accepted: {},
+    CloseRequested: { close_seq: "u64" },
+    Merged: { close_seq: "u64" },
+    AlreadyClosing: {},
+    ReplyApplied: {},
+    ReplyStale: {},
+    Destroyed: {},
+    Adopted: { window: "WindowRef" },
+    Loaded: {},
+  },
+  WindowEvent: {
+    Created: {
+      window: "WindowRef",
+      state: "WindowState",
+      pending_close: "Option<u64>",
+    },
+    Bounds: { window: "WindowRef", bounds: "Rect" },
+    Focus: { window: "WindowRef", focused: "bool" },
+    Maximized: { window: "WindowRef", maximized: "bool" },
+    FullScreen: { window: "WindowRef", full_screen: "bool" },
+    CloseRequested: { window: "WindowRef", close_seq: "u64" },
+    Destroyed: { window: "WindowRef" },
+    DesktopSnapshot: { epoch: "u64", snapshot: "Option<DesktopFacts>" },
+    NavigationCommitted: {
+      window: "WindowRef",
+      document_generation: "u32",
+      native_url: "String",
+    },
+    NavigationFinished: { window: "WindowRef", document_generation: "u32" },
+    DocumentRecovered: {
+      window: "WindowRef",
+      document_generation: "u32",
+      native_url: "String",
+    },
+  },
   FsRequest: {
     Read: { path: "String" },
     Write: { path: "String", bytes: "Vec<u8>" },
@@ -244,8 +327,29 @@ function parseNativeEnum(
   lines: readonly string[],
   name: NativeEnumName,
 ): NativeVariant[] {
+  const canonicalName = name === "WindowEvent" ? "WindowEventValue" : name;
+  const ownedAlias =
+    name === "WindowEvent"
+      ? "pub type WindowEvent = WindowEventValue<String>;"
+      : undefined;
+  if (ownedAlias !== undefined) {
+    const aliasDeclaration = new RegExp(
+      "^\\s*(?:pub(?:\\([^)]*\\))?\\s+)?(?:enum|type)\\s+" + name + "\\b",
+    );
+    const aliases = lines.flatMap((line, index) =>
+      aliasDeclaration.test(line) ? [index] : [],
+    );
+    if (aliases.length !== 1 || lines[aliases[0]] !== ownedAlias)
+      fail("native " + name + " requires its exact canonical owned alias");
+    for (let index = aliases[0] - 1; index >= 0; index -= 1) {
+      const line = lines[index];
+      if (line.length === 0 || /^\/\/\/(?: |$)/.test(line)) continue;
+      if (line === "}") break;
+      fail("native " + name + " alias has an unsupported declaration prefix");
+    }
+  }
   const declaration = new RegExp(
-    "^\\s*(?:pub(?:\\([^)]*\\))?\\s+)?enum\\s+" + name + "\\b",
+    "^\\s*(?:pub(?:\\([^)]*\\))?\\s+)?enum\\s+" + canonicalName + "\\b",
   );
   const starts = lines.flatMap((line, index) =>
     declaration.test(line) ? [index] : [],
@@ -253,15 +357,20 @@ function parseNativeEnum(
   if (starts.length !== 1)
     fail("native " + name + " requires exactly one public enum declaration");
   const start = starts[0];
-  if (lines[start] !== "pub enum " + name + " {")
+  const expected =
+    name === "WindowEvent"
+      ? "pub enum WindowEventValue<T> {"
+      : "pub enum " + name + " {";
+  if (lines[start] !== expected)
     fail("native " + name + " must use the rustfmt-normalized named enum form");
   let derives = 0;
   for (let index = start - 1; index >= 0; index -= 1) {
     const line = lines[index];
     if (line.length === 0 || /^\/\/\/(?: |$)/.test(line)) continue;
     if (line.startsWith("#[")) {
-      const derive =
-        name.startsWith("Lifecycle") || name === "SubscribeRefusal"
+      const derive = name.startsWith("Window")
+        ? /^#\[derive\(Debug, Clone(?:, Copy)?, PartialEq(?:, Eq)?, Serialize, Deserialize\)\]$/
+        : name.startsWith("Lifecycle") || name === "SubscribeRefusal"
           ? /^#\[derive\(Debug, Clone(?:, Copy)?, PartialEq, Eq, Serialize, Deserialize\)\]$/
           : /^#\[derive\((?:(?:Debug|Clone), )?Serialize, Deserialize\)\]$/;
       if (!derive.test(line)) {
@@ -311,6 +420,19 @@ function parseNativeEnum(
           );
         }
       }
+      if (name.startsWith("Window")) {
+        const expectedVariants = Object.keys(schema);
+        for (const [index, variant] of variants.entries()) {
+          const expected = Object.keys(schema[variant.name]);
+          if (
+            variant.name !== expectedVariants[index] ||
+            variant.fields.some(
+              (field, position) => field.name !== expected[position],
+            )
+          )
+            fail("window append-only variant/field order changed");
+        }
+      }
       return variants;
     }
     if (line.length === 0 || /^    \/\/\/(?: |$)/.test(line)) continue;
@@ -337,10 +459,18 @@ function parseNativeEnum(
         }
         if (fieldLine.length === 0 || /^        \/\/\/(?: |$)/.test(fieldLine))
           continue;
-        const field =
-          /^        ([A-Za-z_][A-Za-z0-9_]*): (String|Vec<u8>|Vec<String>|Option<String>|Option<Vec<String>>|u64|u16|RuntimeProcessFacts|SubscribeRefusal),$/.exec(
-            fieldLine,
-          );
+        if (
+          name === "WindowRequest" &&
+          (fieldLine ===
+            '        #[serde(deserialize_with = "preload_path")]' ||
+            fieldLine ===
+              '        #[serde(deserialize_with = "preload_arguments")]')
+        )
+          continue;
+        const pattern = name.startsWith("Window")
+          ? /^        ([A-Za-z_][A-Za-z0-9_]*): (String|T|Vec<String>|u32|u64|WindowRef|WindowState|Rect|bool|Option<i32>|CloseVerdict|Option<u64>|Option<DesktopFacts>),$/
+          : /^        ([A-Za-z_][A-Za-z0-9_]*): (String|Vec<u8>|Vec<String>|Option<String>|Option<Vec<String>>|u64|u16|RuntimeProcessFacts|SubscribeRefusal),$/;
+        const field = pattern.exec(fieldLine);
         if (!field)
           fail(
             "native " +
@@ -359,7 +489,18 @@ function parseNativeEnum(
               " has duplicate field " +
               field[1],
           );
-        fields.push({ name: field[1], rustType: field[2] as NativeFieldType });
+        let rustType = field[2];
+        if (
+          name === "WindowEvent" &&
+          field[1] === "native_url" &&
+          (variantName === "NavigationCommitted" ||
+            variantName === "DocumentRecovered")
+        ) {
+          if (rustType !== "T")
+            fail("window observation URL must borrow the canonical type");
+          rustType = "String";
+        }
+        fields.push({ name: field[1], rustType: rustType as NativeFieldType });
       }
       if (!closed || fields.length === 0)
         fail(
@@ -1254,6 +1395,195 @@ export function renderDialogBinding(rustSource: string): string {
   return formatGenerated(DIALOG_RUNTIME, dialogGeneratedPath);
 }
 
+/** Generate only the append-only N1 extension inside the existing window adapter. */
+export function renderWindowCodecBinding(
+  rustSource: string,
+  adapter: string,
+): string {
+  const lines = rustSource.replaceAll("\r\n", "\n").split("\n");
+  const targets = [
+    ["WindowRequest", 6],
+    ["WindowResponse", 9],
+    ["WindowEvent", 8],
+  ] as const;
+  const output: string[] = [
+    "// @generated by echo-codegen.ts from keld-ipc/src/window.rs; do not edit.",
+  ];
+  const tsType = (field: NativeField): string => {
+    switch (field.rustType) {
+      case "u32":
+        return "number";
+      case "String":
+        return "string";
+      case "Vec<String>":
+        return "readonly string[]";
+      case "Option<i32>":
+        return "number | null";
+      case "WindowRef":
+        return "WindowRef";
+      default:
+        return fail("unsupported window extension field " + field.rustType);
+    }
+  };
+  const encodeField = (field: NativeField): string => {
+    const value = "value." + field.name;
+    switch (field.rustType) {
+      case "u32":
+        return (
+          (field.name === "document_generation"
+            ? "encodeNativeDocumentGeneration"
+            : "encodeVarint") +
+          "(" +
+          value +
+          ")"
+        );
+      case "WindowRef":
+        return "encodeWindowRef(" + value + ")";
+      case "Option<i32>":
+        return "encodeOption(" + value + ", encodeI32)";
+      case "Vec<String>":
+        return "encodePreloadArguments(" + value + ")";
+      case "String":
+        return (
+          "encodePreloadString(" +
+          value +
+          ", " +
+          (field.name === "preload_absolute" ? 2048 : 8192) +
+          ", true)"
+        );
+      default:
+        return fail("unsupported window extension encoder");
+    }
+  };
+  const decodeField = (field: NativeField): string => {
+    switch (field.rustType) {
+      case "u32":
+        return (
+          (field.name === "document_generation"
+            ? "nativeDocumentGenerationAt"
+            : "decodeVarint") + "(wireBytes, at)"
+        );
+      case "WindowRef":
+        return "windowRefAt(wireBytes, at)";
+      case "Option<i32>":
+        return "decodeOption(wireBytes, at, decodeI32)";
+      case "Vec<String>":
+        return "preloadArgumentsAt(wireBytes, at)";
+      case "String":
+        return (
+          "preloadStringAt(wireBytes, at, " +
+          (field.name === "preload_absolute" ? 2048 : 8192) +
+          ", true)"
+        );
+      default:
+        return fail("unsupported window extension decoder");
+    }
+  };
+  for (const [name, first] of targets) {
+    const variants = parseNativeEnum(lines, name);
+    const suffix = variants.slice(first);
+    output.push("type " + name + "Extension =");
+    for (const [index, variant] of suffix.entries()) {
+      output.push(
+        "  | { variant: " +
+          JSON.stringify(variant.name) +
+          variant.fields
+            .map((field) => "; " + field.name + ": " + tsType(field))
+            .join("") +
+          " }" +
+          (index === suffix.length - 1 ? ";" : ""),
+      );
+    }
+    output.push(
+      "function encode" +
+        name +
+        "Extension(value: " +
+        name +
+        "Extension): Uint8Array {",
+      "  switch (value.variant) {",
+    );
+    for (const [index, variant] of suffix.entries()) {
+      output.push(
+        "    case " +
+          JSON.stringify(variant.name) +
+          ": return join([" +
+          [
+            "encodeVarint(" + (first + index) + ")",
+            ...variant.fields.map(encodeField),
+          ].join(", ") +
+          "]);",
+      );
+    }
+    output.push(
+      "    default: throw invalid('unknown " + name + " extension');",
+      "  }",
+      "}",
+    );
+    output.push(
+      "function " +
+        name[0].toLowerCase() +
+        name.slice(1) +
+        "ExtensionAt(" +
+        (name === "WindowResponse" ? "" : "wireBytes: Uint8Array, ") +
+        "tag: number, afterTag: number): [" +
+        name +
+        "Extension, number] {",
+      "  switch (tag) {",
+    );
+    for (const [index, variant] of suffix.entries()) {
+      output.push(
+        "    case " + (first + index) + ": {",
+        variant.fields.length ? "      let at = afterTag;" : "",
+      );
+      for (const field of variant.fields) {
+        output.push(
+          "      const [" +
+            field.name +
+            ", next_" +
+            field.name +
+            "] = " +
+            decodeField(field) +
+            ";",
+          "      at = next_" + field.name + ";",
+        );
+      }
+      output.push(
+        "      return [{ variant: " +
+          JSON.stringify(variant.name) +
+          variant.fields.map((field) => ", " + field.name).join("") +
+          " }, " +
+          (variant.fields.length ? "at" : "afterTag") +
+          "];",
+        "    }",
+      );
+    }
+    output.push(
+      "    default: throw invalid('unknown " + name + " extension tag');",
+      "  }",
+      "}",
+    );
+  }
+  const begin = "// @keld/window-n1-generated-begin";
+  const end = "// @keld/window-n1-generated-end";
+  const startAt = adapter.indexOf(begin),
+    endAt = adapter.indexOf(end);
+  if (
+    startAt < 0 ||
+    endAt <= startAt ||
+    adapter.indexOf(begin, startAt + begin.length) !== -1 ||
+    adapter.indexOf(end, endAt + end.length) !== -1
+  )
+    return fail("window adapter requires one generated N1 region");
+  return formatGenerated(
+    adapter.slice(0, startAt + begin.length) +
+      "\n" +
+      output.join("\n") +
+      "\n" +
+      adapter.slice(endAt),
+    windowCodecPath,
+  );
+}
+
 /** Generate the private cold Init codec from the owning lifecycle declarations. */
 export function renderRuntimeProcessBinding(rustSource: string): string {
   const lines = rustSource.split(/\r?\n/);
@@ -1375,6 +1705,13 @@ function generate(): void {
     { path: authGeneratedPath, source: authGenerated },
     { path: dialogGeneratedPath, source: dialogGenerated },
     { path: transportPath, source: regenerated },
+    {
+      path: windowCodecPath,
+      source: renderWindowCodecBinding(
+        readFileSync(windowSourcePath, "utf8"),
+        readFileSync(windowCodecPath, "utf8"),
+      ),
+    },
   );
   // All parsing, formatting and stamping must succeed before the first write.
   // This does not make filesystem write errors a multi-file transaction.
@@ -1382,6 +1719,15 @@ function generate(): void {
 }
 
 function check(): void {
+  const windowAdapter = readFileSync(windowCodecPath, "utf8");
+  if (
+    windowAdapter !==
+    renderWindowCodecBinding(
+      readFileSync(windowSourcePath, "utf8"),
+      windowAdapter,
+    )
+  )
+    fail("Window binding is stale; run bun run echo:generate");
   if (
     readFileSync(runtimeGeneratedPath, "utf8") !==
     renderRuntimeProcessBinding(readFileSync(runtimeSourcePath, "utf8"))

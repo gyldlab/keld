@@ -14,7 +14,6 @@ use crate::codec::{decode, encode, encode_into};
 mod desktop;
 
 const VECTORS: &str = include_str!("../../tests/fixtures/window-v0.tsv");
-const ORIGINAL_VECTORS: &str = include_str!("../../tests/fixtures/window-original-v0.tsv");
 const WINDOW: WindowRef = WindowRef {
     id: WindowId(7),
     incarnation: WindowGeneration(300),
@@ -34,11 +33,7 @@ const STATE: WindowState = WindowState {
 
 fn vectors(family: &str) -> BTreeMap<&str, Vec<u8>> {
     let mut result = BTreeMap::new();
-    for line in VECTORS
-        .lines()
-        .chain(ORIGINAL_VECTORS.lines())
-        .filter(|line| !line.starts_with('#'))
-    {
+    for line in VECTORS.lines().filter(|line| !line.starts_with('#')) {
         let fields: Vec<_> = line.split('\t').collect();
         assert_eq!(fields.len(), 3, "malformed shared vector: {line}");
         if fields[1] != family {
@@ -172,88 +167,87 @@ fn identity_geometry_and_state_match_shared_vectors() {
 
 #[test]
 fn window_events_match_shared_vectors() {
-    assert_vectors(
-        "event",
-        &[
-            (
-                "event-created",
-                WindowEvent::Created {
-                    window: WINDOW,
-                    state: STATE,
-                    pending_close: None,
-                },
-            ),
-            (
-                "event-created-pending-close",
-                WindowEvent::Created {
-                    window: WINDOW,
-                    state: STATE,
-                    pending_close: Some(300),
-                },
-            ),
-            (
-                "event-bounds",
-                WindowEvent::Bounds {
-                    window: WINDOW,
-                    bounds: BOUNDS,
-                },
-            ),
-            (
-                "event-focus",
-                WindowEvent::Focus {
-                    window: WINDOW,
-                    focused: true,
-                },
-            ),
-            (
-                "event-maximized",
-                WindowEvent::Maximized {
-                    window: WINDOW,
-                    maximized: false,
-                },
-            ),
-            (
-                "event-full-screen",
-                WindowEvent::FullScreen {
-                    window: WINDOW,
-                    full_screen: true,
-                },
-            ),
-            (
-                "event-close-requested",
-                WindowEvent::CloseRequested {
-                    window: WINDOW,
-                    close_seq: 300,
-                },
-            ),
-            ("event-destroyed", WindowEvent::Destroyed { window: WINDOW }),
-            (
-                "event-navigation-committed",
-                WindowEvent::NavigationCommitted {
-                    window: WINDOW,
-                    document_generation: 5,
-                    native_url: "keld-resource://0123456789abcdef0123456789abcdef/index.html?q=1"
-                        .to_owned(),
-                },
-            ),
-            (
-                "event-navigation-finished",
-                WindowEvent::NavigationFinished {
-                    window: WINDOW,
-                    document_generation: 5,
-                },
-            ),
-            (
-                "event-document-recovered",
-                WindowEvent::DocumentRecovered {
-                    window: WINDOW,
-                    document_generation: 5,
-                    native_url: "keld-resource://0123456789abcdef0123456789abcdef/index.html?q=1"
-                        .to_owned(),
-                },
-            ),
-        ],
-    );
+    let cases = [
+        (
+            "event-created",
+            WindowEvent::Created {
+                window: WINDOW,
+                state: STATE,
+                pending_close: None,
+            },
+        ),
+        (
+            "event-created-pending-close",
+            WindowEvent::Created {
+                window: WINDOW,
+                state: STATE,
+                pending_close: Some(300),
+            },
+        ),
+        (
+            "event-bounds",
+            WindowEvent::Bounds {
+                window: WINDOW,
+                bounds: BOUNDS,
+            },
+        ),
+        (
+            "event-focus",
+            WindowEvent::Focus {
+                window: WINDOW,
+                focused: true,
+            },
+        ),
+        (
+            "event-maximized",
+            WindowEvent::Maximized {
+                window: WINDOW,
+                maximized: false,
+            },
+        ),
+        (
+            "event-full-screen",
+            WindowEvent::FullScreen {
+                window: WINDOW,
+                full_screen: true,
+            },
+        ),
+        (
+            "event-close-requested",
+            WindowEvent::CloseRequested {
+                window: WINDOW,
+                close_seq: 300,
+            },
+        ),
+        ("event-destroyed", WindowEvent::Destroyed { window: WINDOW }),
+        (
+            "event-navigation-committed",
+            WindowEvent::NavigationCommitted {
+                window: WINDOW,
+                document_generation: 5,
+                native_url: "keld-resource://0123456789abcdef0123456789abcdef/index.html?q=1"
+                    .to_owned(),
+            },
+        ),
+        (
+            "event-navigation-finished",
+            WindowEvent::NavigationFinished {
+                window: WINDOW,
+                document_generation: 5,
+            },
+        ),
+        (
+            "event-document-recovered",
+            WindowEvent::DocumentRecovered {
+                window: WINDOW,
+                document_generation: 5,
+                native_url: "keld-resource://0123456789abcdef0123456789abcdef/index.html?q=1"
+                    .to_owned(),
+            },
+        ),
+    ];
+    let cases: Vec<_> = cases.into_iter().chain(desktop::literal_cases()).collect();
+    assert_vectors("event", &cases);
 }
 
 fn preload_request_vectors() -> [(&'static str, WindowRequest); 2] {

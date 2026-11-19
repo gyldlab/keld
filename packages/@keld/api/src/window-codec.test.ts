@@ -6,6 +6,7 @@ import {
   decodeCloseVerdict,
   decodeRect,
   decodeWindowEvent,
+  decodeWindowCarrierEvent,
   decodeWindowRef,
   decodeWindowRequest,
   decodeWindowResponse,
@@ -13,6 +14,7 @@ import {
   encodeCloseVerdict,
   encodeRect,
   encodeWindowEvent,
+  encodeWindowCarrierEvent,
   encodeWindowRef,
   encodeWindowRequest,
   encodeWindowResponse,
@@ -20,6 +22,7 @@ import {
   type CloseVerdict,
   type Rect,
   type WindowEvent,
+  type WindowCarrierEvent,
   type WindowRef,
   type WindowRequest,
   type WindowResponse,
@@ -155,6 +158,68 @@ replay<WindowEvent>(
   encodeWindowEvent,
   decodeWindowEvent,
 );
+replay<WindowCarrierEvent>(
+  "event",
+  [
+    [
+      "desktop-captured",
+      {
+        variant: "DesktopSnapshot",
+        epoch: 300n,
+        snapshot: {
+          primary_id: 17,
+          displays: [
+            {
+              id: 17,
+              bounds: { x: 0, y: 0, width: 1440, height: 900 },
+              work_area: { x: 0, y: 24, width: 1440, height: 876 },
+              scale_factor: 2,
+            },
+          ],
+          should_use_dark_colors: false,
+        },
+      },
+    ],
+    [
+      "desktop-unavailable",
+      { variant: "DesktopSnapshot", epoch: 301n, snapshot: null },
+    ],
+    [
+      "desktop-epoch-maximum",
+      {
+        variant: "DesktopSnapshot",
+        epoch: 0xffff_ffff_ffff_ffffn,
+        snapshot: null,
+      },
+    ],
+    [
+      "event-navigation-committed",
+      {
+        variant: "NavigationCommitted",
+        window: WINDOW,
+        document_generation: 5,
+        native_url:
+          "keld-resource://0123456789abcdef0123456789abcdef/index.html?q=1",
+      },
+    ],
+    [
+      "event-navigation-finished",
+      { variant: "NavigationFinished", window: WINDOW, document_generation: 5 },
+    ],
+    [
+      "event-document-recovered",
+      {
+        variant: "DocumentRecovered",
+        window: WINDOW,
+        document_generation: 5,
+        native_url:
+          "keld-resource://0123456789abcdef0123456789abcdef/index.html?q=1",
+      },
+    ],
+  ],
+  encodeWindowCarrierEvent,
+  decodeWindowCarrierEvent,
+);
 replay<WindowRequest>(
   "request",
   [
@@ -204,6 +269,46 @@ replay<WindowRequest>(
       },
     ],
     ["request-destroy", { variant: "Destroy", window: WINDOW }],
+    [
+      "request-create-preload-empty",
+      {
+        variant: "CreateWithPreload",
+        width: 640,
+        height: 480,
+        x: -3,
+        y: 4,
+        preload_absolute: "/app/p.js",
+        additional_arguments: [],
+      },
+    ],
+    [
+      "request-create-preload-adaptive",
+      {
+        variant: "CreateWithPreload",
+        width: 1,
+        height: 2,
+        x: null,
+        y: null,
+        preload_absolute: "/a/p.js",
+        additional_arguments: ["--initial-adaptive-colors=auto"],
+      },
+    ],
+    [
+      "request-load-url",
+      {
+        variant: "LoadUrl",
+        window: WINDOW,
+        uri: "file:///s/drawio/src/main/webapp/index.html?q=1",
+      },
+    ],
+    [
+      "request-destroy-original-document",
+      {
+        variant: "DestroyOriginalDocument",
+        window: WINDOW,
+        document_generation: 5,
+      },
+    ],
   ],
   encodeWindowRequest,
   decodeWindowRequest,
@@ -222,6 +327,7 @@ replay<WindowResponse>(
     ["response-reply-applied", { variant: "ReplyApplied" }],
     ["response-reply-stale", { variant: "ReplyStale" }],
     ["response-destroyed", { variant: "Destroyed" }],
+    ["response-loaded", { variant: "Loaded" }],
     ["response-adopted", { variant: "Adopted", window: WINDOW }],
     [
       "response-close-sequence-maximum",
@@ -242,7 +348,7 @@ replay<CloseVerdict>(
 );
 
 test("every shared vector is replayed exactly once", () => {
-  expect(vectors.size).toBe(37);
+  expect(vectors.size).toBe(48);
   expect([...replayed].sort()).toEqual([...vectors.keys()].sort());
 });
 
@@ -250,7 +356,8 @@ test("unknown discriminants and malformed scalar bytes fail closed", () => {
   for (const [decode, bytes] of [
     [decodeWindowEvent, [7]],
     [decodeWindowRequest, [6]],
-    [decodeWindowResponse, [9]],
+    [decodeWindowResponse, [10]],
+    [decodeWindowCarrierEvent, [11, 7, 0xac, 2, 5]],
     [decodeCloseVerdict, [2]],
     [decodeWindowEvent, [2, 7, 0xac, 2, 2]],
     [decodeWindowRequest, [0, 0, 0, 2]],
@@ -432,4 +539,25 @@ test("u64 extrema remain bigint across every close-sequence surface", () => {
     expect(decodeWindowEvent(encodeWindowEvent(event))).toEqual(event);
     expect(decodeWindowEvent(encodeWindowEvent(replay))).toEqual(replay);
   }
+});
+
+test("ordinary Window decoder refuses complete appended event facts", () => {
+  for (const id of [
+    "desktop-captured",
+    "desktop-unavailable",
+    "desktop-epoch-maximum",
+    "event-navigation-committed",
+    "event-navigation-finished",
+    "event-document-recovered",
+  ]) {
+    const fact = vectors.get(id);
+    if (!fact) throw new Error("Missing appended event vector " + id);
+    expect(() => decodeWindowEvent(fact.bytes)).toThrow("KELD-IPC-003");
+  }
+  const ordinary = vectors.get("event-destroyed");
+  if (!ordinary) throw new Error("Missing ordinary event vector");
+  expect(decodeWindowEvent(ordinary.bytes)).toEqual({
+    variant: "Destroyed",
+    window: WINDOW,
+  });
 });

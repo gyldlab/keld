@@ -1,10 +1,9 @@
-//! GH481 candidate wire contract, separate from the eight existing event vectors.
-use crate::codec::{decode, encode, encode_into};
+//! Desktop facts use the shared Window postcard corpus.
+use crate::codec::{decode, encode_into};
 use crate::window::{DESKTOP_EVENT_STORAGE_BYTES, DesktopFact, DesktopFacts, Rect, WindowEvent};
 
-#[test]
-fn desktop_literals_pin_optional_facts_and_full_epoch() -> Result<(), Box<dyn std::error::Error>> {
-    let expected = [
+pub(super) fn literal_cases() -> [(&'static str, WindowEvent); 3] {
+    [
         (
             "desktop-captured",
             WindowEvent::DesktopSnapshot {
@@ -45,42 +44,23 @@ fn desktop_literals_pin_optional_facts_and_full_epoch() -> Result<(), Box<dyn st
                 snapshot: None,
             },
         ),
-    ];
-    let rows: Vec<_> = include_str!("../../../tests/fixtures/desktop-v0.tsv")
-        .lines()
-        .filter(|line| !line.starts_with('#'))
-        .collect();
-    assert_eq!(rows.len(), expected.len());
-    for (line, (name, fact)) in rows.into_iter().zip(expected) {
-        let (actual_name, hex) = line.split_once('\t').ok_or("malformed desktop literal")?;
-        assert_eq!(actual_name, name);
-        assert_eq!(hex.len() % 2, 0);
-        let mut bytes = Vec::new();
-        for pair in hex.as_bytes().as_chunks::<2>().0 {
-            bytes.push(u8::from_str_radix(std::str::from_utf8(pair)?, 16)?);
-        }
-        assert_eq!(encode(&fact)?, bytes);
-        let mut scratch = [0_u8; DESKTOP_EVENT_STORAGE_BYTES];
-        assert_eq!(encode_into(&fact, &mut scratch)?, bytes);
-        assert_eq!(decode::<WindowEvent>(&bytes)?, fact);
-        if name == "desktop-captured" {
-            let mut invalid_option = bytes.clone();
-            invalid_option[3] = 2;
-            assert!(decode::<WindowEvent>(&invalid_option).is_err());
-        }
-        for end in 0..bytes.len() {
-            assert!(decode::<WindowEvent>(&bytes[..end]).is_err());
-        }
-        bytes.push(0);
-        assert!(decode::<WindowEvent>(&bytes).is_err());
+    ]
+}
+
+#[test]
+fn desktop_literals_fit_the_desktop_storage() -> Result<(), Box<dyn std::error::Error>> {
+    let vectors = super::vectors("event");
+    for (name, fact) in literal_cases() {
+        let mut storage = [0_u8; DESKTOP_EVENT_STORAGE_BYTES];
+        assert_eq!(encode_into(&fact, &mut storage)?, vectors[name]);
     }
     Ok(())
 }
 
 #[test]
 fn desktop_rejects_unknown_tag_and_invalid_optional_payload() {
-    // A complete otherwise-valid invalidation distinguishes unknown tag 10 from truncation.
-    assert!(decode::<WindowEvent>(&[10, 1, 0]).is_err());
+    // A complete invalidation with an unknown tag fails.
+    assert!(decode::<WindowEvent>(&[11, 1, 0]).is_err());
     assert!(decode::<WindowEvent>(&[7, 1, 2]).is_err());
 }
 
