@@ -1,7 +1,43 @@
 const DIGEST: &str = "sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356";
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-struct ReapedRouterProbe(std::process::Child);
+/// The existing process owner kills and reaps a diagnostic child on failure.
+pub(in crate::app_session) struct ReapedRouterProbe(std::process::Child);
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl ReapedRouterProbe {
+    /// Own an already spawned child before any fallible observation begins.
+    pub(in crate::app_session) fn new(child: std::process::Child) -> Self {
+        Self(child)
+    }
+
+    /// Bound the actual child's stderr and wait for its exit. `Drop` handles
+    /// a failed read, oversized output, timeout, or test assertion panic.
+    pub(in crate::app_session) fn wait_bounded_stderr(
+        &mut self,
+        stderr: &std::fs::File,
+        max_bytes: u64,
+    ) -> std::io::Result<std::process::ExitStatus> {
+        let started = Instant::now();
+        loop {
+            if stderr.metadata()?.len() > max_bytes {
+                return Err(std::io::Error::other(
+                    "router probe stderr exceeded capture bound",
+                ));
+            }
+            if let Some(status) = self.0.try_wait()? {
+                return Ok(status);
+            }
+            if started.elapsed() >= Duration::from_secs(10) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "router probe exceeded ten-second cleanup bound",
+                ));
+            }
+            std::thread::park_timeout(Duration::from_millis(10));
+        }
+    }
+}
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 impl Drop for ReapedRouterProbe {
@@ -98,6 +134,7 @@ fn stale_and_foreign_link_contexts_are_inert_before_echo_decode() {
         attempt: 2,
         writer,
         reader_stop: Arc::clone(&current_stop),
+        dialog_nonce_high_water: 0,
         pending_quit: None,
     }));
     let shutdown = SessionShutdownState::new();
@@ -134,6 +171,7 @@ fn current_g2_context_dispatches_original_echo_and_stopped_context_is_inert() {
         attempt: 2,
         writer,
         reader_stop: Arc::clone(&stop),
+        dialog_nonce_high_water: 0,
         pending_quit: None,
     }));
     let caller = PrimaryCallerContext {

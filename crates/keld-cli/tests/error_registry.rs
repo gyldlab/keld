@@ -47,6 +47,9 @@ const SCAN_REL: &[&str] = &[
     // Public Electron facade errors must not be silently invisible just
     // because no Rust binary emits the same KELD-COMPAT identifier.
     "packages/@keld/electron/src",
+    // The migrated electron-updater emits its own typed COMPAT-050 refusal.
+    // Registry parity must cover the real emitter, not a Rust shadow.
+    "packages/@keld/electron-updater/src",
     "tools",
 ];
 
@@ -400,4 +403,24 @@ fn electron_emitter_is_scanned_without_a_rust_shadow() {
             "{code} must be covered without Rust shadows or test-only copies"
         );
     }
+}
+
+#[test]
+fn electron_updater_emitter_is_scanned_without_a_rust_shadow() {
+    let root = tempfile::tempdir().expect("isolated registry source roots");
+    for rel in SCAN_REL {
+        fs::create_dir_all(root.path().join(rel)).expect("create scanner root");
+    }
+    fs::write(root.path().join("crates/keld-core/src/lib.rs"), "")
+        .expect("empty Rust test control");
+    let updater = root.path().join("packages/@keld/electron-updater/src");
+    fs::copy(
+        workspace_root().join("packages/@keld/electron-updater/src/error.ts"),
+        updater.join("error.ts"),
+    )
+    .expect("copy actual updater error emitter");
+    assert!(
+        emitted_codes(root.path()).contains("KELD-COMPAT-050"),
+        "the migrated updater's real typed refusal must be registered without Rust shadows"
+    );
 }

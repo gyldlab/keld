@@ -57,6 +57,11 @@ fn policy_by_name(name: &str) -> ReceivePolicy {
             ReceivePolicy::privileged_call_receiver(table_entry(arg.expect("policy arg")))
                 .expect("guarded CALL channel")
         }
+        "privileged-dialog-receiver" => {
+            let entry = table_entry(arg.expect("dialog channel id"));
+            assert_eq!(entry.id(), keld_ipc::channel_table::DIALOG.id());
+            ReceivePolicy::privileged_call_receiver(entry).expect("guarded dialog CALL channel")
+        }
         "primary-app-receiver" => ReceivePolicy::primary_app_receiver(),
         // Rows name wire ids; only an allocated table entry builds these
         // policies (GH-508 criterion 10), so an unallocated id fails the row.
@@ -134,12 +139,13 @@ fn stage_two(policy_name: &str, header: FrameHeader, payload: &[u8]) -> Result<(
         {
             keld_ipc::codec::decode::<WindowResponse>(payload).map(|_| ())
         }
-        // PING carries no payload; the future privileged channel declares its
-        // codec under KEL-102/T3; the primary session's per-channel codecs are
-        // proven by their own policies' rows; a generic reply waiter's REPLY
-        // codec belongs to the channel that issued the CALL (GH-527 §4.7).
+        // PING carries no payload. Guarded FS and Dialog header policies are
+        // exercised here; the Dialog request/reply payload vectors also run
+        // through their production keld-native codec in dialog_wire.rs, since
+        // keld-ipc cannot import its consumer without a cyclic dependency.
+        // Generic reply waiters use their owning channel's codec.
         (_, keld_ipc::FrameKind::Ping)
-        | ("privileged-fs-receiver" | "primary-app-receiver", _)
+        | ("privileged-fs-receiver" | "privileged-dialog-receiver" | "primary-app-receiver", _)
         | ("reply-waiter", keld_ipc::FrameKind::Reply) => Ok(()),
         (base, kind) => panic!("corpus stage-two has no rule for {base}/{kind:?}"),
     }
@@ -343,6 +349,23 @@ fn positive_vectors_match_the_live_codec_bytes() {
         keld_ipc::codec::encode(&LifecycleEvent::Ready).expect("encode"),
     );
     assert_eq!(
+        unhex(by_id("lifecycle-event-quit-requested").payload_hex),
+        keld_ipc::codec::encode(&LifecycleEvent::QuitRequested).expect("encode"),
+    );
+    assert_eq!(
+        unhex(by_id("lifecycle-call-init").payload_hex),
+        keld_ipc::codec::encode(&LifecycleRequest::Init {
+            runtime_process_facts: keld_ipc::lifecycle::RuntimeProcessFacts {
+                versions: std::collections::BTreeMap::from([("bun".to_owned(), "1".to_owned())]),
+            },
+        })
+        .expect("encode"),
+    );
+    assert_eq!(
+        unhex(by_id("lifecycle-reply-initialized").payload_hex),
+        keld_ipc::codec::encode(&LifecycleResponse::Initialized).expect("encode"),
+    );
+    assert_eq!(
         unhex(by_id("lifecycle-call-quit").payload_hex),
         keld_ipc::codec::encode(&LifecycleRequest::Quit).expect("encode"),
     );
@@ -353,6 +376,10 @@ fn positive_vectors_match_the_live_codec_bytes() {
             message: "KELD-GUARD001: denied".to_owned(),
         })
         .expect("encode"),
+    );
+    assert_eq!(
+        unhex(by_id("window-reply-loaded").payload_hex),
+        keld_ipc::codec::encode(&WindowResponse::Loaded).expect("encode"),
     );
     // The HELLO positive rows carry the declared fixture token bytes.
     assert_eq!(

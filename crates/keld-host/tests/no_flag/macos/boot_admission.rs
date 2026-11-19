@@ -3,9 +3,10 @@ use crate::support::TITLE;
 use crate::support::admission::{NativeAbsenceWatcher, PolicyReadFault};
 use crate::support::control::wait_child_output;
 use crate::support::control::wait_child_output_observing;
+use crate::support::dev_cycle::ShippingLaunchCleanup;
 use crate::support::invalid_stage::{InvalidBoot, InvalidPolicy};
 use crate::support::native_window::native_windows;
-use crate::support::process::{await_process_state, session_dirs_for};
+use crate::support::process::{await_process_state, process_exists, session_dirs_for};
 use crate::support::product::ProductFixture;
 use std::fs;
 use std::io::Write;
@@ -66,6 +67,42 @@ fn private_guardian_discriminator_without_authenticated_handoff_spawns_nothing()
 
 #[test]
 fn private_guardian_with_valid_liveness_but_no_authenticated_registration_still_spawns_nothing() {
+    assert_private_guardian_requires_registration(&["1".to_owned()]);
+}
+
+#[test]
+fn private_original_guardian_authenticates_before_native_facts_are_consumed() {
+    let forged = serde_json::json!({
+        "schema": 7,
+        "kind": "local-development",
+        "name": "Unregistered",
+        "version": "1.0.0",
+        "root": "/tmp/unregistered.app/Contents/Resources/app",
+        "resourcesRoot": "/tmp/unregistered.app/Contents/Resources",
+        "paths": {},
+        "singleInstance": { "verdict": "acquired" },
+        "originalResourcePolicy": {
+            "contract": "gh473-original-editor-offline/v1",
+            "graphSha256": format!("sha256:{}", "ab".repeat(32)),
+            "policySha256": format!("sha256:{}", "cd".repeat(32)),
+            "windowKey": "main",
+            "selector": "original-editor-offline"
+        }
+    })
+    .to_string();
+    for native_facts in ["not-json".to_owned(), forged] {
+        assert_private_guardian_requires_registration(&[
+            "2".to_owned(),
+            "local-bundle-v2".to_owned(),
+            "ab".repeat(32),
+            "cd".repeat(32),
+            "ef".repeat(32),
+            native_facts,
+        ]);
+    }
+}
+
+fn assert_private_guardian_requires_registration(suffix: &[String]) {
     let temp = tempfile::tempdir().expect("private valid-pipe fixture");
     let marker = temp.path().join("must-not-spawn");
     let entry = temp.path().join("entry.ts");
@@ -83,7 +120,7 @@ fn private_guardian_with_valid_liveness_but_no_authenticated_registration_still_
         .arg("entry.ts")
         .arg("1")
         .arg("1")
-        .arg("1") // valid native mode keeps the liveness/authentication fence reachable
+        .args(suffix) // closed role shape keeps the authentication fence reachable
         .env_remove("KELD_INTERNAL_MACOS_GUARDIAN_REGISTRATION")
         .env(
             "KELD_APP_LINK",
@@ -257,32 +294,46 @@ pub(crate) fn assert_invalid_stage_is_resource_free(
     } else {
         command.env_remove("KELD_DEV_LEASE");
     }
-    let mut child = command.spawn().expect("start suspended invalid host");
+    // The suspended shell can panic during state/census setup. Install its
+    // kill-and-reap owner before any assertion or another process spawn.
+    let mut host_owner =
+        ShippingLaunchCleanup::new(command.spawn().expect("start suspended invalid host"));
     // Retain the valid lease writer until the real host has exited. Legacy
     // callers still select the lease-less invalid-stage path above.
+    let child = host_owner.cli.as_mut().expect("suspended host owner");
     let _dev_lease = child.stdin.take();
     let host_pid = child.id();
     await_process_state(host_pid, 'T');
-    let native = watcher.spawn(host_pid);
+    // The watcher is a second independent process: its owner must also be
+    // installed before the waiting callback can panic.
+    let mut native_owner = ShippingLaunchCleanup::new(watcher.spawn(host_pid));
     let mut forbidden_control = false;
-    let output = wait_child_output_observing(child, EVENT_DEADLINE, || match listener.accept() {
-        Ok((mut stream, _)) => {
-            forbidden_control = true;
-            stream
-                .write_all(b"QUIT\n")
-                .expect("stop forbidden app through its owned lifecycle path");
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-        Err(error) => panic!("inspect invalid-stage control: {error}"),
-    });
+    let output = wait_child_output_observing(
+        host_owner.cli.take().expect("retained suspended host"),
+        EVENT_DEADLINE,
+        || match listener.accept() {
+            Ok((mut stream, _)) => {
+                forbidden_control = true;
+                stream
+                    .write_all(b"QUIT\n")
+                    .expect("stop forbidden app through its owned lifecycle path");
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => panic!("inspect invalid-stage control: {error}"),
+        },
+    );
     assert!(!forbidden_control, "{case}: Bun entered before preflight");
     assert!(
         !output.status.success(),
         "{case}: invalid boot became success"
     );
-    let native_output = native
-        .wait_with_output()
-        .expect("wait native absence watcher");
+    let native_output = wait_child_output(
+        native_owner
+            .cli
+            .take()
+            .expect("retained native absence watcher"),
+        EVENT_DEADLINE,
+    );
     assert!(
         native_output.status.success(),
         "{case}: watcher failed: {native_output:?}"
@@ -315,4 +366,54 @@ pub(crate) fn assert_invalid_stage_is_resource_free(
     );
     let _ = fs::remove_file(control_path);
     output
+}
+
+#[test]
+fn suspended_host_and_watcher_are_reaped_on_early_panic() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    let owned = tempfile::tempdir().expect("owned suspended process regression");
+    for after_watcher_spawn in [false, true] {
+        let marker = owned
+            .path()
+            .join(format!("unexpected-resume-{after_watcher_spawn}"));
+        let mut host_pid = None;
+        let mut watcher_pid = None;
+        let failure = catch_unwind(AssertUnwindSafe(|| {
+            let host_owner = ShippingLaunchCleanup::new(
+                Command::new("/bin/sh")
+                    .args(["-c", "kill -STOP $$; printf resumed > \"$1\"", "preflight"])
+                    .arg(&marker)
+                    .spawn()
+                    .expect("owned stopped host child"),
+            );
+            let pid = host_owner.cli.as_ref().expect("host handle").id();
+            host_pid = Some(pid);
+            await_process_state(pid, 'T');
+            assert!(after_watcher_spawn, "forced pre-watcher failure");
+            let watcher_owner = ShippingLaunchCleanup::new(
+                Command::new("/bin/sleep")
+                    .arg("60")
+                    .spawn()
+                    .expect("owned watcher child"),
+            );
+            watcher_pid = Some(watcher_owner.cli.as_ref().expect("watcher handle").id());
+            panic!("forced post-watcher failure");
+        }));
+        let original = failure.expect_err("forced failure must unwind");
+        let expected = if after_watcher_spawn {
+            "forced post-watcher failure"
+        } else {
+            "forced pre-watcher failure"
+        };
+        assert_eq!(original.downcast_ref::<&str>(), Some(&expected));
+        assert!(!process_exists(host_pid.expect("observed suspended host")));
+        if let Some(pid) = watcher_pid {
+            assert!(!process_exists(pid), "watcher survived an early failure");
+        }
+        assert!(
+            !marker.exists(),
+            "stopped host resumed into application work"
+        );
+    }
 }

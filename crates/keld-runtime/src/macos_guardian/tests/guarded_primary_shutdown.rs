@@ -19,6 +19,7 @@ struct PersistentPrimaryFixture {
     primary: GuardedPrimary,
     stderr: File,
     stage_root: std::path::PathBuf,
+    primary_principal: Option<crate::primary::RolePrincipal>,
 }
 
 impl PersistentPrimaryFixture {
@@ -67,6 +68,7 @@ impl PersistentPrimaryFixture {
             primary,
             stderr,
             stage_root: stage,
+            primary_principal: None,
         }
     }
 
@@ -84,6 +86,7 @@ impl PersistentPrimaryFixture {
             assert!(Instant::now() < deadline, "actual G1 Bound deadline");
         };
         assert_eq!(bound.attempt(), 1);
+        self.primary_principal = Some(bound.principal());
         let pid = self
             .primary
             .group_pid()
@@ -109,6 +112,7 @@ impl PersistentPrimaryFixture {
     fn await_cleared(&mut self) {
         let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
         let mut revoked = false;
+        let mut physically_drained = false;
         loop {
             self.primary
                 .poll_fatal()
@@ -118,6 +122,16 @@ impl PersistentPrimaryFixture {
                     GuardedPrimaryUpdate::Role(RoleEvent::Revoked { attempt: 1, .. }) => {
                         revoked = true;
                     }
+                    GuardedPrimaryUpdate::Role(RoleEvent::ProcessDrained { retirement }) => {
+                        assert!(revoked, "logical revoke must precede physical proof");
+                        assert_eq!(retirement.attempt(), 1);
+                        assert_eq!(Some(retirement.principal()), self.primary_principal);
+                        assert!(
+                            !physically_drained,
+                            "one native proof for the old generation"
+                        );
+                        physically_drained = true;
+                    }
                     GuardedPrimaryUpdate::Bound(bound) => {
                         panic!("closed permit bound G{}", bound.attempt())
                     }
@@ -125,7 +139,11 @@ impl PersistentPrimaryFixture {
                 }
             }
             let recovery = lock_recovery(&self.primary.recovery_decision);
-            if revoked && recovery.cleared_attempt == Some(1) && recovery.expected_attempt == 2 {
+            if revoked
+                && physically_drained
+                && recovery.cleared_attempt == Some(1)
+                && recovery.expected_attempt == 2
+            {
                 assert!(recovery.release_attempt.is_none());
                 break;
             }

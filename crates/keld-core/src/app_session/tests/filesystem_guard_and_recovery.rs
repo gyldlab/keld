@@ -147,6 +147,7 @@ fn fs_worker_reply_write_failure_retires_generation_and_notifies_owner() {
         attempt: 1,
         writer: server,
         reader_stop: Arc::clone(&reader_stop),
+        dialog_nonce_high_water: 0,
         pending_quit: None,
     })));
     let (guardian_tx, guardian_rx) = mpsc::channel();
@@ -172,6 +173,12 @@ fn fs_worker_reply_write_failure_retires_generation_and_notifies_owner() {
         auth: None,
         #[cfg(target_os = "macos")]
         auth_commands: None,
+        #[cfg(target_os = "macos")]
+        dialog: None,
+        #[cfg(target_os = "macos")]
+        menu: None,
+        #[cfg(target_os = "macos")]
+        compat: None,
         guardian: GuardianOwnerHandle {
             command_tx: guardian_tx,
         },
@@ -253,9 +260,167 @@ fn fs_worker_reply_write_failure_retires_generation_and_notifies_owner() {
     assert!(state.failed_write_attempt.is_none());
 }
 
+// The recovery assertion runs while the native worker can be waiting for an
+// owner receipt. Unwinding before a manual join must still release that wait,
+// finish a pending successor install, stop the worker and join both threads.
+#[cfg(target_os = "macos")]
+struct FsRecoveryOrderingCleanup {
+    commands: mpsc::SyncSender<FsWorkerCommand>,
+    guardian: mpsc::Receiver<GuardianOwnerCommand>,
+    recovery_reply: Option<mpsc::SyncSender<Result<Instant, String>>>,
+    acknowledged: bool,
+    installer: Option<thread::JoinHandle<()>>,
+    router: Option<PrimaryRouter>,
+    report: Option<mpsc::SyncSender<Result<(), String>>>,
+    finished: bool,
+    worker: Option<thread::JoinHandle<Result<(), HostAppError>>>,
+}
+
+#[cfg(target_os = "macos")]
+impl FsRecoveryOrderingCleanup {
+    fn receive_recovery(&mut self) -> u32 {
+        let command = self
+            .guardian
+            .recv_timeout(Duration::from_secs(5))
+            .expect("failed terminal write must request retired-generation recovery");
+        let GuardianOwnerCommand::FailRetiredGeneration(attempt, reply) = command else {
+            panic!("failed terminal write used the wrong owner command");
+        };
+        self.recovery_reply = Some(reply);
+        attempt
+    }
+
+    fn acknowledge_recovery(&mut self) -> Result<(), String> {
+        let reply = self
+            .recovery_reply
+            .take()
+            .ok_or_else(|| String::from("missing retired-generation recovery reply"))?;
+        self.acknowledged = true;
+        reply
+            .send(Ok(Instant::now()))
+            .map_err(|_| String::from("retired-generation recovery receiver closed"))
+    }
+
+    fn finish(&mut self) -> Result<(), String> {
+        if self.finished {
+            return Ok(());
+        }
+        self.finished = true;
+        let mut errors = Vec::new();
+        if !self.acknowledged {
+            if self.recovery_reply.is_none() {
+                match self.guardian.recv_timeout(Duration::from_secs(5)) {
+                    Ok(GuardianOwnerCommand::FailRetiredGeneration(attempt, reply)) => {
+                        if attempt != 1 {
+                            errors.push(format!("unexpected retired generation {attempt}"));
+                        }
+                        self.recovery_reply = Some(reply);
+                    }
+                    Ok(_) => errors.push(String::from("unexpected guardian recovery command")),
+                    Err(error) => {
+                        errors.push(format!("guardian recovery receipt missing: {error}"));
+                    }
+                }
+            }
+            if self.recovery_reply.is_some()
+                && let Err(error) = self.acknowledge_recovery()
+            {
+                errors.push(error);
+            }
+        }
+        // An installer may be waiting for the worker's Retire/Prepare receipt.
+        // Let it finish before enqueueing Stop, or Stop could overtake Prepare.
+        if let Some(installer) = self.installer.take()
+            && installer.join().is_err()
+        {
+            errors.push(String::from("successor installer panicked"));
+        }
+        if self.worker.is_some() {
+            if self.commands.send(FsWorkerCommand::Stop).is_err() {
+                errors.push(String::from("FS worker stopped before Stop delivery"));
+            }
+            if let Some(worker) = self.worker.take() {
+                match worker.join() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => errors.push(format!("FS worker failed: {error}")),
+                    Err(_) => errors.push(String::from("FS worker panicked")),
+                }
+            }
+        }
+        if let Some(router) = self.router.take()
+            && let Err(error) = router.shutdown()
+        {
+            errors.push(format!("router shutdown failed: {error}"));
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for FsRecoveryOrderingCleanup {
+    fn drop(&mut self) {
+        // A cleanup panic must not turn the original test assertion into a
+        // double-panic abort. Both thread joins precede router shutdown.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.finish()))
+            .unwrap_or_else(|_| Err(String::from("recovery-ordering cleanup panicked")));
+        if let Some(report) = self.report.take() {
+            let _ = report.send(result);
+        } else if let Err(error) = result {
+            // A cleanup error cannot replace the assertion that caused unwind.
+            eprintln!("recovery-ordering fixture cleanup: {error}");
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug)]
+enum FsRecoveryEarlyFailure {
+    AfterWorker,
+    AfterInstaller,
+}
+
 #[test]
 #[cfg(target_os = "macos")]
 fn successor_install_does_not_wait_for_retired_fs_recovery_ack() {
+    exercise_fs_recovery_ordering(None, None);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn recovery_ordering_cleanup_joins_after_forced_early_panic() {
+    for stage in [
+        FsRecoveryEarlyFailure::AfterWorker,
+        FsRecoveryEarlyFailure::AfterInstaller,
+    ] {
+        let (report, observed) = mpsc::sync_channel(1);
+        let unwind =
+            std::panic::catch_unwind(|| exercise_fs_recovery_ordering(Some(stage), Some(report)));
+        let failure = unwind.expect_err("early failure must cause a real assertion unwind");
+        let message = failure
+            .downcast_ref::<&'static str>()
+            .copied()
+            .or_else(|| failure.downcast_ref::<String>().map(String::as_str));
+        let expected = match stage {
+            FsRecoveryEarlyFailure::AfterWorker => "forced failure after worker spawn",
+            FsRecoveryEarlyFailure::AfterInstaller => "forced failure after installer spawn",
+        };
+        assert_eq!(message, Some(expected), "unexpected panic at {stage:?}");
+        observed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("cleanup did not join both threads after unwind")
+            .unwrap_or_else(|error| panic!("{stage:?} left recovery threads live: {error}"));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn exercise_fs_recovery_ordering(
+    early_failure: Option<FsRecoveryEarlyFailure>,
+    report: Option<mpsc::SyncSender<Result<(), String>>>,
+) {
     use std::os::unix::net::UnixStream;
 
     use sha2::{Digest as _, Sha256};
@@ -286,6 +451,7 @@ fn successor_install_does_not_wait_for_retired_fs_recovery_ack() {
         attempt: 1,
         writer: g1_server,
         reader_stop: Arc::clone(&reader_stop),
+        dialog_nonce_high_water: 0,
         pending_quit: None,
     })));
     let (guardian_tx, guardian_rx) = mpsc::channel();
@@ -311,6 +477,12 @@ fn successor_install_does_not_wait_for_retired_fs_recovery_ack() {
         auth: None,
         #[cfg(target_os = "macos")]
         auth_commands: None,
+        #[cfg(target_os = "macos")]
+        dialog: None,
+        #[cfg(target_os = "macos")]
+        menu: None,
+        #[cfg(target_os = "macos")]
+        compat: None,
         guardian: GuardianOwnerHandle {
             command_tx: guardian_tx,
         },
@@ -350,14 +522,25 @@ fn successor_install_does_not_wait_for_retired_fs_recovery_ack() {
     let worker_broker = snapshot
         .take_initial_broker()
         .expect("transfer worker broker");
-    let worker =
-        thread::spawn(move || run_fs_worker(&receiver, &worker_handle, worker_broker, 1, None));
-    let command = guardian_rx
-        .recv_timeout(Duration::from_secs(5))
-        .expect("failed terminal write must request retired-generation recovery");
-    let GuardianOwnerCommand::FailRetiredGeneration(attempt, recovery_reply) = command else {
-        panic!("failed terminal write used the wrong owner command");
+    // The worker spawn is the last initializer: no unowned, fallible step
+    // remains between a successful spawn and installation of the Drop guard.
+    let mut cleanup = FsRecoveryOrderingCleanup {
+        commands,
+        guardian: guardian_rx,
+        recovery_reply: None,
+        acknowledged: false,
+        installer: None,
+        router: Some(router),
+        report,
+        finished: false,
+        worker: Some(thread::spawn(move || {
+            run_fs_worker(&receiver, &worker_handle, worker_broker, 1, None)
+        })),
     };
+    if matches!(early_failure, Some(FsRecoveryEarlyFailure::AfterWorker)) {
+        panic!("forced failure after worker spawn");
+    }
+    let attempt = cleanup.receive_recovery();
     assert_eq!(attempt, 1);
     assert_eq!(
         snapshot
@@ -380,19 +563,20 @@ fn successor_install_does_not_wait_for_retired_fs_recovery_ack() {
     let (g2_server, _g2_client) = UnixStream::pair().expect("G2 recovery ordering pair");
     let g2_handle = handle.clone();
     let (installed_tx, installed_rx) = mpsc::sync_channel(1);
-    let install = thread::spawn(move || {
+    cleanup.installer = Some(thread::spawn(move || {
         let result = g2_handle.install_generation(2, g2_server);
-        installed_tx.send(result).expect("report G2 installation");
-    });
+        // The assertion thread may unwind before receiving this result.
+        let _ = installed_tx.send(result);
+    }));
+    if matches!(early_failure, Some(FsRecoveryEarlyFailure::AfterInstaller)) {
+        panic!("forced failure after installer spawn");
+    }
 
     let install_report = installed_rx.recv_timeout(Duration::from_secs(2));
-    if install_report.is_err() {
-        let _ = commands.send(FsWorkerCommand::Stop);
-        let _ = recovery_reply.send(Ok(Instant::now()));
-        let _ = worker.join();
-        let _ = install.join();
-        panic!("G2 installation waited for the retired-generation recovery acknowledgment");
-    }
+    assert!(
+        install_report.is_ok(),
+        "G2 installation waited for the retired-generation recovery acknowledgment"
+    );
     install_report
         .expect("G2 installation report")
         .expect("G2 installs while owner recovery acknowledgment is pending");
@@ -401,20 +585,12 @@ fn successor_install_does_not_wait_for_retired_fs_recovery_ack() {
         "recovery ordering sent an unexpected fatal window command"
     );
 
-    commands
-        .send(FsWorkerCommand::Stop)
-        .expect("queue recovery-ordering worker stop");
-    recovery_reply
-        .send(Ok(Instant::now()))
+    cleanup
+        .acknowledge_recovery()
         .expect("acknowledge retired-generation recovery after G2 installation");
-    worker
-        .join()
-        .expect("recovery-ordering worker joins")
-        .expect("recovery-ordering worker stays healthy");
-    install.join().expect("G2 installer joins");
-    router
-        .shutdown()
-        .expect("recovery-ordering router shutdown");
+    cleanup
+        .finish()
+        .expect("recovery-ordering threads join and router shuts down");
 }
 
 #[test]

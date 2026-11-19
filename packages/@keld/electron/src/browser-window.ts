@@ -6,21 +6,24 @@
 import { EventEmitter } from "node:events";
 import {
   app as hostApp,
+  captureOriginalWindowRecoveryDocument,
   flushAppliedLastWindowClosedAfterDestroy,
   getDispatchedPendingWindowCloses,
   getWindowSnapshot,
   getWindowSnapshots,
   invokeWindow,
   invokeWindowBlocking,
+  sendCurrentWindowEvent,
   onWindowFactApplied,
-} from "../../api/src/app.ts";
+} from "@keld/api/internal/app";
 import type {
   Rect,
   WindowEvent,
   WindowRef,
   WindowRequest,
-} from "../../api/src/window-codec.ts";
+} from "@keld/api/internal/window-codec";
 import {
+  linkError,
   stateDefineProperty,
   stateFreeze,
   stateMap,
@@ -31,8 +34,9 @@ import {
   stateWeakMap,
   stateWeakMapGet,
   stateWeakMapSet,
-} from "../../kipc/src/transport.ts";
-import { emitNativeAppEvent } from "./app.ts";
+} from "@keld/kipc";
+import { emitNativeAppEvent, joinOriginalQuitBeforeClose } from "./app.ts";
+import { encodeEndpointArguments } from "@keld/kipc/endpoint-value-codec";
 
 /** Known draw.io preferences; other fields are reported, never made authoritative. */
 export interface WebPreferences {
@@ -84,10 +88,14 @@ export interface BrowserWindowEventMap {
 /** The single Host-created content view's first-window events. */
 export interface WebContentsEventMap {
   destroyed: [];
+  "did-finish-load": [];
 }
 
 /** Public content lifetime surface; the Host alone owns native release. */
 export interface WebContents {
+  send(channel: string, ...args: unknown[]): void;
+  /** Last actual native committed URL; empty before the first committed document. */
+  getURL(): string;
   isDestroyed(): boolean;
   on<K extends keyof WebContentsEventMap>(
     event: K,
@@ -170,6 +178,97 @@ function checkOptions(options: BrowserWindowOptions): void {
   }
 }
 
+/** Capture every used getter before Create; validation never rereads app objects. */
+function captureWindowOptions(
+  source: BrowserWindowOptions,
+): BrowserWindowOptions {
+  if (source === null || typeof source !== "object" || Array.isArray(source))
+    throw diagnostic("BrowserWindow options must be an object");
+  const captured: Record<string, unknown> = {};
+  for (const name of [
+    "width",
+    "height",
+    "x",
+    "y",
+    "backgroundColor",
+    "icon",
+  ] as const)
+    stateDefineProperty(captured, name, {
+      __proto__: null,
+      value: source[name],
+      enumerable: true,
+    } as PropertyDescriptor);
+  const original = source.webPreferences;
+  if (original !== undefined) {
+    if (
+      original === null ||
+      typeof original !== "object" ||
+      Array.isArray(original)
+    )
+      throw diagnostic("webPreferences must be an object");
+    const prefs: Record<string, unknown> = {};
+    for (const name of [
+      "preload",
+      "webviewTag",
+      "contextIsolation",
+      "nodeIntegration",
+      "nodeIntegrationInWorker",
+      "nodeIntegrationInSubFrames",
+      "webSecurity",
+      "allowRunningInsecureContent",
+      "disableBlinkFeatures",
+      "spellcheck",
+    ] as const) {
+      stateDefineProperty(prefs, name, {
+        __proto__: null,
+        value: original[name],
+        enumerable: true,
+      } as PropertyDescriptor);
+    }
+    const args = original.additionalArguments;
+    if (args !== undefined) {
+      if (!Array.isArray(args))
+        throw diagnostic(
+          "additionalArguments requires at most sixteen strings",
+        );
+      const count = args.length;
+      if (
+        typeof count !== "number" ||
+        count % 1 !== 0 ||
+        count < 0 ||
+        count > 16
+      )
+        throw diagnostic(
+          "additionalArguments requires at most sixteen strings",
+        );
+      const copy: string[] = [];
+      for (let index = 0; index < count; index += 1) {
+        const value: unknown = args[index];
+        if (typeof value !== "string")
+          throw diagnostic("additionalArguments must contain strings");
+        stateDefineProperty(copy, index, {
+          __proto__: null,
+          value,
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        } as PropertyDescriptor);
+      }
+      stateDefineProperty(prefs, "additionalArguments", {
+        __proto__: null,
+        value: copy,
+        enumerable: true,
+      } as PropertyDescriptor);
+    }
+    stateDefineProperty(captured, "webPreferences", {
+      __proto__: null,
+      value: prefs,
+      enumerable: true,
+    } as PropertyDescriptor);
+  }
+  return captured as BrowserWindowOptions;
+}
+
 function ignoredOptionDiagnostics(options: BrowserWindowOptions): void {
   // Warnings are advisory only. Application code can replace console.warn
   // with a throwing function; it must never invalidate a committed native
@@ -195,11 +294,6 @@ function ignoredOptionDiagnostics(options: BrowserWindowOptions): void {
       );
     }
   }
-  if (options.webPreferences?.preload !== undefined) {
-    warn(
-      "KELD window: preload execution is not yet implemented for this native window",
-    );
-  }
 }
 
 /** The first-proof content lifetime; loading and preload APIs are not faked. */
@@ -213,9 +307,11 @@ const hostContentsRelease = stateWeakMap<
 
 class BrowserWindowWebContents extends EventEmitter {
   #destroyed = false;
+  readonly #windowRef: () => WindowRef;
 
-  constructor() {
+  constructor(windowRef: () => WindowRef) {
     super();
+    this.#windowRef = windowRef;
     stateWeakMapSet(hostContentsRelease, this, () =>
       this.#releaseAfterHostDestroyed(),
     );
@@ -223,6 +319,29 @@ class BrowserWindowWebContents extends EventEmitter {
 
   isDestroyed(): boolean {
     return this.#destroyed;
+  }
+  send(channel: string, ...args: unknown[]): void {
+    if (this.#destroyed)
+      throw new Error("KELD-COMPAT-011: Object has been destroyed");
+    const payload = encodeEndpointArguments(args);
+    // Capture the Host-selected document before yielding. Never substitute a
+    // window id for a native webview id or retry an unknown native effect.
+    const delivery = sendCurrentWindowEvent(
+      this.#windowRef(),
+      channel,
+      payload,
+    );
+    void delivery.catch((error: unknown) =>
+      reportNativeCallbackError("KELD webContents.send failed:", error),
+    );
+  }
+  getURL(): string {
+    if (this.#destroyed)
+      throw new Error("KELD-COMPAT-011: Object has been destroyed");
+    const snapshot = getWindowSnapshot(this.#windowRef());
+    if (!snapshot || snapshot.host_destroyed)
+      throw new Error("KELD-COMPAT-011: Object has been destroyed");
+    return snapshot.document?.native_url ?? "";
   }
 
   /** Only the module-private Host release capability can flip this bit. */
@@ -251,7 +370,146 @@ function releaseContentsAfterHostDestroyed(
   release();
 }
 
+/** Internal dialog parent extraction; deliberately absent from the package index. */
+export let readDialogParentRef: (candidate: unknown) => WindowRef;
+/** Internal exact Host pair lookup; absent from the public Electron entry. */
+export let findIpcSenderContents: (ref: WindowRef) => WebContents | undefined;
+/** Internal exact authenticated Veto receipt; absent from the public Electron entry. */
+export let awaitOriginalIpcWindowCloseVeto: (
+  window: WindowRef,
+  current: () => boolean,
+) => Promise<void>;
+/** Internal conditional native teardown; its selector comes from the retained original event. */
+export let destroyOriginalIpcWindowDocument: (
+  request: Extract<WindowRequest, { variant: "DestroyOriginalDocument" }>,
+  current: () => boolean,
+) => Promise<void>;
+
+/** @internal Consume only the automatic original startup load decision. */
+export let consumeOriginalRecoveryStartup: (candidate: unknown) => boolean;
+
 export class BrowserWindow extends EventEmitter {
+  static {
+    consumeOriginalRecoveryStartup = (candidate: unknown): boolean => {
+      if (
+        (typeof candidate !== "object" && typeof candidate !== "function") ||
+        candidate === null ||
+        !(#ref in candidate)
+      )
+        return false;
+      const current = candidate.#originalRecoveryStartup;
+      candidate.#originalRecoveryStartup = false;
+      return (
+        candidate.#recovered &&
+        !candidate.#destroyed &&
+        stateMapGet(windows, candidate.#ref.id) === candidate &&
+        typeof current === "function" &&
+        current()
+      );
+    };
+    findIpcSenderContents = (ref: WindowRef): WebContents | undefined => {
+      const admitted = getWindowSnapshot(ref);
+      if (!admitted || admitted.host_destroyed) return undefined;
+      let owner = stateMapGet(windows, ref.id);
+      if (owner === undefined && hostApp.isReady()) {
+        owner = BrowserWindow.getAllWindows().find(
+          (window) => window.id === ref.id,
+        );
+      }
+      if (
+        owner === undefined ||
+        owner.#ref.incarnation !== ref.incarnation ||
+        owner.#destroyed
+      )
+        return undefined;
+      const snapshot = getWindowSnapshot(ref);
+      return snapshot && !snapshot.host_destroyed ? owner.#contents : undefined;
+    };
+    awaitOriginalIpcWindowCloseVeto = async (ref, current): Promise<void> => {
+      const owner = stateMapGet(windows, ref.id);
+      if (
+        !owner ||
+        owner.#ref.incarnation !== ref.incarnation ||
+        owner.#destroyed ||
+        !current()
+      )
+        throw linkError(
+          "KELD-CORE-054",
+          "original close has no current owning window",
+        );
+      for (;;) {
+        if (!current() || owner.#destroyed)
+          throw linkError(
+            "KELD-CORE-054",
+            "original document retired before close Veto settlement",
+          );
+        const receipt = owner.#lastVetoApplied;
+        if (!receipt)
+          throw linkError(
+            "KELD-CORE-054",
+            "original close has no authenticated Veto request",
+          );
+        await receipt.applied;
+        if (!current() || owner.#destroyed)
+          throw linkError(
+            "KELD-CORE-054",
+            "original document retired during close Veto settlement",
+          );
+        if (owner.#lastVetoApplied === receipt) return;
+        // A different actual close attempt arrived while waiting. Await its
+        // own correlated reply; do not resend or retry a failed operation.
+      }
+    };
+    destroyOriginalIpcWindowDocument = async (
+      request,
+      current,
+    ): Promise<void> => {
+      const ref = request.window;
+      const owner = stateMapGet(windows, ref.id);
+      if (
+        !owner ||
+        owner.#ref.incarnation !== ref.incarnation ||
+        owner.#destroyed ||
+        !current()
+      )
+        throw linkError(
+          "KELD-CORE-054",
+          "original teardown has no current owning window",
+        );
+      await awaitOriginalIpcWindowCloseVeto(ref, current);
+      if (!current())
+        throw linkError(
+          "KELD-CORE-054",
+          "original document retired before conditional native teardown",
+        );
+      const response = await invokeWindow(request);
+      // The genuine Destroyed dispatch may already have tombstoned this exact
+      // owner and removed its Source record before the async reply resumes.
+      const observedDestroyed =
+        owner.#destroyed || getWindowSnapshot(ref)?.host_destroyed === true;
+      if (response.variant !== "Destroyed" || !observedDestroyed)
+        throw linkError(
+          "KELD-IPC-003",
+          "original teardown lacks its physical Destroyed fact and response",
+        );
+      // Native success retires the original document. Never demand current()
+      // after success, nor replace the captured selector with a latest lookup.
+      owner.#closed(false);
+      flushAppliedLastWindowClosedAfterDestroy();
+    };
+    readDialogParentRef = (candidate: unknown): WindowRef => {
+      if (
+        (typeof candidate !== "object" && typeof candidate !== "function") ||
+        candidate === null ||
+        !(#ref in candidate)
+      ) {
+        throw new TypeError("dialog parent must be a live BrowserWindow");
+      }
+      candidate.#state();
+      return candidate.#ref;
+    };
+  }
+
   // Only getAllWindows may enter this synchronous, callback-free constructor
   // path. Reading a private ref from caller options would let a Proxy forge
   // the otherwise secret Symbol and bypass the Host Create contract.
@@ -273,11 +531,17 @@ export class BrowserWindow extends EventEmitter {
   static #terminalMirrorReported = false;
   readonly id!: number;
   readonly #ref!: WindowRef;
-  readonly #contents = new BrowserWindowWebContents();
+  readonly #contents = new BrowserWindowWebContents(() => this.#ref);
   #destroyed = false;
   #insideClosed = false;
   readonly #recovered!: boolean;
+  // Undefined permits only an actual Adopted reply to arm a replay wrapper.
+  // False is terminal: fresh creation, an ineligible decision, or any load.
+  #originalRecoveryStartup: (() => boolean) | false | undefined;
   #lastCloseSeq: bigint | undefined;
+  #lastVetoApplied:
+    { readonly closeSeq: bigint; readonly applied: Promise<void> } | undefined;
+
   // Creation notifications belong to the Host-owned BrowserWindow wrapper,
   // not its WebContents. Mark before invoking reentrant application callbacks.
   #creationPublished = false;
@@ -300,18 +564,39 @@ export class BrowserWindow extends EventEmitter {
       if (replayed !== undefined) {
         ref = replayed;
       } else {
+        options = captureWindowOptions(options);
         checkOptions(options);
         // Read *all* caller-controlled diagnostic getters before the irreversible
         // authenticated Host Create. A hostile getter cannot throw after the
         // Host returned Created and strand an unreturned native window.
         ignoredOptionDiagnostics(options);
-        const response = invokeWindowBlocking({
-          variant: "Create",
+        const geometry = {
           width: options.width ?? 800,
           height: options.height ?? 600,
           x: options.x ?? null,
           y: options.y ?? null,
-        });
+        };
+        const preload = options.webPreferences?.preload;
+        const args = options.webPreferences?.additionalArguments;
+        if (preload === undefined && args !== undefined && args.length !== 0)
+          throw diagnostic(
+            "additionalArguments requires an admitted preload selector",
+          );
+        if (
+          preload !== undefined &&
+          (typeof preload !== "string" || preload.length === 0)
+        )
+          throw diagnostic("preload must be a nonempty absolute selector");
+        const request: WindowRequest =
+          preload === undefined
+            ? { variant: "Create", ...geometry }
+            : {
+                variant: "CreateWithPreload",
+                ...geometry,
+                preload_absolute: preload,
+                additional_arguments: args ?? [],
+              };
+        const response = invokeWindowBlocking(request);
         if (response.variant !== "Created" && response.variant !== "Adopted") {
           throw diagnostic(
             `unexpected native Create response ${response.variant}`,
@@ -327,6 +612,9 @@ export class BrowserWindow extends EventEmitter {
           previous.#ref.incarnation === ref.incarnation &&
           !previous.isDestroyed()
         ) {
+          if (previous.#originalRecoveryStartup === undefined)
+            previous.#originalRecoveryStartup =
+              captureOriginalWindowRecoveryDocument(previous.#ref) ?? false;
           previous.#publishCreation();
           return previous;
         }
@@ -356,6 +644,11 @@ export class BrowserWindow extends EventEmitter {
       // An Adopted host window also predates this JS facade, even if application
       // code never called getAllWindows() to materialize its replay wrapper.
       this.#recovered = replayed !== undefined || adopted;
+      this.#originalRecoveryStartup = adopted
+        ? (captureOriginalWindowRecoveryDocument(this.#ref) ?? false)
+        : replayed === undefined
+          ? false
+          : undefined;
       stateMapSet(windows, ref.id, this);
       published = true;
       if (replayed === undefined) this.#publishCreation();
@@ -490,6 +783,28 @@ export class BrowserWindow extends EventEmitter {
     }
     return this.#contents;
   }
+  /** The existing window channel resolves only after the actual native Finished fact. */
+  async loadURL(uri: string): Promise<void> {
+    this.#originalRecoveryStartup = false;
+    this.#state();
+    const ref = this.#ref;
+    const response = await invokeWindow({
+      variant: "LoadUrl",
+      window: ref,
+      uri,
+    });
+    const current = getWindowSnapshot(ref);
+    if (this.#destroyed || !current || current.host_destroyed)
+      throw new Error("KELD-COMPAT-011: Object has been destroyed");
+    if (
+      response.variant !== "Loaded" ||
+      !current.document?.current ||
+      !current.document.finished
+    )
+      throw diagnostic(
+        "native LoadUrl settled without its current Finished fact",
+      );
+  }
 
   #state() {
     if (this.#destroyed)
@@ -612,6 +927,10 @@ export class BrowserWindow extends EventEmitter {
   #nativeClose(close_seq: bigint): void {
     if (this.#destroyed || this.#lastCloseSeq === close_seq) return;
     this.#lastCloseSeq = close_seq;
+    // The existing dispatch owner validated the actual Host pair/sequence.
+    // Complete a qualified original handoff before a user listener can
+    // synchronously destroy and enter the real last-window policy.
+    joinOriginalQuitBeforeClose(this.#ref, close_seq);
     // A recovered wrapper may be materialized by a native fact before app code
     // has acquired it or registered its unsaved-document listener. Veto rather
     // than allowing an invisible/default close through that recovery interval.
@@ -653,14 +972,32 @@ export class BrowserWindow extends EventEmitter {
       );
       return;
     }
-    void invokeWindow({
+    const requested = invokeWindow({
       variant: "CloseReply",
       window: this.#ref,
       close_seq,
       verdict: prevented ? "Veto" : "Allow",
-    }).catch((error: unknown) => {
-      reportNativeCallbackError("KELD native close verdict failed:", error);
     });
+    if (prevented) {
+      const applied = requested.then((response) => {
+        if (response.variant !== "ReplyApplied")
+          throw linkError(
+            "KELD-CORE-054",
+            "original close Veto was not applied to its exact request",
+          );
+      });
+      this.#lastVetoApplied = { closeSeq: close_seq, applied };
+      void applied.catch((error: unknown) => {
+        reportNativeCallbackError(
+          "KELD native close Veto settlement failed:",
+          error,
+        );
+      });
+    } else {
+      void requested.catch((error: unknown) => {
+        reportNativeCallbackError("KELD native close verdict failed:", error);
+      });
+    }
   }
 
   /** Host facts are applied before this method; never mint a local identity. */
@@ -767,6 +1104,13 @@ export class BrowserWindow extends EventEmitter {
   static {
     onWindowFactApplied(
       (fact: WindowEvent) => {
+        // This is a global desktop fact. Close/Bounds listeners below own only
+        // real native WindowRef pairs; do not fabricate an id or flush a close.
+        if (
+          fact.variant === "DesktopSnapshot" ||
+          fact.variant === "DocumentRecovered"
+        )
+          return;
         if (fact.variant === "Created") {
           stateMapSet(BrowserWindow.#receivedBounds, fact.window.id, {
             incarnation: fact.window.incarnation,
@@ -811,6 +1155,22 @@ export class BrowserWindow extends EventEmitter {
         if (!window || window.#ref.incarnation !== fact.window.incarnation)
           return;
         switch (fact.variant) {
+          case "NavigationFinished": {
+            const current = getWindowSnapshot(window.#ref);
+            if (
+              !window.#destroyed &&
+              current?.document?.current &&
+              current.document.generation === fact.document_generation &&
+              current.document.finished
+            ) {
+              try {
+                window.#contents.emit("did-finish-load");
+              } catch (error) {
+                reportNativeCallbackError("KELD load listener failed:", error);
+              }
+            }
+            break;
+          }
           case "Bounds":
             {
               const prior = window.#lastDispatchedBounds;

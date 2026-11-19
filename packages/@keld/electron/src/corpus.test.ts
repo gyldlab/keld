@@ -12,6 +12,11 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
+import {
+  decodeLifecycleEvent,
+  decodeRuntimeProcessInit,
+  decodeRuntimeInitialized,
+} from "@keld/kipc/runtime-process-facts";
 
 import {
   FrameKind,
@@ -39,6 +44,10 @@ import {
   decodeWindowRequest,
   decodeWindowResponse,
 } from "../../api/src/window-codec.ts";
+import {
+  decodeDialogReply,
+  encodeDialogRequest,
+} from "../../api/src/dialog.generated.ts";
 
 const CORPUS_PATH = join(
   import.meta.dir,
@@ -47,7 +56,7 @@ const CORPUS_PATH = join(
 const STALL_LIMIT_MS = 5000;
 /** One owner, one digest: the Rust suite asserts this same constant. */
 const CORPUS_SHA256 =
-  "94f6dd8a39aab2baf8b6e2ac4eb6c7c8e91e780c20d419ef927bd4dd5faff4af";
+  "3ca414e30de36a328b4688d4c400ff34eeec7f46f7444df02acbe6df4515d1f4";
 /** Pre-auth policies may reaccept after a rejection; authenticated ones close. */
 const PRE_AUTH_POLICIES = new Set([
   "server-pre-auth-hello",
@@ -125,6 +134,10 @@ function policyByName(name: string): ReceivePolicy {
       return lifecycleReplyWaiter(Number(arg));
     case "privileged-fs-receiver":
       return privilegedCallReceiver(Number(arg));
+    case "privileged-dialog-receiver":
+      if (Number(arg) !== 6)
+        throw new Error("dialog channel must be allocated id 6");
+      return privilegedCallReceiver(6);
     case "primary-app-receiver":
       return primaryAppReceiver();
     case "reply-waiter": {
@@ -224,12 +237,6 @@ function decodeEchoShape(payload: Uint8Array): void {
     throw new Error("KELD-IPC-003: trailing bytes");
 }
 
-function decodeUnitEnum(payload: Uint8Array, max: number): void {
-  if (payload.length !== 1 || payload[0] > max) {
-    throw new Error("KELD-IPC-003: invalid unit enum");
-  }
-}
-
 /** Corpus-only schema validation for the closed enums in keld-ipc lifecycle.rs. */
 function decodeLifecycleShape(
   payload: Uint8Array,
@@ -247,8 +254,9 @@ function decodeLifecycleShape(
       }
       end = afterChannel;
     } else if (variant !== 0) {
-      // Quit
-      throw new Error("KELD-IPC-003: unknown LifecycleRequest discriminant");
+      // New request bodies are validated by their existing generated owner.
+      decodeRuntimeProcessInit(payload);
+      return;
     }
   } else if (variant === 2) {
     // SubscribeRefused { reason: SubscribeRefusal }
@@ -257,8 +265,9 @@ function decodeLifecycleShape(
       throw new Error("KELD-IPC-003: unknown SubscribeRefusal discriminant");
     end = afterReason;
   } else if (variant > 1) {
-    // Quit | Subscribed
-    throw new Error("KELD-IPC-003: unknown LifecycleResponse discriminant");
+    // The generated owner alone validates Initialized and rejects unknown tags.
+    decodeRuntimeInitialized(payload);
+    return;
   }
   if (end !== payload.length)
     throw new Error("KELD-IPC-003: trailing lifecycle bytes");
@@ -309,17 +318,18 @@ function stageTwo(
       decodeWindowRequest(payload);
       return;
     case "lifecycle-event-receiver":
-      decodeUnitEnum(payload, 1); // Ready | LastWindowClosed
+      decodeLifecycleEvent(payload);
       return;
     case "event-receiver":
       if (channel === WINDOW_CHANNEL) decodeWindowEvent(payload);
-      else decodeUnitEnum(payload, 1); // LifecycleEvent
+      else decodeLifecycleEvent(payload);
       return;
     case "reply-waiter":
       // A generic waiter's REPLY codec belongs to the channel that issued the
       // CALL (GH-527 §4.7); its ERR is the shared CallError.
       if (kind === FrameKind.Err) decodeCorpusCallError(payload);
       else if (channel === WINDOW_CHANNEL) decodeWindowResponse(payload);
+      else if (channel === 6) decodeDialogReply(payload);
       return;
     case "lifecycle-reply-waiter":
       if (kind === FrameKind.Err) decodeCorpusCallError(payload);
@@ -330,6 +340,15 @@ function stageTwo(
       // The privileged codec is KEL-102/T3's; the primary session's
       // per-channel codecs are proven by their own policies' rows.
       return;
+    case "privileged-dialog-receiver": {
+      // Native owns the full request decoder. This canonical positive Cancel
+      // vector must match the generated Bun request encoder byte-for-byte;
+      // the Rust keld-native dialog_wire test decodes the same fixture row.
+      const canonical = encodeDialogRequest({ variant: "Cancel", nonce: 1n });
+      if (!timingSafeEq(payload, canonical))
+        throw new Error("KELD-IPC-003: dialog Cancel payload differs");
+      return;
+    }
     default:
       throw new Error(`no stage-two rule for ${policyName}`);
   }
