@@ -24,6 +24,8 @@ fn reused_original_correlation_closes_without_a_competing_terminal() {
     for payload in payloads {
         let (mut handle, mut peer, owner_rx, ui_rx) =
             crate::app_session::tests::initial_ready_router_with_window_loop();
+        peer.set_app_link_deadlines(Some(Duration::from_secs(3)))
+            .unwrap();
         let (dialog, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
         let dialog = Arc::new(dialog);
         handle.dialog = Some(Arc::clone(&dialog));
@@ -56,8 +58,6 @@ fn reused_original_correlation_closes_without_a_competing_terminal() {
             .unwrap_err();
         acknowledge.join().unwrap();
         assert!(error.to_string().contains("KELD-IPC-005"), "{error}");
-        peer.set_app_link_deadlines(Some(Duration::from_secs(3)))
-            .unwrap();
         let mut byte = [0_u8; 1];
         match peer.read(&mut byte) {
             Ok(0) => {}
