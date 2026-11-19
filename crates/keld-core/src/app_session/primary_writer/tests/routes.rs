@@ -42,7 +42,7 @@ fn ready_ping_echo_quit_and_drain_use_the_same_physical_owner() {
     router.signal_ready().expect("publish physical Ready");
     let (header, payload) = link::read_frame(&mut peer).expect("read physical Ready");
     assert_eq!(
-        (header.kind(), header.channel()),
+        (header.kind, header.channel),
         (FrameKind::Event, LIFECYCLE_CHANNEL)
     );
     assert_eq!(
@@ -67,7 +67,7 @@ fn ready_ping_echo_quit_and_drain_use_the_same_physical_owner() {
     assert!(configured <= keld_ipc::APP_LINK_IO_DEADLINE);
     let (header, payload) = link::read_frame(&mut peer).expect("read Ping reply");
     assert_eq!(
-        (header.kind(), header.channel(), header.corr()),
+        (header.kind, header.channel, header.corr),
         (FrameKind::Ping, LIFECYCLE_CHANNEL, ping)
     );
     assert!(payload.is_empty());
@@ -82,7 +82,7 @@ fn ready_ping_echo_quit_and_drain_use_the_same_physical_owner() {
         .expect("Echo from peer");
     let (header, payload) = link::read_frame(&mut peer).expect("read Echo reply");
     assert_eq!(
-        (header.kind(), header.channel(), header.corr()),
+        (header.kind, header.channel, header.corr),
         (FrameKind::Reply, ECHO_CHANNEL, echo)
     );
     let response = codec::decode::<keld_ipc::EchoResponse>(&payload).expect("Echo reply");
@@ -114,7 +114,7 @@ fn ready_ping_echo_quit_and_drain_use_the_same_physical_owner() {
     .expect("one subsequent frame to drain");
     let (header, payload) = link::read_frame(&mut peer).expect("physical Quit reply first");
     assert_eq!(
-        (header.kind(), header.channel(), header.corr()),
+        (header.kind, header.channel, header.corr),
         (FrameKind::Reply, LIFECYCLE_CHANNEL, quit)
     );
     assert_eq!(
@@ -123,7 +123,7 @@ fn ready_ping_echo_quit_and_drain_use_the_same_physical_owner() {
     );
     let (header, payload) = link::read_frame(&mut peer).expect("physical post-Quit drain response");
     assert_eq!(
-        (header.kind(), header.channel(), header.corr()),
+        (header.kind, header.channel, header.corr),
         (FrameKind::Err, LIFECYCLE_CHANNEL, drained)
     );
     assert_eq!(
