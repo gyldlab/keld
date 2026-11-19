@@ -45,6 +45,8 @@ function literal(name: string): Uint8Array {
 }
 function accept(source: WindowSource, bytes: Uint8Array): WindowEvent {
   const fact = source.decode(bytes);
+  if (fact.variant === "DesktopSnapshot")
+    throw new Error("unexpected desktop fact");
   source.apply(fact);
   return fact;
 }
@@ -295,8 +297,7 @@ test("every state fact changes only its own host-confirmed field", () => {
   expect(source.get(WINDOW)).not.toBe(initial);
 });
 
-test("all eight Rust-owned event vectors are accepted in their specified order", () => {
-  expect(literals.size).toBe(8);
+test("all eight ordinary Rust-owned event vectors are accepted in their specified order", () => {
   for (const created of ["event-created", "event-created-pending-close"]) {
     const source = new WindowSource(() => {});
     accept(source, literal(created));

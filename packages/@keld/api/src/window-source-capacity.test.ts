@@ -50,6 +50,7 @@ test("1024 distinct destroyed Host identities remain queryable; the 1025th inval
       encodeWindowEvent({ variant: "Destroyed", window }),
     );
     source.apply(destroyed);
+    if (created.variant !== "Created") throw new Error("expected Created");
     if (id === 1) first = created;
   }
   const historical = source.all();

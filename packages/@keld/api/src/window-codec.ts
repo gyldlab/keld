@@ -78,15 +78,16 @@ export type WindowEvent =
   | { variant: "Destroyed"; window: WindowRef };
 
 /** Appended native fact payloads awaiting application-owner dispatch. */
-export type WindowCarrierEvent =
+export type WindowEventWithDesktop =
   | WindowEvent
   | {
       /** GH481: appended postcard tag 7, no WindowRef on this global fact. */
       variant: "DesktopSnapshot";
       epoch: bigint;
       snapshot: DesktopFacts | null;
-    }
-  | WindowEventExtension;
+    };
+
+export type WindowCarrierEvent = WindowEventWithDesktop | WindowEventExtension;
 /** App-to-host calls; optional positions use explicit null, matching postcard. */
 export type WindowRequest =
   | {
@@ -530,12 +531,17 @@ function eventAt(
 function eventAt(
   bytes: Uint8Array,
   offset: number,
-  carrier = false,
+  carrier: "desktop",
+): [WindowEventWithDesktop, number];
+function eventAt(
+  bytes: Uint8Array,
+  offset: number,
+  carrier: boolean | "desktop" = false,
 ): [WindowCarrierEvent, number] {
   const decoded14 = decodeVarint(bytes, offset);
   const variant = decoded14[0];
   const afterVariant = decoded14[1];
-  if (!carrier && variant >= 7)
+  if (carrier !== true && variant >= (carrier === "desktop" ? 8 : 7))
     throw invalid("unknown WindowEvent discriminant");
   if (variant >= 8) return windowEventExtensionAt(bytes, variant, afterVariant);
   if (variant === 7) {
@@ -606,6 +612,12 @@ function eventAt(
 /** Decode exactly one host fact; unknown facts must never be silently ignored. */
 export function decodeWindowEvent(payload: Uint8Array): WindowEvent {
   return exact(payload, (bytes, offset) => eventAt(bytes, offset));
+}
+/** Decode the selected facade's existing window facts and desktop observation. */
+export function decodeWindowEventWithDesktop(
+  payload: Uint8Array,
+): WindowEventWithDesktop {
+  return exact(payload, (bytes, offset) => eventAt(bytes, offset, "desktop"));
 }
 /** Decode the complete carrier for codec validation before live dispatch is joined. */
 export function decodeWindowCarrierEvent(
