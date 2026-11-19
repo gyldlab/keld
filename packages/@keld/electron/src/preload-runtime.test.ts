@@ -420,6 +420,22 @@ describe("original preload runtime only", () => {
           message: "native renderer queue occupied; not dispatched",
         },
       });
+      // The real native route may stop scheduling callbacks after refusal.
+      // No simulated __keldAppNativeCall may be needed to release these page
+      // snapshots. A reforward would exhaust 60 callbacks after 30 calls.
+      const pageRequest = (
+        f.page.electron as { request: (...args: unknown[]) => void }
+      ).request;
+      for (let i = 0; i < 80; i++)
+        pageRequest(
+          { action: "isFullscreen" },
+          () => {},
+          () => {},
+        );
+      expect(f.pageMessages).toHaveLength(1);
+      expect(
+        f.appMessages.filter((value) => value.kind === "call"),
+      ).toHaveLength(1);
       for (let i = 0; i < 80; i++)
         f.call(
           "request",
@@ -453,6 +469,59 @@ describe("original preload runtime only", () => {
       f.restore();
     }
     // A separately instantiated document has fresh original callback custody.
+    const fresh = fixture();
+    try {
+      fresh.call(
+        "request",
+        { action: "isFullscreen" },
+        () => {},
+        () => {},
+      );
+      expect(fresh.sends()).toHaveLength(1);
+    } finally {
+      fresh.restore();
+    }
+  });
+
+  test("local request codec failure retires immutable original before repeated snapshots", () => {
+    const f = fixture();
+    const priorError = console.error;
+    const diagnostics: string[] = [];
+    console.error = (...args: unknown[]) =>
+      diagnostics.push(args.map((part) => String(part)).join(" "));
+    try {
+      f.call(
+        "request",
+        { action: "isFullscreen", large: "X".repeat(5_000) },
+        () => {},
+        () => {},
+      );
+      expect(f.sends()).toHaveLength(0);
+      expect(f.pageMessages).toHaveLength(1);
+      expect(diagnostics.some((value) => value.includes("CodecLimit"))).toBe(
+        true,
+      );
+      expect(
+        diagnostics.some((value) => value.includes("reload the document")),
+      ).toBe(true);
+      const pageRequest = (
+        f.page.electron as { request: (...args: unknown[]) => void }
+      ).request;
+      for (let i = 0; i < 80; i++)
+        pageRequest(
+          { action: "isFullscreen" },
+          () => {},
+          () => {},
+        );
+      expect(f.pageMessages).toHaveLength(1);
+      expect(
+        f.appMessages.filter((value) => value.kind === "call"),
+      ).toHaveLength(1);
+      expect(f.sends()).toHaveLength(0);
+    } finally {
+      console.error = priorError;
+      f.restore();
+    }
     const fresh = fixture();
     try {
       fresh.call(

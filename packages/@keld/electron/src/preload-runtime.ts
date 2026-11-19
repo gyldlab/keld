@@ -659,6 +659,15 @@ export function installApp(
       !isArray(data.args)
     )
       return;
+    if (requiresDocumentReset) {
+      // Native may not call us again after retiring a route. Refuse the page
+      // snapshot before forwarding; it must not fill the page callback table
+      // while the original preload's private request state remains retained.
+      dom.dispatchEvent(
+        new CustomEvent(PAGE_REFUSAL_EVENT, { detail: data.call }),
+      );
+      return;
+    }
     if (!credential || !registry || !processPublished || !nativeRegistered) {
       console.error(
         "KELD-COMPAT-103: early page request refused without retention",
@@ -851,6 +860,17 @@ export function installApp(
         for (const id of callbackProxies.keys())
           if (!proxiesBefore.has(id)) callbackProxies.delete(id);
         releaseCall(call.call);
+        if (entered && call.method === "request") {
+          // The unchanged original request already inserted a lexical reqInfo
+          // record before attempting its IPC send. A local codec refusal
+          // cannot erase that record or safely synthesize mainResp. Refuse
+          // further calls until a new document owns a fresh original closure.
+          requiresDocumentReset = true;
+          w.__keldAppRouteState?.(credential, false);
+          console.error(
+            "KELD-COMPAT-103: original request failed before dispatch; reload the document before another request",
+          );
+        }
       }
       console.error("KELD-COMPAT-103: original preload call refused", error);
     } finally {
