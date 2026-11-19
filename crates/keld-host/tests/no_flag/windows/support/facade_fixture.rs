@@ -36,9 +36,9 @@ report(`MODE ${JSON.stringify({
 })}`);
 Reflect.deleteProperty(process.env, "KELD_NATIVE_WINDOW_FACADE");
 if (Reflect.get(process.env, "KELD_NATIVE_WINDOW_FACADE") !== undefined) throw new Error("actual env was not deleted");
-const transport = await import("./packages/@keld/kipc/src/transport.ts");
+const transport = await import("./packages/node_modules/@keld/kipc/src/transport.ts");
 report(`SELECTED ${transport.nativeFacadeBootSelected}`);
-const { app, BrowserWindow } = await import("./packages/@keld/electron/src/index.ts");
+const { app, BrowserWindow } = await import("./packages/node_modules/@keld/electron/src/index.ts");
 let framesOnWindowChannel = 0;
 const prototype = transport.WorkerLink.prototype;
 const call = prototype.call;

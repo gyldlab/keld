@@ -1872,7 +1872,7 @@ export function checkWorkflowSecurity(source: string): void {
     fmt: "5021013ee751a651b110df9c3f45d96425b8a51ca5f6b7e13ce107c4a0042ea9",
     "windows-media":
       "72ddccabb2cd44d6dab130ee48134b9568175481d959dce7d74ed8e79341721d",
-    check: "6697d7e3790000044f3b833fab5409c4b50af6fa9af12bd344f26f9bd20f2f05",
+    check: "243425c00684c8c73eadd628f3c807d626943a9b9404c9aca4e374cdddcc609d",
     "codeql-rust":
       "c4226d22280f60c9c2d1c1d00d60a09b16b807f86ca769f21ccc5ab6a9d3918a",
     "codeql-javascript-typescript":

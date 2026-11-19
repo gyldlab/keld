@@ -336,6 +336,53 @@ test("actual workflow passes parsed security admission", () => {
   expect(() => checkWorkflowSecurity(source)).not.toThrow();
 });
 
+test("Rust test SDK links use frozen lockfiles with no install scripts", () => {
+  const clean = fixture();
+  const steps = clean.jobs.check!.steps;
+  const selected = step(
+    clean,
+    "check",
+    "Install SDK links for Rust test oracles",
+  );
+  expect(selected.shell).toBe("bash");
+  expect(selected.run).toBe(
+    "set -euo pipefail\n" +
+      "for package in packages/@keld/kipc packages/@keld/api packages/@keld/electron; do\n" +
+      '  (cd "$package" && bun install --frozen-lockfile --ignore-scripts)\n' +
+      "done\n",
+  );
+  expect(steps.indexOf(selected)).toBeLessThan(
+    steps.indexOf(step(clean, "check", "clippy (warnings deny)")),
+  );
+  for (const mutation of [
+    "removed",
+    "changed",
+    "conditional",
+    "reordered",
+  ] as const) {
+    const f = fixture();
+    const selected = step(
+      f,
+      "check",
+      "Install SDK links for Rust test oracles",
+    );
+    if (mutation === "removed") {
+      f.jobs.check!.steps.splice(f.jobs.check!.steps.indexOf(selected), 1);
+    } else if (mutation === "changed") {
+      selected.run = String(selected.run).replace(
+        "--ignore-scripts",
+        "--force",
+      );
+    } else if (mutation === "conditional") {
+      selected.if = false;
+    } else {
+      f.jobs.check!.steps.splice(f.jobs.check!.steps.indexOf(selected), 1);
+      f.jobs.check!.steps.push(selected);
+    }
+    expect(() => check(f), mutation).toThrow();
+  }
+});
+
 test("Linux and Windows native acceptance tests print cargo failure output", () => {
   const f = fixture();
   const bash =

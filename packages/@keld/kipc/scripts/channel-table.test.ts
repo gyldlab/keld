@@ -56,13 +56,16 @@ export const LIFECYCLE_CHANNEL = 3;
 export const AUTH_CHANNEL = 4;
 /** Channel \`window\` (\`keld_ipc::channel_table::WINDOW\`). */
 export const WINDOW_CHANNEL = 5;
+/** Channel \`dialog\` (\`keld_ipc::channel_table::DIALOG\`). */
+export const DIALOG_CHANNEL = 6;
 /** An allocated channel id (\`keld_ipc::channel_table::CHANNEL_TABLE\`). */
 export type AllocatedChannel =
   | typeof ECHO_CHANNEL
   | typeof FS_CHANNEL
   | typeof LIFECYCLE_CHANNEL
   | typeof AUTH_CHANNEL
-  | typeof WINDOW_CHANNEL;
+  | typeof WINDOW_CHANNEL
+  | typeof DIALOG_CHANNEL;
 /** Every allocated channel id, in table order. */
 export const ALLOCATED_CHANNELS: readonly AllocatedChannel[] = Object.freeze([
   ECHO_CHANNEL,
@@ -70,6 +73,7 @@ export const ALLOCATED_CHANNELS: readonly AllocatedChannel[] = Object.freeze([
   LIFECYCLE_CHANNEL,
   AUTH_CHANNEL,
   WINDOW_CHANNEL,
+  DIALOG_CHANNEL,
 ]);
 /** Channels whose receive class carries host \`EVENT\`s (\`ReceiveClass::carries_host_events\`). */
 export const HOST_EVENT_CHANNELS: readonly AllocatedChannel[] = Object.freeze([
@@ -355,6 +359,12 @@ describe("criterion 8: the region is the render of channel_table.rs", () => {
           id: 5,
           receiveClass: "HostCallWithEvents",
         },
+        {
+          rustName: "DIALOG",
+          name: "dialog",
+          id: 6,
+          receiveClass: "GuardedCall",
+        },
       ],
       hostEventClasses: ["HostCallWithEvents"],
     });
@@ -429,7 +439,7 @@ describe("criterion 8: the region is the render of channel_table.rs", () => {
       );
       return module.HOST_EVENT_CHANNELS as readonly number[];
     };
-    expect(await exportedEvents(widened)).toEqual([2, 3, 4, 5]);
+    expect(await exportedEvents(widened)).toEqual([2, 3, 4, 5, 6]);
     const narrowed = replaceOnce(
       tableSource,
       rule,
@@ -553,21 +563,21 @@ describe("criterion 9: the generator fails closed and names the source line", ()
 
   test("CHANNEL_TABLE must list every entry constant exactly once", () => {
     const list =
-      "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, LIFECYCLE, AUTH, WINDOW];";
+      "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, LIFECYCLE, AUTH, WINDOW, DIALOG];";
     for (const [label, replacement, message] of [
       [
         "unlisted entry",
-        "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, AUTH, WINDOW];",
+        "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, AUTH, WINDOW, DIALOG];",
         "LIFECYCLE is not listed",
       ],
       [
         "unknown name",
-        "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, LIFECYCLE, AUTH, WINDOW, PROBE];",
+        "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, LIFECYCLE, AUTH, WINDOW, DIALOG, PROBE];",
         "PROBE, which is not a parsed",
       ],
       [
         "listed twice",
-        "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, FS, LIFECYCLE, AUTH, WINDOW];",
+        "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, FS, LIFECYCLE, AUTH, WINDOW, DIALOG];",
         "FS more than once",
       ],
       [
@@ -586,7 +596,7 @@ describe("criterion 9: the generator fails closed and names the source line", ()
     const wrapped = replaceOnce(
       tableSource,
       list,
-      "pub const CHANNEL_TABLE: &[ChannelEntry] = &[\n    ECHO,\n    FS,\n    LIFECYCLE,\n    AUTH,\n    WINDOW,\n];",
+      "pub const CHANNEL_TABLE: &[ChannelEntry] = &[\n    ECHO,\n    FS,\n    LIFECYCLE,\n    AUTH,\n    WINDOW,\n    DIALOG,\n];",
     );
     expect(renderChannelTableRegion(wrapped)).toBe(expectedRegion);
   });

@@ -13,13 +13,13 @@ import {
   invokeWindow,
   invokeWindowBlocking,
   onWindowFactApplied,
-} from "../../api/src/app.ts";
+} from "@keld/api/internal/app";
 import type {
   Rect,
   WindowEvent,
   WindowRef,
   WindowRequest,
-} from "../../api/src/window-codec.ts";
+} from "@keld/api/internal/window-codec";
 import {
   stateDefineProperty,
   stateFreeze,
@@ -31,7 +31,7 @@ import {
   stateWeakMap,
   stateWeakMapGet,
   stateWeakMapSet,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 import { emitNativeAppEvent } from "./app.ts";
 
 /** Known draw.io preferences; other fields are reported, never made authoritative. */
@@ -251,7 +251,24 @@ function releaseContentsAfterHostDestroyed(
   release();
 }
 
+/** Internal dialog parent extraction; deliberately absent from the package index. */
+export let readDialogParentRef: (candidate: unknown) => WindowRef;
+
 export class BrowserWindow extends EventEmitter {
+  static {
+    readDialogParentRef = (candidate: unknown): WindowRef => {
+      if (
+        (typeof candidate !== "object" && typeof candidate !== "function") ||
+        candidate === null ||
+        !(#ref in candidate)
+      ) {
+        throw new TypeError("dialog parent must be a live BrowserWindow");
+      }
+      candidate.#state();
+      return candidate.#ref;
+    };
+  }
+
   // Only getAllWindows may enter this synchronous, callback-free constructor
   // path. Reading a private ref from caller options would let a Proxy forge
   // the otherwise secret Symbol and bypass the Host Create contract.

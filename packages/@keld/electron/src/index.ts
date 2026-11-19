@@ -12,6 +12,7 @@
 
 import { app } from "./app";
 import { BrowserWindow } from "./browser-window";
+import { dialog } from "./dialog";
 
 /** Reported `process.versions.electron`. Keld 0.0.1, not an Electron release. */
 export const ELECTRON_VERSION_SHIM = "0.0.1";
@@ -26,7 +27,15 @@ Object.defineProperty(proc, "type", {
   writable: false,
 });
 
-export { app, BrowserWindow };
+export { app, BrowserWindow, dialog };
+export type {
+  MessageBoxOptions,
+  MessageBoxResult,
+  OpenDialogOptions,
+  OpenDialogResult,
+  SaveDialogOptions,
+  SaveDialogResult,
+} from "./dialog";
 export type {
   BrowserWindowEventMap,
   BrowserWindowOptions,
@@ -35,7 +44,7 @@ export type {
   WebContentsEventMap,
   WebPreferences,
 } from "./browser-window";
-export { isCallError, type KeldCallError } from "./link";
+export { isCallError, type KeldCallError } from "@keld/kipc";
 
-const electron = { app, BrowserWindow };
+const electron = { app, BrowserWindow, dialog };
 export default electron;

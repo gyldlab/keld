@@ -2,11 +2,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import {
-  decodeU64Varint,
-  decodeVarint,
-  encodeVarint,
-} from "../../kipc/src/transport.ts";
+import { decodeU64Varint, decodeVarint, encodeVarint } from "@keld/kipc";
 import {
   AUTH_BEGIN_CALL_DEADLINE_MS,
   AUTH_TOKEN_CALL_DEADLINE_MS,

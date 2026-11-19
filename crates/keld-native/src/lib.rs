@@ -8,6 +8,8 @@
 
 /// Authentication contracts; the guarded runtime broker is being implemented.
 pub mod auth;
+/// Typed, bounded native dialog wire contracts.
+pub mod dialog;
 pub mod fs;
 
 #[cfg(test)]
