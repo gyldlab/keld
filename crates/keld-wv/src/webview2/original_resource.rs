@@ -333,6 +333,17 @@ impl ResourceView {
         (&self.core, self.environment_identity, &self.navigation)
     }
 
+    /// One retained binding supplies both the receiver and its navigation owner.
+    pub(super) fn original_post_target(
+        &self,
+    ) -> (&ICoreWebView2, usize, &Rc<RefCell<OriginalNavigation>>) {
+        (&self.core, self.core_identity, &self.navigation)
+    }
+
+    pub(super) fn actual_post_controller_closed(&self) -> bool {
+        self.close.actual_closed()
+    }
+
     pub(super) fn holds_live_load_owner(&self, navigation: &OriginalNavigation) -> bool {
         self.handler_token.get().is_some()
             && !self.install_in_progress.get()
