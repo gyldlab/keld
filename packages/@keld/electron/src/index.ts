@@ -14,18 +14,14 @@ import { app } from "./app";
 import { BrowserWindow } from "./browser-window";
 import { dialog } from "./dialog";
 
-/** Reported `process.versions.electron`. Keld 0.0.1, not an Electron release. */
-export const ELECTRON_VERSION_SHIM = "0.0.1";
+import { runtimeProcessFactsSelected } from "@keld/kipc";
+import {
+  ELECTRON_VERSION_SHIM,
+  installMainProcessFacts,
+} from "./process-facts.ts";
+export { ELECTRON_VERSION_SHIM };
 
-const proc = process as typeof process & { type?: string };
-
-(process.versions as { electron?: string }).electron = ELECTRON_VERSION_SHIM;
-Object.defineProperty(proc, "type", {
-  value: "browser",
-  configurable: true,
-  enumerable: true,
-  writable: false,
-});
+installMainProcessFacts(process, runtimeProcessFactsSelected);
 
 export { app, BrowserWindow, dialog };
 export type {
