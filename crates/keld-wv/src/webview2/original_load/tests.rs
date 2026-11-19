@@ -45,6 +45,9 @@ pub(in crate::webview2) fn captured_runtime_and_view_binding(
     let source = fixture.source_arc();
     let a = engine.create(spec)?;
     let b = engine.create(spec)?;
+    // Both tested controllers close below. Keep the ordinary release path's
+    // browser witness alive in this same environment until engine shutdown.
+    let release_witness = engine.create(spec)?;
     let session = ResourceSession::new(
         Arc::clone(&source),
         engine.creation_event_loop()?.create_proxy(),
@@ -134,5 +137,6 @@ pub(in crate::webview2) fn captured_runtime_and_view_binding(
         owner.controller_closed_on_ui();
         assert!(owner.is_drained());
     }
+    assert!(engine.view(release_witness)?.close_custody.is_open());
     result
 }

@@ -124,7 +124,8 @@ impl PreparedNativeLoad {
         let environment = environment
             .cast::<ICoreWebView2Environment2>()
             .map_err(|_| NativeNavigationRefusal::Unavailable)?;
-        let request = create_checked_request(&environment, &qualified.prepared)?;
+        let request = create_checked_request(&environment, &qualified.prepared)
+            .map_err(|_| NativeNavigationRefusal::NativeUrlRejected)?;
         Ok(Self {
             call: NativeLoadCall {
                 view,
