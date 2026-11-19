@@ -155,6 +155,7 @@ impl Fixture {
             height,
             x,
             y,
+            ..
         } = self.commands.recv_timeout(Duration::from_secs(3))?
         else {
             return Err(std::io::Error::other("Create command expected").into());

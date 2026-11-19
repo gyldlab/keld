@@ -8,7 +8,7 @@ use super::{
 use crate::profile::{ProfileIdentity, WebProfileSelection};
 use crate::webview2 as backend;
 use crate::webview2::media_acceptance::adopted_close_control;
-use crate::{AppWindowCommand, AppWindowEvent, WebviewId, WvError};
+use crate::{AppWindowCommand, AppWindowEvent, BuildStage, WebviewId, WvError};
 use std::cell::Cell;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::Instant;
@@ -19,6 +19,7 @@ mod native_support;
 #[derive(Debug, Default)]
 struct DriverTrace {
     ready: u32,
+    original_refused: u32,
     built: u32,
     released: u32,
     view: Option<WebviewId>,
@@ -34,6 +35,21 @@ impl Drop for DriverGuard<'_> {
         if !self.completed {
             let _ = self.commands.send(AppWindowCommand::Fatal);
         }
+    }
+}
+
+fn create_command(build: u64, original_create_start_by: Option<Instant>) -> AppWindowCommand {
+    AppWindowCommand::CreateWindow {
+        build,
+        width: 640,
+        height: 480,
+        x: None,
+        y: None,
+        original_source: None,
+        preload_image: None,
+        original_role: None,
+        original_application_name_for_user_agent: None,
+        original_create_start_by,
     }
 }
 
@@ -62,16 +78,19 @@ fn drive(
             AppWindowEvent::HostInitialized { .. } => {
                 trace.ready += 1;
                 if trace.ready == 1 {
+                    // An original-Create deadline without its selected inputs
+                    // cannot fall through to an ordinary native window.
                     commands
-                        .send(AppWindowCommand::CreateWindow {
-                            build: 1,
-                            width: 640,
-                            height: 480,
-                            x: None,
-                            y: None,
-                        })
+                        .send(create_command(2, Some(deadline)))
                         .map_err(failure)?;
                 }
+            }
+            AppWindowEvent::WindowBuildFailed {
+                build: 2,
+                stage: BuildStage::Webview,
+            } if trace.original_refused == 0 && trace.built == 0 => {
+                trace.original_refused += 1;
+                commands.send(create_command(1, None)).map_err(failure)?;
             }
             AppWindowEvent::WindowBuilt { build, view, .. } => {
                 trace.built += 1;
@@ -160,6 +179,7 @@ fn require_native_eligibility(
         || initial_windows != 0
         || initial_phase != "running"
         || trace.ready != 1
+        || trace.original_refused != 1
         || trace.built != 1
         || trace.released != 1
         || trace.error.is_some()

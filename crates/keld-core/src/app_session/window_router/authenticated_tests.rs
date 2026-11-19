@@ -172,6 +172,7 @@ fn create_from_native_result(
         height,
         x,
         y,
+        ..
     } = native.recv_timeout(BOUND)?
     else {
         return Err(

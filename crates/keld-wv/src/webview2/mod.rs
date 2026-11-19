@@ -4063,7 +4063,7 @@ impl WebView2Engine {
                     (AppWindowCommand::Quit | AppWindowCommand::Fatal))) => {
                     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
                     let terminal_name =
-                        if command == AppWindowCommand::Quit { "Quit" } else { "Fatal" };
+                        if matches!(command, AppWindowCommand::Quit) { "Quit" } else { "Fatal" };
                     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
                     let was_armed = release_in_loop.armed_at.get().is_some();
                     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -4071,7 +4071,7 @@ impl WebView2Engine {
                         terminal_has_run = true;
                         t2_test_observation::terminal(terminal_name);
                     }
-                    if command == AppWindowCommand::Fatal {
+                    if matches!(command, AppWindowCommand::Fatal) {
                         fatal_in_loop.store(true, Ordering::Release);
                     }
                     stop_app_views(&mut views, &mut managed, stop_in_loop.as_ref(),

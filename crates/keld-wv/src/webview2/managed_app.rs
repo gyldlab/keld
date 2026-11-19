@@ -164,6 +164,11 @@ impl ManagedWindows {
                 height,
                 x,
                 y,
+                original_source,
+                preload_image,
+                original_role,
+                original_application_name_for_user_agent,
+                original_create_start_by,
             } => {
                 let create = DeferredCreate {
                     build,
@@ -172,6 +177,21 @@ impl ManagedWindows {
                     x,
                     y,
                 };
+                if original_source.is_some()
+                    || preload_image.is_some()
+                    || original_role.is_some()
+                    || original_application_name_for_user_agent.is_some()
+                    || original_create_start_by.is_some()
+                {
+                    // Original inputs require the selected native builder and its
+                    // retained bridge. The ordinary builder cannot consume them.
+                    return send_failure(
+                        &self.events,
+                        create.failure_event(),
+                        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                        self.test_control.as_ref(),
+                    );
+                }
                 match self.custody.admit(create, terminated || terminal_intent) {
                     CreateAdmission::Start(create) => self.build(target, release, create),
                     CreateAdmission::Queued => {

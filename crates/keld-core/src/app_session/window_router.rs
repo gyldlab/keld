@@ -612,6 +612,16 @@ impl PrimaryRouterHandle {
                     height,
                     x,
                     y,
+                    #[cfg(windows)]
+                    original_source: None,
+                    #[cfg(windows)]
+                    preload_image: None,
+                    #[cfg(windows)]
+                    original_role: None,
+                    #[cfg(windows)]
+                    original_application_name_for_user_agent: None,
+                    #[cfg(windows)]
+                    original_create_start_by: None,
                 })
                 .map_err(|_| app_detail("window native build", "UI command owner is unavailable")),
             Ok(CreateOutcome::Adopted(window)) => window_reply(

@@ -249,7 +249,8 @@ mod original_entry_query_tests {
 }
 
 /// Command delivered from the primary app-link owner to the platform UI loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
+#[cfg_attr(not(windows), derive(Copy, PartialEq, Eq))]
 pub enum AppWindowCommand {
     /// The session is ending: close windows and exit the loop. Sent after the
     /// correlated Quit reply has been written, or by the host itself at a profile
@@ -272,6 +273,21 @@ pub enum AppWindowCommand {
         x: Option<i32>,
         /// Requested outer top edge; absence preserves the OS placement.
         y: Option<i32>,
+        /// Exact already-admitted per-window source.
+        #[cfg(windows)]
+        original_source: Option<std::sync::Arc<crate::resource_source::AdmittedWebAppSource>>,
+        /// Immutable selected preload image retained for native registration.
+        #[cfg(windows)]
+        preload_image: Option<std::sync::Arc<crate::preload_image::AppPreloadImage>>,
+        /// Authenticated creator retained through original view admission.
+        #[cfg(windows)]
+        original_role: Option<crate::renderer_bridge::RendererRoleWitness>,
+        /// Immutable application metadata from the admitted original development boot.
+        #[cfg(windows)]
+        original_application_name_for_user_agent: Option<ApplicationNameForUserAgent>,
+        /// Latest monotonic time to start an original Create on the Windows UI thread.
+        #[cfg(windows)]
+        original_create_start_by: Option<Instant>,
     },
     /// Request a maximized state. A later native fact confirms its outcome.
     SetMaximized {
