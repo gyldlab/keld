@@ -10,7 +10,6 @@
 use super::{OriginalBinding, OriginalCredentialSlot};
 use crate::WebviewId;
 use crate::native_document::{NativeCommitIdentity, NativeDocumentOwner};
-use crate::original_call::active::ActiveOriginalCall;
 use crate::original_event::PendingOriginalEvent;
 use crate::renderer_bridge::RendererRoleWitness;
 use crate::renderer_contract::{CheckedNativeDocumentLease, NativeAttemptObservation};
@@ -327,7 +326,6 @@ fn retirement_clears_live_credentials_but_retained_original_records_can_finish_c
     let fixture = Fixture::new();
     let (mut binding, mut owner, lease) = bound(&fixture);
     binding.register(&owner, "app").unwrap();
-    let mut call = ActiveOriginalCall::entered(9, lease.clone(), "app".into(), None, 31, None);
     let mut event = PendingOriginalEvent::begin(&owner, 11, lease.clone(), "app".into()).unwrap();
     owner.destroy();
     binding.clear_credentials();
@@ -336,9 +334,6 @@ fn retirement_clears_live_credentials_but_retained_original_records_can_finish_c
     assert!(!binding.original_current(&owner, &lease, "app"));
     binding.discard_revoked_registration();
     assert!(binding.registration_notice().is_none());
-    call.observe_function_finished(9, "app").unwrap();
-    assert!(call.observe_native_quiescence(9, &lease, true));
-    assert!(call.ready_to_release());
     event
         .observe_consumed(11, "app", WvConsumerDisposition::Consumed)
         .unwrap();

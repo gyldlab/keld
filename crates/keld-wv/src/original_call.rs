@@ -7,25 +7,6 @@ pub(crate) mod queue;
 const MAX_LOCAL_CALL_RECORDS: usize = 64;
 const MAX_LOCAL_CALL_BYTES: usize = 524_288;
 
-pub(crate) fn original_call_channel(call: &AppPageCall) -> Result<Option<String>, WvError> {
-    let channel = match call.method.as_str() {
-        "request" => Some(String::from("rendererReq")),
-        "sendMessage" => {
-            let topic = call
-                .args
-                .first()
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| bridge_error("sendMessage needs a copied literal action"))?;
-            if topic.len() > 256 {
-                return Err(bridge_error("named action exceeds 256 bytes"));
-            }
-            Some(topic.to_owned())
-        }
-        _ => None,
-    };
-    Ok(channel)
-}
-
 #[derive(Default)]
 pub(crate) struct LocalCallBudget {
     records: usize,
