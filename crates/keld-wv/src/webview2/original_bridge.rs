@@ -2,5 +2,6 @@
 
 mod event;
 mod installer;
+mod post;
 pub use event::NativeEventRetirement;
 pub(super) use installer::{InstallStart, InstallStatus, PreloadInstaller};

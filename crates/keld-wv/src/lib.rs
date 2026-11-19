@@ -25,6 +25,8 @@ mod native_document;
 mod native_window;
 #[cfg(windows)]
 mod original_call;
+#[cfg(windows)]
+mod original_event;
 #[cfg(any(target_os = "macos", windows))]
 pub mod preload_image;
 pub mod profile;
