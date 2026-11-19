@@ -1530,6 +1530,66 @@ fn criterion22_abandoned_set_is_bounded() {
     );
 }
 
+/// GH478 A13: 256+1 caller-local timeouts stay on one healthy link. The Host
+/// answers every abandoned original with its terminal ERR and every fresh
+/// Cancel correlation separately; accumulating originals would hit the
+/// 256-entry abandon cap and close the link before the 257th cycle.
+#[test]
+fn gh478_a13_257_dialog_timeout_cancel_cycles_release_abandoned_originals() {
+    const CYCLES: u32 = 257;
+    let (mut stream, role) = start("dialog-timeout-cancel");
+    long_reads(&stream);
+    for cycle in 0..CYCLES {
+        let (original, original_payload) = read_call(&mut stream);
+        assert_eq!(
+            original.channel,
+            keld_ipc::channel_table::DIALOG.id(),
+            "{original:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&original_payload),
+            format!("original-{cycle}")
+        );
+        let (cancel, cancel_payload) = read_call(&mut stream);
+        assert_eq!(
+            cancel.channel,
+            keld_ipc::channel_table::DIALOG.id(),
+            "{cancel:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&cancel_payload),
+            format!("cancel-{cycle}")
+        );
+        write_call_error(
+            &mut stream,
+            original.channel,
+            original.corr,
+            &CallError {
+                code: "KELD-NATIVE-015".to_owned(),
+                message: "original dialog abandoned by its caller".to_owned(),
+            },
+        )
+        .expect("host writes the abandoned original's terminal ERR");
+        host_reply(
+            &mut stream,
+            cancel,
+            format!("cancel-ack-{cycle}").as_bytes(),
+        );
+    }
+    let healthy = read_call_named(&mut stream, "healthy");
+    host_reply(&mut stream, healthy, b"healthy-ok");
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("timeouts", "257"),
+            ("cancel-acks", "257"),
+            ("healthy", "healthy-ok"),
+            ("done", "true"),
+        ],
+    );
+}
+
 /// Criterion 25: a 4 MiB ring (a power of two) opens and carries a call.
 #[test]
 fn criterion25_four_mib_ring_opens() {

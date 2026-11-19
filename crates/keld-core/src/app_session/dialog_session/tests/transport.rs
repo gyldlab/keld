@@ -196,4 +196,79 @@ fn fresh_cancel_keeps_its_ack_separate_from_the_original_terminal() {
     assert!(owner_rx.try_recv().is_err());
 }
 
+#[test]
+fn cli_lease_loss_retires_pending_dialog_custody() {
+    let (mut handle, _peer, owner_rx, _ui_rx) =
+        crate::app_session::tests::initial_ready_router_with_window_loop();
+    let (dialog, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
+    let dialog = Arc::new(dialog);
+    handle.dialog = Some(Arc::clone(&dialog));
+    let owner = original(7, 9);
+    dialog.reserve(owner, options(), WebviewId(3)).unwrap();
+    dialog.take_work().unwrap();
+    assert!(!dialog.fully_drained());
+    assert!(handle.shutdown.reserve_cli_lease_lost());
+    let acknowledge = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let command = owner_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("guardian owner command");
+            let (GuardianOwnerCommand::PrepareAcceptedShutdown(reply)
+            | GuardianOwnerCommand::Shutdown(reply)) = command
+            else {
+                panic!("unexpected guardian owner command");
+            };
+            reply.send(Ok(())).expect("guardian owner receipt");
+        }
+    });
+    handle.cli_lease_lost().expect("forced CLI lease tail");
+    acknowledge.join().unwrap();
+    // Retirement tombstones the acknowledged original; only a genuine native
+    // callback and physical invisibility may release the retained owner.
+    assert_eq!(
+        dialog.pending_original_for(owner.identity, owner.attempt),
+        None
+    );
+    assert!(!dialog.fully_drained());
+    handle
+        .dialog_native_finished(1, 9, MacDialogUiOutcome::Dismissed)
+        .unwrap();
+    assert!(dialog.fully_drained());
+}
+
+#[test]
+fn lifecycle_quit_retires_pending_dialog_custody() {
+    let (mut handle, _peer, owner_rx, _ui_rx) =
+        crate::app_session::tests::initial_ready_router_with_window_loop();
+    let (dialog, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
+    let dialog = Arc::new(dialog);
+    handle.dialog = Some(Arc::clone(&dialog));
+    let owner = original(7, 9);
+    dialog.reserve(owner, options(), WebviewId(3)).unwrap();
+    dialog.take_work().unwrap();
+    assert!(!dialog.fully_drained());
+    let acknowledge = std::thread::spawn(move || {
+        let GuardianOwnerCommand::Shutdown(reply) = owner_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("guardian shutdown command")
+        else {
+            panic!("unexpected guardian owner command");
+        };
+        reply.send(Ok(())).expect("guardian shutdown receipt");
+    });
+    handle
+        .finish_quit_link_and_tail(Ok(()))
+        .expect("lifecycle Quit tail");
+    acknowledge.join().unwrap();
+    assert_eq!(
+        dialog.pending_original_for(owner.identity, owner.attempt),
+        None
+    );
+    assert!(!dialog.fully_drained());
+    handle
+        .dialog_native_finished(1, 9, MacDialogUiOutcome::Dismissed)
+        .unwrap();
+    assert!(dialog.fully_drained());
+}
+
 mod failure_ordering;

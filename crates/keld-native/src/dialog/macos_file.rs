@@ -253,27 +253,7 @@ impl MacFilePanel {
             state: PanelState::Prepared,
         };
         if filters.len() > 1 {
-            let mtm = MainThreadMarker::new()
-                .ok_or_else(|| invalid("file panel not on AppKit main thread"))?;
-            let popup = NSPopUpButton::new(mtm);
-            popup.setFrameSize(NSSize::new(280.0, 28.0));
-            // NSPopUpButton::addItemWithTitle removes an earlier item with the
-            // same title. Electron permits identically named filter groups,
-            // whose *positions* have distinct meaning; allocate real menu
-            // items instead, preserving every original index and label.
-            let menu = NSMenu::new(mtm);
-            for label in owner.filter.labels() {
-                let item = NSMenuItem::new(mtm);
-                item.setTitle(&NSString::from_str(label));
-                menu.addItem(&item);
-            }
-            if usize::try_from(menu.numberOfItems()).ok() != Some(filters.len()) {
-                return Err(invalid("native filter menu lost a declared group"));
-            }
-            popup.setMenu(Some(&menu));
-            popup.selectItemAtIndex(0);
-            owner.panel.save_panel().setAccessoryView(Some(&popup));
-            owner.popup = Some(popup);
+            owner.install_filter_picker(filters.len())?;
         }
         let mode = match &owner.panel {
             FilePanel::Open {
@@ -320,6 +300,31 @@ impl MacFilePanel {
             panel.setCanChooseDirectories(*requested_directories);
         }
         Ok(owner)
+    }
+
+    fn install_filter_picker(&mut self, declared_groups: usize) -> Result<(), IpcError> {
+        let mtm = MainThreadMarker::new()
+            .ok_or_else(|| invalid("file panel not on AppKit main thread"))?;
+        let popup = NSPopUpButton::new(mtm);
+        popup.setFrameSize(NSSize::new(280.0, 28.0));
+        // NSPopUpButton::addItemWithTitle removes an earlier item with the
+        // same title. Electron permits identically named filter groups,
+        // whose *positions* have distinct meaning; allocate real menu
+        // items instead, preserving every original index and label.
+        let menu = NSMenu::new(mtm);
+        for label in self.filter.labels() {
+            let item = NSMenuItem::new(mtm);
+            item.setTitle(&NSString::from_str(label));
+            menu.addItem(&item);
+        }
+        if usize::try_from(menu.numberOfItems()).ok() != Some(declared_groups) {
+            return Err(invalid("native filter menu lost a declared group"));
+        }
+        popup.setMenu(Some(&menu));
+        popup.selectItemAtIndex(0);
+        self.panel.save_panel().setAccessoryView(Some(&popup));
+        self.popup = Some(popup);
+        Ok(())
     }
 
     fn apply_filter(&self) -> Result<(), IpcError> {

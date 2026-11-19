@@ -310,7 +310,7 @@ fn timely_open_result_survives_delayed_service_and_allows_next_save() {
         )
         .unwrap();
     let work = session.take_work().unwrap().unwrap();
-    assert_eq!(work.owner, open);
+    assert!(work.owner == open, "open reservation must keep its owner");
     let tick = Duration::from_millis(1);
     let callback_at = work
         .deadline
@@ -334,12 +334,12 @@ fn timely_open_result_survives_delayed_service_and_allows_next_save() {
     session
         .record_native_outcome(open, MacDialogUiOutcome::FileResult, observed)
         .unwrap();
-    assert_eq!(
-        session
-            .complete(open.attempt, open.nonce, MacDialogUiOutcome::FileResult)
-            .unwrap(),
-        Some((open, Ok(opened)))
-    );
+    let (terminal_owner, terminal_result) = session
+        .complete(open.attempt, open.nonce, MacDialogUiOutcome::FileResult)
+        .unwrap()
+        .expect("open must publish one terminal result");
+    assert!(terminal_owner == open, "open terminal must keep its owner");
+    assert_eq!(terminal_result, Ok(opened));
     assert!(session.fully_drained());
 
     let save = original(2, 2);
@@ -355,7 +355,7 @@ fn timely_open_result_survives_delayed_service_and_allows_next_save() {
         )
         .unwrap();
     let work = session.take_work().unwrap().unwrap();
-    assert_eq!(work.owner, save);
+    assert!(work.owner == save, "save reservation must keep its owner");
     let saved = DialogReplyV1::Save {
         canceled: false,
         file_path: "/tmp/keld-picker-destination.txt".to_owned(),
@@ -363,12 +363,12 @@ fn timely_open_result_survives_delayed_service_and_allows_next_save() {
     session
         .record_native_outcome(save, MacDialogUiOutcome::FileResult, Some(saved.clone()))
         .unwrap();
-    assert_eq!(
-        session
-            .complete(save.attempt, save.nonce, MacDialogUiOutcome::FileResult)
-            .unwrap(),
-        Some((save, Ok(saved)))
-    );
+    let (terminal_owner, terminal_result) = session
+        .complete(save.attempt, save.nonce, MacDialogUiOutcome::FileResult)
+        .unwrap()
+        .expect("save must publish one terminal result");
+    assert!(terminal_owner == save, "save terminal must keep its owner");
+    assert_eq!(terminal_result, Ok(saved));
     assert!(session.fully_drained());
 }
 

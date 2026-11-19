@@ -7277,6 +7277,13 @@ impl PrimaryRouterHandle {
                 )),
             ]);
         };
+        // Quit removes this generation outside retire_current_generation_locked,
+        // so it must retire any live dialog custody here as well; otherwise a
+        // pending native panel is never tombstoned and can block final drain.
+        #[cfg(target_os = "macos")]
+        if let Some(dialog) = &self.dialog {
+            dialog.retire(active.identity, active.attempt);
+        }
         let window_retirement = self.retire_window_owner(window_registry::WindowOwner::new(
             active.identity,
             active.attempt,
@@ -7420,6 +7427,12 @@ impl PrimaryRouterHandle {
         #[cfg(not(target_os = "macos"))]
         let auth_retirement = Ok(());
         let link = current_guard.as_mut().map_or(Ok(()), |active| {
+            // This forced tail removes the generation directly, so retire the
+            // dialog custody that retire_current_generation_locked would own.
+            #[cfg(target_os = "macos")]
+            if let Some(dialog) = &self.dialog {
+                dialog.retire(active.identity, active.attempt);
+            }
             collapse_app_results([
                 self.retire_window_owner(window_registry::WindowOwner::new(
                     active.identity,
@@ -8160,6 +8173,12 @@ impl PrimaryRouter {
                     .fail_any_pending_echo("application call retired by router shutdown"),
             ]);
             if let Some(active) = current.take() {
+                // Router shutdown takes the generation outside the shared
+                // retirement owner; tombstone dialog custody before dropping it.
+                #[cfg(target_os = "macos")]
+                if let Some(dialog) = &self.handle.dialog {
+                    dialog.retire(active.identity, active.attempt);
+                }
                 pending = collapse_app_results([
                     pending,
                     self.handle

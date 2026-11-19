@@ -194,11 +194,10 @@ impl DialogMainOwner {
                 Instant::now(),
             )?;
             // Callback time arbitrates expiry but does not date physical drain.
-            if let Some((outcome, file_result)) = self.session.poll_before_cleanup_deadline(
-                *owner,
-                Instant::now,
-                || panel.poll_outcome(),
-            )? {
+            if let Some((outcome, file_result)) =
+                self.session
+                    .poll_before_cleanup_deadline(*owner, Instant::now, || panel.poll_outcome())?
+            {
                 let owner = *owner;
                 self.notify(owner, outcome, file_result)?;
                 self.active = None;

@@ -538,7 +538,7 @@ class ExecutorTests(SelectionTests):
                        "packages/@keld/api/src/auth.generated.ts",
                        "packages/@keld/api/src/dialog.generated.ts",
                        "packages/@keld/kipc/src/transport.ts"]
-            for relative in outputs + ["justfile", "bunfig.toml", "tools/fmt_included.sh",
+            for relative in [*outputs, "justfile", "bunfig.toml", "tools/fmt_included.sh",
                     "packages/@keld/kipc/scripts/echo-codegen.ts",
                     "crates/keld-ipc/src/echo.rs", "crates/keld-ipc/src/channel_table.rs",
                     "crates/keld-native/src/fs.rs", "crates/keld-native/src/auth/mod.rs",
