@@ -345,6 +345,43 @@ fn retained_source_root_pins_its_name_until_the_source_is_released() {
 }
 
 #[test]
+fn windows_resource_custody_follows_the_shared_source_account() {
+    use crate::resource_intake::RetainedByteCredit;
+
+    let fixture = Fixture::new();
+    let source = fixture.source_arc();
+    let window = Arc::clone(&source);
+    let independent = AdmittedWebAppSource::from_admitted_windows_graph(
+        source
+            .webapp_root
+            .try_clone()
+            .expect("same retained directory"),
+        [7; 32],
+        source.assets.values().cloned().collect(),
+        Path::new(ENTRY),
+        source.policy.clone(),
+    )
+    .expect("independent source with the same inventory and policy");
+    assert_eq!(source.source_id(), independent.source_id());
+    assert_eq!(source.root_identity, independent.root_identity);
+    assert!(source.shares_windows_resource_custody(&window));
+    assert!(!source.shares_windows_resource_custody(&independent));
+
+    let account = window.retained_credit_account();
+    let credit = RetainedByteCredit::reserve(&source.retained_credit_account(), 64)
+        .expect("retain first resource result");
+    drop(source);
+    assert!(credit.covers(&account, 64));
+    assert!(!credit.covers(&independent.retained_credit_account(), 1));
+    let pending = credit.reserve_more(32).expect("retain pending metadata");
+    assert_eq!(account.load(Ordering::Acquire), 96);
+    drop(credit);
+    assert_eq!(account.load(Ordering::Acquire), 32);
+    drop(pending);
+    assert_eq!(account.load(Ordering::Acquire), 0);
+}
+
+#[test]
 fn relative_reader_refuses_hardlink_and_intermediate_junction_substitution() {
     let fixture = Fixture::new();
     let outside = fixture.owned.join("outside");

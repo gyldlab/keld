@@ -4,7 +4,7 @@
 use crate::native_document::VerifiedSourceId;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, atomic::AtomicUsize};
 
 #[path = "resource_source_io.rs"]
 mod io;
@@ -70,6 +70,8 @@ pub struct AdmittedWebAppSource {
     pub(crate) entry: String,
     pub(crate) policy: VerifiedResourceResponsePolicy,
     pub(crate) assets: Arc<BTreeMap<String, VerifiedWebAsset>>,
+    /// Shared across windows and live until all retained resource results release their credit.
+    pub(crate) retained_bytes: Arc<AtomicUsize>,
 }
 
 impl std::fmt::Debug for AdmittedWebAppSource {
@@ -103,6 +105,10 @@ impl AdmittedWebAppSource {
     #[must_use]
     pub const fn verified_manifest_sha256(&self) -> [u8; 32] {
         self.policy.verified_sha256()
+    }
+
+    pub(crate) fn retained_credit_account(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.retained_bytes)
     }
 }
 

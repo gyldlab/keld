@@ -20,7 +20,7 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 impl AdmittedWebAppSource {
@@ -84,7 +84,19 @@ impl AdmittedWebAppSource {
             entry,
             policy,
             assets: Arc::new(assets),
+            retained_bytes: Arc::new(AtomicUsize::new(0)),
         }))
+    }
+
+    /// Resource-session admission only. Never use this predicate in place of
+    /// the exact source Arc identity required by document and IPC leases.
+    pub(crate) fn shares_windows_resource_custody(&self, other: &Self) -> bool {
+        self.source == other.source
+            && self.root_identity == other.root_identity
+            && self.entry == other.entry
+            && self.verified_manifest_sha256() == other.verified_manifest_sha256()
+            && Arc::ptr_eq(&self.assets, &other.assets)
+            && Arc::ptr_eq(&self.retained_bytes, &other.retained_bytes)
     }
 
     /// Qualify the original primary's file URL through the same parser used by
