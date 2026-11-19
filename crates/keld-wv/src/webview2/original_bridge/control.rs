@@ -102,6 +102,9 @@ impl StartupControl {
                 StartupKind::Registered => {
                     if !state.registration_ack_pending
                         || state.binding.registration_notice().is_some()
+                        || state.startup.as_ref().is_none_or(|startup| {
+                            startup.expired(&state.binding, owner, Instant::now())
+                        })
                     {
                         return false;
                     }

@@ -195,6 +195,13 @@ impl OriginalBridge {
         {
             return Ok(());
         }
+        if state.startup.as_ref().is_none_or(|startup| {
+            startup.expired(&state.binding, nav.document(), std::time::Instant::now())
+        }) {
+            return Err(failure(
+                "registration handoff reached its original deadline",
+            ));
+        }
         let request = crate::original_call::request_for_lease(
             lease.clone(),
             0,

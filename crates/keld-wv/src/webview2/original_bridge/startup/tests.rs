@@ -172,7 +172,8 @@ fn local_registration_and_capacity_wait_do_not_settle_startup() {
     h.binding.registration_handed_off(&h.lease).unwrap();
     assert_eq!(state.next_deadline(&h.binding, &h.owner), Some(deadline));
     assert!(state.expired(&h.binding, &h.owner, deadline));
-    assert!(!state.observe_registered_post_return(&h.binding, &h.owner, &h.lease, deadline));
+    let mut missed = StartupReceipt::new(&h.owner, h.lease.clone(), now).unwrap();
+    assert!(!missed.observe_registered_post_return(&h.binding, &h.owner, &h.lease, deadline));
     let before = deadline.checked_sub(Duration::from_nanos(1)).unwrap();
     assert!(!state.observe_registered_post_return(&h.binding, &h.owner, &other_lease, before));
     assert!(state.observe_registered_post_return(&h.binding, &h.owner, &h.lease, before));
