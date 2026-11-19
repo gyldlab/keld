@@ -155,7 +155,7 @@ Until GH-1095 is approved and implemented:
 - callers MUST NOT resend those calls automatically.
 
 The draft contract revision
-[`gh1095-request-error-codes.md`](../gh1095-request-error-codes.md) narrows
+[GH-1095 request error codes](../gh1095-request-error-codes/index.md) narrows
 `KELD-WV-011` back to pre-write refusals and adds `KELD-WV-012` (definitely not
 dispatched), `KELD-WV-013` (outcome unknown) and `KELD-API-002` (no handler
 registered), and it keeps `KELD-WV-011` as "never resend automatically". It
