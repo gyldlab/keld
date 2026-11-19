@@ -20,6 +20,10 @@ const JOB_PROCESS_ID_LIST_GROWTH_SLACK: usize = 16;
 /// Bound on buffer growth within one snapshot; a Job whose member count outruns
 /// it that often is refused rather than queried without end.
 pub(super) const JOB_PROCESS_ID_LIST_GROWTH_LIMIT: u32 = 8;
+/// A single Job census may allocate at most 64K process-ID slots (512 KiB
+/// on 64-bit Windows). An impossible kernel-reported count fails closed,
+/// rather than trying to reserve gigabytes before the next query.
+pub(super) const JOB_PROCESS_ID_LIST_MAX_IDS: usize = 64 * 1024;
 
 /// One snapshot of a Job hierarchy's process-ID list.
 #[derive(Debug)]
@@ -130,6 +134,12 @@ pub(super) fn list_job_process_ids_with(
     mut query: impl FnMut(&mut [usize]) -> io::Result<()>,
 ) -> Result<WindowsJobProcessIdSnapshot, WindowsHostJobError> {
     let mut capacity = initial_ids.max(1);
+    if capacity > JOB_PROCESS_ID_LIST_MAX_IDS {
+        return Err(WindowsHostJobError::contract(
+            phase,
+            "process-ID request exceeds bounded Job snapshot capacity",
+        ));
+    }
     for _ in 0..JOB_PROCESS_ID_LIST_GROWTH_LIMIT {
         let mut buffer = vec![0_usize; JOB_PROCESS_ID_LIST_HEADER_WORDS + capacity];
         let short_buffer = match query(&mut buffer) {
@@ -159,9 +169,16 @@ pub(super) fn list_job_process_ids_with(
             ));
         }
         if short_buffer || listed == capacity {
-            capacity = assigned
+            let next_capacity = assigned
                 .max(capacity.saturating_mul(2))
                 .saturating_add(JOB_PROCESS_ID_LIST_GROWTH_SLACK);
+            if next_capacity > JOB_PROCESS_ID_LIST_MAX_IDS {
+                return Err(WindowsHostJobError::contract(
+                    phase,
+                    "process-ID request exceeds bounded Job snapshot capacity",
+                ));
+            }
+            capacity = next_capacity;
             continue;
         }
         let ids = buffer
