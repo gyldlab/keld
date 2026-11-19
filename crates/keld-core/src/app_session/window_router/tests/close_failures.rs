@@ -1,7 +1,7 @@
 //! Failed socket/command owners retain teardown and correlation custody.
 use super::{Fixture, TestResult, fact, install_successor, reply, verdict};
 use keld_ipc::codec::{decode, encode};
-use keld_ipc::link::{AppLinkDeadlines as _, read_frame};
+use keld_ipc::link::read_frame;
 use keld_ipc::window::{CloseVerdict, WindowEvent, WindowRequest, WindowResponse};
 use keld_ipc::{CorrelationId, FrameKind};
 use keld_wv::{AppWindowCommand, AppWindowEvent, WebviewId};
