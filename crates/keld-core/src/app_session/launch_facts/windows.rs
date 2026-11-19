@@ -1,7 +1,6 @@
 //! Selected BOOT8 facts for the one retained Windows original Runtime.
 
 use std::path::Path;
-use std::sync::Arc;
 
 use keld_runtime::primary::{BUN_OPTIONS_ENV, PrimaryRoleConfig};
 use keld_update::WindowsInstanceLeaseFile;
@@ -89,7 +88,7 @@ fn prepare_selected(
     facts.observe(observe()?)?;
     let winner_lease = facts.set_election(selected.declaration.map(elect).transpose()?);
     let config = PrimaryRoleConfig::new("bun")
-        .source_recheck(Arc::clone(graph))
+        .source_recheck(graph.clone())
         .current_dir(selected.root)
         .env_remove(BUN_OPTIONS_ENV)
         .env_remove(DEV_LEASE_ENV)
