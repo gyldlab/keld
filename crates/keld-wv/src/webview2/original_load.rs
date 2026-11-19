@@ -23,7 +23,9 @@ use crate::resource_intake::ORIGINAL_WEBAPP_LIMITS;
 
 // GH1185 ?4.6, Q22(a,b). Windows x64 native capture, 2026-11-19:
 // both native header surfaces observed; absent on plain/page/same-URI-frame controls.
-// Probe source 6c38cceee701439dec873000e444f66bd94a329e.
+// Archived checkout base 6c38cceee701439dec873000e444f66bd94a329e. The raw receipt
+// records all nine compiled fixture input digests. Exact sources and build manifest:
+// chatgpt-windows-w3-20261105/eval-discrimination-20261105-1140/resume-1204/native-healthy.
 // Executable SHA-256 7510c5d25998fa66b93267ed2b2d0cd87b7be364358b4e30aeb235ccba2008e5.
 // winq22-current-runtime-20261119-240ec7 / keld-w3-q22-32020-19f864345374bcdb4922b996c05b9558
 // receipt.json SHA-256 0a063e18ac070efea3296deb609b389cfadf747602eae1ae9e471fa18f3a5481.
