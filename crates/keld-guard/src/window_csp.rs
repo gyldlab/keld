@@ -56,6 +56,11 @@ impl<'de> Deserialize<'de> for WindowCspProfile {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub(super) struct WindowPolicy {
+    #[serde(
+        default,
+        deserialize_with = "super::renderer_channels::deserialize_channels"
+    )]
+    pub(super) channels: Vec<String>,
     #[serde(default)]
     pub(super) web: WindowWebPolicy,
 }

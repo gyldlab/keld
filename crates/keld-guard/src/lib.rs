@@ -30,6 +30,7 @@ mod file_url;
 mod jsonc;
 mod manifest_profile;
 mod probe;
+mod renderer_channels;
 mod unique_json;
 
 /// Parses a JSON document with unique object keys at all depths.
@@ -127,6 +128,10 @@ pub use admit::{
 };
 pub use manifest_profile::{DeclaredProfile, LEGACY_PROFILE_FORFEIT};
 pub use probe::{ProbeReport, run_synthetic_probes};
+pub use renderer_channels::{
+    BorrowedHostWindowGrants, GuardQuery, NativeCapabilityQuery, RendererChannelPermit,
+    RendererChannelQuery, evaluate_query,
+};
 pub use window_csp::{ResolvedWindowCsp, WindowCspProfile};
 
 /// Canonical Windows installation-state protection profiles owned by `keld-guard`.
@@ -191,9 +196,9 @@ impl Principal {
 
 /// The outcome of a guard check.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Decision {
-    /// Operation may proceed under the first matching manifest grant.
-    Allow(ScopePermit),
+pub enum Decision<Permit = ScopePermit> {
+    /// Operation may proceed under the selected query's opaque permit.
+    Allow(Permit),
     /// Operation is denied; the reason is safe to surface to developers.
     Deny(DenyReason),
 }
