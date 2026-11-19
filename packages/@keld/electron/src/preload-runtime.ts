@@ -739,8 +739,7 @@ export function installApp(
         );
       requiresDocumentReset = true;
       w.__keldAppRouteState?.(value.document, false);
-    }
-    else if (value.disposition.status !== "consumed")
+    } else if (value.disposition.status !== "consumed")
       for (const record of requests.values())
         if (record.message === (value as { message?: number }).message)
           record.active = false;
@@ -765,7 +764,12 @@ export function installApp(
       // Reject new calls before entering the immutable original. Release only
       // their page-owned callbacks; the prior request needs a document reset.
       releaseCall(call.call);
-      post({ v: 1, kind: "call-finished", document: credential, call: call.call });
+      post({
+        v: 1,
+        kind: "call-finished",
+        document: credential,
+        call: call.call,
+      });
       return;
     }
     let bytes = 0,
