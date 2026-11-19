@@ -2621,9 +2621,15 @@ impl WaitRegistration {
 /// after a successful unregistration and leaked otherwise.
 struct BrowserExitWake {
     wait: WaitRegistration,
-    proxy: *mut NativeWakeContext,
-    process: ManuallyDrop<OwnedHandle>,
+    // Unproved cancellation retains both inputs, even if this shell is dropped.
+    // Successful retirement takes the inputs once and leaves the slot empty.
+    inputs: Option<ManuallyDrop<WaitInputs>>,
     kind: NativeWakeKind,
+}
+
+struct WaitInputs {
+    proxy: *mut NativeWakeContext,
+    process: OwnedHandle,
 }
 
 impl BrowserExitWake {
@@ -2682,14 +2688,18 @@ impl BrowserExitWake {
         }
         Ok(Self {
             wait: WaitRegistration::Live(wait),
-            proxy,
-            process: ManuallyDrop::new(process),
+            inputs: Some(ManuallyDrop::new(WaitInputs { proxy, process })),
             kind,
         })
     }
 
-    fn process(&self) -> HANDLE {
-        HANDLE(self.process.as_raw_handle())
+    fn live_handle(&self) -> Option<HANDLE> {
+        match (&self.wait, &self.inputs) {
+            (WaitRegistration::Live(_), Some(inputs)) => {
+                Some(HANDLE(inputs.process.as_raw_handle()))
+            }
+            _ => None,
+        }
     }
 
     fn resource_reader_signaled(&self) -> Result<bool, WvError> {
@@ -2698,12 +2708,17 @@ impl BrowserExitWake {
                 "a browser wait cannot prove resource reader termination",
             )));
         }
+        let process = self.live_handle().ok_or_else(|| {
+            WvError::EventLoop(String::from(
+                "resource reader observation requires a live wait registration",
+            ))
+        })?;
         // SAFETY: this wait retains the cloned handle of the exact owned Rust
         // reader thread. A zero-time kernel observation never waits on the UI.
         // WAIT_OBJECT_0 means the thread and its TLS destructors have terminated;
         // only then may the UI consume that thread's JoinHandle without blocking.
         // https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject
-        match unsafe { WaitForSingleObject(self.process(), 0) } {
+        match unsafe { WaitForSingleObject(process, 0) } {
             WAIT_OBJECT_0 => Ok(true),
             WAIT_TIMEOUT => Ok(false),
             _ => Err(WvError::EventLoop(String::from(
@@ -2724,6 +2739,9 @@ impl BrowserExitWake {
         let Some(wait) = wait else {
             return Ok(());
         };
+        if self.inputs.is_none() {
+            return Err(self.retirement_failure());
+        }
         // SAFETY: this exact registration is consumed before the call and never
         // retried. Blocking cancellation joins its pool callback; the owning UI
         // thread is not that callback. The process/proxy stay valid throughout.
@@ -2737,10 +2755,14 @@ impl BrowserExitWake {
             if self.kind.is_resource_reader() {
                 result
             } else {
+                let inputs = self
+                    .inputs
+                    .as_ref()
+                    .ok_or_else(|| self.retirement_failure())?;
                 media_acceptance::exit_wake_control::after_native_unregister(
                     result,
-                    self.proxy,
-                    self.process(),
+                    inputs.proxy,
+                    HANDLE(inputs.process.as_raw_handle()),
                 )
             }
         };
@@ -2750,14 +2772,16 @@ impl BrowserExitWake {
             // but the checked caller must now refuse successful profile release.
             return Err(self.retirement_failure());
         }
-        // SAFETY: actual blocking cancellation confirmed that no callback can
-        // still reach this one registered proxy. The consumed token prevents a
-        // second reclamation from Drop, including on a returned error.
-        drop(unsafe { Box::from_raw(self.proxy) });
-        // SAFETY: no native wait can reference this retained process object after
-        // successful cancellation. Only this owner closes its handle, exactly once.
-        unsafe { ManuallyDrop::drop(&mut self.process) };
+        let retained = self
+            .inputs
+            .take()
+            .ok_or_else(|| self.retirement_failure())?;
         self.wait = WaitRegistration::Retired;
+        let inputs = ManuallyDrop::into_inner(retained);
+        // SAFETY: checked blocking unregistration ended all callbacks. This
+        // exact context belongs to the consumed registration and is freed once.
+        drop(unsafe { Box::from_raw(inputs.proxy) });
+        drop(inputs.process);
         Ok(())
     }
 
@@ -2793,10 +2817,10 @@ enum BrowserProcess {
 }
 
 impl BrowserProcess {
-    fn raw(&self) -> HANDLE {
+    fn raw(&self) -> Option<HANDLE> {
         match self {
-            Self::Polled(process) => HANDLE(process.as_raw_handle()),
-            Self::Watched(wake) => wake.process(),
+            Self::Polled(process) => Some(HANDLE(process.as_raw_handle())),
+            Self::Watched(wake) => wake.live_handle(),
         }
     }
 }
@@ -2942,19 +2966,56 @@ impl ProfileReleaseWait {
         Ok(self)
     }
 
-    /// The returned loop must have dropped its closure before release can commit.
-    /// No observed normal receipt substitutes for retiring the registered wait.
-    fn retire_loop_wait(self: Rc<Self>) -> Result<Self, WvError> {
-        let mut release = Rc::try_unwrap(self).map_err(|_| {
-            profile_failure_with(
+    /// Only the completed-loop sole strong owner may retire this wait. Keep the
+    /// same Rc/Weak identity and restore its actual process owner on every error.
+    fn retire_loop_wait(self: &Rc<Self>) -> Result<(), WvError> {
+        if Rc::strong_count(self) != 1 {
+            return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
                 "browser-exit wait retirement requires sole completed-loop ownership",
-            )
-        })?;
-        if let Some(BrowserProcess::Watched(mut wake)) = release.process.get_mut().take() {
-            wake.retire_checked()?;
+            ));
         }
-        Ok(release)
+        self.retire_process_with(|process| match process {
+            BrowserProcess::Watched(wake) => wake.retire_checked(),
+            BrowserProcess::Polled(_) => Ok(()),
+        })
+    }
+
+    /// One actual process-owner transfer for completed-loop and live rebind
+    /// retirement. A failed call restores that same owner before returning.
+    fn retire_process_with(
+        &self,
+        retire: impl FnOnce(&mut BrowserProcess) -> Result<(), WvError>,
+    ) -> Result<(), WvError> {
+        // The native pool callback owns only a proxy/kind and posts a wake.
+        // No RefCell borrow crosses this exact checked native retirement.
+        let mut process = self.process.borrow_mut().take();
+        let returned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Some(process) = process.as_mut() {
+                retire(process)
+            } else {
+                Ok(())
+            }
+        }));
+        match returned {
+            Ok(Ok(())) => {
+                // Retired native owners have inert Drop; a polled handle is
+                // released here exactly as in the original completed-loop path.
+                drop(process);
+                Ok(())
+            }
+            Ok(Err(error)) => {
+                self.process.replace(process);
+                Err(error)
+            }
+            Err(_) => {
+                self.process.replace(process);
+                Err(profile_failure_with(
+                    ProfileErrorKind::LifecycleUnproven,
+                    "browser-exit wait retirement unwound; original custody is retained",
+                ))
+            }
+        }
     }
 
     /// Starts the barrier after the controllers were closed. Idempotent: the
@@ -2971,10 +3032,14 @@ impl ProfileReleaseWait {
         let Some(process) = process.as_ref() else {
             return true;
         };
+        let Some(handle) = process.raw() else {
+            self.latch_fault(ProfileReleaseFault::WakeRetireFailed);
+            return false;
+        };
         // SAFETY: `process` is a live owned SYNCHRONIZE handle; a zero timeout
         // only queries whether it is signaled. Contract:
         // https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject
-        let state = unsafe { WaitForSingleObject(process.raw(), 0) };
+        let state = unsafe { WaitForSingleObject(handle, 0) };
         state != WAIT_TIMEOUT
     }
 
@@ -3187,7 +3252,13 @@ fn wait_for_browser_exit(release: &ProfileReleaseWait) -> Result<(), WvError> {
                 .process
                 .borrow()
                 .as_ref()
-                .map(|process| [process.raw()]),
+                .map(|process| {
+                    process
+                        .raw()
+                        .map(|handle| [handle])
+                        .ok_or_else(|| release.fail(ProfileReleaseFault::WakeRetireFailed))
+                })
+                .transpose()?,
             Some(_) => None,
         };
         pump_message_or_handle(
@@ -3621,7 +3692,7 @@ impl WebView2Engine {
             ));
         }
         synchronize_profile_stop(stop_transition.as_ref(), self.profile.as_mut())?;
-        let release = release.retire_loop_wait()?;
+        release.retire_loop_wait()?;
         #[cfg(all(feature = "media-acceptance", test))]
         media_acceptance::observe_com_phase("stop-synchronized");
         self.finish_profile_release(release.observed.get())?;
@@ -4125,7 +4196,7 @@ impl WebView2Engine {
             ));
         }
         synchronize_profile_stop(stop_transition.as_ref(), self.profile.as_mut())?;
-        let release = release.retire_loop_wait()?;
+        release.retire_loop_wait()?;
         let app_result = if refused_registry_command.load(Ordering::Acquire) {
             Err(WvError::EventLoop(String::from(
                 "Core queued a registry-window command on a renderer boot; refuse it before the UI queue",

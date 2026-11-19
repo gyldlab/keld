@@ -72,7 +72,7 @@ impl WebView2Engine {
             ));
         }
         synchronize_profile_stop(stop.as_ref(), self.profile.as_mut())?;
-        let release = release.retire_loop_wait()?;
+        release.retire_loop_wait()?;
         self.finish_app_profile_release(&release, release_witness)?;
         scavenge_after_release(scavenge_root)
     }

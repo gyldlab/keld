@@ -16,13 +16,13 @@ fn zero_controller_owner_retires_without_inventing_native_credit() {
         None,
         ReleaseSite::Host,
     ));
-    let result = release
+    release
         .retire_loop_wait()
         .expect("no native registration to retire");
-    assert!(result.process.borrow().is_none());
-    assert!(!result.observed.get());
-    assert_eq!(result.normal_exit_observed_at.get(), None);
-    assert_eq!(result.fault(), None);
+    assert!(release.process.borrow().is_none());
+    assert!(!release.observed.get());
+    assert_eq!(release.normal_exit_observed_at.get(), None);
+    assert_eq!(release.fault(), None);
 }
 
 #[test]
@@ -41,13 +41,13 @@ fn successful_retirement_preserves_normal_credit_timestamp_and_existing_fault() 
     let armed_at = release.armed_at.get();
     assert!(normal_at.is_some());
     release.fault.set(Some(ProfileReleaseFault::GraceExpired));
-    let result = release
+    release
         .retire_loop_wait()
         .expect("retire empty native owner");
-    assert!(result.observed.get());
-    assert_eq!(result.normal_exit_observed_at.get(), normal_at);
-    assert_eq!(result.armed_at.get(), armed_at);
-    assert_eq!(result.fault(), Some(ProfileReleaseFault::GraceExpired));
+    assert!(release.observed.get());
+    assert_eq!(release.normal_exit_observed_at.get(), normal_at);
+    assert_eq!(release.armed_at.get(), armed_at);
+    assert_eq!(release.fault(), Some(ProfileReleaseFault::GraceExpired));
 }
 
 #[test]
@@ -61,17 +61,41 @@ fn retained_loop_reference_prevents_successful_retirement() {
     let unfinished_loop = Rc::clone(&release);
     let error = release
         .retire_loop_wait()
-        .err()
-        .expect("another loop reference is still live");
+        .expect_err("another loop reference is still live");
     assert!(
         error.to_string().contains("sole completed-loop ownership"),
         "{error}"
     );
-    assert_eq!(Rc::strong_count(&unfinished_loop), 1);
+    assert_eq!(Rc::strong_count(&unfinished_loop), 2);
+    assert!(Rc::ptr_eq(&release, &unfinished_loop));
+    assert!(release.process.borrow().is_none());
+    drop(release);
     let result = unfinished_loop.retire_loop_wait();
     assert!(
         result.is_ok(),
         "once the other owner is gone retirement succeeds"
+    );
+}
+
+#[test]
+fn weak_callback_references_preserve_identity_without_blocking_retirement() {
+    let release = Rc::new(ProfileReleaseWait::new(
+        None,
+        Arc::new(BrowserBinding::new()),
+        None,
+        ReleaseSite::Host,
+    ));
+    let weak = Rc::downgrade(&release);
+    let identity = Rc::as_ptr(&release);
+    release
+        .retire_loop_wait()
+        .expect("sole strong owner can retire with weak native references");
+    let same = weak.upgrade().expect("the same actual owner remains alive");
+    assert_eq!(Rc::as_ptr(&same), identity);
+    assert!(Rc::ptr_eq(&same, &release));
+    assert!(
+        !release.observed.get(),
+        "retirement supplies no browser receipt"
     );
 }
 
@@ -90,4 +114,68 @@ fn failed_wait_retirement_is_terminal_and_cannot_be_retried_or_promoted() {
     assert_eq!(retired.begin_retirement(), Ok(None));
     assert_eq!(retired.begin_retirement(), Ok(None));
     assert!(matches!(retired, WaitRegistration::Retired));
+}
+
+#[test]
+fn retired_reader_wait_refuses_observation_after_releasing_its_actual_inputs() {
+    use crate::webview2::{BrowserExitWake, WindowsLoopEvent};
+    use std::os::windows::io::AsHandle as _;
+    use tao::event_loop::EventLoopBuilder;
+    use tao::platform::windows::EventLoopBuilderExtWindows as _;
+
+    let mut builder = EventLoopBuilder::<WindowsLoopEvent>::with_user_event();
+    builder.with_any_thread(true).with_dpi_aware(false);
+    let event_loop = builder.build();
+    let reader = std::thread::spawn(|| ());
+    let handle = reader
+        .as_handle()
+        .try_clone_to_owned()
+        .expect("exact reader thread");
+    let mut wake = BrowserExitWake::register_for_resource_reader(handle, event_loop.create_proxy())
+        .expect("actual reader wait");
+    reader.join().expect("reader returned");
+    assert!(
+        wake.resource_reader_signaled()
+            .expect("live kernel observation")
+    );
+    wake.retire_checked().expect("actual blocking unregister");
+    assert!(wake.inputs.is_none());
+    assert!(wake.live_handle().is_none());
+    assert!(
+        wake.resource_reader_signaled()
+            .expect_err("retired reader has no live handle")
+            .to_string()
+            .contains("requires a live wait registration")
+    );
+    wake.retire_checked().expect("already retired");
+}
+
+#[test]
+fn unproved_wait_cannot_offer_its_retained_handle_for_another_observation() {
+    use crate::webview2::{BrowserExitWake, NativeWakeKind, WaitInputs, WaitRegistration};
+    use std::mem::ManuallyDrop;
+    // This fixture owns its handle. No native registration references this input;
+    // the terminal branch must reject it before entering the kernel.
+    let inputs = WaitInputs {
+        process: crate::webview2::tests::alive_process_handle(),
+        proxy: std::ptr::null_mut(),
+    };
+    let mut wake = BrowserExitWake {
+        wait: WaitRegistration::Unproved,
+        kind: NativeWakeKind::ResourceReader,
+        inputs: Some(ManuallyDrop::new(inputs)),
+    };
+    assert!(wake.live_handle().is_none());
+    assert!(
+        wake.resource_reader_signaled()
+            .expect_err("unproved custody refuses observation")
+            .to_string()
+            .contains("requires a live wait registration")
+    );
+    assert!(wake.retire_checked().is_err());
+    drop(ManuallyDrop::into_inner(
+        wake.inputs
+            .take()
+            .expect("original fixture inputs retained"),
+    ));
 }
