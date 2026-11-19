@@ -998,8 +998,12 @@ fn window_router_maximum_created_fact_fits_the_fixed_writer_storage() -> TestRes
     let mut failed = None;
     {
         let mut guard = fixture.handle.current.lock().expect("current writer");
-        event(guard.as_mut().expect("active writer"), fact, &mut failed)
-            .expect("maximum fact encodes into caller storage");
+        event(
+            guard.as_mut().expect("active writer"),
+            fact.clone(),
+            &mut failed,
+        )
+        .expect("maximum fact encodes into caller storage");
     }
     let (header, bytes) = read_frame(&mut fixture.peer).expect("actual maximum fact frame");
     assert_eq!(

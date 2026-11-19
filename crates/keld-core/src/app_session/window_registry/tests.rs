@@ -105,7 +105,10 @@ fn native_close_holds_one_pending_sequence_instead_of_tearing_down() -> TestResu
         state: snapshot(),
         pending_close: Some(1),
     };
-    assert_eq!(registry.replay(owner(1)).collect::<Vec<_>>(), vec![pending]);
+    assert_eq!(
+        registry.replay(owner(1)).collect::<Vec<_>>(),
+        vec![pending.clone()]
+    );
     registry.native_close(WebviewId(7));
     assert_eq!(registry.replay(owner(1)).collect::<Vec<_>>(), vec![pending]);
     Ok(())

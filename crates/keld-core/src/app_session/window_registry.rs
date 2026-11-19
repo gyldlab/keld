@@ -759,7 +759,10 @@ impl WindowRegistry {
         } else {
             None
         };
-        let recipient = fact.map(|event| event.owner).filter(|_| !self.ending);
+        let recipient = fact
+            .as_ref()
+            .map(|event| event.owner)
+            .filter(|_| !self.ending);
         let last_window = if let Some(owner) = recipient {
             if self.has_live_windows() {
                 if self.only_opening_windows() {
