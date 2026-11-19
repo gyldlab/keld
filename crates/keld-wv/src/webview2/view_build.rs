@@ -201,6 +201,10 @@ impl NativeBuild {
                 ));
             }
         }
+        let close_custody = Rc::new(super::controller_custody::AdoptedControllerClose::new(
+            controller.clone(),
+            managed_release,
+        ));
         let view = View {
             window: Rc::new(window),
             controller,
@@ -208,7 +212,7 @@ impl NativeBuild {
             hidden_for_minimize: std::cell::Cell::new(false),
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
             test_view_id: None,
-            managed_release,
+            close_custody,
         };
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         if let (Some(control), Some(attempt)) =

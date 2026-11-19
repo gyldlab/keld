@@ -5,6 +5,7 @@
 //! requests report into the existing release owner's first-fault cell only.
 #![deny(unsafe_op_in_unsafe_fn)]
 
+use std::cell::Cell;
 use std::rc::Weak;
 use std::sync::mpsc::Receiver;
 
@@ -55,12 +56,78 @@ impl NativeController {
     }
 }
 
+/// UI-only capability shared by a View and its original-resource callback.
+/// The existing adopted controller remains the sole physical Close authority.
+/// Reentry observes `InProgress` and never retries the native operation.
+pub(in crate::webview2) struct AdoptedControllerClose {
+    controller: ICoreWebView2Controller,
+    release: Option<Weak<ProfileReleaseWait>>,
+    state: Cell<CloseState>,
+}
+
+#[derive(Clone, Copy)]
+enum CloseState {
+    Open,
+    InProgress,
+    Returned(bool),
+}
+
+impl CloseState {
+    const fn actual_closed(self) -> bool {
+        matches!(self, Self::Returned(true))
+    }
+}
+
+impl AdoptedControllerClose {
+    pub(in crate::webview2) fn new(
+        controller: ICoreWebView2Controller,
+        release: Option<Weak<ProfileReleaseWait>>,
+    ) -> Self {
+        Self {
+            controller,
+            release,
+            state: Cell::new(CloseState::Open),
+        }
+    }
+
+    /// Borrow the actual retained interface without minting another Close owner.
+    pub(in crate::webview2) fn controller(&self) -> &ICoreWebView2Controller {
+        &self.controller
+    }
+
+    /// Observe the actual completed Close without entering or retrying COM.
+    pub(in crate::webview2) fn actual_closed(&self) -> bool {
+        self.state.get().actual_closed()
+    }
+
+    /// True is an actual successful Close return, never an admission or wake.
+    /// A failed or still-reentrant call cannot be retried or credited as closed.
+    pub(in crate::webview2) fn close_on_ui(&self) -> bool {
+        close_once(&self.state, || {
+            close_adopted(&self.controller, self.release.as_ref())
+        })
+    }
+}
+
+fn close_once(state: &Cell<CloseState>, close: impl FnOnce() -> bool) -> bool {
+    match state.get() {
+        CloseState::InProgress => false,
+        CloseState::Returned(success) => success,
+        CloseState::Open => {
+            state.set(CloseState::InProgress);
+            let success = close();
+            state.set(CloseState::Returned(success));
+            success
+        }
+    }
+}
+
 /// Both adopted-resource custodians use this one Close call before HWND drop.
 /// Legacy views pass None and retain their existing Close-result behavior.
 pub(super) fn close_adopted(
     controller: &ICoreWebView2Controller,
     release: Option<&Weak<ProfileReleaseWait>>,
-) {
+) -> bool {
     #[cfg(all(feature = "media-acceptance", test))]
     let observed =
         super::media_acceptance::adopted_close_control::before(controller, release.is_some());
@@ -77,7 +144,9 @@ pub(super) fn close_adopted(
     );
     #[cfg(all(feature = "media-acceptance", test))]
     let result = super::media_acceptance::adopted_close_control::after(result, observed);
+    let success = result.is_ok();
     record_adopted_close_result(result, release);
+    success
 }
 
 /// A failed Close invalidates even previously credited normal exit. It neither

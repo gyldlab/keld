@@ -226,7 +226,7 @@ impl ProfileReleaseWait {
             pid,
             open_browser_process,
             |process| match process {
-                BrowserProcess::Watched(wake) => wake.retire(),
+                BrowserProcess::Watched(mut wake) => wake.retire_checked(),
                 BrowserProcess::Polled(_) => Ok(()),
             },
             |process| BrowserExitWake::register(process, proxy).map(BrowserProcess::Watched),

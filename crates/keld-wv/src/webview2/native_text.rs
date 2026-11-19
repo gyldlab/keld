@@ -1,0 +1,338 @@
+//! Bounded, strict conversion of a COM task-allocated native text result.
+//! The caller reserves its existing source/bridge metadata charge before the
+//! getter. No native allocation is copied until the UTF16 bound is checked.
+#![deny(unsafe_code)]
+#![deny(unsafe_op_in_unsafe_fn)]
+
+use windows::Win32::Foundation::{E_INVALIDARG, E_OUTOFMEMORY, E_POINTER};
+use windows::Win32::System::Com::CoTaskMemFree;
+use windows::core::{PCWSTR, PWSTR};
+
+struct TaskText(PWSTR);
+
+impl Drop for TaskText {
+    #[allow(unsafe_code)] // Only the COM task allocation returned by the getter.
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: the getter returned a COM task-allocated PWSTR; this
+            // private owner is its sole releaser, including conversion failure.
+            unsafe { CoTaskMemFree(Some(self.0.as_ptr().cast())) };
+            #[cfg(test)]
+            FREED_TASK_STRINGS.with(|count| count.set(count.get() + 1));
+        }
+    }
+}
+
+fn validate_limits(max_utf16_units: usize, max_utf8_bytes: usize) -> windows::core::Result<()> {
+    if max_utf16_units > crate::wv_link::MAX_APP_WV_LINK_ENVELOPE_LEN
+        || max_utf8_bytes > crate::wv_link::MAX_APP_WV_LINK_ENVELOPE_LEN
+    {
+        return Err(E_INVALIDARG.into());
+    }
+    Ok(())
+}
+
+/// Copy a live native callback's NUL-terminated UTF16 result before its borrowed lifetime ends.
+///
+/// # Safety
+/// The caller must hold a readable native string through the first terminator for this call.
+#[allow(unsafe_code)] // One shared bounded scan for owned native getters and borrowed callback results.
+pub(super) unsafe fn copy_native_text<T>(
+    text: PCWSTR,
+    max_utf16_units: usize,
+    max_utf8_bytes: usize,
+    admit: impl FnOnce(usize, usize) -> windows::core::Result<T>,
+) -> windows::core::Result<(String, T)> {
+    validate_limits(max_utf16_units, max_utf8_bytes)?;
+    if text.is_null() {
+        return Err(E_POINTER.into());
+    }
+    let mut length = 0;
+    loop {
+        // SAFETY: the native getter or callback supplies a live NUL-terminated
+        // allocation. We read at most limit+1 units and stop at its first NUL,
+        // so rejected overlong strings are never copied into an owned buffer.
+        let unit = unsafe { *text.as_ptr().add(length) };
+        if unit == 0 {
+            break;
+        }
+        if length == max_utf16_units {
+            return Err(E_INVALIDARG.into());
+        }
+        length += 1;
+    }
+    // SAFETY: the bounded scan observed these initialized units before NUL;
+    // the native source remains alive through strict UTF16 conversion.
+    let units = unsafe { std::slice::from_raw_parts(text.as_ptr(), length) };
+    let mut bytes = 0_usize;
+    for ch in char::decode_utf16(units.iter().copied()) {
+        let ch = ch.map_err(|_| windows::core::Error::from(E_INVALIDARG))?;
+        bytes = bytes.checked_add(ch.len_utf8()).ok_or(E_INVALIDARG)?;
+        if bytes > max_utf8_bytes {
+            return Err(E_INVALIDARG.into());
+        }
+    }
+    let admitted = admit(length, bytes)?;
+    let mut result = String::new();
+    result.try_reserve_exact(bytes).map_err(|_| E_OUTOFMEMORY)?;
+    for ch in char::decode_utf16(units.iter().copied()) {
+        result.push(ch.map_err(|_| windows::core::Error::from(E_INVALIDARG))?);
+    }
+    if result.capacity() > bytes {
+        return Err(E_OUTOFMEMORY.into());
+    }
+    Ok((result, admitted))
+}
+
+impl TaskText {
+    #[allow(unsafe_code)] // The live TaskText owns this successful native getter output.
+    fn copy_bounded_admitted<T>(
+        &self,
+        max_utf16_units: usize,
+        max_utf8_bytes: usize,
+        admit: impl FnOnce(usize, usize) -> windows::core::Result<T>,
+    ) -> windows::core::Result<(String, T)> {
+        // SAFETY: TaskText retains this NUL-terminated COM allocation throughout conversion.
+        unsafe {
+            copy_native_text(
+                PCWSTR(self.0.as_ptr()),
+                max_utf16_units,
+                max_utf8_bytes,
+                admit,
+            )
+        }
+    }
+
+    fn copy_bounded(&self, units: usize, bytes: usize) -> windows::core::Result<String> {
+        self.copy_bounded_admitted(units, bytes, |_, _| Ok(()))
+            .map(|(text, ())| text)
+    }
+}
+
+pub(super) fn read_task_text(
+    get: impl FnOnce(*mut PWSTR) -> windows::core::Result<()>,
+    max_utf16_units: usize,
+    max_utf8_bytes: usize,
+) -> windows::core::Result<String> {
+    validate_limits(max_utf16_units, max_utf8_bytes)?;
+    let mut text = TaskText(PWSTR::null());
+    get(&raw mut text.0)?;
+    text.copy_bounded(max_utf16_units, max_utf8_bytes)
+}
+
+/// Same task-allocation owner and strict scan; the pure admission hook runs
+/// after measuring but BEFORE any owned UTF8 allocation. The caller prepays its
+/// permitted native UTF16 snapshot before invoking the getter. This cannot
+/// control an oversized allocation performed internally by `WebView2` itself.
+pub(super) fn read_task_text_admitted<T>(
+    get: impl FnOnce(*mut PWSTR) -> windows::core::Result<()>,
+    max_utf16_units: usize,
+    max_utf8_bytes: usize,
+    admit: impl FnOnce(usize, usize) -> windows::core::Result<T>,
+) -> windows::core::Result<(String, T)> {
+    validate_limits(max_utf16_units, max_utf8_bytes)?;
+    let mut text = TaskText(PWSTR::null());
+    get(&raw mut text.0)?;
+    text.copy_bounded_admitted(max_utf16_units, max_utf8_bytes, admit)
+}
+
+/// `GetCurrentHeader` returns two independent task allocations in one call. Keep
+/// both under the SAME RAII owner, including getter/first-conversion failures.
+/// The second string's stricter field bound is selected only after the first
+/// bounded string is known; a Host nonce therefore keeps its 32/32 bound before
+/// owned copying. Neither field may exceed the remaining aggregate allowance.
+pub(super) fn read_task_text_pair(
+    get: impl FnOnce(*mut PWSTR, *mut PWSTR) -> windows::core::Result<()>,
+    max_total_utf16_units: usize,
+    max_total_utf8_bytes: usize,
+    second_limits: impl FnOnce(&str) -> (usize, usize),
+) -> windows::core::Result<(String, String)> {
+    validate_limits(max_total_utf16_units, max_total_utf8_bytes)?;
+    let mut first = TaskText(PWSTR::null());
+    let mut second = TaskText(PWSTR::null());
+    get(&raw mut first.0, &raw mut second.0)?;
+    let first = first.copy_bounded(max_total_utf16_units, max_total_utf8_bytes)?;
+    let remaining_units = max_total_utf16_units - first.encode_utf16().count();
+    let remaining_bytes = max_total_utf8_bytes - first.len();
+    let (units, bytes) = second_limits(&first);
+    let second = second.copy_bounded(units.min(remaining_units), bytes.min(remaining_bytes))?;
+    Ok((first, second))
+}
+
+#[cfg(test)]
+thread_local! {
+    static FREED_TASK_STRINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::System::Com::CoTaskMemAlloc;
+
+    #[allow(unsafe_code)] // Controlled COM allocation obeys the real getter's ownership contract.
+    fn native_text(units: &[u16]) -> PWSTR {
+        let bytes = (units.len() + 1) * std::mem::size_of::<u16>();
+        // SAFETY: nonzero bounded fixture allocation, checked before writes.
+        let allocation = unsafe { CoTaskMemAlloc(bytes) }.cast::<u16>();
+        assert!(!allocation.is_null());
+        // SAFETY: allocation has exactly units.len()+1 writable aligned u16s;
+        // source is a live immutable slice and the final NUL is inside the buffer.
+        unsafe {
+            std::ptr::copy_nonoverlapping(units.as_ptr(), allocation, units.len());
+            allocation.add(units.len()).write(0);
+        }
+        PWSTR(allocation)
+    }
+
+    #[allow(unsafe_code)] // Writes only the helper's two initialized getter out-pointers.
+    fn pair_getter(first: *mut PWSTR, second: *mut PWSTR, a: &[u16], b: &[u16]) {
+        // SAFETY: called only from read_task_text_pair's synchronous getter,
+        // which provides both live writable out-pointers and then owns each result.
+        unsafe {
+            first.write(native_text(a));
+            second.write(native_text(b));
+        }
+    }
+
+    #[test]
+    fn paired_getter_keeps_nonce_and_aggregate_bounds_and_frees_both_allocations() {
+        FREED_TASK_STRINGS.set(0);
+        let name = "X-Keld-Host-Attempt".encode_utf16().collect::<Vec<_>>();
+        let oversized = vec![u16::from(b'a'); 33];
+        let refused = read_task_text_pair(
+            |a, b| {
+                pair_getter(a, b, &name, &oversized);
+                Ok(())
+            },
+            4096,
+            16384,
+            |_| (32, 32),
+        );
+        assert!(refused.is_err());
+        assert_eq!(FREED_TASK_STRINGS.get(), 2);
+        let valid = read_task_text_pair(
+            |a, b| {
+                pair_getter(a, b, &[u16::from(b'a')], &[u16::from(b'b')]);
+                Ok(())
+            },
+            2,
+            2,
+            |_| (usize::MAX, usize::MAX),
+        )
+        .expect("exact combined bound");
+        assert_eq!(valid, (String::from("a"), String::from("b")));
+        assert_eq!(FREED_TASK_STRINGS.get(), 4);
+        let over_total = read_task_text_pair(
+            |a, b| {
+                pair_getter(a, b, &[0x00e9], &[u16::from(b'b')]);
+                Ok(())
+            },
+            2,
+            2,
+            |_| (usize::MAX, usize::MAX),
+        );
+        assert!(
+            over_total.is_err(),
+            "aggregate UTF8 bytes are distinct from UTF16 units"
+        );
+        assert_eq!(FREED_TASK_STRINGS.get(), 6);
+    }
+
+    #[test]
+    fn paired_getter_failure_and_invalid_first_utf16_release_second_too() {
+        FREED_TASK_STRINGS.set(0);
+        let failed_getter = read_task_text_pair(
+            |a, b| {
+                pair_getter(a, b, &[u16::from(b'a')], &[u16::from(b'b')]);
+                Err(E_INVALIDARG.into())
+            },
+            64,
+            64,
+            |_| (64, 64),
+        );
+        assert!(failed_getter.is_err());
+        assert_eq!(FREED_TASK_STRINGS.get(), 2);
+        let malformed = read_task_text_pair(
+            |a, b| {
+                pair_getter(a, b, &[0xd800], &[u16::from(b'b')]);
+                Ok(())
+            },
+            64,
+            64,
+            |_| (64, 64),
+        );
+        assert!(malformed.is_err());
+        assert_eq!(FREED_TASK_STRINGS.get(), 4);
+    }
+    #[allow(unsafe_code)] // Writes only the same initialized task-text output.
+    fn single_getter(out: *mut PWSTR, units: &[u16]) {
+        // SAFETY: read_task_text_admitted supplies this live writable output.
+        unsafe {
+            out.write(native_text(units));
+        }
+    }
+
+    #[test]
+    fn pre_copy_admission_sees_exact_lengths_and_refusal_frees_native_snapshot() {
+        FREED_TASK_STRINGS.set(0);
+        let seen = std::cell::Cell::new(None);
+        let refused = read_task_text_admitted(
+            |out| {
+                single_getter(out, &[0x00e9]);
+                Ok(())
+            },
+            1,
+            2,
+            |units, bytes| {
+                seen.set(Some((units, bytes)));
+                Err::<(), _>(E_OUTOFMEMORY.into())
+            },
+        );
+        assert!(refused.is_err());
+        assert_eq!(seen.get(), Some((1, 2)));
+        assert_eq!(FREED_TASK_STRINGS.get(), 1);
+        let (copied, marker) = read_task_text_admitted(
+            |out| {
+                single_getter(out, &[0xd83d, 0xde00]);
+                Ok(())
+            },
+            2,
+            4,
+            |units, bytes| Ok((units, bytes)),
+        )
+        .unwrap();
+        assert_eq!(marker, (2, 4));
+        assert_eq!(copied.as_bytes(), &[0xf0, 0x9f, 0x98, 0x80]);
+        assert_eq!(copied.capacity(), 4);
+        assert_eq!(
+            FREED_TASK_STRINGS.get(),
+            2,
+            "native snapshot is gone before caller receives text"
+        );
+    }
+
+    #[test]
+    fn native_bounds_and_bad_utf16_refuse_before_pre_copy_admission() {
+        FREED_TASK_STRINGS.set(0);
+        let calls = std::cell::Cell::new(0);
+        for units in [&[0xd800][..], &[u16::from(b'a'), u16::from(b'b')][..]] {
+            assert!(
+                read_task_text_admitted(
+                    |out| {
+                        single_getter(out, units);
+                        Ok(())
+                    },
+                    1,
+                    4,
+                    |_, _| {
+                        calls.set(calls.get() + 1);
+                        Ok(())
+                    },
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(calls.get(), 0);
+        assert_eq!(FREED_TASK_STRINGS.get(), 2);
+    }
+}

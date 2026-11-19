@@ -74,3 +74,20 @@ fn retained_loop_reference_prevents_successful_retirement() {
         "once the other owner is gone retirement succeeds"
     );
 }
+
+#[test]
+fn failed_wait_retirement_is_terminal_and_cannot_be_retried_or_promoted() {
+    use crate::webview2::WaitRegistration;
+    use windows::Win32::Foundation::HANDLE;
+    let handle = HANDLE(std::ptr::dangling_mut::<core::ffi::c_void>());
+    let mut phase = WaitRegistration::Live(handle);
+    assert_eq!(phase.begin_retirement(), Ok(Some(handle)));
+    assert!(matches!(phase, WaitRegistration::Unproved));
+    assert!(phase.begin_retirement().is_err());
+    assert!(phase.begin_retirement().is_err());
+    assert!(matches!(phase, WaitRegistration::Unproved));
+    let mut retired = WaitRegistration::Retired;
+    assert_eq!(retired.begin_retirement(), Ok(None));
+    assert_eq!(retired.begin_retirement(), Ok(None));
+    assert!(matches!(retired, WaitRegistration::Retired));
+}

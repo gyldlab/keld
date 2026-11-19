@@ -6,12 +6,11 @@
 
 use std::cell::{Cell, RefCell};
 use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
-use tao::event_loop::EventLoopProxy;
 use windows::Win32::Foundation::{E_UNEXPECTED, GetHandleInformation, HANDLE};
 
 use super::failure;
 use crate::WvError;
-use crate::webview2::WindowsLoopEvent;
+use crate::webview2::NativeWakeContext;
 
 thread_local! {
     static ACTIVE: Cell<Option<bool>> = const { Cell::new(None) };
@@ -22,7 +21,7 @@ thread_local! {
 }
 
 struct RetiredResources {
-    proxy: *mut EventLoopProxy<WindowsLoopEvent>,
+    proxy: *mut NativeWakeContext,
     process: HANDLE,
 }
 impl Drop for RetiredResources {
@@ -99,7 +98,7 @@ impl Drop for Scope {
 /// retain both resources rather than free them; the active Scope owns reclamation.
 pub(in crate::webview2) unsafe fn after_native_unregister(
     result: windows::core::Result<()>,
-    proxy: *mut EventLoopProxy<WindowsLoopEvent>,
+    proxy: *mut NativeWakeContext,
     process: HANDLE,
 ) -> windows::core::Result<()> {
     let Some(inject) = ACTIVE.get() else {
