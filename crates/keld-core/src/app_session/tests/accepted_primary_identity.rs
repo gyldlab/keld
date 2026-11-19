@@ -341,6 +341,9 @@ fn windows_authenticated_generations_bind_retained_admission_to_the_current_prin
     ));
 }
 
+// The shared Message owner admits nonces on macOS and exposes that owner to
+// Linux Core fixtures. Windows does not have this dialog provider yet.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn dialog_nonce_is_owned_by_the_authenticated_current_generation() {
     let mut primary = AcceptedRole::start(RoleOwner::Primary);
