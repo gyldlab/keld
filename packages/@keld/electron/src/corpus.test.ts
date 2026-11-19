@@ -12,6 +12,10 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
+import {
+  decodeRuntimeInitialized,
+  decodeRuntimeProcessInit,
+} from "@keld/kipc/runtime-process-facts";
 
 import {
   FrameKind,
@@ -47,7 +51,7 @@ const CORPUS_PATH = join(
 const STALL_LIMIT_MS = 5000;
 /** One owner, one digest: the Rust suite asserts this same constant. */
 const CORPUS_SHA256 =
-  "94f6dd8a39aab2baf8b6e2ac4eb6c7c8e91e780c20d419ef927bd4dd5faff4af";
+  "e12d2e38c3f9862d8f54fde99109d72ba03aa481274162ff42bda04ce0edb637";
 /** Pre-auth policies may reaccept after a rejection; authenticated ones close. */
 const PRE_AUTH_POLICIES = new Set([
   "server-pre-auth-hello",
@@ -247,8 +251,8 @@ function decodeLifecycleShape(
       }
       end = afterChannel;
     } else if (variant !== 0) {
-      // Quit
-      throw new Error("KELD-IPC-003: unknown LifecycleRequest discriminant");
+      decodeRuntimeProcessInit(payload);
+      return;
     }
   } else if (variant === 2) {
     // SubscribeRefused { reason: SubscribeRefusal }
@@ -257,8 +261,8 @@ function decodeLifecycleShape(
       throw new Error("KELD-IPC-003: unknown SubscribeRefusal discriminant");
     end = afterReason;
   } else if (variant > 1) {
-    // Quit | Subscribed
-    throw new Error("KELD-IPC-003: unknown LifecycleResponse discriminant");
+    decodeRuntimeInitialized(payload);
+    return;
   }
   if (end !== payload.length)
     throw new Error("KELD-IPC-003: trailing lifecycle bytes");
