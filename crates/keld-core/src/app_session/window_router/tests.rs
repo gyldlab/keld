@@ -406,7 +406,7 @@ fn window_router_native_snapshot_identity_and_setter_wire_are_actual() -> TestRe
         },
         23,
     )?;
-    assert_eq!(
+    assert!(matches!(
         fixture
             .commands
             .recv_timeout(Duration::from_secs(3))
@@ -415,7 +415,7 @@ fn window_router_native_snapshot_identity_and_setter_wire_are_actual() -> TestRe
             view: WebviewId(7),
             maximized: true
         }
-    );
+    ));
     let (header, bytes) = read_frame(&mut fixture.peer).expect("accepted response");
     assert_eq!(
         (header.kind, header.corr),
@@ -653,13 +653,13 @@ fn window_router_terminal_cut_precedes_release_and_is_idempotent() -> TestResult
             .end_window_session_guarded()
             .expect("idempotent second service drive");
     }
-    assert_eq!(
+    assert!(matches!(
         fixture
             .commands
             .recv_timeout(Duration::from_secs(3))
             .expect("sole teardown"),
         AppWindowCommand::DestroyWindow { view: WebviewId(7) }
-    );
+    ));
     assert!(fixture.commands.try_recv().is_err());
     fixture
         .handle
@@ -871,13 +871,13 @@ fn window_router_duplicate_live_correlation_closes_link_before_second_effect() -
             snapshot: snapshot(),
         })
         .expect("late build still physically cleaned up");
-    assert_eq!(
+    assert!(matches!(
         fixture
             .commands
             .recv_timeout(Duration::from_secs(3))
             .expect("late cleanup"),
         AppWindowCommand::DestroyWindow { view: WebviewId(7) }
-    );
+    ));
     Ok(())
 }
 
@@ -1047,13 +1047,13 @@ fn window_router_successor_has_no_stale_legacy_last_window_replay() -> TestResul
     )?;
     verdict(&fixture, first, 1, CloseVerdict::Allow, 3)?;
     reply(&mut fixture, 3, WindowResponse::ReplyApplied)?;
-    assert_eq!(
+    assert!(matches!(
         fixture
             .commands
             .recv_timeout(Duration::from_secs(3))
             .expect("sole Destroy"),
         AppWindowCommand::DestroyWindow { view: WebviewId(7) }
-    );
+    ));
     fixture
         .handle
         .window_native_event(AppWindowEvent::WindowReleased { view: WebviewId(7) })

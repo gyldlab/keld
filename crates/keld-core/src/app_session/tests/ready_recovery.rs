@@ -500,9 +500,8 @@ fn failed_owner_shutdown_after_accepted_quit_wakes_ui_on_every_os() {
             "cause {cause}: {error}"
         );
         if wakes_ui {
-            assert_eq!(
-                window_rx.try_recv(),
-                Ok(AppWindowCommand::Fatal),
+            assert!(
+                matches!(window_rx.try_recv(), Ok(AppWindowCommand::Fatal)),
                 "a failed owner shutdown after an accepted Quit must wake the UI"
             );
         }

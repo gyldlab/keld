@@ -119,12 +119,12 @@ fn quit_drain_ends_quietly_when_its_answer_finds_the_role_gone() {
     shutdown
         .send(Ok(()))
         .expect("acknowledge guardian shutdown");
-    assert_eq!(
+    assert!(matches!(
         t.window
             .recv_timeout(Duration::from_secs(5))
             .expect("UI Quit"),
         AppWindowCommand::Quit
-    );
+    ));
     assert!(!target.exists(), "a post-Quit FS CALL must not execute");
     t.router
         .shutdown()

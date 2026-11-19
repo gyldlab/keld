@@ -194,12 +194,12 @@ fn windows_lease_tail_failure_wakes_the_window_fatally() {
         &error_tx,
         &window_tx,
     );
-    assert_eq!(
+    assert!(matches!(
         window_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("lease failure Fatal wake"),
         AppWindowCommand::Fatal
-    );
+    ));
     assert!(
         error_rx
             .recv_timeout(Duration::from_secs(1))

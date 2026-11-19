@@ -30,10 +30,10 @@ fn destroy_correlation_reuse_retires_the_link_before_a_second_effect() -> TestRe
     fixture.ready()?;
     let window = fixture.build(1, 7)?;
     fixture.call(&WindowRequest::Destroy { window }, 2)?;
-    assert_eq!(
+    assert!(matches!(
         fixture.commands.recv_timeout(Duration::from_secs(3))?,
         AppWindowCommand::DestroyWindow { view: WebviewId(7) }
-    );
+    ));
     let failure = fixture
         .call(&WindowRequest::RequestClose { window }, 2)
         .expect_err("pending Destroy owns correlation");
@@ -131,12 +131,12 @@ fn failed_allow_acknowledgement_still_queues_the_committed_teardown() -> TestRes
         failure.to_string().contains("window ordered writer"),
         "{failure}"
     );
-    assert_eq!(
+    assert!(matches!(
         fixture.commands.try_recv().expect(
             "accepted Allow must release native handles even when its acknowledgement fails"
         ),
         AppWindowCommand::DestroyWindow { view: WebviewId(7) }
-    );
+    ));
     assert!(fixture.commands.try_recv().is_err());
     fixture
         .handle
