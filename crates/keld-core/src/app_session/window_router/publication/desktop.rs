@@ -43,7 +43,7 @@ struct PendingDesktopSubscribe {
 pub(super) enum DesktopSubscribe {
     Ordinary,
     Deferred,
-    Competing { original: CorrelationId },
+    Competing,
 }
 
 pub(in crate::app_session) enum DesktopStartup {
@@ -221,9 +221,7 @@ impl PrimaryRouterHandle {
             };
             if let Some(pending) = desktop.pending.as_ref() {
                 if Arc::ptr_eq(&pending.target, target) && pending.correlation != correlation {
-                    outcome = DesktopSubscribe::Competing {
-                        original: pending.correlation,
-                    };
+                    outcome = DesktopSubscribe::Competing;
                     return Ok(());
                 }
                 return Err(app_ipc(

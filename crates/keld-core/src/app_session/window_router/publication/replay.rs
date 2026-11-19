@@ -20,9 +20,12 @@ impl PrimaryRouterHandle {
     ) -> Result<(), HostAppError> {
         self.primary_writer_owner()?;
         let deadline = Instant::now() + keld_ipc::APP_LINK_IO_DEADLINE;
-        if channel == keld_ipc::channel_table::WINDOW.wire_id()
-            && self.selected_desktop_enabled()?
-        {
+        let refusal = window_subscribe_refusal(
+            channel,
+            caller.identity.is_primary(),
+            self.windows.is_some(),
+        );
+        if refusal.is_none() && self.selected_desktop_enabled()? {
             let Some(target) = self.primary_writer_target(caller)? else {
                 return Ok(());
             };
@@ -34,7 +37,7 @@ impl PrimaryRouterHandle {
                         .completed_source_progress()
                         .map_err(|error| error.into_host_error("desktop Subscribe progress"));
                 }
-                DesktopSubscribe::Competing { original } => {
+                DesktopSubscribe::Competing => {
                     let Some(turn) = self.claim_window_publication(deadline, Some(caller))? else {
                         return Ok(());
                     };
@@ -47,7 +50,7 @@ impl PrimaryRouterHandle {
                     let refusal = emitter.desktop_error(
                         correlation, "KELD-IPC-005",
                         "KELD-IPC-005: a selected desktop Subscribe already owns another correlation",
-                        |_| original != correlation,
+                        |_| true,
                     ).map(drop);
                     drop(turn);
                     return self.finish_call_publication(refusal);
@@ -59,9 +62,7 @@ impl PrimaryRouterHandle {
             let Some(target) = self.primary_writer_target(caller)? else {
                 return Ok(());
             };
-            if let Some(reason) =
-                window_subscribe_refusal(channel, caller.identity.is_primary(), turn.is_some())
-            {
+            if let Some(reason) = refusal {
                 let frame = self.prepare_primary_control(
                     caller,
                     Arc::clone(&target),
