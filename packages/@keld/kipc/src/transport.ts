@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:92987f3443d57331cfd0d37b5ccda34ba4c3a5bd2495ee744963ce702ab765bf
+// @keld/kipc-transport sha256:d977c0295813699c42745af6f8d0dbfb4852627122ace9cb94b765a871d17ee9
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -520,8 +520,9 @@ export const stateOwnDescriptor = intrinsicDescriptor;
 export const stateHasOwn = intrinsicHasOwn;
 export const stateOwnKeys = intrinsicOwnKeys;
 export const stateIsArray = intrinsicIsArray;
-export const stateIsProxy = intrinsicIsProxy;
-export const stateIsNativeError = intrinsicIsNativeError;
+export const stateIsProxy: (value: unknown) => boolean = intrinsicIsProxy;
+export const stateIsNativeError: (value: unknown) => value is Error =
+  intrinsicIsNativeError;
 export const stateObjectEntries = intrinsicObjectEntries;
 export const stateTypeErrorConstructor: TypeErrorConstructor =
   IntrinsicTypeError;
