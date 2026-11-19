@@ -249,6 +249,7 @@ impl PrimaryRouterHandle {
         facts: Option<AppDesktopFacts>,
     ) -> Result<(), HostAppError> {
         let qualified = facts.and_then(qualified_sample);
+        let validated_at = Instant::now();
         let _transition = self.shutdown.transition_guard();
         let current = self
             .current
@@ -292,7 +293,7 @@ impl PrimaryRouterHandle {
         }) {
             return Ok(());
         }
-        desktop.observation(qualified, Instant::now())
+        desktop.observation(qualified, validated_at)
     }
 
     pub(in crate::app_session) fn mark_selected_desktop_initialized(
