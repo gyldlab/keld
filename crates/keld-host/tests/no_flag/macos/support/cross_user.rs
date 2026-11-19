@@ -150,12 +150,12 @@ pub(crate) fn make_signed_fixture_readable_by_standard_users(app: &Path) {
             .expect("make signed fixture directories traversable by the test account");
     }
     fs::set_permissions(
-        &app.join("Contents/Info.plist"),
+        app.join("Contents/Info.plist"),
         fs::Permissions::from_mode(0o644),
     )
     .expect("make signed app metadata readable by the test account");
     fs::set_permissions(
-        &signed_host_executable(app),
+        signed_host_executable(app),
         fs::Permissions::from_mode(0o755),
     )
     .expect("make signed host executable readable by the test account");
