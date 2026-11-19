@@ -24,6 +24,11 @@
 //!   [`WebviewId`] must surface as a typed error, never a panic (root
 //!   `AGENTS.md`: no panics in libs).
 
+#[cfg(windows)]
+mod desktop;
+#[cfg(windows)]
+pub use desktop::{AppDesktopCapture, AppDesktopDisplay, AppDesktopFacts, AppDesktopRect};
+
 use crate::WebviewId;
 use crate::error::WvError;
 #[cfg(any(target_os = "macos", windows))]
@@ -327,6 +332,12 @@ pub enum AppWindowCommand {
     /// command contains no caller-minted window pointer or payload.
     #[cfg(any(target_os = "macos", windows))]
     DialogWake,
+    /// Bind desktop observations to the exact current authenticated reader.
+    #[cfg(windows)]
+    WindowsDesktopProducer {
+        /// Reader captured by Core before entering the UI queue.
+        capture: AppDesktopCapture,
+    },
     /// Ask the Core writer owner to inspect capacity and completion.
     #[cfg(windows)]
     HostWriterProgress,
@@ -359,8 +370,23 @@ pub enum DialogUiOutcome {
 pub type MacDialogUiOutcome = DialogUiOutcome;
 
 /// Observable UI-owned milestone delivered to the host session coordinator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(not(windows), derive(Copy, Eq))]
 pub enum AppWindowEvent {
+    /// First-Init desktop facts from the actual selected native UI thread.
+    #[cfg(windows)]
+    DesktopObserved {
+        /// Unavailable when the approved physical and appearance scope refuses.
+        facts: Option<AppDesktopFacts>,
+    },
+    /// Post-Init desktop facts for the reader whose actual query began.
+    #[cfg(windows)]
+    WindowsDesktopObserved {
+        /// Exact reader identity carried unchanged through the native read.
+        capture: AppDesktopCapture,
+        /// Unavailable after a failed read, with no replay of a past sample.
+        facts: Option<AppDesktopFacts>,
+    },
     /// Initial renderer navigation completed on the live backend.
     NavigationReady,
     /// The application loop delivered its actual first Init turn.
