@@ -5,6 +5,7 @@
 use std::cell::Cell;
 use std::path::Path;
 use std::rc::Rc;
+use std::time::Instant;
 
 use block2::RcBlock;
 use keld_ipc::IpcError;
@@ -145,7 +146,7 @@ impl FilePanel {
 /// objects are deliberately !Send, never copied into a background worker.
 pub struct MacFilePanel {
     panel: FilePanel,
-    completion: Rc<Cell<Option<NSModalResponse>>>,
+    completion: Rc<Cell<Option<(NSModalResponse, Instant)>>>,
     callback: RcBlock<dyn Fn(NSModalResponse)>,
     filter: MacFileFilterModel,
     native_groups: Vec<Vec<Retained<UTType>>>,
@@ -237,7 +238,7 @@ impl MacFilePanel {
         let state = Rc::clone(&completion);
         let callback: RcBlock<dyn Fn(NSModalResponse)> = RcBlock::new(move |response| {
             if state.get().is_none() {
-                state.set(Some(response));
+                state.set(Some((response, Instant::now())));
             }
         });
         let mut owner = Self {
@@ -470,6 +471,13 @@ impl MacFilePanel {
         }
     }
 
+    /// When the first native callback arrived, on the Host's monotonic clock.
+    /// This timestamp alone does not establish physical sheet drain.
+    #[must_use]
+    pub fn completed_at(&self) -> Option<Instant> {
+        self.completion.get().map(|(_, completed_at)| completed_at)
+    }
+
     /// Return a genuine result only after the callback and native window
     /// invisibility, validating all returned paths before releasing custody.
     ///
@@ -483,7 +491,7 @@ impl MacFilePanel {
         ) {
             return Ok(None);
         }
-        let Some(response) = self.completion.get() else {
+        let Some((response, _completed_at)) = self.completion.get() else {
             if self.state == PanelState::Presented && self.refresh_filter_choice().is_err() {
                 // Fail the request only after the real sheet is dismissed.
                 // Do not misreport this native failure as user Cancel.

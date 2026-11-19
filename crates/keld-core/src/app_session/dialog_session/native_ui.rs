@@ -47,6 +47,13 @@ impl NativePanel {
         result.map_err(|source| app_detail("native dialog cancellation", source.to_string()))
     }
 
+    fn completed_at(&self) -> Option<Instant> {
+        match self {
+            Self::Message(panel) => panel.completed_at(),
+            Self::File(panel) => panel.completed_at(),
+        }
+    }
+
     fn poll_outcome(
         &mut self,
     ) -> Result<Option<(MacDialogUiOutcome, Option<DialogReplyV1>)>, HostAppError> {
@@ -172,15 +179,30 @@ impl DialogMainOwner {
             // Never retain the native panel solely because the former NSWindow
             // pointer still has an AppKit retain count: the UI owner checks
             // the live `WebviewId` map on every active service turn.
-            if stopping || !self.session.may_present(*owner)? || resolve(*parent_view).is_none() {
+            let retiring = stopping || resolve(*parent_view).is_none();
+            if retiring {
+                self.session
+                    .begin_cleanup(*owner, Instant::now() + Duration::from_secs(5))?;
+            }
+            if retiring || !self.session.may_present(*owner)? {
                 panel.request_cancel()?;
             }
-            if let Some((outcome, file_result)) = panel.poll_outcome()? {
+            let expired = self.session.expire_if_due(
+                *owner,
+                *deadline,
+                panel.completed_at(),
+                Instant::now(),
+            )?;
+            // Callback time arbitrates expiry but does not date physical drain.
+            if let Some((outcome, file_result)) = self.session.poll_before_cleanup_deadline(
+                *owner,
+                Instant::now,
+                || panel.poll_outcome(),
+            )? {
                 let owner = *owner;
                 self.notify(owner, outcome, file_result)?;
                 self.active = None;
-            } else if Instant::now() >= *deadline {
-                self.session.expire(*owner)?;
+            } else if expired {
                 panel.request_cancel()?;
             }
         }

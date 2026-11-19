@@ -15,8 +15,58 @@
  * NSAlert/WorkerLink/Guard/native evidence belongs to the macOS Host fixtures.
  */
 import { expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import * as electron from "./index";
+
+// Exercise the platform gate in an isolated process so platform/readiness
+// overrides cannot affect another test. This proves facade routing, not native
+// Windows/Linux or AppKit acceptance. Removing the gate must fail this case.
+test("Message refuses unsupported platforms before touching the app link", () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--eval",
+      `
+    import assert from "node:assert/strict";
+    import { app } from "../../api/src/app.ts";
+    import { showMessageBox } from "./dialog.ts";
+    let readinessCalls = 0;
+    const sentinel = new Error("readiness sentinel");
+    app.whenReady = () => {
+      readinessCalls++;
+      return Promise.reject(sentinel);
+    };
+    for (const platform of ["linux", "win32"]) {
+      Object.defineProperty(process, "platform", { value: platform, configurable: true });
+      for (const args of [[{ message: "Confirm" }], [null, { message: "Confirm" }]]) {
+        const result = showMessageBox(...args);
+        assert.ok(result instanceof Promise);
+        await assert.rejects(result, error => error.code === "KELD-NATIVE-010");
+      }
+      assert.equal(readinessCalls, 0);
+      assert.throws(() => showMessageBox({ message: "Confirm", unsupported: true }), /KELD-COMPAT-010/);
+    }
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    await assert.rejects(showMessageBox({ message: "Confirm" }), error => error === sentinel);
+    assert.equal(readinessCalls, 1);
+    console.log("platform refusal and macOS delegation checks pass");
+  `,
+    ],
+    {
+      cwd: fileURLToPath(new URL(".", import.meta.url)),
+      encoding: "utf8",
+      timeout: 10_000,
+    },
+  );
+  expect(result.error).toBeUndefined();
+  expect(result.signal).toBeNull();
+  expect(result.status).toBe(0);
+  expect(result.stdout).toContain(
+    "platform refusal and macOS delegation checks pass",
+  );
+});
 
 /** Read the exported surface (not a copied implementation of dialog behavior). */
 function member(target: unknown, key: string): unknown {

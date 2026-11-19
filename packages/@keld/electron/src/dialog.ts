@@ -3,6 +3,7 @@
 import { invokeFileDialog, invokeMessageDialog } from "@keld/api/internal/app";
 import type { MessageOptions } from "@keld/api/internal/dialog-codec";
 import type { WindowRef } from "@keld/api/internal/window-codec";
+import { linkError } from "@keld/kipc";
 
 import { readDialogParentRef } from "./browser-window.ts";
 import { normalizeMessageOptions } from "./dialog-options.ts";
@@ -67,6 +68,13 @@ function submit(
   parent: WindowRef | null,
   options: MessageOptions,
 ): Promise<MessageBoxResult> {
+  // These Hosts do not admit DIALOG yet. Refuse before touching the shared
+  // app link rather than turn an unsupported API call into a protocol failure.
+  if (process.platform !== "darwin") {
+    return Promise.reject(
+      linkError("KELD-NATIVE-010", "native Message dialogs require macOS"),
+    );
+  }
   return invokeMessageDialog(parent, options).then((reply) => {
     if (reply.variant !== "Message") {
       throw new Error(

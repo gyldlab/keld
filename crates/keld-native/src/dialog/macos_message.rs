@@ -4,6 +4,7 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Instant;
 
 use block2::RcBlock;
 use keld_ipc::IpcError;
@@ -78,13 +79,47 @@ fn normalize_access_keys(input: &str) -> String {
     output
 }
 
+fn button_title(label: &str, normalize: bool) -> String {
+    let text = if normalize {
+        normalize_access_keys(label)
+    } else {
+        label.to_owned()
+    };
+    // AppKit rejects empty titles; match Electron after access-key removal.
+    if text.is_empty() {
+        "(empty)".to_owned()
+    } else {
+        text
+    }
+}
+
+// Electron's omitted cancelId is selected after access-key normalization.
+// A single native button keeps Return; it must not be rebound to Escape.
+fn escape_button(options: &MessageOptions) -> Option<u32> {
+    if options.buttons.len() <= 1 {
+        return None;
+    }
+    if let Some(index) = options.cancel_id {
+        return Some(index);
+    }
+    options
+        .buttons
+        .iter()
+        .position(|label| {
+            let text = button_title(label, options.normalize_access_keys);
+            text.eq_ignore_ascii_case("cancel") || text.eq_ignore_ascii_case("no")
+        })
+        .and_then(|index| u32::try_from(index).ok())
+        .or(Some(u32::from(options.default_id == Some(0))))
+}
+
 /// One retained native sheet and its one-shot completion block. This type is
 /// `MainThreadOnly` through its owned `NSAlert`; it must never cross a worker.
 /// The caller MUST hold it until [`Self::poll_outcome`] confirms invisibility
 /// and the completion callback has run. No locks are held while `AppKit` runs.
 pub struct MacMessagePanel {
     alert: Retained<NSAlert>,
-    completion: Rc<Cell<Option<NSModalResponse>>>,
+    completion: Rc<Cell<Option<(NSModalResponse, Instant)>>>,
     callback: RcBlock<dyn Fn(NSModalResponse)>,
     buttons: usize,
     checkbox: bool,
@@ -124,14 +159,11 @@ impl MacMessagePanel {
             }
         });
         let count = options.buttons.len().max(1);
+        let escape = escape_button(options);
         for (index, label) in options.buttons.iter().enumerate() {
             let index = u32::try_from(index)
                 .map_err(|_| invalid("native Message button count exceeds u32 domain"))?;
-            let text = if options.normalize_access_keys {
-                normalize_access_keys(label)
-            } else {
-                label.clone()
-            };
+            let text = button_title(label, options.normalize_access_keys);
             let button = alert.addButtonWithTitle(&NSString::from_str(&text));
             if index == 0 && options.default_id.is_some_and(|id| id > 0) {
                 button.setKeyEquivalent(&NSString::from_str(""));
@@ -139,7 +171,7 @@ impl MacMessagePanel {
             if options.default_id == Some(index) {
                 button.setKeyEquivalent(&NSString::from_str("\r"));
             }
-            if options.cancel_id == Some(index) {
+            if escape == Some(index) {
                 button.setKeyEquivalent(&NSString::from_str("\u{1b}"));
             }
         }
@@ -159,7 +191,7 @@ impl MacMessagePanel {
         let completion_for_block = Rc::clone(&completion);
         let callback: RcBlock<dyn Fn(NSModalResponse)> = RcBlock::new(move |response| {
             if completion_for_block.get().is_none() {
-                completion_for_block.set(Some(response));
+                completion_for_block.set(Some((response, Instant::now())));
             }
         });
         Ok(Self {
@@ -217,6 +249,13 @@ impl MacMessagePanel {
         }
     }
 
+    /// The first native callback's monotonic timestamp, independent of when
+    /// the Host next polls or when the window becomes physically invisible.
+    #[must_use]
+    pub fn completed_at(&self) -> Option<Instant> {
+        self.completion.get().map(|(_, completed_at)| completed_at)
+    }
+
     /// Returns the single genuine outcome only after callback and real window
     /// invisibility. An outstanding cancellation is not proof of that drain.
     ///
@@ -227,7 +266,7 @@ impl MacMessagePanel {
         if self.state == PanelState::Prepared || self.state == PanelState::Drained {
             return Ok(None);
         }
-        let Some(response) = self.completion.get() else {
+        let Some((response, _completed_at)) = self.completion.get() else {
             return Ok(None);
         };
         if self.alert.window().isVisible() {
@@ -297,6 +336,59 @@ mod tests {
         }
         assert!(response_index(NSAlertFirstButtonReturn + 3, 3).is_err());
         assert!(response_index(0, 3).is_err());
+    }
+
+    #[test]
+    fn button_titles_are_nonempty_after_access_key_normalization() {
+        for (label, normalize, expected) in [
+            ("", false, "(empty)"),
+            ("", true, "(empty)"),
+            ("&", true, "(empty)"),
+            ("&", false, "&"),
+            ("&&", true, "&"),
+            ("&&&", true, "&"),
+            ("&Save", true, "Save"),
+            ("&Save", false, "&Save"),
+            ("Save && Close", true, "Save & Close"),
+            ("保存", true, "保存"),
+            (" ", true, " "),
+        ] {
+            assert_eq!(button_title(label, normalize), expected);
+        }
+    }
+
+    #[test]
+    fn escape_selection_matches_electron_and_preserves_singleton_return() {
+        for (labels, default_id, cancel_id, normalize, expected) in [
+            (vec![], None, None, false, None),
+            (vec!["OK"], Some(0), Some(0), false, None),
+            (vec!["Cancel"], None, None, false, None),
+            (vec!["Yes", "No"], None, None, false, Some(1)),
+            (vec!["No", "Cancel"], None, None, false, Some(0)),
+            (vec!["YES", "cAnCeL"], Some(0), None, false, Some(1)),
+            (vec!["A", "B"], None, None, false, Some(0)),
+            (vec!["A", "B"], Some(0), None, false, Some(1)),
+            (vec!["A", "B"], Some(1), None, false, Some(0)),
+            (vec!["Yes", "No"], Some(0), Some(0), false, Some(0)),
+            (vec!["A", "&No"], None, None, true, Some(1)),
+            (vec!["A", "&No"], None, None, false, Some(0)),
+            (vec!["A", "&&No"], None, None, true, Some(0)),
+        ] {
+            let options = MessageOptions {
+                message: String::new(),
+                kind: MessageKind::None,
+                title: None,
+                detail: None,
+                buttons: labels.into_iter().map(str::to_owned).collect(),
+                default_id,
+                cancel_id,
+                normalize_access_keys: normalize,
+                no_link: false,
+                checkbox_label: None,
+                checkbox_checked: None,
+            };
+            assert_eq!(escape_button(&options), expected, "{options:?}");
+        }
     }
 
     #[test]

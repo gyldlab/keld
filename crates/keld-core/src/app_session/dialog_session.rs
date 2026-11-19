@@ -111,9 +111,20 @@ pub(super) enum DialogWorkOptions {
 struct DialogState {
     custody: DialogCustody,
     pending: Option<DialogWork>,
+    cleanup_deadline: Option<Instant>,
     /// File paths are captured only after the actual native callback and
     /// physical sheet drain. No duplicate authority or new socket exists.
     file_result: Option<(DialogOwner, DialogReplyV1)>,
+}
+
+impl DialogState {
+    // Repeated Cancel/retirement/polls may shorten, never restart, this clock.
+    fn tighten_cleanup(&mut self, deadline: Instant) {
+        self.cleanup_deadline = Some(
+            self.cleanup_deadline
+                .map_or(deadline, |old| old.min(deadline)),
+        );
+    }
 }
 
 /// The verified manifest is immutable; native effects and current-generation
@@ -133,6 +144,7 @@ impl DialogSession {
             state: Mutex::new(DialogState {
                 custody: DialogCustody::default(),
                 pending: None,
+                cleanup_deadline: None,
                 file_result: None,
             }),
             wake,
@@ -188,6 +200,7 @@ impl DialogSession {
                 ReserveError::Busy => DialogFault::Busy,
                 ReserveError::Stale | ReserveError::InvalidTransition => DialogFault::NativeFailure,
             })?;
+            state.cleanup_deadline = None;
             state.pending = Some(DialogWork {
                 owner,
                 options,
@@ -229,6 +242,9 @@ impl DialogSession {
             return Err(DialogFault::InvalidRequest);
         }
         let outcome = state.custody.cancel(identity, attempt, nonce);
+        if outcome == CancelResult::Requested {
+            state.tighten_cleanup(Instant::now() + Duration::from_secs(10));
+        }
         drop(state);
         match outcome {
             CancelResult::Requested => {
@@ -250,7 +266,11 @@ impl DialogSession {
         // the shared Host queue. This also keeps existing FS/Ready teardown
         // ordering unchanged when the policy happens to include `dialog`.
         let wake_needed = if let Ok(mut state) = self.state.lock() {
-            state.custody.retire(identity, attempt)
+            let retired = state.custody.retire(identity, attempt);
+            if retired {
+                state.tighten_cleanup(Instant::now() + Duration::from_secs(5));
+            }
+            retired
         } else {
             false
         };
@@ -311,6 +331,76 @@ impl DialogSession {
             .map_err(|_| app_detail("native dialog deadline", "custody lock poisoned"))?;
         state.custody.expire(owner);
         Ok(())
+    }
+
+    fn begin_cleanup(&self, owner: DialogOwner, deadline: Instant) -> Result<(), HostAppError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| app_detail("native dialog cleanup", "custody lock poisoned"))?;
+        if state.custody.active_owner() == Some(owner) {
+            state.tighten_cleanup(deadline);
+        }
+        Ok(())
+    }
+
+    // Before accepting new callback/invisibility proof, enforce the cleanup
+    // cutoff. A late poll has no proof invisibility occurred before the bound.
+    // An error enters the existing fatal/retained-custody path, not quiescence.
+    fn check_cleanup(
+        &self,
+        owner: DialogOwner,
+        now: impl FnOnce() -> Instant,
+    ) -> Result<(), HostAppError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| app_detail("native dialog cleanup", "custody lock poisoned"))?;
+        if state.custody.active_owner() == Some(owner)
+            && state
+                .cleanup_deadline
+                .is_some_and(|deadline| now() >= deadline)
+        {
+            return Err(app_detail(
+                "native dialog cleanup",
+                "native callback and physical drain remain unproved at cleanup deadline",
+            ));
+        }
+        Ok(())
+    }
+
+    fn poll_before_cleanup_deadline<T>(
+        &self,
+        owner: DialogOwner,
+        mut now: impl FnMut() -> Instant,
+        poll: impl FnOnce() -> Result<Option<T>, HostAppError>,
+    ) -> Result<Option<T>, HostAppError> {
+        self.check_cleanup(owner, &mut now)?;
+        let outcome = poll()?;
+        // Service or lock acquisition can be descheduled across the cutoff.
+        // Retain the owner even when polling just produced a drain receipt.
+        self.check_cleanup(owner, &mut now)?;
+        Ok(outcome)
+    }
+
+    // A delayed poll is not a delayed callback. Preserve a timestamped native
+    // completion strictly before the cutoff; expiry wins at/after the cutoff.
+    fn expire_if_due(
+        &self,
+        owner: DialogOwner,
+        deadline: Instant,
+        completed_at: Option<Instant>,
+        now: Instant,
+    ) -> Result<bool, HostAppError> {
+        let due = now >= deadline && completed_at.is_none_or(|at| at >= deadline);
+        if due {
+            self.expire(owner)?;
+        }
+        if now >= deadline {
+            // A timely callback preserves the selection, not unlimited custody.
+            self.begin_cleanup(owner, deadline + Duration::from_secs(10))?;
+        }
+        Ok(due)
     }
 
     /// The Tao owner invokes this only after observing the actual `AppKit`
