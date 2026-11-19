@@ -10,6 +10,7 @@ use super::super::original_view::ViewInputs;
 use super::super::view_build::original::OriginalBuild;
 use super::super::{PROFILE_LAUNCH_DEADLINE, SelectedNavigationObserver};
 use super::{Instant, ManagedWindows, ProfileReleaseWait, Rc, WindowsLoopEvent, WvError};
+use crate::ApplicationNameForUserAgent;
 use crate::preload_image::AppPreloadImage;
 use crate::renderer_bridge::{
     RendererBridgeEndpoint, RendererBridgeOutcome, RendererBridgeRequest, RendererRoleWitness,
@@ -21,6 +22,7 @@ pub(super) struct SelectedCreate {
     pub(super) image: Arc<AppPreloadImage>,
     pub(super) role: RendererRoleWitness,
     pub(super) start_by: Instant,
+    pub(super) application_name_for_user_agent: Option<ApplicationNameForUserAgent>,
 }
 
 pub(in crate::webview2) struct SelectedRenderer {
@@ -155,6 +157,7 @@ impl ManagedWindows {
                 }
             }),
             deadline: now + PROFILE_LAUNCH_DEADLINE,
+            application_name_for_user_agent: inputs.application_name_for_user_agent,
         })
     }
 

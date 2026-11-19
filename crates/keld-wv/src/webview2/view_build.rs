@@ -11,11 +11,15 @@ use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event_loop::{EventLoopProxy, EventLoopWindowTarget};
 use tao::platform::windows::WindowExtWindows as _;
 use tao::window::WindowBuilder;
+use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings2;
 use windows::Win32::Foundation::HWND;
+use windows::core::{HSTRING, Interface as _};
 
 use super::browser_instance::BrowserExitReceipt;
 use super::controller_custody::PendingController;
+use super::guarded_navigation::GuardInstalled;
 use super::managed_windows::DeferredCreate;
+use super::native_text::read_task_text;
 use super::navigation_diagnostics::FirstNavigationDiagnostic;
 use super::view_host::install_controller_focus;
 use super::{
@@ -25,7 +29,7 @@ use super::{
     saved_permission_reconciliation_enabled,
 };
 use crate::WebviewId;
-use crate::engine::{AppWindowEvent, WebviewSpec};
+use crate::engine::{AppWindowEvent, ApplicationNameForUserAgent, WebviewSpec};
 use crate::error::WvError;
 use crate::media::webview_media_principal;
 use crate::native_window::next_view_id;
@@ -34,6 +38,8 @@ mod candidate;
 mod geometry;
 pub(super) mod original;
 mod resources;
+#[cfg(test)]
+mod user_agent_tests;
 use geometry::correct_outer_frame;
 pub(super) use geometry::snapshot;
 use original::OriginalBuild;
@@ -411,4 +417,64 @@ impl NativeBuild {
         }
         Ok(())
     }
+}
+
+const MAX_NATIVE_USER_AGENT_UTF16_UNITS: usize = 4096;
+
+fn apply_application_name_for_user_agent(
+    metadata: &ApplicationNameForUserAgent,
+    mut read: impl FnMut(usize) -> Result<String, WvError>,
+    write: impl FnOnce(&str) -> Result<(), WvError>,
+) -> Result<(), WvError> {
+    let mut configured = read(MAX_NATIVE_USER_AGENT_UTF16_UNITS)?;
+    if configured.is_empty()
+        || configured.encode_utf16().count() > MAX_NATIVE_USER_AGENT_UTF16_UNITS
+    {
+        return Err(WvError::Webview(String::from(
+            "native user agent is empty or exceeds its capture bound. Update WebView2 before using applicationNameForUserAgent.",
+        )));
+    }
+    // The validated suffix is ASCII, so each byte adds one UTF-16 unit.
+    let additional = 1 + metadata.as_str().len();
+    configured.try_reserve_exact(additional).map_err(|error| {
+        WvError::Webview(format!("allocate applicationNameForUserAgent: {error}"))
+    })?;
+    configured.push(' ');
+    configured.push_str(metadata.as_str());
+    write(&configured)?;
+    let observed = read(MAX_NATIVE_USER_AGENT_UTF16_UNITS + additional)?;
+    if observed != configured {
+        return Err(WvError::Webview(String::from(
+            "native user agent did not retain applicationNameForUserAgent. Update WebView2 or remove the unsupported metadata.",
+        )));
+    }
+    Ok(())
+}
+
+fn configure_application_name_for_user_agent(
+    guard: &GuardInstalled<'_>,
+    metadata: &ApplicationNameForUserAgent,
+) -> Result<(), WvError> {
+    // SAFETY: the Guard proves this is the retained selected view on its
+    // creating STA. Preload installation and navigation have not started.
+    let settings = unsafe { guard.view().Settings() }
+        .and_then(|settings| settings.cast::<ICoreWebView2Settings2>())
+        .map_err(|error| WvError::Webview(format!("native user agent settings: {error}")))?;
+    apply_application_name_for_user_agent(
+        metadata,
+        |limit| {
+            // SAFETY: the retained Settings2 stays on this STA. The initialized
+            // task-text owner frees the getter output even on failure.
+            read_task_text(|out| unsafe { settings.UserAgent(out) }, limit, 3 * limit)
+                .map_err(|error| WvError::Webview(format!("read native user agent: {error}")))
+        },
+        |configured| {
+            let wide = HSTRING::from(configured);
+            // SAFETY: the bounded NUL-terminated string lives through the
+            // synchronous setter on this retained Settings2 owner.
+            unsafe { settings.SetUserAgent(&wide) }.map_err(|error| {
+                WvError::Webview(format!("append native user agent metadata: {error}"))
+            })
+        },
+    )
 }

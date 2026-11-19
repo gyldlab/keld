@@ -224,16 +224,19 @@ impl ManagedWindows {
                     original_create_start_by,
                 ) {
                     (None, None, None, None, None) => None,
-                    (Some(source), Some(image), Some(role), None, Some(start_by))
-                        if self.renderer.is_some() =>
-                    {
-                        Some(SelectedCreate {
-                            source,
-                            image,
-                            role,
-                            start_by,
-                        })
-                    }
+                    (
+                        Some(source),
+                        Some(image),
+                        Some(role),
+                        application_name_for_user_agent,
+                        Some(start_by),
+                    ) if self.renderer.is_some() => Some(SelectedCreate {
+                        source,
+                        image,
+                        role,
+                        start_by,
+                        application_name_for_user_agent,
+                    }),
                     _ => {
                         return send_failure(
                             &self.events,

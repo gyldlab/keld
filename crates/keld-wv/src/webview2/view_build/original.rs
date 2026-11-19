@@ -11,8 +11,11 @@ use super::super::original_view::{OriginalView, ViewInputs};
 use super::{
     BuildCompletion, BuildFailure, BuildNavigation, BuildProgress, BuildResources, CompletedBuild,
     ManagedBuild, NativeBuild, ProfileReleaseWait, WebviewId, WindowsLoopEvent, WvError, candidate,
+    configure_application_name_for_user_agent,
 };
+use crate::ApplicationNameForUserAgent;
 use crate::engine::WebviewSpec;
+use crate::resource_intake::{MAX_PENDING_METADATA_BYTES, RetainedByteCredit};
 
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 use super::TestControl;
@@ -21,6 +24,7 @@ pub(in crate::webview2) struct OriginalBuild {
     pub(in crate::webview2) inputs: ViewInputs,
     pub(in crate::webview2) observer: Observation,
     pub(in crate::webview2) deadline: Instant,
+    pub(in crate::webview2) application_name_for_user_agent: Option<ApplicationNameForUserAgent>,
 }
 
 impl NativeBuild {
@@ -62,6 +66,9 @@ impl NativeBuild {
         original: OriginalBuild,
         proxy: &EventLoopProxy<WindowsLoopEvent>,
     ) -> Result<(), WvError> {
+        let application_name = original
+            .application_name_for_user_agent
+            .map(|name| (name, original.inputs.source.retained_credit_account()));
         let prepared = OriginalView::prepare(original.inputs, id)?;
         self.view_mut()?.original = Some(prepared);
         self.completed = Some(BuildCompletion::OriginalPending {
@@ -76,6 +83,17 @@ impl NativeBuild {
         };
         let guard = Self::install_guard(&view.webview, id)?;
         Self::configure_guarded_shell(view, id, Some(proxy))?;
+        if let Some((name, account)) = application_name {
+            // Bound the native strings and UTF-8 copies on this source's account.
+            // Release this temporary reservation before preload installation.
+            let _credit = RetainedByteCredit::reserve(&account, MAX_PENDING_METADATA_BYTES)
+                .map_err(|_| {
+                    candidate::candidate_error(
+                        "applicationNameForUserAgent metadata budget exhausted",
+                    )
+                })?;
+            configure_application_name_for_user_agent(&guard, &name)?;
+        }
         let original_view = view.original.as_mut().ok_or_else(|| {
             candidate::candidate_error("selected build lost its attached original owner")
         })?;
