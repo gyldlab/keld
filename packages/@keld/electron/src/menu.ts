@@ -234,8 +234,7 @@ function buildMenu(input: unknown, build: BuildState, depth: number): Menu {
     if (label === undefined) {
       label = metadata?.label ?? "";
       if ((label as string).includes("{app}"))
-        label = (label as string).replace(
-          "{app}",
+        label = (label as string).replace("{app}", () =>
           readSessionFact("name", "MenuItem role default label"),
         );
     }

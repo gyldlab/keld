@@ -90,6 +90,31 @@ test("GH480 native role labels use only actual pre-entry Host launch metadata", 
   ]);
 });
 
+test("GH480 native role labels preserve literal replacement tokens in the Host app name", () => {
+  const child = Bun.spawnSync({
+    cmd: [
+      process.execPath,
+      "--no-install",
+      "--no-env-file",
+      '--define=__KELD_HOST_LAUNCH_FACTS__:{"schema":1,"kind":"development","name":"Acme $&","root":"/qualified-stage"}',
+      `--preload=${new URL("../../kipc/src/transport.ts", import.meta.url).pathname}`,
+      "-e",
+      `import { Menu } from ${JSON.stringify(new URL("./menu.ts", import.meta.url).pathname)}; const m=Menu.buildFromTemplate([{role:'hide'},{role:'hideothers'},{role:'unhide'},{role:'quit'}]); console.log(JSON.stringify(m.items.map(i=>[i.role,i.label,i.accelerator])));`,
+    ],
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 4000,
+  });
+  expect(child.exitCode).toBe(0);
+  expect(child.stderr.toString()).toBe("");
+  expect(JSON.parse(child.stdout.toString())).toEqual([
+    ["hide", "Hide Acme $&", "Command+H"],
+    ["hideothers", "Hide Others", "Command+Option+H"],
+    ["unhide", "Show All", null],
+    ["quit", "Quit Acme $&", "Command+Q"],
+  ]);
+});
+
 test("GH480 both original macOS template variants construct all source menus, roles and initial checkbox states", () => {
   const child = Bun.spawnSync({
     cmd: [
