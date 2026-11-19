@@ -1,0 +1,7 @@
+# Keep the vendored Tao 0.35.3 sources in their upstream Rust 2018 style while
+# the repository's included-file checker formats every discovered source path.
+style_edition = "2018"
+tab_spaces = 2
+newline_style = "Unix"
+use_field_init_shorthand = false
+use_try_shorthand = false
