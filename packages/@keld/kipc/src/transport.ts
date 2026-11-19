@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:fecc471716f3583191cab21359b220d05d2a167b33b1943f75c237472a292ce4
+// @keld/kipc-transport sha256:0934a08ed8076de1a902039b6bd48f8d3eca8040856e4980a3b1ea2f4511e34e
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -26,7 +26,7 @@ import {
   workerData,
   MessagePort,
 } from "node:worker_threads";
-import { isProxy } from "node:util/types";
+import { isNativeError, isProxy } from "node:util/types";
 
 /** @internal Host-selected launch mode captured by the qualified native preload. */
 export const nativeFacadeBootSelected =
@@ -375,6 +375,7 @@ export const windowsDesktopSnapshotSelected =
 // never invoke a saved method through mutable Function.prototype methods.
 const intrinsicApply = Reflect.apply;
 const IntrinsicError = Error;
+const IntrinsicTypeError = TypeError;
 const IntrinsicUint8Array = Uint8Array;
 const IntrinsicInt32Array = Int32Array;
 const IntrinsicSharedArrayBuffer = SharedArrayBuffer;
@@ -385,7 +386,10 @@ const intrinsicFreeze = Object.freeze;
 const intrinsicSetPrototypeOf = Object.setPrototypeOf;
 const intrinsicDefineProperty = Object.defineProperty;
 const intrinsicDescriptor = Object.getOwnPropertyDescriptor;
+const intrinsicHasOwn = Object.hasOwn;
+const intrinsicObjectEntries = Object.entries;
 const intrinsicIsProxy = isProxy;
+const intrinsicIsNativeError = isNativeError;
 const intrinsicOwnKeys = Reflect.ownKeys;
 const intrinsicIsArray = Array.isArray;
 const intrinsicInteger = Number.isInteger;
@@ -443,6 +447,7 @@ const intrinsicTextDecode = TextDecoder.prototype.decode;
 const intrinsicSetImmediate = setImmediate;
 const intrinsicConsole = console;
 const intrinsicConsoleError = console.error;
+const intrinsicConsoleWarn = console.warn;
 const intrinsicStringify = JSON.stringify;
 const intrinsicStringCodeUnit = String.prototype.charCodeAt;
 const intrinsicTextEncode = TextEncoder.prototype.encode;
@@ -501,6 +506,23 @@ export const stateDefineProperty: typeof Object.defineProperty =
 /** @internal Error creation and string quoting for late facade imports. */
 export const stateErrorConstructor: ErrorConstructor = IntrinsicError;
 export const stateJsonStringify: typeof JSON.stringify = intrinsicStringify;
+
+/** @internal Pre-app validators for selected SDK inputs, even on late imports. */
+export const stateOwnDescriptor = intrinsicDescriptor;
+export const stateHasOwn = intrinsicHasOwn;
+export const stateOwnKeys = intrinsicOwnKeys;
+export const stateIsArray = intrinsicIsArray;
+export const stateIsProxy = intrinsicIsProxy;
+export const stateIsNativeError = intrinsicIsNativeError;
+export const stateObjectEntries = intrinsicObjectEntries;
+export const stateTypeErrorConstructor: TypeErrorConstructor =
+  IntrinsicTypeError;
+
+/** @internal Diagnostic-only SDK warning through the pre-app console. */
+export function stateWarn(message: string): void {
+  intrinsicApply(intrinsicConsoleWarn, intrinsicConsole, [message]);
+}
+
 /** @internal Construct Source-owned state with the captured native constructor. */
 export function stateMap<K, V>(): Map<K, V> {
   return new IntrinsicMap<K, V>();
