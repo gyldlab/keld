@@ -1,13 +1,13 @@
 //! The selected Create producer uses real retained source and Runtime Init facts.
 
-use super::{AcceptedRole, PrimaryRoleConfig};
+use super::{AcceptedRole, PrimaryRoleConfig, RoleOwner};
 use crate::app_session::graph_contract::tests::prepared_original_window_source;
 use crate::app_session::window_router::original::{
     OriginalWindowCreateRefusal, PreparedOriginalWindowCreate,
 };
 use crate::app_session::{
-    AppWindowCommand, PlatformPrimaryOwnerHandle, PrimaryCallerContext, PrimaryRouter,
-    SessionShutdownState,
+    AppWindowCommand, PlatformPrimaryOwnerHandle, PrimaryCallerContext, PrimaryOwnerUpdate,
+    PrimaryRouter, SessionShutdownState,
 };
 use keld_ipc::CorrelationId;
 use keld_ipc::window::WindowRequest;
@@ -38,6 +38,16 @@ fn windows_original_create_preparation_binds_exact_source_runtime_and_start_cut(
     let selection = prepared
         .bind_runtime(&bound)
         .expect("bind authenticated facts");
+    selection
+        .validate_runtime_versions(Some(&versions))
+        .expect("identical Runtime facts preserve selection");
+    let mut changed_versions = versions.clone();
+    changed_versions.remove("bun");
+    assert!(
+        selection
+            .validate_runtime_versions(Some(&changed_versions))
+            .is_err()
+    );
     let (guardian, _commands) = mpsc::channel();
     let (window, commands) = mpsc::channel();
     let router = PrimaryRouter::start_bound(
@@ -140,9 +150,28 @@ fn windows_original_create_preparation_binds_exact_source_runtime_and_start_cut(
         commands.try_recv().is_err(),
         "preparation owns no UI publication"
     );
+    let mut unqualified_role = AcceptedRole::start(RoleOwner::Primary);
+    let (unqualified, _unqualified_control) = unqualified_role.bind();
+    assert!(unqualified.runtime_versions().is_none());
+    assert!(prepared.bind_runtime(&unqualified).is_err());
+    let refusal = handle
+        .apply_generation_update(PrimaryOwnerUpdate::Bound(unqualified))
+        .expect_err("authenticated successor lacks the selected Runtime facts");
+    assert!(
+        refusal
+            .error
+            .to_string()
+            .contains("immutable preload Runtime process facts")
+    );
+    assert!(
+        witness.try_admit_native(&mut || true),
+        "refusal did not replace the current role"
+    );
     router.shutdown().expect("router cleanup");
-    assert!(matches!(
-        role.finish(),
-        Some(keld_runtime::SupervisorOutcome::Stopped)
-    ));
+    for owner in [&mut role, &mut unqualified_role] {
+        assert!(matches!(
+            owner.finish(),
+            Some(keld_runtime::SupervisorOutcome::Stopped)
+        ));
+    }
 }

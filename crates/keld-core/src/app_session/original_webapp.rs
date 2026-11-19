@@ -64,6 +64,19 @@ pub(super) struct OriginalLoadSelection {
 }
 
 impl OriginalLoadSelection {
+    pub(super) fn validate_runtime_versions(
+        &self,
+        versions: Option<&BTreeMap<String, String>>,
+    ) -> Result<(), HostAppError> {
+        if versions == Some(&self.versions) {
+            return Ok(());
+        }
+        Err(app_detail(
+            "Windows original runtime versions",
+            "the successor did not supply the same immutable preload Runtime process facts",
+        ))
+    }
+
     pub(super) fn prepare_preload(
         &self,
         absolute_selector: &str,

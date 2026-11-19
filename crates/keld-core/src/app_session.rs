@@ -7857,6 +7857,26 @@ impl PrimaryRouterHandle {
                     let _ = stream.shutdown_app_link();
                     return Ok(());
                 }
+                #[cfg(windows)]
+                {
+                    let runtime_facts = self.windows.as_ref().map_or(Ok(()), |windows| {
+                        windows
+                            .lock()
+                            .map_err(|_| {
+                                app_detail("Windows Runtime rebind", "registry lock poisoned")
+                            })?
+                            .validate_original_runtime_versions(bound.runtime_versions())
+                    });
+                    if let Err(primary) = runtime_facts {
+                        self.guardian.deny_recovery();
+                        let stream = bound.into_stream();
+                        let close = finish_link_shutdown(
+                            stream.shutdown_app_link(),
+                            "incompatible Windows successor link close",
+                        );
+                        return Err(append_app_cleanup(primary, [close]).into());
+                    }
+                }
                 #[cfg(target_os = "macos")]
                 {
                     self.install_prepared_generation_with_identity(

@@ -61,6 +61,18 @@ impl WindowSession {
     }
 
     #[cfg(windows)]
+    pub(super) fn validate_original_runtime_versions(
+        &self,
+        versions: Option<&std::collections::BTreeMap<String, String>>,
+    ) -> Result<(), HostAppError> {
+        self.original_selection
+            .as_ref()
+            .map_or(Ok(()), |selection| {
+                selection.validate_runtime_versions(versions)
+            })
+    }
+
+    #[cfg(windows)]
     pub(super) fn create_original_for_caller(
         &mut self,
         caller: &PrimaryCallerContext,
