@@ -144,7 +144,6 @@ impl ManagedWindows {
     /// Parked answers remain owned until independent native retirement.
     pub(super) fn stop(&mut self, after_views_closed: impl FnOnce()) -> Result<(), WvError> {
         let candidate_drained = self.builder.retire_candidate_on_ui();
-        let selected_stopped = self.stop_selected();
         let events = &self.events;
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         let test_control = self.test_control.as_ref();
@@ -166,8 +165,11 @@ impl ManagedWindows {
                 )
             },
         );
+        // Each actual View first revokes and reports its own checked identity.
+        // Shared resource retirement would otherwise erase that correlation.
+        let selected_stopped = self.stop_selected();
         if !candidate_drained {
-            if let Err(error) = stopped {
+            if let Err(error) = stopped.and(selected_stopped) {
                 eprintln!("KELD_WV_BUILD_STOP_CLEANUP {error}");
             }
             return Err(super::profile_failure_with(
