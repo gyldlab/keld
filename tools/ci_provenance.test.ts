@@ -1004,7 +1004,9 @@ test("KEL-270 evidence preflight binds a clean Git checkout to its expected SHA"
   if (process.platform !== "linux") return;
 
   const temporary = mkdtempSync(join(tmpdir(), "keld270-checkout-binding-"));
-  const receipt = JSON.parse(readFileSync(trustedKEL270ReceiptPath, "utf8")) as {
+  const receipt = JSON.parse(
+    readFileSync(trustedKEL270ReceiptPath, "utf8"),
+  ) as {
     published_file_sha256: Record<string, string>;
   };
   const git = (...args: string[]) => {
@@ -1032,6 +1034,7 @@ test("KEL-270 evidence preflight binds a clean Git checkout to its expected SHA"
       writeFileSync(target, readFileSync(name));
     }
     git("init", "-q", "--object-format=sha1");
+    git("config", "maintenance.auto", "false");
     git("add", "-f", "--", "docs");
     git(
       "-c",
