@@ -16,6 +16,7 @@ use nix::sys::signal::{Signal, kill, killpg};
 use nix::unistd::{Pid, getpgid};
 use serde_json::json;
 use std::fs;
+use std::io;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::Ordering;
@@ -232,23 +233,29 @@ impl Drop for ActorFixture {
 
 /// A real test-owned member of the authenticated G1 group. Only this test
 /// parent may reap it; failure cleanup never acts on an observed foreign PID.
-struct HeldGuardianMember(Option<Child>);
+// A test-only channel lets the caller verify what Drop actually did with the
+// original Child, not merely that its numeric PID no longer has a group.
+type HeldChildCleanupReceipt = (io::Result<()>, io::Result<std::process::ExitStatus>);
+struct HeldGuardianMember(Option<Child>, Option<mpsc::Sender<HeldChildCleanupReceipt>>);
 
 impl HeldGuardianMember {
     fn new(group_pid: u32) -> Self {
         let raw = i32::try_from(group_pid).expect("authenticated Bun group PID fits i32");
         // Own the exact Child before checking its group: a failed assertion
         // must still reach the test-only kill-and-wait Drop rescue.
-        let member = Self(Some(
-            Command::new("/bin/sleep")
-                .arg("30")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .process_group(raw)
-                .spawn()
-                .expect("test-owned child joined authenticated G1 group"),
-        ));
+        let member = Self(
+            Some(
+                Command::new("/bin/sleep")
+                    .arg("30")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .process_group(raw)
+                    .spawn()
+                    .expect("test-owned child joined authenticated G1 group"),
+            ),
+            None,
+        );
         assert_eq!(
             getpgid(Some(Pid::from_raw(
                 i32::try_from(member.0.as_ref().expect("owned member").id())
@@ -286,8 +293,11 @@ impl HeldGuardianMember {
 impl Drop for HeldGuardianMember {
     fn drop(&mut self) {
         if let Some(mut member) = self.0.take() {
-            let _ = member.kill();
-            let _ = member.wait();
+            let signaled = member.kill();
+            let reaped = member.wait();
+            if let Some(receipt) = self.1.take() {
+                let _ = receipt.send((signaled, reaped));
+            }
         }
     }
 }
@@ -306,7 +316,8 @@ fn held_member_reap_timeout_keeps_child_for_drop_rescue() {
         .spawn()
         .expect("spawn exact test-owned independent child");
     let pid = Pid::from_raw(i32::try_from(child.id()).expect("owned PID fits"));
-    let mut owned = HeldGuardianMember(Some(child));
+    let (cleanup_tx, cleanup_rx) = mpsc::channel();
+    let mut owned = HeldGuardianMember(Some(child), Some(cleanup_tx));
     // Independent precondition: a child that already exited cannot prove the
     // live-child timeout or its unwind cleanup.
     let live_before = owned
@@ -336,9 +347,17 @@ fn held_member_reap_timeout_keeps_child_for_drop_rescue() {
     });
     drop(owned);
     if !still_owned {
-        // Failure-first mutation rescue: this test spawned the exact process,
-        // and no other parent-side waiter was installed for its PID.
-        let _ = kill(pid, Some(Signal::SIGKILL));
+        // Negative mutation rescue: this is still the test's direct Child.
+        // Wait for the finite sleeper; never signal a PID after losing its
+        // original Child handle.
+        let _ = nix::sys::wait::waitpid(pid, None);
+    }
+    let cleanup = cleanup_rx.recv_timeout(OBSERVATION_BOUND);
+    // A zombie can have getpgid(pid) == ESRCH on Darwin. Query the actual
+    // parent wait slot: ECHILD is the independent exact-reap oracle.
+    let child_wait_slot = nix::sys::wait::waitpid(pid, Some(nix::sys::wait::WaitPidFlag::WNOHANG));
+    if matches!(child_wait_slot, Ok(nix::sys::wait::WaitStatus::StillAlive)) {
+        // Test-only rescue if Drop lost its wait under a negative mutation.
         let _ = nix::sys::wait::waitpid(pid, None);
     }
     assert!(
@@ -358,10 +377,22 @@ fn held_member_reap_timeout_keeps_child_for_drop_rescue() {
         live_after,
         "the original child must still be running before Drop"
     );
+    let (signaled, reaped) = cleanup.expect("Drop must publish actual kill and wait results");
+    signaled.expect("Drop must signal the original live Child");
+    assert_eq!(
+        reaped.expect("Drop must reap the exact Child").signal(),
+        Some(nix::libc::SIGKILL),
+        "Drop must kill the original Child, not wait for a natural exit"
+    );
+    assert_eq!(
+        child_wait_slot,
+        Err(Errno::ECHILD),
+        "Drop must consume the original Child's OS wait status"
+    );
     assert_eq!(
         getpgid(Some(pid)),
         Err(Errno::ESRCH),
-        "Drop must kill and reap the exact test-owned child"
+        "Drop must leave no original test-owned process group"
     );
 }
 
