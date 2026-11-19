@@ -7,10 +7,11 @@
 //! against `limit_for_kind` before a body read on an admitted compatibility receiver.
 //! A typed decoder validates all inner field bounds after that bounded read.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
 use crate::CallError;
 use crate::IpcError;
+use crate::call_error::CallErrorFields;
 use crate::codec::{decode, encode};
 use crate::frame::FrameKind;
 
@@ -30,6 +31,8 @@ pub const COMPAT_ORIGIN_BYTES: usize = 1_024;
 pub const COMPAT_ERROR_CODE_BYTES: usize = 64;
 /// Maximum UTF-8 size of a consumer diagnostic message.
 pub const COMPAT_ERROR_MESSAGE_BYTES: usize = 512;
+/// Maximum received encoded size of a document retirement event.
+pub const COMPAT_DOCUMENT_RETIRED_FRAME_BYTES: usize = 11;
 
 /// A compatibility delivery or release requested by the authenticated Bun role.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,8 +42,10 @@ pub enum CompatControlRequest {
         /// Host-registered `WebView` selector.
         webview: u32,
         /// Literal topic, checked separately against exact Host grant.
+        #[serde(deserialize_with = "deserialize_compat_topic")]
         topic: String,
         /// Encoded endpoint value, opaque to Host.
+        #[serde(deserialize_with = "deserialize_compat_payload")]
         payload: Vec<u8>,
     },
     /// Main's addressed reply → original committed document only.
@@ -50,8 +55,10 @@ pub enum CompatControlRequest {
         /// Native-owned checked navigation identity, never independently minted.
         navigation: u32,
         /// Exact literal topic.
+        #[serde(deserialize_with = "deserialize_compat_topic")]
         topic: String,
         /// Encoded endpoint value, opaque to Host.
+        #[serde(deserialize_with = "deserialize_compat_payload")]
         payload: Vec<u8>,
     },
     /// Application consumer's terminal report (quantity-free, one ledger key).
@@ -122,6 +129,7 @@ pub enum ConsumerDisposition {
     /// Consumer could not admit the endpoint value.
     Refused {
         /// Existing canonical encoded `CallError`, attributed to consumer.
+        #[serde(deserialize_with = "deserialize_compat_diagnostic")]
         error: CallError,
     },
 }
@@ -138,6 +146,7 @@ pub enum TerminalDisposition {
     /// Consumer refused the value.
     Refused {
         /// Bounded diagnostic attributed to consumer, not Host certainty.
+        #[serde(deserialize_with = "deserialize_compat_diagnostic")]
         error: CallError,
     },
     /// Host-owned proof of retirement; ambiguous effects remain charged.
@@ -185,15 +194,48 @@ fn valid_payload(payload: &[u8]) -> bool {
     payload.len() <= COMPAT_VALUE_BYTES
 }
 
-fn valid_diagnostic(error: &CallError) -> bool {
-    let code = error.code.as_bytes();
+fn valid_diagnostic<S: AsRef<str>>(error: &CallErrorFields<S>) -> bool {
+    let code = error.code.as_ref().as_bytes();
     code.len() > b"KELD-".len()
         && code.len() <= COMPAT_ERROR_CODE_BYTES
         && code.starts_with(b"KELD-")
         && code
             .iter()
             .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || *byte == b'-')
-        && error.message.len() <= COMPAT_ERROR_MESSAGE_BYTES
+        && error.message.as_ref().len() <= COMPAT_ERROR_MESSAGE_BYTES
+}
+
+fn deserialize_compat_topic<'de, D: Deserializer<'de>>(decoder: D) -> Result<String, D::Error> {
+    let topic = <&str>::deserialize(decoder)?;
+    if !valid_topic(topic) {
+        return Err(D::Error::custom("compatibility topic exceeds its bound"));
+    }
+    Ok(topic.to_owned())
+}
+
+fn deserialize_compat_payload<'de, D: Deserializer<'de>>(decoder: D) -> Result<Vec<u8>, D::Error> {
+    let payload = <&[u8]>::deserialize(decoder)?;
+    if !valid_payload(payload) {
+        return Err(D::Error::custom(
+            "compatibility endpoint value exceeds its bound",
+        ));
+    }
+    Ok(payload.to_vec())
+}
+
+fn deserialize_compat_diagnostic<'de, D: Deserializer<'de>>(
+    decoder: D,
+) -> Result<CallError, D::Error> {
+    let error = CallErrorFields::<&str>::deserialize(decoder)?;
+    if !valid_diagnostic(&error) {
+        return Err(D::Error::custom(
+            "compatibility diagnostic exceeds its domain",
+        ));
+    }
+    Ok(CallError {
+        code: error.code.to_owned(),
+        message: error.message.to_owned(),
+    })
 }
 
 fn valid_consumer(disposition: &ConsumerDisposition) -> bool {
@@ -344,9 +386,39 @@ pub fn decode_event(bytes: &[u8]) -> Result<CompatControlEvent, IpcError> {
     if bytes.len() > COMPAT_DATA_FRAME_BYTES {
         return Err(IpcError::PayloadTooLarge);
     }
-    let value: CompatControlEvent = decode(bytes)?;
+    let value: CompatControlEventValue<&str, &[u8]> = decode(bytes)?;
+    if matches!(value, CompatControlEventValue::DocumentRetired { .. })
+        && bytes.len() > COMPAT_DOCUMENT_RETIRED_FRAME_BYTES
+    {
+        return Err(IpcError::PayloadTooLarge);
+    }
     validate_event(&value)?;
-    Ok(value)
+    Ok(match value {
+        CompatControlEventValue::RendererMessage {
+            webview,
+            navigation,
+            message,
+            url,
+            origin,
+            topic,
+            payload,
+        } => CompatControlEvent::RendererMessage {
+            webview,
+            navigation,
+            message,
+            url: url.to_owned(),
+            origin: origin.to_owned(),
+            topic: topic.to_owned(),
+            payload: payload.to_vec(),
+        },
+        CompatControlEventValue::DocumentRetired {
+            webview,
+            navigation,
+        } => CompatControlEvent::DocumentRetired {
+            webview,
+            navigation,
+        },
+    })
 }
 
 /// Canonically encode Host-authenticated event fields inside their frame budget.

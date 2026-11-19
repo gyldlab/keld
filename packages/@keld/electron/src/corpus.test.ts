@@ -51,7 +51,7 @@ const CORPUS_PATH = join(
 const STALL_LIMIT_MS = 5000;
 /** One owner, one digest: the Rust suite asserts this same constant. */
 const CORPUS_SHA256 =
-  "e12d2e38c3f9862d8f54fde99109d72ba03aa481274162ff42bda04ce0edb637";
+  "a1e34cf20a8879deb8bb84d866e44b15315194429db9bc43aa015d0d1b3a852b";
 /** Pre-auth policies may reaccept after a rejection; authenticated ones close. */
 const PRE_AUTH_POLICIES = new Set([
   "server-pre-auth-hello",

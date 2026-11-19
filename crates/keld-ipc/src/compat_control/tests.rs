@@ -146,6 +146,87 @@ fn compat_host_events_preserve_the_approved_field_order() {
 }
 
 #[test]
+fn compat_retirement_rejects_a_longer_received_body() {
+    let mut extended_tag = vec![0x81, 0];
+    extended_tag.extend_from_slice(&vector("document-retired-max")[1..]);
+    assert_eq!(extended_tag.len(), 12);
+    assert_eq!(
+        decode::<CompatControlEvent>(&extended_tag).expect("postcard accepts the overlong tag"),
+        CompatControlEvent::DocumentRetired {
+            webview: u32::MAX,
+            navigation: u32::MAX,
+        }
+    );
+    assert!(matches!(
+        decode_event(&extended_tag),
+        Err(IpcError::PayloadTooLarge)
+    ));
+}
+
+#[test]
+fn compat_body_checks_borrowed_fields_before_owning_them() {
+    use super::{COMPAT_ERROR_MESSAGE_BYTES, COMPAT_VALUE_BYTES, CompatControlEventValue};
+
+    let payload = vec![7; COMPAT_VALUE_BYTES + 1];
+    let event = CompatControlEventValue::RendererMessage {
+        webview: 1,
+        navigation: 2,
+        message: 3,
+        url: "file:///a",
+        origin: "null",
+        topic: "x",
+        payload: payload.as_slice(),
+    };
+    let event_bytes = encode(&event).expect("physical fixture body");
+    let borrowed: CompatControlEventValue<&str, &[u8]> =
+        decode(&event_bytes).expect("borrow event fields");
+    let CompatControlEventValue::RendererMessage {
+        payload: borrowed_payload,
+        ..
+    } = borrowed
+    else {
+        panic!("fixture must be a renderer message");
+    };
+    assert_eq!(borrowed_payload, payload);
+    assert!(
+        event_bytes
+            .as_ptr_range()
+            .contains(&borrowed_payload.as_ptr())
+    );
+    assert!(matches!(
+        decode_event(&event_bytes),
+        Err(IpcError::Codec(_))
+    ));
+
+    let request = CompatControlRequest::DeliverToCurrentMain {
+        webview: 1,
+        topic: "x".into(),
+        payload,
+    };
+    let request_bytes = encode(&request).expect("physical fixture body");
+    assert!(matches!(
+        decode::<CompatControlRequest>(&request_bytes),
+        Err(IpcError::Codec(_))
+    ));
+    let request = CompatControlRequest::ReleaseConsumed {
+        webview: 1,
+        navigation: 2,
+        message: 3,
+        disposition: ConsumerDisposition::Refused {
+            error: CallError {
+                code: "KELD-GUARD003".into(),
+                message: "x".repeat(COMPAT_ERROR_MESSAGE_BYTES + 1),
+            },
+        },
+    };
+    let request_bytes = encode(&request).expect("physical fixture body");
+    assert!(matches!(
+        decode::<CompatControlRequest>(&request_bytes),
+        Err(IpcError::Codec(_))
+    ));
+}
+
+#[test]
 fn compat_responses_keep_delivery_and_release_distinct() {
     let deliveries = [
         ("deliver-consumed", TerminalDisposition::Consumed),

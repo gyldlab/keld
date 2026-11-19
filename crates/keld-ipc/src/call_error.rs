@@ -55,13 +55,26 @@ use crate::link::write_frame;
 /// moves, so a mismatched pair completes the handshake and only discovers a
 /// payload-shape difference on the first failed `Call`. Acceptable pre-1.0 —
 /// nothing is published and the host and `@keld/electron` ship together.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CallError {
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename = "CallError")]
+pub struct CallErrorFields<S> {
     /// Stable registered `KELD-*` code (e.g. `KELD-GUARD001`).
-    pub code: String,
+    pub code: S,
     /// Failure rendering with code and fix: ordinarily full `Display`,
     /// with only the approved `auth.token` per-code constant exception.
-    pub message: String,
+    pub message: S,
+}
+
+/// Owned form of the one canonical application-level error.
+pub type CallError = CallErrorFields<String>;
+
+impl<S: core::fmt::Debug> core::fmt::Debug for CallErrorFields<S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CallError")
+            .field("code", &self.code)
+            .field("message", &self.message)
+            .finish()
+    }
 }
 
 impl core::fmt::Display for CallError {

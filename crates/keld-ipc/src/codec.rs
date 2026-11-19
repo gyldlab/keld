@@ -15,7 +15,9 @@ use crate::IpcError;
 ///
 /// Returns [`IpcError::Codec`] if the bytes are not valid postcard for `T`,
 /// or if bytes remain after `T`.
-pub fn decode<T: serde::de::DeserializeOwned>(payload: &[u8]) -> Result<T, IpcError> {
+pub fn decode<'payload, T: serde::Deserialize<'payload>>(
+    payload: &'payload [u8],
+) -> Result<T, IpcError> {
     let (value, rest) = take_from_bytes(payload).map_err(IpcError::Codec)?;
     if rest.is_empty() {
         Ok(value)
