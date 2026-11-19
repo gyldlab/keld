@@ -342,5 +342,8 @@ include!("tests/failed_ready_and_cli_lease.rs");
 include!("tests/terminal_cleanup_and_windows_shutdown.rs");
 
 #[cfg(windows)]
+#[path = "tests/windows_renderer_failure.rs"]
+mod windows_renderer_failure;
+#[cfg(windows)]
 #[path = "tests/windows_startup_preparation.rs"]
 mod windows_startup_preparation;

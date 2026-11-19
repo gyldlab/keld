@@ -307,6 +307,8 @@ struct DevHostLease {
 #[derive(Default)]
 struct SessionTransition {
     #[cfg(windows)]
+    direct_recovery: Option<Arc<PrimaryRecoveryGate>>,
+    #[cfg(windows)]
     failed_writer: Option<primary_writer::RetiredWriterFailure>,
     #[cfg(windows)]
     pending_ready: Option<lifecycle_writer::PendingReady>,
@@ -5355,14 +5357,40 @@ fn stop_failed_renderer_dispatch(
     router: &PrimaryRouterHandle,
     commands: &Sender<AppWindowCommand>,
 ) -> Result<(), HostAppError> {
-    let _transition = router.shutdown.transition_guard();
-    if router.shutdown.is_running() && !router.shutdown.reader_stop.load(Ordering::Acquire) {
-        commands
-            .send(AppWindowCommand::Fatal)
-            .map_err(|_| app_detail("renderer dispatch terminal", "window command owner ended"))?;
-        router.shutdown.stop_reader();
+    let transition = router.shutdown.transition_guard();
+    if !router.shutdown.is_running() {
+        return Ok(());
     }
-    Ok(())
+    // A queued owner command can lose to the Runtime worker's restart decision.
+    // Deny the exact Runtime gate here, at the same cut as the original readers.
+    let recovery = transition.direct_recovery.as_ref().map_or_else(
+        || {
+            Err(app_detail(
+                "renderer dispatch terminal",
+                "direct Runtime recovery gate is unavailable",
+            ))
+        },
+        |recovery| {
+            let _ = recovery.deny();
+            Ok(())
+        },
+    );
+    let terminal = publish_direct_primary_fatal_guarded(&router.shutdown, commands);
+    collapse_app_results([recovery, terminal])
+}
+
+#[cfg(windows)]
+fn publish_direct_primary_fatal_guarded(
+    shutdown: &SessionShutdownState,
+    commands: &Sender<AppWindowCommand>,
+) -> Result<(), HostAppError> {
+    if shutdown.reader_stop.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    shutdown.stop_reader();
+    commands
+        .send(AppWindowCommand::Fatal)
+        .map_err(|_| app_detail("renderer dispatch terminal", "window command owner ended"))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -6154,6 +6182,19 @@ impl DirectPrimaryOwner {
         window_commands: Sender<AppWindowCommand>,
         shutdown: SessionShutdownState,
     ) -> Result<Self, HostAppError> {
+        #[cfg(windows)]
+        let recovery = {
+            let recovery = Arc::new(recovery);
+            let mut transition = shutdown.transition_guard();
+            if transition.direct_recovery.is_some() {
+                return Err(app_detail(
+                    "direct primary owner",
+                    "Runtime recovery gate is already attached",
+                ));
+            }
+            transition.direct_recovery = Some(Arc::clone(&recovery));
+            recovery
+        };
         let (command_tx, command_rx) = mpsc::channel();
         let handle = thread::Builder::new()
             .name("keld-core-direct-primary-owner".to_owned())
@@ -6246,6 +6287,9 @@ impl DirectPrimaryOwner {
                     }
                     if let Some(outcome) = supervisor.try_wait_for_outcome() {
                         let session_running = shutdown.is_running();
+                        #[cfg(windows)]
+                        let session_running = session_running
+                            && !shutdown.reader_stop.load(Ordering::Acquire);
                         let result = match outcome {
                             keld_runtime::SupervisorOutcome::Stopped if session_running => {
                                 let ledger = supervisor.crash_ledger();
@@ -6268,7 +6312,7 @@ impl DirectPrimaryOwner {
                         // Ranked before the Fatal that ends the window loop.
                         .map_err(|error| owner_failure_by_causality(error, &shutdown));
                         if session_running {
-                            let _ = window_commands.send(AppWindowCommand::Fatal);
+                            publish_direct_primary_fatal(&shutdown, &window_commands);
                         }
                         forward_direct_primary_output(&supervisor)?;
                         return result;
@@ -6649,8 +6693,25 @@ fn terminate_direct_primary_owner(
     let error = owner_failure_by_causality(error, shutdown);
     let _ = recovery.deny();
     supervisor.shutdown();
-    let _ = window_commands.send(AppWindowCommand::Fatal);
+    publish_direct_primary_fatal(shutdown, window_commands);
     error
+}
+
+#[cfg(any(target_os = "linux", windows))]
+fn publish_direct_primary_fatal(
+    shutdown: &SessionShutdownState,
+    commands: &Sender<AppWindowCommand>,
+) {
+    #[cfg(windows)]
+    {
+        let _transition = shutdown.transition_guard();
+        let _ = publish_direct_primary_fatal_guarded(shutdown, commands);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = shutdown;
+        let _ = commands.send(AppWindowCommand::Fatal);
+    }
 }
 
 #[cfg(any(target_os = "linux", windows))]
