@@ -1,4 +1,4 @@
-//! Real two-controller resource installation; model only the timing of retirement.
+//! Real resource installation with two participants and a separate release witness.
 use super::*;
 use crate::WebEngine as _;
 use crate::resource_source::windows::tests::Fixture;
@@ -12,6 +12,9 @@ pub(in crate::webview2) fn reentrant_retirement(
     let source = fixture.source_arc();
     let first = engine.create(spec)?;
     let second = engine.create(spec)?;
+    // The fixture closes both resource participants explicitly. Leave a
+    // same-environment controller for the ordinary browser release witness.
+    let release_witness = engine.create(spec)?;
     let proxy = engine.creation_event_loop()?.create_proxy();
     let session = ResourceSession::new(
         Arc::clone(&source),
@@ -73,5 +76,7 @@ pub(in crate::webview2) fn reentrant_retirement(
     assert!(guard.close.close_on_ui());
     guard.controller_closed_on_ui();
     assert!(guard.is_drained());
+    assert!(engine.view(release_witness)?.close_custody.is_open());
+    eprintln!("KELD_W3_REENTRANT_INSTALL_REFUSED_AND_DRAINED");
     Ok(())
 }
