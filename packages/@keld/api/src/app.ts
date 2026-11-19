@@ -109,7 +109,7 @@ export function hasObservedHostReady(): boolean {
 let linkDead: Error | undefined;
 let readyWaiters: ReadyWaiter[] = [];
 /**
- * The role's one link attempt (GH-527 Â§4.2: a realm opens one link). Never
+ * The role's one link attempt (GH-527 §4.2: a realm opens one link). Never
  * reset: a failed connect, or a link that died before Ready, stays the answer,
  * so every later `whenReady` or `quit` rethrows that same typed error instead
  * of retrying into `KELD-IPC-005`.

@@ -706,7 +706,7 @@ export function assertAuthArtifactFresh(
 }
 
 // ---------------------------------------------------------------------------
-// Channel-table target (GH-508 spec docs/specs/gh508-kipc-channel-table.md Â§4.3).
+// Channel-table target (GH-508 spec docs/specs/gh508-kipc-channel-table.md §4.3).
 //
 // Reads the Rust channel table and rewrites one delimited region of the single
 // staged transport file. Rust compilation (`validate_table`) is the validator

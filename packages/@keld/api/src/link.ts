@@ -114,7 +114,7 @@ export type LifecycleHandler = {
   onLinkDead: (err: Error) => void;
 };
 
-/** What the host may send this role besides replies to its own calls (GH-527 Â§4.7). */
+/** What the host may send this role besides replies to its own calls (GH-527 §4.7). */
 const LIFECYCLE_RECEIVE: WorkerReceiveTable = {
   eventChannels: [LIFECYCLE_CHANNEL],
   callReceivers: [{ policy: "echoReceiver" }],
@@ -198,7 +198,7 @@ export class LifecycleLink {
       handlers.onReady();
     };
     // A lifecycle EVENT this role cannot decode ends the link (a throwing
-    // applier, Â§4.6) before any listener runs; the listener then dispatches it.
+    // applier, §4.6) before any listener runs; the listener then dispatches it.
     workerLink.setStateApplier(LIFECYCLE_CHANNEL, (payload) => {
       if (decodeEvent(payload) === "last-window-closed") {
         session.#appliedLastWindowClosed += 1;
@@ -331,7 +331,7 @@ export class LifecycleLink {
   /**
    * Sends the role's Quit without parking (PANEL-P2: `app.quit` returns
    * immediately) and closes the link once its REPLY or typed failure settles
-   * (GH-527 Â§4.9). Resolves on `LifecycleResponse::Quit`; a host ERR rejects
+   * (GH-527 §4.9). Resolves on `LifecycleResponse::Quit`; a host ERR rejects
    * with that error, any other REPLY with `KELD-IPC-003`. Concurrent calls
    * share one Quit.
    */
