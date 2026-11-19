@@ -19,6 +19,24 @@ mod original_controls;
 #[path = "accepted_primary_identity/original_create.rs"]
 mod original_create;
 
+#[cfg(windows)]
+fn expect_original_desktop_binding(
+    router: &PrimaryRouter,
+    commands: &mpsc::Receiver<AppWindowCommand>,
+) {
+    let handle = router.handle();
+    let (attempt, reader) = {
+        let current = handle.current.lock().expect("current owner");
+        let active = current.as_ref().expect("authenticated primary");
+        (active.attempt, Arc::clone(&active.reader_stop))
+    };
+    assert!(matches!(
+        commands.recv_timeout(BOUND).expect("original desktop producer binding"),
+        AppWindowCommand::WindowsDesktopProducer { capture }
+            if capture.matches(attempt, &reader)
+    ));
+}
+
 /// Actual role coordinator owns every Bun child/restart/reap, including unwind.
 struct AcceptedRole {
     supervisor: PrimaryRoleSupervisor,

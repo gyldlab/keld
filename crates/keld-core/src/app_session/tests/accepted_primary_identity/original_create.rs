@@ -62,6 +62,7 @@ fn windows_original_create_preparation_binds_exact_source_runtime_and_start_cut(
         Some(Arc::new(selection)),
     )
     .expect("actual primary with prepared original source");
+    super::expect_original_desktop_binding(&router, &commands);
     let handle = router.handle();
     let request = |path: &Path| WindowRequest::CreateWithPreload {
         width: 640,

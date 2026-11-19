@@ -106,6 +106,7 @@ fn start_control_router(first: BoundPrimaryGeneration) -> ControlRouter {
         Some(Arc::new(selection)),
     )
     .expect("authenticated original router");
+    super::expect_original_desktop_binding(&router, &events);
     {
         let handle = router.handle();
         let _transition = handle.shutdown.transition_guard();
