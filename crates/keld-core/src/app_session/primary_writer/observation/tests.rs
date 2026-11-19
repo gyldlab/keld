@@ -142,6 +142,7 @@ fn written_slot_after_wait_deadline_keeps_the_physical_stamp_and_original_author
                 &fixture.target,
                 receipt,
                 observed,
+                caller_deadline,
                 "actual Written slot after observer deadline",
             )
             .into_parts();
@@ -186,7 +187,12 @@ fn an_earlier_observer_cutoff_keeps_the_pending_original_writer_live() -> TestRe
     resume.send(())?;
     let physical = read_frame(&mut fixture.peer);
     fixture.finish()?;
-    assert!(result.is_err(), "the observer cutoff still ends its wait");
+    assert!(
+        result
+            .expect_err("the observer cutoff ends its wait")
+            .to_string()
+            .contains("observer cutoff expired before the admitted primary write cutoff")
+    );
     assert!(
         failure.is_none(),
         "an early observer timeout supplies no writer failure evidence"
@@ -196,5 +202,44 @@ fn an_earlier_observer_cutoff_keeps_the_pending_original_writer_live() -> TestRe
         "an early observer timeout retired the current reader"
     );
     assert_eq!(physical?.1, FRAME);
+    Ok(())
+}
+
+#[test]
+fn a_pending_slot_at_its_admitted_cutoff_grants_exact_retirement() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    let (dequeued, resume) = fixture
+        .router
+        .primary_writer_owner()?
+        .hold_next_dequeue_for_test();
+    let admitted = Instant::now() + Duration::from_millis(250);
+    let receipt = fixture.send(admitted)?;
+    dequeued.recv_timeout(Duration::from_secs(2))?;
+    let (result, failure) = fixture
+        .router
+        .observe_primary_write(
+            &fixture.target,
+            receipt,
+            admitted + Duration::from_secs(2),
+            "admitted physical cutoff",
+        )
+        .into_parts();
+    let role_retired = fixture.router.current_primary_writer_target()?.is_none();
+    resume.send(())?;
+    fixture.finish()?;
+    assert!(
+        result
+            .expect_err("the original physical cutoff expires")
+            .to_string()
+            .contains("the original primary write deadline expired")
+    );
+    assert!(
+        failure.is_some(),
+        "a still-pending original slot has exact cutoff evidence"
+    );
+    assert!(
+        role_retired,
+        "only the actual cutoff closes the original role"
+    );
     Ok(())
 }

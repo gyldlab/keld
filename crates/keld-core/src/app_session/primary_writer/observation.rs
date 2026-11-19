@@ -1,6 +1,7 @@
 //! One synchronous source keeps this result until its publication turn ends.
 //! Waiting observes only the original receipt; recovery stays with its real owner.
 
+use super::failure::WriteReceiptState;
 use super::{PrimaryWriteFailure, WriteCompletion, WriteReceipt, WriterLink, WriterRefusal};
 use crate::app_session::{HostAppError, PrimaryRouterHandle, app_detail, append_app_cleanup};
 use std::sync::Arc;
@@ -36,8 +37,8 @@ impl PrimaryRouterHandle {
         deadline: Instant,
         phase: &'static str,
     ) -> DeferredPrimaryWrite {
-        let observed = receipt.wait(deadline);
-        self.finish_primary_write_observation(target, receipt, observed, phase)
+        let observed = receipt.wait(deadline.min(receipt.deadline));
+        self.finish_primary_write_observation(target, receipt, observed, deadline, phase)
     }
 
     fn finish_primary_write_observation(
@@ -45,48 +46,47 @@ impl PrimaryRouterHandle {
         target: &Arc<WriterLink>,
         receipt: WriteReceipt,
         observed: Result<WriteCompletion, WriterRefusal>,
+        observer_deadline: Instant,
         phase: &'static str,
     ) -> DeferredPrimaryWrite {
-        if observed == Ok(WriteCompletion::Written) {
-            let result = receipt
-                .written_at()
-                .map_err(|error| error.into_host_error(phase))
-                .and_then(|instant| {
-                    instant.ok_or_else(|| {
-                        app_detail(phase, "Written has no physical completion instant")
-                    })
-                });
-            // A known Written outcome never becomes failed-writer authority,
-            // even if reading its retained timestamp detects an internal error.
-            drop(receipt);
-            return DeferredPrimaryWrite {
-                result,
-                failure: None,
-            };
-        }
-        let primary = observed
-            .map_err(|error| error.into_host_error(phase))
-            .and_then(|completion| completion.into_result(phase))
-            .err()
-            .unwrap_or_else(|| app_detail(phase, "unexpected physical completion state"));
-        let evidence = receipt.failure_evidence();
+        let admitted_deadline = receipt.deadline;
+        let snapshot = receipt.snapshot(Some(target));
         drop(receipt); // the worker still owns any actually pending encoded Box
-        match evidence {
-            Ok(failure) => {
-                let retirement = failure.as_ref().map_or_else(
-                    || self.retire_generation_after_write_failure(target.caller()),
-                    |failure| self.record_primary_write_failure(failure),
-                );
+        let wait_error = || match observed {
+            Err(WriterRefusal::Deadline) if observer_deadline < admitted_deadline => app_detail(
+                phase,
+                "the observer cutoff expired before the admitted primary write cutoff",
+            ),
+            _ => observed
+                .map_err(|error| error.into_host_error(phase))
+                .and_then(|completion| completion.into_result(phase))
+                .err()
+                .unwrap_or_else(|| app_detail(phase, "unexpected physical completion state")),
+        };
+        match snapshot {
+            Ok(WriteReceiptState::Written(at)) => DeferredPrimaryWrite {
+                result: Ok(at),
+                failure: None,
+            },
+            Ok(WriteReceiptState::Pending) => DeferredPrimaryWrite {
+                result: Err(wait_error()),
+                failure: None,
+            },
+            Ok(
+                WriteReceiptState::OutcomeUnknown(failure)
+                | WriteReceiptState::AdmittedDeadlineExpired(failure),
+            ) => {
+                let retirement = self.record_primary_write_failure(&failure);
                 DeferredPrimaryWrite {
-                    result: Err(append_app_cleanup(primary, [retirement])),
-                    failure,
+                    result: Err(append_app_cleanup(wait_error(), [retirement])),
+                    failure: Some(failure),
                 }
             }
             Err(error) => DeferredPrimaryWrite {
                 // Poison/invalid observation supplies no fabricated Unknown fact.
                 // Existing receipt/worker custody still owns the actual position.
                 result: Err(append_app_cleanup(
-                    primary,
+                    wait_error(),
                     [Err(error.into_host_error(phase))],
                 )),
                 failure: None,

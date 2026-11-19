@@ -77,33 +77,64 @@ impl PrimaryWriteFailure {
     }
 }
 
+pub(super) enum WriteReceiptState {
+    Pending,
+    Written(Instant),
+    OutcomeUnknown(PrimaryWriteFailure),
+    AdmittedDeadlineExpired(PrimaryWriteFailure),
+}
+
 impl WriteReceipt {
-    /// Inspect before dropping the unique receipt. A successful write, a mere
-    /// wake, a short observer timeout, or an unadmitted frame yields no evidence.
-    pub(in crate::app_session) fn failure_evidence(
+    /// Read completion, its physical time and failure authority in one exact
+    /// slot observation. An earlier observer cutoff has no writer authority.
+    pub(super) fn snapshot(
         &self,
-    ) -> Result<Option<PrimaryWriteFailure>, WriterRefusal> {
+        expected: Option<&Arc<WriterLink>>,
+    ) -> Result<WriteReceiptState, WriterRefusal> {
         let state = self
             .shared
             .state
             .lock()
             .map_err(|_| WriterRefusal::Poisoned)?;
         let completion = state.completion(self.position)?;
-        let failed = completion == Some(WriteCompletion::OutcomeUnknown)
-            || (completion.is_none()
-                && state.pending(self.position)
-                && Instant::now() >= self.deadline);
-        if !failed {
-            return Ok(None);
+        let target = state.slots[self.position.index].target.as_ref();
+        if expected
+            .is_some_and(|expected| target.is_none_or(|target| !Arc::ptr_eq(expected, target)))
+        {
+            return Err(WriterRefusal::InvalidFrame);
         }
-        let target = state.slots[self.position.index]
-            .target
-            .as_ref()
-            .ok_or(WriterRefusal::InvalidFrame)?;
-        Ok(Some(PrimaryWriteFailure {
-            target: Arc::clone(target),
-            owner: Arc::downgrade(&self.shared),
-        }))
+        let evidence = || {
+            let target = target.ok_or(WriterRefusal::InvalidFrame)?;
+            Ok(PrimaryWriteFailure {
+                target: Arc::clone(target),
+                owner: Arc::downgrade(&self.shared),
+            })
+        };
+        match completion {
+            Some(WriteCompletion::Written) => state
+                .written_at(self.position)?
+                .map(WriteReceiptState::Written)
+                .ok_or(WriterRefusal::InvalidFrame),
+            Some(WriteCompletion::OutcomeUnknown) => {
+                evidence().map(WriteReceiptState::OutcomeUnknown)
+            }
+            None if state.pending(self.position) && Instant::now() >= self.deadline => {
+                evidence().map(WriteReceiptState::AdmittedDeadlineExpired)
+            }
+            None => Ok(WriteReceiptState::Pending),
+        }
+    }
+
+    /// Inspect before dropping the unique receipt. A successful write, a mere
+    /// wake, a short observer timeout, or an unadmitted frame yields no evidence.
+    pub(in crate::app_session) fn failure_evidence(
+        &self,
+    ) -> Result<Option<PrimaryWriteFailure>, WriterRefusal> {
+        match self.snapshot(None)? {
+            WriteReceiptState::OutcomeUnknown(failure)
+            | WriteReceiptState::AdmittedDeadlineExpired(failure) => Ok(Some(failure)),
+            WriteReceiptState::Pending | WriteReceiptState::Written(_) => Ok(None),
+        }
     }
 }
 
