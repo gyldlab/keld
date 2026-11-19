@@ -159,7 +159,8 @@ fn copied_entry_timeout_cannot_stop_a_replacement_or_duplicate_terminal() -> Res
     let (server, _peer) = primary_test_stream_pair();
     fixture
         .router
-        .install_generation(fixture.caller.attempt + 1, server)?;
+        .install_generation(fixture.caller.attempt + 1, server)
+        .map_err(HostAppError::from)?;
     let successor = fixture
         .router
         .current_primary_writer_target()?
