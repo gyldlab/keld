@@ -18,7 +18,7 @@ mod publication;
 #[cfg(windows)]
 mod publication_turn;
 #[cfg(windows)]
-pub(super) use publication::{NativePublicationDisposition, PublicationError, PublicationResult};
+pub(super) use publication::NativePublicationDisposition;
 #[cfg(windows)]
 pub(super) mod original;
 #[cfg(any(not(windows), test))]

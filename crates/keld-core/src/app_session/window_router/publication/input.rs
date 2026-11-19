@@ -6,8 +6,9 @@ use super::super::request::{
     duplicate_correlation, prepare_close_reply,
 };
 use super::super::{
-    CorrelationId, HostAppError, PrimaryCallerContext, PrimaryRouterHandle, WindowRequest,
-    WindowResponse, app_detail, with_primary_caller_locked,
+    ActivePrimaryGeneration, CorrelationId, HostAppError, PrimaryCallerContext,
+    PrimaryRouterHandle, WindowRequest, WindowResponse, WindowSession, app_detail,
+    with_primary_caller_locked,
 };
 use super::{PublicationResult, WindowEmitter, with_cleanup};
 use std::time::{Duration, Instant};
@@ -90,86 +91,80 @@ impl PrimaryRouterHandle {
                 }
             };
             let original = matches!(&request, WindowRequest::CreateWithPreload { .. });
-            let mut outcome = None;
-            with_primary_caller_locked(&self.current, &self.shutdown, caller, |current| {
-                let active = current.as_ref().ok_or_else(|| {
-                    app_detail("Window request admission", "validated role disappeared")
+            let outcome =
+                emitter.with_registry("Window request admission", |session, active| {
+                    let prepared = self.prepare_ordered_window_request(
+                        session,
+                        active,
+                        caller,
+                        correlation,
+                        request,
+                        started,
+                    )?;
+                    let reply_cut = (original
+                        && matches!(
+                            &prepared,
+                            WindowRequestOutcome::Reply(_) | WindowRequestOutcome::Refused(_)
+                        ))
+                    .then(|| {
+                        (started + ORIGINAL_CREATE_PUBLICATION_LIMIT)
+                            .min(Instant::now() + keld_ipc::APP_LINK_IO_DEADLINE)
+                    });
+                    Ok((prepared, reply_cut))
                 })?;
-                let windows = self.windows.as_ref().ok_or_else(|| {
-                    app_detail("Window request admission", "Registry disappeared")
-                })?;
-                let mut session = windows.lock().map_err(|_| {
-                    app_detail("Window request admission", "Registry lock poisoned")
-                })?;
-                if !turn.owns(windows, &session) {
-                    return Err(app_detail(
-                        "Window request admission",
-                        "foreign Window publication turn",
-                    ));
+            if let Some((outcome, reply_cut)) = outcome {
+                if let Some(cut) = reply_cut {
+                    emitter.deadline = cut;
                 }
-                let prepared =
-                    match self.check_window_request_locked(Some(&session), active, correlation) {
-                        Some(WindowRequestInput::Refused(refusal)) => {
-                            WindowRequestOutcome::Refused(refusal)
-                        }
-                        Some(WindowRequestInput::DuplicateCorrelation) => {
-                            return Err(duplicate_correlation());
-                        }
-                        Some(WindowRequestInput::Request(_)) => {
-                            return Err(app_detail(
-                                "Window request admission",
-                                "preflight returned a second request",
-                            ));
-                        }
-                        None if original => {
-                            match self.prepare_original_window_create_locked(
-                                &mut session,
-                                caller,
-                                correlation,
-                                request,
-                                started,
-                            ) {
-                                Ok(PreparedOriginalWindowCreate::Build(command)) => {
-                                    self.send_window_request_command(
-                                        command,
-                                        "window native build",
-                                    )?;
-                                    WindowRequestOutcome::Deferred
-                                }
-                                Ok(PreparedOriginalWindowCreate::Adopted(window)) => {
-                                    WindowRequestOutcome::Reply(WindowResponse::Adopted { window })
-                                }
-                                Err(error) => {
-                                    WindowRequestOutcome::Refused(original_refusal(error)?)
-                                }
-                            }
-                        }
-                        None => self.prepare_window_request_locked(
-                            &mut session,
-                            active,
-                            correlation,
-                            request,
-                        )?,
-                    };
-                if original
-                    && matches!(
-                        prepared,
-                        WindowRequestOutcome::Reply(_) | WindowRequestOutcome::Refused(_)
-                    )
-                {
-                    emitter.deadline = (started + ORIGINAL_CREATE_PUBLICATION_LIMIT)
-                        .min(Instant::now() + keld_ipc::APP_LINK_IO_DEADLINE);
-                }
-                outcome = Some(prepared);
-                Ok(())
-            })?;
-            if let Some(outcome) = outcome {
                 emitter.request(correlation, outcome)?;
             }
             Ok(())
         })();
         drop(turn);
         self.finish_call_publication(result)
+    }
+
+    fn prepare_ordered_window_request(
+        &self,
+        session: &mut WindowSession,
+        active: &ActivePrimaryGeneration,
+        caller: &PrimaryCallerContext,
+        correlation: CorrelationId,
+        request: WindowRequest,
+        started: Instant,
+    ) -> Result<WindowRequestOutcome, HostAppError> {
+        if let Some(refusal) = self.check_window_request_locked(Some(session), active, correlation)
+        {
+            return match refusal {
+                WindowRequestInput::Refused(refusal) => Ok(WindowRequestOutcome::Refused(refusal)),
+                WindowRequestInput::DuplicateCorrelation => Err(duplicate_correlation()),
+                WindowRequestInput::Request(_) => Err(app_detail(
+                    "Window request admission",
+                    "preflight returned a second request",
+                )),
+            };
+        }
+        if !matches!(&request, WindowRequest::CreateWithPreload { .. }) {
+            return self.prepare_window_request_locked(session, active, correlation, request);
+        }
+        Ok(
+            match self.prepare_original_window_create_locked(
+                session,
+                caller,
+                correlation,
+                request,
+                started,
+            ) {
+                Ok(PreparedOriginalWindowCreate::Build(command)) => {
+                    self.send_window_request_command(command, "window native build")?;
+                    WindowRequestOutcome::Deferred
+                }
+                Ok(PreparedOriginalWindowCreate::Adopted(window)) => {
+                    WindowRequestOutcome::Reply(WindowResponse::Adopted { window })
+                }
+                Err(error) => WindowRequestOutcome::Refused(original_refusal(error)?),
+            },
+        )
     }
 }
 
