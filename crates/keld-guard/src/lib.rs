@@ -39,6 +39,7 @@ pub fn parse_unique_json(text: &str) -> Result<serde_json::Value, serde_json::Er
     unique_json::parse(text)
 }
 pub mod verified_manifest;
+mod window_csp;
 #[cfg(windows)]
 mod windows_authenticode;
 #[cfg(windows)]
@@ -94,6 +95,7 @@ pub use windows_owner_private::{
     windows_owner_private_directory_security, windows_owner_private_file_security,
 };
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, Read};
@@ -114,6 +116,7 @@ pub use admit::{
 };
 pub use manifest_profile::{DeclaredProfile, LEGACY_PROFILE_FORFEIT};
 pub use probe::{ProbeReport, run_synthetic_probes};
+pub use window_csp::{ResolvedWindowCsp, WindowCspProfile};
 
 /// Canonical Windows installation-state protection profiles owned by `keld-guard`.
 ///
@@ -633,7 +636,8 @@ impl std::error::Error for ManifestError {}
 /// Parsed `keld.permissions.jsonc`.
 ///
 /// The optional root `profile` declares strict or legacy; it grants no capability.
-/// Unrelated unknown keys stay ignored. v0 evaluate reads
+/// Unrelated unknown keys stay ignored. Reserved window `web` metadata accepts
+/// only the closed named CSP selector. v0 evaluate reads
 /// `app.<group>.<action>` string arrays as path/host scopes.
 ///
 /// Direct Serde deserialization constructs data only; it is not the validated
@@ -647,6 +651,8 @@ pub struct PermissionsManifest {
     app: Map<String, Value>,
     #[serde(default, deserialize_with = "manifest_profile::deserialize_present")]
     profile: Option<DeclaredProfile>,
+    #[serde(default)]
+    windows: BTreeMap<String, window_csp::WindowPolicy>,
 }
 
 impl fmt::Debug for PermissionsManifest {
@@ -657,6 +663,9 @@ impl fmt::Debug for PermissionsManifest {
         output.field("app", &self.app);
         if let Some(profile) = self.profile {
             output.field("profile", &profile);
+        }
+        if !self.windows.is_empty() {
+            output.field("windows", &self.windows);
         }
         output.finish()
     }
@@ -671,6 +680,14 @@ impl PermissionsManifest {
     #[must_use]
     pub const fn declared_profile(&self) -> Option<DeclaredProfile> {
         self.profile
+    }
+
+    /// Whether this manifest declares a named window response policy.
+    ///
+    /// This authoring data carries no verified provenance or native authority.
+    #[must_use]
+    pub fn declares_window_csp(&self) -> bool {
+        self.windows.values().any(|window| window.web.csp.is_some())
     }
 }
 
@@ -785,11 +802,19 @@ fn parse_manifest_at(
         path: path.map(Path::to_path_buf),
         detail: detail.to_owned(),
     })?;
+    window_csp::validate_structure(&value).map_err(|detail| ManifestError::Parse {
+        path: path.map(Path::to_path_buf),
+        detail: detail.to_owned(),
+    })?;
     let manifest: PermissionsManifest =
         serde_json::from_value(value).map_err(|e| ManifestError::Parse {
             path: path.map(Path::to_path_buf),
             detail: e.to_string(),
         })?;
+    window_csp::validate_keys(&manifest.windows).map_err(|detail| ManifestError::Parse {
+        path: path.map(Path::to_path_buf),
+        detail,
+    })?;
     for capability in [capability::AUTH_BEGIN, capability::AUTH_TOKEN] {
         let Some(scopes) = grant_node(&manifest, capability).and_then(Value::as_array) else {
             continue;
