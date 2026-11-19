@@ -413,6 +413,11 @@ pub fn write_frame<S: Write>(
 delivery atomic: the peer can receive a partial frame if a write fails or the link closes.
 `read_frame` uses `read_exact` for the 16-byte header and then for the declared `len` bytes;
 an incomplete header or payload is an I/O error.
+After a partial read, write failure, timeout, or other frame I/O error, **discard the link**:
+remaining bytes can be misinterpreted as a new frame if the same stream is reused.
+Establish a new authenticated connection and perform its handshake rather than retrying on
+the damaged stream. Each link also needs **one serialized writer**: concurrent `write_frame`
+calls must not interleave header and payload bytes.
 
 **Know what this is not.** `crates/keld-ipc/AGENTS.md` requires the eventual implementation to be a
 state machine with no steady-state allocation, and says so bluntly: "State-machine readers/writers.

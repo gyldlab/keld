@@ -334,6 +334,58 @@ fn registry_file_exists_and_is_unique_with_fixes() {
     }
 }
 
+/// A registry "fix" must not direct users to a command the shipped CLI
+/// reserves or imply that an unimplemented app-link bulk transport is usable.
+/// Emitted Display strings are checked separately by their owning crates.
+#[test]
+fn recovery_registry_marks_reserved_build_and_bulk_transports_unavailable() {
+    let text = fs::read_to_string(registry_path()).expect("read registry");
+    let entries = parse_registry(&text).expect("parse registry");
+
+    for entry in &entries {
+        if entry.fix.contains("`keld build`") {
+            assert!(
+                entry.fix.contains("reserved") && entry.fix.contains("KELD-CLI-045"),
+                "{} must identify the reserved build verb as unavailable, not a remedy: {}",
+                entry.code,
+                entry.fix
+            );
+        }
+    }
+
+    for code in ["KELD-UPDATE-019", "KELD-PACK-007", "KELD-PACK-011"] {
+        let entry = entries
+            .iter()
+            .find(|entry| entry.code == code)
+            .expect("known code");
+        assert!(
+            entry.fix.contains("before signing"),
+            "{code}: {}",
+            entry.fix
+        );
+        assert!(
+            entry.fix.contains("signed package") || entry.fix.contains("packaging integration"),
+            "{code}: {}",
+            entry.fix
+        );
+    }
+
+    let ipc = entries
+        .iter()
+        .find(|entry| entry.code == "KELD-IPC-004")
+        .expect("IPC oversize code");
+    assert!(
+        ipc.fix.contains("not available transports"),
+        "no live bulk lane must be implied by the registry: {}",
+        ipc.fix
+    );
+    let emitted = keld_ipc::IpcError::PayloadTooLarge.to_string();
+    assert!(
+        emitted.contains("No bulk/resource transport is implemented"),
+        "{emitted}"
+    );
+}
+
 #[test]
 fn scanned_source_codes_match_registry() {
     let root = workspace_root();
