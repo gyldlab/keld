@@ -134,14 +134,30 @@ function Invoke-MediaOuterDeadlineProbe {
 function Invoke-ProfileRegressionCases {
     param([string]$Binary, [string]$EvidenceRoot)
     $cases = @(
+        'view_focus::windows_app_view_native_active_focus',
+        'view_focus::windows_hello_view_native_active_focus',
         'windows_com_engine_lifetime_subprocess',
         'windows_dev_profile_cleanup_subprocess',
         'windows_busy_ephemeral_scavenge_subprocess',
         'windows_persistent_recovery_subprocess',
         'windows_saved_media_reconciliation_subprocess',
+        'saved_permission_deadline::windows_saved_permission_reconciliation_refuses_a_spent_budget',
+        'saved_permission_deadline::windows_saved_permission_read_callback_is_bounded',
+        'saved_permission_deadline::windows_saved_permission_write_callback_is_bounded',
+        'saved_permission_deadline::windows_saved_permission_create_keeps_one_budget_and_retries',
+        'saved_permission_deadline::windows_empty_saved_permission_collection_still_checks_budget',
         'windows_swallowed_browser_exit_fails_bounded_subprocess',
         'windows_unproven_probe_retains_predecessor_subprocess',
-        'windows_unproven_probe_window_retains_predecessor_subprocess'
+        'windows_unproven_probe_window_retains_predecessor_subprocess',
+        'view_host::windows_app_view_minimize_restore_obligations',
+        'view_host::windows_hello_view_minimize_restore_obligations',
+        'view_position::windows_app_view_native_parent_position',
+        'view_position::windows_hello_view_native_parent_position',
+        'view_retry::windows_view_host_failed_native_steps_remain_retryable',
+        'release_receipts::windows_native_exit_credit_cannot_hide_a_queued_fault',
+        'release_receipts::windows_foreign_abnormal_receipt_cannot_be_discarded_as_stale',
+        'exit_wake_retirement::windows_app_retirement_is_checked_before_profile_idle',
+        'exit_wake_retirement::windows_hello_retirement_is_checked_before_profile_idle'
     )
     # Outer kill switches only; every child bounds itself with its own watchdog.
     # The two swallowed-event cases (host site, probe site) wait out the full
@@ -154,8 +170,11 @@ function Invoke-ProfileRegressionCases {
         'windows_unproven_probe_retains_predecessor_subprocess' = 300000
     }
     foreach ($case in $cases) {
-        $stdoutPath = Join-Path $EvidenceRoot "profile-$case.log"
-        $stderrPath = Join-Path $EvidenceRoot "profile-$case.stderr.log"
+        # Keep the exact nested libtest selector; Windows evidence filenames
+        # cannot contain the Rust module separator.
+        $fileStem = $case.Replace('::', '--')
+        $stdoutPath = Join-Path $EvidenceRoot "profile-$fileStem.log"
+        $stderrPath = Join-Path $EvidenceRoot "profile-$fileStem.stderr.log"
         $start = [Diagnostics.ProcessStartInfo]::new()
         $start.FileName = $Binary
         $start.Arguments = "webview2::media_acceptance::tests::$case --ignored --exact --nocapture --test-threads=1"
@@ -192,8 +211,8 @@ if ($binaryHash -ne $sourceBinaryHash) {
 $watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot
 $outerDeadlineProbe = Invoke-MediaOuterDeadlineProbe -Binary $binary -EvidenceRoot $evidenceRoot
 $profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot
-if ($profileRegressionCount -ne 8) {
-    throw "Expected eight Windows profile regressions, observed $profileRegressionCount"
+if ($profileRegressionCount -ne 24) {
+    throw "Expected twenty-four Windows profile regressions, observed $profileRegressionCount"
 }
 $results = @()
 $seenNonces = @{}

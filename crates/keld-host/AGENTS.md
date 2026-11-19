@@ -9,8 +9,10 @@ Extends root `AGENTS.md`; this file owns the thin shipping-binary boundary.
   stage. It MUST NOT enter boot, create a window/app-link/Bun child, mint a
   principal, inherit the host Job, or gain permission authority.
 - Production unsafe belongs to the owning library, not this binary. Test-only
-  unsafe is limited to independent real-OS handle/process census and fixture
-  cleanup with local `// SAFETY:` proofs.
+  unsafe is limited to independent real-OS handle/process/window census, creation
+  and stimuli of retained fixture-owned HWNDs, reversible test-thread DPI and
+  fixture-window style changes, and fixture cleanup with local `// SAFETY:` proofs.
+  DPI/style changes require restoration guards.
 - Product claims require the shipping no-flag executable and native window,
   direct child and descendant process handles, ordered cleanup, stage deletion,
   and relaunch. A helper artifact or aggregate process count is not evidence.

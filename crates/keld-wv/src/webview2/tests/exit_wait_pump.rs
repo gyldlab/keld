@@ -2,8 +2,8 @@
 //! Tests exercise actual Windows message queue and thread CPU accounting.
 
 use super::{
-    ProfileReleaseWait, ReleaseSite, alive_process_handle, exited_process_handle, release_channel,
-    wait_for_browser_exit, wait_for_launch_with_message_pump_until,
+    ProfileReleaseWait, ReleaseSite, alive_process_handle, exited_process_handle, normal_receipt,
+    release_channel, test_binding, wait_for_browser_exit, wait_for_launch_with_message_pump_until,
 };
 
 /// The probe's pump driver wakes on the process handle: a signaled handle
@@ -14,6 +14,7 @@ fn exit_wait_pump_fails_promptly_for_a_signaled_process_without_an_event() {
     let (_sender, receiver) = release_channel();
     let release = ProfileReleaseWait::with_bounds(
         Some(receiver),
+        test_binding(),
         Some(exited_process_handle()),
         ReleaseSite::Probe,
         std::time::Duration::ZERO,
@@ -71,6 +72,7 @@ fn exit_wait_pump_idles_through_the_grace_after_the_process_exited() {
     // alone, so the fault below must be the grace, never the guard.
     let release = ProfileReleaseWait::with_bounds(
         Some(receiver),
+        test_binding(),
         Some(exited_process_handle()),
         ReleaseSite::Host,
         grace,
@@ -123,6 +125,7 @@ fn exit_wait_pump_keeps_pumping_while_the_process_is_alive_until_the_event() {
     let (sender, receiver) = release_channel();
     let release = ProfileReleaseWait::with_bounds(
         Some(receiver),
+        test_binding(),
         Some(alive_process_handle()),
         ReleaseSite::Host,
         std::time::Duration::ZERO,
@@ -135,7 +138,9 @@ fn exit_wait_pump_keeps_pumping_while_the_process_is_alive_until_the_event() {
         // Contract: https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-postthreadmessagew
         unsafe { PostThreadMessageW(thread_id, WM_APP, WPARAM(0), LPARAM(0)) }
             .expect("queue unrelated message");
-        sender.send(Ok(())).expect("deliver the release event");
+        sender
+            .send(normal_receipt())
+            .expect("deliver the release event");
         // SAFETY: as above.
         unsafe { PostThreadMessageW(thread_id, WM_NULL, WPARAM(0), LPARAM(0)) }
             .expect("queue the wake");
@@ -189,6 +194,7 @@ fn release_witness_preserves_the_existing_post_exit_deadline() {
     let (_sender, receiver) = release_channel();
     let release = ProfileReleaseWait::with_bounds(
         Some(receiver),
+        test_binding(),
         None,
         ReleaseSite::Host,
         std::time::Duration::from_secs(10),
@@ -211,6 +217,7 @@ fn release_witness_does_not_renew_an_expired_post_exit_budget() {
     let (_sender, receiver) = release_channel();
     let release = ProfileReleaseWait::with_bounds(
         Some(receiver),
+        test_binding(),
         None,
         ReleaseSite::Host,
         std::time::Duration::from_secs(10),
@@ -239,6 +246,7 @@ fn release_witness_starts_at_the_later_of_terminal_and_normal_receipt() {
         let grace = std::time::Duration::from_secs(10);
         let release = ProfileReleaseWait::with_bounds(
             Some(receiver),
+            test_binding(),
             None,
             ReleaseSite::Host,
             grace,
@@ -268,6 +276,7 @@ fn release_witness_refuses_a_session_that_was_never_armed() {
     let (_sender, receiver) = release_channel();
     let release = ProfileReleaseWait::with_bounds(
         Some(receiver),
+        test_binding(),
         None,
         ReleaseSite::Host,
         std::time::Duration::from_secs(10),

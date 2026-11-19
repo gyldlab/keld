@@ -2018,6 +2018,24 @@ impl WindowsProcessJob {
         query_job_active_processes(self.handle.as_raw_handle().cast())
     }
 
+    /// Returns one kernel snapshot of (active processes, lifetime total).
+    ///
+    /// The total includes exited processes, nested child Jobs and associations
+    /// rejected by Job limits; it is activity history, not process identity.
+    /// Keeping this
+    /// existing owner alive preserves history after its Host exits; querying
+    /// grants no assignment, termination, release or profile authority.
+    ///
+    /// <https://learn.microsoft.com/windows/win32/api/winnt/ns-winnt-jobobject_basic_accounting_information>
+    /// <https://learn.microsoft.com/windows/win32/procthread/nested-jobs>
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the native accounting query fails.
+    pub fn process_accounting(&self) -> Result<(u32, u32), WindowsHostJobError> {
+        query_job_process_accounting(self.handle.as_raw_handle().cast())
+    }
+
     fn terminate(&self) -> Result<(), WindowsHostJobError> {
         // SAFETY: the owning Job handle is live through the call; Keld's launcher
         // or host owner is the sole authority responsible for this process family.
@@ -2657,6 +2675,10 @@ fn create_job_completion_port(raw_job: HANDLE) -> Result<OwnedHandle, WindowsHos
 }
 
 fn query_job_active_processes(raw_job: HANDLE) -> Result<u32, WindowsHostJobError> {
+    query_job_process_accounting(raw_job).map(|(active, _total)| active)
+}
+
+fn query_job_process_accounting(raw_job: HANDLE) -> Result<(u32, u32), WindowsHostJobError> {
     let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
     let bytes = u32::try_from(std::mem::size_of_val(&accounting)).map_err(|_| {
         WindowsHostJobError::contract(
@@ -2678,7 +2700,7 @@ fn query_job_active_processes(raw_job: HANDLE) -> Result<u32, WindowsHostJobErro
     {
         return Err(WindowsHostJobError::new("attempt Job accounting query"));
     }
-    Ok(accounting.ActiveProcesses)
+    Ok((accounting.ActiveProcesses, accounting.TotalProcesses))
 }
 
 mod process_id_snapshot;
@@ -3839,7 +3861,7 @@ mod tests {
         std::process::exit(72);
     }
 
-    fn spawn_blocked_child() -> Child {
+    fn blocked_child_command() -> Command {
         let mut command = Command::new(std::env::current_exe().expect("current test executable"));
         command
             .args([
@@ -3852,7 +3874,13 @@ mod tests {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        command.spawn().expect("spawn assignment-gate child")
+        command
+    }
+
+    fn spawn_blocked_child() -> Child {
+        blocked_child_command()
+            .spawn()
+            .expect("spawn assignment-gate child")
     }
 
     /// Spawns one parked occupant of this binary with no console. A console
@@ -5084,6 +5112,7 @@ mod tests {
 
     mod census_observe;
     mod primary_families;
+    mod process_accounting;
     mod process_id_list;
 
     /// Two plain Jobs, `outer` standing for the host-death Job and `inner` for the
