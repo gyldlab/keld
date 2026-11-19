@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 
 use std::sync::Arc;
-use std::sync::mpsc::TryRecvError;
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
 
 use super::super::managed_windows::RELEASING_DESTROYED_BOUND;
 use super::super::original_resource::ResourceSession;
@@ -11,7 +11,9 @@ use super::super::view_build::original::OriginalBuild;
 use super::super::{PROFILE_LAUNCH_DEADLINE, SelectedNavigationObserver};
 use super::{Instant, ManagedWindows, ProfileReleaseWait, Rc, WindowsLoopEvent, WvError};
 use crate::preload_image::AppPreloadImage;
-use crate::renderer_bridge::{RendererBridgeEndpoint, RendererBridgeOutcome, RendererRoleWitness};
+use crate::renderer_bridge::{
+    RendererBridgeEndpoint, RendererBridgeOutcome, RendererBridgeRequest, RendererRoleWitness,
+};
 use crate::resource_source::AdmittedWebAppSource;
 
 pub(super) struct SelectedCreate {
@@ -22,7 +24,9 @@ pub(super) struct SelectedCreate {
 }
 
 pub(in crate::webview2) struct SelectedRenderer {
-    endpoint: RendererBridgeEndpoint,
+    requests: Option<SyncSender<RendererBridgeRequest>>,
+    outcomes: Receiver<RendererBridgeOutcome>,
+    admitted_channel: u16,
     observe: Rc<SelectedNavigationObserver>,
     session: Option<Rc<ResourceSession>>,
     pending: Option<RendererBridgeOutcome>,
@@ -35,8 +39,15 @@ impl SelectedRenderer {
         endpoint: RendererBridgeEndpoint,
         observe: Rc<SelectedNavigationObserver>,
     ) -> Option<Self> {
-        endpoint.outcomes.is_some().then_some(Self {
-            endpoint,
+        let RendererBridgeEndpoint {
+            requests,
+            outcomes,
+            admitted_channel,
+        } = endpoint;
+        Some(Self {
+            requests: Some(requests),
+            outcomes: outcomes?,
+            admitted_channel,
             observe,
             session: None,
             pending: None,
@@ -46,7 +57,8 @@ impl SelectedRenderer {
     }
 
     fn retains_resources(&self) -> bool {
-        !self.outcomes_closed
+        self.requests.is_some()
+            || !self.outcomes_closed
             || self.pending.is_some()
             || self
                 .session
@@ -60,12 +72,7 @@ impl SelectedRenderer {
         if self.pending.is_some() || self.outcomes_closed {
             return Ok(());
         }
-        let source = self
-            .endpoint
-            .outcomes
-            .as_ref()
-            .ok_or_else(|| failure("selected outcome receiver disappeared"))?;
-        match source.try_recv() {
+        match self.outcomes.try_recv() {
             Ok(outcome) => self.pending = Some(outcome),
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
@@ -102,10 +109,12 @@ impl ManagedWindows {
                 "selected create cannot use a retiring Host endpoint",
             ));
         }
-        let endpoint = RendererBridgeEndpoint::shared_view(
-            renderer.endpoint.requests.clone(),
-            renderer.endpoint.admitted_channel,
-        );
+        let requests = renderer
+            .requests
+            .as_ref()
+            .ok_or_else(|| failure("selected request producer already retired"))?;
+        let endpoint =
+            RendererBridgeEndpoint::shared_view(requests.clone(), renderer.admitted_channel);
         if renderer.session.is_none() {
             renderer.session = Some(ResourceSession::new(
                 Arc::clone(&inputs.source),
@@ -227,6 +236,17 @@ impl ManagedWindows {
                 || !(retiring || self.custody.contains(native.window.id()))
                 || !native.retire_on_ui()
         });
+        if retiring
+            && !self.has_build_candidate()
+            && self.views.values().all(|view| view.original.is_none())
+            && let Some(renderer) = self.renderer.as_mut()
+        {
+            // All actual per-View producers have physically retired. Release
+            // the final request sender without dropping the outcome receiver.
+            // The Core dispatcher wakes after it observes request EOF and
+            // closes its own outcome sender; that observation has no UI credit.
+            let _ = renderer.requests.take();
+        }
         if self
             .renderer
             .as_ref()
@@ -269,11 +289,22 @@ mod tests {
 
     #[test]
     fn renderer_receiver_waits_for_actual_terminal_disconnect() {
-        let (requests, _requests_received) = sync_channel(1);
+        let (requests, requests_received) = sync_channel(1);
         let (send, outcomes) = sync_channel(2);
         let endpoint = RendererBridgeEndpoint::new(requests, outcomes, 1);
         let mut renderer = SelectedRenderer::new(endpoint, Rc::new(|_, _| Ok(()))).unwrap();
         renderer.retire_by = Some(Instant::now());
+        let view = renderer.requests.as_ref().unwrap().clone();
+        let _ = renderer.requests.take();
+        assert!(matches!(
+            requests_received.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        drop(view);
+        assert!(matches!(
+            requests_received.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ));
         send.try_send(RendererBridgeOutcome::ControlCapacity)
             .unwrap();
         send.try_send(RendererBridgeOutcome::ControlCapacity)
