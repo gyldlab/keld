@@ -949,7 +949,12 @@ function assertKEL270HygieneContext(job: Record<string, any>) {
   expect(job.name).toBe("CODEOWNERS + templates");
   expect(job["runs-on"]).toBe("ubuntu-24.04");
   expect(job["timeout-minutes"]).toBe(10);
-  expect(job.needs).toBe("changes");
+  expect(
+    job.needs === "changes" ||
+      (Array.isArray(job.needs) &&
+        job.needs.length === 1 &&
+        job.needs[0] === "changes"),
+  ).toBe(true);
   expect(job.if).toBe(
     "needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'",
   );
@@ -1024,6 +1029,12 @@ test("KEL-270 job and step startup overrides cannot bypass evidence", () => {
   run((job) => {
     job.if = false;
   });
+  run((job) => {
+    job.needs = ["changes", "check"];
+  });
+  const equivalentDependency = structuredClone(pristine);
+  equivalentDependency.needs = ["changes"];
+  expect(() => assertKEL270HygieneContext(equivalentDependency)).not.toThrow();
   run((job) => {
     job["runs-on"] = "self-hosted";
   });

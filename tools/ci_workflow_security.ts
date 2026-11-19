@@ -1851,11 +1851,16 @@ export function checkWorkflowSecurity(source: string): void {
     ["name", "runs-on", "timeout-minutes", "needs", "if", "steps"],
     hygieneContext,
   );
+  const soleChangesDependency =
+    hygieneJob.needs === "changes" ||
+    (Array.isArray(hygieneJob.needs) &&
+      hygieneJob.needs.length === 1 &&
+      hygieneJob.needs[0] === "changes");
   if (
     hygieneJob.name !== "CODEOWNERS + templates" ||
     hygieneJob["runs-on"] !== "ubuntu-24.04" ||
     scalar(hygieneJob["timeout-minutes"]) !== "10" ||
-    hygieneJob.needs !== "changes" ||
+    !soleChangesDependency ||
     hygieneJob.if !==
       "needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'"
   ) {
@@ -1884,17 +1889,37 @@ export function checkWorkflowSecurity(source: string): void {
   ) {
     fail(hygieneContext);
   }
-  inputsMatch(
-    mapping(hygieneRustInstaller.with, "KEL-270 B-82 Rust installer inputs"),
-    { toolchain: "1.99.1", components: "rustfmt, clippy" },
-    hygieneContext,
+  const rustInputs = mapping(
+    hygieneRustInstaller.with,
+    "KEL-270 B-82 Rust installer inputs",
   );
+  exactKeys(rustInputs, ["toolchain", "components"], hygieneContext);
+  // The workspace TOML-derived checkRustToolchainPins owns the exact Rust
+  // version. The B-82 gate only owns the immutable installer and components.
+  if (
+    !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(scalar(rustInputs.toolchain) ?? "") ||
+    scalar(rustInputs.components) !== "rustfmt, clippy"
+  ) {
+    fail(hygieneContext);
+  }
   const evidenceStep = hygieneSteps[2]!;
   exactKeys(evidenceStep, ["name", "shell", "run"], hygieneContext);
   if (
     evidenceStep.name !== "KEL-270 definition evidence (read-only)" ||
     evidenceStep.shell !== "bash" ||
     typeof evidenceStep.run !== "string"
+  ) {
+    fail(hygieneContext);
+  }
+  // An unchanged name/shell does not prove the executed body. Bind the full
+  // reviewed B-82 program, including receipt/verifier/source checks and
+  // failure handling. This check is defense-in-depth: candidate-owned CI
+  // cannot grant itself trusted-base authorization.
+  const reviewedB82RunSha256 =
+    "787c37ffddff7884073502989c9d1bb90f8f5c5fe22f7b84a62460e3e035b12a";
+  if (
+    createHash("sha256").update(evidenceStep.run).digest("hex") !==
+    reviewedB82RunSha256
   ) {
     fail(hygieneContext);
   }
@@ -1959,6 +1984,48 @@ export function checkWorkflowSecurity(source: string): void {
   }
 }
 
+// The hygiene gate runs candidate-owned workflow steps before its own
+// checkout validator. Read the event commit object, not only the mutable
+// worktree: a prior step could restore approved bytes after executing an
+// unreviewed program. This is a same-job false-green guard, not a replacement
+// for separately enforced protected-base admission before execution.
+export function checkCommittedWorkflowSnapshot(
+  root: string,
+  eventSha: string,
+  checkoutSource: string,
+): void {
+  const mismatch = "CI workflow checkout differs from exact Git event commit";
+  if (!/^[0-9a-f]{40}$/.test(eventSha)) fail(mismatch);
+  const head = Bun.spawnSync([
+    "git",
+    "-C",
+    root,
+    "rev-parse",
+    "--verify",
+    "HEAD",
+  ]);
+  if (
+    head.exitCode !== 0 ||
+    new TextDecoder().decode(head.stdout).trim() !== eventSha
+  ) {
+    fail(mismatch);
+  }
+  const object = Bun.spawnSync([
+    "git",
+    "-C",
+    root,
+    "show",
+    eventSha + ":.github/workflows/ci.yml",
+  ]);
+  if (
+    object.exitCode !== 0 ||
+    new TextDecoder().decode(object.stdout) !== checkoutSource
+  ) {
+    fail(mismatch);
+  }
+  checkWorkflowSecurity(new TextDecoder().decode(object.stdout));
+}
+
 if (import.meta.main) {
   try {
     const [, , command, root = ".", ...extra] = process.argv;
@@ -1968,6 +2035,17 @@ if (import.meta.main) {
       resolve(root, ".github/workflows/ci.yml"),
       "utf8",
     );
+    if (
+      process.env.GITHUB_ACTIONS === "true" &&
+      process.env.GITHUB_WORKSPACE &&
+      resolve(root) === resolve(process.env.GITHUB_WORKSPACE)
+    ) {
+      checkCommittedWorkflowSnapshot(
+        root,
+        process.env.GITHUB_SHA ?? "",
+        workflowSource,
+      );
+    }
     checkWorkflowSecurity(workflowSource);
     checkRustToolchainPins(
       workflowSource,
