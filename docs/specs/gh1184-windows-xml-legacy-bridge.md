@@ -1,10 +1,17 @@
 # Spec: Windows XML Legacy development preload bridge
-Status: approved
-Tracker: GH-1184 · Owner: repository owner · Updated: 2026-11-11
+
+- Status: approved
+- Tracker: GH-1184
+- Owner: repository owner
+- Updated: 2026-11-18
+- Pin: 1a8325d4262ea5cab5799aa2ecdb1987b2512e71
 
 Approved exact proposal: `5e286fddd945a6ccad8a599d938421afaf14f5ea`,
 [human receipt6801094337](https://github.com/gyldlab/keld/issues/1184#issuecomment-6801094337).
 The implementation still owes all technical and native qualification gates.
+This structure-only migration preserves the six approved outcomes. Its explicit
+Given/When and negative-control fields need independent owner review before merge.
+They do not authorize implementation or transfer the original approval to changed bytes.
 
 This bounded proposal preserves PR1307/r17 at `d2c48b1b1fe3d42bf08dcc82211671e06f72654f`.
 Approval of this file authorizes only the Windows XML development slice below, not
@@ -40,25 +47,83 @@ preload source; GH467 owns the existing first-proof runtime; GH541/GH552 own gra
 This file amends only their Windows adapter interpretation stated here. Their concrete
 existing contracts remain the source of truth, including bounds and typed refusals.
 
-## 3. Acceptance criteria (binary, each becomes a test)
+## 3. Acceptance criteria
 
-1. A graph-selected preload, exact arguments and genuine Host facts run before first
+### AC-1: original preload precedes the selected first page script
+
+- **Given:** The selected entry and its graph-qualified preload have been admitted.
+- **When:** A normal `keld dev` launch loads the approved top-level entry.
+- **Then:** A graph-selected preload, exact arguments and genuine Host facts run before first
    inline page code in the top-level selected entry. `process.contextIsolated` is false.
    An iframe, error page, non-entry document or string-loaded about:blank gains no route.
-2. Same-document raw page and facade calls have identical Host authorization. A missing
+- **Negative control:**
+  - **Single fault:** Remove the admitted preload registration barrier.
+  - **At-risk precondition:** The selected entry runs its first inline script.
+  - **Expected RED:** The first-inline preload-presence oracle fails.
+
+### AC-2: raw page and facade calls use the same Host authorization
+
+- **Given:** A qualified current document has an exact literal channel-grant set.
+- **When:** The same document calls through the raw page or facade path.
+- **Then:** Same-document raw page and facade calls have identical Host authorization. A missing
    literal grant, wrong native view/source, old epoch or retired role produces zero Bun
    handler/native effects. Channel permission cannot become a native filesystem permit.
-3. A retained source/graph mutation or preload digest mismatch refuses construction;
+- **Negative control:**
+  - **Single fault:** Omit the exact literal-grant check for one ungranted call.
+  - **At-risk precondition:** An ungranted page call reaches the real Host admission path.
+  - **Expected RED:** The independent denied-channel effect-counter test detects a Bun effect.
+
+### AC-3: graph and source mutations refuse before construction
+
+- **Given:** The runtime retains the qualified source, graph and preload digests.
+- **When:** A source member changes or a preload digest fails to match.
+- **Then:** A retained source/graph mutation or preload digest mismatch refuses construction;
    the page/app cannot select another root, preload, grant key or expected digest.
-4. A held A reply released after B commits never reaches B's raw WebMessage listener.
+- **Negative control:**
+  - **Single fault:** Allow a reopened preload leaf to bypass the selected digest witness.
+  - **At-risk precondition:** A source is changed after qualification but before construction.
+  - **Expected RED:** The changed-source test fails if construction proceeds. The separate
+    wrong-digest test must still verify refusal.
+
+### AC-4: a stale reply cannot enter the successor document
+
+- **Given:** Document A has a pending reply and document B can replace it.
+- **When:** The held A reply is released after B commits.
+- **Then:** A held A reply released after B commits never reaches B's raw WebMessage listener.
    Pending navigation holds posts; cancellation without replacement restores A; actual
    replacement revokes A. Native post completion and consumer release each occur once.
-5. Missing/late bind receipt, forged/duplicate receipt, source failure, role crash and
+- **Negative control:**
+  - **Single fault:** Remove the final document-epoch revalidation before native posting.
+  - **At-risk precondition:** A's reply is held while B commits to the same native window.
+  - **Expected RED:** B's independent raw-listener oracle observes A's forbidden payload.
+
+### AC-5: missing or forged lifecycle evidence cannot admit success
+
+- **Given:** A current native source, bind receipt and role lifecycle own admission.
+- **When:** A bind receipt is missing, late, forged or duplicated, a source
+  fails, a role crashes, or the window closes.
+- **Then:** Missing/late bind receipt, forged/duplicate receipt, source failure, role crash and
    window close end through existing typed failure/revocation and W2 cleanup. No success,
    replay credit or document is fabricated. A healthy successor still works.
-6. Ordinary no-flag Host plus the complete provider passes all ten XML workflows above,
+- **Negative control:**
+  - **Single fault:** Admit a stale bind receipt as the current document's receipt.
+  - **At-risk precondition:** A new document exists while an old receipt is still pending.
+  - **Expected RED:** The stale-bind test fails if admission succeeds. Verify healthy
+    successor behavior in a separate positive test.
+
+### AC-6: genuine unchanged editor performs the ten XML workflows
+
+- **Given:** The approved XML editor bytes and complete provider run in a no-flag Host.
+- **When:** The native Windows workflow harness runs all ten listed operations.
+- **Then:** Ordinary no-flag Host plus the complete provider passes all ten XML workflows above,
    including actual W5 Open/Save/close dialogs and on-disk XML readback. First-inline,
    denied-channel and stale-document mutants fail their independent effect oracles.
+- **Negative control:**
+  - **Single fault:** Remove the original selected preload from the test candidate.
+  - **At-risk precondition:** The genuine first page loads and requires the preload.
+  - **Expected RED:** The first-inline test fails if the page does not observe the
+    selected preload. This does not replace native evidence for each of the ten
+    XML workflows, including dialogs and on-disk XML readback.
 
 ## 4. Design
 
@@ -258,30 +323,41 @@ getrandom facilities suffice; actual platform visibility is checked by the depen
 owner. Any necessary new dependency returns to that owner, not a local workaround.
 No original app/source edits or release/source-authentication policy expansion.
 
-## 6. Tasks (ordered vertical slice)
+## 6. Tasks
 
+### T-1: retain owner-approved realm boundary and independent review
+
+- **Blocked by:** none
 - [ ] Record exact approval of this bounded realm amendment and independent contract review.
+
+### T-2: implement the selected carrier and negative controls
+
+- **Blocked by:** T-1
 - [ ] Add first-proof conformance/negative controls, extract shared owners mechanically,
   then connect real Windows source/document/endpoint/runtime and canonical writer.
+
+### T-3: compose the real Host and qualify editor workflows
+
+- **Blocked by:** T-2
 - [ ] Compose W3/W2/W4/W5/W6 through normal CLI; run exact-current source/OS tests,
   preserve every failed/unrun atom, then qualify all ten XML workflows. One concern's
   implementation PR; do not publish stub stages or create a PR per mechanical step.
 
-## 7. Test plan
+## 7. Test plan & evidence
 
-AC1/3: actual first-inline top/iframe/error/changed-source tests; wrong digest, deleted
+AC-1/AC-3: actual first-inline top/iframe/error/changed-source tests; wrong digest, deleted
 registration barrier and removed top-frame guard each falsify their own oracle.
-AC2: real Bun effect counters for permitted/raw permitted/ungranted/wrong-view/stale
+AC-2: real Bun effect counters for permitted/raw permitted/ungranted/wrong-view/stale
 messages. Deterministically hold A's native callback until B commit, then replay it;
 removing nonce or literal-grant enforcement must create the forbidden handler effect.
 This replaces r17 B7's pre-implementation natural-race gate for this slice. Natural
 cross-document delivery frequency remains unknown; no empty at-risk statistic is proof.
-AC4: B's raw listener counts payloads, independently of bridge filtering. Hold physical
+AC-4: B's raw listener counts payloads, independently of bridge filtering. Hold physical
 writer/post and retire in both orders; mutate only final revalidation, charge retention,
 or release-key match. Count aggregate live/retired work, not only active windows.
-AC5: stale bind ahead of B's listener, late second bound, no/forged/duplicate receipt,
+AC-5: stale bind ahead of B's listener, late second bound, no/forged/duplicate receipt,
 role crash, close during post and healthy follow-up. Use events/barriers, not sleeps.
-AC6: unchanged original preload/webapp byte census, actual on-disk XML and native dialog
+AC-6: unchanged original preload/webapp byte census, actual on-disk XML and native dialog
 outcomes. A Ready token or fixture-only success is not product acceptance.
 Run actual fmt, warning-denied workspace clippy, workspace tests and relevant generated
 artifact checks on the final implementation; no such run is claimed by this proposal.
@@ -302,7 +378,7 @@ No performance claim. Preserve existing source/codec/ledger/writer limits. Measu
 startup and retained work only against attributed baselines; native posting versus eval
 is a semantic choice, not a claimed speedup.
 
-## 10. Open questions
+## 10. Open questions, blockers & unknowns
 
 Resolved by the receipt above: approve main-world emulation for this selected-source explicit
 Legacy development slice, with direct page use of every declared literal channel and
