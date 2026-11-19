@@ -449,7 +449,7 @@ export const codeqlLanguages = [
 // Both actions must use the same *reviewed* immutable revision. Merely
 // requiring equal 40-hex SHAs would allow all six init/analyze uses to drift
 // together to an unreviewed action while the security admission stays green.
-const approvedCodeqlActionSha = "6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee"; // v4.39.0
+const approvedCodeqlActionSha = "33d7b85da1a04171e211befe2c739303b9a4c066"; // v4.39.3
 
 /**
  * One language's job condition: its router output (tools/ci_changes.sh), or a
@@ -1141,7 +1141,7 @@ const reviewedWorkflowActionRefs = new Set([
   // GH-502 requires Node 26 for the installed alias oracle in bun-test.
   // Reviewed immutable SHA; the invocation is also validated below.
   "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1",
-  "taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91",
+  "taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519",
   `github/codeql-action/init@${approvedCodeqlActionSha}`,
   `github/codeql-action/analyze@${approvedCodeqlActionSha}`,
   "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294",
@@ -1896,16 +1896,16 @@ export function checkWorkflowSecurity(source: string): void {
   const reviewedStepInventories: Record<string, string> = {
     fmt: "5021013ee751a651b110df9c3f45d96425b8a51ca5f6b7e13ce107c4a0042ea9",
     "windows-media":
-      "f4c3b6794e4f21428201253a5cf0af3ceb3fc1abf7e47a008c96682c4cf2f68f",
+      "72ddccabb2cd44d6dab130ee48134b9568175481d959dce7d74ed8e79341721d",
     // Re-reviewed check lane: a frozen/no-scripts SDK install before Clippy
     // supplies the actual test oracles without changing the allowed check set.
-    check: "b98d6e8d56da9631920e242cbd79a88918d4aee33e0871704ae6d6b7f9623f4b",
+    check: "243425c00684c8c73eadd628f3c807d626943a9b9404c9aca4e374cdddcc609d",
     "codeql-rust":
-      "8f4dd53774b6cc05b37eab2a04b65da5580d0ff8f352be0aae481dcc8e8f2889",
+      "c4226d22280f60c9c2d1c1d00d60a09b16b807f86ca769f21ccc5ab6a9d3918a",
     "codeql-javascript-typescript":
-      "94618e798d1743171d548d8a5e45b6cc891fa0f0fa2eb44e08bdbed0de2d63f8",
+      "caa3a23e21faf901bc37ed871305b0a30d5fc89dcf20c783645ee173d2223860",
     "codeql-actions":
-      "d074515becad551aef170eaf595df0daa69eec27474654ec3cd0cb2d12847c17",
+      "544a57d04bbb11fe0761a4829f5b4c74ae5901e7ebb84c4182e70ecf1a0b21f7",
   };
   for (const [jobName, digest] of Object.entries(reviewedStepInventories)) {
     const steps = stepsByJob.get(jobName);

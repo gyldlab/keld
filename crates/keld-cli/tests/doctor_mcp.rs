@@ -212,6 +212,13 @@ fn mcp_missing_subcommand_exits_2() {
 }
 
 #[test]
+fn mcp_discovery_only_eof_exits_successfully() {
+    let response = mcp_request("server/discover", &serde_json::json!({}));
+    assert_eq!(response["id"], 2, "{response}");
+    assert_eq!(response["result"]["resultType"], "complete", "{response}");
+}
+
+#[test]
 fn mcp_server_discover_advertises_versions_and_identity() {
     let response = mcp_request(
         "server/discover",
@@ -725,7 +732,7 @@ fn mcp_request_with_lifecycle(
     writeln!(stdin, "{call}").expect("write call");
     stdin.flush().expect("flush");
     let resp = read_json_line(&line_rx, &mut child);
-    if legacy_initialize.is_none() && (method == "server/discover" || resp["error"].is_object()) {
+    if legacy_initialize.is_none() && resp["error"].is_object() {
         assert_modern_bootstrap_completes(&mut stdin, &line_rx, &mut child);
     }
 

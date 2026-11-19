@@ -1,3 +1,4 @@
+import "./keldbot_size_label.test";
 import "./ci_provenance.test";
 import "./ci_verisentry_publisher.test";
 import "./ci_verisentry_refresh.test";
@@ -1715,7 +1716,7 @@ test("both Nextest installers pin 0.9.149 and reject unpinned or downgraded rele
     );
     expect(installer).toBeDefined();
     expect(installer!.uses).toBe(
-      "taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91",
+      "taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519",
     );
     expect((installer!.with as Step).tool).toBe(reviewed);
     expect((installer!.with as Step).fallback).toBe("none");

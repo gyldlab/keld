@@ -42,15 +42,26 @@ function fixture(
     state?: string;
     changedFiles?: number;
     changedOnSecondFetch?: boolean;
+    changedCountOnSecondFetch?: number;
     apiFailure?: boolean;
     badEventNumber?: boolean;
     mutablePrFileList?: ChangedFile[];
     comparisonFiles?: ChangedFile[];
     comparisonBase?: string;
+    comparisonMergeBase?: string;
+    baseTreeEntries?: Record<string, unknown>[];
+    headTreeEntries?: Record<string, unknown>[];
+    truncatedTree?: "base" | "head";
+    wrongTreeSha?: "base" | "head";
+    wrongCommitSha?: "base" | "head";
+    gitApiFailure?: boolean;
   } = {},
 ) {
   const expectedHead = overrides.head ?? "head-commit-1";
   const expectedBase = overrides.base ?? "base-commit-1";
+  const mergeBaseSha = overrides.comparisonMergeBase ?? "c".repeat(40);
+  const baseTreeSha = "d".repeat(40);
+  const headTreeSha = "e".repeat(40);
   const current = {
     number: 123,
     state: overrides.state ?? "open",
@@ -65,14 +76,76 @@ function fixture(
   let reads = 0;
   let paginationCalls = 0;
   let comparisonCalls = 0;
+  let treeCalls = 0;
   const github = {
     rest: {
+      git: {
+        getCommit: async (args: Record<string, unknown>) => {
+          if (overrides.gitApiFailure) throw Error("Git tree API unavailable");
+          const side = args.commit_sha === mergeBaseSha ? "base" : "head";
+          expect(args).toEqual({
+            owner: "gyldlab",
+            repo: "keld",
+            commit_sha: side === "base" ? mergeBaseSha : expectedHead,
+          });
+          return {
+            data: {
+              sha:
+                overrides.wrongCommitSha === side
+                  ? "0".repeat(40)
+                  : args.commit_sha,
+              tree: { sha: side === "base" ? baseTreeSha : headTreeSha },
+            },
+          };
+        },
+        getTree: async (args: Record<string, unknown>) => {
+          if (overrides.gitApiFailure) throw Error("Git tree API unavailable");
+          treeCalls++;
+          const side = args.tree_sha === baseTreeSha ? "base" : "head";
+          expect(args).toEqual({
+            owner: "gyldlab",
+            repo: "keld",
+            tree_sha: side === "base" ? baseTreeSha : headTreeSha,
+            recursive: "1",
+          });
+          const headEntries = files.map((file) => ({
+            path: file.filename,
+            type: "blob",
+            mode: "100644",
+            sha: "f".repeat(40),
+          }));
+          return {
+            data: {
+              sha:
+                overrides.wrongTreeSha === side
+                  ? "0".repeat(40)
+                  : args.tree_sha,
+              truncated: overrides.truncatedTree === side,
+              tree:
+                side === "base"
+                  ? (overrides.baseTreeEntries ?? [])
+                  : (overrides.headTreeEntries ?? headEntries),
+            },
+          };
+        },
+      },
       pulls: {
         get: async () => {
           if (overrides.apiFailure) throw Error("GitHub API unavailable");
           reads += 1;
           if (reads === 2 && overrides.changedOnSecondFetch) {
             return { data: { ...current, head: { sha: "newer-head" } } };
+          }
+          if (
+            reads === 2 &&
+            overrides.changedCountOnSecondFetch !== undefined
+          ) {
+            return {
+              data: {
+                ...current,
+                changed_files: overrides.changedCountOnSecondFetch,
+              },
+            };
           }
           return { data: current };
         },
@@ -97,6 +170,7 @@ function fixture(
               base_commit: {
                 sha: overrides.comparisonBase ?? current.base.sha,
               },
+              merge_base_commit: { sha: mergeBaseSha },
               files: overrides.comparisonFiles ?? files,
             },
           };
@@ -138,6 +212,7 @@ function fixture(
     getReads: () => reads,
     getPages: () => paginationCalls,
     getComparisons: () => comparisonCalls,
+    getTrees: () => treeCalls,
     messages,
     outputs,
   };
@@ -418,15 +493,208 @@ test("immutable comparison returns all 101 files on first commit-list page", asy
   expect(f.getPages()).toBe(0);
 });
 
-test("immutable compare must fail closed at GitHub's 300-file response limit", async () => {
-  const files = Array.from({ length: 300 }, (_, i) => ({
-    filename: `docs/file${i}.md`,
-    status: "modified",
+test.each([300, 448, 600])(
+  "%i benign files are admitted only after a complete immutable tree census",
+  async (count) => {
+    const files = Array.from({ length: count }, (_, i) => ({
+      filename: `docs/file${i}.md`,
+      status: "added",
+    }));
+    const f = fixture(files, {
+      head: "a".repeat(40),
+      base: "b".repeat(40),
+      // CompareCommits provides only its first 300 entries even at 600.
+      comparisonFiles: files.slice(0, 300),
+      mutablePrFileList: [{ filename: "docs/decoy.md", status: "added" }],
+    });
+    await expect(f.run()).resolves.toBeUndefined();
+    expect(f.getComparisons()).toBe(1);
+    expect(f.getTrees()).toBe(2);
+    expect(f.getPages()).toBe(0);
+    expect(f.messages[0]).toContain(`${count} PR files inspected`);
+  },
+);
+
+test("inconsistent 300-file metadata cannot disguise 448 distinct immutable additions", async () => {
+  const files = Array.from({ length: 448 }, (_, i) => ({
+    filename: `docs/add-${i}.md`,
+    status: "added",
   }));
-  await expect(fixture(files).run()).rejects.toThrow(
-    "cannot safely enumerate all changed files",
+  const f = fixture(files, {
+    head: "a".repeat(40),
+    base: "b".repeat(40),
+    changedFiles: 300,
+    comparisonFiles: files.slice(0, 300),
+  });
+  await expect(f.run()).rejects.toThrow(
+    "census disagrees with changed-file count",
   );
-  await expect(fixture(files.slice(0, 299)).run()).resolves.toBeUndefined();
+  expect(f.getTrees()).toBe(2);
+});
+
+test("immutable tree census supports exact source/destination rename pairs", async () => {
+  const files = Array.from({ length: 300 }, (_, i) => ({
+    filename: `docs/add-${i}.md`,
+    status: "added",
+  }));
+  const old = {
+    path: "docs/old-name.md",
+    type: "blob",
+    mode: "100644",
+    sha: "f".repeat(40),
+  };
+  const f = fixture(files, {
+    head: "a".repeat(40),
+    base: "b".repeat(40),
+    baseTreeEntries: [old],
+    comparisonFiles: files.slice(0, 300),
+  });
+  await expect(f.run()).resolves.toBeUndefined();
+  expect(f.getTrees()).toBe(2);
+});
+
+test("599 and 600 are permitted, but 601 files are rejected before enumeration", async () => {
+  const f = fixture([], { changedFiles: 601 });
+  await expect(f.run()).rejects.toThrow("more than 600 changed files");
+  expect(f.getComparisons()).toBe(0);
+  expect(f.getTrees()).toBe(0);
+  await expect(
+    fixture(
+      Array.from({ length: 299 }, (_, i) => ({
+        filename: `docs/file${i}.md`,
+        status: "added",
+      })),
+    ).run(),
+  ).resolves.toBeUndefined();
+});
+
+test("protected authority after Compare API's first 300 files cannot hide", async () => {
+  const files = Array.from({ length: 448 }, (_, i) => ({
+    filename: `docs/benign-${i}.md`,
+    status: "added",
+  }));
+  files[447].filename = "deny.toml";
+  const f = fixture(files, {
+    head: "a".repeat(40),
+    base: "b".repeat(40),
+    comparisonFiles: files.slice(0, 300),
+  });
+  await expect(f.run()).rejects.toThrow("protected CI authority");
+  expect(f.getTrees()).toBe(2);
+});
+
+test("immutable tree census catches a protected-file rename even when the new name is benign", async () => {
+  const files = Array.from({ length: 300 }, (_, i) => ({
+    filename: `docs/benign-${i}.md`,
+    status: "added",
+  }));
+  const f = fixture(files, {
+    head: "a".repeat(40),
+    base: "b".repeat(40),
+    comparisonFiles: files.slice(0, 300),
+    baseTreeEntries: [
+      {
+        path: ".github/workflows/ci.yml",
+        type: "blob",
+        mode: "100644",
+        sha: "f".repeat(40),
+      },
+    ],
+  });
+  await expect(f.run()).rejects.toThrow("protected CI authority");
+});
+
+test("unchanged protected paths are not mistaken for PR changes", async () => {
+  const files = Array.from({ length: 300 }, (_, i) => ({
+    filename: `docs/benign-${i}.md`,
+    status: "added",
+  }));
+  const protectedEntry = {
+    path: ".github/workflows/ci.yml",
+    type: "blob",
+    mode: "100644",
+    sha: "f".repeat(40),
+  };
+  const f = fixture(files, {
+    head: "a".repeat(40),
+    base: "b".repeat(40),
+    comparisonFiles: files.slice(0, 300),
+    baseTreeEntries: [protectedEntry],
+    headTreeEntries: [
+      protectedEntry,
+      ...files.map((file) => ({
+        path: file.filename,
+        type: "blob",
+        mode: "100644",
+        sha: "f".repeat(40),
+      })),
+    ],
+  });
+  await expect(f.run()).resolves.toBeUndefined();
+});
+
+test.each(["base", "head"] as const)(
+  "truncated or unbound %s tree fails closed at 300 files",
+  async (side) => {
+    const files = Array.from({ length: 300 }, (_, i) => ({
+      filename: `docs/benign-${i}.md`,
+      status: "added",
+    }));
+    const opts = { head: "a".repeat(40), base: "b".repeat(40) };
+    await expect(
+      fixture(files, { ...opts, truncatedTree: side }).run(),
+    ).rejects.toThrow("truncated or unbound Git tree");
+    await expect(
+      fixture(files, { ...opts, wrongTreeSha: side }).run(),
+    ).rejects.toThrow("truncated or unbound Git tree");
+    await expect(
+      fixture(files, { ...opts, wrongCommitSha: side }).run(),
+    ).rejects.toThrow("unbound Git commit tree");
+  },
+);
+
+test("duplicate/malformed immutable paths and incomplete census are rejected", async () => {
+  const files = Array.from({ length: 300 }, (_, i) => ({
+    filename: `docs/benign-${i}.md`,
+    status: "added",
+  }));
+  const goodEntries = files.map((file) => ({
+    path: file.filename,
+    type: "blob",
+    mode: "100644",
+    sha: "f".repeat(40),
+  }));
+  const opts = { head: "a".repeat(40), base: "b".repeat(40) };
+  await expect(
+    fixture(files, {
+      ...opts,
+      headTreeEntries: [...goodEntries, goodEntries[0]],
+    }).run(),
+  ).rejects.toThrow("malformed or duplicated Git tree entry");
+  await expect(
+    fixture(files, {
+      ...opts,
+      headTreeEntries: [
+        ...goodEntries.slice(0, -1),
+        {
+          ...goodEntries[299],
+          path: "../ci.yml",
+        },
+      ],
+    }).run(),
+  ).rejects.toThrow("malformed or duplicated Git tree entry");
+  await expect(
+    fixture(files, {
+      ...opts,
+      headTreeEntries: goodEntries.slice(0, 299),
+    }).run(),
+  ).rejects.toThrow("census disagrees");
+  await expect(
+    fixture(files, { ...opts, comparisonMergeBase: "not-a-sha" }).run(),
+  ).rejects.toThrow("missing immutable comparison commits");
+  await expect(
+    fixture(files, { ...opts, gitApiFailure: true }).run(),
+  ).rejects.toThrow("Git tree API unavailable");
 });
 
 test("renames missing original path and unknown statuses fail closed", async () => {
@@ -456,6 +724,11 @@ test("mismatched or changing head/base, missing files, and wrong base fail close
   ).rejects.toThrow("stale pull-request head/base");
   await expect(
     fixture([{ filename: "docs/ok.md", status: "modified" }], {
+      changedCountOnSecondFetch: 2,
+    }).run(),
+  ).rejects.toThrow("changed PR file count during verification");
+  await expect(
+    fixture([{ filename: "docs/ok.md", status: "modified" }], {
       changedFiles: 2,
     }).run(),
   ).rejects.toThrow("incomplete or truncated file list");
@@ -478,7 +751,7 @@ test("GitHub API problems, invalid PR/repo and comparison cap refuse admission",
     "valid pull request number",
   );
   await expect(fixture([], { changedFiles: 3000 }).run()).rejects.toThrow(
-    "cannot safely enumerate all changed files",
+    "more than 600 changed files",
   );
 });
 
@@ -499,4 +772,21 @@ test("review-state changes cannot authorize a protected CI edit without a truste
   // that can be dismissed without triggering pull_request_target again.
   expect(code).not.toContain("listReviews");
   expect(f.outputs).toEqual({});
+});
+
+test("tree census rechecks a 300-file count after enumeration", async () => {
+  const files = Array.from({ length: 300 }, (_, i) => ({
+    filename: `docs/tree-${i}.md`,
+    status: "added",
+  }));
+  const f = fixture(files, {
+    head: "a".repeat(40),
+    base: "b".repeat(40),
+    comparisonFiles: files.slice(0, 300),
+    changedCountOnSecondFetch: 301,
+  });
+  await expect(f.run()).rejects.toThrow(
+    "changed PR file count during verification",
+  );
+  expect(f.getTrees()).toBe(2);
 });
