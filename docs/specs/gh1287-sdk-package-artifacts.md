@@ -93,9 +93,9 @@ with the review gates in §8.
   API internal runtime edge is normalized to the actual KIPC version. The
   manifest never ships scripts or packageManager.
 - **Negative control:**
-  - **Single fault:** Build from a different caller directory or add a forbidden manifest field.
-  - **At-risk precondition:** Both builds use the same source inputs.
-  - **Expected RED:** The hash or manifest allowlist oracle fails.
+  - **Single fault:** In separate runs, make one artifact depend on the caller directory, or emit one field outside the manifest allowlist.
+  - **At-risk precondition:** The builds use identical source inputs from two different caller directories; the manifest fixture has a non-allowlisted source field.
+  - **Expected RED:** The artifact hashes differ in the first run. The manifest allowlist oracle rejects the extra field in the second.
 
 ### AC-6: installed-graph Source and lifecycle are independently qualified
 
