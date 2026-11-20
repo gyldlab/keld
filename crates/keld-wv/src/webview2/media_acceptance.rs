@@ -1173,6 +1173,7 @@ mod tests {
     mod desktop_first_init;
     mod exit_wake_retirement;
     mod first_navigation;
+    mod original_resources;
     mod profile_release;
     mod release_receipts;
     mod saved_permission_deadline;

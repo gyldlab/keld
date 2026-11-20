@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(1);
-const ENTRY: &str = "views/editor.html";
+pub(crate) const ENTRY: &str = "views/editor.html";
 const ENTRY_BYTES: &[u8] = b"<html>selected fixture</html>\n";
 
 const POLICY: &str = "{\"profile\":\"legacy\",\"app\":{},\"windows\":{\"fixture\":{\"web\":{\"csp\":\"original-editor-offline\"}},\"alternate\":{\"web\":{\"csp\":\"original-editor-offline-empty-style\"}}}}\n";
@@ -24,6 +24,21 @@ pub(crate) struct Fixture {
 
 impl Fixture {
     pub(crate) fn new() -> Self {
+        Self::with_files(
+            ENTRY_BYTES,
+            &[
+                (
+                    "views/other.html",
+                    b"<html>not a document grant</html>\n",
+                    true,
+                ),
+                ("styles/main.css", b"body{margin:0}\n", true),
+                ("data/Caf\u{e9}.txt", b"literal unicode resource\n", true),
+            ],
+        )
+    }
+
+    pub(crate) fn with_files(entry: &[u8], files: &[(&str, &[u8], bool)]) -> Self {
         use ::windows::Win32::Storage::FileSystem::{
             FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
             FILE_SHARE_WRITE,
@@ -36,20 +51,19 @@ impl Fixture {
         let root = owned.join("selected assets");
         fs::create_dir(&root).expect("selected source directory");
         let mut assets = Vec::new();
-        for (path, bytes) in [
-            (ENTRY, ENTRY_BYTES),
-            ("views/other.html", b"<html>not a document grant</html>\n"),
-            ("styles/main.css", b"body{margin:0}\n"),
-            ("data/Caf\u{e9}.txt", b"literal unicode resource\n"),
-        ] {
+        for (path, bytes, listed) in
+            std::iter::once((ENTRY, entry, true)).chain(files.iter().copied())
+        {
             let absolute = root.join(path);
             fs::create_dir_all(absolute.parent().expect("parent")).expect("fixture directories");
             fs::write(absolute, bytes).expect("literal fixture data");
-            assets.push(VerifiedWebAsset {
-                path: PathBuf::from(path),
-                size: bytes.len() as u64,
-                sha256: Sha256::digest(bytes).into(),
-            });
+            if listed {
+                assets.push(VerifiedWebAsset {
+                    path: PathBuf::from(path),
+                    size: bytes.len() as u64,
+                    sha256: Sha256::digest(bytes).into(),
+                });
+            }
         }
         let parent = fs::OpenOptions::new()
             .read(true)
