@@ -8,6 +8,14 @@ Six core files are compared against immutable original SHA-256 and Git blob hash
 
 Run on an already verified immutable pristine original source root with a distinct NEW scratch output path:
 
+The output destination must be outside the pristine source tree, including
+physical paths reached through symbolic-link aliases. The producer refuses a
+symlinked immediate output parent and resolves other existing ancestors to
+their physical directory before claiming a new output path. A separately
+qualified builder must still protect the filesystem against same-user inode
+renames or changes after this point-in-time source-only receipt. This output
+must never be treated as an approved installed application.
+
 The qualified producer is Node 24.19.0. The exact generated main SHA-256 is cc240f18df8eb102c4fc3c0d75f4f6da21129a8d32835b43fe260b6a3bfbc0de and is checked before any output is written. Bun 1.4.4 transforms the adapter's function.toString() representation; its different output is deliberately refused rather than accepted as the reviewed artifact. Bun test success covers that refusal, not source generation or installed execution.
 
 GH1404_PINNED_PRISTINE_DESKTOP=/approved/pristine GH1404_PINNED_1506_ADAPTER=/approved/pr1506/tools/gh1404-original-argv/patch-original-main.mjs GH1404_WORKER17_SOURCE_OUTPUT=/own/scratch/new-output node --test tools/gh1404-original-source-w17/source-review.test.mjs

@@ -37,6 +37,53 @@ test("source-only producer rejects missing independent input", async () => {
   await assert.rejects(() => produceReview(), /Usage:/);
   await assert.rejects(() => produceReview(root, adapter, undefined), /Usage:/);
 });
+test("source-only review cannot put generated files inside its pristine input tree", async () => {
+  const pristine = mkdtempSync(join(tmpdir(), "gh1404-pristine-output-refusal-"));
+  try {
+    const outputInsideSource = join(pristine, "generated-review");
+    await assert.rejects(
+      () => produceReview(pristine, join(pristine, "missing-adapter"), outputInsideSource),
+      /review output overlaps pristine source/,
+    );
+    assert.equal(existsSync(outputInsideSource), false);
+  } finally {
+    rmSync(pristine, { recursive: true, force: true });
+  }
+});
+
+test("source-only review rejects an output aliased into the pristine tree", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "gh1404-pristine-output-alias-"));
+  try {
+    const pristine = join(parent, "pristine");
+    const alias = join(parent, "alias");
+    mkdirSync(pristine);
+    symlinkSync(pristine, alias, "dir");
+    await assert.rejects(
+      () => produceReview(pristine, join(parent, "missing-adapter"), join(alias, "review")),
+      /symlinked review output parent|review output overlaps pristine source/,
+    );
+    assert.equal(existsSync(join(pristine, "review")), false);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("source-only materializer does not write through a symlinked immediate parent", () => {
+  const parent = mkdtempSync(join(tmpdir(), "gh1404-review-parent-alias-"));
+  try {
+    const destination = join(parent, "elsewhere");
+    const alias = join(parent, "alias");
+    mkdirSync(destination);
+    symlinkSync(destination, alias, "dir");
+    assert.throws(
+      () => materializeReviewFiles(join(alias, "review"), [["main.js", "unapproved"]]),
+      /symlinked review output parent/,
+    );
+    assert.equal(existsSync(join(destination, "review")), false);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
 test(
   "pinned pristine source + exact #1506 adapter yield bounded source and review-only manifest",
   { skip: !(root && adapter && output) },

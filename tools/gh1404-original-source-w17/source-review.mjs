@@ -8,12 +8,13 @@ import {
   openSync,
   closeSync,
   fstatSync,
+  realpathSync,
   rmdirSync,
   unlinkSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, resolve, join, isAbsolute } from "node:path";
+import { dirname, basename, relative, sep, resolve, join, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PIN_DIGESTS = {
@@ -84,12 +85,53 @@ export function claimNewReviewDirectory(output) {
 }
 
 /**
+ * Pin a new review destination to the physical existing parent before writing.
+ * Refuse a symlink when it is the immediate nearest existing parent. Other
+ * existing ancestors are resolved to their physical directory, so a caller's
+ * alias cannot redirect a subsequent file operation through that alias.
+ * This is not a defense against a same-user actor renaming physical inodes.
+ */
+function canonicalNewReviewOutput(outputInput) {
+  const requested = resolve(outputInput);
+  const missingParents = [];
+  let parent = dirname(requested);
+  for (;;) {
+    try {
+      const info = lstatSync(parent);
+      if (info.isSymbolicLink())
+        throw new Error("GH1404 symlinked review output parent refused");
+      if (!info.isDirectory())
+        throw new Error("GH1404 non-directory review output parent refused");
+      break;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      const ancestor = dirname(parent);
+      if (ancestor === parent) throw error;
+      missingParents.unshift(basename(parent));
+      parent = ancestor;
+    }
+  }
+  return join(realpathSync(parent), ...missingParents, basename(requested));
+}
+
+/** Disallow source-review artifacts from mutating the pinned source checkout. */
+function assertReviewOutsideSource(root, output) {
+  const physicalRoot = realpathSync(root);
+  const within = relative(physicalRoot, output);
+  if (
+    within === "" ||
+    (within !== ".." && !within.startsWith(".." + sep) && !isAbsolute(within))
+  )
+    throw new Error("GH1404 review output overlaps pristine source");
+}
+
+/**
  * Write a complete, non-installable review into an exclusively claimed path.
  * Never adopt another producer's directory. Roll back only files opened by
  * this invocation, then remove owned directories only if they are empty.
  */
 export function materializeReviewFiles(outputInput, entries) {
-  const output = resolve(outputInput);
+  const output = canonicalNewReviewOutput(outputInput);
   if (existsSync(output))
     throw new Error("GH1404 refuse existing output directory");
   // Capture and validate every caller-provided name and byte buffer BEFORE
@@ -182,9 +224,10 @@ export async function produceReview(rootInput, adapterInput, outputInput) {
     throw new Error(
       "Usage: node source-review.mjs PRISTINE_ROOT EXACT_1506_ADAPTER OUTPUT_NEW_PATH",
     );
-  const root = resolve(rootInput),
-    output = resolve(outputInput),
+  const root = realpathSync(resolve(rootInput)),
+    output = canonicalNewReviewOutput(outputInput),
     adapter = resolve(adapterInput);
+  assertReviewOutsideSource(root, output);
   if (existsSync(output))
     throw new Error("GH1404 refuse existing output directory");
   const source = Object.fromEntries(
