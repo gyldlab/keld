@@ -426,7 +426,9 @@ describe("FrameReader chunk queue", () => {
     const reader = new FrameReader();
     const pending = reader.readFrame();
     const frame = encodeFrame(FrameKind.Ping, 17, 23, new Uint8Array());
-    const started = performance.now();
+    const started = 100;
+    let now = started;
+    const clockDescriptor = Object.getOwnPropertyDescriptor(performance, "now");
     const constructorDescriptor = Object.getOwnPropertyDescriptor(
       globalThis,
       "Uint8Array",
@@ -439,29 +441,37 @@ describe("FrameReader chunk queue", () => {
       construct(target, args, newTarget) {
         if (delayCopy && args[0] instanceof originalConstructor) {
           delayCopy = false;
-          const copyStarted = performance.now();
-          while (performance.now() - copyStarted < 25) {
-            // Inject copy work after the transport observes callback entry.
-          }
+          // Copy time must fall outside the first fragment's arrival timestamp.
+          now += 25;
         }
         return Reflect.construct(target, args, newTarget);
       },
     });
-    Object.defineProperty(globalThis, "Uint8Array", {
-      ...constructorDescriptor,
-      value: delayedConstructor,
+    Object.defineProperty(performance, "now", {
+      configurable: true,
+      value: () => now,
     });
     try {
+      Object.defineProperty(globalThis, "Uint8Array", {
+        ...constructorDescriptor,
+        value: delayedConstructor,
+      });
       reader.push(frame.subarray(0, 1));
+      expect(delayCopy).toBe(false);
+      // Complete in the same turn, after the arrival deadline and before the
+      // deadline calculated from the end of the copy.
+      now = started + APP_LINK_IO_DEADLINE_MS + 10;
+      reader.push(frame.subarray(1));
     } finally {
       Object.defineProperty(globalThis, "Uint8Array", constructorDescriptor);
+      if (clockDescriptor === undefined) {
+        Reflect.deleteProperty(performance, "now");
+      } else {
+        Object.defineProperty(performance, "now", clockDescriptor);
+      }
     }
-    while (performance.now() - started < APP_LINK_IO_DEADLINE_MS + 10) {
-      // Hold the JS turn so the already-due timer callback cannot run first.
-    }
-    reader.push(frame.subarray(1));
     await expect(pending).rejects.toThrow("KELD-IPC-006");
-  }, 8_000);
+  });
 
   test("wall-clock rollback cannot extend a monotonic frame deadline", async () => {
     const originalDateNow = Date.now;
