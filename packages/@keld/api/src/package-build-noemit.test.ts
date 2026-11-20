@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
@@ -14,6 +14,20 @@ import { tmpdir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 
 const packages = resolve(import.meta.dir, "../..");
+
+beforeAll(() => {
+  // The API setup does not install the linked KIPC package's dev dependencies.
+  // Warm from the KIPC lock before any isolated fixture installs offline.
+  const install = Bun.spawnSync(
+    [process.execPath, "install", "--frozen-lockfile", "--ignore-scripts"],
+    { cwd: join(packages, "kipc"), stdout: "pipe", stderr: "pipe" },
+  );
+  expect(
+    install.exitCode,
+    new TextDecoder().decode(install.stdout) +
+      new TextDecoder().decode(install.stderr),
+  ).toBe(0);
+}, 30_000);
 
 function fixture(check: (root: string) => void): void {
   const root = mkdtempSync(join(tmpdir(), "keld-noemit-"));
