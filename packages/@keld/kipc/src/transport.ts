@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:74ce05ca4cf0b7e7b2a140395f434e4fe38c30c1ca228dc85fecc757f3f73f8a
+// @keld/kipc-transport sha256:f07898e39ac3141f19456034319dad66177b34a2927fb7676ce9e132d0d7dca6
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -419,6 +419,7 @@ const intrinsicMapNext = Object.getPrototypeOf(
   new IntrinsicMap().values(),
 ).next;
 const intrinsicMapSize = intrinsicDescriptor(Map.prototype, "size")!.get!;
+const intrinsicSetSize = intrinsicDescriptor(Set.prototype, "size")!.get!;
 const intrinsicWeakMapGet = WeakMap.prototype.get;
 const intrinsicWeakMapSet = WeakMap.prototype.set;
 const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
@@ -455,6 +456,8 @@ const intrinsicTerminate = Worker.prototype.terminate;
 const IntrinsicTextDecoder = TextDecoder;
 const intrinsicTextDecode = TextDecoder.prototype.decode;
 const intrinsicSetImmediate = setImmediate;
+const intrinsicSetTimeout = setTimeout;
+const intrinsicClearTimeout = clearTimeout;
 const intrinsicConsole = console;
 const intrinsicConsoleError = console.error;
 const intrinsicConsoleWarn = console.warn;
@@ -3028,6 +3031,15 @@ export class WorkerLink {
   readonly #pending = new Map<number, PendingAsyncCall>();
   readonly #appliers = stateMap<number, (payload: Uint8Array) => void>();
   readonly #listeners = new Map<number, Set<(payload: Uint8Array) => void>>();
+  // One framework-owned consumer, registered once; no per-record receipt queue.
+  #releasedEventHandler:
+    | {
+        channel: number;
+        take: (payload: Uint8Array) => unknown;
+        dispatch: (fact: unknown) => void;
+        released: (fact: unknown) => void;
+      }
+    | undefined;
   readonly #callHandlers = new Map<
     number,
     (payload: Uint8Array) => Promise<WorkerCallReply>
@@ -3257,7 +3269,7 @@ export class WorkerLink {
     }
     const corr = this.#allocateCorr();
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const timer = intrinsicSetTimeout(() => {
         if (this.#pending.get(corr)?.timer !== timer) return;
         // A reply retained in the ring before this decision is the call's
         // answer, whichever task the event loop ran first after a park (§4.6):
@@ -3329,6 +3341,9 @@ export class WorkerLink {
     listener: (payload: Uint8Array) => void,
   ): () => void {
     this.#requireEventChannel(channel);
+    if (this.#releasedEventHandler?.channel === channel) {
+      throw linkError("KELD-IPC-005", "EVENT already has a post-ring consumer");
+    }
     let set = this.#listeners.get(channel);
     if (set === undefined) {
       set = new Set();
@@ -3337,6 +3352,35 @@ export class WorkerLink {
     set.add(listener);
     return () => {
       set.delete(listener);
+    };
+  }
+
+  /** @internal One framework consumer; release follows both physical read counters. */
+  onEventAfterRingRelease<Fact>(
+    channel: number,
+    take: (payload: Uint8Array) => Fact,
+    dispatch: (fact: Fact) => void,
+    released: (fact: Fact) => void,
+  ): () => void {
+    this.#requireEventChannel(channel);
+    const existing = stateMapGet(this.#listeners, channel);
+    if (
+      this.#releasedEventHandler !== undefined ||
+      (existing !== undefined &&
+        intrinsicApply(intrinsicSetSize, existing, []) > 0)
+    ) {
+      throw linkError("KELD-IPC-005", "EVENT already has a consumer");
+    }
+    const owner = {
+      channel,
+      take,
+      dispatch: dispatch as (fact: unknown) => void,
+      released: released as (fact: unknown) => void,
+    };
+    this.#releasedEventHandler = owner;
+    return () => {
+      if (this.#releasedEventHandler === owner)
+        this.#releasedEventHandler = undefined;
     };
   }
 
@@ -3730,26 +3774,69 @@ export class WorkerLink {
         continue;
       }
       switch (header.kind) {
-        case FrameKind.Event:
-          for (const listener of this.#listeners.get(header.channel) ?? []) {
+        case stateEventKind: {
+          const owner =
+            this.#releasedEventHandler?.channel === header.channel
+              ? this.#releasedEventHandler
+              : undefined;
+          let fact: unknown;
+          let taken = false;
+          if (owner !== undefined) {
             try {
-              listener(payload);
+              fact = owner.take(payload);
+              taken = true;
             } catch (err) {
-              if (!failed) {
-                failed = true;
-                firstError = err;
+              this.#failLink(
+                `post-ring consumer could not take its applied fact: ${stateErrorMessage(err)}`,
+              );
+            }
+            if (taken) {
+              try {
+                owner.dispatch(fact);
+              } catch (err) {
+                if (!failed) {
+                  failed = true;
+                  firstError = err;
+                }
+              }
+            }
+          } else {
+            for (const listener of this.#listeners.get(header.channel) ?? []) {
+              try {
+                listener(payload);
+              } catch (err) {
+                if (!failed) {
+                  failed = true;
+                  firstError = err;
+                }
               }
             }
           }
           release();
+          if (owner !== undefined && taken) {
+            // Release handlers are framework state machinery, never app callbacks.
+            // In particular, a synchronous call here would reenter this drain.
+            const wasApplying = this.#applying;
+            this.#applying = true;
+            try {
+              owner.released(fact);
+            } catch (err) {
+              this.#failLink(
+                `post-ring release failed: ${stateErrorMessage(err)}`,
+              );
+            } finally {
+              this.#applying = wasApplying;
+            }
+          }
           break;
+        }
         case FrameKind.Reply:
         case FrameKind.Err: {
           release();
           const waiter = this.#pending.get(header.corr);
           if (waiter === undefined) break; // already rejected at its deadline
           this.#pending.delete(header.corr);
-          clearTimeout(waiter.timer);
+          intrinsicClearTimeout(waiter.timer);
           if (header.kind === FrameKind.Reply) waiter.resolve(payload);
           else waiter.reject(this.#callErrorOrFail(payload));
           break;
@@ -3838,7 +3925,7 @@ export class WorkerLink {
     const pending = [...this.#pending.values()];
     this.#pending.clear();
     for (const waiter of pending) {
-      clearTimeout(waiter.timer);
+      intrinsicClearTimeout(waiter.timer);
       waiter.reject(this.#terminalError(state));
     }
     // In a later task, so every pending call's rejection handlers ran first.

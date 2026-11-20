@@ -20,6 +20,7 @@ import {
   ECHO_CHANNEL,
   FrameKind,
   LIFECYCLE_CHANNEL,
+  WINDOW_CHANNEL,
   WORKER_HEARTBEAT_INTERVAL_MS,
   WORKER_LINK_CONTROL,
   WORKER_LINK_TEST_WORDS,
@@ -214,6 +215,237 @@ function awaitWord(
 
 function nextTask(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+// The real Worker advances both ring counters before notifying its framework owner.
+async function afterRingRelease(): Promise<void> {
+  const { link, control } = await open({
+    receive: {
+      eventChannels: [LIFECYCLE_CHANNEL, WINDOW_CHANNEL],
+      callReceivers: [],
+    },
+  });
+  let otherEvents = 0;
+  link.setStateApplier(WINDOW_CHANNEL, () => {});
+  expectThrow("ring-install-rollback", () =>
+    attachMirror(
+      link,
+      {
+        channel: WINDOW_CHANNEL,
+        decode() {
+          return 0;
+        },
+        apply() {},
+        dispatch() {},
+      },
+      () => {},
+    ),
+  );
+  link.onEvent(WINDOW_CHANNEL, () => {
+    otherEvents += 1;
+  });
+  const fact = { marker: "same fact" };
+  let complete: () => void = () => undefined;
+  const finished = new Promise<void>((resolve) => {
+    complete = resolve;
+  });
+  let count = 0;
+  let timerProbe: Promise<Uint8Array> | undefined;
+  attachMirror(
+    link,
+    {
+      channel: LIFECYCLE_CHANNEL,
+      decode() {
+        return fact;
+      },
+      apply() {},
+      dispatch(actual) {
+        report("ring-dispatched-fact", actual === fact);
+        count += 1;
+        report(
+          "ring-before-receipt",
+          word(control, WORKER_LINK_CONTROL.R_RECS),
+        );
+        const savedTimer = globalThis.setTimeout;
+        globalThis.setTimeout = (() => {
+          throw new Error("late timer lookup");
+        }) as unknown as typeof setTimeout;
+        try {
+          timerProbe = link.call(ECHO_CHANNEL, text("timer-probe"), 30_000);
+        } finally {
+          globalThis.setTimeout = savedTimer;
+        }
+        report(
+          "ring-nested",
+          decoder.decode(
+            link.callBlocking(ECHO_CHANNEL, text("ring-nested"), 30_000),
+          ),
+        );
+      },
+    },
+    (actual) => {
+      report("ring-same-fact", actual === fact);
+      report(
+        "ring-after-receipt",
+        word(control, WORKER_LINK_CONTROL.R_RECS) >= 1,
+      );
+      report(
+        "ring-bytes-released",
+        word(control, WORKER_LINK_CONTROL.R_BYTES) >= 24,
+      );
+      expectThrow("ring-release-block", () =>
+        link.callBlocking(ECHO_CHANNEL, text("must-not-send"), 30_000),
+      );
+      complete();
+    },
+  );
+  expectThrow("ring-duplicate", () =>
+    link.onEvent(LIFECYCLE_CHANNEL, () => {}),
+  );
+  // Main's writable exported object is not the WorkerLink dispatch authority.
+  const eventKind = FrameKind.Event;
+  (FrameKind as { Event: number }).Event = 255;
+  report(
+    "ring-first",
+    decoder.decode(await link.call(ECHO_CHANNEL, text("after-ring"), 30_000)),
+  );
+  await finished;
+  if (timerProbe === undefined) throw new Error("timer probe was not created");
+  report("ring-timer-probe", decoder.decode(await timerProbe));
+  report("ring-dispatch-count", count);
+  report(
+    "ring-healthy",
+    decoder.decode(await link.call(ECHO_CHANNEL, text("ring-healthy"), 30_000)),
+  );
+  report("ring-other-events", otherEvents);
+  report("ring-final-dispatch-count", count);
+  (FrameKind as { Event: number }).Event = eventKind;
+  link.close();
+}
+
+async function afterRingReleaseFailure(): Promise<void> {
+  const { link, control } = await open();
+  let complete: () => void = () => undefined;
+  const ended = new Promise<void>((resolve) => {
+    complete = resolve;
+  });
+  link.onEnd((error) => {
+    report("ring-failure-code", error.code);
+    complete();
+  });
+  attachMirror(
+    link,
+    {
+      channel: LIFECYCLE_CHANNEL,
+      decode() {
+        return 7;
+      },
+      apply() {},
+      dispatch() {},
+    },
+    () => {
+      report(
+        "ring-failure-released",
+        word(control, WORKER_LINK_CONTROL.R_RECS) === 1,
+      );
+      throw new Error("release fault");
+    },
+  );
+  void link
+    .call(ECHO_CHANNEL, text("release-failure"), 30_000)
+    .catch(() => undefined);
+  await ended;
+  link.close();
+}
+
+async function afterRingDispatchFailure(): Promise<void> {
+  const { link, control } = await open();
+  const fact = { marker: "retained despite throw" };
+  let completed: () => void = () => undefined;
+  let failed: () => void = () => undefined;
+  const released = new Promise<void>((resolve) => {
+    completed = resolve;
+  });
+  const thrown = new Promise<void>((resolve) => {
+    failed = resolve;
+  });
+  process.once("uncaughtException", (error) => {
+    report("ring-dispatch-error", error.message);
+    failed();
+  });
+  attachMirror(
+    link,
+    {
+      channel: LIFECYCLE_CHANNEL,
+      decode() {
+        return fact;
+      },
+      apply() {},
+      dispatch() {
+        throw new Error("dispatch fault");
+      },
+    },
+    (actual) => {
+      report("ring-throw-same-fact", actual === fact);
+      report(
+        "ring-throw-released",
+        word(control, WORKER_LINK_CONTROL.R_RECS) === 1,
+      );
+      completed();
+    },
+  );
+  const first = link.call(ECHO_CHANNEL, text("dispatch-failure"), 30_000);
+  await released;
+  await thrown;
+  report("ring-throw-first", decoder.decode(await first));
+  report(
+    "ring-throw-healthy",
+    decoder.decode(
+      await link.call(ECHO_CHANNEL, text("throw-healthy"), 30_000),
+    ),
+  );
+  link.close();
+}
+
+async function afterRingTakeFailure(): Promise<void> {
+  const { link } = await open();
+  let complete: () => void = () => undefined;
+  const ended = new Promise<void>((resolve) => {
+    complete = resolve;
+  });
+  let uncaught = 0;
+  let dispatched = 0;
+  let released = 0;
+  process.on("uncaughtException", () => {
+    uncaught += 1;
+  });
+  link.onEnd((error) => {
+    report("ring-take-code", error.code);
+    complete();
+  });
+  link.onEventAfterRingRelease(
+    LIFECYCLE_CHANNEL,
+    () => {
+      throw new Error("framework take fault");
+    },
+    () => {
+      dispatched += 1;
+      throw new Error("must not dispatch");
+    },
+    () => {
+      released += 1;
+      throw new Error("must not release absent fact");
+    },
+  );
+  void link
+    .call(ECHO_CHANNEL, text("take-failure"), 30_000)
+    .catch(() => undefined);
+  await ended;
+  await nextTask();
+  report("ring-take-uncaught", uncaught);
+  report("ring-take-dispatched", dispatched);
+  report("ring-take-released", released);
+  link.close();
 }
 
 // Criteria 1, 2, 3 and 9: the #418 arm-B load during one park.
@@ -1712,6 +1944,10 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
   "malformed-err": malformedErr,
   "arm-b": armB,
   "wake-rule": wakeRule,
+  "after-ring-release": afterRingRelease,
+  "after-ring-failure": afterRingReleaseFailure,
+  "after-ring-take-failure": afterRingTakeFailure,
+  "after-ring-dispatch-failure": afterRingDispatchFailure,
   "mirror-release": mirrorRelease,
   "mirror-identity": mirrorValues("identity"),
   "mirror-primitives": mirrorValues("primitives"),

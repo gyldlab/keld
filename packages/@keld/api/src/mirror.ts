@@ -23,6 +23,7 @@ export interface MirrorSource<Fact> {
 export function attachMirror<Fact>(
   link: WorkerLink,
   source: MirrorSource<Fact>,
+  released?: (fact: Fact) => void,
 ): void {
   const channel = source.channel;
   const decode = source.decode;
@@ -34,7 +35,7 @@ export function attachMirror<Fact>(
   const pending = stateSlots<Fact>(capacity);
   let head = 0;
   let count = 0;
-  link.setStateApplier(channel, (payload) => {
+  const applyFact = (payload: Uint8Array): void => {
     try {
       const fact = stateApply(decode, source, [payload]);
       stateApply(apply, source, [fact]);
@@ -53,8 +54,8 @@ export function attachMirror<Fact>(
         "mirror decode or apply failed. Check the source codec and state contract before restarting the role.",
       );
     }
-  });
-  link.onEvent(channel, () => {
+  };
+  const take = (): Fact => {
     if (count === 0) {
       throw linkError(
         "KELD-IPC-005",
@@ -67,6 +68,30 @@ export function attachMirror<Fact>(
     pending[head] = undefined;
     head = (head + 1) % capacity;
     count -= 1;
-    stateApply(dispatch, source, [fact]);
-  });
+    return fact;
+  };
+  if (released === undefined) {
+    const remove = link.onEvent(channel, () =>
+      stateApply(dispatch, source, [take()]),
+    );
+    try {
+      link.setStateApplier(channel, applyFact);
+    } catch (error) {
+      remove();
+      throw error;
+    }
+  } else {
+    const remove = link.onEventAfterRingRelease(
+      channel,
+      take,
+      (fact) => stateApply(dispatch, source, [fact]),
+      released,
+    );
+    try {
+      link.setStateApplier(channel, applyFact);
+    } catch (error) {
+      remove();
+      throw error;
+    }
+  }
 }

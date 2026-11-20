@@ -594,6 +594,112 @@ fn mirror_values(scenario: &str, reentrant: bool, duplicate: bool) {
     }
 }
 
+/// The physical-release hook cannot impersonate a read-counter advance.
+#[test]
+fn event_receipt_follows_physical_ring_release_after_reentrant_call() {
+    let (mut stream, role) = start("after-ring-release");
+    long_reads(&stream);
+    let first = read_call_named(&mut stream, "after-ring");
+    host_event(&mut stream, 0, 8);
+    host_reply(&mut stream, first, b"first-reply");
+    let timer_probe = read_call_named(&mut stream, "timer-probe");
+    host_reply(&mut stream, timer_probe, b"timer-reply");
+    let nested = read_call_named(&mut stream, "ring-nested");
+    host_reply(&mut stream, nested, b"nested-reply");
+    host_write(
+        &mut stream,
+        FrameKind::Event,
+        keld_ipc::channel_table::WINDOW.id(),
+        CorrelationId(0),
+        &seq_payload(1, 8),
+    );
+    let healthy = read_call_named(&mut stream, "ring-healthy");
+    host_reply(&mut stream, healthy, b"healthy-reply");
+    expect_report(
+        &role.finish(),
+        &[
+            ("ring-before-receipt", "0"),
+            ("ring-after-receipt", "true"),
+            ("ring-bytes-released", "true"),
+            ("ring-same-fact", "true"),
+            ("ring-dispatched-fact", "true"),
+            ("ring-dispatch-count", "1"),
+            ("ring-other-events", "1"),
+            ("ring-final-dispatch-count", "1"),
+            ("ring-first", "first-reply"),
+            ("ring-nested", "nested-reply"),
+            ("ring-timer-probe", "timer-reply"),
+            ("ring-healthy", "healthy-reply"),
+            ("ring-release-block-code", "KELD-IPC-005"),
+            ("ring-release-block-returned", "false"),
+            ("ring-install-rollback-code", "KELD-IPC-005"),
+            ("ring-install-rollback-returned", "false"),
+            ("ring-duplicate-code", "KELD-IPC-005"),
+            ("ring-duplicate-returned", "false"),
+            ("done", "true"),
+        ],
+    );
+}
+
+/// A failed release hook ends the link after physical release, not a false receipt.
+#[test]
+fn event_release_hook_failure_ends_the_link() {
+    let (mut stream, role) = start("after-ring-failure");
+    long_reads(&stream);
+    let _ = read_call_named(&mut stream, "release-failure");
+    host_event(&mut stream, 0, 8);
+    expect_report(
+        &role.finish(),
+        &[
+            ("ring-failure-released", "true"),
+            ("ring-failure-code", "KELD-IPC-005"),
+            ("done", "true"),
+        ],
+    );
+}
+
+/// A throwing consumer cannot strand the already-applied physical receipt.
+#[test]
+fn event_receipt_survives_dispatch_exception() {
+    let (mut stream, role) = start("after-ring-dispatch-failure");
+    long_reads(&stream);
+    let first = read_call_named(&mut stream, "dispatch-failure");
+    host_event(&mut stream, 0, 8);
+    host_reply(&mut stream, first, b"first-reply");
+    let healthy = read_call_named(&mut stream, "throw-healthy");
+    host_reply(&mut stream, healthy, b"healthy-reply");
+    expect_report(
+        &role.finish(),
+        &[
+            ("ring-dispatch-error", "dispatch fault"),
+            ("ring-throw-same-fact", "true"),
+            ("ring-throw-released", "true"),
+            ("ring-throw-first", "first-reply"),
+            ("ring-throw-healthy", "healthy-reply"),
+            ("done", "true"),
+        ],
+    );
+}
+
+/// An internal take failure ends the link without a user exception or receipt.
+#[test]
+fn event_take_failure_is_terminal_without_application_exception() {
+    let (mut stream, role) = start("after-ring-take-failure");
+    long_reads(&stream);
+    let _ = read_call_named(&mut stream, "take-failure");
+    host_event(&mut stream, 0, 8);
+    expect_report(
+        &role.finish(),
+        &[
+            ("ring-take-code", "KELD-IPC-005"),
+            ("ring-take-uncaught", "0"),
+            ("ring-take-dispatched", "0"),
+            ("ring-take-released", "0"),
+            ("done", "true"),
+        ],
+    );
+}
+
 /// One decode per record; exact object identity and captured source receiver.
 #[test]
 fn mirror_decodes_once_and_dispatches_the_exact_applied_object() {
