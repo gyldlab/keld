@@ -371,6 +371,42 @@ fn generic_host_mutable_ref_before_pin_stays_rejected() {
 }
 
 #[test]
+fn generic_host_sha_looking_project_names_do_not_pin_mutable_provider_routes() {
+    let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
+    let project = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denominator");
+    for uri in [
+        format!("https://gitlab.gnome.org/team/{project}/-/blob/main/README.md"),
+        format!("https://gitlab.gnome.org/team/{project}/-/raw/release/{sha}"),
+        format!("https://gitea.example.com/team/{project}/blob/main/README.md"),
+        format!("https://gitea.example.com/team/{project}/%62lob/main/README.md"),
+        format!("https://gitea.example.com/team/{project}/%2562lob/main/README.md"),
+    ] {
+        let mut envelope: serde_json::Value =
+            serde_json::from_str(&valid_evidence_json()).expect("valid evidence envelope");
+        envelope["evidence_uri"] = serde_json::Value::String(uri.clone());
+        let input = serde_json::to_vec(&envelope).expect("serialize evidence input");
+        let err = parse_evidence(&input).expect_err(&uri);
+        assert_eq!(err.code(), "KELD-COMPAT-007", "{uri}");
+
+        let mut constructed = parse_ok();
+        constructed.evidence_uri = uri.clone();
+        let err = score(&denom, &[constructed], AS_OF).expect_err(&uri);
+        assert_eq!(err.code(), "KELD-COMPAT-007", "{uri}");
+    }
+    // A real immutable provider revision remains valid even if the
+    // project slug happens to resemble a SHA.
+    assert_canonical_pinned_uri(
+        &denom,
+        &format!("https://gitlab.gnome.org/team/{project}/-/blob/{sha}/docs/%62lob/main.md"),
+    );
+    assert_canonical_pinned_uri(
+        &denom,
+        &format!("https://gitea.example.com/team/{project}/blob/{sha}/docs/%62lob/main.md"),
+    );
+}
+
+#[test]
 fn preserves_ref_named_directories_below_immutable_git_refs() {
     let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
     let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denominator");

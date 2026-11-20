@@ -95,8 +95,11 @@ Non-goals:
     later filename looks like a git object id. After the immutable ref at a
     known provider route, or after the first object id on a generic public
     HTTPS host, ordinary `blob`/`tree`/`raw` directory names are file-path
-    data. This includes safe percent-encoded and nested-encoded route names;
-    unsafe encoded separators, controls and dot navigation are still refused.
+    data. However, recognizable provider routes at their actual ref position
+    (such as `/{owner}/{repo}/blob/<ref>` or `/-/blob/<ref>`) still require a
+    git object id there, even if an owner or project slug looks like an id.
+    Safe encoded directory names remain allowed outside these routes; unsafe
+    encoded separators, controls and dot navigation are still refused.
 11. Given two pass records that fill a 2-cell denom but disagree on artifact
     SHA-256, authority profile, or engine, when `score` runs, then `complete`
     is false and `unweighted_percent` is `None`.

@@ -396,7 +396,36 @@ fn https_path_is_live_mutable(host: &str, path: &str) -> bool {
     // location. Route-like directory names after it are file-path data.
     // Named providers keep their existing route-position checks above.
     let generic_host = !matches!(host, "github.com" | "gitlab.com" | "bitbucket.org");
+    // A SHA-looking project or group name is not proof that a later
+    // GitLab/GitHub-style provider route has a pinned revision.
+    if generic_host && generic_host_has_live_provider_ref(&segs) {
+        return true;
+    }
     path_has_live_git_ref(path, generic_host)
+}
+
+fn generic_host_has_live_provider_ref(segments: &[&str]) -> bool {
+    let is_route = |segment: &str| {
+        matches!(
+            segment.to_ascii_lowercase().as_str(),
+            "commit" | "blob" | "tree" | "raw"
+        )
+    };
+    // GitLab self-hosted instances support nested groups before /-/blob/<ref>.
+    // Only the first provider route is authoritative; later route-like names
+    // in a pinned file path remain directory data.
+    if let Some(route) = segments
+        .windows(3)
+        .find(|part| part[0] == "-" && is_route(part[1]))
+    {
+        return !is_git_object_id(route[2]);
+    }
+    // A GitHub/Gitea-style route follows /<owner>/<repo>/, even when
+    // the owner or repository slug itself looks like a git object id.
+    segments.get(2).is_some_and(|segment| is_route(segment))
+        && !segments
+            .get(3)
+            .is_some_and(|segment| is_git_object_id(segment))
 }
 
 fn has_pinned_provider_ref(host: &str, segments: &[&str]) -> bool {
