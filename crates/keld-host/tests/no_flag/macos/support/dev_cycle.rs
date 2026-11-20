@@ -115,6 +115,28 @@ impl ShippingLaunchCleanup {
         self.record_bun_group(bun_group, guardian);
     }
 
+    /// A directly launched Host is owned by this test, not by a shipping CLI.
+    /// Prove the native Host -> Guardian -> Bun ancestry before retaining any
+    /// process-group signal authority. Do not infer ownership from fixture PIDs.
+    pub(crate) fn record_direct_host_groups(&mut self, host_group: u32, bun_group: u32) {
+        let host_pid = self.cli.as_ref().expect("live direct Host owner").id();
+        assert_eq!(host_group, host_pid, "direct Host must lead its own group");
+        self.record_host_group(host_group, std::process::id());
+        let guardian = parent_process(bun_group);
+        assert_ne!(guardian, host_pid, "Guardian must be a separate process");
+        assert_eq!(
+            parent_process(guardian),
+            host_pid,
+            "direct Host must be Guardian's native parent"
+        );
+        self.host_member = Some(retain_parented_group_member(
+            guardian,
+            host_pid,
+            self.host_birth.expect("birth-attested direct Host"),
+        ));
+        self.record_bun_group(bun_group, guardian);
+    }
+
     /// Only callers with an independently observed descendant may retain
     /// optional member evidence for a reaped-leader cleanup fallback.
     pub(crate) fn record_authenticated_members(&mut self, guardian: u32, descendant: u32) {

@@ -543,6 +543,32 @@ fn attested_fixture_member_rescue_cleans_on_unwind() {
 }
 
 #[test]
+fn shipping_direct_host_capture_rejects_foreign_group_without_signal_authority() {
+    let mut outsider = native_outsider();
+    let host = Command::new("/usr/bin/true")
+        .spawn()
+        .expect("owned direct-Host stand-in");
+    let mut cleanup = ShippingLaunchCleanup::new(host);
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        cleanup.record_direct_host_groups(outsider.0.id(), outsider.0.id());
+    }));
+    assert!(
+        refused.is_err(),
+        "unowned outsider is not the test-owned Host"
+    );
+    assert!(
+        cleanup.host_group.is_none(),
+        "foreign group gained cleanup custody"
+    );
+    assert!(
+        cleanup.bun_group.is_none(),
+        "foreign group gained Bun custody"
+    );
+    drop(cleanup);
+    assert_outsider_echo(&mut outsider);
+}
+
+#[test]
 fn shipping_cleanup_unparented_birth_cannot_gain_group_authority() {
     let mut outsider = native_outsider();
     let refused = std::panic::catch_unwind(|| {

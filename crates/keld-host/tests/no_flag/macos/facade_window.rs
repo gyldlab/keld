@@ -355,7 +355,7 @@ fn public_destroy_fulfills_closed_then_all_closed_before_sync_return() {
     let fields: Vec<_> = created.split_whitespace().collect();
     assert_eq!(fields.first().copied(), Some("PUBLIC_CREATED"), "{created}");
     let bun_pid = parse_pid(fields.get(1).copied(), &created);
-    cleanup.record_authenticated_groups(process_group(host_pid), process_group(bun_pid));
+    cleanup.record_direct_host_groups(process_group(host_pid), process_group(bun_pid));
     assert_eq!(visible_app_windows(host_pid).len(), 1);
     writer
         .write_all(b"DESTROY_ORDER\n")
@@ -660,7 +660,7 @@ fn public_electron_browser_window_uses_native_host_and_vetoes_unsaved_close() {
     let parts: Vec<_> = created.split_whitespace().collect();
     assert_eq!(parts.first().copied(), Some("PUBLIC_CREATED"), "{created}");
     let bun_pid = parse_pid(parts.get(1).copied(), &created);
-    cleanup.record_authenticated_groups(process_group(host_pid), process_group(bun_pid));
+    cleanup.record_direct_host_groups(process_group(host_pid), process_group(bun_pid));
     assert_eq!(
         &parts[2..],
         ["1", "640x480", "contents,window"],
@@ -769,7 +769,7 @@ fn external_appkit_close_fails_closed_instead_of_leaving_a_ghost_browser_window(
     let parts: Vec<_> = created.split_whitespace().collect();
     assert_eq!(parts.first().copied(), Some("PUBLIC_CREATED"), "{created}");
     let bun_pid = parse_pid(parts.get(1).copied(), &created);
-    cleanup.record_authenticated_groups(process_group(host_pid), process_group(bun_pid));
+    cleanup.record_direct_host_groups(process_group(host_pid), process_group(bun_pid));
     assert_eq!(
         &parts[2..],
         ["1", "640x480", "contents,window"],
@@ -835,7 +835,7 @@ fn native_schema_two_subscribe_creates_one_real_app_window_without_authority_lea
     let parts: Vec<_> = bound.split_whitespace().collect();
     assert_eq!(parts.first().copied(), Some("BOUND"), "{bound}");
     let bun_pid = parse_pid(parts.get(1).copied(), &bound);
-    cleanup.record_authenticated_groups(process_group(host_pid), process_group(bun_pid));
+    cleanup.record_direct_host_groups(process_group(host_pid), process_group(bun_pid));
 
     writer.write_all(b"PRE_SUB\n").expect("unsubscribed create");
     assert_eq!(read_control_line(&mut reader), "PRE_SUB KELD-CORE-045");
@@ -1040,7 +1040,7 @@ fn assert_late_package_boot_mode(with_sidecar: bool, recover: bool) {
     let parts: Vec<_> = bound.split_whitespace().collect();
     assert_eq!(parts.first().copied(), Some("BOUND"), "{bound}");
     let mut bun_pid = parse_pid(parts.get(1).copied(), &bound);
-    cleanup.record_authenticated_groups(process_group(host_pid), process_group(bun_pid));
+    cleanup.record_direct_host_groups(process_group(host_pid), process_group(bun_pid));
     assert_eq!(read_control_line(&mut reader), "PREQUIT KELD-COMPAT-012");
     assert_eq!(read_control_line(&mut reader), "CREATED 1");
     let initial = visible_app_windows(host_pid);
@@ -1060,7 +1060,7 @@ fn assert_late_package_boot_mode(with_sidecar: bool, recover: bool) {
         assert_eq!(parts.first().copied(), Some("BOUND"), "{bound}");
         let successor_pid = parse_pid(parts.get(1).copied(), &bound);
         assert_ne!(bun_pid, successor_pid, "recovery must mint a fresh process");
-        cleanup.record_authenticated_groups(process_group(host_pid), process_group(successor_pid));
+        cleanup.record_direct_host_groups(process_group(host_pid), process_group(successor_pid));
         assert_eq!(
             read_control_line(&mut reader),
             "PREQUIT KELD-COMPAT-012",
@@ -1170,7 +1170,7 @@ control.end();
     assert_eq!(parts.first().copied(), Some("LEGACY_READY"), "{ready}");
     assert_eq!(parts.get(2).copied(), Some("false"), "{ready}");
     let bun_pid = parse_pid(parts.get(1).copied(), &ready);
-    cleanup.record_authenticated_groups(process_group(host_pid), process_group(bun_pid));
+    cleanup.record_direct_host_groups(process_group(host_pid), process_group(bun_pid));
     assert_eq!(
         visible_app_windows(host_pid).len(),
         1,
