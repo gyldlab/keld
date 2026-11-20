@@ -255,6 +255,8 @@ fn legacy_zero_exit_never_releases_birth_before_held_group_members_are_reaped() 
         Ok(Pid::from_raw(group_raw)),
         "both owned native children share the authenticated group"
     );
+    // The scoped hook counts attested calls on this thread. The exact child
+    // wait status below independently attributes the late member's exit.
     let signals = Rc::new(Cell::new(0_u8));
     let observed = Rc::clone(&signals);
     let _signal_hook = install_test_group_signal_hook(
@@ -306,22 +308,19 @@ fn legacy_zero_exit_never_releases_birth_before_held_group_members_are_reaped() 
         "terminal HostGuardian must not re-enter shutdown after failed absence"
     );
     assert_eq!(signals.get(), 1, "terminal retry must not signal again");
-    assert!(
-        fresh_member
-            .try_wait()
-            .expect("inspect independent late joiner")
-            .is_none(),
-        "a second group SIGKILL would kill the new member"
-    );
 
-    // Only the test parent owns these exact reap operations. A positive
-    // dual-ESRCH control then confirms the group really is absent.
-    fresh_member
-        .kill()
-        .expect("terminate exact new test-owned member");
+    // SIGKILL delivery is asynchronous. Send SIGTERM to the exact late
+    // joiner and inspect its wait status; a product group SIGKILL must win
+    // this race and make the oracle RED instead of being masked by our own
+    // SIGKILL. The signal hook also checks the attested path.
+    let fresh_member_pid =
+        Pid::from_raw(i32::try_from(fresh_member.id()).expect("fresh member PID fits"));
+    kill(fresh_member_pid, Some(Signal::SIGTERM))
+        .expect("send SIGTERM only to the exact test-owned late joiner");
     assert_eq!(
         fresh_member.wait().expect("reap exact new member").signal(),
-        Some(9)
+        Some(Signal::SIGTERM as i32),
+        "the late joiner must exit from test-owned SIGTERM, not product SIGKILL"
     );
     assert_eq!(member.wait().expect("reap exact member").signal(), Some(9));
     assert_eq!(leader.wait().expect("reap exact leader").signal(), Some(9));
@@ -334,5 +333,11 @@ fn legacy_zero_exit_never_releases_birth_before_held_group_members_are_reaped() 
         guardian.group_identity_for_test(),
         Some(birth),
         "terminal fatal custody is sticky even after a later clean kernel observation"
+    );
+    drop(guardian);
+    assert_eq!(
+        signals.get(),
+        1,
+        "Guardian Drop must not signal the retained PGID again"
     );
 }

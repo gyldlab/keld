@@ -306,6 +306,7 @@ pub(super) fn validate_guardian_child_group(
 /// (`GuardedPrimary`'s spent authority), not here.
 pub(super) fn terminate_attested_group(group: GroupIdentity) -> Result<(), RuntimeError> {
     terminate_attested_group_until(group, Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE / 4)
+        .map(|_| ())
 }
 
 /// [`terminate_attested_group`] with a caller-owned absolute reap deadline,
@@ -313,12 +314,13 @@ pub(super) fn terminate_attested_group(group: GroupIdentity) -> Result<(), Runti
 pub(super) fn terminate_attested_group_until(
     group: GroupIdentity,
     reap_deadline: Instant,
-) -> Result<(), RuntimeError> {
-    terminate_attested_group_outcome(group, reap_deadline).map(|_| ())
+) -> Result<AttestedGroupTermination, RuntimeError> {
+    terminate_attested_group_outcome(group, reap_deadline)
 }
 
 // Internal outcome only: a delivered signal is not an absence proof.
-enum AttestedGroupTermination {
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(super) enum AttestedGroupTermination {
     SignalDelivered,
     AbsenceProven,
 }
@@ -354,6 +356,23 @@ fn terminate_attested_group_outcome(
         probe_group_absence,
         || signal_attested_group_once(group, reap_deadline),
         || require_attested_group_absence(group, reap_deadline),
+    )
+}
+
+#[cfg(test)]
+pub(super) fn terminate_attested_group_with_observers_for_test(
+    group: GroupIdentity,
+    observe_identity: impl FnOnce() -> Result<GroupIdentity, RuntimeError>,
+    first_probe: impl FnOnce(i32) -> (Result<Pid, Errno>, Result<(), Errno>),
+    signal_once: impl FnOnce() -> Result<AttestedGroupTermination, RuntimeError>,
+    prove_absence: impl FnOnce() -> Result<(), RuntimeError>,
+) -> Result<AttestedGroupTermination, RuntimeError> {
+    terminate_attested_group_with_observers(
+        group,
+        observe_identity,
+        first_probe,
+        signal_once,
+        prove_absence,
     )
 }
 
