@@ -11,6 +11,15 @@ use super::{
 use crate::WebviewId;
 use crate::engine::{AppWindowEvent, BuildStage};
 
+fn collect_events(
+    answers: &mut Vec<AppWindowEvent>,
+) -> impl FnMut(isize, Releasing, AppWindowEvent) -> Result<(), Infallible> + '_ {
+    move |_, _, event| {
+        answers.push(event);
+        Ok(())
+    }
+}
+
 #[test]
 fn parked_then_staged_then_native_absent_is_one_ordered_release() {
     let now = Instant::now();
@@ -29,10 +38,7 @@ fn parked_then_staged_then_native_absent_is_one_ordered_release() {
                 native_reads += 1;
                 false
             },
-            |_, _, event| {
-                answers.push(event);
-                Ok::<(), Infallible>(())
-            },
+            collect_events(&mut answers),
         ),
         Ok(0),
     );
@@ -70,10 +76,7 @@ fn parked_then_staged_then_native_absent_is_one_ordered_release() {
                 assert_eq!(hwnd, 101);
                 true
             },
-            |_, _, event| {
-                answers.push(event);
-                Ok::<(), Infallible>(())
-            },
+            collect_events(&mut answers),
         ),
         Ok(0),
         "the HWND may still exist after WM_DESTROY",
@@ -110,10 +113,7 @@ fn parked_then_staged_then_native_absent_is_one_ordered_release() {
         custody.publish_staged_with(
             |_| false,
             |_| panic!("retired entries must never query a recycled HWND"),
-            |_, _, event| {
-                answers.push(event);
-                Ok::<(), Infallible>(())
-            },
+            collect_events(&mut answers),
         ),
         Ok(0),
     );
