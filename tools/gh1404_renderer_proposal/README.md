@@ -101,6 +101,35 @@ and existing rich native SVG children still pass.
 The guard does not compute browser-derived `getBBox()` width in
 `adjustBlockTextOverflow`; full HTML layout, converted/wrapped SVG exports,
 text backgrounds and all other export variants remain unproved.
+
+### 🔶 MEDIUM · correctness · issue (blocking): HTML line-height can overflow after finite-input checks
+
+- **Problem:** On source-proposal commit `49d898d5a2238fe613b3b772aaa31c5c000d3c9f`,
+  the HTML guard accepts finite values that make `getTextCss` emit
+  `line-height: Infinity` or `Infinitypx`. The invalid text stays in a
+  visible `foreignObject` group. This overflow exists in the pinned upstream
+  calculation; the proposed new guard claimed broader derived CSS protection
+  than it established.
+- **📎 Evidence (reproduced):** The real pinned `mxSvgCanvas2D.getTextCss`
+  computes `LINE_HEIGHT * lineHeightCorrection` in relative mode and
+  `fontSize * LINE_HEIGHT` in absolute mode. With an original-cell layout
+  `html=1`, `x=100`, `y=110`, `w=320`, `h=80`,
+  `lineHeightCorrection=Number.MAX_VALUE` emits `Infinity` while
+  `fontSize=Number.MAX_VALUE`, `scale=0.5` emits `Infinitypx`, even
+  though `fontSize * scale` is finite. The prior committed generator fails
+  these two exact source probes.
+- **🛠 Change:** The generated `updateTextNodes` guard computes the line
+  height selected by `mxConstants.ABSOLUTE_LINE_HEIGHT` and refuses non-finite
+  results before `getTextCss` or SVG/HTML node updates. It retains the
+  existing invalid-group hiding and valid-update restoration contract.
+- **🧪 Check (reproduced):** Actual pinned `getTextCss` yields `1.2` for
+  normal relative `lineHeightCorrection=1` and `19.2px` for normal
+  absolute `fontSize=16`. The former candidate fails the two MAX cases.
+  The corrected candidate passes both normal controls and both overflow
+  rejection/recovery controls. Removing only `isFinite(lineHeight)` makes
+  those two overflow checks fail again. This is a source-level check, not a
+  native WebKit visual or installed G1 result.
+
 The installed G1 labels' finite off-screen AX bounds
 `(31777,-345,18614,10)` are a **different unresolved geometry problem**.
 The actual two original `html=1` cells have ordinary coordinates. Potential
@@ -123,21 +152,22 @@ The source input, prior first candidate and revised two-path candidate are
 reproducible using the commands below; no local installed app was used.
 The prior preserved failure logs retain actual `Infinitypx`, `Infinity`
 and `NaN` SVG attributes observed from the pinned function. Those logs
-refer to the earlier 19-case run and must not be used as 29-case evidence.
+refer to the earlier 19-case run and must not be used as 33-case evidence.
 
 | Input | Source-level oracle | Shell exit |
 | --- | --- | --- |
-| Upstream pinned Draw.io (current tests) | **11/29** passed; 18 defects detected, ordinary source-label, wrap and repaint controls retained | 0 (`--baseline` expects RED) |
+| Upstream pinned Draw.io (current tests) | **13/33** passed; 20 defect checks fail, ordinary SVG and HTML, including real line-height controls, pass | 0 (`--baseline` expects RED) |
 | First candidate at `10e279957` (earlier tests) | **13/19** passed; six derived-overflow tests failed | 1 |
 | Hardened native SVG-only at `2bc8336c8` (earlier tests) | **19/19** passed, native path only | 0 |
-| Revised inert SVG + HTML candidate (current tests) | **29/29** passed; positive HTML geometry, wrapped label, native SVG, malformed rotation, HTML reused group/display, overflow and repaint checks | 0 |
+| SVG + HTML proposal at `49d898d5` (current tests) | **31/33** passed; both real CSS line-height MAX cases fail | 1 |
+| Corrected inert SVG + HTML proposal (current tests) | **33/33** passed; includes real `getTextCss` normal and overflow controls for both CSS branches | 0 |
 
 - Original `mxSvgCanvas2D.js` SHA-256:
   `0daef9812e3b8c530bc9556791ffaea53fe9a57091a86534bd909ca31e4485b3`.
-- Revised two-path unified source patch SHA-256:
-  `cf569f2a0ebdc04844b5c9be64ed8f054142d31a9f4ed2f493622454680dc892`.
-- Revised two-path candidate JavaScript SHA-256:
-  `2599400cacb00fec39578874d7c4be4cef6a495f0fc571ea71d12bedce91e33a`.
+- Corrected unified source patch SHA-256:
+  `77d0e7fec237cb4ea92c368829013c6082ab406c2cf175f02e24b8523aae490d`.
+- Corrected candidate JavaScript SHA-256:
+  `d6857eb3f3d371c07dc64352e00af099917691bd8710ea702ff06e23f483bfb7`.
 - `evidence/upstream-baseline-red.log` SHA-256:
   `efa0e733b9e6fa61a38f485950f436fe4fb29d87c8381767f65f732e4436e19f`.
 - `evidence/first-candidate-red.log` SHA-256:
@@ -153,6 +183,8 @@ The generated JavaScript passed `node --check`. Disabling the HTML
 invalid-geometry guard in-memory makes **five current regressions fail**:
 malformed rotation, stale reused label, preservation of prior display,
 derived coordinate overflow and overflowing zoom percentage.
+Removing only the computed `isFinite(lineHeight)` check makes both MAX
+CSS cases fail, with the normal relative and absolute controls still passing.
 No installed-WebKit acceptance is implied.
 
 Approval decisions still owned by the user/product/source owner:

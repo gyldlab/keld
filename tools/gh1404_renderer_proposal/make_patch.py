@@ -191,8 +191,13 @@ HTML_REPLACEMENT = """mxSvgCanvas2D.prototype.updateTextNodes = function(x, y, w
 		var top = y + Number(this.state.dy);
 		var angle = ((this.rotateHtml) ? Number(this.state.rotation) : 0) + rotation;
 		var percent = Math.ceil(1 / Math.min(1, s) * 100);
+		// Match getTextCss: either line-height mode can overflow after
+		// its individual numeric inputs and scaled font-size pass.
+		var lineHeight = (mxConstants.ABSOLUTE_LINE_HEIGHT) ?
+			Number(this.state.fontSize) * mxConstants.LINE_HEIGHT :
+			mxConstants.LINE_HEIGHT * Number(this.lineHeightCorrection);
 		valid = isFinite(width) && isFinite(left) && isFinite(top) &&
-			isFinite(angle) && isFinite(percent) &&
+			isFinite(angle) && isFinite(percent) && isFinite(lineHeight) &&
 			isFinite(Math.round(left + anchor.x * width)) &&
 			isFinite(Math.round(top + anchor.y * h)) &&
 			isFinite(left * s) && isFinite(top * s) &&

@@ -92,19 +92,27 @@ function compileHtmlText(source) {
     optionalNumericHelper(source) + '\n' +
     extractFunction(source, 'mxSvgCanvas2D.createCss = function(') + '\n' +
     extractFunction(source, 'mxSvgCanvas2D.prototype.updateTextNodes = function(') +
-    '\nreturn mxSvgCanvas2D.prototype.updateTextNodes;');
+    '\n' + extractFunction(source, 'mxSvgCanvas2D.prototype.getTextCss = function(') +
+    '\nreturn [mxSvgCanvas2D.prototype.updateTextNodes, ' +
+    'mxSvgCanvas2D.prototype.getTextCss];');
   function Canvas() {}
-  return compile(Canvas, {
+  const constants = {
     ALIGN_LEFT: 'left', ALIGN_CENTER: 'center', ALIGN_RIGHT: 'right',
     ALIGN_TOP: 'top', ALIGN_MIDDLE: 'middle', ALIGN_BOTTOM: 'bottom',
-    WORD_WRAP: 'break-word',
-  }, {
+    WORD_WRAP: 'break-word', LINE_HEIGHT: 1.2, ABSOLUTE_LINE_HEIGHT: false,
+    FONT_BOLD: 1, FONT_ITALIC: 2, FONT_UNDERLINE: 4,
+    FONT_STRIKETHROUGH: 8, FONT_UNDERLINE_DOTTED: 16,
+  };
+  const [updateTextNodes, getTextCss] = compile(Canvas, constants, {
     bind: (self, fn) => fn.bind(self),
+    htmlEntities: (value) => String(value),
+    parseCssFontFamily: (family) => family,
     getAlignmentAsPoint: (align, valign) => ({
       x: align === 'center' ? -0.5 : align === 'right' ? -1 : 0,
       y: valign === 'middle' ? -0.5 : valign === 'bottom' ? -1 : 0,
     }),
   });
+  return { updateTextNodes, getTextCss, constants };
 }
 
 function htmlWith(updateTextNodes, content = 'VISIBLE-HTML') {
@@ -125,12 +133,15 @@ function htmlWith(updateTextNodes, content = 'VISIBLE-HTML') {
     state: {
       scale: 1, rotation: 0, dx: 0, dy: 0, alpha: 1,
       fontSize: 16, fontColor: '#000000',
+      fontFamily: 'Arial', fontStyle: 0,
       fontBackgroundColor: null, fontBorderColor: null,
     },
     foreignObjectPadding: 2, foOffset: 0, rotateHtml: true,
+    lineHeightCorrection: 1, pointerEvents: true,
+    pointerEventsValue: 'all',
     setCssText: (node, css) => { node.style.cssText = css; },
     getLightDarkColor: () => ({ light: '#000000', cssText: '#000000' }),
-    getTextCss: () => 'font-size: 16px;',
+    getTextCss: htmlTextCss,
     updateTextNodes,
   };
   return { canvas, svg, group, fo, div, box, text, doc };
@@ -188,7 +199,11 @@ if (baseline) {
     'baseline source must match the pinned upstream input');
 }
 const plainText = compilePlainText(source);
-const htmlText = compileHtmlText(source);
+const {
+  updateTextNodes: htmlText,
+  getTextCss: htmlTextCss,
+  constants: htmlConstants,
+} = compileHtmlText(source);
 const cases = [
   ['ordinary numeric coordinates render unchanged', () => {
     const { canvas, svg } = canvasWith(plainText);
@@ -397,6 +412,68 @@ const cases = [
     assert.match(div.style.cssText, /padding-top: 120px;/);
     assert.match(div.style.cssText, /margin-left: 120px;/);
   }],
+  ['foreignObject real getTextCss retains ordinary relative line-height', () => {
+    assert.equal(htmlConstants.ABSOLUTE_LINE_HEIGHT, false);
+    const { canvas, group, text } = htmlWith(htmlText, 'NORMAL-RELATIVE');
+    canvas.lineHeightCorrection = 1;
+    const returned = drawHtml(canvas, group, 0, [100, 110, 320, 80]);
+    assert.notEqual(returned, false);
+    assert.equal(group.getAttribute('display'), null);
+    assert.match(canvas.getTextCss(), /line-height: 1\.2;/);
+    assert.match(text.style.cssText, /line-height: 1\.2;/);
+    assert.doesNotMatch(text.style.cssText, /NaN|Infinity/);
+  }],
+  ['foreignObject real getTextCss must reject finite MAX relative line-height overflow', () => {
+    assert.equal(htmlConstants.ABSOLUTE_LINE_HEIGHT, false);
+    const { canvas, group, text } = htmlWith(htmlText, 'MAX-RELATIVE');
+    canvas.lineHeightCorrection = Number.MAX_VALUE;
+    assert(Number.isFinite(canvas.lineHeightCorrection));
+    assert.match(canvas.getTextCss(), /line-height: Infinity;/);
+    const returned = drawHtml(canvas, group, 0, [100, 110, 320, 80]);
+    assert.equal(returned, false);
+    assert.equal(group.getAttribute('display'), 'none');
+    assert.equal(group.getAttribute('transform'), null);
+    assert.equal(text.style.cssText, '');
+    canvas.lineHeightCorrection = 1;
+    drawHtml(canvas, group, 0, [100, 110, 320, 80]);
+    assert.equal(group.getAttribute('display'), null);
+    assert.match(text.style.cssText, /line-height: 1\.2;/);
+  }],
+  ['foreignObject real getTextCss retains ordinary absolute line-height', () => {
+    htmlConstants.ABSOLUTE_LINE_HEIGHT = true;
+    try {
+      const { canvas, group, text } = htmlWith(htmlText, 'NORMAL-ABSOLUTE');
+      const returned = drawHtml(canvas, group, 0, [100, 110, 320, 80]);
+      assert.notEqual(returned, false);
+      assert.equal(group.getAttribute('display'), null);
+      assert.match(canvas.getTextCss(), /line-height: 19\.2px;/);
+      assert.match(text.style.cssText, /line-height: 19\.2px;/);
+      assert.doesNotMatch(text.style.cssText, /NaN|Infinity/);
+    } finally {
+      htmlConstants.ABSOLUTE_LINE_HEIGHT = false;
+    }
+  }],
+  ['foreignObject real getTextCss must reject finite MAX absolute line-height overflow', () => {
+    htmlConstants.ABSOLUTE_LINE_HEIGHT = true;
+    try {
+      const { canvas, group, text } = htmlWith(htmlText, 'MAX-ABSOLUTE');
+      canvas.state.fontSize = Number.MAX_VALUE;
+      canvas.state.scale = 0.5;
+      assert(Number.isFinite(canvas.state.fontSize));
+      assert(Number.isFinite(canvas.state.fontSize * canvas.state.scale));
+      assert.match(canvas.getTextCss(), /line-height: Infinitypx;/);
+      const returned = drawHtml(canvas, group, 0, [100, 110, 320, 80]);
+      assert.equal(returned, false);
+      assert.equal(group.getAttribute('display'), 'none');
+      assert.equal(text.style.cssText, '');
+      canvas.state.fontSize = 16;
+      drawHtml(canvas, group, 0, [100, 110, 320, 80]);
+      assert.equal(group.getAttribute('display'), null);
+      assert.match(text.style.cssText, /line-height: 19\.2px;/);
+    } finally {
+      htmlConstants.ABSOLUTE_LINE_HEIGHT = false;
+    }
+  }],
   ['foreignObject clipped label retains bounded centered margin', () => {
     const { canvas, group, div, text } = htmlWith(htmlText, 'HTML-CLIPPED');
     drawHtml(canvas, group, 0, [120, 120, 150, 50], false, true);
@@ -519,6 +596,8 @@ const baselineMustPass = new Set([
   'valid clip coordinates retain original finite clipping geometry',
   'converted rich label retains its native SVG child',
   'foreignObject original label keeps finite in-viewport coordinates',
+  'foreignObject real getTextCss retains ordinary relative line-height',
+  'foreignObject real getTextCss retains ordinary absolute line-height',
   'foreignObject clipped label retains bounded centered margin',
   'foreignObject wrap preserves visible rich label and half-scale layout',
   'foreignObject full repaint shows edited value without stale text',
