@@ -209,11 +209,50 @@ pub(super) fn pin_input_root(root: &Path) -> Result<Vec<File>, BuildError> {
             "use an absolute local-disk project directory without parent traversal",
         ));
     }
+    // Pin the selected physical drive root once. All later descendants are
+    // opened through the last handle-derived path, never the caller's alias.
+    let drive_root = root
+        .ancestors()
+        .last()
+        .ok_or_else(|| BuildError::input("Windows authoring namespace", "missing drive root"))?;
     let mut ancestors = Vec::new();
-    for path in root.ancestors().collect::<Vec<_>>().into_iter().rev() {
-        let guard = boot::open_windows_input_directory_guard(path)
+    let first = boot::open_windows_input_directory_guard(drive_root)
+        .map_err(|error| BuildError::input("Windows authoring namespace", error))?;
+    let mut physical = keld_update::fixed_local_dos_path(&first)
+        .map_err(|error| BuildError::input("Windows local volume", error))?;
+    ancestors.push(first);
+    #[cfg(test)]
+    windows_local_volume_tests::run_after_first_root_pin();
+    let relative = root.strip_prefix(drive_root).map_err(|_| {
+        BuildError::input(
+            "Windows authoring namespace",
+            "root differs from retained volume",
+        )
+    })?;
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(BuildError::input(
+                "Windows authoring namespace",
+                "non-ordinary ancestor",
+            ));
+        };
+        let mut ordinary = Path::new(name).components();
+        if !matches!(
+            (ordinary.next(), ordinary.next()),
+            (Some(Component::Normal(parsed)), None) if parsed == name
+        ) || name.as_encoded_bytes().contains(&b':')
+            || has_windows_trailing_alias(name)
+            || keld_update::reserved_dos_device_name(name)
+        {
+            return Err(BuildError::input(
+                "Windows authoring namespace",
+                "ambiguous ancestor component",
+            ));
+        }
+        physical.push(name);
+        let guard = boot::open_windows_input_directory_guard(&physical)
             .map_err(|error| BuildError::input("Windows authoring namespace", error))?;
-        keld_update::fixed_local_dos_path(&guard)
+        physical = keld_update::fixed_local_dos_path(&guard)
             .map_err(|error| BuildError::input("Windows local volume", error))?;
         ancestors.push(guard);
     }
@@ -654,7 +693,76 @@ mod windows_local_volume_tests {
             }
         });
     }
+    std::thread_local! {
+        static AFTER_FIRST_ROOT_PIN: RefCell<Option<Box<dyn FnOnce()>>> =
+            const { RefCell::new(None) };
+    }
+
+    pub(super) fn run_after_first_root_pin() {
+        AFTER_FIRST_ROOT_PIN.with(|hook| {
+            if let Some(callback) = hook.borrow_mut().take() {
+                callback();
+            }
+        });
+    }
+
     const LOCAL_CAPTURE_MARKER: &[u8] = b"R208_CAPTURED_LOCAL_ORIGIN_ONLY";
+
+    #[test]
+    #[ignore = "requires exclusive ownership of unused Z: SUBST alias"]
+    fn retained_ancestor_chain_cannot_mix_a_and_b_on_subst_rebind() {
+        let _lock = Z_MAPPING_TEST_LOCK
+            .lock()
+            .expect("exclusive Z: fixture lock");
+        let a = tempfile::tempdir().expect("private A fixture");
+        let b = tempfile::tempdir().expect("private B fixture");
+        let a_leaf = a.path().join("child").join("leaf");
+        let b_leaf = b.path().join("child").join("leaf");
+        std::fs::create_dir_all(&a_leaf).expect("A ancestor path");
+        std::fs::create_dir_all(&b_leaf).expect("B ancestor path");
+        std::fs::write(a_leaf.join("identity"), b"A").expect("A marker");
+        std::fs::write(b_leaf.join("identity"), b"B").expect("B marker");
+        assert!(!Path::new(r"Z:\").exists(), "unused Z: required");
+        assert!(!net_use(&["use", "Z:"]).unwrap().success(), "no SMB Z:");
+        let owned = std::rc::Rc::new(RefCell::new(TemporaryMappedDrive {
+            kind: MappingKind::None,
+        }));
+        assert!(
+            subst(&["Z:", a.path().to_str().unwrap()])
+                .unwrap()
+                .success()
+        );
+        owned.borrow_mut().kind = MappingKind::Subst;
+        let replacement = b.path().to_str().expect("B native path").to_owned();
+        let guard = owned.clone();
+        AFTER_FIRST_ROOT_PIN.with(|hook| {
+            assert!(hook.borrow().is_none(), "no existing rebind hook");
+            *hook.borrow_mut() = Some(Box::new(move || {
+                assert!(subst(&["Z:", "/D"]).unwrap().success(), "unmap A");
+                guard.borrow_mut().kind = MappingKind::None;
+                assert!(subst(&["Z:", &replacement]).unwrap().success(), "map B");
+                guard.borrow_mut().kind = MappingKind::Subst;
+            }));
+        });
+
+        let pins = pin_input_root(Path::new(r"Z:\child\leaf"))
+            .expect("pin every descendant from selected A root");
+        let stable = stable_local_path(&pins).expect("final retained A locator");
+        assert_eq!(
+            std::fs::read(Path::new(r"Z:\child\leaf\identity")).unwrap(),
+            b"B"
+        );
+        assert_eq!(
+            std::fs::read(stable.join("identity")).expect("retained A marker"),
+            b"A",
+            "a mutable SUBST rebind must not mix the root from A and a descendant from B"
+        );
+        assert_eq!(
+            stable.canonicalize().unwrap(),
+            a_leaf.canonicalize().unwrap(),
+            "all ancestors must remain in the original physical A namespace"
+        );
+    }
 
     #[test]
     fn retained_local_directory_returns_a_stable_fixed_dos_path() {
