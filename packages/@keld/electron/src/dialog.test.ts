@@ -119,6 +119,8 @@ test("dialog.show-message-box-sync exports the same method and refuses before Re
       const code = process.platform === "win32" ? "KELD-CORE-040" : "KELD-NATIVE-010";
       assert.throws(() => dialog.showMessageBoxSync({ message: "Confirm" }), error => error.code === code);
       assert.equal(connections, 0);
+      assert.throws(() => publicEntry.app.whenReady(), /unexpected connection/);
+      assert.equal(connections, 1, "the counter must observe a real connection attempt");
     `,
     ],
     {
