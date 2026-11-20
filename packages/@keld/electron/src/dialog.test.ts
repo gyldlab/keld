@@ -7,7 +7,7 @@
  * its separate no-flag Host test exercises three OS clicks, actual checkbox
  * state, physical quiescence and 257+1 same-link operations. The parentless
  * overload remains unsupported, so the broad Message cell stays expected-fail
- * alongside sync Message, Open and Save until parentless and remaining OS gates pass.
+ * alongside sync Message, Open and Save until parentless and native OS gates pass.
  *
  * The Electron docs guarantee a blocking numeric clicked index for the
  * sync variant and distinct Promise result shapes for three async variants.
@@ -53,6 +53,8 @@ test("Message refuses unsupported platforms before touching the app link", () =>
       assert.throws(() => showMessageBox({ message: "Confirm", unsupported: true }), /KELD-COMPAT-010/);
     }
     Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    assert.throws(() => showMessageBoxSync({ message: "Confirm" }),
+      error => error.code === "KELD-NATIVE-010");
     await assert.rejects(showMessageBox({ message: "Confirm" }), error => error === sentinel);
     assert.equal(readinessCalls, 1);
     console.log("platform refusal and macOS delegation checks pass");
@@ -94,11 +96,13 @@ test("dialog.show-message-box-sync exports the same method and refuses before Re
   const method = dialogMethod(electron, "showMessageBoxSync");
   expect(typeof method).toBe("function");
   expect(dialogMethod(electron.default, "showMessageBoxSync")).toBe(method);
+  const code =
+    process.platform === "win32" ? "KELD-CORE-040" : "KELD-NATIVE-010";
   expect(() =>
     Reflect.apply(method as Function, electron.dialog, [
       { message: "Confirm" },
     ]),
-  ).toThrow("KELD-CORE-040");
+  ).toThrow(code);
 });
 
 // Real parented Open returns a native selected path or canceled: true with an

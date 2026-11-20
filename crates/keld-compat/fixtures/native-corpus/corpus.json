@@ -36,8 +36,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/dialog.test.ts",
-      "test_name": "dialog.show-message-box-sync.clicked-index today: no synchronous native dialog method is exported",
-      "negative_control": "While pending: injecting an exported dialog.showMessageBoxSync callable (including a Promise substitute) fails this mapped case. GH-564 must invert it to require an actually clicked synchronous numeric index; returning a Promise, guessed default, or wrong button must then fail."
+      "test_name": "dialog.show-message-box-sync exports the same method and refuses before Ready",
+      "negative_control": "The source test checks both export shapes and a typed synchronous refusal before Ready; a Promise or fabricated result fails it. The macOS native clicked-index, parent and teardown acceptance remain unverified, so the broad cell stays fail."
     },
     {
       "operation_id": "dialog.show-open-dialog.canceled-paths",

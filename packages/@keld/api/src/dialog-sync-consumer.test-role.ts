@@ -11,6 +11,13 @@ import { encodeWindowEvent, type WindowRef } from "./window-codec.ts";
 import type { DialogReplyV1, MessageOptions } from "./dialog.generated.ts";
 import { linkError } from "@keld/kipc";
 
+// Exercise Windows source routing on each CI OS with a controlled Host seam.
+// This does not establish any Windows native behavior.
+Object.defineProperty(process, "platform", {
+  value: "win32",
+  configurable: true,
+});
+
 const mode = process.argv[2];
 const ref: WindowRef = { id: 71, incarnation: 8001n };
 const source = new WindowSource(() => {});
@@ -68,9 +75,9 @@ process.env.KELD_APP_LINK = "/controlled-gh564-no-socket#" + "a".repeat(64);
 // src/main/electron.js:875-887. The source assigns modifiedModalOpen first.
 const originalOptions = Object.freeze({
   type: "question" as const,
-  buttons: Object.freeze(["Save", "Cancel", "Discard Changes"]),
+  buttons: Object.freeze(["&Save", "&Discard Changes", "Cancel"]),
   defaultId: 0,
-  cancelId: 1,
+  cancelId: 2,
   noLink: true,
   normalizeAccessKeys: true,
   title: "Confirm",
@@ -79,9 +86,9 @@ const originalOptions = Object.freeze({
 const expectedOptions: MessageOptions = {
   message: originalOptions.message,
   kind: "Question",
-  buttons: ["Save", "Cancel", "Discard Changes"],
+  buttons: ["&Save", "&Discard Changes", "Cancel"],
   default_id: 0,
-  cancel_id: 1,
+  cancel_id: 2,
   normalize_access_keys: true,
   title: "Confirm",
   detail: null,
@@ -201,6 +208,15 @@ async function main(): Promise<void> {
         );
         assert.deepEqual(calls.at(-1)?.parent, ref);
         assert.deepEqual(calls.at(-1)?.options, expectedOptions);
+        assert.notDeepEqual(
+          calls.at(-1)?.options,
+          {
+            ...expectedOptions,
+            buttons: ["&Save", "Cancel", "&Discard Changes"],
+            cancel_id: 1,
+          },
+          "Windows Cancel and Discard must not be swapped",
+        );
       }
       assert.equal(calls.length, 3);
     } else if (mode === "source-validation") {

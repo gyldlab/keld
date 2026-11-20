@@ -9,7 +9,7 @@ import type { MessageOptions } from "@keld/api/internal/dialog-codec";
 import type { WindowRef } from "@keld/api/internal/window-codec";
 import { linkError } from "@keld/kipc";
 
-import { readDialogParentRef } from "./browser-window.ts";
+import { readDialogParentRef, type BrowserWindow } from "./browser-window.ts";
 import { normalizeMessageOptions } from "./dialog-options.ts";
 import {
   normalizeOpenDialogOptions,
@@ -92,7 +92,7 @@ function submit(
   });
 }
 
-/** The only public Message API; one-argument calls are allowed by Electron
+/** The asynchronous Message API; one-argument calls are allowed by Electron
  * grammar but the Host currently refuses unimplemented parentless presentation
  * with a typed error. It never opens another WorkerLink or silently succeeds. */
 export function showMessageBox(
@@ -130,7 +130,7 @@ export function showMessageBox(
 /** Return the actual native button index without re-entering the app loop. */
 export function showMessageBoxSync(options: MessageBoxOptions): number;
 export function showMessageBoxSync(
-  parent: unknown,
+  parent: BrowserWindow | null | undefined,
   options: MessageBoxOptions,
 ): number;
 export function showMessageBoxSync(
@@ -150,16 +150,17 @@ export function showMessageBoxSync(
   const options = normalizeMessageOptions(
     withParent ? suppliedOptions : parentOrOptions,
   );
-  if (process.platform !== "darwin" && process.platform !== "win32") {
+  if (process.platform !== "win32") {
     throw linkError(
       "KELD-NATIVE-010",
-      "native synchronous Message dialogs require macOS or Windows",
+      "native synchronous Message dialogs require the Windows implementation",
     );
   }
   const reply = invokeMessageDialogBlocking(parent, options);
   if (reply.variant !== "Message") {
-    throw new Error(
-      "KELD-IPC-003: native Message returned another operation's disposition",
+    throw linkError(
+      "KELD-IPC-003",
+      "native Message returned another operation's disposition",
     );
   }
   return reply.response;

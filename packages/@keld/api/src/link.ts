@@ -68,6 +68,7 @@ import {
   kipcError,
   linkError,
   isCallError,
+  isLocalCallTimeout,
   nativeFacadeBootSelected,
   windowsDesktopSnapshotSelected,
   quitAndCloseLink,
@@ -482,10 +483,10 @@ export class LifecycleLink {
     blocking = false,
   ): DialogReplyV1 | Promise<DialogReplyV1> {
     if (this.#closed || this.#quitPromise !== undefined) {
-      throw this.#dead ?? kipcError("KELD-IPC-001", "session is closed");
+      throw this.#dead ?? linkError("KELD-IPC-001", "session is closed");
     }
     if (this.#nextDialogNonce > 0xffff_ffff_ffff_ffffn) {
-      throw kipcError(
+      throw linkError(
         "KELD-IPC-003",
         "dialog generation nonce exhausted; restart the role",
       );
@@ -494,9 +495,17 @@ export class LifecycleLink {
     const payload = encodeDialogRequest(request(nonce));
     const deadlineMs = 600_000;
     const receive = (raw: Uint8Array): DialogReplyV1 => {
-      const value = decodeDialogReply(raw);
+      let value: DialogReplyV1;
+      try {
+        value = decodeDialogReply(raw);
+      } catch {
+        throw linkError(
+          "KELD-IPC-003",
+          "native dialog reply could not be decoded",
+        );
+      }
       if (value.variant !== expected) {
-        throw kipcError(
+        throw linkError(
           "KELD-IPC-003",
           "native dialog original correlation received a different operation's reply",
         );
@@ -507,10 +516,7 @@ export class LifecycleLink {
       // A role-local timeout does not prove whether the Host opened a sheet.
       // Never replay the original effect, and do not await Cancel from a
       // synchronous caller or overwrite its original typed failure.
-      if (
-        !this.#closed &&
-        (error as { code?: unknown } | null)?.code === "KELD-IPC-006"
-      ) {
+      if (!this.#closed && isLocalCallTimeout(error)) {
         const cancel = encodeDialogRequest({ variant: "Cancel", nonce });
         void this.#link
           .call(DIALOG_CHANNEL, cancel, APP_LINK_IO_DEADLINE_MS)

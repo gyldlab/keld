@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:44ff3925d4334bb30a45babacbdce7dc0a8e1111c88f469c1a0754ed50a4c77c
+// @keld/kipc-transport sha256:74ce05ca4cf0b7e7b2a140395f434e4fe38c30c1ca228dc85fecc757f3f73f8a
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -2466,6 +2466,25 @@ export function linkError(code: string, detail: string): KeldCallError {
   return codedError(code, `${code}: ${detail}`);
 }
 
+// Local deadline ownership is independent of the public error code: a Host ERR
+// or a terminal transport fault can also legitimately carry KELD-IPC-006.
+const localCallTimeouts = stateWeakMap<object, true>();
+
+/** @internal True only for this Worker's own abandoned CALL deadline. */
+export function isLocalCallTimeout(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    stateWeakMapGet(localCallTimeouts, error) === true
+  );
+}
+
+function localCallTimeout(detail: string): KeldCallError {
+  const error = linkError("KELD-IPC-006", detail);
+  stateWeakMapSet(localCallTimeouts, error, true);
+  return error;
+}
+
 /** Runs a shared policy rule and re-raises its `kipcError` with the code as a field. */
 function withCode<T>(rule: () => T): T {
   try {
@@ -3252,8 +3271,7 @@ export class WorkerLink {
         this.#pending.delete(corr);
         this.#post({ t: "abandon", corr });
         reject(
-          linkError(
-            "KELD-IPC-006",
+          localCallTimeout(
             `call deadline of ${deadlineMs} ms expired with no host reply`,
           ),
         );
@@ -3508,8 +3526,7 @@ export class WorkerLink {
           continue;
         if (atomicCompareExchange(ctrl, BLOCKING, corr | 0, 0) === (corr | 0)) {
           this.#post({ t: "abandon", corr });
-          throw linkError(
-            "KELD-IPC-006",
+          throw localCallTimeout(
             `blocking call deadline of ${deadlineMs} ms expired with no host reply`,
           );
         }
