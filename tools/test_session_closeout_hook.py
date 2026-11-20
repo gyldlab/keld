@@ -61,32 +61,50 @@ class HookTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
+    def fixture_git_configuration(self, executable):
+        """Exercise production registration using only this disposable Git checkout."""
+        original_guard = hook.trusted_git_executable
+        with mock.patch.object(hook, 'trusted_git_executable',
+                               side_effect=lambda value: original_guard(value, checkout=self.repo)):
+            return hook.configuration(git_executable=executable)
+
     def test_registration_rejects_checkout_git(self):
-        local_git = Path(hook.__file__).parent / 'fake-git'
+        local_git = self.repo / 'fake-git'
         local_git.write_bytes(b'not an executable')
         self.addCleanup(local_git.unlink)
         with self.assertRaisesRegex(ValueError, 'outside the checkout'):
-            hook.configuration(git_executable=str(local_git.resolve()))
+            self.fixture_git_configuration(str(local_git.resolve()))
         with self.assertRaisesRegex(ValueError, 'absolute'):
             hook.configuration(git_executable='git')
 
+    def test_registration_negative_probe_preserves_existing_source_file(self):
+        """A developer's same-name file in another source tree stays intact."""
+        with tempfile.TemporaryDirectory(prefix='keld-protected-source-', dir=self.fixture.root) as temp:
+            source_tools = Path(temp) / 'tools'
+            source_tools.mkdir()
+            sentinel = source_tools / 'fake-git'
+            sentinel.write_bytes(b'UNTRACKED_DEVELOPER_FILE_MUST_SURVIVE')
+            with mock.patch.object(hook, '__file__', str(source_tools / 'session_closeout_hook.py')):
+                self.test_registration_rejects_checkout_git()
+            self.assertEqual(sentinel.read_bytes(), b'UNTRACKED_DEVELOPER_FILE_MUST_SURVIVE')
+
     def test_registration_rejects_case_alias_of_checkout_git(self):
         """Real filesystem identity must trump differing component spellings."""
-        local_git = Path(hook.__file__).parent / 'case-alias-git'
+        local_git = self.repo / 'case-alias-git'
         local_git.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
         local_git.chmod(0o755)
         self.addCleanup(local_git.unlink)
-        checkout = Path(hook.__file__).resolve().parent.parent
-        alias = checkout.with_name(checkout.name.swapcase()) / 'tools' / local_git.name
+        checkout = self.repo
+        alias = checkout.with_name(checkout.name.swapcase()) / local_git.name
         if not alias.exists() or not alias.samefile(local_git):
             self.skipTest('filesystem does not support the case-alias attack')
         with self.assertRaisesRegex(ValueError, 'outside the checkout'):
-            hook.configuration(git_executable=str(alias))
+            self.fixture_git_configuration(str(alias))
 
     def test_registration_rejects_outside_hardlink_to_checkout_executable(self):
         """An outside pathname cannot make a checkout inode trusted."""
-        checkout = Path(hook.__file__).resolve().parent.parent
-        local_git = Path(hook.__file__).parent / (
+        checkout = self.repo
+        local_git = checkout / (
             'hardlink-git.exe' if os.name == 'nt' else 'hardlink-git'
         )
         if os.name == 'nt':
@@ -104,7 +122,7 @@ class HookTests(unittest.TestCase):
             self.assertTrue(alias.samefile(local_git))
             self.assertGreater(alias.stat().st_nlink, 1)
             with self.assertRaisesRegex(ValueError, 'only one hard link'):
-                hook.configuration(git_executable=str(alias))
+                self.fixture_git_configuration(str(alias))
 
     @unittest.skipUnless(os.name == 'nt', 'Git for Windows launcher acceptance')
     def test_windows_installed_git_launcher_preserves_hardlink_rejection(self):

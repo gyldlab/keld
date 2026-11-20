@@ -768,20 +768,16 @@ unreviewed monitor executable during status/identity checks.
 
 
 
-<!-- /coderabbit-ai-generated:v1 -->Claude uses exact argument execution; Cursor uses its native command string. Cursor
+<!-- /coderabbit-ai-generated:v1 -->
+
+Claude uses exact argument execution; Cursor uses its native command string. Cursor
 receives a session-start pointer and refreshes a small `current.json` before each prompt
 under the Git common directory's session namespace. It contains IDs and receipt
 instructions, never prompts or transcripts, and does not activate a task by itself.
 Codex and Claude prompt hooks additionally emit the verified primary
 `.keld-work/sessions/<session-id>/` pointer without creating it. The hash-bound hook
 registration includes the workspace resolver, so a changed resolver refuses until the
-<!-- coderabbit-ai-generated:v1 -->
-
-<!-- coderabbit-ai-generated-section:v1:4ec121ca7bf9bd58703ac755ce889084269fca0fcfba6975c33f3ebc304c7dc7 -->
-
-local configuration is regenerated and reviewed.
-
-<!-- /coderabbit-ai-generated:v1 --> Historical closeout baselines
+tracked Codex configuration is regenerated and reviewed. Historical closeout baselines
 and receipts remain under the Git common directory in this slice.
 The adapter rejects ambiguous/foreign workspace roots. The validator remains read-only.
 The adapter requests repair only when the native `loop_count` is zero and configures
