@@ -24,12 +24,7 @@
  */
 import { EventEmitter } from "node:events";
 
-import {
-  stateMap,
-  stateMapDelete,
-  stateMapHas,
-  stateMapSet,
-} from "@keld/kipc";
+import { stateMap, stateMapDelete, stateMapHas, stateMapSet } from "@keld/kipc";
 import type { WebContents } from "./browser-window.ts";
 
 /**

@@ -128,7 +128,9 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { isCallError } from '@keld/kipc';
 const require = createRequire(import.meta.url);
-` + namedDesktopBindings("electron") + `
+` +
+        namedDesktopBindings("electron") +
+        `
 const main = await import('electron');
 assert.equal(main.isCallError, isCallError);
 for (const name of ['electron','electron/main','electron/renderer','electron/common','electron/utility']) {

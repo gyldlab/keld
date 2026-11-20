@@ -168,7 +168,8 @@ describe("Electron v44.4.5 ipc-main-impl.ts parity (source-cited, not corpus cel
     const ch = channel("handle-once-reentrant");
     const originalHandle = ipcMain.handle;
     const originalRemove = ipcMain.removeHandler;
-    let registered: ((event: electron.IpcMainInvokeEvent) => unknown) | undefined;
+    let registered:
+      ((event: electron.IpcMainInvokeEvent) => unknown) | undefined;
     let calls = 0;
     const event = {} as electron.IpcMainInvokeEvent;
     try {
