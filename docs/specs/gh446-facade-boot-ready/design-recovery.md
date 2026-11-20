@@ -126,15 +126,16 @@ Owns: Startup failure, generation recovery, lifecycle wire and platform support 
     `adoptable`. The mark is cleared by adoption, by the owner's first
     window-addressed CALL naming that window, or by `Destroyed`.
   - **Adoption.** A successor's `Create` adopts the adoptable window with the lowest
-    `WindowId`, answering `REPLY Adopted { window }` with no EVENT and no state
-    change. With no adoptable window left, `Create` creates a new one.
+    `WindowId`. `REPLY Adopted { window }` clears `adoptable`, with no EVENT or
+    native `WindowState` change. Without an adoptable window, `Create` creates one.
     - Ids are minted in `Create` admission order, the same order as `getAllWindows`.
     - In T-1, `Create` carries no renderer-authority option, so there is nothing to
       match. #455 adds the rule: adopt the lowest-id adoptable window whose triaged
       renderer-authority options equal the request's; if none matches, create. There
       is no refusal code.
-  - **Identity.** The replayed `Created` builds the mirror entry and its
-    `BrowserWindow` object, and on `Adopted` the constructor returns that same object,
+  - **Identity.** The replayed `Created` updates the WindowSource mirror. The facade materializes
+    its `BrowserWindow` wrapper lazily. On `Adopted`, the constructor uses the
+    same identity and returns an existing wrapper when one was materialized,
     so `fromId(win.id) === win`. `browser-window-created` and `web-contents-created`
     fire once, at adoption, never at replay. Bounds and title come from the replay.
   - **Unclaimed survivors.** They stay `Open`, owned by the successor and counted by
@@ -151,17 +152,23 @@ Owns: Startup failure, generation recovery, lifecycle wire and platform support 
     isolation and retired-filesystem quiescence remain required.
 
   Transfer, the `Created` replay at `Subscribe` (criterion 30 without `pending_close`),
-  `adoptable`, criterion 46, `WindowResponse::Adopted` and `KELD-CORE-045` land with
-  #449 (GH-531 T-1). `pending_close` and closes during
+  `adoptable`, criterion 46, `WindowResponse::Adopted` and `KELD-CORE-045` have
+  source paths at the current Pin. #449 (GH-531 T-1) owns their qualification
+  and fixes gaps its acceptance tests demonstrate. `pending_close` and closes during
   the recovery gap stay with #450 (GH-531 T-2).
 - **The compat cell.** `app.ready.recovered-generation` is `unknown` (AC-9). It is
-  uncited, and its NC names #449's keld-core adoption test.
+  uncited under GH-532 rule 6. AC-9 names the separate late-Ready-listener replay
+  control in `app.ready.api-first-late-listener`, whose observer expects `lateListener=0`.
+  This control does not prove supervised role recovery. Eligible-survivor adoption
+  belongs to AC-19 / GH-531 criterion 46, not AC-9.
 - **Scoring fact, which carries no weight here.** The first proof scores only "install
   + activation + a 4-step primary_workflow" (#432), so no scored path crosses
   generation loss. The invariant holds regardless.
 
-This spec is safe in its own landing window. No `Create` exists until #449, so no
-schema-2 generation can have a window.
+The pinned facade already sends Host `Create`, and the registry already has
+a `Create` path. Initial Ready still precedes the first successful non-subscription
+window call under AC-16. A recovered generation may already have surviving windows. Source
+presence does not establish first-window or recovery acceptance under #449.
 
 **Rejected:**
 

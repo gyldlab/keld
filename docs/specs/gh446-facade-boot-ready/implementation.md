@@ -37,6 +37,9 @@ Owns: Allowed implementation paths and the ordered implementation task.
 
 - **Blocked by:** none
 - **External gate:** #445 must land before T-1 starts.
+- **Review prerequisite:** Before T-1 starts, independently review the exact current
+  split head and bind approval to its specification blobs as required by §10. The
+  historical technical-head approval does not satisfy this prerequisite.
 
 - **Scope:** One vertical slice covers AC-1–AC-15, the host/link portion of AC-17 and AC-20. AC-16, AC-18 and AC-19 are F02-T2's tests of this spec's
   cross-owner rules. At current Pin `ec29b7ce`, the parser, compiler, macOS

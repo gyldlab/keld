@@ -1,5 +1,5 @@
 # Spec: facade-boot Ready — host initialized and window module available before any app window (F01-T2)
-Status: approved
+Status: draft
 Tracker: GH-446
 Owner: @0monish
 Updated: 2026-11-16
@@ -32,16 +32,17 @@ the app creates every window, the host on macOS:
 3. the loop emits `HostInitialized` on its `Init` turn; the coordinator receives it and writes `Ready` once afterward.
 
 In the initial generation, the app then sees `ready`/`whenReady` with zero application
-windows. From #449, the facade also completes window subscription and replay before
-publishing readiness. The host refuses non-subscription window calls before its
+windows. At the current Pin the facade composes raw Host Ready with accepted window
+subscription and complete replay. #449 owns qualification of that source path. The host refuses non-subscription window calls before its
 `Ready` transition. Recovered generations may already have surviving windows (D7).
 Renderer-declared boots preserve their existing contract.
 
 Non-goals:
 
-- The window `Create` call and the `BrowserWindow` constructor (F02-T2 #449, gh531).
-- `Create` adoption for recovered generations. The gh531 registry owns it (gh531 D6
-  scope, amended by #657), and it lands with #449 (gh531 T1).
+- Qualification and demonstrated repairs of the existing window `Create` call and
+  `BrowserWindow` constructor (F02-T2 #449, GH-531).
+- Qualification of the existing registry's recovery adoption (GH-531 D-6 and T-1,
+  tracked by #449).
 - Two-phase quit (F01-T3).
 - Launch-time `open-url`/`open-file` delivery (#524, F01-T8).
 - Windows and Linux emission points. Those hosts refuse the new boot kind (D9).

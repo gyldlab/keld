@@ -212,7 +212,9 @@ The names below are proposed.
   - **Single fault:** Move the registry's serviceable state to construction.
   - **At-risk precondition:** A role can send a window call before Ready.
   - **Expected RED:** The pre-Ready `Create` succeeds instead of returning `KELD-CORE-040`.
-- **Ownership:** F02-T2 in #449 implements this rule with its first window call. GH-531 criterion 14 carries the corresponding test.
+- **Ownership:** The rule and window call have source paths at the current Pin. F02-T2
+  in #449 qualifies them and repairs only proven gaps. GH-531 criterion 14 carries the
+  corresponding test.
 
 ### AC-17: Entry-evaluation ordering is qualified
 - **Given:** Separate synchronous CJS and native-ESM entry fixtures, plus a target-derived fixture whose imported dependency invokes `whenReady()` before the entry registers its `ready` listener.

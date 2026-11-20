@@ -222,10 +222,10 @@ fail. "Owner" is the implementing ticket.
     `getPosition()`, `isMaximized()` and `isFullScreen()` reads leave the app-link frame
     counter unchanged in both directions. *NC:* implementing any getter as a host round
     trip fails. Owner: F02-T2.
-    Static `BrowserWindow.getAllWindows()` returns applied mirror entries before public
-    Ready, without a Host call or Subscribe wait (GH-446 §4.12). Complete replay remains
-    criterion 20's barrier. *NC:* refusing or blocking this getter fails the pre-Ready
-    fixture; it does not authorize Host `Create`.
+    Pre-Ready `getAllWindows()` lists applied facts now; after correlated `Subscribed`,
+    it lists the complete current mirror (20; GH-446 §4.12). Facts are not wrappers.
+    The getter reuses lazy wrappers; no reader, frames or wait. *NC:* a blocked getter
+    or eager wrapper fails. This does not authorize Host `Create`.
 18. **Per-window causal order.** Given the host writes `Bounds(r)` and then
     `CloseRequested` for one window, inside the `'close'` listener `getSize()` and
     `getPosition()` equal `r`. *NC:* dispatching `'close'` before the preceding `Bounds`
@@ -370,9 +370,8 @@ fail. "Owner" is the implementing ticket.
       timer. (iv) A window already in `Closing` at the successor's `Subscribe` finishes
       its teardown and is not replayed.
     *NC 1:* replaying the pending `CloseRequested(s)` to a successor fails. *NC 2:*
-    omitting the replay leaves the successor's mirror empty, so `getAllWindows()`
-    returns `[]` and fails. *NC 3:* transferring ownership to a role of a different
-    declaration (an `app-bound` role) fails, because that role's call must get
+    omitting replay leaves the mirror empty after `Subscribed`. *NC 3:* transferring
+    to a different declaration fails: an `app-bound` role's call must get
     `KELD-CORE-043`. *NC 4:* a host that writes `CloseRequested(n)` or any fact to the
     retired link fails (i). *NC 5:* a replay without `pending_close` leaves `n`
     unanswered and A stays `ClosePending(n)` forever, which fails (ii). *NC 6:*
@@ -483,13 +482,12 @@ fail. "Owner" is the implementing ticket.
 
 46. **A successor `Create` adopts before it builds.** Given successor g2 past
     criterion 20's completion barrier, windows 41 and 43 adoptable, 42 claimed by a
-    setter: three `Create`s answer `Adopted 41`, `Adopted 43`, `Created 44`, and the fake
-    UI port builds exactly one window. The host fixture has advanced and retired its
-    earlier entries, while g2's fresh facade allocation counter would start at 1.
-    Each adopting constructor must return the same replayed facade object, retain its
-    host-supplied `HostWindowRef`/wire `WindowRef`, and address later calls with that
-    pair. The native identities of all three survivors, including already-claimed 42,
-    are unchanged; native retention does not depend on adoption eligibility.
+    setter: obtain 41 and 43 wrappers via `getAllWindows()` before construction.
+    Three `Create`s answer `Adopted 41`, `Adopted 43`, `Created 44`; the fake UI port
+    builds one window. The host retired earlier entries; g2's facade counter starts
+    at 1. Each adoption returns the same getter wrapper and keeps the host's
+    `HostWindowRef`/wire `WindowRef` for later calls. All three native identities
+    survive, including claimed 42; retention does not depend on eligibility.
     A `Create` before `Subscribe` answers `ERR 045`, builds nothing. *NC 1:* deleting
     the adoption arm builds on the first `Create`; deleting the 045 check builds before
     `Subscribe`. *NC 2:* minting a facade id or substituting the fresh local allocation
@@ -679,7 +677,7 @@ pub enum WindowResponse {
     ReplyStale,                          // 6; plus one host diagnostic
     Destroyed,                           // 7; written after the Destroyed EVENT
     Adopted { window: WindowRef },       // 8; a successor Create adopted a transferred window
-                                         //    (D6 scope, criterion 46): no EVENT, no state change
+                                         // D6/46: clears adoptable; no EVENT or WindowState change
                                          //    (amended by #657)
 }
 ```
@@ -1322,10 +1320,10 @@ reversible, and each names the observation that reopens it.
   CALLs before `Subscribe` are refused `KELD-CORE-045` (criterion 46). Per window:
   `adoptable` is set at transfer and cleared by adoption, by the owner's first
   window-addressed CALL, or by `Destroyed`. A `Create` adopts the lowest-`WindowId`
-  adoptable window owned by the caller, answering `Adopted { window }` with no EVENT
-  and no state change; otherwise it creates. The constructor returns the replayed
-  object. The app owns navigation of adopted windows. *Falsifier and NCs:* criterion
-  46. (amended by #657)
+  caller-owned adoptable window. `Adopted` clears that mark without EVENT
+  or native `WindowState` change; else `Create` creates. The constructor returns
+  the wrapper for the replayed Host identity. The app owns navigation. *Falsifier
+  and NCs:* criterion 46. (amended by #657)
   *Approval history:* the 2026-10-07 decision above remains the historical owner
   record. The scoped 2026-10-23 amendment in §5 explicitly qualifies the schema-2
   document guarantee under the separate exact-content approval linked above; the
@@ -1559,8 +1557,8 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
   Implementation acceptance remains required; the historical approval is unchanged.
 - Re-slice (amended by #657): the D6 transfer, the `Created` replay at `Subscribe`
   without `pending_close`, `adoptable`, criterion 46, `WindowResponse::Adopted`,
-  `KELD-CORE-045`, and the constructor returning the replayed object are in this
-  slice's T1. The `Created.pending_close` field and its vector, and closes
+  `KELD-CORE-045`, and return of the wrapper for the replayed Host identity are T1.
+  The `Created.pending_close` field and its vector, and closes
   during the recovery gap, are in T2.
 - Architecture sentences changed in this PR
   (`docs/architecture/05-webview-and-native.md` §3, after the module table): one new
@@ -1590,7 +1588,7 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
   `Destroyed` (no veto yet), so criterion 4 is exercisable. Role loss (amended by
   #657): the D6 transfer and `Created` replay at `Subscribe` (criterion 30 without
   `pending_close`); `adoptable`; criterion 46; `WindowResponse::Adopted`;
-  `KELD-CORE-045`; the constructor returning the replayed object, with
+  `KELD-CORE-045`; return of the wrapper for the replayed Host identity, with
   `browser-window-created` and `web-contents-created` once, at adoption; the ▲ cell
   `app.window.adopted-survivor`. Criteria 1–14, 16–17,
   19–20, 41–44 and 46, and criterion 30 without `pending_close`.

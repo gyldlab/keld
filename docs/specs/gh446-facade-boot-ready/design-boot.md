@@ -115,8 +115,8 @@ Independence and the coupling they expose:
   boots. F02-T2 owns qualification of this existing pre-loop service and its rule-2
   test (AC-16), and implements only gaps proved by those tests.
 - **A7 ↔ GH-531 D-6 and #449.** These are explicit cross-spec edges. D-6 owns host crash
-  ownership of windows for every boot kind. The registry's `Create` adoption, which
-  lands with #449, owns the no-second-window rule, keyed on registry state.
+  ownership of windows for every boot kind. The pinned registry's `Create` adoption
+  owns the no-second-window rule, keyed on registry state. #449 qualifies that path.
 
 Reuse:
 
@@ -312,7 +312,7 @@ The Host-backed `BrowserWindow` sends `WindowRequest::Create`, while the existin
 `LifecycleLink` publishes public Ready only after raw Host Ready and accepted
 Subscribe/replay. These are source-presence facts, not acceptance receipts.
 
-F02-T2 owns the GH-531 registry implementation and qualification of the rule-2 path;
+F02-T2 owns qualification of the existing GH-531 registry rule-2 path and any proven repair;
 do not assign any remaining registry gap to GH-446 T-1, add a parallel registry, or
 describe the window CALL as absent. F02-T2 is tracked by #449; that issue remains the
 acceptance record for subscription/replay, constructor identity, eligible-survivor
@@ -353,13 +353,13 @@ finishes before HELLO. Generation 1 of a schema-2 boot follows this partial orde
    installed. This is link readiness, not host Ready.
 3. The engine, authority services and window-call servers are installed and the UI
    loop is entered. The genuine `Init` turn emits `HostInitialized`.
-4. In one guarded transition the registry becomes serviceable (from #449), the host
+4. In one guarded transition the existing registry becomes serviceable, the host
    writes its one Ready EVENT, and successful writing arms the existing recovery
    protocol. No startup-fallible service installation remains after that boundary.
 5. The existing transport delivers the event after the lifecycle listener is
    installed. AC-17 must exercise coalesced HELLO/Ready, delayed attachment and an
    imported module's early lifecycle call; the ordinary path is not sufficient proof.
-6. From #449, the facade composes raw host Ready with accepted window subscription
+6. At the current Pin, the facade composes raw host Ready with accepted window subscription
    and complete replay. The host writes all replayed `Created` facts before the
    correlated accepted `Subscribed` reply on the same ordered stream. Processing
    that reply after applying the facts is the completion boundary, including an empty

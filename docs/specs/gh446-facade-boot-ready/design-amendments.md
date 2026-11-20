@@ -355,8 +355,17 @@ One concrete target requirement is pre-Ready enumeration: the entry calls
 `contextMenu(...)` before its Ready registration, and the locked
 [`electron-context-menu` 5.1.0 entry](https://github.com/sindresorhus/electron-context-menu/blob/v5.1.0/index.js)
 calls `BrowserWindow.getAllWindows()` and registers `browser-window-created`.
-Therefore #449 must keep static mirror enumeration usable before public Ready,
-without a Host Create call or synchronous wait for subscription. It reflects facts
-already applied to the mirror; only the readiness barrier promises complete replay.
+At the current Pin, `getAllWindows()` reads a snapshot gated on public Ready.
+#449 must make already-applied facts from the current generation readable
+synchronously, even before the correlated `Subscribed` reply. The getter adds
+no reader, Host call, or wait; it materializes wrappers lazily and reuses them
+for existing identities. Replay applies facts, not wrappers. Exclude retired
+or failed generations. Only the replay barrier guarantees a complete mirror.
+
+**Fixture:** Apply survivor A; hold survivor B, `Subscribed`, and Host Ready.
+The getter returns only A with no outgoing frame, and Ready/Create stay
+blocked. Deliver B and the correlated accepted reply: the getter returns A
+and B with the same A wrapper. Public Ready/Create stay blocked until Host
+Ready. The current Ready-gated getter fails the first read.
 The constructor guard and host pre-Ready call refusal remain unchanged. This
 publisher-tag source check is not a full npm-tarball byte or target-runtime receipt.
