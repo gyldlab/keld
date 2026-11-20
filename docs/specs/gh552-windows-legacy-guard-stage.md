@@ -1,6 +1,6 @@
 # Spec: Selected Windows Legacy Guard runtime stage
 
-Status: draft
+Status: approved
 Tracker: GH-552
 Owner: GYLDLAB
 Updated: 2026-11-20
