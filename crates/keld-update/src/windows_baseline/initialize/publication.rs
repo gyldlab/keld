@@ -6,22 +6,39 @@
 use std::io;
 use std::path::Path;
 
+use cap_std::fs::File;
+
 use super::super::{Roots, error, publish_new_record, random_leaf_name, seal_child};
 use super::{BaselineAuthority, BaselineBoundary};
 use crate::records::{self, PointerKind};
 use crate::windows_extraction::{open_source, populate_stage};
-use crate::{UpdateError, VerifiedBaseline};
+use crate::{UpdateError, ValidatedArchive, VerifiedBaseline};
+
+/// Retained legacy archive and the table validated against that exact open file.
+/// This pair carries no installer, destination, or v2 admission authority.
+pub(super) struct ValidatedBaselineStageSource {
+    table: ValidatedArchive,
+    file: File,
+}
+
+impl ValidatedBaselineStageSource {
+    pub(super) fn open_legacy(
+        verified: &VerifiedBaseline,
+        archive: &Path,
+    ) -> Result<Self, UpdateError> {
+        let mut file =
+            open_source(archive).map_err(|cause| error("baseline source admission", cause))?;
+        let table = verified.validate_windows_archive(&mut file)?;
+        Ok(Self { table, file })
+    }
+}
 
 pub(super) fn publish_baseline_version(
-    verified: &VerifiedBaseline,
-    archive: &Path,
+    source: &mut ValidatedBaselineStageSource,
     roots: &Roots,
     authority: BaselineAuthority,
     observe: &mut impl FnMut(BaselineBoundary) -> io::Result<()>,
 ) -> Result<(), UpdateError> {
-    let mut source =
-        open_source(archive).map_err(|cause| error("baseline source admission", cause))?;
-    let validated = verified.validate_windows_archive(&mut source)?;
     let name =
         random_leaf_name("incomplete").map_err(|cause| error("temporary identity", cause))?;
     let parent = roots
@@ -37,8 +54,8 @@ pub(super) fn publish_baseline_version(
     let (directories, files) = populate_stage(
         stage,
         &name,
-        &validated,
-        &mut source,
+        &source.table,
+        &mut source.file,
         authority.stage_protection(),
         &mut |_, _| Ok(()),
     )?;
@@ -49,7 +66,7 @@ pub(super) fn publish_baseline_version(
         BaselineAuthority::MachineSystem => {
             // Files already have final protected ACLs, applied before their original
             // writable handles were flushed. Seal only the remaining directories here.
-            for entry in validated.entries().iter().rev() {
+            for entry in source.table.entries().iter().rev() {
                 if entry.kind() == crate::ArchiveEntryKind::Directory {
                     seal_child(tree, entry.name(), true)
                         .map_err(|cause| error("stage directory seal", cause))?;
@@ -87,13 +104,13 @@ pub(super) fn publish_baseline_version(
             }
         }
     }
-    let complete = records::encode_complete(verified.identity(), verified.content_size())?;
+    let complete = records::encode_complete(source.table.identity(), source.table.content_size())?;
     publish_new_record(stage, ".complete", &complete, roots.profile())?;
     observe(BaselineBoundary::CompletePublished)
         .map_err(|cause| error("complete boundary", cause))?;
     drop(files);
     drop(directories);
-    crate::windows_fs::publish_new(&parent, &name, &verified.identity().version)
+    crate::windows_fs::publish_new(&parent, &name, &source.table.identity().version)
         .map_err(|cause| error("version publication", cause))?;
     observe(BaselineBoundary::VersionPublished)
         .map_err(|cause| error("version boundary", cause))?;
