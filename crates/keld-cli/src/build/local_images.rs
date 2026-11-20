@@ -86,7 +86,10 @@ impl LocalSigner {
             .parent()
             .ok_or_else(|| refuse("local signer", "tool parent missing"))?;
         let directory_pins = windows_inputs::pin_input_root(parent)?;
-        let tool = local_source::pin_file(tool, MAX_IMAGE_BYTES)?;
+        let tool = local_source::pin_file(
+            &windows_inputs::stable_file_at_parent(tool, &directory_pins)?,
+            MAX_IMAGE_BYTES,
+        )?;
         if tool.sha256 != hex::<32>(expected_tool)? {
             return Err(refuse(
                 "local signer",
@@ -284,6 +287,16 @@ pub(super) fn request_from_args(args: &[String]) -> Result<ImageRequest, BuildEr
         publisher_scope: args[13].clone(),
     })
 }
+// The image stage shares the source session's retained DOS identity. Convert
+// only the Win32 API spelling at the creation/ACL boundary; never reuse the
+// mutable caller's SUBST alias to shorten a long path.
+fn create_image_stage(path: &Path) -> Result<Vec<File>, BuildError> {
+    let api_path = local_source::win32_extended_if_long(path)?;
+    boot::create_windows_stage_root(&api_path)
+        .map_err(|error| refuse("local images directory", error))?;
+    windows_inputs::pin_input_root(path)
+}
+
 #[allow(clippy::too_many_lines)] // Same existing source/sign/image-custody transaction, not a second pipeline.
 pub(super) fn prepare_request(
     request: ImageRequest,
@@ -291,13 +304,18 @@ pub(super) fn prepare_request(
 ) -> Result<PreparedLocalPair, BuildError> {
     let app_root = request.app_root.as_path();
     let authoring = windows_inputs::CapturedInputs::open(app_root)?.capture(app_root)?;
+    // The archive must reopen the same admitted project, not a rebound alias.
+    let stable_app_root = authoring.stable_root().to_owned();
     let app = &authoring.app;
     let key_path = request.release_public_key.as_path();
     let key_parent = key_path
         .parent()
         .ok_or_else(|| refuse("update public key", "parent missing"))?;
-    let _key_directories = windows_inputs::pin_input_root(key_parent)?;
-    let key = local_source::pin_file(key_path, 32)?;
+    let key_directories = windows_inputs::pin_input_root(key_parent)?;
+    let key = local_source::pin_file(
+        &windows_inputs::stable_file_at_parent(key_path, &key_directories)?,
+        32,
+    )?;
     let key_bytes: [u8; 32] = read_exact_image(&key.file, 32)?.try_into().map_err(|_| {
         refuse(
             "update public key",
@@ -315,12 +333,11 @@ pub(super) fn prepare_request(
         &request.certificate_thumbprint,
         &request.publisher_scope,
     )?;
-    let session = request.source.session.clone();
     let source = local_source::prepare(request.source, initial_install)?;
+    // Never reuse the caller's mutable drive alias after the source owner pins it.
+    let session = source.session.clone();
     let images = session.join("local-test-images");
-    boot::create_windows_stage_root(&images)
-        .map_err(|error| refuse("local images directory", error))?;
-    let image_directories = windows_inputs::pin_input_root(&images)?;
+    let image_directories = create_image_stage(&images)?;
     let mut environment = Vec::new();
     for name in ["SystemRoot", "WINDIR", "PATH"] {
         if let Some(value) = std::env::var_os(name) {
@@ -362,7 +379,7 @@ pub(super) fn prepare_request(
         helper,
         source,
         session,
-        app_root: app_root.to_owned(),
+        app_root: stable_app_root,
         _image_directories: image_directories,
     })
 }
@@ -407,6 +424,38 @@ pub(super) fn run(args: &[String]) -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_stage_uses_extended_syntax_at_win32_creation_boundary() {
+        use std::os::windows::ffi::OsStrExt as _;
+
+        let owned = tempfile::tempdir().expect("private fixed-local fixture");
+        let root_units = owned.path().as_os_str().encode_wide().count();
+        let parent = if root_units + 1 + "local-test-images".len() >= 248 {
+            // A long TEMP location already reaches the API boundary; do not
+            // panic while trying to add a fictitious negative-width suffix.
+            owned.path().to_path_buf()
+        } else {
+            let width = 245 - root_units - 1;
+            assert!(width <= 255, "parent must fit one NTFS component");
+            let parent = owned.path().join("p".repeat(width));
+            std::fs::create_dir(&parent).expect("ordinary Win32 parent");
+            parent
+        };
+        let stage = parent.join("local-test-images");
+        let api_path = local_source::win32_extended_if_long(&stage)
+            .expect("retained absolute fixed-local DOS path");
+        assert!(
+            api_path.to_string_lossy().starts_with(r"\\?\"),
+            "long image stage requires extended Win32 syntax"
+        );
+        let pins = create_image_stage(&stage).expect("create and retain long private image stage");
+        let stable = windows_inputs::stable_local_path(&pins).expect("retained image stage");
+        assert_eq!(
+            stable.canonicalize().unwrap(),
+            stage.canonicalize().unwrap()
+        );
+    }
 
     #[test]
     fn image_cache_mode_requires_explicit_opt_in_and_preserves_signer_inputs() {

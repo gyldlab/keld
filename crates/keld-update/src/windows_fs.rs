@@ -3,9 +3,12 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![allow(unsafe_code)] // Exact volume, relative-directory, never-follow deletion and sibling-publication operations in AGENTS.md.
 
+use std::ffi::OsString;
 use std::fs::File;
 use std::io;
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::path::PathBuf;
 use std::ptr;
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
@@ -28,7 +31,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_WRITE, FILE_TRAVERSE, FileAttributeTagInfo, FileDispositionInfoEx,
     FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, GetDriveTypeW,
     GetFileInformationByHandleEx, GetFinalPathNameByHandleW, GetVolumeInformationByHandleW,
-    READ_CONTROL, SYNCHRONIZE, SetFileInformationByHandle, VOLUME_NAME_GUID, WRITE_DAC,
+    READ_CONTROL, SYNCHRONIZE, SetFileInformationByHandle, VOLUME_NAME_DOS, VOLUME_NAME_GUID,
+    WRITE_DAC,
 };
 use windows_sys::Win32::System::IO::{IO_STATUS_BLOCK, IO_STATUS_BLOCK_0};
 use windows_sys::Win32::System::SystemServices::{FILE_PERSISTENT_ACLS, FILE_READ_ONLY_VOLUME};
@@ -42,6 +46,131 @@ use directory_entries::{DirectoryChild, parse_directory_entries};
 
 const MAX_WINDOWS_PATH_UNITS: usize = 32_768;
 const VOLUME_GUID_ROOT_UNITS: usize = 49;
+
+// A retained verbatim NTFS name must remain a file, not become a DOS device
+// when exported as a regular Win32 path. Extensions do not make CON/NUL/etc.
+// safe, and Win32 also reserves superscript 1/2/3 on COM/LPT names.
+pub(crate) fn reserved_dos_device_component(component: &[u16]) -> bool {
+    let stem = component
+        .split(|&unit| unit == u16::from(b'.') || unit == u16::from(b':'))
+        .next()
+        .unwrap_or_default();
+    let end = stem
+        .iter()
+        .rposition(|&unit| unit != u16::from(b' '))
+        .map_or(0, |index| index + 1);
+    let stem = &stem[..end];
+    let mut upper = [0_u8; 7];
+    if stem.len() > upper.len() {
+        return false;
+    }
+    for (&unit, output) in stem.iter().zip(&mut upper) {
+        let Ok(byte) = u8::try_from(unit) else {
+            return false;
+        };
+        *output = byte.to_ascii_uppercase();
+    }
+    matches!(
+        &upper[..stem.len()],
+        b"CON" | b"PRN" | b"AUX" | b"NUL" | b"CONIN$" | b"CONOUT$"
+    ) || (stem.len() == 4
+        && (upper[..3] == *b"COM" || upper[..3] == *b"LPT")
+        && matches!(upper[3], b'1'..=b'9' | 0xb9 | 0xb2 | 0xb3))
+}
+
+/// Resolves the same retained OS object to a stable local DOS path.
+/// Mapped SMB handles resolve to UNC (or fail after disconnect) and are refused.
+pub(crate) fn fixed_local_dos_path(handle: &File) -> io::Result<PathBuf> {
+    let path = normalized_dos_path(handle)?;
+    let prefix = [
+        u16::from(b'\\'),
+        u16::from(b'\\'),
+        u16::from(b'?'),
+        u16::from(b'\\'),
+    ];
+    let offset = if path.starts_with(&prefix) { 4 } else { 0 };
+    if path.len() < offset + 3 {
+        return Err(unsupported(
+            "retained handle does not resolve to a local DOS disk path",
+        ));
+    }
+    let drive_letter = path[offset];
+    let is_drive_letter = (u16::from(b'A')..=u16::from(b'Z')).contains(&drive_letter)
+        || (u16::from(b'a')..=u16::from(b'z')).contains(&drive_letter);
+    if !is_drive_letter
+        || path[offset + 1] != u16::from(b':')
+        || path[offset + 2] != u16::from(b'\\')
+    {
+        return Err(unsupported(
+            "retained handle does not resolve to a local DOS disk path",
+        ));
+    }
+    // The DOS drive letter may be fixed while a nested volume mounted beneath
+    // it is removable. Qualify the volume that owns this retained handle.
+    let volume_root = volume_guid_root(&normalized_guid_path(handle)?)?;
+    // SAFETY: `volume_root` is the validated, NUL-terminated volume GUID root
+    // of the live handle; this synchronous API retains no pointer.
+    let drive_type = unsafe { GetDriveTypeW(volume_root.as_ptr()) };
+    if drive_type != DRIVE_FIXED {
+        return Err(unsupported(
+            "retained handle is not on a fixed local volume",
+        ));
+    }
+    // Dropping the verbatim prefix is safe only if ordinary Win32 parsing
+    // cannot trim a trailing dot/space from any component. Otherwise later
+    // path-based opens could select a different object than this retained handle.
+    let stable = &path[offset..];
+    let ends_with_dot_or_space = |unit: u16| unit == u16::from(b'.') || unit == u16::from(b' ');
+    if stable
+        .last()
+        .is_some_and(|&unit| ends_with_dot_or_space(unit))
+        || stable
+            .windows(2)
+            .any(|pair| ends_with_dot_or_space(pair[0]) && pair[1] == u16::from(b'\\'))
+    {
+        return Err(unsupported(
+            "retained handle path has a component that ordinary Windows path parsing changes",
+        ));
+    }
+    if stable
+        .split(|&unit| unit == u16::from(b'\\'))
+        .any(reserved_dos_device_component)
+    {
+        return Err(unsupported(
+            "retained handle path has a reserved DOS device name",
+        ));
+    }
+    Ok(PathBuf::from(OsString::from_wide(stable)))
+}
+
+fn normalized_dos_path(handle: &File) -> io::Result<Vec<u16>> {
+    let mut path = Vec::new();
+    path.try_reserve_exact(MAX_WINDOWS_PATH_UNITS)
+        .map_err(io::Error::other)?;
+    path.resize(MAX_WINDOWS_PATH_UNITS, 0_u16);
+    let capacity = u32::try_from(path.len()).map_err(io::Error::other)?;
+    // SAFETY: `handle` owns the live object throughout this synchronous query;
+    // `path` is writable for `capacity` UTF-16 units and no pointer escapes.
+    let length = unsafe {
+        GetFinalPathNameByHandleW(
+            handle.as_raw_handle().cast(),
+            path.as_mut_ptr(),
+            capacity,
+            FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
+        )
+    };
+    if length == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let length = usize::try_from(length).map_err(io::Error::other)?;
+    if length >= path.len() || path[length] != 0 {
+        return Err(unsupported(
+            "final DOS path exceeds the supported Windows path bound",
+        ));
+    }
+    path.truncate(length);
+    Ok(path)
+}
 
 /// Duplicates an exclusive activation-lock open into a non-writable keeper
 /// retention handle. The duplicate references the exact same OS file object and

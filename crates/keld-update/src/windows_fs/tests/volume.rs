@@ -67,3 +67,154 @@ fn a_same_volume_subdirectory_is_not_a_drive_anchor() {
         .expect("actual drive root");
     require_volume_root_handle(&root).expect("actual volume root positive control");
 }
+
+/// Reopening a bare DOS path must never resolve to a different file than the
+/// retained verbatim handle. The ordinary sibling remains a positive control.
+#[test]
+fn fixed_local_dos_path_rejects_verbatim_trailing_dot_component() {
+    let fixture = tempfile::tempdir().expect("private fixed-local fixture");
+    let normal = fixture.path().join("receipt");
+    std::fs::write(&normal, b"ordinary-file").expect("normal sibling");
+    let verbatim = fixture
+        .path()
+        .canonicalize()
+        .expect("Win32 verbatim directory")
+        .join("receipt.");
+    let special = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&verbatim)
+        .expect("create literal trailing-dot NTFS filename");
+    let admitted = super::super::fixed_local_dos_path(&special);
+    assert!(
+        admitted.is_err(),
+        "a normalized DOS path would reopen the sibling instead of the retained file: {admitted:?}"
+    );
+    let spaced = fixture
+        .path()
+        .canonicalize()
+        .expect("verbatim directory")
+        .join("spaced ");
+    let space_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&spaced)
+        .expect("create trailing-space NTFS filename");
+    assert!(
+        super::super::fixed_local_dos_path(&space_file).is_err(),
+        "a trailing-space component must fail closed"
+    );
+
+    let odd_parent = fixture
+        .path()
+        .canonicalize()
+        .expect("verbatim directory")
+        .join("parent.");
+    std::fs::create_dir(&odd_parent).expect("create verbatim trailing-dot directory");
+    let child = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(odd_parent.join("child"))
+        .expect("create child under unusual parent");
+    assert!(
+        super::super::fixed_local_dos_path(&child).is_err(),
+        "a nonfinal trailing-dot directory component must fail closed"
+    );
+
+    let ordinary = OpenOptions::new()
+        .read(true)
+        .open(&normal)
+        .expect("open ordinary sibling");
+    let stable = super::super::fixed_local_dos_path(&ordinary)
+        .expect("ordinary fixed-local path still allowed");
+    assert_eq!(
+        std::fs::read(stable).expect("reopen ordinary retained file"),
+        b"ordinary-file"
+    );
+}
+
+/// A literal NTFS file named NUL.txt is not a safe filename to export as a
+/// nonverbatim Win32 path, even when the retained handle is on a fixed disk.
+#[test]
+fn fixed_local_dos_path_refuses_reserved_device_filename() {
+    let fixture = tempfile::tempdir().expect("reserved DOS filename fixture");
+    let root = fixture.path().canonicalize().expect("verbatim local root");
+    for name in ["NUL", "NUL.txt"] {
+        let reserved = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(root.join(name))
+            .expect("create literal reserved DOS name on NTFS");
+        assert!(
+            reserved
+                .metadata()
+                .expect("retained file metadata")
+                .is_file(),
+            "verbatim selection must be a real NTFS file: {name}"
+        );
+        let admitted = super::super::fixed_local_dos_path(&reserved);
+        assert!(
+            admitted.is_err(),
+            "must not export reserved DOS device name as an ordinary path: {admitted:?}"
+        );
+    }
+
+    let ordinary = fixture.path().join("ordinary.txt");
+    std::fs::write(&ordinary, b"ordinary-file").expect("write ordinary file");
+    let opened = OpenOptions::new()
+        .read(true)
+        .open(&ordinary)
+        .expect("open ordinary file");
+    let admitted = super::super::fixed_local_dos_path(&opened)
+        .expect("ordinary fixed-local file is still admitted");
+    assert_eq!(
+        std::fs::read(admitted).expect("reopen ordinary selected file"),
+        b"ordinary-file"
+    );
+}
+
+#[test]
+fn reserved_dos_device_components_reject_extensions_and_ancestors() {
+    for name in [
+        "NUL",
+        "nul.txt",
+        "NUL:stream",
+        "CON.log",
+        "CONIN$",
+        "conout$.txt",
+        "prn .sig",
+        "AUX",
+        "COM1.txt",
+        "com9.dat",
+        "LPT1",
+        "lpt9.bin",
+        "COM¹.txt",
+        "LPT²",
+        "LPT³",
+        "COM³.dat",
+    ] {
+        assert!(
+            super::super::reserved_dos_device_component(&name.encode_utf16().collect::<Vec<_>>()),
+            "reserved DOS name was admitted: {name:?}"
+        );
+    }
+    for name in [
+        "ordinary.txt",
+        "ordinary.NUL",
+        "NULish.txt",
+        "COM0.txt",
+        "LPT10.dat",
+        "COMx.txt",
+        "CONSOLE.log",
+        "CONTEXT",
+    ] {
+        assert!(
+            !super::super::reserved_dos_device_component(&name.encode_utf16().collect::<Vec<_>>()),
+            "ordinary DOS name incorrectly refused: {name:?}"
+        );
+    }
+}

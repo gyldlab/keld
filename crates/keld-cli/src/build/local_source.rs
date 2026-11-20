@@ -292,6 +292,8 @@ fn pin_file_with_budget(
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
         .map_err(|error| failure("local source capture", error))?;
+    let stable_path = keld_update::fixed_local_dos_path(&file)
+        .map_err(|error| failure("local source volume", error))?;
     let metadata = file
         .metadata()
         .map_err(|error| failure("local source capture", error))?;
@@ -334,7 +336,7 @@ fn pin_file_with_budget(
     file.seek(SeekFrom::Start(0))
         .map_err(|error| failure("local source capture", error))?;
     Ok(PinnedFile {
-        path: path.to_owned(),
+        path: stable_path,
         file,
         sha256: digest.finalize().into(),
     })
@@ -665,6 +667,8 @@ fn run_captured_with_options(
 /// This private value cannot be deserialized or converted to release/Strict authority.
 pub(super) struct LocalSourceBuildObservation {
     source_root: PathBuf,
+    // The retained source-owner pins own this stable output namespace.
+    pub(super) session: PathBuf,
     pub(super) source_commit: String,
     pub(super) source_sha256: [u8; 32],
     cargo_lock_sha256: [u8; 32],
@@ -860,7 +864,10 @@ fn pin_native_msvc_linker(root: &Path) -> Result<(PinnedFile, Vec<File>), BuildE
         .parent()
         .ok_or_else(|| failure("native MSVC linker", "linker parent missing"))?;
     let directories = pin_directories(parent)?;
-    let linker = pin_file(&image, MAX_IMAGE)?;
+    let linker = pin_file(
+        &super::windows_inputs::stable_file_at_parent(&image, &directories)?,
+        MAX_IMAGE,
+    )?;
     Ok((linker, directories))
 }
 
@@ -879,8 +886,55 @@ fn pin_directories(path: &Path) -> Result<Vec<File>, BuildError> {
     super::windows_inputs::pin_input_root(path)
 }
 
+// The retained fixed-volume path is DOS-form for tool identity, but direct
+// Win32 security and CreateDirectoryW calls must use extended syntax when a
+// short SUBST locator expands beyond the ordinary Win32 directory limit.
+// This is syntax conversion only: neither the path nor its owner is trusted
+// without the independent retained-handle and principal checks.
+pub(super) fn win32_extended_if_long(path: &Path) -> Result<PathBuf, BuildError> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::path::{Component, Prefix};
+
+    if path.as_os_str().encode_wide().count() < 248 {
+        return Ok(path.to_owned());
+    }
+    match path.components().next() {
+        Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::VerbatimDisk(_)) => {
+            Ok(path.to_owned())
+        }
+        Some(Component::Prefix(prefix))
+            if path.is_absolute() && matches!(prefix.kind(), Prefix::Disk(_)) =>
+        {
+            let mut extended = OsString::from(r"\\?\");
+            extended.push(path.as_os_str());
+            Ok(PathBuf::from(extended))
+        }
+        _ => Err(failure(
+            "local source long path",
+            "a retained absolute fixed-local DOS path is required",
+        )),
+    }
+}
+
 fn create_private(path: &Path) -> Result<(), BuildError> {
-    boot::create_windows_stage_root(path).map_err(|error| failure("local source session", error))
+    let api_path = win32_extended_if_long(path)?;
+    boot::create_windows_stage_root(&api_path)
+        .map_err(|error| failure("local source session", error))
+}
+
+// The caller's session leaf must remain a single ordinary filename when
+// appended to the retained physical parent. A verbatim path may hide an
+// absolute DOS path inside Component::Normal, so never join file_name raw.
+fn stabilize_source_session(session: &Path) -> Result<(PathBuf, Vec<File>), BuildError> {
+    let parent = session
+        .parent()
+        .ok_or_else(|| failure("local source session", "session parent missing"))?;
+    let pins = pin_directories(parent)?;
+    let stable_parent = super::windows_inputs::stable_local_path(&pins)?;
+    boot::ensure_current_principal_owns(&win32_extended_if_long(&stable_parent)?)
+        .map_err(|error| failure("local source session owner", error))?;
+    let stable_session = super::windows_inputs::stable_file_at_parent(session, &pins)?;
+    Ok((stable_session, pins))
 }
 
 fn os_args(values: &[&str]) -> Vec<OsString> {
@@ -923,10 +977,11 @@ fn collect_pins_at(
             "directory depth/count exceeds support limit",
         ));
     }
-    directories.push(
-        boot::open_windows_input_directory_guard(root)
-            .map_err(|error| failure("local source snapshot", error))?,
-    );
+    let directory = boot::open_windows_input_directory_guard(root)
+        .map_err(|error| failure("local source snapshot", error))?;
+    keld_update::fixed_local_dos_path(&directory)
+        .map_err(|error| failure("local source snapshot volume", error))?;
+    directories.push(directory);
     let mut entries = Vec::new();
     for entry in fs::read_dir(root).map_err(|error| failure("local source snapshot", error))? {
         budget.check()?;
@@ -1091,16 +1146,28 @@ pub(super) fn prepare(
     initial_install: bool,
 ) -> Result<LocalSourceBuildObservation, BuildError> {
     let budget = PreparationBudget::new(Instant::now(), Duration::from_mins(30));
+    let mut request = request;
     if !commit_id(&request.commit) {
         return Err(failure(
             "local source commit",
             "exact lowercase SHA1 commit required",
         ));
     }
+    // Resolve every path root from its retained directory handle. A drive alias
+    // can be rebound after pinning; all later subprocess cwd and source paths
+    // must use the handle-derived fixed-local DOS path, not that alias.
+    let source_pins = pin_directories(&request.source)?;
+    request.source = super::windows_inputs::stable_local_path(&source_pins)?;
+    let cargo_home_pins = pin_directories(&request.cargo_home)?;
+    request.cargo_home = super::windows_inputs::stable_local_path(&cargo_home_pins)?;
+    let (stable_session, session_pins) = stabilize_source_session(&request.session)?;
+    request.session = stable_session;
+    let mut directory_pins = source_pins;
+    directory_pins.extend(cargo_home_pins);
+    directory_pins.extend(session_pins);
     if request.cache_mode == CacheMode::MutableDeveloper {
         validate_developer_cache(&request.cargo_home)?;
     }
-    let mut directory_pins = pin_directories(&request.source)?;
     // The first source cell intentionally refuses linked worktrees/bare repos.
     // It never parses or follows a caller-controlled gitdir indirection file.
     directory_pins.extend(pin_directories(&request.source.join(".git"))?);
@@ -1108,19 +1175,15 @@ pub(super) fn prepare(
     // Git can recursively follow an unmeasured external object store through
     // objects/info/alternates even with one explicit alternate in the child.
     reject_recursive_object_alternates(&request.source.join(".git/objects"))?;
-    let parent = request
-        .session
-        .parent()
-        .ok_or_else(|| failure("local source session", "session parent missing"))?;
-    directory_pins.extend(pin_directories(parent)?);
-    boot::ensure_current_principal_owns(parent)
-        .map_err(|error| failure("local source session owner", error))?;
-    for tool in [&request.git, &request.cargo, &request.rustc] {
+    for tool in [&mut request.git, &mut request.cargo, &mut request.rustc] {
         budget.check()?;
         let parent = tool
             .parent()
             .ok_or_else(|| failure("local source tool", "tool parent missing"))?;
-        directory_pins.extend(pin_directories(parent)?);
+        let pins = pin_directories(parent)?;
+        let stable = super::windows_inputs::stable_file_at_parent(tool, &pins)?;
+        directory_pins.extend(pins);
+        *tool = stable;
     }
     let git = pin_file_with_budget(&request.git, MAX_IMAGE, Some(&budget))?;
     let cargo = pin_file_with_budget(&request.cargo, MAX_IMAGE, Some(&budget))?;
@@ -1312,10 +1375,11 @@ pub(super) fn prepare(
                 // Never accept an unexplained preexisting child, follow a
                 // junction, or write below an unpinned new directory.
                 fs::create_dir(&directory).map_err(|error| failure("source directories", error))?;
-                directory_pins.push(
-                    boot::open_windows_input_directory_guard(&directory)
-                        .map_err(|error| failure("source directory pin", error))?,
-                );
+                let guard = boot::open_windows_input_directory_guard(&directory)
+                    .map_err(|error| failure("source directory pin", error))?;
+                keld_update::fixed_local_dos_path(&guard)
+                    .map_err(|error| failure("source directory volume", error))?;
+                directory_pins.push(guard);
             }
         }
         let mut file = File::create_new(&path).map_err(|error| failure("source blob", error))?;
@@ -1533,6 +1597,7 @@ pub(super) fn prepare(
     budget.check()?;
     Ok(LocalSourceBuildObservation {
         source_root: source,
+        session: request.session,
         source_commit: request.commit,
         source_sha256: source_digest.finalize().into(),
         cargo_lock_sha256: cargo_lock,
@@ -1630,6 +1695,56 @@ pub(super) fn run(args: &[String]) -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn verbatim_rooted_source_session_leaf_cannot_escape_retained_parent() {
+        let owned = tempfile::tempdir().expect("private local session fixture");
+        let verbatim_parent = owned
+            .path()
+            .canonicalize()
+            .expect("verbatim Windows parent");
+        let disguised = PathBuf::from(format!(r"{}\/outside/session", verbatim_parent.display()));
+        let Some(std::path::Component::Normal(leaf)) = disguised.components().next_back() else {
+            panic!("verbatim filename must expose one disguised leaf");
+        };
+        assert!(matches!(
+            Path::new(leaf).components().next(),
+            Some(std::path::Component::RootDir)
+        ));
+        let error = stabilize_source_session(&disguised)
+            .expect_err("a rooted reparse must not redirect the local source session");
+        assert!(
+            error.to_string().contains("one ordinary path component"),
+            "unexpected source session refusal: {error}"
+        );
+        let valid = owned.path().join("session-1");
+        let (stable, pins) =
+            stabilize_source_session(&valid).expect("ordinary session remains admissible");
+        let retained = super::super::windows_inputs::stable_local_path(&pins)
+            .expect("retained session parent");
+        assert_eq!(stable, retained.join("session-1"));
+    }
+
+    #[test]
+    fn expanded_fixed_local_session_creates_beyond_ordinary_win32_path_limit() {
+        use std::os::windows::ffi::OsStrExt as _;
+        let owned = tempfile::tempdir().expect("private Windows session parent");
+        let mut parent = owned.path().to_path_buf();
+        while parent.as_os_str().encode_wide().count() < 270 {
+            parent.push("expanded-fixed-local-session-parent");
+            std::fs::create_dir_all(&parent).expect("private nested parent");
+        }
+        let session = parent.join("session-1");
+        let (stable, pins) =
+            stabilize_source_session(&session).expect("retain exact long session parent");
+        assert!(
+            stable.as_os_str().encode_wide().count() > 260,
+            "the test must exercise a real expanded Win32 long path"
+        );
+        create_private(&stable).expect("owner-private session creation beyond MAX_PATH");
+        assert!(stable.is_dir(), "the exact admitted session was created");
+        drop(pins);
+    }
+
     fn entry(mode: &str, path: &str) -> Vec<u8> {
         format!(":000000 {mode} 0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 A\0{path}\0").into_bytes()
     }
@@ -1830,7 +1945,14 @@ mod tests {
         fs::write(&image, b"nonsecret test-only native linker bytes").expect("fixture image");
         let (linker, directories) =
             pin_native_msvc_linker(&root).expect("capture explicit selected linker");
-        assert_eq!(linker.path, image);
+        // The pinned path is now resolved from the exact open file handle.
+        // GitHub runners may expose a short (RUNNER~1) pathname that spells
+        // the same object differently from the stable long DOS path.
+        assert_eq!(
+            linker.path.canonicalize().expect("retained linker path"),
+            image.canonicalize().expect("selected linker path"),
+            "the stable executable pathname must reference the selected file"
+        );
         let expected_digest: [u8; 32] =
             Sha256::digest(b"nonsecret test-only native linker bytes").into();
         assert_eq!(

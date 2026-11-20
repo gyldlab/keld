@@ -44,6 +44,30 @@ mod windows_extraction;
 #[cfg(windows)]
 mod windows_fs;
 
+/// Resolve a retained Windows file or directory handle to its stable DOS path,
+/// refusing mapped network, removable and non-fixed volumes. Use the returned
+/// path for subsequent path-based operations instead of the original drive alias.
+///
+/// # Errors
+///
+/// Returns an error when the handle is disconnected, cannot be resolved to a
+/// local DOS path, or its final volume is not a fixed local drive.
+#[cfg(windows)]
+pub fn fixed_local_dos_path(handle: &std::fs::File) -> std::io::Result<std::path::PathBuf> {
+    windows_fs::fixed_local_dos_path(handle)
+}
+
+/// Reject a Win32 device alias before constructing an ordinary path to a
+/// target that does not exist yet. This shares the retained-path refusal rule.
+#[cfg(windows)]
+#[doc(hidden)]
+#[must_use]
+pub fn reserved_dos_device_name(name: &std::ffi::OsStr) -> bool {
+    use std::os::windows::ffi::OsStrExt as _;
+    let units: Vec<u16> = name.encode_wide().collect();
+    windows_fs::reserved_dos_device_component(&units)
+}
+
 #[cfg(test)]
 mod tests;
 

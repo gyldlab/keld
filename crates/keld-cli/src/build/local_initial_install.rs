@@ -89,6 +89,67 @@ impl InputMode {
             ],
         }
     }
+    fn stabilize_observed_roots(&mut self) -> Result<Vec<File>, BuildError> {
+        let mut directory_pins = Vec::new();
+        if let Self::Observed(observed, _) = self {
+            let (install_root, install_pins) =
+                windows_inputs::stable_local_target_path(&observed.install_root)?;
+            observed.install_root = install_root;
+            directory_pins.extend(install_pins);
+            let (update_root, update_pins) =
+                windows_inputs::stable_local_target_path(&observed.update_root)?;
+            observed.update_root = update_root;
+            directory_pins.extend(update_pins);
+        }
+        Ok(directory_pins)
+    }
+
+    fn retain_pinned_paths(&mut self, pins: &[InputPin]) -> Result<(), BuildError> {
+        match self {
+            Self::Provided(inputs) => {
+                let [
+                    catalog,
+                    catalog_signature,
+                    manifest,
+                    manifest_signature,
+                    content,
+                    provenance,
+                ] = pins
+                else {
+                    return Err(refuse(
+                        "provided input pin count differs from the closed schema",
+                    ));
+                };
+                inputs.catalog.clone_from(&catalog.file.path);
+                inputs
+                    .catalog_signature
+                    .clone_from(&catalog_signature.file.path);
+                inputs.manifest.clone_from(&manifest.file.path);
+                inputs
+                    .manifest_signature
+                    .clone_from(&manifest_signature.file.path);
+                inputs.canonical_content.clone_from(&content.file.path);
+                inputs.provenance.clone_from(&provenance.file.path);
+            }
+            Self::Observed(inputs, _) => {
+                let [catalog, catalog_signature, manifest, manifest_signature] = pins else {
+                    return Err(refuse(
+                        "observed input pin count differs from the closed schema",
+                    ));
+                };
+                inputs.catalog.clone_from(&catalog.file.path);
+                inputs
+                    .catalog_signature
+                    .clone_from(&catalog_signature.file.path);
+                inputs.manifest.clone_from(&manifest.file.path);
+                inputs
+                    .manifest_signature
+                    .clone_from(&manifest_signature.file.path);
+            }
+        }
+        Ok(())
+    }
+
     fn request_bytes(&self, candidate: &Path, key: [u8; 32]) -> Result<Vec<u8>, BuildError> {
         match self {
             Self::Provided(i) => request_bytes(i, candidate, key),
@@ -181,11 +242,32 @@ fn pin(path: &Path, limit: u64) -> Result<InputPin, BuildError> {
     }
     let parent = path.parent().ok_or_else(|| refuse("input parent absent"))?;
     let directories = windows_inputs::pin_input_root(parent)?;
-    let file = local_source::pin_file(path, limit)?;
+    pin_with_retained_parent(path, limit, directories)
+}
+
+fn pin_with_retained_parent(
+    path: &Path,
+    limit: u64,
+    directories: Vec<File>,
+) -> Result<InputPin, BuildError> {
+    // Bind the leaf to the original retained parent, not a mutable drive alias.
+    let stable = windows_inputs::stable_file_at_parent(path, &directories)?;
+    let file = local_source::pin_file(&stable, limit)?;
     Ok(InputPin {
         _directories: directories,
         file,
     })
+}
+
+#[cfg(test)]
+pub(super) fn pin_sha_with_retained_parent_for_test(
+    path: &Path,
+    limit: u64,
+    directories: Vec<File>,
+) -> Result<[u8; 32], BuildError> {
+    Ok(pin_with_retained_parent(path, limit, directories)?
+        .file
+        .sha256)
 }
 fn request_bytes<'a>(
     inputs: &'a Inputs,
@@ -273,7 +355,7 @@ fn run_with_mode(
     let mut input = pin(input_path, MAX_REQUEST as u64)?;
     let mut bytes = Vec::new();
     input.file.file.read_to_end(&mut bytes).map_err(refuse)?;
-    let inputs = match kind {
+    let mut inputs = match kind {
         InvocationKind::Provided => InputMode::Provided(parse(&bytes)?),
         InvocationKind::Observed(mode) => InputMode::Observed(
             if let Some(signed) = signed {
@@ -289,10 +371,12 @@ fn run_with_mode(
             mode,
         ),
     };
+    let _observed_directory_pins = inputs.stabilize_observed_roots()?;
     let mut pins = Vec::new();
     for (path, limit) in inputs.files(candidate.receipt().content_size()) {
         pins.push(pin(path, limit)?);
     }
+    inputs.retain_pinned_paths(&pins)?;
     if pins[1].file.file.metadata().map_err(refuse)?.len() != 64 {
         return Err(refuse("catalog signature must be exactly 64 raw bytes"));
     }
