@@ -14,7 +14,15 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, basename, relative, sep, resolve, join, isAbsolute } from "node:path";
+import {
+  dirname,
+  basename,
+  relative,
+  sep,
+  resolve,
+  join,
+  isAbsolute,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PIN_DIGESTS = {

@@ -38,11 +38,18 @@ test("source-only producer rejects missing independent input", async () => {
   await assert.rejects(() => produceReview(root, adapter, undefined), /Usage:/);
 });
 test("source-only review cannot put generated files inside its pristine input tree", async () => {
-  const pristine = mkdtempSync(join(tmpdir(), "gh1404-pristine-output-refusal-"));
+  const pristine = mkdtempSync(
+    join(tmpdir(), "gh1404-pristine-output-refusal-"),
+  );
   try {
     const outputInsideSource = join(pristine, "generated-review");
     await assert.rejects(
-      () => produceReview(pristine, join(pristine, "missing-adapter"), outputInsideSource),
+      () =>
+        produceReview(
+          pristine,
+          join(pristine, "missing-adapter"),
+          outputInsideSource,
+        ),
       /review output overlaps pristine source/,
     );
     assert.equal(existsSync(outputInsideSource), false);
@@ -59,7 +66,12 @@ test("source-only review rejects an output aliased into the pristine tree", asyn
     mkdirSync(pristine);
     symlinkSync(pristine, alias, "dir");
     await assert.rejects(
-      () => produceReview(pristine, join(parent, "missing-adapter"), join(alias, "review")),
+      () =>
+        produceReview(
+          pristine,
+          join(parent, "missing-adapter"),
+          join(alias, "review"),
+        ),
       /symlinked review output parent|review output overlaps pristine source/,
     );
     assert.equal(existsSync(join(pristine, "review")), false);
@@ -76,7 +88,10 @@ test("source-only materializer does not write through a symlinked immediate pare
     mkdirSync(destination);
     symlinkSync(destination, alias, "dir");
     assert.throws(
-      () => materializeReviewFiles(join(alias, "review"), [["main.js", "unapproved"]]),
+      () =>
+        materializeReviewFiles(join(alias, "review"), [
+          ["main.js", "unapproved"],
+        ]),
       /symlinked review output parent/,
     );
     assert.equal(existsSync(join(destination, "review")), false);
