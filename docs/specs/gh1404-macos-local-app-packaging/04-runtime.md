@@ -27,17 +27,24 @@ their existing contracts. Bun/Node built-ins remain the pinned runtime's facilit
 not ambient npm packages.
 
 Disabling installation alone is insufficient: normal resolution can search ancestor
-`node_modules`. Resolve and validate the selected module's captured identity through
-the existing graph/admission owner before evaluation; reject missing, unlisted or
-escaping modules rather than falling back to caches, registries or unqualified paths
-in the checkout, home, cwd or installation ancestors. Sanitize inherited resolution inputs (including
-`NODE_PATH` and unqualified configuration/preloads); neither ambient `.npmrc` nor
-a registry override may acquire or admit code. Revalidate on generation restart and
-relocation. Reuse the graph owner and pinned runtime's supported controls, not a
-second package manager or policy engine. If those controls cannot enforce this
-boundary for a supported loading path, installed acceptance stays blocked until that
-owner supplies a separately reviewed solution. This module-admission requirement
-does not claim OS containment or remove Legacy's disclosed ambient OS authority.
+`node_modules`. Enforce admission through one of two named mechanisms: a reviewed
+pinned-Bun resolution-allowlist gate, or a provably single-root environment whose
+sealed graph is the only `node_modules` between the filesystem root and the app root.
+Both require clearing inherited inputs such as `NODE_PATH`, `BUN_OPTIONS`, ambient
+`bunfig.toml` and `.npmrc`, and verifying that no ancestor `node_modules` exists.
+Resolve and validate the selected module's captured identity through the existing
+graph/admission owner before evaluation. Reject missing, unlisted or escaping modules
+rather than falling back to caches, registries or unqualified paths in the checkout,
+home, cwd or installation ancestors. Prove the boundary for every loading path:
+static import, dynamic `import()`, `require`, `createRequire`, worker entry points,
+`process.dlopen`, `tsconfig` `paths` and `package.json` `imports`. Cover Bun built-in
+replacement specifiers explicitly; a fixture using such a name cannot exercise the
+resolver refusal. Revalidate on generation restart and relocation. Reuse the graph
+owner and pinned runtime's supported controls, not a second package manager or policy
+engine. If those controls cannot enforce this boundary for a supported loading path,
+installed acceptance stays blocked until that owner supplies a separately reviewed
+solution. This module-admission requirement does not claim OS containment or remove
+Legacy's disclosed ambient OS authority.
 
 The transport remains a separately packaged canonical `kipc-transport.ts` or
 `.js` with the existing release build/stamp requirements. Do not inline it into
@@ -48,8 +55,9 @@ owned nonce under existing rules; LocalDevelopment retires owned processes and
 runtime state but has no authority to delete the installed bundle. Failures cannot
 turn that capability into an arbitrary path janitor.
 
-Extend the existing `launch_facts` owner and closed codec with packaged provenance.
-Do not call `DevelopmentLaunchFacts::from_validated_development` for a lease-less app.
+Extend the launch-fact codec handed off by the GH-452/GH-570 owners (B-2/B-3) with
+packaged provenance. Do not reuse the development-lease launch-fact path for a
+lease-less app.
 
 | Observable | Local installed value |
 | --- | --- |

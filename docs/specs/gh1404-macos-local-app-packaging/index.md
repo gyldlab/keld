@@ -63,8 +63,9 @@ and all other platform cells remain unverified until actually exercised.
 - **permission model:** local provenance must not become publisher/Strict/update
   authority; existing Guard rules and graph admission remain the only policy owners.
 - **dependency addition:** none planned; any necessity reopens this gate.
-- **wire protocol:** no public kipc change proposed; the existing private launch-fact
-  record needs a versioned closed extension and independent protocol review.
+- **wire protocol:** no public kipc change proposed; the private launch-fact record
+  handed off by the GH-452/GH-570 owners (B-2/B-3) needs a versioned closed extension
+  and independent protocol review.
 
 Architecture/security review is independent of the author and covers the final
 diff. It does not replace the separate exact-content feature-spec approval.

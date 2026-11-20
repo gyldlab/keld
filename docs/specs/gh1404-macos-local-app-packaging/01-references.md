@@ -30,6 +30,8 @@ Owns: Source baseline and primary references
   implicitly by this proposal.
 
 Source baseline inspected: `df99602ef10abd2cd6f3b5c633ba6d1cffee97bc`.
+The header `Pin` is the main merge base for this text; `df99602` is the separate
+source-baseline SHA whose boundary facts are inspected below.
 On that main, `keld build` is reserved; `keld-pack` implements Windows update and
 identity-container primitives, not macOS bundle assembly. macOS no-flag selection
 still selects a private development stage. The no-dev-lease profile path requires

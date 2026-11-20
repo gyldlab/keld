@@ -14,7 +14,7 @@ Proposed implementation ownership, after approval:
   and existing boot-producer integration. No window/link/principal/supervisor owner.
 - `crates/keld-core`: existing config extraction and closed boot owner, opaque bundle
   provenance, same opened policy input, local ephemeral profile selection and
-  existing launch-facts owner. The published Apple identity path remains intact.
+  the GH-452/GH-570 launch-fact codec owner. The published Apple identity path remains intact.
 - `crates/keld-wv`: expose the existing pure canonical-ID validator if necessary;
   do not add a local publisher identity or use the default WebView store.
 - `crates/keld-runtime` and `crates/keld-host`: verified bundled Bun selection and
@@ -45,39 +45,35 @@ launch-fact codec extension must be versioned and reject unknown/mixed records.
 - **Blocked by:** B-1
 
 Independently review this exact proposal and reconcile its owners.
-  Obtain exact-content human specification approval before implementing the amended contract.
-  Keep the spec draft and the PR open; do not merge.
-
+Obtain exact-content human specification approval before implementing the amended contract.
+Keep the spec draft and the PR open; do not merge.
 
 ### T-2: Minimal installed app
 
 - **Blocked by:** T-1, B-3
 
 Build a minimal installed app through the shipping Host with independently
-  qualified generic inputs. Exercise bundle admission, absolute bundled Bun,
-  existing Guard, ephemeral profile, durable cleanup and installed launch facts.
-  Use the native Pack signing path and fail-first controls. Do not hardcode draw.io.
-  Do not require approval of the original draw.io source to build this fixture.
-
+qualified generic inputs. Exercise bundle admission, absolute bundled Bun,
+existing Guard, ephemeral profile, durable cleanup and installed launch facts.
+Use the native Pack signing path and fail-first controls. Do not hardcode draw.io.
+Do not require approval of the original draw.io source to build this fixture.
 
 ### T-3: CLI and DMG
 
 - **Blocked by:** T-2, B-3
 
 Complete the generic macOS CLI/config and DMG output, receipt and failure cleanup.
-  Use only committed, independently qualified generic graph/provider inputs.
-  Defer original draw.io resource integration until its separate B-2 handoff.
-
+Use only committed, independently qualified generic graph/provider inputs.
+Defer original draw.io resource integration until its separate B-2 handoff.
 
 ### T-4: Native acceptance
 
 - **Blocked by:** T-3, B-2
 
 Independently install and relocate the minimal and original draw.io apps.
-  Integrate only qualified original draw.io inputs from the B-2 handoff.
-  Run original draw.io workflows, security/lifecycle controls and current-head gates.
-  Publish only verified local artifacts and exact limitations.
-
+Integrate only qualified original draw.io inputs from the B-2 handoff.
+Run original draw.io workflows, security/lifecycle controls and current-head gates.
+Publish only verified local artifacts and exact limitations.
 
 Track meaningful PR-sized subunits on GH-1404 before their first edit; do not create
 dozens of empty issues. Future Windows/Linux records remain deferred. Preserve the
@@ -221,7 +217,7 @@ new async runtime or performance budget waiver is proposed.
 
 ### Q-1: Approval decision
 
- approve or reject this exact local-development contract:
+Approve or reject this exact local-development contract:
 ad-hoc self-consistency without publisher authenticity; an ephemeral browser profile;
 existing explicit Legacy authority; no Strict/updater/publisher-profile privileges;
 the existing Host as launcher; exact bundled Bun; provenance-scoped cleanup; and a
@@ -237,7 +233,7 @@ release approval. #589 records the resulting end-to-end consumer evidence.
 
 ### U-1: Execution uncertainties
 
- preserved pinned-Bun operation in the installed layout, resource
+Preserved pinned-Bun operation in the installed layout, resource
 replacement controls, original draw.io packaged-path behavior and required descendant
 cleanup are tests, not assumed passes. Preserve a named blocker and owner if a
 required predicate fails. Stronger same-user replacement protection would require
@@ -245,7 +241,7 @@ an independently approved trust anchor and cannot be promised by this artifact.
 
 ### Q-3: Future platform decisions
 
- Windows/Linux installer format, installed trust details, signing,
+Windows/Linux installer format, installed trust details, signing,
 update ownership and supported native cells remain in #1405/#1406. They do not delay
 macOS implementation once its own approval and source dependencies are satisfied.
 
