@@ -279,6 +279,78 @@ fn fresh_successor_native_quit_follows_its_actual_ready_frame() {
 }
 
 #[test]
+fn recovered_install_publishes_native_quit_source_authority() {
+    let (mut router, mut first_peer, old_guardian, _ui) =
+        app::tests::initial_ready_router_with_window_loop();
+    first_peer
+        .set_app_link_deadlines(Some(Duration::from_secs(3)))
+        .expect("G1 peer deadline");
+    let _source = install_original(&mut router);
+    subscribe(&router, &mut first_peer);
+    ready(&router, &mut first_peer, old_guardian);
+    let first_attempt = caller(&router).attempt;
+    router
+        .retire_generation(first_attempt)
+        .expect("G1 current link and owner retire");
+    assert_eq!(captured_source(&router), 0, "G1 capture revoked");
+
+    // Recovery installs the successor through the real install path while
+    // window_ready is already true. That path writes its own Ready and must
+    // also publish the native Quit source authority; the sibling successor
+    // tests call signal_ready directly and never exercise this path.
+    let (replacement, mut next_peer, _new_guardian, _next_ui) =
+        app::tests::initial_ready_router_with_window_loop();
+    next_peer
+        .set_app_link_deadlines(Some(Duration::from_secs(3)))
+        .expect("G2 peer deadline");
+    let successor = replacement
+        .current
+        .lock()
+        .expect("new generation")
+        .take()
+        .expect("new role");
+    let g2_attempt = first_attempt + 1;
+    router
+        .install_prepared_generation_with_identity(g2_attempt, successor.writer, successor.identity)
+        .map_err(|failure| failure.error)
+        .expect("recovered G2 installs through the real path");
+    let (ready_header, ready_bytes) = read_frame(&mut next_peer).expect("recovered G2 Ready frame");
+    assert_eq!(
+        (ready_header.kind, ready_header.channel, ready_header.corr),
+        (FrameKind::Event, LIFECYCLE_CHANNEL, CorrelationId(0))
+    );
+    assert_eq!(ready_bytes, [0], "recovered G2 must receive its own Ready");
+
+    // Ready publication alone is not subscription authority.
+    assert_eq!(
+        captured_source(&router),
+        0,
+        "Ready alone is not subscription"
+    );
+    subscribe(&router, &mut next_peer);
+    assert_eq!(
+        captured_source(&router),
+        g2_attempt,
+        "recovered subscription arms the install-published source"
+    );
+
+    router
+        .native_os_quit_requested(captured_source(&router))
+        .expect("fresh recovered G2 native Quit");
+    let (quit_header, quit_bytes) =
+        read_frame(&mut next_peer).expect("fresh recovered G2 native QuitRequested");
+    assert_eq!(
+        (quit_header.kind, quit_header.channel, quit_header.corr),
+        (FrameKind::Event, LIFECYCLE_CHANNEL, CorrelationId(0))
+    );
+    assert_eq!(quit_bytes, [2], "existing native intent unit");
+    assert_eq!(
+        decode::<LifecycleEvent>(&quit_bytes).expect("strict recovered G2 event"),
+        LifecycleEvent::QuitRequested
+    );
+}
+
+#[test]
 fn buffered_g1_native_intent_must_not_reach_ready_g2() {
     let (mut router, mut first_peer, old_guardian, _ui) =
         app::tests::initial_ready_router_with_window_loop();

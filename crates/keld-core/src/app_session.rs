@@ -8440,6 +8440,8 @@ impl PrimaryRouterHandle {
             // cannot overtake Ready or observe the same Close via both paths.
             if self.window_ready.load(Ordering::Acquire) {
                 self.write_event_guarded(LifecycleEvent::Ready)?;
+                #[cfg(target_os = "macos")]
+                self.publish_native_quit_ready_guarded()?;
             }
             if self.windows.is_none() && self.last_window_closed.load(Ordering::Acquire) {
                 self.write_event_guarded(LifecycleEvent::LastWindowClosed)?;
