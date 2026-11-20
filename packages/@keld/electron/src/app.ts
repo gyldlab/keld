@@ -91,12 +91,14 @@ function emitCancelable(eventName: string): boolean {
   // A listener cannot replace the next listener's veto method or spoof the
   // veto-state getter. Never use application-mutable global intrinsics here.
   stateDefineProperty(event, "preventDefault", {
+    __proto__: null,
     writable: false,
     configurable: false,
-  });
+  } as PropertyDescriptor);
   stateDefineProperty(event, "defaultPrevented", {
+    __proto__: null,
     configurable: false,
-  });
+  } as PropertyDescriptor);
   return emit(eventName, event) || prevented;
 }
 

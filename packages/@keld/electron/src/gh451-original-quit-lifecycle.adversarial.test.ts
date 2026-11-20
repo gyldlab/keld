@@ -50,6 +50,7 @@ let pendingClose = null;
 let generationCurrent = true;
 let documentCurrent = true;
 let vetoWillWithTemporaryClose = false;
+let vetoBeforeQuit = false;
 let enqueueRetryAfterWillVeto = false;
 let queuedRetry = null;
 let requestCalls = 0;
@@ -67,6 +68,11 @@ const apiApp = {
 };
 function emit(name, event) {
   trace.push(name);
+  if (name === "before-quit" && vetoBeforeQuit) {
+    if (event.defaultPrevented !== false) throw new Error("forged defaultPrevented before veto");
+    event.preventDefault();
+    if (event.defaultPrevented !== true) throw new Error("forged defaultPrevented after veto");
+  }
   if (name === "will-quit" && vetoWillWithTemporaryClose) {
     replacementAlive = true;
     replacementAlive = false;
@@ -183,6 +189,45 @@ test("Host rejection before CloseRequested leaves no false terminal and permits 
   f.run("rejectClose(new Error('second controlled denial'))");
   await expect(second).rejects.toThrow("second controlled denial");
   expect(f.read<string[]>("trace")).toEqual(["before-quit", "before-quit"]);
+});
+
+test("inherited descriptor getter cannot strand Quit and block a later retry", async () => {
+  const f = fixture();
+  // Poison the app's own VM realm after preload, not the test runner's realm.
+  // Without null-prototype descriptors, Object.defineProperty throws before
+  // the active attempt's cleanup handler is installed.
+  f.run(
+    "Object.prototype.get = function injectedGetter() { return () => {}; }",
+  );
+  const first = f.run<Promise<void>>("quit()");
+  expect(f.read<string[]>("trace")).toEqual(["before-quit"]);
+  f.run("rejectClose(new Error('controlled Host denial under poison'))");
+  await expect(first).rejects.toThrow("controlled Host denial under poison");
+
+  f.run("delete Object.prototype.get");
+  const retry = f.run<Promise<void>>("quit()");
+  expect(retry).not.toBe(first);
+  expect(f.read<string[]>("trace")).toEqual(["before-quit", "before-quit"]);
+  f.run("rejectClose(new Error('retry remains available'))");
+  await expect(retry).rejects.toThrow("retry remains available");
+});
+
+test("inherited getter cannot spoof defaultPrevented or swallow a vetoed Quit retry", async () => {
+  const f = fixture();
+  f.run(
+    "Object.prototype.get = function injectedGetter() { return 'forged'; }; vetoBeforeQuit = true",
+  );
+  const vetoed = f.run<Promise<void>>("quit()");
+  await vetoed;
+  expect(f.read<string[]>("trace")).toEqual(["before-quit"]);
+  expect(f.read<number>("requestCalls")).toBe(0);
+
+  f.run("delete Object.prototype.get; vetoBeforeQuit = false");
+  const retry = f.run<Promise<void>>("quit()");
+  expect(retry).not.toBe(vetoed);
+  expect(f.read<string[]>("trace")).toEqual(["before-quit", "before-quit"]);
+  f.run("rejectClose(new Error('retry after veto remains available'))");
+  await expect(retry).rejects.toThrow("retry after veto remains available");
 });
 
 test("controlled Host Veto keeps dirty window; later user close may emit window-all-closed", async () => {
