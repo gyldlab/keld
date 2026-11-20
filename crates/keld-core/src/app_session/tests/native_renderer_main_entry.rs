@@ -408,6 +408,7 @@ fn run_joint() {
             &event_commands,
             super::AppReadyTrigger::NavigationReady,
             |_| Ok(()),
+            None,
         )
     });
     let (requests, observed_requests) = mpsc::sync_channel(1);

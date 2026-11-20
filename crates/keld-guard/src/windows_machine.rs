@@ -24,8 +24,9 @@ pub use logon_session::{
     require_windows_logon_session_ended, windows_initiating_logon_time,
 };
 pub use uac_token::{
-    WindowsTokenError, require_windows_machine_uac_owner_token,
-    require_windows_own_impersonate_privilege, require_windows_own_token_session,
+    MAX_TOKEN_INFORMATION_BYTES, WindowsTokenError, bounded_token_information_buffer,
+    require_windows_machine_uac_owner_token, require_windows_own_impersonate_privilege,
+    require_windows_own_token_session,
 };
 
 const SYSTEM: &str = "S-1-5-18";

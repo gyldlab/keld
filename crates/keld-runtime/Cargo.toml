@@ -32,6 +32,11 @@ landlock = { workspace = true }
 # launch. windows-sys has no optional dependencies, so they add no crate and leave
 # Cargo.lock unchanged.
 windows-sys = { workspace = true, features = ["Win32_Security", "Win32_System_Com", "Win32_System_Console", "Win32_System_IO", "Win32_System_SystemServices", "Win32_UI_Shell"] }
+# GH-824: keld-guard owns the one 1 MiB GetTokenInformation bound and buffer sizing
+# (`bounded_token_information_buffer`) that windows_lpac.rs's token observation uses.
+# keld-guard is already in this crate's graph through keld-ipc, so this edge adds no
+# crate; it replaces a mirrored constant.
+keld-guard = { workspace = true }
 
 # KEL-77 differential harness only (test-only; no shipped API).
 # - serde_json: parse fixture observation lines and emit evidence JSON.
