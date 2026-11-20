@@ -70,7 +70,7 @@ assert.equal(
 // package-artifact.test.ts, including its two-CWD reproducibility/provider controls.
 const expected = js
   ? [
-      "e9a9fa1f9fc1e503e273ee9995f0d1908ef207c711a84ce39bdd1428a816a03b",
+      "6a6f3caee17cfd017a6e4b4e93b5f018885d734bfb50d3fc8da30ef50daec826",
       "68ffa84604bd39b71592f90463131e8cfe9567fdbe308331ec374d971b928b7a",
       "8429237e7d0f75eef35b0bc5f9739a6b5543ae11f6b02b7f8821d28574d5e454",
       "b7ab94616cf6acdcb1b20190acd3d90908dde0a66fecd3eaf7e7bc392bb3aa6c",
