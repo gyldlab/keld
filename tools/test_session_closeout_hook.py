@@ -16,6 +16,24 @@ import session_closeout_hook as hook
 import test_session_closeout as fixtures
 
 
+def trusted_git_for_tests():
+    """Use a one-link Git executable; do not weaken the product trust gate.
+
+    Git for Windows often hard-links cmd/git.exe to git-lfs.exe. Its installed
+    bin/git.exe launcher is a distinct one-link executable in that same Git
+    installation. An unsuitable installation must still fail the real guard.
+    """
+    found = shutil.which('git')
+    if found is None:
+        raise RuntimeError('Git is required for native closeout tests')
+    candidate = Path(found).resolve()
+    if os.name == 'nt' and candidate.stat().st_nlink != 1:
+        alternative = candidate.parent.parent / 'bin' / 'git.exe'
+        if alternative.is_file() and alternative.stat().st_nlink == 1:
+            candidate = alternative.resolve()
+    return str(candidate)
+
+
 class HookTests(unittest.TestCase):
     def setUp(self):
         self.fixture = fixtures.CloseoutTests()
@@ -88,6 +106,19 @@ class HookTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'only one hard link'):
                 hook.configuration(git_executable=str(alias))
 
+    @unittest.skipUnless(os.name == 'nt', 'Git for Windows launcher acceptance')
+    def test_windows_installed_git_launcher_preserves_hardlink_rejection(self):
+        selected = Path(trusted_git_for_tests())
+        self.assertEqual(selected.stat().st_nlink, 1)
+        version = subprocess.run([str(selected), '--version'], check=True,
+                                 capture_output=True, text=True, timeout=30)
+        self.assertIn('git version', version.stdout)
+        ambient = Path(shutil.which('git')).resolve()
+        if ambient.stat().st_nlink != 1:
+            with self.assertRaisesRegex(ValueError, 'only one hard link'):
+                hook.configuration(git_executable=str(ambient))
+        self.assertIn('UserPromptSubmit', hook.configuration(git_executable=str(selected))['hooks'])
+
     def test_unconfigured_registration_fails_closed(self):
         handler = hook.configuration('claude')['hooks']['Stop'][0]['hooks'][0]
         result = subprocess.run([sys.executable, *handler['args']], cwd=self.repo,
@@ -103,7 +134,7 @@ class HookTests(unittest.TestCase):
         for name in ('session_closeout', 'workspace', 'session_closeout_hook'):
             shutil.copyfile(source_root / 'tools' / (name + '.py'),
                             self.repo / 'tools' / (name + '.py'))
-        trusted_git = str(Path(shutil.which('git')).resolve())
+        trusted_git = trusted_git_for_tests()
         config = hook.configuration('claude', git_executable=trusted_git)
         handler = config['hooks']['Stop'][0]['hooks'][0]
         # A real child process must validate an activated receipt, exercising
@@ -140,7 +171,7 @@ class HookTests(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
         config = json.loads((root / '.codex/hooks.json').read_text(encoding='utf-8'))
         self.assertEqual(config, hook.configuration())
-        config = hook.configuration(git_executable=str(Path(shutil.which('git')).resolve()))
+        config = hook.configuration(git_executable=trusted_git_for_tests())
         self.assertEqual(set(config['hooks']), {'UserPromptSubmit', 'Stop'})
         handlers = [config['hooks'][event][0]['hooks'][0] for event in config['hooks']]
         self.assertEqual(handlers[0], handlers[1])
@@ -228,7 +259,8 @@ class HookTests(unittest.TestCase):
         source_root = Path(__file__).resolve().parent.parent
         # Mirror a fresh clone: hooks are tracked, only the Git binding is local.
         entrypoint = Path('.codex/hooks.json')
-        files = [Path('.gitignore'), entrypoint, *(Path('tools') / (name + '.py')
+        files = [Path('.gitignore'), Path('.gitattributes'), entrypoint,
+                 *(Path('tools') / (name + '.py')
                  for name in ('session_closeout', 'workspace', 'session_closeout_hook'))]
         for path in files:
             (self.repo / path).parent.mkdir(parents=True, exist_ok=True)
@@ -266,7 +298,7 @@ class HookTests(unittest.TestCase):
         self.assertEqual(self.fixture.git('status', '--porcelain'), '')
         configured = subprocess.run(
             [sys.executable, '-B', 'tools/session_closeout_hook.py', '--configure-codex',
-             '--git-executable', str(Path(shutil.which('git')).resolve())],
+             '--git-executable', trusted_git_for_tests()],
             cwd=self.repo, check=True, capture_output=True, text=True, encoding='utf-8', timeout=30)
         self.assertIn('trusted Git binding installed', configured.stdout)
         local = hook.codex_trust_path(self.repo)
@@ -314,7 +346,7 @@ class HookTests(unittest.TestCase):
 
     def test_codex_linked_worktree_never_inherits_parent_binding(self):
         source_root = Path(__file__).resolve().parent.parent
-        files = [Path('.gitignore'), Path('.codex/hooks.json'),
+        files = [Path('.gitignore'), Path('.gitattributes'), Path('.codex/hooks.json'),
                  *(Path('tools') / (name + '.py')
                    for name in ('session_closeout', 'workspace', 'session_closeout_hook'))]
         for path in files:
@@ -323,7 +355,7 @@ class HookTests(unittest.TestCase):
         self.fixture.git('add', '--', *(str(path) for path in files))
         self.fixture.git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
                          'commit', '-qm', 'track native Codex entrypoint')
-        trusted_git = str(Path(shutil.which('git')).resolve())
+        trusted_git = trusted_git_for_tests()
         setup = [sys.executable, '-B', 'tools/session_closeout_hook.py',
                  '--configure-codex', '--git-executable', trusted_git]
         subprocess.run(setup, cwd=self.repo, check=True, capture_output=True, timeout=30)
@@ -342,7 +374,9 @@ class HookTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             return json.loads(result.stdout)
         self.assertIn('--configure-codex', stop()['stopReason'])
-        subprocess.run(setup, cwd=linked, check=True, capture_output=True, timeout=30)
+        linked_setup = subprocess.run(setup, cwd=linked, capture_output=True,
+                                      text=True, encoding='utf-8', timeout=30)
+        self.assertEqual(linked_setup.returncode, 0, linked_setup.stderr)
         linked_trust = hook.codex_trust_path(linked)
         self.addCleanup(lambda: linked_trust.unlink(missing_ok=True))
         self.assertIn('No activated Keld task', stop()['systemMessage'])
@@ -512,7 +546,7 @@ class HookTests(unittest.TestCase):
                 for name in ('session_closeout', 'workspace', 'session_closeout_hook'):
                     shutil.copyfile(source_root / 'tools' / (name + '.py'),
                                     self.repo / 'tools' / (name + '.py'))
-                config = hook.configuration(harness, git_executable=str(Path(shutil.which("git")).resolve()))
+                config = hook.configuration(harness, git_executable=trusted_git_for_tests())
                 if harness == 'claude':
                     handler = config['hooks']['Stop'][0]['hooks'][0]
                     command = [handler['command'], *handler['args']]

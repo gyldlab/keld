@@ -696,8 +696,20 @@ run with the prerequisite Python interpreter and an absolute path
 to the trusted Git installation, for example:
 
 ```text
-python -B tools/session_closeout_hook.py --configure-codex --git-executable "C:\Program Files\Git\cmd\git.exe"
+python -B tools/session_closeout_hook.py --configure-codex --git-executable "C:\Program Files\Git\bin\git.exe"
 ```
+
+Git for Windows may hard-link `cmd\git.exe` to another executable such as
+`cmd\git-lfs.exe`; the trusted-Git guard intentionally rejects such multi-link
+executables. The standard `bin\git.exe` launcher is a separate one-link
+candidate on verified Git for Windows 2.56 installations. Review the selected
+installation, confirm the executable really has one link, and refuse setup if
+the installed Git executable does not meet the trust requirement. Do not
+relax the hard-link guard or select Git from an unreviewed `PATH` lookup.
+Git for Windows launchers can delegate to another installed Git executable;
+the manifest hash authenticates the selected launcher, **not the whole Git
+installation or its dependencies**. Trusted installation custody remains a
+prerequisite on Windows, just as on macOS and Linux.
 
 This writes an owner-private, per-checkout trust manifest **outside the repository**
 (macOS/Linux: `~/.config/keld/codex-hook-trust/`; Windows:
