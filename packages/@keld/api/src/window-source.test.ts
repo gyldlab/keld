@@ -636,6 +636,19 @@ test("post-preload filter/sort poisoning cannot hide retained Host windows from 
   });
 });
 
+test("post-preload inherited Array.prototype[0] setter cannot erase Host census facts", async () => {
+  const result = await sourceRole("window-source-array-poison.test-role.ts", [
+    "index-setter",
+  ]);
+  expect(result).toEqual({
+    ids: [3, 7],
+    size: 2,
+    ownZero: true,
+    frozen: true,
+    intercepted: 0,
+  });
+});
+
 test(
   "standalone source releases replaced and ended snapshot graphs using the same Bun executable",
   async () => {

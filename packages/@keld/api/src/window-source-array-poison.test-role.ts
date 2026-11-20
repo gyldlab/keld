@@ -44,10 +44,40 @@ function census(mode: "filter" | "sort" | "both") {
   }
 }
 
-process.stdout.write(JSON.stringify({
-  filter: census("filter"),
-  sort: census("sort"),
-  both: census("both"),
-  live: [source.get(low)?.window.id, source.get(high)?.window.id],
-  tombstone: source.get(retired) === undefined,
-}));
+function inheritedIndexSetterCensus() {
+  // Installed after the KIPC preload/import and after authenticated facts are
+  // applied. A bare values[0] write would invoke this inherited setter.
+  const prior = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  let intercepted = 0;
+  try {
+    Object.defineProperty(Array.prototype, "0", {
+      configurable: true,
+      set(_value: unknown) {
+        intercepted += 1;
+      },
+    });
+    const snapshots = source.all();
+    return {
+      ids: [snapshots[0]?.window.id, snapshots[1]?.window.id],
+      size: snapshots.length,
+      ownZero: Object.prototype.hasOwnProperty.call(snapshots, "0"),
+      frozen: Object.isFrozen(snapshots),
+      intercepted,
+    };
+  } finally {
+    if (prior) Object.defineProperty(Array.prototype, "0", prior);
+    else Reflect.deleteProperty(Array.prototype, "0");
+  }
+}
+
+process.stdout.write(JSON.stringify(
+  process.argv[2] === "index-setter"
+    ? inheritedIndexSetterCensus()
+    : {
+        filter: census("filter"),
+        sort: census("sort"),
+        both: census("both"),
+        live: [source.get(low)?.window.id, source.get(high)?.window.id],
+        tombstone: source.get(retired) === undefined,
+      },
+));
