@@ -13,7 +13,7 @@ import {
   stateMapDelete,
   stateMapSet,
   stateMapValues,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 import type {
   WindowEvent,
   WindowRef,
