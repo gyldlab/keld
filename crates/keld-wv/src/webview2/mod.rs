@@ -397,6 +397,23 @@ impl WebView2LaunchPhase {
     }
 }
 
+/// Cold COM completion-channel observation. The capture timestamp is taken
+/// when the WebView2 callback executes, immediately before its channel send.
+/// It does not claim the earlier, unobservable OS/COM event-queue time.
+struct LaunchCallback<T> {
+    captured_at: Instant,
+    value: T,
+}
+
+impl<T> LaunchCallback<T> {
+    fn captured(value: T) -> Self {
+        Self {
+            captured_at: Instant::now(),
+            value,
+        }
+    }
+}
+
 const MESSAGE_WAIT_FAILED: &str = "the Win32 message wait failed while waiting for WebView2";
 const MESSAGE_PUMP_QUIT: &str = "WM_QUIT reached the profile wait before WebView2 completed";
 const BROWSER_EXIT_WAKE_UNREGISTERED: &str = "the browser-exit wake could not be registered, so the release barrier could not observe the browser's exit";
@@ -626,16 +643,48 @@ fn pump_message_or_handle(handles: Option<&[HANDLE]>, milliseconds: u32) -> Resu
 /// bound while the browser process is alive, only the
 /// [`BROWSER_SHUTDOWN_HANG_GUARD`] kill switch.
 fn wait_for_launch_with_message_pump_until<T>(
-    receiver: &Receiver<T>,
+    receiver: &Receiver<LaunchCallback<T>>,
     deadline: Instant,
     phase: WebView2LaunchPhase,
     phase_started: Instant,
 ) -> Result<T, WvError> {
+    let mut last_pump_returned_at: Option<Instant> = None;
     loop {
-        if Instant::now() >= deadline {
+        let observed_at = Instant::now();
+        if observed_at >= deadline {
             // Bounded, non-sensitive failure-only telemetry. The stable typed
-            // error remains KELD-WV-009; this does not re-arm a deadline.
-            let elapsed_ms = phase_started.elapsed().as_millis();
+            // error remains KELD-WV-009; a queued completion is inspected
+            // only for evidence and can NEVER rescue an expired launch.
+            let (callback_channel_state, callback_captured_ms) = match receiver.try_recv() {
+                Ok(callback) => (
+                    if callback.captured_at < deadline {
+                        "captured_before_deadline"
+                    } else {
+                        "captured_at_or_after_deadline"
+                    },
+                    Some(
+                        callback
+                            .captured_at
+                            .saturating_duration_since(phase_started)
+                            .as_millis(),
+                    ),
+                ),
+                Err(TryRecvError::Empty) => ("not_observed", None),
+                Err(TryRecvError::Disconnected) => ("sender_disconnected", None),
+            };
+            let callback_captured_ms = callback_captured_ms
+                .map_or_else(|| String::from("none"), |elapsed| elapsed.to_string());
+            let pump_returned_ms = last_pump_returned_at.map_or_else(
+                || String::from("none"),
+                |at| {
+                    at.saturating_duration_since(phase_started)
+                        .as_millis()
+                        .to_string()
+                },
+            );
+            let elapsed_ms = observed_at
+                .saturating_duration_since(phase_started)
+                .as_millis();
             let remaining_ms = deadline
                 .saturating_duration_since(phase_started)
                 .as_millis();
@@ -652,7 +701,7 @@ fn wait_for_launch_with_message_pump_until<T>(
                 })
                 .unwrap_or_else(|| String::from("unavailable"));
             eprintln!(
-                "KELD_GH814_WEBVIEW2_LAUNCH_TIMEOUT phase={} elapsed_ms={elapsed_ms} remaining_ms_at_phase_start={remaining_ms} loader_runtime_version={runtime}",
+                "KELD_GH814_WEBVIEW2_LAUNCH_TIMEOUT phase={} elapsed_ms={elapsed_ms} remaining_ms_at_phase_start={remaining_ms} callback_channel_state={callback_channel_state} callback_captured_ms={callback_captured_ms} pump_returned_ms={pump_returned_ms} pump_observed_ms={elapsed_ms} loader_runtime_version={runtime}",
                 phase.name(),
             );
             return Err(profile_failure_with(
@@ -661,13 +710,14 @@ fn wait_for_launch_with_message_pump_until<T>(
             ));
         }
         match receiver.try_recv() {
-            Ok(value) => return Ok(value),
+            Ok(callback) => return Ok(callback.value),
             Err(TryRecvError::Disconnected) => {
                 return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
             }
             Err(TryRecvError::Empty) => {}
         }
         pump_message_or_handle(None, milliseconds_until(deadline)?)?;
+        last_pump_returned_at = Some(Instant::now());
     }
 }
 
@@ -1691,7 +1741,7 @@ fn create_environment_with_options_until(
                 move |result, environment| {
                     let environment = result
                         .and(environment.ok_or_else(|| windows::core::Error::from(E_POINTER)));
-                    tx.send(environment)
+                    tx.send(LaunchCallback::captured(environment))
                         .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
                 },
             )),
@@ -1789,7 +1839,7 @@ fn create_controller_observed_until(
                 move |result, controller| {
                     let controller =
                         result.and(controller.ok_or_else(|| windows::core::Error::from(E_POINTER)));
-                    tx.send(controller)
+                    tx.send(LaunchCallback::captured(controller))
                         .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
                 },
             )),
@@ -3982,7 +4032,7 @@ mod tests {
 
     #[test]
     fn real_launch_deadline_reports_exact_com_phase_and_preserves_error_kind() {
-        use super::WebView2LaunchPhase;
+        use super::{LaunchCallback, WebView2LaunchPhase};
 
         for (phase, expected, unexpected) in [
             (
@@ -3996,7 +4046,7 @@ mod tests {
                 "phase=environment",
             ),
         ] {
-            let (_sender, receiver) = std::sync::mpsc::channel::<()>();
+            let (_sender, receiver) = std::sync::mpsc::channel::<LaunchCallback<()>>();
             let started = std::time::Instant::now();
             let observed =
                 super::wait_for_launch_with_message_pump_until(&receiver, started, phase, started)
@@ -4019,8 +4069,10 @@ mod tests {
 
         // A successfully completed asynchronous COM callback remains accepted
         // before the same deadline; the diagnostic path cannot invent failure.
-        let (sender, receiver) = std::sync::mpsc::channel::<u32>();
-        sender.send(17).expect("queue callback before deadline");
+        let (sender, receiver) = std::sync::mpsc::channel::<LaunchCallback<u32>>();
+        sender
+            .send(LaunchCallback::captured(17))
+            .expect("queue callback before deadline");
         let started = std::time::Instant::now();
         assert_eq!(
             super::wait_for_launch_with_message_pump_until(
@@ -4038,6 +4090,7 @@ mod tests {
     /// Merely preserving typed metadata would not satisfy this contract.
     #[test]
     fn gh814_launch_timeout_log_child() {
+        use super::LaunchCallback;
         let Ok(label) = std::env::var("KELD_GH814_LAUNCH_LOG_PHASE") else {
             return;
         };
@@ -4046,11 +4099,38 @@ mod tests {
             "controller" => super::WebView2LaunchPhase::Controller,
             _ => panic!("unknown test-owned launch phase"),
         };
-        let (_sender, receiver) = std::sync::mpsc::channel::<()>();
-        let started = std::time::Instant::now();
+        let (sender, receiver) = std::sync::mpsc::channel::<LaunchCallback<()>>();
+        // Both artificial callback times are already in the past when the
+        // waiter runs. This tests ordering without relying on a timed sleep,
+        // a live WebView2 environment or an assumed COM queue timestamp.
+        let started = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        let case = std::env::var("KELD_GH814_CALLBACK_QUEUE_CASE")
+            .unwrap_or_else(|_| String::from("none"));
+        let deadline = if case == "none" {
+            started
+        } else {
+            started + std::time::Duration::from_millis(500)
+        };
+        match case.as_str() {
+            "before" => sender
+                .send(LaunchCallback {
+                    captured_at: started + std::time::Duration::from_millis(250),
+                    value: (),
+                })
+                .expect("queue synthetic pre-deadline callback"),
+            "after" => sender
+                .send(LaunchCallback {
+                    captured_at: started + std::time::Duration::from_millis(750),
+                    value: (),
+                })
+                .expect("queue synthetic late callback"),
+            "disconnected" => drop(sender),
+            "none" => {}
+            _ => panic!("unknown test-owned callback case"),
+        }
         let failure =
-            super::wait_for_launch_with_message_pump_until(&receiver, started, phase, started)
-                .expect_err("expired native launch must fail");
+            super::wait_for_launch_with_message_pump_until(&receiver, deadline, phase, started)
+                .expect_err("expired native launch must fail even with a callback");
         assert!(
             failure.to_string().contains("KELD-WV-009"),
             "original lifecycle failure category changed"

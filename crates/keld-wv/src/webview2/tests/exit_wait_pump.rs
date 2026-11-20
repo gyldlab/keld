@@ -1,7 +1,7 @@
 //! Window message-pump behavior under browser exit and launch deadlines.
 //! Tests exercise actual Windows message queue and thread CPU accounting.
 
-use super::super::WebView2LaunchPhase;
+use super::super::{LaunchCallback, WebView2LaunchPhase};
 use super::{
     ProfileReleaseWait, ReleaseSite, alive_process_handle, exited_process_handle, release_channel,
     wait_for_browser_exit, wait_for_launch_with_message_pump_until,
@@ -172,7 +172,9 @@ fn expired_launch_pump_rejects_ready_result_before_queued_messages() {
     unsafe { PostThreadMessageW(GetCurrentThreadId(), WM_NULL, WPARAM(0), LPARAM(0)) }
         .expect("queue inert message");
     let (sender, receiver) = std::sync::mpsc::channel();
-    sender.send(7_u8).expect("queue ready result");
+    sender
+        .send(LaunchCallback::captured(7_u8))
+        .expect("queue ready result");
     let started = std::time::Instant::now();
     let error = wait_for_launch_with_message_pump_until(
         &receiver,
@@ -188,4 +190,87 @@ fn expired_launch_pump_rejects_ready_result_before_queued_messages() {
     // SAFETY: removes only this test's inert WM_NULL records without
     // dispatch. Contract: PeekMessageW above.
     while unsafe { PeekMessageW(&raw mut message, None, WM_NULL, WM_NULL, PM_REMOVE) }.as_bool() {}
+}
+
+/// Failure-first GH-814 observation: an expired launch still fails WV-009,
+/// but the real emitted diagnostic must identify whether the callback channel
+/// had an entry at the time the deadline was observed. This catches a lost
+/// source-level observation even when the typed refusal remains correct.
+#[test]
+fn expired_launch_reports_callback_channel_without_changing_refusal() {
+    let output = std::process::Command::new(
+        std::env::current_exe().expect("current keld-wv test executable"),
+    )
+    .args([
+        "--exact",
+        "webview2::tests::gh814_launch_timeout_log_child",
+        "--nocapture",
+    ])
+    .env("KELD_GH814_LAUNCH_LOG_PHASE", "controller")
+    .output()
+    .expect("run real expired-launch diagnostic in a subprocess");
+    assert!(
+        output.status.success(),
+        "original WV-009 must survive: {output:?}"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("bounded ASCII diagnostic");
+    let emitted = stderr
+        .lines()
+        .find(|line| line.contains("KELD_GH814_WEBVIEW2_LAUNCH_TIMEOUT"))
+        .expect("actual failure-side diagnostic");
+    assert!(
+        emitted.contains("callback_channel_state=not_observed"),
+        "missing callback-channel state must be explicit: {emitted}"
+    );
+    assert!(
+        emitted.contains("pump_observed_ms="),
+        "the deadline observation must use its phase monotonic clock: {emitted}"
+    );
+}
+
+/// Synthetic monotonic enqueue timestamps independently falsify attribution:
+/// an already queued pre-deadline completion must be distinguished from one
+/// whose callback only ran after the deadline. Both MUST still refuse WV-009.
+/// These synthetic timestamps do not assert when WebView2 posted an OS event.
+#[test]
+fn expired_launch_distinguishes_callback_enqueue_order_without_accepting_late_ready() {
+    for (case, expected_state) in [
+        ("before", "captured_before_deadline"),
+        ("after", "captured_at_or_after_deadline"),
+        ("disconnected", "sender_disconnected"),
+    ] {
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("current keld-wv test executable"),
+        )
+        .args([
+            "--exact",
+            "webview2::tests::gh814_launch_timeout_log_child",
+            "--nocapture",
+        ])
+        .env("KELD_GH814_LAUNCH_LOG_PHASE", "controller")
+        .env("KELD_GH814_CALLBACK_QUEUE_CASE", case)
+        .output()
+        .expect("run exact expired-launch callback case in its own process");
+        assert!(
+            output.status.success(),
+            "late callback must not turn WV-009 into success: {case} {output:?}"
+        );
+        let stderr = String::from_utf8(output.stderr).expect("bounded ASCII diagnostic");
+        let emitted = stderr
+            .lines()
+            .find(|line| line.contains("KELD_GH814_WEBVIEW2_LAUNCH_TIMEOUT"))
+            .expect("callback deadline evidence must be emitted");
+        assert!(
+            emitted.contains(&format!("callback_channel_state={expected_state}")),
+            "{case}: {emitted}"
+        );
+        assert!(
+            emitted.contains("callback_captured_ms=") && emitted.contains("pump_observed_ms="),
+            "{case}: missing monotonic phase-only timestamps: {emitted}"
+        );
+        assert!(
+            !emitted.contains("http") && !emitted.contains("profile=") && !emitted.contains("pid="),
+            "diagnostics may not disclose URLs, profiles or PIDs: {emitted}"
+        );
+    }
 }
