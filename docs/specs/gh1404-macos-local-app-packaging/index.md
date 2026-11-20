@@ -1,33 +1,23 @@
 # Spec: local macOS application packaging and installed boot
 
-- Status: implementing
+- Status: approved
 - Tracker: GH-1404
 - Owner: GYLDLAB
-- Updated: 2026-11-15
-- Pin: 3a514aa3cdbeb0b2fd22bd6311dbf89372a60fe5
-
-## 1. Goal & non-goals
+- Updated: 2026-11-20
+- Pin: d7b273299bc31ff7d3d67d79f6ea2339632cfc6a
 
 Tracker of record: [GH-1404](https://github.com/gyldlab/keld/issues/1404).
 Future design only: [Windows GH-1405](https://github.com/gyldlab/keld/issues/1405)
 and [Linux GH-1406](https://github.com/gyldlab/keld/issues/1406).
-The user authorized implementation of the exact reviewed contract at
-`3c490596ceb483254551d37041d25e7e110dfa41` on 2026-11-05. The assistant recorded
-that authorization through the connected non-author account in
-[review 5787262030](https://github.com/gyldlab/keld/pull/1407#pullrequestreview-5787262030),
-after verifying the specification and independent review findings. This is the
-[workflow step 2](../../agents/workflow.md) approval record, not native implementation
-or installed-artifact acceptance. The approved behavioral contract below is unchanged.
+This document is a proposed contract, not implementation or approval evidence.
+The delegated implementation approval at `3c490596ceb483254551d37041d25e7e110dfa41`
+covers only that historical specification. It does not approve the later module-resolution amendment.
+Implementation of the amended contract requires exact-content human approval under
+[workflow step 2](../../agents/workflow.md) and the [spec template](../../agents/spec-template.md).
 The user's delivery objective remains open until installed macOS acceptance passes.
+Formal specification approval, native acceptance and merge clearance are separate gates.
 
-Implementation note: the first local installed cell requires an explicitly declared
-Legacy permission profile; an absent profile is refused rather than inferred as
-consent to uncontained execution. Existing development schemas and their historical
-profile behavior are unchanged. The local Guardian reuses the authenticated private
-role with a closed `local-bundle-v1` suffix carrying the exact Bun, boot and policy
-digests; those expected values are data, not an admission capability. Installed
-origin is independently derived from current code before each generation. These
-mechanical choices do not qualify the original application graph or final artifact.
+## 1. Goal & non-goals
 
 Produce KELD's first framework-owned, reusable macOS application bundle and DMG.
 The app runs from an independent installation with the real Rust Host, bundled Bun,
@@ -35,7 +25,8 @@ original application resources and existing Host-enforced permissions. Local ad-
 signing is the initial artifact class. The original draw.io migration is the first
 full acceptance consumer; a separate minimal app proves framework independence.
 
-Implement macOS now. Design Windows/Linux now; implement them later.
+Target macOS first, subject to the approval and input gates below.
+Design Windows/Linux now; implement them later.
 
 Non-goals: Windows/Linux code, installers, adapters, traits, dependencies or pipelines;
 universal or Intel Mac qualification; public Developer ID/notarized distribution;
@@ -50,15 +41,17 @@ and all other platform cells remain unverified until actually exercised.
 ## Parts
 
 | Part | Owns | Load when |
-|---|---|---|
-| [requirements.md](requirements.md) | Source contracts, acceptance criteria and primary documentation | Auditing source and installed artifact requirements |
-| [design.md](design.md) | Native packaging, signed graph, boot and platform design | Reviewing signing, artifact identity and installed boot |
-| [implementation.md](implementation.md) | Implementation ownership, tasks and native tests | Implementing and validating local packaging |
-| [acceptance.md](acceptance.md) | Performance and remaining original app acceptance | Deciding whether signed artifacts qualify for release |
+| --- | --- | --- |
+| [References](01-references.md) | Section 2 | Check source and platform claims |
+| [Acceptance](02-acceptance.md) | Section 3 | Implement or verify an acceptance obligation |
+| [Bundle design](03-design.md) | Section 4, ownership and bundle | Change capture or admission |
+| [Runtime design](04-runtime.md) | Section 4, runtime and outputs | Change launch, graph or signing |
+| [Execution](05-execution.md) | Sections 5–7, 9–10 | Plan tasks, tests or unblock approval |
 
 ## Current blockers
 
-- B-1
+- B-2
+- B-3
 
 ## 8. Review gates triggered
 
@@ -69,8 +62,9 @@ and all other platform cells remain unverified until actually exercised.
 - **permission model:** local provenance must not become publisher/Strict/update
   authority; existing Guard rules and graph admission remain the only policy owners.
 - **dependency addition:** none planned; any necessity reopens this gate.
-- **wire protocol:** no public kipc change proposed; the existing private launch-fact
-  record needs a versioned closed extension and independent protocol review.
+- **wire protocol:** no public kipc change proposed; the private launch-fact record
+  handed off by the GH-452/GH-570 owners (B-2/B-3) needs a versioned closed extension
+  and independent protocol review.
 
 Architecture/security review is independent of the author and covers the final
 diff. It does not replace the separate exact-content feature-spec approval.

@@ -19,6 +19,8 @@ import {
 import {
   nativeFacadeBootSelected,
   linkError,
+  stateApply,
+  stateDefineProperty,
   stateMap,
   stateMapDelete,
   stateMapGet,
@@ -47,16 +49,54 @@ let readyObservation: Promise<void> | undefined;
 function emit(event: string, ...args: unknown[]): boolean {
   const snapshot = stateMapGet(listeners, event);
   if (!snapshot) return false;
+  // Snapshot listener membership before user callbacks can add or remove it.
+  // Application code may replace Array.prototype.slice or Reflect.apply.
+  const callbacks: AppListener[] = [];
+  for (let index = 0; index < snapshot.length; index += 1)
+    stateDefineProperty(callbacks, index, {
+      __proto__: null,
+      value: snapshot[index]!,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    } as PropertyDescriptor);
   let listenerFailed = false;
-  for (const listener of snapshot.slice()) {
+  for (let index = 0; index < callbacks.length; index += 1) {
     try {
-      Reflect.apply(listener, undefined, args);
+      stateApply(
+        callbacks[index]! as (...args: unknown[]) => void,
+        undefined,
+        args,
+      );
     } catch {
       listenerFailed = true;
       // A user callback must not break lifecycle delivery.
     }
   }
   return listenerFailed;
+}
+
+/** Listener failures have the same canceling effect as preventDefault. */
+function emitCancelable(eventName: string): boolean {
+  let prevented = false;
+  const event = {
+    get defaultPrevented(): boolean {
+      return prevented;
+    },
+    preventDefault(): void {
+      prevented = true;
+    },
+  };
+  // A listener cannot replace the next listener's veto method or spoof the
+  // veto-state getter. Never use application-mutable global intrinsics here.
+  stateDefineProperty(event, "preventDefault", {
+    writable: false,
+    configurable: false,
+  });
+  stateDefineProperty(event, "defaultPrevented", {
+    configurable: false,
+  });
+  return emit(eventName, event) || prevented;
 }
 
 /** Electron event names and application listeners have this single owner. */
@@ -100,6 +140,26 @@ function hasListeners(event: string): boolean {
   return list !== undefined && list.length > 0;
 }
 
+/** Read the authenticated mirror without mutable Array prototype methods. */
+function liveWindowSnapshots() {
+  const snapshots = getWindowSnapshots();
+  const live: Array<(typeof snapshots)[number]> = [];
+  for (let index = 0; index < snapshots.length; index += 1) {
+    const window = snapshots[index];
+    if (!window)
+      throw new Error("KELD-COMPAT-012: native window census is incomplete");
+    if (!window.host_destroyed)
+      stateDefineProperty(live, live.length, {
+        __proto__: null,
+        value: window,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      } as PropertyDescriptor);
+  }
+  return live;
+}
+
 function removeAppListener(event: string, listener: AppListener): void {
   const list = stateMapGet(listeners, event);
   if (!list) return;
@@ -117,6 +177,10 @@ function removeAppListener(event: string, listener: AppListener): void {
 // delivers this event and ends the application session 10 s later if it has not
 // requested quit by then (KEL-53 §4 "Profile handover", the quit deadline D).
 function onLastWindowClosed(): void {
+  // Only an admitted Quit suppresses this notification. A `before-quit`
+  // listener can close the final window synchronously and then veto Quit;
+  // suppressing at preflight entry would lose its `window-all-closed` event.
+  if (activeQuitAttempt?.closing) return;
   // GH531's Host wrote LastWindowClosed when the registry reached zero, but
   // a synchronous `closed` listener may construct a replacement BrowserWindow
   // before that event reaches this Bun role. Electron's native window list
@@ -128,7 +192,7 @@ function onLastWindowClosed(): void {
   if (nativeFacadeBootSelected) {
     if (!apiApp.isReady()) return;
     try {
-      if (getWindowSnapshots().some((window) => !window.host_destroyed)) return;
+      if (liveWindowSnapshots().length !== 0) return;
     } catch {
       return;
     }
@@ -151,6 +215,7 @@ interface QuitAttempt {
   readonly resolve: () => void;
   readonly reject: (error: unknown) => void;
   settled: boolean;
+  closing: boolean;
   handoff?: OriginalWindowQuitScope;
 }
 let activeQuitAttempt: QuitAttempt | undefined;
@@ -188,22 +253,14 @@ function requestQuitAfterBeforeEvent(
     resolve: resolveAttempt,
     reject: rejectAttempt,
     settled: false,
+    closing: false,
   };
   activeQuitAttempt = attempt;
-  let prevented = false;
-  const event = {
-    get defaultPrevented(): boolean {
-      return prevented;
-    },
-    preventDefault(): void {
-      prevented = true;
-    },
-  };
-  const listenerFailed = emit("before-quit", event);
-  if (prevented || listenerFailed) {
+  if (emitCancelable("before-quit")) {
     fulfillQuitAttempt(attempt);
     return promise;
   }
+  attempt.closing = true;
   const failed = (error: unknown): void => {
     if (attempt.settled) {
       // This request may fail after its genuine close fact already completed
@@ -245,9 +302,7 @@ function quit(): Promise<void> {
       );
     }
     try {
-      const live = getWindowSnapshots().filter(
-        (window) => !window.host_destroyed,
-      );
+      const live = liveWindowSnapshots();
       if (live.length === 1) {
         const scope = captureOriginalWindowQuitScope(live[0]!.window);
         if (scope) {
@@ -281,8 +336,27 @@ function quit(): Promise<void> {
     } catch (error) {
       return Promise.reject(error);
     }
+    // The Host remains alive on will-quit veto, including after a previous
+    // close removed every window. A later app.quit() must start a fresh D2
+    // attempt and emit before-quit/will-quit again.
+    if (emitCancelable("will-quit")) return Promise.resolve();
+    // A synchronous will-quit listener may construct another native window.
+    // The prior zero-window census is no authority to force-close that window.
+    if (
+      nativeFacadeBootSelected &&
+      (!apiApp.isReady() || liveWindowSnapshots().length !== 0)
+    ) {
+      return Promise.reject(
+        new Error(
+          "KELD-COMPAT-012: a window appeared during will-quit; retry through its cancelable close path",
+        ),
+      );
+    }
     ignoreIfUnawaited(observeReady());
-    return apiApp.quit();
+    return apiApp.quit().then(() => {
+      // The terminal owner has accepted the Quit; no event on rejection/veto.
+      emit("quit");
+    });
   });
 }
 

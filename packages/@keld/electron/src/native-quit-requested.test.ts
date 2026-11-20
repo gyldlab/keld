@@ -62,6 +62,31 @@ const modes = [
   "request-error",
   "veto",
   "zero",
+  "zero-before-overwrite",
+  "zero-before-global-noop",
+  "zero-before-global-throw",
+  "zero-before-getter-spoof",
+  "zero-before-reflect-noop",
+  "zero-before-reflect-throw",
+  "zero-before-slice-noop",
+  "zero-before-slice-throw",
+  "zero-will-veto",
+  "zero-will-overwrite",
+  "zero-will-global-noop",
+  "zero-will-global-throw",
+  "zero-will-getter-spoof",
+  "zero-will-reflect-noop",
+  "zero-will-reflect-throw",
+  "zero-will-slice-noop",
+  "zero-will-slice-throw",
+  "zero-will-retry",
+  "zero-will-throw",
+  "zero-will-create",
+  "live-census-filter-only",
+  "live-census-some-only",
+  "live-census-both",
+  "live-census-index-setter",
+  "zero-will-index-setter",
   "multi",
   "missing-selection",
   "pre-ready",
@@ -137,7 +162,11 @@ for (const { facts, mode } of cases) {
       expect(child.stderr.toString()).toContain(
         "KELD-IPC-006: controlled original RequestClose failure",
       );
-    } else if (mode === "multi") {
+    } else if (
+      mode === "zero-will-create" ||
+      mode === "multi" ||
+      mode?.startsWith("live-census-")
+    ) {
       expect(child.stderr.toString()).toContain(
         "KELD native menu Quit failed;",
       );
