@@ -481,10 +481,10 @@ fn committed_original_without_finish_expires_on_its_initial_deadline() {
     let (_, document) = h.committed(91);
     let deadline = h.now + crate::INITIAL_MILESTONE_DEADLINE;
     assert_eq!(h.navigation.next_deadline(), Some(deadline));
-    assert!(
-        !h.navigation
-            .expire_unfinished(deadline - std::time::Duration::from_nanos(1))
-    );
+    let before_deadline = deadline
+        .checked_sub(std::time::Duration::from_nanos(1))
+        .unwrap();
+    assert!(!h.navigation.expire_unfinished(before_deadline));
     assert!(document.is_current());
     assert!(h.navigation.expire_unfinished(deadline));
     assert!(!document.is_current());
@@ -509,12 +509,13 @@ fn completion_at_the_deadline_is_failure_and_a_timely_finish_never_expires() {
     let mut timely = Harness::new();
     let (_, document) = timely.committed(93);
     let deadline = timely.now + crate::INITIAL_MILESTONE_DEADLINE;
+    let before_deadline = deadline
+        .checked_sub(std::time::Duration::from_nanos(1))
+        .unwrap();
     assert!(matches!(
-        timely.navigation.navigation_completed(
-            id(93),
-            true,
-            deadline - std::time::Duration::from_nanos(1)
-        ),
+        timely
+            .navigation
+            .navigation_completed(id(93), true, before_deadline),
         Some(Ok(_))
     ));
     assert_eq!(timely.navigation.next_deadline(), None);
