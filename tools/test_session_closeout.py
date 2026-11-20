@@ -3,14 +3,18 @@
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 import session_closeout as checker
+import workspace
 
 
 class CloseoutTests(unittest.TestCase):
@@ -76,6 +80,82 @@ class CloseoutTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("remote state and inventory completeness not authenticated", result.stdout)
         self.assertEqual(before, {str(p): p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
+
+    @unittest.skipIf(os.name == "nt", "POSIX fsmonitor shell probe")
+    def test_closeout_does_not_execute_repo_configured_fsmonitor(self):
+        """A trusted Git binary must not execute an untrusted repository helper."""
+        marker = self.root / "untrusted-fsmonitor-ran"
+        monitor = self.root / "fsmonitor.sh"
+        monitor.write_text(f'#!/bin/sh\nprintf triggered >> "{marker}"\nexit 0\n', encoding="utf-8")
+        monitor.chmod(0o755)
+        self.git("config", "core.fsmonitor", str(monitor))
+        # Negative control: ordinary Git status DOES run the configured helper.
+        self.git("status", "--porcelain")
+        self.assertTrue(marker.exists(), "fsmonitor execution was not reproduced")
+        marker.unlink()
+        self.write()
+        self.assertEqual(checker.check(self.path), "complete")
+        self.assertFalse(marker.exists(), "closeout ran an untrusted fsmonitor helper")
+
+    @unittest.skipIf(os.name == "nt", "POSIX executable clean-filter probe")
+    def test_closeout_and_workspace_status_do_not_execute_clean_filters(self):
+        """An untrusted filter must never run as a side effect of read-only status."""
+        marker = self.root / "clean-filter-ran"
+        helper = self.root / "clean.sh"
+        helper.write_text("#!/bin/sh\necho triggered >> '" + str(marker) + "'\ncat\n",
+                          encoding="utf-8")
+        helper.chmod(0o755)
+        (self.repo / ".gitattributes").write_text("tracked.txt filter=untrusted\n",
+                                                   encoding="utf-8")
+        tracked = self.repo / "tracked.txt"
+        tracked.write_text("unchanged\n", encoding="utf-8")
+        self.git("config", "filter.untrusted.clean", str(helper))
+        self.git("add", ".gitattributes", "tracked.txt")
+        self.git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                 "commit", "-m", "filter fixture", "--quiet")
+        marker.unlink(missing_ok=True)
+        self.receipt["head"] = self.git("rev-parse", "HEAD")
+        self.receipt["checks"][0]["source_head"] = self.receipt["head"]
+        self.write()
+
+        # Git executes filters on stat refreshes even when files are unchanged.
+        old = time.time() - 120
+        os.utime(tracked, (old, old))
+        self.git("status", "--porcelain", "--untracked-files=no")
+        self.assertTrue(marker.exists(), "fixture did not reproduce Git filter execution")
+        marker.unlink()
+        os.utime(tracked, (old - 120, old - 120))
+
+        self.assertEqual(checker.check(self.path), "complete")
+        self.assertFalse(marker.exists(), "closeout ran an untrusted clean filter")
+        os.utime(tracked, (old - 240, old - 240))
+        self.assertFalse(workspace.git(self.repo, "status", "--porcelain", "-z").stdout)
+        self.assertFalse(marker.exists(), "workspace status ran an untrusted clean filter")
+
+        tracked.write_text("modified\n", encoding="utf-8")
+        self.reject("dirty tracked files")
+        self.assertFalse(marker.exists(), "dirty-file rejection ran a clean filter")
+
+    def test_status_does_not_silently_ignore_submodule_dirty_state(self):
+        """Disabling nested Git execution must fail closed, not hide gitlinks."""
+        head = self.git("rev-parse", "HEAD")
+        self.git("update-index", "--add", "--cacheinfo", "160000," + head + ",nested")
+        with self.assertRaisesRegex(checker.Invalid, "submodule status"):
+            checker.inert_git_filters(self.repo, status=True)
+        with self.assertRaisesRegex(checker.Invalid, "submodule status"):
+            workspace.git(self.repo, "status", "--porcelain", "-z")
+
+    def test_closeout_ignores_ambient_git_directory_and_config_overrides(self):
+        self.write()
+        injected = {
+            "GIT_DIR": str(self.root / "missing-git-dir"),
+            "GIT_WORK_TREE": str(self.root / "foreign-work-tree"),
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.fsmonitor",
+            "GIT_CONFIG_VALUE_0": str(self.root / "missing-monitor"),
+        }
+        with mock.patch.dict(os.environ, injected):
+            self.assertEqual(checker.check(self.path), "complete")
 
     def test_original_dotnet_objective_cannot_be_replaced(self):
         self.receipt["objectives"][0]["id"] = "later-repair"
