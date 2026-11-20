@@ -381,6 +381,12 @@ fn generic_host_sha_looking_project_names_do_not_pin_mutable_provider_routes() {
         format!("https://gitea.example.com/team/{project}/blob/main/README.md"),
         format!("https://gitea.example.com/team/{project}/%62lob/main/README.md"),
         format!("https://gitea.example.com/team/{project}/%2562lob/main/README.md"),
+        format!("https://gitea.example.com/team/{project}/src/branch/main/README.md"),
+        format!("https://gitea.example.com/team/{project}/%73rc/branch/main/README.md"),
+        format!("https://gitea.example.com/team/{project}/%2573rc/%62ranch/main/README.md"),
+        format!("https://gitea.example.com/team/{project}/src/tag/latest/README.md"),
+        format!("https://gitea.example.com/team/{project}/src/commit/main/README.md"),
+        format!("https://git.example.com/team/{project}/src/main/README.md"),
     ] {
         let mut envelope: serde_json::Value =
             serde_json::from_str(&valid_evidence_json()).expect("valid evidence envelope");
@@ -403,6 +409,14 @@ fn generic_host_sha_looking_project_names_do_not_pin_mutable_provider_routes() {
     assert_canonical_pinned_uri(
         &denom,
         &format!("https://gitea.example.com/team/{project}/blob/{sha}/docs/%62lob/main.md"),
+    );
+    assert_canonical_pinned_uri(
+        &denom,
+        &format!("https://gitea.example.com/team/{project}/src/commit/{sha}/README.md"),
+    );
+    assert_canonical_pinned_uri(
+        &denom,
+        &format!("https://git.example.com/team/{project}/src/{sha}/README.md"),
     );
 }
 

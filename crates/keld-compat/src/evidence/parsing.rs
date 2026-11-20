@@ -22,6 +22,10 @@ use super::{
 /// Accepted HTTPS evidence is stored as a canonical serialized URL; source
 /// spelling may change (for example, host case, default port or dot segments).
 /// Content-addressed `sha256:` evidence is preserved exactly.
+///
+/// The input size cap applies to JSON bytes before normalization. Percent
+/// encoding can grow a returned canonical URL, so a caller-built JSON record
+/// that contains it is checked against the cap again on reimport.
 pub fn parse_evidence(bytes: &[u8]) -> Result<EvidenceRecord, EvidenceError> {
     let raw: RawEvidence = parse_object(bytes, MAX_EVIDENCE_BYTES)?;
     if raw.schema != EVIDENCE_SCHEMA {

@@ -420,6 +420,20 @@ fn generic_host_has_live_provider_ref(segments: &[&str]) -> bool {
     {
         return !is_git_object_id(route[2]);
     }
+    // Gitea uses /<owner>/<repo>/src/branch/<mutable-ref> and
+    // /src/commit/<immutable-sha>. A Bitbucket-like /src/<ref> must
+    // also pin the ref at its actual position.
+    if segments
+        .get(2)
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("src"))
+    {
+        let ref_kind = segments.get(3).copied().unwrap_or_default();
+        return match ref_kind.to_ascii_lowercase().as_str() {
+            "branch" | "tag" => true,
+            "commit" => !segments.get(4).is_some_and(|pin| is_git_object_id(pin)),
+            _ => !is_git_object_id(ref_kind),
+        };
+    }
     // A GitHub/Gitea-style route follows /<owner>/<repo>/, even when
     // the owner or repository slug itself looks like a git object id.
     segments.get(2).is_some_and(|segment| is_route(segment))
