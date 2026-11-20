@@ -398,7 +398,7 @@ impl WebView2LaunchPhase {
 }
 
 /// Cold COM completion-channel observation. The capture timestamp is taken
-/// when the WebView2 callback executes, immediately before its channel send.
+/// when the `WebView2` callback executes, immediately before its channel send.
 /// It does not claim the earlier, unobservable OS/COM event-queue time.
 struct LaunchCallback<T> {
     captured_at: Instant,
@@ -4103,7 +4103,9 @@ mod tests {
         // Both artificial callback times are already in the past when the
         // waiter runs. This tests ordering without relying on a timed sleep,
         // a live WebView2 environment or an assumed COM queue timestamp.
-        let started = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        let started = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .expect("test monotonic clock must support one second of history");
         let case = std::env::var("KELD_GH814_CALLBACK_QUEUE_CASE")
             .unwrap_or_else(|_| String::from("none"));
         let deadline = if case == "none" {

@@ -231,7 +231,7 @@ fn expired_launch_reports_callback_channel_without_changing_refusal() {
 /// Synthetic monotonic enqueue timestamps independently falsify attribution:
 /// an already queued pre-deadline completion must be distinguished from one
 /// whose callback only ran after the deadline. Both MUST still refuse WV-009.
-/// These synthetic timestamps do not assert when WebView2 posted an OS event.
+/// These synthetic timestamps do not assert when `WebView2` posted an OS event.
 #[test]
 fn expired_launch_distinguishes_callback_enqueue_order_without_accepting_late_ready() {
     for (case, expected_state) in [
