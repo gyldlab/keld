@@ -1,22 +1,28 @@
 //! Below-gate commands use the real Windows Runtime and immutable provider tuple.
 use super::{SelectedLaunch, native, prepare_selected};
 use crate::app_session::graph_contract::tests::prepared_pinned_launch_source;
+use crate::app_session::original_webapp::PreparedOriginalSource;
 use crate::app_session::windows_primary_config;
+use keld_ipc::bootstrap::BootstrapStream;
 use keld_ipc::channel_table::{COMPAT_CONTROL, WINDOW};
 use keld_ipc::lifecycle::{LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse};
 use keld_ipc::link::{read_frame, write_frame};
 use keld_ipc::window::{DesktopFact, DesktopFacts, Rect, WindowEvent};
 use keld_ipc::{AppLinkDeadlines, CorrelationId, FrameKind};
-use keld_runtime::primary::{PrimaryRoleEvent, PrimaryRoleSupervisor};
+use keld_runtime::primary::{
+    BoundPrimaryGeneration, PrimaryRecoveryGate, PrimaryRoleEvent, PrimaryRoleSupervisor, RoleOwner,
+};
 use keld_runtime::{RuntimeError, SupervisorOutcome};
 use serde_json::{Value, json};
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use std::{fs, io::Write};
 
 const BOUND: Duration = Duration::from_secs(15);
 const CHANGED_PROVIDER: &str = "node_modules/electron/dist/app-session-facts.d.ts";
+const FIRST_DISPLAY_ID: u32 = 41;
+const SUCCESSOR_DISPLAY_ID: u32 = 73;
 const OUTPUT: &str = "KELD_WINDOWS_COMMAND_PROBE ";
 const ENV_SAMPLE: &str = r#"
 import { writeSync } from "node:fs";
@@ -89,13 +95,13 @@ fn pinned_providers() -> PathBuf {
         .expect("the three qualified provider directories under node_modules")
 }
 
-fn replay_desktop_snapshot(stream: &mut impl Write) -> Result<(), Box<dyn Error>> {
+fn replay_desktop_snapshot(stream: &mut impl Write, display_id: u32) -> Result<(), Box<dyn Error>> {
     let event = WindowEvent::DesktopSnapshot {
         epoch: 1,
         snapshot: Some(DesktopFacts {
-            primary_id: 41,
+            primary_id: display_id,
             displays: vec![DesktopFact {
-                id: 41,
+                id: display_id,
                 bounds: Rect {
                     x: 0,
                     y: 0,
@@ -148,39 +154,29 @@ fn terminal(supervisor: &PrimaryRoleSupervisor) -> (SupervisorOutcome, Vec<Prima
     }
 }
 
-fn read_probe(supervisor: &PrimaryRoleSupervisor) -> Result<Value, Box<dyn Error>> {
+fn read_probes(supervisor: &PrimaryRoleSupervisor) -> Result<Vec<Value>, Box<dyn Error>> {
     let output = supervisor.output();
-    let mut records = output
+    Ok(output
         .stdout
         .lines()
-        .filter_map(|line| line.strip_prefix(OUTPUT));
-    let result = records
-        .next()
-        .ok_or_else(|| format!("Bun probe absent: {output:?}"))?;
-    assert!(
-        records.next().is_none(),
-        "only the verified generation emitted a probe"
-    );
-    Ok(serde_json::from_str(result)?)
+        .filter_map(|line| line.strip_prefix(OUTPUT))
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()?)
 }
 
-#[test]
-#[ignore = "requires the qualified Windows x64 provider fixture and inherited command probe environment"]
-fn selected_command_delivers_pinned_facts_and_rechecks_provider_before_successor()
--> Result<(), Box<dyn Error>> {
-    assert_probe_environment();
-    let (_guard, source, root, entry) = prepared_pinned_launch_source(
-        &pinned_providers(),
-        &format!("{ENV_SAMPLE}{ORIGINAL_PROBE}"),
-    );
+fn start_selected_probe(
+    source: &PreparedOriginalSource,
+    root: &Path,
+    entry: &Path,
+) -> Result<(PrimaryRoleSupervisor, PrimaryRecoveryGate), Box<dyn Error>> {
     let prepared = prepare_selected(
         SelectedLaunch {
-            root: &root,
+            root,
             entry,
             name: "Command Fixture",
             version: Some("31.7.0-probe"),
             declaration: None,
-            source: &source,
+            source,
         },
         || {
             Ok(native::Observation {
@@ -192,16 +188,24 @@ fn selected_command_delivers_pinned_facts_and_rechecks_provider_before_successor
         |_| panic!("an undeclared boot cannot elect a lease"),
     )?;
     assert!(prepared.winner_lease.is_none());
-    let (supervisor, recovery) = PrimaryRoleSupervisor::start_with_bound_generations_gated(
-        windows_primary_config(&root, entry, true, None, Some(prepared.config))?
+    Ok(PrimaryRoleSupervisor::start_with_bound_generations_gated(
+        windows_primary_config(root, entry, true, None, Some(prepared.config))?
             .admission_timeout(BOUND),
-    )?;
+    )?)
+}
+
+fn receive_selected_probe(
+    supervisor: &PrimaryRoleSupervisor,
+    attempt: u32,
+) -> Result<BoundPrimaryGeneration, Box<dyn Error>> {
     let bound = supervisor.recv_bound_generation(BOUND).ok_or_else(|| {
         format!(
-            "original G1 did not authenticate: {:?}",
+            "original generation {attempt} did not authenticate: {:?}",
             supervisor.output()
         )
     })?;
+    assert_eq!(bound.attempt(), attempt);
+    assert_eq!(bound.principal().owner(), RoleOwner::Primary);
     assert_eq!(
         bound
             .runtime_versions()
@@ -209,10 +213,16 @@ fn selected_command_delivers_pinned_facts_and_rechecks_provider_before_successor
             .map(String::as_str),
         Some("0.0.1")
     );
-    let mut stream = bound.into_stream();
+    Ok(bound)
+}
+
+fn accept_selected_subscriptions(
+    stream: &mut BootstrapStream,
+    display_id: u32,
+) -> Result<(), Box<dyn Error>> {
     stream.set_app_link_read_deadline(Some(BOUND))?;
     for (channel, correlation) in [(WINDOW, 2), (COMPAT_CONTROL, 3)] {
-        let (header, message) = read_frame(&mut stream)?;
+        let (header, message) = read_frame(stream)?;
         assert_eq!(header.kind, FrameKind::Call);
         assert_eq!(header.channel, LIFECYCLE_CHANNEL);
         assert_eq!(header.corr, CorrelationId(correlation));
@@ -223,10 +233,10 @@ fn selected_command_delivers_pinned_facts_and_rechecks_provider_before_successor
             }
         );
         if channel.id() == WINDOW.id() {
-            replay_desktop_snapshot(&mut stream)?;
+            replay_desktop_snapshot(stream, display_id)?;
         }
         write_frame(
-            &mut stream,
+            stream,
             FrameKind::Reply,
             0,
             LIFECYCLE_CHANNEL,
@@ -234,20 +244,58 @@ fn selected_command_delivers_pinned_facts_and_rechecks_provider_before_successor
             &keld_ipc::codec::encode(&LifecycleResponse::Subscribed)?,
         )?;
     }
-    // Change one byte in a nonexecuted, otherwise admitted provider member.
-    // G1 already captured the real provider and cannot finish before Ready.
-    let changed = root.join(CHANGED_PROVIDER);
-    let mut bytes = fs::read(&changed)?;
-    bytes[0] ^= 1;
-    fs::write(changed, bytes)?;
+    Ok(())
+}
+
+fn send_ready(stream: &mut BootstrapStream) -> Result<(), Box<dyn Error>> {
     write_frame(
-        &mut stream,
+        stream,
         FrameKind::Event,
         0,
         LIFECYCLE_CHANNEL,
         CorrelationId(0),
         &keld_ipc::codec::encode(&LifecycleEvent::Ready)?,
     )?;
+    Ok(())
+}
+
+fn expected_selected_probe(root: &Path, display_id: u32) -> Value {
+    json!({
+        "environment": expected_environment("1"),
+        "initial": {
+            "name": "Command Fixture",
+            "root": root.to_str().expect("verbatim UTF-8 stage"),
+            "version": "31.7.0-probe",
+            "userData": r"D:\Core Command Fixture\Roaming\Command Fixture",
+            "packaged": false,
+        },
+        "locale": "fr-CA",
+        "mainRoleVersion": "0.0.1",
+        "desktopSelected": true,
+        "desktopPrimaryId": display_id,
+        "desktopDark": false,
+    })
+}
+
+#[test]
+#[ignore = "requires the qualified Windows x64 provider fixture and inherited command probe environment"]
+fn selected_command_delivers_pinned_facts_and_rechecks_provider_before_successor()
+-> Result<(), Box<dyn Error>> {
+    assert_probe_environment();
+    let (_guard, source, root, entry) = prepared_pinned_launch_source(
+        &pinned_providers(),
+        &format!("{ENV_SAMPLE}{ORIGINAL_PROBE}"),
+    );
+    let (supervisor, recovery) = start_selected_probe(&source, &root, entry)?;
+    let mut stream = receive_selected_probe(&supervisor, 1)?.into_stream();
+    accept_selected_subscriptions(&mut stream, FIRST_DISPLAY_ID)?;
+    // Change one byte in a nonexecuted, otherwise admitted provider member.
+    // G1 already captured the real provider and cannot finish before Ready.
+    let changed = root.join(CHANGED_PROVIDER);
+    let mut bytes = fs::read(&changed)?;
+    bytes[0] ^= 1;
+    fs::write(changed, bytes)?;
+    send_ready(&mut stream)?;
     assert!(recovery.arm());
     let (outcome, events) = terminal(&supervisor);
     assert!(
@@ -269,22 +317,60 @@ fn selected_command_delivers_pinned_facts_and_rechecks_provider_before_successor
     )));
     assert!(supervisor.try_recv_bound_generation().is_none());
     assert_eq!(
-        read_probe(&supervisor)?,
-        json!({
-            "environment": expected_environment("1"),
-            "initial": {
-                "name": "Command Fixture",
-                "root": root.to_str().expect("verbatim UTF-8 stage"),
-                "version": "31.7.0-probe",
-                "userData": r"D:\Core Command Fixture\Roaming\Command Fixture",
-                "packaged": false,
-            },
-            "locale": "fr-CA",
-            "mainRoleVersion": "0.0.1",
-        "desktopSelected": true,
-        "desktopPrimaryId": 41,
-        "desktopDark": false,
+        read_probes(&supervisor)?,
+        [expected_selected_probe(&root, FIRST_DISPLAY_ID)],
+        "{:?}",
+        supervisor.output(),
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires the qualified Windows x64 provider fixture and inherited command probe environment"]
+fn selected_command_delivers_pinned_facts_to_two_authenticated_generations()
+-> Result<(), Box<dyn Error>> {
+    assert_probe_environment();
+    let (_guard, source, root, entry) = prepared_pinned_launch_source(
+        &pinned_providers(),
+        &format!("{ENV_SAMPLE}{ORIGINAL_PROBE}"),
+    );
+    let (supervisor, recovery) = start_selected_probe(&source, &root, entry)?;
+    let first = receive_selected_probe(&supervisor, 1)?;
+    let first_generation = first.generation();
+    let mut stream = first.into_stream();
+    accept_selected_subscriptions(&mut stream, FIRST_DISPLAY_ID)?;
+    // Ready prompts the probe's deliberate exit. A separate snapshot on G2
+    // proves its app observed its own Worker traffic after Ready.
+    send_ready(&mut stream)?;
+    assert!(recovery.arm());
+
+    let successor = receive_selected_probe(&supervisor, 2)?;
+    assert_ne!(successor.generation(), first_generation);
+    let mut successor_stream = successor.into_stream();
+    accept_selected_subscriptions(&mut successor_stream, SUCCESSOR_DISPLAY_ID)?;
+    assert!(recovery.deny());
+    send_ready(&mut successor_stream)?;
+
+    let (outcome, events) = terminal(&supervisor);
+    assert!(matches!(outcome, SupervisorOutcome::Stopped), "{outcome:?}");
+    let retired_attempts: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            PrimaryRoleEvent::Revoked { attempt, .. } => Some(*attempt),
+            _ => None,
         })
+        .collect();
+    assert_eq!(retired_attempts, [1, 2], "{events:?}");
+    assert!(supervisor.try_recv_bound_generation().is_none());
+    source.launch_graph().recheck()?;
+    assert_eq!(
+        read_probes(&supervisor)?,
+        [
+            expected_selected_probe(&root, FIRST_DISPLAY_ID),
+            expected_selected_probe(&root, SUCCESSOR_DISPLAY_ID),
+        ],
+        "{:?}",
+        supervisor.output(),
     );
     Ok(())
 }
@@ -316,8 +402,10 @@ fn ordinary_command_still_scrubs_private_environment_and_preserves_ordinary_mode
             .any(|event| matches!(event, PrimaryRoleEvent::Spawned { attempt: 1, .. }))
     );
     assert_eq!(
-        read_probe(&supervisor)?,
-        json!({ "environment": expected_environment("0"), "desktopSelected": false })
+        read_probes(&supervisor)?,
+        [json!({ "environment": expected_environment("0"), "desktopSelected": false })],
+        "{:?}",
+        supervisor.output(),
     );
     Ok(())
 }
