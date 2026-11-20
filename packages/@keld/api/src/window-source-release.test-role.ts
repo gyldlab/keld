@@ -118,6 +118,61 @@ if (historyMode) {
       settled,
     }),
   );
+  if (settled.objectsLive !== (retaining ? count * 4 : 0)) {
+    // Failure-only diagnostics. This does not change the first GC observation
+    // or permit the assertion below to pass after an additional collection.
+    // WeakRef.deref() can retain a target until the end of the current job;
+    // the second observation must therefore run in a separate job.
+    const names = ["snapshot", "window", "state", "bounds"] as const;
+    const survivingGraphs = () => {
+      const survivors: Array<{
+        index: number;
+        members: Array<(typeof names)[number]>;
+        sourceLookupAbsent: boolean;
+      }> = [];
+      for (let index = 0; index < tracked.length; index += 1) {
+        const members: Array<(typeof names)[number]> = [];
+        for (let member = 0; member < names.length; member += 1) {
+          if (tracked[index]![member]!.deref() !== undefined) {
+            members.push(names[member]!);
+          }
+        }
+        if (members.length !== 0) {
+          survivors.push({
+            index: index + 1,
+            members,
+            sourceLookupAbsent:
+              roots.source.get({
+                id: index + 1,
+                incarnation: BigInt(index + 1),
+              }) === undefined,
+          });
+        }
+      }
+      return survivors;
+    };
+    console.error(
+      "GH1149_FIRST_GC_SURVIVORS " +
+        JSON.stringify({
+          observed: settled.objectsLive,
+          expected: retaining ? count * 4 : 0,
+          graphs: survivingGraphs(),
+          snapshotsVisible: roots.source.all().length,
+          finalWindowAbsent:
+            roots.source.get({ id: count, incarnation: BigInt(count) }) ===
+            undefined,
+        }),
+    );
+    const later = await nextJob(() => {
+      Bun.gc(true);
+      return {
+        graphs: survivingGraphs(),
+        snapshotsVisible: roots.source.all().length,
+        sharedCallbackAlive: roots.weak.deref() !== undefined,
+      };
+    });
+    console.error("GH1149_SECOND_GC_OBSERVATION " + JSON.stringify(later));
+  }
   requireFact(
     settled.objectsLive === (retaining ? count * 4 : 0),
     "settled Source graph release oracle failed",
