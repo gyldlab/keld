@@ -26,6 +26,7 @@ pub(super) mod original;
 #[cfg(any(not(windows), test))]
 use native_outcome::NativeOutcome;
 mod request;
+#[cfg(any(not(windows), test))]
 use request::{WindowRequestInput, WindowRequestOutcome, duplicate_correlation};
 
 use super::window_registry::{
@@ -36,12 +37,12 @@ use super::window_registry::{
 use super::{
     ActivePrimaryGeneration, AppWindowCommand, AppWindowEvent, CallError, CorrelationId, FrameKind,
     HostAppError, IpcError, LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleResponse, Ordering,
-    PrimaryCallerContext, PrimaryRouterHandle, app_detail, app_ipc, append_app_cleanup,
-    collapse_app_results, decode, with_primary_caller_locked,
+    PrimaryCallerContext, PrimaryRouterHandle, app_detail, app_ipc, collapse_app_results, decode,
+    with_primary_caller_locked,
 };
 
 #[cfg(any(not(windows), test))]
-use super::{encode, write_frame};
+use super::{append_app_cleanup, encode, write_frame};
 
 // Current maximum payloads: WindowEvent Created = 50 bytes, WindowResponse
 // Created/Adopted = 16, LifecycleResponse SubscribeRefused = 2. The literal

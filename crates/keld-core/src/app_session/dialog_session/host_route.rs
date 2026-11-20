@@ -4,10 +4,10 @@ use super::super::{encode, write_frame};
 use super::{
     ActivePrimaryGeneration, CallError, CorrelationId, DialogFault, DialogOwner, DialogReplyV1,
     DialogSession, DialogUiOutcome, DialogWorkOptions, HostAppError, PrimaryCallerContext,
-    PrimaryRouterHandle, WebviewId, WindowError, WindowOwner, app_detail,
+    PrimaryRouterHandle, WebviewId, WindowError, WindowOwner,
 };
 #[cfg(any(not(windows), test))]
-use super::{FrameKind, with_primary_caller_locked};
+use super::{FrameKind, app_detail, with_primary_caller_locked};
 
 pub(super) enum DialogAdmission {
     Native,
