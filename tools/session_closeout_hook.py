@@ -199,6 +199,20 @@ def cursor_response(payload):
         return {"continue": False, "user_message": "Closeout hook failed: " + str(error)}
 
 
+def git_common_directory(checkout):
+    """Read the common Git directory without invoking an untrusted Git binary."""
+    marker = checkout / ".git"
+    if marker.is_dir():
+        return marker.resolve()
+    if not marker.is_file():
+        return None
+    value = marker.read_text(encoding="utf-8").strip()
+    session_closeout.require(value.startswith("gitdir: "), "invalid worktree Git metadata")
+    admin = (checkout / value[len("gitdir: "):].strip()).resolve()
+    common = admin / "commondir"
+    return (admin / common.read_text(encoding="utf-8").strip()).resolve() if common.is_file() else admin
+
+
 def trusted_git_executable(value, checkout=None):
     """Validate the path before any invocation, including filesystem aliases."""
     candidate = session_closeout.absolute(value).resolve(strict=True)
@@ -206,6 +220,13 @@ def trusted_git_executable(value, checkout=None):
     session_closeout.require(not any(parent.samefile(checkout)
                                     for parent in (candidate, *candidate.parents)),
                              "Git executable must be outside the checkout")
+    # An unrelated Git-managed installation (e.g. Homebrew) is allowed, but
+    # another worktree of this repository is never a trusted installation.
+    common = git_common_directory(checkout)
+    session_closeout.require(common is not None, "checkout Git metadata is unavailable")
+    session_closeout.require(not any((other := git_common_directory(parent)) is not None and
+                                    other.samefile(common) for parent in candidate.parents),
+                             "Git executable must be outside all worktrees of this repository")
     session_closeout.require(candidate.is_file() and os.access(candidate, os.X_OK),
                              "Git executable must be an executable file")
     # A hard link outside the checkout can still execute checkout-owned bytes.
@@ -262,10 +283,18 @@ def configure_codex_local(git_executable, replace=False):
         session_closeout.require(metadata.st_uid == os.getuid() and not metadata.st_mode & 0o077,
                                  "Codex trust directory must be user-owned and private")
     if target.exists():
+        metadata = target.lstat()
+        safe = (stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1 and
+                not getattr(metadata, "st_file_attributes", 0) &
+                getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+        if os.name != "nt":
+            safe = safe and metadata.st_uid == os.getuid() and not metadata.st_mode & 0o077
+        session_closeout.require(safe or replace,
+                                 "Existing Codex trust manifest is unsafe; review and use --replace-local-binding")
         current = json.loads(target.read_text(encoding="utf-8"))
         session_closeout.require(replace or current == data,
                                  "Codex Git binding already differs; review it and use --replace-local-binding")
-        if current == data:
+        if current == data and safe:
             return target
     write_atomic(target, data)
     if os.name != "nt":
@@ -284,11 +313,23 @@ def configuration(harness="codex", platform=None, git_executable=None):
     selected = platform or ("windows" if os.name == "nt" else "posix")
     if git_executable is not None:
         git_executable = trusted_git_executable(git_executable)
+    git_sha256 = (hashlib.sha256(Path(git_executable).read_bytes()).hexdigest()
+                  if git_executable is not None else None)
     specs = [(name, hashlib.sha256(Path(__file__).with_name(name + ".py").read_bytes()).hexdigest())
              for name in ("session_closeout", "workspace", "session_closeout_hook")]
     bootstrap = """import hashlib,json,os,pathlib,subprocess,sys,types
+def common_git_directory(root):
+ marker=root/'.git'
+ if marker.is_dir(): return marker.resolve()
+ if not marker.is_file(): return None
+ value=marker.read_text(encoding='utf-8').strip()
+ if not value.startswith('gitdir: '): raise ValueError('Invalid worktree Git metadata')
+ admin=(root/value[len('gitdir: '):].strip()).resolve()
+ common=admin/'commondir'
+ return (admin/common.read_text(encoding='utf-8').strip()).resolve() if common.is_file() else admin
 try:
  git=GIT_PATH
+ expected_git_sha256=GIT_SHA256
  launch=pathlib.Path.cwd().resolve()
  safe_env={k:v for k,v in os.environ.items() if not k.upper().startswith('GIT_')}
  expected_root=None
@@ -317,20 +358,28 @@ try:
    raise ValueError('Keld Codex trust manifest does not belong to this checkout')
   expected_common=pathlib.Path(setting['git_common_dir'])
   git=setting['git_executable']
+  expected_git_sha256=setting['git_sha256']
   if not isinstance(git,str) or not pathlib.Path(git).is_absolute():
    raise ValueError('Keld Codex Git binding must be an absolute path')
-  candidate=pathlib.Path(git).resolve(strict=True)
-  if any(parent.samefile(expected_root) for parent in (candidate,*candidate.parents)):
-   raise ValueError('Keld Codex Git executable must be outside the checkout')
-  if not candidate.is_file() or not os.access(candidate,os.X_OK):
-   raise ValueError('Keld Codex Git executable must be an executable file')
-  if candidate.stat().st_nlink!=1:
-   raise ValueError('Keld Codex Git executable must have only one hard link')
-  if hashlib.sha256(candidate.read_bytes()).hexdigest()!=setting['git_sha256']:
-   raise ValueError('Keld Codex trusted Git binary changed; review and reconfigure')
-  git=str(candidate)
  if git is None:
   raise ValueError('Generate local registration with --git-executable and a trusted absolute Git path outside the checkout')
+ candidate=pathlib.Path(git).resolve(strict=True)
+ if expected_root is not None and any(parent.samefile(expected_root) for parent in (candidate,*candidate.parents)):
+  raise ValueError('Keld Codex Git executable must be outside the checkout')
+ selected_common=expected_common
+ if selected_common is None:
+  for parent in (launch,*launch.parents):
+   selected_common=common_git_directory(parent)
+   if selected_common is not None: break
+ if selected_common is not None and any((other:=common_git_directory(parent)) is not None and other.samefile(selected_common) for parent in candidate.parents):
+  raise ValueError('Keld Git executable must be outside all worktrees of this repository')
+ if not candidate.is_file() or not os.access(candidate,os.X_OK):
+  raise ValueError('Keld Git executable must be an executable file')
+ if candidate.stat().st_nlink!=1:
+  raise ValueError('Keld Git executable must have only one hard link')
+ if not isinstance(expected_git_sha256,str) or hashlib.sha256(candidate.read_bytes()).hexdigest()!=expected_git_sha256:
+  raise ValueError('Keld trusted Git binary changed; review and reconfigure')
+ git=str(candidate)
  root=pathlib.Path(subprocess.check_output([git,'-c','core.fsmonitor=false','-C',str(launch),'rev-parse','--show-toplevel'],text=True,encoding='utf-8',timeout=30,env=safe_env).strip()).resolve()
  if expected_root is not None and not root.samefile(expected_root):
   raise ValueError('Keld Codex hook registration belongs to another checkout')
@@ -365,7 +414,7 @@ except Exception as error:
    print(json.dumps({'decision':'block','reason':str(error),'systemMessage':failure['systemMessage']}))
    sys.exit(0)
  print(json.dumps(failure))
-""".replace("SPECS", repr(specs)).replace("HARNESS", repr(harness)).replace("GIT_PATH", repr(git_executable))
+""".replace("SPECS", repr(specs)).replace("HARNESS", repr(harness)).replace("GIT_PATH", repr(git_executable)).replace("GIT_SHA256", repr(git_sha256))
     code = "import base64;exec(base64.b64decode('" + base64.b64encode(bootstrap.encode()).decode() + "'))"
     posix, windows = "python3 -I -B -c \"" + code + "\"", "python -I -B -c \"" + code + "\""
     if harness == "claude":

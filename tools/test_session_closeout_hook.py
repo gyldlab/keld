@@ -124,6 +124,23 @@ class HookTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'only one hard link'):
                 self.fixture_git_configuration(str(alias))
 
+    def test_registration_rejects_sibling_worktree_executable(self):
+        """A different worktree is not a trusted Git installation."""
+        local_git = self.repo / ('sibling-git.exe' if os.name == 'nt' else 'sibling-git')
+        if os.name == 'nt':
+            shutil.copyfile(sys.executable, local_git)
+        else:
+            local_git.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+            local_git.chmod(0o755)
+        linked = self.fixture.root / 'linked-sibling'
+        self.fixture.git('worktree', 'add', '-b', 'sibling-trust', str(linked))
+        self.addCleanup(lambda: self.fixture.git('worktree', 'remove', '--force', str(linked)))
+        guard = hook.trusted_git_executable
+        with mock.patch.object(hook, 'trusted_git_executable',
+                               side_effect=lambda value: guard(value, checkout=linked)):
+            with self.assertRaisesRegex(ValueError, 'outside all worktrees of this repository'):
+                hook.configuration(git_executable=str(local_git))
+
     @unittest.skipUnless(os.name == 'nt', 'Git for Windows launcher acceptance')
     def test_windows_installed_git_launcher_preserves_hardlink_rejection(self):
         selected = Path(trusted_git_for_tests())
@@ -145,6 +162,20 @@ class HookTests(unittest.TestCase):
         answer = json.loads(result.stdout)
         self.assertIs(answer['continue'], False)
         self.assertIn('--git-executable', answer['stopReason'])
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX executable replacement probe')
+    def test_explicit_registration_rejects_replaced_git_before_execution(self):
+        git = self.fixture.root / 'reviewed-git'
+        marker = self.fixture.root / 'unreviewed-git-ran'
+        git.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+        git.chmod(0o755)
+        handler = hook.configuration('claude', git_executable=str(git))['hooks']['Stop'][0]['hooks'][0]
+        git.write_text(f'#!/bin/sh\nprintf executed > "{marker}"\nexit 0\n', encoding='utf-8')
+        result = subprocess.run([sys.executable, *handler['args']], cwd=self.repo,
+                                input='{}', capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('trusted Git binary changed', json.loads(result.stdout)['stopReason'])
+        self.assertFalse(marker.exists(), 'a replaced Git executable was invoked')
 
     def test_registered_git_survives_hostile_path_for_all_helpers(self):
         source_root = Path(hook.__file__).resolve().parent.parent
@@ -322,6 +353,18 @@ class HookTests(unittest.TestCase):
         local = hook.codex_trust_path(self.repo)
         self.assertTrue(local.is_file())
         self.addCleanup(lambda: local.unlink(missing_ok=True))
+        if os.name != 'nt':
+            # Reusing identical JSON must not falsely report success for a
+            # manifest that the native hook will reject as non-private.
+            local.chmod(0o644)
+            rerun = subprocess.run(configured.args, cwd=self.repo, capture_output=True,
+                                   text=True, encoding='utf-8', timeout=30)
+            self.assertNotEqual(rerun.returncode, 0)
+            self.assertIn('manifest is unsafe', rerun.stderr)
+            repair = subprocess.run([*configured.args, '--replace-local-binding'], cwd=self.repo,
+                                    capture_output=True, text=True, encoding='utf-8', timeout=30)
+            self.assertEqual(repair.returncode, 0, repair.stderr)
+            self.assertFalse(local.stat().st_mode & 0o077)
         self.assertFalse((self.repo / '.codex/hooks.local.json').exists())
         answer = stop()
         self.assertIn('accepted: complete', answer.get('systemMessage', str(answer)))
