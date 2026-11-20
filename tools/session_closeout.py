@@ -20,6 +20,12 @@ from urllib.parse import urlsplit
 GIT_EXECUTABLE = "git"
 
 
+def git_environment():
+    """Do not let inherited Git overrides redirect closeout verification."""
+    return {name: value for name, value in os.environ.items()
+            if not name.upper().startswith("GIT_")}
+
+
 class Invalid(ValueError):
     """A receipt fails an observable closeout contract."""
 
@@ -101,8 +107,9 @@ def blocked(row):
 
 
 def registered_worktrees(common):
-    result = subprocess.run([GIT_EXECUTABLE, "--git-dir", str(common), "worktree", "list", "--porcelain", "-z"],
-                            check=True, capture_output=True, text=True, encoding="utf-8", timeout=30)
+    result = subprocess.run([GIT_EXECUTABLE, "-c", "core.fsmonitor=false", "--git-dir", str(common), "worktree", "list", "--porcelain", "-z"],
+                            check=True, capture_output=True, text=True, encoding="utf-8", timeout=30,
+                            env=git_environment())
     return {os.path.normcase(os.path.abspath(entry[len("worktree "):]))
             for entry in result.stdout.split("\0") if entry.startswith("worktree ")}
 
@@ -114,9 +121,10 @@ def repository_context(receipt, baseline):
     require(has_common == ("source_ref" in baseline), "baseline requires common directory and source ref together")
     live = repo.is_dir()
     if live:
-        result = subprocess.run([GIT_EXECUTABLE, "-C", str(repo), "rev-parse", "--path-format=absolute",
+        result = subprocess.run([GIT_EXECUTABLE, "-c", "core.fsmonitor=false", "-C", str(repo), "rev-parse", "--path-format=absolute",
                                  "--git-common-dir", "--show-toplevel", "HEAD"],
-                                check=True, capture_output=True, text=True, encoding="utf-8", timeout=30)
+                                check=True, capture_output=True, text=True, encoding="utf-8", timeout=30,
+                                env=git_environment())
         lines = result.stdout.splitlines()
         require(len(lines) == 3 and Path(lines[1]).resolve() == repo.resolve(), "repository root mismatch")
         require(lines[2] == receipt["head"], "stale git HEAD")
@@ -129,9 +137,10 @@ def repository_context(receipt, baseline):
     if has_common:
         ref = baseline["source_ref"]
         require(isinstance(ref, str) and ref.startswith("refs/heads/"), "source_ref must name a retained branch")
-        subprocess.run([GIT_EXECUTABLE, "check-ref-format", ref], check=True, capture_output=True, text=True, encoding="utf-8", timeout=30)
-        result = subprocess.run([GIT_EXECUTABLE, "--git-dir", str(common), "rev-parse", "--verify", ref],
-                                check=True, capture_output=True, text=True, encoding="utf-8", timeout=30)
+        subprocess.run([GIT_EXECUTABLE, "-c", "core.fsmonitor=false", "check-ref-format", ref], check=True, capture_output=True, text=True, encoding="utf-8", timeout=30, env=git_environment())
+        result = subprocess.run([GIT_EXECUTABLE, "-c", "core.fsmonitor=false", "--git-dir", str(common), "rev-parse", "--verify", ref],
+                                check=True, capture_output=True, text=True, encoding="utf-8", timeout=30,
+                                env=git_environment())
         require(result.stdout.strip() == receipt["head"], "retained source ref changed")
     if not live:
         require(any(isinstance(row, dict) and row.get("status") == "removed" and
@@ -294,8 +303,9 @@ def check(receipt_path):
     require(set(required_checks) <= names, "dropped baseline checks")
     current_untracked = set()
     if live:
-        census = subprocess.run([GIT_EXECUTABLE, "-C", str(repo), "ls-files", "--others", "--exclude-standard", "-z"],
-                                check=True, capture_output=True, text=True, encoding="utf-8", timeout=30)
+        census = subprocess.run([GIT_EXECUTABLE, "-c", "core.fsmonitor=false", "-C", str(repo), "ls-files", "--others", "--exclude-standard", "-z"],
+                                check=True, capture_output=True, text=True, encoding="utf-8", timeout=30,
+                                env=git_environment())
         current_untracked = set(census.stdout.rstrip("\0").split("\0")) - {""}
     new_untracked = current_untracked - untracked_files.keys()
     require(receipt["outcome"] != "complete" or not new_untracked,
@@ -319,8 +329,9 @@ def check(receipt_path):
             require(digest.hexdigest() == expected, "untracked file hash mismatch: " + relative)
     dirty = False
     if live:
-        status = subprocess.run([GIT_EXECUTABLE, "-C", str(repo), "status", "--porcelain", "--untracked-files=no"],
-                                check=True, capture_output=True, text=True, encoding="utf-8", timeout=30)
+        status = subprocess.run([GIT_EXECUTABLE, "-c", "core.fsmonitor=false", "-C", str(repo), "status", "--porcelain", "--untracked-files=no"],
+                                check=True, capture_output=True, text=True, encoding="utf-8", timeout=30,
+                                env=git_environment())
         dirty = bool(status.stdout.strip())
     if dirty:
         unfinished = (any(row["status"] != "complete" for row in receipt["objectives"]) or

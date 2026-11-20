@@ -750,6 +750,9 @@ All bootstrap and helper Git calls use the selected absolute path. No additional
 Python packages are required. Registrations pin exact source hashes: changed bytes
 require review and regeneration of the tracked Codex entrypoint, then Codex's
 trust/loading check. Re-run the explicit local setup when changing Git installation.
+Closeout Git calls also discard inherited `GIT_*` environment overrides and explicitly
+disable `core.fsmonitor` to prevent repository configuration from invoking an
+unreviewed monitor executable during status/identity checks.
 
 
 

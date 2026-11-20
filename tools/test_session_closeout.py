@@ -3,12 +3,14 @@
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import session_closeout as checker
 
@@ -76,6 +78,34 @@ class CloseoutTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("remote state and inventory completeness not authenticated", result.stdout)
         self.assertEqual(before, {str(p): p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
+
+    @unittest.skipIf(os.name == "nt", "POSIX fsmonitor shell probe")
+    def test_closeout_does_not_execute_repo_configured_fsmonitor(self):
+        """A trusted Git binary must not execute an untrusted repository helper."""
+        marker = self.root / "untrusted-fsmonitor-ran"
+        monitor = self.root / "fsmonitor.sh"
+        monitor.write_text(f'#!/bin/sh\nprintf triggered >> "{marker}"\nexit 0\n', encoding="utf-8")
+        monitor.chmod(0o755)
+        self.git("config", "core.fsmonitor", str(monitor))
+        # Negative control: ordinary Git status DOES run the configured helper.
+        self.git("status", "--porcelain")
+        self.assertTrue(marker.exists(), "fsmonitor execution was not reproduced")
+        marker.unlink()
+        self.write()
+        self.assertEqual(checker.check(self.path), "complete")
+        self.assertFalse(marker.exists(), "closeout ran an untrusted fsmonitor helper")
+
+    def test_closeout_ignores_ambient_git_directory_and_config_overrides(self):
+        self.write()
+        injected = {
+            "GIT_DIR": str(self.root / "missing-git-dir"),
+            "GIT_WORK_TREE": str(self.root / "foreign-work-tree"),
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.fsmonitor",
+            "GIT_CONFIG_VALUE_0": str(self.root / "missing-monitor"),
+        }
+        with mock.patch.dict(os.environ, injected):
+            self.assertEqual(checker.check(self.path), "complete")
 
     def test_original_dotnet_objective_cannot_be_replaced(self):
         self.receipt["objectives"][0]["id"] = "later-repair"

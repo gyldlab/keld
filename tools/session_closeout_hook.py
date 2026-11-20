@@ -103,9 +103,10 @@ def claude_response(payload):
 
 
 def git_context(root):
-    result = subprocess.run([session_closeout.GIT_EXECUTABLE, "-C", str(session_closeout.absolute(root)), "rev-parse", "--path-format=absolute",
+    result = subprocess.run([session_closeout.GIT_EXECUTABLE, "-c", "core.fsmonitor=false", "-C", str(session_closeout.absolute(root)), "rev-parse", "--path-format=absolute",
                              "--git-common-dir", "--show-toplevel"], check=True, capture_output=True,
-                            text=True, encoding="utf-8", timeout=30)
+                            text=True, encoding="utf-8", timeout=30,
+                            env=session_closeout.git_environment())
     lines = result.stdout.splitlines()
     session_closeout.require(len(lines) == 2, "cannot identify checkout")
     return tuple(Path(line).resolve() for line in lines)
@@ -244,9 +245,10 @@ def configure_codex_local(git_executable, replace=False):
                                     for item in expected["hooks"][event]),
                                  "Codex " + event + " entrypoint does not match reviewed source hashes")
     selected = trusted_git_executable(git_executable, checkout)
-    common = subprocess.check_output([selected, "-C", str(checkout), "rev-parse",
+    common = subprocess.check_output([selected, "-c", "core.fsmonitor=false", "-C", str(checkout), "rev-parse",
                                       "--path-format=absolute", "--git-common-dir"],
-                                     text=True, encoding="utf-8", timeout=30).strip()
+                                     text=True, encoding="utf-8", timeout=30,
+                                     env=session_closeout.git_environment()).strip()
     session_closeout.require(common, "cannot resolve Git common directory")
     data = {"version": 1, "checkout": str(checkout), "git_common_dir": str(Path(common).resolve()),
             "git_executable": selected, "git_sha256": hashlib.sha256(Path(selected).read_bytes()).hexdigest()}
@@ -288,6 +290,7 @@ def configuration(harness="codex", platform=None, git_executable=None):
 try:
  git=GIT_PATH
  launch=pathlib.Path.cwd().resolve()
+ safe_env={k:v for k,v in os.environ.items() if not k.upper().startswith('GIT_')}
  expected_root=None
  expected_common=None
  if git is None and HARNESS=='codex':
@@ -328,11 +331,11 @@ try:
   git=str(candidate)
  if git is None:
   raise ValueError('Generate local registration with --git-executable and a trusted absolute Git path outside the checkout')
- root=pathlib.Path(subprocess.check_output([git,'-C',str(launch),'rev-parse','--show-toplevel'],text=True,encoding='utf-8',timeout=30).strip()).resolve()
+ root=pathlib.Path(subprocess.check_output([git,'-c','core.fsmonitor=false','-C',str(launch),'rev-parse','--show-toplevel'],text=True,encoding='utf-8',timeout=30,env=safe_env).strip()).resolve()
  if expected_root is not None and not root.samefile(expected_root):
   raise ValueError('Keld Codex hook registration belongs to another checkout')
  if expected_common is not None:
-  actual=pathlib.Path(subprocess.check_output([git,'-C',str(root),'rev-parse','--path-format=absolute','--git-common-dir'],text=True,encoding='utf-8',timeout=30).strip()).resolve()
+  actual=pathlib.Path(subprocess.check_output([git,'-c','core.fsmonitor=false','-C',str(root),'rev-parse','--path-format=absolute','--git-common-dir'],text=True,encoding='utf-8',timeout=30,env=safe_env).strip()).resolve()
   if not actual.samefile(expected_common):
    raise ValueError('Keld Codex Git common directory changed; review and reconfigure')
  specs=SPECS
