@@ -9,13 +9,13 @@
 Tracker of record: [GH-1404](https://github.com/gyldlab/keld/issues/1404).
 Future design only: [Windows GH-1405](https://github.com/gyldlab/keld/issues/1405)
 and [Linux GH-1406](https://github.com/gyldlab/keld/issues/1406).
-This document is a proposed contract, not implementation or approval evidence.
-The delegated implementation approval at `3c490596ceb483254551d37041d25e7e110dfa41`
-covers only that historical specification. It does not approve the later module-resolution amendment.
-Implementation of the amended contract requires exact-content human approval under
-[workflow step 2](../../agents/workflow.md) and the [spec template](../../agents/spec-template.md).
+The amended B-1 specification was approved for implementation at
+[PR #1407 commit `76f891c8`](https://github.com/gyldlab/keld/commit/76f891c806d419f6772a1ad44beca54b48b45660).
+The earlier delegated approval at `3c490596ceb483254551d37041d25e7e110dfa41`
+covered only the prior specification, before the module-resolution amendment.
+The B-1 approval does not establish implementation or installed-app acceptance.
 The user's delivery objective remains open until installed macOS acceptance passes.
-Formal specification approval, native acceptance and merge clearance are separate gates.
+Independent implementation review, native acceptance and merge clearance remain separate gates.
 
 ## 1. Goal & non-goals
 
@@ -25,7 +25,7 @@ original application resources and existing Host-enforced permissions. Local ad-
 signing is the initial artifact class. The original draw.io migration is the first
 full acceptance consumer; a separate minimal app proves framework independence.
 
-Target macOS first, subject to the approval and input gates below.
+Target macOS first, subject to the open input and acceptance gates below.
 Design Windows/Linux now; implement them later.
 
 Non-goals: Windows/Linux code, installers, adapters, traits, dependencies or pipelines;
@@ -67,4 +67,4 @@ and all other platform cells remain unverified until actually exercised.
   and independent protocol review.
 
 Architecture/security review is independent of the author and covers the final
-diff. It does not replace the separate exact-content feature-spec approval.
+implementation diff. B-1 specification approval does not replace that review.

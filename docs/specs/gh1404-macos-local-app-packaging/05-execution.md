@@ -5,7 +5,7 @@ Owns: Boundaries, tasks, tests, performance and open decisions
 
 ## 5. Boundaries
 
-Proposed implementation ownership, after approval:
+Implementation ownership under the approved B-1 contract:
 
 - `crates/keld-pack`: macOS-only assembly, tool invocation, explicit nested-code
   inventory, signing, output receipt and DMG. Reuse existing error conventions;
@@ -42,15 +42,15 @@ launch-fact codec extension must be versioned and reject unknown/mixed records.
 
 ### T-1: Review and approval
 
-- **Blocked by:** B-1
+- **Blocked by:** none
 
-Independently review this exact proposal and reconcile its owners.
-Obtain exact-content human specification approval before implementing the amended contract.
-Keep the spec draft and the PR open; do not merge.
+B-1 specification approval is recorded at PR #1407 commit `76f891c8`.
+T-1 is complete for the amended specification.
+Keep the PR open and its merge hold in place until independent implementation review and required acceptance pass.
 
 ### T-2: Minimal installed app
 
-- **Blocked by:** T-1, B-3
+- **Blocked by:** B-3
 
 Build a minimal installed app through the shipping Host with independently
 qualified generic inputs. Exercise bundle admission, absolute bundled Bun,
@@ -215,14 +215,14 @@ new async runtime or performance budget waiver is proposed.
 
 ## 10. Open questions, blockers & unknowns
 
-### Q-1: Approval decision
+### Q-1: Specification approval decision (closed)
 
-Approve or reject this exact local-development contract:
+PR #1407 commit `76f891c8` records approval of the B-1 local-development contract:
 ad-hoc self-consistency without publisher authenticity; an ephemeral browser profile;
 existing explicit Legacy authority; no Strict/updater/publisher-profile privileges;
 the existing Host as launcher; exact bundled Bun; provenance-scoped cleanup; and a
-separately qualified original-content package caller. This is the missing feature
-spec approval artifact, not an optional implementation preference.
+separately qualified original-content package caller.
+This decision closes the specification gate only. Installed acceptance and merge clearance remain open.
 
 ### Q-2: Integration evidence
 
@@ -249,8 +249,8 @@ macOS implementation once its own approval and source dependencies are satisfied
 
 - **Status:** closed
 - **Owner:** GYLDLAB specification owner
-- **Impact:** T-1 cannot complete and implementation under this amended contract remains gated.
-- **Check:** Record exact-content approval of the complete index and all parts.
+- **Impact:** T-1 is complete. B-2 and B-3 still gate qualified inputs, and final acceptance remains open.
+- **Check:** PR #1407 commit `76f891c8` records approval of the complete index and all parts.
 
 ### B-2: Qualified original-application handoff
 
