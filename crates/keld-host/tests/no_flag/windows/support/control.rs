@@ -263,7 +263,7 @@ fn host_exit_observation(host: &LeasedReadyHost<'_>) -> String {
     }
 }
 
-/// The lease-specific failure path MUST NOT use exited_child_output(child):
+/// The lease-specific failure path MUST NOT use `exited_child_output(child)`:
 /// the CLI stdout and stderr are already being consumed by dedicated threads.
 /// The retained Host HANDLE is independent of the still-running helper.
 fn fail_with_actual_host_evidence(

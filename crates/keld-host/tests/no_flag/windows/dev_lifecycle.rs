@@ -22,7 +22,7 @@ use crate::{
 };
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
 use std::process::{Command, Stdio};
 use std::time::Instant;
