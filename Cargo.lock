@@ -1548,9 +1548,11 @@ version = "0.0.1"
 dependencies = [
  "keld-core",
  "keld-ipc",
+ "percent-encoding",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "url",
 ]
 
 [[package]]
