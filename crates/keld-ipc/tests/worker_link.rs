@@ -1256,6 +1256,42 @@ fn outbound_call_uses_preapplication_intrinsics() {
     );
 }
 
+/// Runtime-preloaded clock and blocking method survive app replacement.
+#[test]
+fn preloaded_clock_and_call_avoid_late_app_hooks() {
+    let (mut stream, role) = start("preloaded-clock-poison");
+    long_reads(&stream);
+    let first = read_call_named(&mut stream, "clock-before-poison");
+    host_reply(&mut stream, first, b"ok");
+    if let Ok((header, payload)) = read_frame(&mut stream) {
+        assert_eq!(payload, b"clock-after-poison");
+        host_reply(&mut stream, header, b"ok");
+        let deferred = read_call_named(&mut stream, "clock-deferred");
+        host_reply(&mut stream, deferred, b"ok");
+        let frames_after_retirement = read_until_link_loss(&mut stream);
+        assert!(
+            frames_after_retirement.is_empty(),
+            "no deferred call after link retirement: {frames_after_retirement:?}"
+        );
+    }
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("clock-supported", "true"),
+            ("clock-values", "true"),
+            ("clock-callbacks", "0"),
+            ("deferred-during-call", "false"),
+            ("deferred-call", "true"),
+            ("deferred-hook-callbacks", "0"),
+            ("retired-call-skipped", "true"),
+            ("forged-admission-refused", "true"),
+            ("forged-blocking-refused", "true"),
+            ("forged-async-refused", "true"),
+        ],
+    );
+}
+
 /// Criterion 11: a second `open` in the realm is `KELD-IPC-005` before any
 /// connect; a second connect to the consumed locator is refused by the OS;
 /// the first link keeps working.

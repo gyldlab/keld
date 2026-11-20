@@ -1111,6 +1111,212 @@ async function outboundIntrinsicPoison(): Promise<void> {
   report("outbound-length-callbacks", lengthCalls);
 }
 
+async function preloadedClockPoison(): Promise<void> {
+  const { link } = await open();
+  link.callBlocking(ECHO_CHANNEL, text("clock-before-poison"), 30_000);
+  const pending = text("clock-after-poison");
+  const deferredPayload = text("clock-deferred");
+  const api = transport as unknown as Record<string, unknown>;
+  const names = [
+    "stateMonotonicNow",
+    "stateFloor",
+    "stateCeil",
+    "stateIsFinite",
+    "stateIsSafeInteger",
+    "stateCallBlocking",
+    "stateCall",
+    "stateDefer",
+    "stateCallAdmissionOpen",
+  ];
+  if (!names.every((name) => typeof api[name] === "function")) {
+    report("clock-supported", false);
+    return;
+  }
+  report("clock-supported", true);
+  const now = api.stateMonotonicNow as () => number;
+  const floor = api.stateFloor as (value: number) => number;
+  const ceil = api.stateCeil as (value: number) => number;
+  const finite = api.stateIsFinite as (value: number) => boolean;
+  const safe = api.stateIsSafeInteger as (value: number) => boolean;
+  const call = api.stateCallBlocking as (
+    link: WorkerLink,
+    channel: number,
+    payload: Uint8Array,
+    timeout: number,
+  ) => Uint8Array;
+  const callAsync = api.stateCall as (
+    link: WorkerLink,
+    channel: number,
+    payload: Uint8Array,
+    timeout: number,
+  ) => Promise<Uint8Array>;
+  const defer = api.stateDefer as (callback: () => void) => void;
+  const admission = api.stateCallAdmissionOpen as (link: WorkerLink) => boolean;
+  const oldNow = Object.getOwnPropertyDescriptor(performance, "now");
+  const oldFloor = Math.floor,
+    oldCeil = Math.ceil;
+  const oldFinite = Number.isFinite,
+    oldSafe = Number.isSafeInteger;
+  const oldCall = WorkerLink.prototype.callBlocking;
+  const oldAsync = WorkerLink.prototype.call;
+  const oldAdmission = Object.getOwnPropertyDescriptor(
+    WorkerLink.prototype,
+    "callAdmissionOpen",
+  )!;
+  const oldImmediate = globalThis.setImmediate;
+  let active = false,
+    callbacks = 0;
+  let asyncHookCalls = 0;
+  let admissionHookCalls = 0;
+  let deferredDuringCall = false;
+  let resolveDeferred: (value: boolean) => void = () => undefined;
+  const deferred = new Promise<boolean>((resolve) => {
+    resolveDeferred = resolve;
+  });
+  const count = () => {
+    if (active) callbacks += 1;
+  };
+  Object.defineProperty(performance, "now", {
+    configurable: true,
+    value: () => {
+      count();
+      return 0;
+    },
+  });
+  Math.floor = (n) => {
+    count();
+    return oldFloor(n);
+  };
+  Math.ceil = (n) => {
+    count();
+    return oldCeil(n);
+  };
+  Number.isFinite = (n) => {
+    count();
+    return oldFinite(n);
+  };
+  Number.isSafeInteger = (n) => {
+    count();
+    return oldSafe(n);
+  };
+  WorkerLink.prototype.callBlocking = function (...args) {
+    count();
+    return Reflect.apply(oldCall, this, args);
+  };
+  WorkerLink.prototype.call = function (...args) {
+    asyncHookCalls += 1;
+    count();
+    return Reflect.apply(oldAsync, this, args);
+  };
+  Object.defineProperty(WorkerLink.prototype, "callAdmissionOpen", {
+    ...oldAdmission,
+    get() {
+      admissionHookCalls += 1;
+      count();
+      return Reflect.apply(oldAdmission.get!, this, []);
+    },
+  });
+  globalThis.setImmediate = ((...args: Parameters<typeof setImmediate>) => {
+    count();
+    return Reflect.apply(oldImmediate, globalThis, args);
+  }) as typeof setImmediate;
+  let valuesOkay = false;
+  try {
+    active = true;
+    valuesOkay =
+      now() > 0 &&
+      floor(1.8) === 1 &&
+      ceil(1.2) === 2 &&
+      finite(1) &&
+      safe(1) &&
+      admission(link);
+    defer(() => {
+      deferredDuringCall = active;
+      if (!admission(link)) {
+        resolveDeferred(false);
+        return;
+      }
+      void callAsync(link, ECHO_CHANNEL, deferredPayload, 30_000).then(
+        () => resolveDeferred(true),
+        () => resolveDeferred(false),
+      );
+    });
+    call(link, ECHO_CHANNEL, pending, 30_000);
+  } finally {
+    active = false;
+    if (oldNow === undefined)
+      delete (performance as unknown as { now?: unknown }).now;
+    else Object.defineProperty(performance, "now", oldNow);
+    Math.floor = oldFloor;
+    Math.ceil = oldCeil;
+    Number.isFinite = oldFinite;
+    Number.isSafeInteger = oldSafe;
+    WorkerLink.prototype.callBlocking = oldCall;
+    globalThis.setImmediate = oldImmediate;
+  }
+  let deferredOkay: boolean;
+  try {
+    deferredOkay = await deferred;
+  } finally {
+    WorkerLink.prototype.call = oldAsync;
+    Object.defineProperty(
+      WorkerLink.prototype,
+      "callAdmissionOpen",
+      oldAdmission,
+    );
+  }
+  report("clock-values", valuesOkay);
+  report("clock-callbacks", callbacks);
+  report("deferred-during-call", deferredDuringCall);
+  report("deferred-call", deferredOkay);
+  report("deferred-hook-callbacks", asyncHookCalls + admissionHookCalls);
+
+  const forged = Object.create(WorkerLink.prototype) as WorkerLink;
+  let forgedAdmission = false,
+    forgedBlocking = false,
+    forgedAsync = false;
+  try {
+    admission(forged);
+  } catch (error) {
+    forgedAdmission = error instanceof TypeError;
+  }
+  try {
+    call(forged, ECHO_CHANNEL, pending, 30_000);
+  } catch (error) {
+    forgedBlocking = error instanceof TypeError;
+  }
+  try {
+    await callAsync(forged, ECHO_CHANNEL, pending, 30_000);
+  } catch (error) {
+    forgedAsync = error instanceof TypeError;
+  }
+  report("forged-admission-refused", forgedAdmission);
+  report("forged-blocking-refused", forgedBlocking);
+  report("forged-async-refused", forgedAsync);
+
+  let resolveClosed: (value: boolean) => void = () => undefined;
+  const closed = new Promise<boolean>((resolve) => {
+    resolveClosed = resolve;
+  });
+  defer(() => {
+    if (!admission(link)) {
+      resolveClosed(true);
+      return;
+    }
+    void callAsync(
+      link,
+      ECHO_CHANNEL,
+      text("forbidden-retired-call"),
+      30_000,
+    ).then(
+      () => resolveClosed(false),
+      () => resolveClosed(false),
+    );
+  });
+  link.close();
+  report("retired-call-skipped", await closed);
+}
+
 function overflow(bound: "bytes" | "records"): () => Promise<void> {
   return async () => {
     const retained = bound === "bytes" ? 1024 : 8;
@@ -2201,6 +2407,7 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
   "overflow-records": overflow("records"),
   "compat-intrinsic-poison": compatDecodeIntrinsicPoison,
   "outbound-intrinsic-poison": outboundIntrinsicPoison,
+  "preloaded-clock-poison": preloadedClockPoison,
   "second-link": () => secondLink(true),
   "second-open": () => secondLink(false),
   correlation,

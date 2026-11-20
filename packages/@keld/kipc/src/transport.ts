@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:16b951cb793b0b5184cf7d4c0a2c99c82fb6bf501eefe0ead69dbd77a94c8ce8
+// @keld/kipc-transport sha256:a023a39d586b12d8d2c71d8cc0d041c921253834a3e5fd39aee86de13de22d06
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -404,12 +404,14 @@ const intrinsicOwnKeys = Reflect.ownKeys;
 const intrinsicIsArray = Array.isArray;
 const intrinsicInteger = Number.isInteger;
 const intrinsicFinite = Number.isFinite;
+const intrinsicSafeInteger = Number.isSafeInteger;
 const intrinsicBigInt = BigInt;
 const intrinsicMin = Math.min;
 const intrinsicMax = Math.max;
 const intrinsicPerformance = performance;
 const intrinsicNow = performance.now;
 const intrinsicFloor = Math.floor;
+const intrinsicCeil = Math.ceil;
 const intrinsicMapGet = Map.prototype.get;
 const intrinsicMapHas = Map.prototype.has;
 const intrinsicMapSet = Map.prototype.set;
@@ -521,6 +523,22 @@ export const stateDefineProperty: typeof Object.defineProperty =
 /** @internal Error creation and string quoting for late facade imports. */
 export const stateErrorConstructor: ErrorConstructor = IntrinsicError;
 export const stateJsonStringify: typeof JSON.stringify = intrinsicStringify;
+/** @internal Number and clock operations captured by the preloaded transport. */
+export const stateFloor = intrinsicFloor;
+/** @internal Round deadlines without late application method lookup. */
+export const stateCeil = intrinsicCeil;
+/** @internal Test finiteness without late application method lookup. */
+export const stateIsFinite = intrinsicFinite;
+/** @internal Check integer bounds without late application method lookup. */
+export const stateIsSafeInteger = intrinsicSafeInteger;
+/** @internal Read the transport's captured monotonic clock. */
+export function stateMonotonicNow(): number {
+  return intrinsicApply(intrinsicNow, intrinsicPerformance, []);
+}
+/** @internal Schedule framework follow-up after the current synchronous stack. */
+export function stateDefer(callback: () => void): void {
+  intrinsicSetImmediate(callback);
+}
 
 /** @internal Pre-app validators for selected SDK inputs, even on late imports. */
 export const stateOwnDescriptor = intrinsicDescriptor;
@@ -4020,6 +4038,40 @@ export class WorkerLink {
     this.#recordMain(STATE_WORKER_LOST, cause);
     this.#forceDispatch();
   }
+}
+
+// Capture the real method before application code can replace the prototype.
+const intrinsicCallBlocking = WorkerLink.prototype.callBlocking;
+const intrinsicCall = WorkerLink.prototype.call;
+const intrinsicCallAdmission = intrinsicDescriptor(
+  WorkerLink.prototype,
+  "callAdmissionOpen",
+)!.get!;
+/** @internal Observe this exact Worker's admission through its captured getter. */
+export function stateCallAdmissionOpen(link: WorkerLink): boolean {
+  return intrinsicApply(intrinsicCallAdmission, link, []);
+}
+/** @internal Invoke the existing branded WorkerLink synchronous call owner. */
+export function stateCallBlocking(
+  link: WorkerLink,
+  channel: number,
+  payload: Uint8Array,
+  deadlineMs: number,
+): Uint8Array {
+  return intrinsicApply(intrinsicCallBlocking, link, [
+    channel,
+    payload,
+    deadlineMs,
+  ]);
+}
+/** @internal Invoke the existing branded WorkerLink asynchronous call owner. */
+export function stateCall(
+  link: WorkerLink,
+  channel: number,
+  payload: Uint8Array,
+  deadlineMs: number,
+): Promise<Uint8Array> {
+  return intrinsicApply(intrinsicCall, link, [channel, payload, deadlineMs]);
 }
 
 /**
