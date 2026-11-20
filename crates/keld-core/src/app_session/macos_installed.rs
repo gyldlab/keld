@@ -939,6 +939,8 @@ impl MacLocalGuardianFacts {
 /// ancestor node_modules. The installed graph owns the app-root node_modules;
 /// every parent, including one inside the bundle, must be physically absent.
 /// This is checked again when Core/Guardian revalidate a new Bun generation.
+/// An external same-user writer can still create a parent directory after
+/// inspection; this check is not filesystem containment or full AC-11 proof.
 fn reject_ambient_node_modules(directory: &File) -> Result<(), HostAppError> {
     match nix::sys::stat::fstatat(
         directory,
@@ -1364,6 +1366,31 @@ mod tests {
             "even a dangling node_modules alias is an unqualified resolver root"
         );
         fs::remove_file(&parent_packages).expect("remove alias");
+
+        fs::write(&parent_packages, b"unexpected package path")
+            .expect("non-directory ancestor entry");
+        assert!(
+            open_absolute_directory(&app_root).is_err(),
+            "any ambient node_modules entry is unsafe, regardless of its file type"
+        );
+        fs::remove_file(&parent_packages).expect("restore missing parent");
+
+        let case_alias = outer.join("NODE_MODULES");
+        fs::create_dir(&case_alias).expect("case-equivalent package root");
+        if parent_packages.exists() {
+            // A case-insensitive macOS volume resolves this alternate spelling
+            // through the real filesystem, and the no-follow check must refuse.
+            assert!(
+                open_absolute_directory(&app_root).is_err(),
+                "case-equivalent ancestor packages must refuse on this volume"
+            );
+        } else {
+            assert!(
+                open_absolute_directory(&app_root).is_ok(),
+                "a case-sensitive volume must preserve its distinct spelling"
+            );
+        }
+        fs::remove_dir(&case_alias).expect("restore case alias");
 
         fs::create_dir(app_root.join("node_modules"))
             .expect("app-owned package tree is left to the existing graph owner");
