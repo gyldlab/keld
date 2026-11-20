@@ -9,7 +9,8 @@ Pin: ec29b7ce2b155a8c98f96036cbb9c54488b5c302
 **Approval boundary:** This is a specification-only proposal for GH552.
 It authorizes no production implementation and no merge.
 Amisha must complete independent permission-model and public-API review.
-The owner must record exact-content approval and set this spec to approved before source work.
+Full GH552 requires an exact-content owner decision and approval of this specification.
+Only the [Windows runtime stage](../gh552-windows-legacy-guard-stage.md) can separately authorize T-2 and T-3 after B-1 and B-6 close.
 GH540/GH541 approval and green documentation CI do not satisfy this gate.
 
 ## 1. Goal & non-goals
@@ -29,7 +30,7 @@ Transport serialization is outside that measurement.
 
 The first independent implementation candidate is narrower than the full goal.
 It covers strict policy parsing, pure typed query/evaluation and counted no-effect callbacks.
-This work may start only after this spec is approved.
+That stage requires its own exact independent reviews and an approved stage specification. Q-2 remains deferred.
 Pure tests cannot prove real Host/Bun zero-write or lifecycle acceptance.
 
 Non-goals:
@@ -63,6 +64,7 @@ Non-goals:
 - B-3
 - B-4
 - B-5
+- B-6
 
 ## 8. Review gates triggered
 

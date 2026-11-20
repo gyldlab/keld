@@ -17,6 +17,9 @@ The current PR does not contain the proposed GH552 opt-in marker.
 The current strict `windows` rule conflicts with the compatibility proposal in this spec.
 The GH541 owner must approve an exact-content amendment before implementation consumes the opt-in.
 
+The staged P01 decision applies only to deliberate adoption for the selected Windows Legacy artifact.
+Record the reviewed final artifact and its marker-stripped control under the Windows stage specification.
+
 **FACT:** The historical approval is not GH552 or GH542 implementation approval.
 It covers the cited GH541 contract and its P01–P10 rules only.
 The current GH541 draft requires refreshed exact-content approval before consumption.
@@ -181,7 +184,8 @@ Resolve any cross-spec discrepancy through its owner before implementation.
   Preserve kind `channel_forbidden` and the frozen fix text:
   "Add `{channel}` to this principal's channels list in keld.permissions.jsonc."
   Do not change the existing `CallError { code, message }` mapping.
-  A missing opt-in marker adds only separate non-wire migration guidance.
+  For a current grant miss, preserve the frozen wire reply with both absent and unsupported markers.
+  The deferred trusted diagnostic must give both states the same non-wire adoption guidance.
   The denied callback never runs.
   Independent observers record zero app-link frames and zero Bun listener entries.
   A later current and granted request forwards once.
@@ -211,7 +215,8 @@ Resolve any cross-spec discrepancy through its owner before implementation.
 - **When:** The CLI/MCP explain request evaluates a renderer channel.
 - **Then:** Use the same pure evaluator as live dispatch.
   Return the same allow or deny result and channel spelling.
-  Return a trusted pointer at `/windows/<key>/channels`.
+  Q-2 defers the pointer contract, including presence on Allow, Deny and missing-window results.
+  When Q-2 approves a window pointer, use `/windows/<key>/channels`.
   Escape `~` as `~0` before escaping `/` as `~1`.
   Never mint a live principal, select a Bun link or return either permit.
   Never invoke an effect or write the manifest.

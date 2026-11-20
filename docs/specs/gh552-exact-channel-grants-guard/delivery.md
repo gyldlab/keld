@@ -13,14 +13,14 @@ No production behavior is approved by this DRAFT.
 
 ### Future GH552 implementation ownership
 
-Implementation may begin only after this spec is approved.
+Only an independently reviewed and separately approved Windows stage can authorize T-2 and T-3 while this umbrella remains draft.
 Each slice needs a separate PR and a fresh winning claim.
 
 #### Pure policy parser and evaluation
 
 - Candidate paths: `crates/keld-guard/src/lib.rs` and its existing manifest tests.
 - Add focused guard tests in the same crate.
-- Dependency: GH541 integration and GH552 permission/public-API approval.
+- Dependency: GH541 integration and exact GH552 Windows-stage approval under B-1 and B-6.
 - Preserve AppProcess, legacy metadata and cold parser behavior.
 
 #### One shared guarded query
@@ -58,7 +58,7 @@ Route any required change outside these paths to its current owner.
 ## 6. Tasks
 
 Tasks are ordered vertical slices.
-No production task is authorized while the status remains draft.
+This umbrella draft authorizes no production task. The separately approved Windows stage can authorize T-2 and T-3 only.
 
 ### T-1: GH552 specification and independent approval
 
@@ -67,12 +67,12 @@ No production task is authorized while the status remains draft.
 - Refresh all source pins and links.
 - Run the current specification, documentation and whitespace checks.
 - Request independent permission-model and public-API review from Amisha.
-- Stop until exact-content approval changes this spec to approved.
+- Record full-spec approval separately from any narrowly approved stage.
 - A green documentation check does not authorize a product patch.
 
 ### T-2: Pure policy slice
 
-- **Blocked by:** B-1, B-2
+- **Blocked by:** B-1, B-6
 - Start with failing-first P01, P03, P04 and P06 tests.
 - Extend only the existing `PermissionsManifest` parser and exact window lookup.
 - Preserve old `/app` behavior and unknown metadata.
@@ -81,7 +81,8 @@ No production task is authorized while the status remains draft.
 
 ### T-3: One authoritative dispatch API
 
-- **Blocked by:** B-1, B-2
+- **Blocked by:** B-1, B-6
+- Require T-2 marker and artifact controls to pass before exercising a positive typed channel callback.
 - Consume the existing sealed query types in the typed IPC dispatcher.
 - Delegate the unchanged native entry to the typed dispatcher.
 - Prove independent handler inference and compile-fail type isolation.
@@ -100,7 +101,7 @@ No production task is authorized while the status remains draft.
 
 ### T-5: Qualified adapter and real enforcement
 
-- **Blocked by:** B-1, B-3, B-4
+- **Blocked by:** B-1, B-2, B-3, B-4
 - Wait for GH542 native document/currentness acceptance.
 - Wait for GH540/465 bounded v2 and WorkerLink acceptance.
 - Integrate only the narrow Core adapter.
@@ -140,7 +141,7 @@ Timeouts are kill switches, not proof of no effect.
   Compare valid CSP selection and invalid CSP refusal with each marker.
   Pair malformed channel-list data with valid CSP. Expect inert channels without opt-in and GUARD005 with opt-in.
   Compare v0 scalar acceptance against selected Windows scalar refusal at their respective pins.
-  The diagnostic tells users to review all legacy metadata before opt-in.
+  T-4 owns the separate migration guidance for both absent and unsupported markers. The stage tests their frozen wire mapping.
   A 64 KiB plus one byte input returns GUARD017.
   Within-cap opted-in schema failures return GUARD005.
 - **Single fault / Expected RED:** Grant authority from an unmarked legacy object.
@@ -195,7 +196,7 @@ Timeouts are kill switches, not proof of no effect.
 
 ### G552-P09-explain — AC-7
 
-- **Positive and denial observable:** A hypothetical window returns the same pure result and escaped pointer.
+- **Positive and denial observable:** Return the same pure result. Apply Q-2's reviewed pointer presence and escaping matrix once decided.
   It writes neither the manifest nor the app link.
   Existing app queries remain unchanged.
 - **Single fault / Expected RED:** Return the offline Allow permit alongside the diagnostic success value.
@@ -279,7 +280,9 @@ No renderer-query/native-capability fallback is allowed.
 
 ### Q-2: MCP public diagnostic input
 
-**Owner:** Amisha and GH552.
+**Owner:** Amisha and GH552. Deferred outside the Windows runtime stage.
+Before T-4, specify pointer presence for Allow, Deny and missing-window results.
+Record the complete precedence table for mixed-invalid MCP inputs and manifest errors.
 Approve the additive `hypothetical_window_key` field.
 Approve the conditional `principal="webview"` and `channel` shape.
 Approve the pointer and invalid-combination errors.
@@ -301,15 +304,15 @@ Pure GH552 tests do not prove composed Bun effects.
 
 ### Q-4: MCP and manifest release compatibility
 
-**Owner:** GH541.
-Approve or replace the exact `"$keldWindowChannelGrants": 1` opt-in.
+**Owner:** GH541. The selected Windows Legacy artifact deliberately adopts P01; other policies receive no automatic upgrade.
+Record the exact-content owner decision for the `"$keldWindowChannelGrants": 1` opt-in.
 Approve a matching GH541 P01 amendment before implementation.
 V0 ignores all `windows` shapes, including scalar `{"windows":"legacy"}`.
 GH541's strict wrong-shape rule conflicts with preserving those files.
 The selected Windows candidate already has an independent window CSP schema.
 Keep its current window structure and CSP errors with any marker.
 V0 scalar acceptance applies only where that schema is absent.
-Neither candidate grants incoming channel authority from unmarked metadata under this proposal.
+An absent or unsupported marker grants no channel authority in the selected artifact. This decision excludes other artifacts and strict profiles.
 Acceptance must cover legacy scalar/object metadata, absent/wrong marker,
 valid and invalid opted-in grants, unrelated metadata and unchanged native `app` rules.
 No auto-migration, new error code or mutable hot reload is allowed.
@@ -335,8 +338,8 @@ GH552 approval does not override upstream dependencies.
 
 - **Status:** open
 - **Owner:** Amisha, independent reviewer
-- **Impact:** This spec cannot change from draft to approved.
-- **Check:** Record exact-head permission and public-API decisions for Q-1 and Q-2.
+- **Impact:** T-4, T-5 and full GH552 stay blocked. B-6 governs only the separate Windows stage.
+- **Check:** Record exact-head permission and public-API decisions for Q-1 and Q-2, including pointer presence and error precedence.
 
 ### B-3: GH542 native document identity
 
@@ -359,7 +362,14 @@ GH552 approval does not override upstream dependencies.
 - **Impact:** No Electron compatibility or draw.io product acceptance may be claimed.
 - **Check:** Reconcile the pinned conformance cells and independent evidence receipts.
 
-**Next action:** The independent permission-model and public-API reviewer must decide Q-1 and Q-2.
+### B-6: Separate Windows runtime stage approval
+
+- **Status:** open
+- **Owner:** Amisha for independent permission/public-API review, the native-dispatch owner for native precedence, and the GH552 owner for approval.
+- **Impact:** T-2 and T-3 cannot start for the selected Windows Legacy artifact.
+- **Check:** Record the three named reviews and decisions on the exact stage, its input revisions, Q-1 and Q-4. Set only the stage status to approved.
+
+**Next action:** Decide the Windows runtime stage separately. Q-2 stays deferred for T-4 and full GH552.
 The GH541 owner must decide Q-4.
-Only then may the owner update this document to approved.
+Only full B-2 review, Q-2 and all other required full-spec decisions can promote this umbrella to approved.
 No GH552 production code is authorized by this DRAFT.

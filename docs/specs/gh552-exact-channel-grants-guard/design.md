@@ -72,7 +72,7 @@ Owns: section 4
 - **Owner:** GH552, `keld-cli`.
 - **Boundary:** Offline hypothetical query only.
 - **Input:** Parsed snapshot, hypothetical window key and exact channel.
-- **Output:** The same pure decision and trusted JSON pointer.
+- **Output:** The same pure decision. Q-2 owns any extra offline pointer and its presence rules.
 - **Failure:** No live principal, permit, Bun link or effect callback.
 - **Observable:** The manifest and app link remain unchanged.
 - **Negative control:** Return the offline Allow permit alongside the diagnostic result. The public result-type fixture must fail compilation.
@@ -126,14 +126,14 @@ See `crates/keld-guard/src/lib.rs:621-629`.
 
 **INFERRED — compatibility proposal:** Require exact top-level marker
 `"$keldWindowChannelGrants": 1` before interpreting `windows` as channel authority.
-GH541 must approve this amendment before implementation.
+The selected Windows Legacy artifact adopts P01 deliberately. B-1 requires the owner's exact-text decision before implementation.
 The proposal has three cases:
 
 - If the marker is absent or unsupported, ignore channel-list contents for channel admission.
   Preserve the independent loader's size, duplicate-key, window structure, and response-policy checks.
   The selected Windows candidate requires window objects even without channel opt-in.
   The v0 pin accepts scalar metadata because it has no window response-policy contract.
-  Preserve each existing contract when porting the channel feature.
+  That historical observation grants no adoption or compatibility guarantee for another artifact.
   Preserve existing `app` grants and unrelated metadata.
   Grant zero incoming channel authority, even for grant-shaped legacy objects.
   Never infer opt-in from a `channels` key, document, page or CLI argument.
@@ -149,7 +149,7 @@ The proposal has three cases:
   Unrelated top-level metadata remains tolerated.
   No automatic rewrite or migration of stored user data is allowed.
 
-**UNKNOWN:** GH541 has not approved this exact opt-in amendment.
+**FACT:** The scoped Windows choice still needs the GH541 owner's exact-content record for B-1.
 The GH541 owner must approve a matching P01 change and migration fixture.
 Until then, no GH552 parser implementation or channel-grant enablement may proceed.
 Existing stored policy files need no rewrite.
@@ -273,15 +273,15 @@ It selects no live Bun link and returns neither live permit type.
 It uses the same pure evaluator on a separately loaded offline snapshot.
   Convert the public diagnostic channel to its operand by removing exactly one leading `el:` prefix.
 On denial, it returns the same GUARD003 code, message and fix.
-It may also return a separate trusted JSON pointer.
-Construct `/windows/<escaped-key>/channels`.
+Q-2 must specify whether each valid outcome returns a separate diagnostic pointer.
+If present, construct `/windows/<escaped-key>/channels`.
 Escape `~` as `~0`, then `/` as `~1`.
 Select grants from the offline manifest. The hypothetical numeric WebView is local input to pure evaluation.
 Drop the pure result after projecting Allow or the frozen denial into the diagnostic response.
 The offline path cannot borrow a live Host snapshot, dispatch a handler, or export a permit.
 A suggested patch is advisory and never changes the manifest.
 
-When the marker is absent, keep the frozen GUARD003 `CallError` unchanged.
+When the marker is absent or unsupported, keep the frozen GUARD003 `CallError` unchanged.
 Add migration guidance only as a separate non-wire diagnostic.
 State that adding a channel alone grants nothing.
 Tell users to review all legacy `windows` metadata before opt-in.
@@ -294,7 +294,9 @@ A WebView principal without a hypothetical key or channel is invalid.
 An app principal with a hypothetical key is invalid.
 A channel combined with native capability arguments is invalid.
 Use typed MCP validation errors, never a made-up Allow.
-Preserve MCP012 and MCP014 until an approved migration test passes.
+During the Windows stage, keep the existing CLI/MCP API and its validation order.
+An unknown principal gives MCP012 before the present-channel check gives MCP014 for app requests.
+Both refusals precede manifest loading. Q-2 must decide intersecting future request errors before T-4.
 The reviewer must approve the field names and failure precedence.
 No diagnostic result can enter the authoritative dispatch closure.
 
@@ -314,10 +316,10 @@ They do not qualify WebView2 or WebKitGTK native behavior.
 KEL-78 owns OS sandbox and strict confinement.
 
 **INFERRED — migration rule:** Do not rewrite stored user data automatically.
-The opt-in preserves native `/app` scopes and the independently owned response-policy contract on each source baseline.
+For the selected Windows Legacy artifact, keep native `/app` scopes and the existing response-policy contract.
 Without the approved marker, even grant-shaped legacy metadata grants nothing.
-Adding a channel while the marker is absent does not grant authority.
-Before enabling the marker, users must review all legacy `windows` metadata.
+Adding a channel while the marker is absent or unsupported grants no authority.
+Before deliberate adoption, review the selected final artifact's entire literal list and CSP.
 Do not infer, import or silently convert legacy entries.
 New opt-in documents require an intentional user/configuration change.
 GH541 must approve the schema amendment and migration fixture first.
