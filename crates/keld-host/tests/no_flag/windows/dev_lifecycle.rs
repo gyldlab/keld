@@ -6,10 +6,12 @@ use crate::support::control::{
 };
 use crate::support::handles::assert_dev_lease_handle_isolation;
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-use crate::support::process::{PIPE_DRAIN_KILL_SWITCH, pipe_text_by, read_pipe_on_thread};
 use crate::support::process::{
-    assert_process_signaled, open_process_for_wait, process_exists, terminate_test_process,
-    wait_child, wait_for_child_process, wait_for_cleanup_sentinel, wait_process_gone,
+    PIPE_DRAIN_KILL_SWITCH, pipe_text_by, process_exists, read_pipe_on_thread,
+};
+use crate::support::process::{
+    assert_process_signaled, open_process_for_wait, terminate_test_process, wait_child,
+    wait_for_child_process, wait_for_cleanup_sentinel, wait_for_process_signal, wait_process_gone,
 };
 use crate::support::product::ProductFixture;
 use crate::support::product_cycle::run_product_cycle;
@@ -25,6 +27,7 @@ use std::net::TcpListener;
 use std::os::windows::io::AsRawHandle as _;
 use std::process::{Command, Stdio};
 use std::time::Instant;
+use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
 
 #[test]
 fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
@@ -61,10 +64,15 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
         .expect("launch shipping keld dev helper");
     let host_pid =
         wait_for_child_process(&mut cli, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
+    // Pin the exact fixture process objects while the generation is running.
+    let host = open_process_for_wait(host_pid, false);
     let (mut reader, mut writer, bun_pid, _) = accept_ready_generation(&control_listener, &mut cli);
+    let bun = open_process_for_wait(bun_pid, false);
     expect_renderer_beacon(beacon, "shipping renderer beacon");
     let window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
     assert_eq!(window["title"], PRODUCT_TITLE);
+    assert_eq!(wait_for_process_signal(&host, 0), WAIT_TIMEOUT);
+    assert_eq!(wait_for_process_signal(&bun, 0), WAIT_TIMEOUT);
     writer.write_all(b"QUIT\n").expect("shipping Quit");
     writer.flush().expect("flush shipping Quit");
     assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
@@ -86,13 +94,15 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
             .expect("read shipping stderr");
         panic!("shipping keld dev exited with {status}\nstdout:\n{stdout}\nstderr:\n{stderr}");
     }
-    assert!(
-        !process_exists(host_pid),
-        "delegated host survived orderly exit"
+    assert_eq!(
+        wait_for_process_signal(&host, 0),
+        WAIT_OBJECT_0,
+        "delegated host {host_pid} survived orderly exit"
     );
-    assert!(
-        !process_exists(bun_pid),
-        "delegated Bun survived orderly exit"
+    assert_eq!(
+        wait_for_process_signal(&bun, 0),
+        WAIT_OBJECT_0,
+        "delegated Bun {bun_pid} survived orderly exit"
     );
     assert_eq!(dev_stage_count(&fixture.project), 0, "orderly stage leaked");
 }
