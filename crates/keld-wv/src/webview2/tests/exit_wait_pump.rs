@@ -2,8 +2,9 @@
 //! Tests exercise actual Windows message queue and thread CPU accounting.
 
 use super::{
-    ProfileReleaseWait, ReleaseSite, alive_process_handle, exited_process_handle, release_channel,
-    wait_for_browser_exit, wait_for_launch_with_message_pump_until,
+    ProfileReleaseWait, ReleaseSite, WebView2LaunchPhase, alive_process_handle,
+    exited_process_handle, release_channel, wait_for_browser_exit,
+    wait_for_launch_with_message_pump_until,
 };
 
 /// The probe's pump driver wakes on the process handle: a signaled handle
@@ -172,8 +173,14 @@ fn expired_launch_pump_rejects_ready_result_before_queued_messages() {
         .expect("queue inert message");
     let (sender, receiver) = std::sync::mpsc::channel();
     sender.send(7_u8).expect("queue ready result");
-    let error = wait_for_launch_with_message_pump_until(&receiver, std::time::Instant::now())
-        .expect_err("expired launch work must lose to the absolute deadline");
+    let started = std::time::Instant::now();
+    let error = wait_for_launch_with_message_pump_until(
+        &receiver,
+        started,
+        WebView2LaunchPhase::Controller,
+        started,
+    )
+    .expect_err("expired launch work must lose to the absolute deadline");
     assert!(
         error.to_string().contains("launch deadline expired"),
         "{error}"
