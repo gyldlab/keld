@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::{self, Read as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt as _;
-use std::process::{Child, Command};
+use std::process::{Child, Command, ExitStatus};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -48,6 +48,31 @@ pub(super) fn join_before<T>(
 /// Tests construct a real owned native group before installing a host owner.
 pub(super) fn test_group_identity(pid: u32) -> GroupIdentity {
     observe_group_identity(pid).expect("live native group leader has a kernel birth identity")
+}
+
+/// Model the Guardian's exclusive exact-child reaper for host fail-safe
+/// tests. In production the Guardian, not the Host, owns Bun's wait status.
+/// Without this concurrent test-only reap, a SIGKILL leaves a zombie process
+/// group and the Host correctly refuses its stricter dual-ESRCH absence gate.
+/// A bounded negative-control timeout rescues only this original owned Child.
+pub(super) fn reap_owned_child_with_deadline(
+    mut child: NativeChildOwner,
+) -> thread::JoinHandle<ExitStatus> {
+    thread::spawn(move || {
+        let deadline = Instant::now() + super::super::GUARDIAN_SHUTDOWN_DEADLINE;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => return status,
+                Ok(None) if Instant::now() < deadline => thread::yield_now(),
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("test-owned process was not signalled before native reap deadline");
+                }
+                Err(error) => panic!("test-owned child reap failed: {error}"),
+            }
+        }
+    })
 }
 
 /// Own one actual direct OS child from the instant spawn returns. Tests that

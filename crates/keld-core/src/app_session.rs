@@ -1261,9 +1261,13 @@ fn validate_current_exe_stage() -> Result<ValidatedBootSelection, HostAppError> 
 /// discarded, or used to start another application session.
 #[must_use = "retain unproved main-thread custody through the fatal Host outcome"]
 pub struct HostRunFailure {
-    error: HostAppError,
+    error: Box<HostAppError>,
     #[cfg(target_os = "macos")]
     retained: Option<Box<RetainedMacSession>>,
+    #[cfg(target_os = "macos")]
+    retained_guardian: Option<Box<GuardedPrimary>>,
+    #[cfg(target_os = "macos")]
+    retained_guard: Option<Box<GuardSnapshot>>,
 }
 impl HostRunFailure {
     /// Whether this failed run still owns unresolved main-thread resources.
@@ -1271,7 +1275,7 @@ impl HostRunFailure {
     pub fn retains_main_custody(&self) -> bool {
         #[cfg(target_os = "macos")]
         {
-            self.retained.is_some()
+            self.retained.is_some() || self.retained_guardian.is_some()
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -1279,12 +1283,31 @@ impl HostRunFailure {
         }
     }
 }
+#[cfg(target_os = "macos")]
+impl HostRunFailure {
+    fn with_guardian(error: HostAppError, retained_guardian: Option<Box<GuardedPrimary>>) -> Self {
+        Self {
+            error: Box::new(error),
+            retained: None,
+            retained_guardian,
+            retained_guard: None,
+        }
+    }
+
+    fn into_guardian_parts(self) -> (HostAppError, Option<Box<GuardedPrimary>>) {
+        (*self.error, self.retained_guardian)
+    }
+}
 impl From<HostAppError> for HostRunFailure {
     fn from(error: HostAppError) -> Self {
         Self {
-            error,
+            error: Box::new(error),
             #[cfg(target_os = "macos")]
             retained: None,
+            #[cfg(target_os = "macos")]
+            retained_guardian: None,
+            #[cfg(target_os = "macos")]
+            retained_guard: None,
         }
     }
 }
@@ -1941,10 +1964,14 @@ pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostRunFailure> {
         // event-loop, and ordered-cleanup step. run_app receives only a borrow,
         // so it cannot destroy the verified session policy early.
         let mut result = run_app(app, Some(&guard_snapshot));
-        if let Err(failure) = &mut result
-            && let Some(retained) = &mut failure.retained
-        {
-            let _ = retained.guard.get_or_insert(guard_snapshot);
+        if let Err(failure) = &mut result {
+            if let Some(retained) = &mut failure.retained {
+                let _ = retained.guard.get_or_insert(guard_snapshot);
+            } else if failure.retained_guardian.is_some() {
+                // An unresolved Guardian keeps the verified policy owner
+                // until the Host reports the fatal outcome and exits.
+                failure.retained_guard = Some(Box::new(guard_snapshot));
+            }
         }
         result
     }
@@ -2342,23 +2369,27 @@ fn run_app(
         .register_guarded_primary_until(Instant::now() + APP_LINK_IO_DEADLINE)
         .map_err(|source| app_runtime("guardian registration", &source))?;
     LISTENER_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
-    let Some(initial) = await_bound_generation(
+    let initial = match await_bound_generation(
         &mut guardian,
         dev_lease.as_mut(),
         Instant::now() + APP_LINK_IO_DEADLINE,
         "initial app-link authentication",
-    )?
-    else {
-        return Ok(());
+    ) {
+        Ok(Some(initial)) => initial,
+        Ok(None) => return Ok(()),
+        Err(error) => return Err(failed_pre_actor_guardian(error, guardian)),
     };
 
     let (window_commands_tx, window_commands_rx) = mpsc::channel();
-    let main_thread = objc2::MainThreadMarker::new().ok_or_else(|| {
-        app_detail(
-            "auth presentation",
-            "application owner is not on the main thread",
-        )
-    })?;
+    let Some(main_thread) = objc2::MainThreadMarker::new() else {
+        return Err(failed_pre_actor_guardian(
+            app_detail(
+                "auth presentation",
+                "application owner is not on the main thread",
+            ),
+            guardian,
+        ));
+    };
     let presentation_commands = window_commands_tx.clone();
     let (presentation_port, mut presentation_owner) = keld_native::auth::prepare_as_presentation(
         main_thread,
@@ -2372,7 +2403,7 @@ fn run_app(
         dev_lease,
         shutdown.clone(),
     )?;
-    let router = PrimaryRouter::start_bound(
+    let router = match PrimaryRouter::start_bound(
         initial,
         window_commands_tx.clone(),
         guardian_owner.handle(),
@@ -2380,8 +2411,13 @@ fn run_app(
         guard_snapshot,
         auth_configuration,
         Some(presentation_port),
-    )?;
-    guardian_owner.attach_router(router.handle())?;
+    ) {
+        Ok(router) => router,
+        Err(error) => return Err(failed_guardian_start(error, guardian_owner, None)),
+    };
+    if let Err(error) = guardian_owner.attach_router(router.handle()) {
+        return Err(failed_guardian_start(error, guardian_owner, Some(router)));
+    }
     let (window_events_tx, window_events_rx) = mpsc::channel();
     let router_handle = router.handle();
     let commands_for_events = window_commands_tx.clone();
@@ -2394,8 +2430,18 @@ fn run_app(
                 &commands_for_events,
                 |_| Ok(()),
             )
-        })
-        .map_err(|source| app_io("window event coordinator", &source))?;
+        });
+    let event_coordinator = match event_coordinator {
+        Ok(coordinator) => coordinator,
+        Err(source) => {
+            drop(window_events_tx);
+            return Err(failed_guardian_start(
+                app_io("window event coordinator", &source),
+                guardian_owner,
+                Some(router),
+            ));
+        }
+    };
 
     let (renderer_requests_tx, renderer_requests_rx) = mpsc::sync_channel(1);
     let (renderer_outcomes_tx, renderer_outcomes_rx) = mpsc::channel();
@@ -2416,8 +2462,7 @@ fn run_app(
                 None,
                 (router, presentation_owner, main_thread),
                 guardian_owner,
-            )
-            .map_err(HostRunFailure::from);
+            );
         }
     };
 
@@ -2435,8 +2480,7 @@ fn run_app(
                 Some(renderer_dispatch),
                 (router, presentation_owner, main_thread),
                 guardian_owner,
-            )
-            .map_err(HostRunFailure::from);
+            );
         }
     };
     let spec = WebviewSpec {
@@ -2468,8 +2512,7 @@ fn run_app(
                 Some(renderer_dispatch),
                 (router, presentation_owner, main_thread),
                 guardian_owner,
-            )
-            .map_err(HostRunFailure::from);
+            );
         }
     };
     let presentation_router = router.handle();
@@ -2511,7 +2554,7 @@ fn run_app(
             None => loop_error,
         };
         return Err(HostRunFailure {
-            error,
+            error: Box::new(error),
             retained: Some(Box::new(RetainedMacSession {
                 _engine: engine,
                 _presentation: presentation_owner,
@@ -2522,9 +2565,12 @@ fn run_app(
                 _commands: window_commands_tx,
                 guard: None,
             })),
+            retained_guardian: None,
+            retained_guard: None,
         });
     }
-    finish_guarded_session(guard_snapshot, |_| {
+    let mut retained_guardian = None;
+    let result = finish_guarded_session(guard_snapshot, |_| {
         drop(window_commands_tx);
         let event_result = event_coordinator
             .join()
@@ -2532,7 +2578,8 @@ fn run_app(
             .and_then(std::convert::identity);
         let router_result = router.shutdown();
         let renderer_result = join_renderer_dispatch(renderer_dispatch);
-        let guardian_result = guardian_owner.shutdown();
+        let guardian_result =
+            capture_guardian_shutdown(guardian_owner.shutdown(), &mut retained_guardian);
 
         match window_result {
             Err(source @ WvError::Navigate(_)) => {
@@ -2555,8 +2602,8 @@ fn run_app(
                 guardian_result,
             ]),
         }
-    })
-    .map_err(HostRunFailure::from)
+    });
+    result.map_err(|error| HostRunFailure::with_guardian(error, retained_guardian))
 }
 
 /// Reports only facts read from this process after successful Security.framework validation.
@@ -4303,6 +4350,50 @@ fn join_renderer_dispatch(dispatch: RendererDispatch) -> Result<(), HostAppError
 }
 
 #[cfg(target_os = "macos")]
+fn failed_pre_actor_guardian(
+    primary: HostAppError,
+    mut guardian: GuardedPrimary,
+) -> HostRunFailure {
+    guardian.deny_recovery();
+    let cleanup = guardian
+        .shutdown()
+        .map(|_| ())
+        .map_err(|source| app_guardian_fatal("guardian startup cleanup", &source));
+    // An unsuccessful shutdown cannot prove even the original Guardian
+    // Child has been reaped, including before any Bun group was registered.
+    let retained = (cleanup.is_err() || guardian.group_pid().is_some()).then(|| Box::new(guardian));
+    HostRunFailure::with_guardian(append_app_cleanup(primary, [cleanup]), retained)
+}
+
+#[cfg(target_os = "macos")]
+fn capture_guardian_shutdown(
+    result: Result<(), HostRunFailure>,
+    retained_guardian: &mut Option<Box<GuardedPrimary>>,
+) -> Result<(), HostAppError> {
+    result.map_err(|failure| {
+        let (error, retained) = failure.into_guardian_parts();
+        *retained_guardian = retained;
+        error
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn failed_guardian_start(
+    primary: HostAppError,
+    guardian_owner: GuardianOwner,
+    router: Option<PrimaryRouter>,
+) -> HostRunFailure {
+    let router_result = router.map_or(Ok(()), PrimaryRouter::shutdown);
+    let mut retained_guardian = None;
+    let guardian_result =
+        capture_guardian_shutdown(guardian_owner.shutdown(), &mut retained_guardian);
+    HostRunFailure::with_guardian(
+        append_app_cleanup(primary, [router_result, guardian_result]),
+        retained_guardian,
+    )
+}
+
+#[cfg(target_os = "macos")]
 fn cleanup_window_start_failure(
     primary: &HostAppError,
     guard_snapshot: Option<&GuardSnapshot>,
@@ -4315,7 +4406,7 @@ fn cleanup_window_start_failure(
         objc2::MainThreadMarker,
     ),
     guardian_owner: GuardianOwner,
-) -> Result<(), HostAppError> {
+) -> Result<(), HostRunFailure> {
     let (router, mut owner, main_thread) = presentation;
     if let Some(auth) = &router.handle.auth {
         auth.stop_tail();
@@ -4339,7 +4430,8 @@ fn cleanup_window_start_failure(
             "pre-loop owner remains pending",
         )),
     };
-    finish_guarded_session(guard_snapshot, |_| {
+    let mut retained_guardian = None;
+    let result = finish_guarded_session(guard_snapshot, |_| {
         drop(window_events);
         let event_result = event_coordinator
             .join()
@@ -4347,7 +4439,8 @@ fn cleanup_window_start_failure(
             .and_then(std::convert::identity);
         let router_result = router.shutdown();
         let renderer_result = renderer_dispatch.map_or(Ok(()), join_renderer_dispatch);
-        let guardian_result = guardian_owner.shutdown();
+        let guardian_result =
+            capture_guardian_shutdown(guardian_owner.shutdown(), &mut retained_guardian);
         Err(collapse_app_failures(
             primary,
             [
@@ -4358,7 +4451,8 @@ fn cleanup_window_start_failure(
                 guardian_result,
             ],
         ))
-    })
+    });
+    result.map_err(|error| HostRunFailure::with_guardian(error, retained_guardian))
 }
 
 #[cfg(target_os = "macos")]
@@ -4465,10 +4559,24 @@ fn coordinate_window_events(
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(all(test, feature = "fs-acceptance-observer"))]
+type GuardianOwnerTestPanic = Arc<Mutex<Option<fn()>>>;
+
+#[cfg(target_os = "macos")]
 struct GuardianOwner {
     command_tx: Sender<GuardianOwnerCommand>,
-    handle: Option<JoinHandle<Result<ExitStatus, HostAppError>>>,
+    handle: Option<JoinHandle<GuardianOwnerTerminal>>,
     lease_shutdown: Option<JoinHandle<()>>,
+    #[cfg(all(test, feature = "fs-acceptance-observer"))]
+    panic_requested: GuardianOwnerTestPanic,
+}
+
+#[cfg(target_os = "macos")]
+struct GuardianOwnerTerminal {
+    result: Result<ExitStatus, HostAppError>,
+    // A terminal failure may have spent its one group signal without proving
+    // whole-group absence. The original birth must outlive the actor thread.
+    retained: Option<GuardedPrimary>,
 }
 
 #[cfg(target_os = "macos")]
@@ -4495,11 +4603,11 @@ struct GuardianOwnerHandle {
 impl GuardianOwner {
     #[allow(clippy::too_many_lines)] // one thread serializes guardian commands, updates, lease loss and fatal observation
     fn start(
-        mut guardian: GuardedPrimary,
+        guardian: GuardedPrimary,
         window_commands: Sender<AppWindowCommand>,
         mut dev_lease: Option<DevHostLease>,
         shutdown: SessionShutdownState,
-    ) -> Result<Self, HostAppError> {
+    ) -> Result<Self, HostRunFailure> {
         let (command_tx, command_rx) = mpsc::channel();
         let (lease_tx, lease_rx) = mpsc::channel::<PrimaryRouterHandle>();
         let fatal_commands = window_commands.clone();
@@ -4511,246 +4619,374 @@ impl GuardianOwner {
                 {
                     let _ = fatal_commands.send(AppWindowCommand::Fatal);
                 }
-            })
-            .map_err(|source| app_io("CLI lease-loss shutdown owner", &source))?;
+            });
+        let lease_shutdown = match lease_shutdown {
+            Ok(handle) => handle,
+            Err(source) => {
+                return Err(failed_pre_actor_guardian(
+                    app_io("CLI lease-loss shutdown owner", &source),
+                    guardian,
+                ));
+            }
+        };
+        // Builder::spawn consumes and drops its closure on failure. Keep the
+        // only original Guardian birth on this side until spawn succeeds.
+        let pending_guardian = Arc::new(Mutex::new(Some(guardian)));
+        let actor_guardian = Arc::clone(&pending_guardian);
+        #[cfg(all(test, feature = "fs-acceptance-observer"))]
+        let panic_requested = Arc::new(Mutex::new(None::<fn()>));
+        #[cfg(all(test, feature = "fs-acceptance-observer"))]
+        let actor_panic_requested = Arc::clone(&panic_requested);
         let handle = thread::Builder::new()
             .name("keld-core-guardian-owner".to_owned())
             .spawn(move || {
-                let mut router = None;
-                let mut initial_arm = false;
-                let mut fs_recovery: Option<FsRecoveryAttempt> = None;
-                loop {
-                    match command_rx.recv_timeout(Duration::from_millis(50)) {
-                        Ok(GuardianOwnerCommand::AttachRouter(attached, reply)) => {
-                            let attached = *attached;
-                            let observed = if router.is_some() {
-                                Err(String::from("router is already attached"))
-                            } else {
-                                router = Some(attached);
-                                Ok(())
-                            };
-                            let _ = reply.send(observed);
+                let Some(mut guardian) = actor_guardian
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                else {
+                    return GuardianOwnerTerminal {
+                        result: Err(app_detail(
+                            "guardian owner",
+                            "original Guardian was missing at actor entry",
+                        )),
+                        retained: None,
+                    };
+                };
+                let mut performed_shutdown = false;
+                let mut shutdown_proved = false;
+                // The original Guardian stays outside the unwind boundary.
+                // An actor panic must return owned custody to the Host result,
+                // even when the one native group signal cannot prove absence.
+                let actor_loop = || -> Result<ExitStatus, HostAppError> {
+                    let mut router = None;
+                    let mut initial_arm = false;
+                    let mut fs_recovery: Option<FsRecoveryAttempt> = None;
+                    loop {
+                        #[cfg(all(test, feature = "fs-acceptance-observer"))]
+                        let injected_panic = actor_panic_requested
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take();
+                        #[cfg(all(test, feature = "fs-acceptance-observer"))]
+                        if let Some(injected) = injected_panic {
+                            injected();
                         }
-                        Ok(GuardianOwnerCommand::PrepareAcceptedShutdown(reply)) => {
-                            guardian.deny_recovery();
-                            let result = match guardian.poll_fatal() {
-                                Err(source) => Err(app_guardian_fatal(
-                                    "guardian unexpected primary exit before accepted shutdown",
-                                    &source,
-                                )),
-                                Ok(()) => guardian.accept_shutdown().map_err(|source| {
-                                    app_runtime("guardian accepted-shutdown preparation", &source)
-                                }),
-                            };
-                            let observed = match &result {
-                                Ok(()) => Ok(()),
-                                Err(error) => Err(error.to_string()),
-                            };
-                            let _ = reply.send(observed);
-                            result?;
-                        }
-                        Ok(GuardianOwnerCommand::ArmRecovery(phase, reply)) => {
-                            let result = apply_guardian_recovery_arm(
-                                phase,
-                                &mut guardian,
-                                router.as_ref(),
-                                &mut initial_arm,
-                                fs_recovery.as_mut(),
-                            );
-                            let observed = result
-                                .as_ref()
-                                .copied()
-                                .map_err(std::string::ToString::to_string);
-                            let _ = reply.send(observed);
-                            result?;
-                        }
-                        Ok(GuardianOwnerCommand::DenyRecovery) => {
-                            guardian.deny_recovery();
-                        }
-                        Ok(GuardianOwnerCommand::FailGeneration(attempt, reply)) => {
-                            let result = guardian
-                                .fail_current_generation(attempt)
-                                .map_err(|source| app_runtime("primary app-link failure", &source));
-                            let observed = result
-                                .as_ref()
-                                .copied()
-                                .map_err(std::string::ToString::to_string);
-                            let _ = reply.send(observed);
-                            if let Err(error) = result {
-                                let _ = window_commands.send(AppWindowCommand::Fatal);
-                                return Err(error);
+                        match command_rx.recv_timeout(Duration::from_millis(50)) {
+                            Ok(GuardianOwnerCommand::AttachRouter(attached, reply)) => {
+                                let attached = *attached;
+                                let observed = if router.is_some() {
+                                    Err(String::from("router is already attached"))
+                                } else {
+                                    router = Some(attached);
+                                    Ok(())
+                                };
+                                let _ = reply.send(observed);
                             }
-                        }
-                        Ok(GuardianOwnerCommand::FailRetiredGeneration(attempt, reply)) => {
-                            let result =
-                                guardian.fail_current_generation(attempt).map_err(|source| {
-                                    app_runtime("filesystem reply recovery", &source)
-                                });
-                            let observed = result
-                                .as_ref()
-                                .map(|()| Instant::now())
-                                .map_err(std::string::ToString::to_string);
-                            let _ = reply.send(observed);
-                            if let Err(error) = result {
-                                let _ = window_commands.send(AppWindowCommand::Fatal);
-                                return Err(error);
-                            }
-                        }
-                        Ok(GuardianOwnerCommand::Shutdown(reply)) => {
-                            let primary = guardian.poll_fatal().err().map(|source| {
-                                app_guardian_fatal("guardian unexpected primary exit", &source)
-                            });
-                            let shutdown = guardian
-                                .shutdown()
-                                .map_err(|source| app_guardian_fatal("guardian shutdown", &source));
-                            let result = match primary {
-                                Some(primary) => {
-                                    Err(append_app_cleanup(primary, [shutdown.map(|_| ())]))
-                                }
-                                None => shutdown,
-                            };
-                            let observed = result
-                                .as_ref()
-                                .map(|_| ())
-                                .map_err(std::string::ToString::to_string);
-                            let _ = reply.send(observed);
-                            return result;
-                        }
-                        Err(RecvTimeoutError::Timeout) => {}
-                        Err(RecvTimeoutError::Disconnected) => {
-                            return guardian.shutdown().map_err(|source| {
-                                app_guardian_fatal("guardian owner disconnect", &source)
-                            });
-                        }
-                    }
-                    for _ in 0..64 {
-                        let Some(update) = guardian.recv_update(Duration::ZERO) else {
-                            break;
-                        };
-                        let Some(router) = &router else {
-                            if matches!(&update, GuardedPrimaryUpdate::Role(_))
-                                && !matches!(
-                                    &update,
-                                    GuardedPrimaryUpdate::Role(PrimaryRoleEvent::Revoked { .. })
-                                )
-                            {
-                                continue;
-                            }
-                            let _ = window_commands.send(AppWindowCommand::Fatal);
-                            return Err(app_detail(
-                                "guardian generation update",
-                                "generation changed before the primary router attached",
-                            ));
-                        };
-                        let retired = match &update {
-                            GuardedPrimaryUpdate::Role(PrimaryRoleEvent::Revoked {
-                                attempt,
-                                ..
-                            }) => Some(*attempt),
-                            _ => None,
-                        };
-                        let bound_attempt = match &update {
-                            GuardedPrimaryUpdate::Bound(bound) => Some(bound.attempt()),
-                            GuardedPrimaryUpdate::Role(_) => None,
-                        };
-                        let already_retired = router.last_revoked_attempt.load(Ordering::Acquire);
-                        if let Err(error) = router.apply_generation_update(update.into()) {
-                            guardian.deny_recovery();
-                            let _ = window_commands.send(AppWindowCommand::Fatal);
-                            return Err(error.into());
-                        }
-                        if let Some(attempt) = retired.filter(|attempt| *attempt > already_retired)
-                            && router.shutdown.is_running()
-                        {
-                            if fs_recovery
-                                .as_ref()
-                                .is_some_and(|recovery| !recovery.released)
-                            {
+                            Ok(GuardianOwnerCommand::PrepareAcceptedShutdown(reply)) => {
                                 guardian.deny_recovery();
-                                let _ = window_commands.send(AppWindowCommand::Fatal);
-                                return Err(app_detail(
-                                    "filesystem recovery",
-                                    "overlapping native retirement attempts",
-                                ));
+                                let result = match guardian.poll_fatal() {
+                                    Err(source) => Err(app_guardian_fatal(
+                                        "guardian unexpected primary exit before accepted shutdown",
+                                        &source,
+                                    )),
+                                    Ok(()) => guardian.accept_shutdown().map_err(|source| {
+                                        app_runtime(
+                                            "guardian accepted-shutdown preparation",
+                                            &source,
+                                        )
+                                    }),
+                                };
+                                let observed = match &result {
+                                    Ok(()) => Ok(()),
+                                    Err(error) => Err(error.to_string()),
+                                };
+                                let _ = reply.send(observed);
+                                result?;
                             }
-                            fs_recovery = match FsRecoveryAttempt::retire(router, attempt) {
-                                Ok(recovery) => Some(recovery),
-                                Err(error) => {
-                                    guardian.deny_recovery();
+                            Ok(GuardianOwnerCommand::ArmRecovery(phase, reply)) => {
+                                let result = apply_guardian_recovery_arm(
+                                    phase,
+                                    &mut guardian,
+                                    router.as_ref(),
+                                    &mut initial_arm,
+                                    fs_recovery.as_mut(),
+                                );
+                                let observed = result
+                                    .as_ref()
+                                    .copied()
+                                    .map_err(std::string::ToString::to_string);
+                                let _ = reply.send(observed);
+                                result?;
+                            }
+                            Ok(GuardianOwnerCommand::DenyRecovery) => {
+                                guardian.deny_recovery();
+                            }
+                            Ok(GuardianOwnerCommand::FailGeneration(attempt, reply)) => {
+                                let result =
+                                    guardian.fail_current_generation(attempt).map_err(|source| {
+                                        app_runtime("primary app-link failure", &source)
+                                    });
+                                let observed = result
+                                    .as_ref()
+                                    .copied()
+                                    .map_err(std::string::ToString::to_string);
+                                let _ = reply.send(observed);
+                                if let Err(error) = result {
                                     let _ = window_commands.send(AppWindowCommand::Fatal);
                                     return Err(error);
                                 }
-                            };
-                        }
-                        if bound_attempt.is_some_and(|attempt| {
-                            fs_recovery.as_ref().is_some_and(|recovery| {
-                                recovery.prepared == attempt && recovery.released
-                            })
-                        }) {
-                            fs_recovery = None;
-                        }
-                    }
-                    if let (Some(router), Some(recovery)) = (router.as_ref(), fs_recovery.as_mut())
-                    {
-                        if let Err(error) = recovery.poll(router) {
-                            guardian.deny_recovery();
-                            let _ = window_commands.send(AppWindowCommand::Fatal);
-                            return Err(error);
-                        }
-                        let phase = RecoveryArm::Retired {
-                            retired: recovery.retired,
-                            prepared: recovery.prepared,
-                        };
-                        if let Err(error) = apply_guardian_recovery_arm(
-                            phase,
-                            &mut guardian,
-                            Some(router),
-                            &mut initial_arm,
-                            Some(recovery),
-                        ) {
-                            guardian.deny_recovery();
-                            let _ = window_commands.send(AppWindowCommand::Fatal);
-                            return Err(error);
-                        }
-                    }
-                    if let Some(lease) = dev_lease.as_mut() {
-                        match lease.poll_lost() {
-                            Ok(true) => {
-                                if shutdown.reserve_cli_lease_lost() {
-                                    let Some(router) = &router else {
-                                        let _ = window_commands.send(AppWindowCommand::Fatal);
-                                        return Err(app_detail(
-                                            "CLI lease loss",
-                                            "primary router is not attached",
-                                        ));
-                                    };
-                                    lease_tx.send(router.clone()).map_err(|_| {
-                                        let _ = window_commands.send(AppWindowCommand::Fatal);
-                                        app_detail(
-                                            "CLI lease-loss shutdown owner",
-                                            "shutdown executor stopped",
-                                        )
-                                    })?;
+                            }
+                            Ok(GuardianOwnerCommand::FailRetiredGeneration(attempt, reply)) => {
+                                let result =
+                                    guardian.fail_current_generation(attempt).map_err(|source| {
+                                        app_runtime("filesystem reply recovery", &source)
+                                    });
+                                let observed = result
+                                    .as_ref()
+                                    .map(|()| Instant::now())
+                                    .map_err(std::string::ToString::to_string);
+                                let _ = reply.send(observed);
+                                if let Err(error) = result {
+                                    let _ = window_commands.send(AppWindowCommand::Fatal);
+                                    return Err(error);
                                 }
                             }
-                            Ok(false) => {}
-                            Err(error) => {
+                            Ok(GuardianOwnerCommand::Shutdown(reply)) => {
+                                performed_shutdown = true;
+                                let primary = guardian.poll_fatal().err().map(|source| {
+                                    app_guardian_fatal("guardian unexpected primary exit", &source)
+                                });
+                                let shutdown = guardian.shutdown().map_err(|source| {
+                                    app_guardian_fatal("guardian shutdown", &source)
+                                });
+                                shutdown_proved = shutdown.is_ok();
+                                let result = match primary {
+                                    Some(primary) => {
+                                        Err(append_app_cleanup(primary, [shutdown.map(|_| ())]))
+                                    }
+                                    None => shutdown,
+                                };
+                                let observed = result
+                                    .as_ref()
+                                    .map(|_| ())
+                                    .map_err(std::string::ToString::to_string);
+                                let _ = reply.send(observed);
+                                return result;
+                            }
+                            Err(RecvTimeoutError::Timeout) => {}
+                            Err(RecvTimeoutError::Disconnected) => {
+                                performed_shutdown = true;
+                                let result = guardian.shutdown().map_err(|source| {
+                                    app_guardian_fatal("guardian owner disconnect", &source)
+                                });
+                                shutdown_proved = result.is_ok();
+                                return result;
+                            }
+                        }
+                        for _ in 0..64 {
+                            let Some(update) = guardian.recv_update(Duration::ZERO) else {
+                                break;
+                            };
+                            let Some(router) = &router else {
+                                if matches!(&update, GuardedPrimaryUpdate::Role(_))
+                                    && !matches!(
+                                        &update,
+                                        GuardedPrimaryUpdate::Role(
+                                            PrimaryRoleEvent::Revoked { .. }
+                                        )
+                                    )
+                                {
+                                    continue;
+                                }
+                                let _ = window_commands.send(AppWindowCommand::Fatal);
+                                return Err(app_detail(
+                                    "guardian generation update",
+                                    "generation changed before the primary router attached",
+                                ));
+                            };
+                            let retired = match &update {
+                                GuardedPrimaryUpdate::Role(PrimaryRoleEvent::Revoked {
+                                    attempt,
+                                    ..
+                                }) => Some(*attempt),
+                                _ => None,
+                            };
+                            let bound_attempt = match &update {
+                                GuardedPrimaryUpdate::Bound(bound) => Some(bound.attempt()),
+                                GuardedPrimaryUpdate::Role(_) => None,
+                            };
+                            let already_retired =
+                                router.last_revoked_attempt.load(Ordering::Acquire);
+                            if let Err(error) = router.apply_generation_update(update.into()) {
+                                guardian.deny_recovery();
+                                let _ = window_commands.send(AppWindowCommand::Fatal);
+                                return Err(error.into());
+                            }
+                            if let Some(attempt) =
+                                retired.filter(|attempt| *attempt > already_retired)
+                                && router.shutdown.is_running()
+                            {
+                                if fs_recovery
+                                    .as_ref()
+                                    .is_some_and(|recovery| !recovery.released)
+                                {
+                                    guardian.deny_recovery();
+                                    let _ = window_commands.send(AppWindowCommand::Fatal);
+                                    return Err(app_detail(
+                                        "filesystem recovery",
+                                        "overlapping native retirement attempts",
+                                    ));
+                                }
+                                fs_recovery = match FsRecoveryAttempt::retire(router, attempt) {
+                                    Ok(recovery) => Some(recovery),
+                                    Err(error) => {
+                                        guardian.deny_recovery();
+                                        let _ = window_commands.send(AppWindowCommand::Fatal);
+                                        return Err(error);
+                                    }
+                                };
+                            }
+                            if bound_attempt.is_some_and(|attempt| {
+                                fs_recovery.as_ref().is_some_and(|recovery| {
+                                    recovery.prepared == attempt && recovery.released
+                                })
+                            }) {
+                                fs_recovery = None;
+                            }
+                        }
+                        if let (Some(router), Some(recovery)) =
+                            (router.as_ref(), fs_recovery.as_mut())
+                        {
+                            if let Err(error) = recovery.poll(router) {
+                                guardian.deny_recovery();
+                                let _ = window_commands.send(AppWindowCommand::Fatal);
+                                return Err(error);
+                            }
+                            let phase = RecoveryArm::Retired {
+                                retired: recovery.retired,
+                                prepared: recovery.prepared,
+                            };
+                            if let Err(error) = apply_guardian_recovery_arm(
+                                phase,
+                                &mut guardian,
+                                Some(router),
+                                &mut initial_arm,
+                                Some(recovery),
+                            ) {
+                                guardian.deny_recovery();
                                 let _ = window_commands.send(AppWindowCommand::Fatal);
                                 return Err(error);
                             }
                         }
+                        if let Some(lease) = dev_lease.as_mut() {
+                            match lease.poll_lost() {
+                                Ok(true) => {
+                                    if shutdown.reserve_cli_lease_lost() {
+                                        let Some(router) = &router else {
+                                            let _ = window_commands.send(AppWindowCommand::Fatal);
+                                            return Err(app_detail(
+                                                "CLI lease loss",
+                                                "primary router is not attached",
+                                            ));
+                                        };
+                                        lease_tx.send(router.clone()).map_err(|_| {
+                                            let _ = window_commands.send(AppWindowCommand::Fatal);
+                                            app_detail(
+                                                "CLI lease-loss shutdown owner",
+                                                "shutdown executor stopped",
+                                            )
+                                        })?;
+                                    }
+                                }
+                                Ok(false) => {}
+                                Err(error) => {
+                                    let _ = window_commands.send(AppWindowCommand::Fatal);
+                                    return Err(error);
+                                }
+                            }
+                        }
+                        if let Err(source) = guardian.poll_fatal() {
+                            guardian.deny_recovery();
+                            let _ = window_commands.send(AppWindowCommand::Fatal);
+                            return Err(app_guardian_fatal("guardian watcher", &source));
+                        }
                     }
-                    if let Err(source) = guardian.poll_fatal() {
-                        let _ = window_commands.send(AppWindowCommand::Fatal);
-                        return Err(app_guardian_fatal("guardian watcher", &source));
-                    }
+                };
+                let actor_result =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(actor_loop));
+                let mut actor_panicked = false;
+                let result = if let Ok(result) = actor_result {
+                    result
+                } else {
+                    actor_panicked = true;
+                    guardian.deny_recovery();
+                    let _ = window_commands.send(AppWindowCommand::Fatal);
+                    Err(app_detail(
+                        "guardian owner",
+                        "actor panicked before proving the original Guardian's retirement",
+                    ))
+                };
+                if result.is_err() {
+                    guardian.deny_recovery();
                 }
-            })
-            .map_err(|source| app_io("guardian owner", &source))?;
+                let result = if result.is_err() && !performed_shutdown && !actor_panicked {
+                    // An early owner failure still owes the original Guardian
+                    // its one ordered shutdown attempt. Never replace the first
+                    // failure with a later cleanup result.
+                    // A caught panic may have interrupted a native signal
+                    // before its spent-authority record was published. Never
+                    // retry shutdown after such an ambiguous operation.
+                    // A second panic during fatal cleanup is also an unproved
+                    // owner result. Catch it without dropping the same Child,
+                    // group birth, or spent signal authority.
+                    let cleanup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        guardian.shutdown()
+                    }))
+                    .map_err(|_| {
+                        app_detail(
+                            "guardian fatal cleanup",
+                            "shutdown panicked with original Guardian custody unresolved",
+                        )
+                    })
+                    .and_then(|shutdown| {
+                        shutdown
+                            .map(|_| ())
+                            .map_err(|source| app_guardian_fatal("guardian fatal cleanup", &source))
+                    });
+                    shutdown_proved = cleanup.is_ok();
+                    result.map_err(|error| append_app_cleanup(error, [cleanup]))
+                } else {
+                    result
+                };
+                // A failed exact-Guardian shutdown can leave its Child alive
+                // even before a Bun group exists. Only a proved successful
+                // shutdown plus absent registered group releases this owner.
+                let retained =
+                    (!shutdown_proved || guardian.group_pid().is_some()).then_some(guardian);
+                GuardianOwnerTerminal { result, retained }
+            });
+        let handle = match handle {
+            Ok(handle) => handle,
+            Err(source) => {
+                let original = pending_guardian
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                let _ = lease_shutdown.join();
+                let error = app_io("guardian owner", &source);
+                return Err(match original {
+                    Some(guardian) => failed_pre_actor_guardian(error, guardian),
+                    None => HostRunFailure::from(error),
+                });
+            }
+        };
         Ok(Self {
             command_tx,
             handle: Some(handle),
             lease_shutdown: Some(lease_shutdown),
+            #[cfg(all(test, feature = "fs-acceptance-observer"))]
+            panic_requested,
         })
     }
 
@@ -4760,10 +4996,20 @@ impl GuardianOwner {
         }
     }
 
-    fn shutdown(mut self) -> Result<(), HostAppError> {
-        let request = self.handle().shutdown_and_wait();
-        let joined = self.join();
-        joined.and(request)
+    #[cfg(all(test, feature = "fs-acceptance-observer"))]
+    fn trigger_panic_for_test(&self, injected: fn()) {
+        *self
+            .panic_requested
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(injected);
+    }
+
+    fn shutdown(mut self) -> Result<(), HostRunFailure> {
+        // Only joining the actual actor proves that an earlier Shutdown
+        // already completed cleanly. The handle itself fails closed on a
+        // disconnected command path used by the running primary router.
+        let _request = self.handle().shutdown_and_wait();
+        self.join()
     }
 
     fn attach_router(&self, router: PrimaryRouterHandle) -> Result<(), HostAppError> {
@@ -4788,19 +5034,30 @@ impl GuardianOwner {
         }
     }
 
-    fn join(&mut self) -> Result<(), HostAppError> {
+    fn join(&mut self) -> Result<(), HostRunFailure> {
+        let mut retained_guardian = None;
         let owner = self.handle.take().map_or(Ok(()), |handle| {
-            handle
+            let terminal = handle
                 .join()
-                .map_err(|_| app_detail("guardian owner", "thread panicked"))?
-                .map(|_| ())
+                .map_err(|_| app_detail("guardian owner", "thread panicked"))?;
+            retained_guardian = terminal.retained.map(Box::new);
+            terminal.result.map(|_| ())
         });
         let lease = self.lease_shutdown.take().map_or(Ok(()), |handle| {
             handle
                 .join()
                 .map_err(|_| app_detail("CLI lease-loss shutdown owner", "thread panicked"))
         });
-        owner.and(lease)
+        let result = owner.and(lease);
+        let result = if retained_guardian.is_some() && result.is_ok() {
+            Err(app_detail(
+                "guardian owner",
+                "terminal owner retained an unproved native process group",
+            ))
+        } else {
+            result
+        };
+        result.map_err(|error| HostRunFailure::with_guardian(error, retained_guardian))
     }
 }
 
@@ -4811,7 +5068,14 @@ impl Drop for GuardianOwner {
             return;
         }
         let _ = self.handle().shutdown_and_wait();
-        let _ = self.join();
+        if let Err(mut failure) = self.join()
+            && let Some(retained) = failure.retained_guardian.take()
+        {
+            // Drop has no error-return channel. Preserve the enrolled birth
+            // through the remaining Host lifetime rather than invoking the
+            // runtime Drop after its one native signal was already spent.
+            std::mem::forget(retained);
+        }
     }
 }
 
@@ -4984,11 +5248,18 @@ impl GuardianOwnerHandle {
             .send(GuardianOwnerCommand::Shutdown(reply_tx))
             .is_err()
         {
-            return Ok(());
+            return Err(app_detail(
+                "guardian shutdown",
+                "guardian owner stopped before accepting shutdown",
+            ));
         }
         match reply_rx.recv_timeout(GUARDIAN_OWNER_REPLY_DEADLINE) {
-            Ok(Ok(())) | Err(RecvTimeoutError::Disconnected) => Ok(()),
+            Ok(Ok(())) => Ok(()),
             Ok(Err(detail)) => Err(app_detail("guardian shutdown", detail)),
+            Err(RecvTimeoutError::Disconnected) => Err(app_detail(
+                "guardian shutdown",
+                "guardian owner ended without acknowledging shutdown",
+            )),
             Err(RecvTimeoutError::Timeout) => Err(app_detail(
                 "guardian shutdown",
                 "guardian owner exceeded the shutdown reply deadline",
@@ -8028,12 +8299,32 @@ fn collapse_app_failures<const N: usize>(
     primary: &HostAppError,
     cleanup: [Result<(), HostAppError>; N],
 ) -> HostAppError {
+    #[cfg(target_os = "macos")]
+    let original_runtime = primary
+        .runtime_source
+        .as_deref()
+        .or_else(|| {
+            cleanup.iter().find_map(|result| {
+                result
+                    .as_ref()
+                    .err()
+                    .and_then(|error| error.runtime_source.as_deref())
+            })
+        })
+        .cloned();
     let mut detail = primary.to_string();
     for error in cleanup.into_iter().filter_map(Result::err) {
         detail.push_str("; cleanup: ");
         detail.push_str(&error.to_string());
     }
-    app_detail("startup cleanup", detail)
+    let error = app_detail("startup cleanup", detail);
+    #[cfg(target_os = "macos")]
+    let error = {
+        let mut error = error;
+        error.runtime_source = original_runtime.map(Box::new);
+        error
+    };
+    error
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -8042,6 +8333,12 @@ fn append_app_cleanup<const N: usize>(
     cleanup: [Result<(), HostAppError>; N],
 ) -> HostAppError {
     for error in cleanup.into_iter().filter_map(Result::err) {
+        // Preserve the original typed native failure even when an earlier
+        // startup error is only text. The first native cause retains priority.
+        #[cfg(target_os = "macos")]
+        if primary.runtime_source.is_none() {
+            primary.runtime_source = error.runtime_source.as_deref().cloned().map(Box::new);
+        }
         primary.detail.push_str("; cleanup: ");
         primary.detail.push_str(&error.to_string());
     }
@@ -8059,14 +8356,25 @@ fn collapse_app_results(
     let Some(second) = errors.next() else {
         return Err(first);
     };
+    #[cfg(target_os = "macos")]
+    let mut original_runtime = first.runtime_source.as_deref().cloned();
     let mut detail = first.to_string();
-    detail.push_str("; cleanup: ");
-    detail.push_str(&second.to_string());
-    for error in errors {
+    for error in std::iter::once(second).chain(errors) {
+        #[cfg(target_os = "macos")]
+        if original_runtime.is_none() {
+            original_runtime = error.runtime_source.as_deref().cloned();
+        }
         detail.push_str("; cleanup: ");
         detail.push_str(&error.to_string());
     }
-    Err(app_detail("session cleanup", detail))
+    let error = app_detail("session cleanup", detail);
+    #[cfg(target_os = "macos")]
+    let error = {
+        let mut error = error;
+        error.runtime_source = original_runtime.map(Box::new);
+        error
+    };
+    Err(error)
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -8081,17 +8389,26 @@ fn app_io(phase: &'static str, source: &io::Error) -> HostAppError {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn app_runtime(phase: &'static str, source: &keld_runtime::RuntimeError) -> HostAppError {
-    app_detail(phase, source.to_string())
+    let error = app_detail(phase, source.to_string());
+    #[cfg(target_os = "macos")]
+    let error = {
+        let mut error = error;
+        error.runtime_source = Some(Box::new(source.clone()));
+        error
+    };
+    error
 }
 
 #[cfg(target_os = "macos")]
 fn app_guardian_fatal(phase: &'static str, source: &keld_runtime::RuntimeError) -> HostAppError {
-    HostAppError::new(
+    let mut error = HostAppError::new(
         "KELD-CORE-033",
         phase,
         source.to_string(),
         "Fix the cause named by the nested KELD-RUNTIME diagnostic, then relaunch the no-flag host.",
-    )
+    );
+    error.runtime_source = Some(Box::new(source.clone()));
+    error
 }
 
 #[cfg(any(target_os = "linux", windows))]

@@ -2,25 +2,30 @@
 //! release the generation also spends the authority: a second group-wide kill
 //! could only reach processes that joined later or a recycled PGID. Custody
 //! is kept (fail closed) until absence is proven; nothing is re-signalled.
+use std::cell::Cell;
+use std::io;
 use std::os::unix::process::CommandExt as _;
 use std::os::unix::process::ExitStatusExt as _;
 use std::process::{Command, Stdio};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill};
-use nix::unistd::Pid;
+use nix::unistd::{Pid, getpgid};
 
 use super::super::super::super::process_group::{
     TestGroupSignalPoint, install_test_group_signal_hook, require_attested_group_absence,
 };
 use super::super::super::super::{
-    GuardedPrimary, RecoveryState, RegisteredPrimaryGeneration, lock_generation,
+    GuardedPrimary, GuardianCleanupCauses, RecoveryState, RegisteredPrimaryGeneration,
+    RuntimeError, lock_generation,
 };
 use super::super::super::test_support::{
     NativeChildOwner, await_held_zombie_group, test_group_identity,
 };
-use super::{REUSED_LEADER, owned_sleep, primary_with_dead_guardian};
+use super::{REUSED_LEADER, first_poll_fatal_error, owned_sleep, primary_with_dead_guardian};
 
 /// A process that joins the original group only AFTER the first signal.
 fn late_joiner(raw: i32) -> NativeChildOwner {
@@ -63,6 +68,137 @@ fn failed_clear_absence_after_delivered_signal_never_resignals_the_group() {
     let later = generation.terminate();
     assert!(later.is_err(), "the group is not proven absent: {later:?}");
     assert_not_resignalled(joiner, "fail-safe after failed CLEAR");
+}
+
+fn assert_typed_terminal_group_absence(error: &RuntimeError) {
+    let RuntimeError::GuardianExited {
+        cleanup_error: Some(cleanup),
+        ..
+    } = error
+    else {
+        panic!("fatal Guardian report must carry the native cleanup failure: {error}");
+    };
+    let causes = cleanup
+        .get_ref()
+        .and_then(|cause| cause.downcast_ref::<GuardianCleanupCauses>())
+        .expect("GuardianExited cleanup retains the original typed cause");
+    assert_eq!(causes.failures().len(), 1, "one native absence failure");
+    assert!(
+        matches!(&causes.failures()[0], RuntimeError::Lifecycle { phase, source }
+            if *phase == "macOS guardian generation clear group absence"
+                && source.kind() == io::ErrorKind::TimedOut),
+        "native absence failure must retain its original phase and timeout"
+    );
+}
+
+// A successful group SIGKILL is merely signal delivery. Terminal host cleanup
+// cannot forget the original group birth while a second, test-owned member
+// remains an unreaped zombie. This test exercises the first armed call, not
+// only the already-spent CLEAR retry tested above.
+#[test]
+fn terminal_first_signal_retains_birth_until_held_member_reaped() {
+    let mut leader = owned_sleep(0);
+    let raw = i32::try_from(leader.id()).expect("test-owned group PID fits");
+    let group = Pid::from_raw(raw);
+    let mut held = owned_sleep(raw);
+    assert_eq!(
+        getpgid(Some(Pid::from_raw(
+            i32::try_from(held.id()).expect("held member PID fits")
+        ))),
+        Ok(group),
+        "held member is in the enrolled leader's group"
+    );
+    let registered =
+        RegisteredPrimaryGeneration::authenticated(1, test_group_identity(leader.id()));
+    let mut primary = primary_with_dead_guardian(registered, 17, true);
+    let count = Rc::new(Cell::new(0_usize));
+    let observed = Rc::clone(&count);
+    let _signal_hook = install_test_group_signal_hook(
+        leader.id(),
+        Box::new(move |point| {
+            assert_eq!(point, TestGroupSignalPoint::BeforeSignal);
+            observed.set(observed.get() + 1);
+        }),
+    );
+
+    let result = first_poll_fatal_error(&mut primary);
+    assert!(
+        matches!(&result, RuntimeError::GuardianExited { cleanup_error: Some(error), .. }
+            if error.to_string().contains("absence remains unproven")),
+        "terminal Guardian failure must retain unproven group custody: {result}"
+    );
+    assert_typed_terminal_group_absence(&result);
+    assert_typed_terminal_group_absence(&result.clone());
+    {
+        let owner = lock_generation(&primary.current_generation);
+        let retained = owner
+            .as_ref()
+            .expect("terminal failure retains original group birth");
+        assert_eq!(retained.group_identity, registered.group_identity);
+        assert!(matches!(
+            retained.native_signal,
+            super::super::super::super::guarded_primary::NativeSignalAuthority::Delivered { .. }
+        ));
+    }
+    assert_eq!(count.get(), 1, "only the first armed call may signal");
+    assert_eq!(
+        leader
+            .wait()
+            .expect("reap exact test-owned leader")
+            .signal(),
+        Some(Signal::SIGKILL as i32)
+    );
+    await_held_zombie_group(group);
+    assert_eq!(
+        getpgid(Some(group)),
+        Err(Errno::ESRCH),
+        "original leader has been reaped"
+    );
+    assert_eq!(
+        kill(Pid::from_raw(-raw), None),
+        Err(Errno::EPERM),
+        "unreaped second member keeps original group present"
+    );
+
+    assert!(
+        lock_generation(&primary.current_generation)
+            .as_mut()
+            .expect("original enrollment")
+            .terminate()
+            .is_err(),
+        "a later probe cannot release a held original member"
+    );
+    primary
+        .fail_current_generation(1)
+        .expect("repeated failure report spends no more signal authority");
+    assert_eq!(count.get(), 1, "later cleanup cannot re-signal");
+    assert_eq!(
+        held.wait().expect("reap exact test-owned member").signal(),
+        Some(Signal::SIGKILL as i32)
+    );
+    assert_eq!(kill(Pid::from_raw(-raw), None), Err(Errno::ESRCH));
+    // Re-enter the *shipping terminal owner*, not just the lower-level
+    // generation probe: only after the test reaps its exact held member may
+    // terminal cleanup remove the retained enrollment, without re-signalling.
+    let retired = first_poll_fatal_error(&mut primary);
+    assert!(
+        matches!(
+            &retired,
+            RuntimeError::GuardianExited {
+                cleanup_error: None,
+                ..
+            }
+        ),
+        "terminal owner must release only after real group absence: {retired}"
+    );
+    assert!(
+        lock_generation(&primary.current_generation).is_none(),
+        "terminal owner released original birth only after dual ESRCH"
+    );
+    primary
+        .fail_current_generation(1)
+        .expect("released enrollment cannot signal again");
+    assert_eq!(count.get(), 1, "absence proof never signals");
 }
 
 // GH-824 trigger: the leader passes its birth check, then exits into a
@@ -187,10 +323,40 @@ fn deadline_path_guardian_exit_reports_the_earlier_failure_without_a_second_call
         shutdown_sent: None,
         shutdown_denial_fence: None,
     };
-    let error = primary
+    let failure = primary
         .shutdown()
-        .expect_err("unresponsive Guardian and refused group signal")
-        .to_string();
+        .expect_err("unresponsive Guardian and refused group signal");
+    // The false branch of fatal_group_cleanup_status carries only the
+    // diagnostic that native cleanup was already attempted. Its original
+    // typed failure is retained as a sibling in shutdown_once's aggregate.
+    // Cloning that aggregate must not turn the earlier native failure into
+    // diagnostic text.
+    let copied = failure.clone();
+    for returned in [&failure, &copied] {
+        let RuntimeError::Lifecycle { phase, source } = returned else {
+            panic!("failed shutdown must preserve the typed cleanup aggregate: {returned}");
+        };
+        assert_eq!(*phase, "macOS guardian cleanup");
+        let causes = source
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<GuardianCleanupCauses>())
+            .expect("prior native failure remains a typed aggregate sibling");
+        assert!(
+            causes.failures().iter().any(
+                |cause| matches!(cause, RuntimeError::Lifecycle { phase, source }
+                    if *phase == "macOS guardian registered group identity changed"
+                        && source.kind() == io::ErrorKind::PermissionDenied)
+            ),
+            "native identity mismatch must survive direct and cloned shutdown errors"
+        );
+        assert!(
+            causes.failures().iter().any(|cause|
+                matches!(cause, RuntimeError::GuardianExited { cleanup_error: Some(source), .. }
+                    if source.to_string().contains("failed earlier in this shutdown"))),
+            "the prior-attempt breadcrumb is not a new native cleanup error"
+        );
+    }
+    let error = failure.to_string();
     assert_eq!(
         error.matches(REUSED_LEADER).count(),
         1,

@@ -12,6 +12,7 @@ pub use self::guarded_primary::{GuardedPrimary, GuardedPrimaryUpdate};
 use self::guarded_primary::{RegisteredPrimaryGeneration, lock_generation};
 
 mod error;
+pub use self::error::GuardianCleanupCauses;
 use self::error::{collapse_failures, lifecycle_error, nix_io_error};
 
 mod recovery_state;
@@ -26,6 +27,7 @@ mod generation_wire;
 mod host_control;
 
 mod process_group;
+pub(crate) use self::process_group::clone_unproven_denied_signal;
 #[cfg(test)]
 use self::process_group::terminate_registered_group;
 use self::process_group::{

@@ -9,12 +9,16 @@ use super::{
     Inputs, NativeWorkerSetup, SENTINEL, assert_owned_groups, native_worker_setup, next_bound,
     public_call, public_outcome, public_outcome_count, roundtrip,
 };
+use crate::app_session::HostRunFailure;
 use crate::app_session::native_generation_fixture::ActorTurns;
 use nix::errno::Errno;
-use nix::sys::signal::{Signal, killpg};
-use nix::unistd::Pid;
+use nix::sys::signal::{Signal, kill, killpg};
+use nix::unistd::{Pid, getpgid};
 use serde_json::json;
 use std::fs;
+use std::io;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, mpsc};
@@ -225,6 +229,438 @@ impl Drop for ActorFixture {
             let _ = owner.shutdown();
         }
     }
+}
+
+/// A real test-owned member of the authenticated G1 group. Only this test
+/// parent may reap it; failure cleanup never acts on an observed foreign PID.
+// A test-only channel lets the caller verify what Drop actually did with the
+// original Child, not merely that its numeric PID no longer has a group.
+type HeldChildCleanupReceipt = (io::Result<()>, io::Result<std::process::ExitStatus>);
+struct HeldGuardianMember(Option<Child>, Option<mpsc::Sender<HeldChildCleanupReceipt>>);
+
+impl HeldGuardianMember {
+    fn new(group_pid: u32) -> Self {
+        let raw = i32::try_from(group_pid).expect("authenticated Bun group PID fits i32");
+        // Own the exact Child before checking its group: a failed assertion
+        // must still reach the test-only kill-and-wait Drop rescue.
+        let member = Self(
+            Some(
+                Command::new("/bin/sleep")
+                    .arg("30")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .process_group(raw)
+                    .spawn()
+                    .expect("test-owned child joined authenticated G1 group"),
+            ),
+            None,
+        );
+        assert_eq!(
+            getpgid(Some(Pid::from_raw(
+                i32::try_from(member.0.as_ref().expect("owned member").id())
+                    .expect("member PID fits")
+            ))),
+            Ok(Pid::from_raw(raw)),
+            "member is in the authentic, registered generation group"
+        );
+        member
+    }
+
+    fn reap(&mut self) {
+        self.reap_until(Instant::now() + OBSERVATION_BOUND);
+    }
+
+    fn reap_until(&mut self, deadline: Instant) {
+        // Keep the owner populated until the exact Child has been reaped and
+        // its signal checked. If either assertion panics, Drop must rescue it.
+        let member = self.0.as_mut().expect("one owned child reap");
+        let status = loop {
+            if let Some(status) = member.try_wait().expect("reap exact test child") {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "original group signal did not kill held member"
+            );
+            thread::yield_now();
+        };
+        assert_eq!(status.signal(), Some(nix::libc::SIGKILL));
+        self.0.take();
+    }
+}
+
+impl Drop for HeldGuardianMember {
+    fn drop(&mut self) {
+        if let Some(mut member) = self.0.take() {
+            let signaled = member.kill();
+            let reaped = member.wait();
+            if let Some(receipt) = self.1.take() {
+                let _ = receipt.send((signaled, reaped));
+            }
+        }
+    }
+}
+
+// A RED negative control must not strand a test-owned child outside the
+// isolated actor fixture. Use an already-expired deadline to test the exact
+// failure path without sleeping, and rescue even a deliberately broken owner.
+#[test]
+fn held_member_reap_timeout_keeps_child_for_drop_rescue() {
+    let child = Command::new("/bin/sleep")
+        .arg("30")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .expect("spawn exact test-owned independent child");
+    let pid = Pid::from_raw(i32::try_from(child.id()).expect("owned PID fits"));
+    let (cleanup_tx, cleanup_rx) = mpsc::channel();
+    let mut owned = HeldGuardianMember(Some(child), Some(cleanup_tx));
+    // Independent precondition: a child that already exited cannot prove the
+    // live-child timeout or its unwind cleanup.
+    let live_before = owned
+        .0
+        .as_mut()
+        .expect("exact test child still owned")
+        .try_wait()
+        .expect("inspect test child before timeout")
+        .is_none();
+    let attempted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        owned.reap_until(Instant::now());
+    }));
+    // Catching any panic is not an oracle: wrong exit status also panics in
+    // reap_until. Require the exact timeout and a still-running owned child.
+    let timeout_panic = attempted.err().and_then(|payload| {
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+    });
+    let still_owned = owned.0.is_some();
+    let live_after = owned.0.as_mut().is_some_and(|member| {
+        member
+            .try_wait()
+            .expect("inspect exact child after caught timeout")
+            .is_none()
+    });
+    drop(owned);
+    if !still_owned {
+        // Negative mutation rescue: this is still the test's direct Child.
+        // Wait for the finite sleeper; never signal a PID after losing its
+        // original Child handle.
+        let _ = nix::sys::wait::waitpid(pid, None);
+    }
+    let cleanup = cleanup_rx.recv_timeout(OBSERVATION_BOUND);
+    // A zombie can have getpgid(pid) == ESRCH on Darwin. Query the actual
+    // parent wait slot: ECHILD is the independent exact-reap oracle.
+    let child_wait_slot = nix::sys::wait::waitpid(pid, Some(nix::sys::wait::WaitPidFlag::WNOHANG));
+    if matches!(child_wait_slot, Ok(nix::sys::wait::WaitStatus::StillAlive)) {
+        // Test-only rescue if Drop lost its wait under a negative mutation.
+        let _ = nix::sys::wait::waitpid(pid, None);
+    }
+    assert!(
+        live_before,
+        "timeout test started with an exited test child"
+    );
+    assert_eq!(
+        timeout_panic.as_deref(),
+        Some("original group signal did not kill held member"),
+        "only the real live-child deadline refusal qualifies"
+    );
+    assert!(
+        still_owned,
+        "the assertion may not disarm owned-child Drop rescue"
+    );
+    assert!(
+        live_after,
+        "the original child must still be running before Drop"
+    );
+    let (signaled, reaped) = cleanup.expect("Drop must publish actual kill and wait results");
+    signaled.expect("Drop must signal the original live Child");
+    assert_eq!(
+        reaped.expect("Drop must reap the exact Child").signal(),
+        Some(nix::libc::SIGKILL),
+        "Drop must kill the original Child, not wait for a natural exit"
+    );
+    assert_eq!(
+        child_wait_slot,
+        Err(Errno::ECHILD),
+        "Drop must consume the original Child's OS wait status"
+    );
+    assert_eq!(
+        getpgid(Some(pid)),
+        Err(Errno::ESRCH),
+        "Drop must leave no original test-owned process group"
+    );
+}
+
+#[test]
+fn disconnected_actor_command_cannot_acknowledge_clean_quit() {
+    let (command_tx, commands) = mpsc::channel();
+    drop(commands);
+    let error = GuardianOwnerHandle { command_tx }
+        .shutdown_and_wait()
+        .expect_err("a disconnected Guardian owner must refuse clean Quit");
+    assert_eq!(error.code(), "KELD-CORE-037");
+    assert!(
+        error
+            .to_string()
+            .contains("stopped before accepting shutdown"),
+        "the original owner-disconnection cause must be explicit"
+    );
+}
+
+/// The aborted actor's reader must fail closed; only after all native
+/// children are absent may the exact source-bound fixture stage be released.
+fn finish_retained_actor(mut fixture: ActorFixture, failure: HostRunFailure) {
+    let router_tail = fixture.router.take().expect("original router").shutdown();
+    assert!(
+        matches!(&router_tail, Err(error)
+            if error.code() == "KELD-CORE-037"
+            && error.phase == "primary app-link failure"
+            && matches!(error.detail.as_str(),
+                "guardian owner stopped"
+                | "guardian owner ended before acknowledging link failure")),
+        "the retired reader must fail closed when its Guardian owner is gone: {router_tail:?}"
+    );
+    let stage = fixture.inputs.stage_root.clone();
+    drop(failure);
+    drop(fixture);
+    let deleted = fs::remove_dir_all(&stage);
+    assert!(
+        deleted.is_ok()
+            || matches!(&deleted, Err(source) if source.kind() == std::io::ErrorKind::NotFound),
+        "exact native fixture stage cleanup after group retirement: {deleted:?}"
+    );
+    assert!(
+        !stage.exists(),
+        "fixture stage deletion after native custody proof"
+    );
+}
+
+/// Core must retain Runtime's native group birth after its actor has ended.
+/// The Runtime-only ECHILD regression keeps `GuardedPrimary` alive manually and
+/// therefore cannot prove this Host failure handoff.
+#[test]
+#[ignore = "explicit physical macOS Guardian actor fatal-custody lane"]
+fn fatal_actor_retains_held_native_group_in_host_failure() {
+    const CASE: &str = "guardian-actor-retained-birth";
+    const SELECTOR: &str = "app_session::tests::worker_link_e2e::native_observer_e2e::native_generation_recovery::actor_owner::fatal_actor_retains_held_native_group_in_host_failure";
+    if !support::is_native_child(CASE) {
+        support::isolated_guardian_case(CASE, SELECTOR);
+        return;
+    }
+
+    let mut fixture = ActorFixture::start();
+    let group_pid = fixture.initial_bun_group;
+    let group = Pid::from_raw(i32::try_from(group_pid).expect("registered group PID fits"));
+    let mut held = HeldGuardianMember::new(group_pid);
+    // This is the original test-spawned Guardian Child, still owned by the
+    // actor. The actor performs its own Child::try_wait/owned reap.
+    kill(
+        Pid::from_raw(i32::try_from(fixture.guardian_group).expect("Guardian PID fits")),
+        Some(Signal::SIGKILL),
+    )
+    .expect("kill exact original test Guardian");
+    assert_eq!(
+        fixture
+            .window
+            .recv_timeout(OBSERVATION_BOUND + OBSERVATION_BOUND)
+            .expect("fatal actor must wake original UI"),
+        AppWindowCommand::Fatal
+    );
+    let mut failure = fixture
+        .owner
+        .take()
+        .expect("actual actor owns original group")
+        .shutdown()
+        .expect_err("fatal actor cannot report completed shutdown");
+    assert_eq!(failure.code(), "KELD-CORE-033");
+    assert!(failure.to_string().contains("guardian watcher"));
+    let original_runtime = std::error::Error::source(&failure)
+        .and_then(|source| source.downcast_ref::<keld_runtime::RuntimeError>())
+        .expect("original typed native Guardian failure remains the Core error source");
+    assert!(
+        matches!(original_runtime,
+            keld_runtime::RuntimeError::GuardianExited { group_pid: original, .. }
+            if *original == group_pid),
+        "nested GuardianExit retains exact original native group"
+    );
+    assert!(
+        failure.retains_main_custody(),
+        "Host's existing fatal stage-cleanup gate needs retained Guardian custody"
+    );
+    assert_eq!(
+        failure
+            .retained_guardian
+            .as_ref()
+            .expect("original Guardian birth returned out of joined actor")
+            .group_pid(),
+        Some(group_pid)
+    );
+    assert!(
+        fixture.inputs.stage_root.exists(),
+        "failed Host must not delete the owner-private stage while custody is held"
+    );
+    assert!(
+        !fixture.handle().is_current(2),
+        "fatal actor provisioned a successor"
+    );
+    assert_ne!(
+        killpg(group, None::<Signal>),
+        Err(Errno::ESRCH),
+        "a held unreaped member must prevent a false group-absence receipt"
+    );
+
+    // The test-only parent now reaps its exact child. The already-spent
+    // original signal may not be repeated or given a new kill budget.
+    held.reap();
+    let deadline = Instant::now() + OBSERVATION_BOUND;
+    while killpg(group, None::<Signal>) != Err(Errno::ESRCH) {
+        assert!(Instant::now() < deadline, "owned group never fully retired");
+        thread::yield_now();
+    }
+    let guardian = failure
+        .retained_guardian
+        .as_mut()
+        .expect("Core still holds exact original Runtime owner");
+    guardian
+        .poll_fatal()
+        .expect_err("a dead Guardian never becomes healthy after group absence");
+    assert_eq!(
+        guardian.group_pid(),
+        None,
+        "dual ESRCH released exact group birth"
+    );
+    assert_eq!(
+        failure.code(),
+        "KELD-CORE-033",
+        "first fatal outcome remains sticky"
+    );
+    finish_retained_actor(fixture, failure);
+    println!(
+        "KELD_GH824_CORE_CUSTODY actor_joined=true held_member_denied=true failure_retained=true dual_esrch_released=true"
+    );
+    println!("KELD_AC7_CASE_DONE case={CASE} actor_joined=true fatal_custody=true");
+}
+
+/// A non-release Rust panic must preserve the same original, registered G1
+/// and source-bound Host stage when the actor unwinds while the group is held.
+fn inject_actual_actor_unwind() {
+    panic!("test-only GuardianOwner actor unwind");
+}
+
+#[test]
+#[ignore = "explicit physical macOS actor unwind with real enrolled group"]
+fn actor_unwind_retains_original_guardian_and_denies_successor() {
+    const CASE: &str = "guardian-actor-unwind-custody";
+    const SELECTOR: &str = "app_session::tests::worker_link_e2e::native_observer_e2e::native_generation_recovery::actor_owner::actor_unwind_retains_original_guardian_and_denies_successor";
+    if !support::is_native_child(CASE) {
+        support::isolated_guardian_case(CASE, SELECTOR);
+        return;
+    }
+
+    let mut fixture = ActorFixture::start();
+    let group_pid = fixture.initial_bun_group;
+    let group = Pid::from_raw(i32::try_from(group_pid).expect("enrolled G1 PID fits"));
+    let mut held = HeldGuardianMember::new(group_pid);
+    fixture
+        .owner
+        .as_ref()
+        .expect("actual original Guardian actor")
+        .trigger_panic_for_test(inject_actual_actor_unwind);
+    assert_eq!(
+        fixture
+            .window
+            .recv_timeout(OBSERVATION_BOUND * 2)
+            .expect("fatal UI wake"),
+        AppWindowCommand::Fatal
+    );
+    let mut failure = fixture
+        .owner
+        .take()
+        .expect("original Guardian actor")
+        .shutdown()
+        .expect_err("actor unwind must not complete shutdown");
+    assert_eq!(failure.code(), "KELD-CORE-037");
+    assert!(
+        failure
+            .to_string()
+            .contains("actor panicked before proving"),
+        "the original panic must remain the first terminal cause: {failure}"
+    );
+    assert!(
+        failure.retains_main_custody(),
+        "Host must retain the original Guardian"
+    );
+    assert_eq!(
+        failure
+            .retained_guardian
+            .as_ref()
+            .expect("retained native owner")
+            .group_pid(),
+        Some(group_pid),
+        "actor unwind must retain the original registered birth"
+    );
+    assert!(
+        fixture.inputs.stage_root.exists(),
+        "Host must retain unproved stage"
+    );
+    assert!(!fixture.handle().is_current(2), "no successor after panic");
+    assert_ne!(
+        killpg(group, None::<Signal>),
+        Err(Errno::ESRCH),
+        "the unreaped same-group member keeps group absence unproved"
+    );
+
+    // The synthetic panic occurs before any native signal. Only in this
+    // controlled test can the retained original owner safely perform its
+    // first shutdown; an arbitrary actor panic never retries it automatically.
+    let guardian = failure
+        .retained_guardian
+        .as_mut()
+        .expect("original Guardian remains available after unwind");
+    guardian
+        .shutdown()
+        .expect_err("an unreaped same-group child must deny clean shutdown");
+    assert_eq!(
+        guardian.group_pid(),
+        Some(group_pid),
+        "failed native absence retains the original group birth"
+    );
+
+    // After the test parent reaps its exact child, the original group may
+    // clear only through the runtime's read-only absence probe.
+    held.reap();
+    let deadline = Instant::now() + OBSERVATION_BOUND;
+    while killpg(group, None::<Signal>) != Err(Errno::ESRCH) {
+        assert!(
+            Instant::now() < deadline,
+            "original process group still held"
+        );
+        thread::yield_now();
+    }
+    // The same retained owner now performs only its read-only absence poll.
+    guardian
+        .poll_fatal()
+        .expect_err("panicked Guardian owner remains terminal");
+    assert_eq!(
+        guardian.group_pid(),
+        None,
+        "dual ESRCH releases enrolled birth"
+    );
+    assert_eq!(
+        failure.code(),
+        "KELD-CORE-037",
+        "panic failure stays sticky"
+    );
+    finish_retained_actor(fixture, failure);
+    println!(
+        "KELD_GH824_ACTOR_PANIC_CUSTODY retained=true held_member_denied=true successor=false dual_esrch_released=true"
+    );
+    println!("KELD_AC7_CASE_DONE case={CASE} panic_custody=true");
 }
 
 fn assert_old_return_and_broker_baseline(fixture: &mut ActorFixture) {

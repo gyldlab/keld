@@ -1,6 +1,6 @@
 // Unexpected generation-worker completion is not an attributed shutdown.
 // The host must fail closed and retire its still-registered native process group.
-use std::os::unix::process::CommandExt as _;
+use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -12,11 +12,11 @@ use super::super::{
     GUARDIAN_SHUTDOWN_DEADLINE, GuardedPrimary, JoinHandle, RecoveryState,
     RegisteredPrimaryGeneration, lock_generation, lock_recovery,
 };
-use super::test_support::NativeChildOwner;
+use super::test_support::{NativeChildOwner, reap_owned_child_with_deadline};
 
 #[test]
 fn premature_successful_generation_worker_exit_reaps_unattributed_group() {
-    let mut group = NativeChildOwner::new(
+    let group = NativeChildOwner::new(
         Command::new("/bin/sleep")
             .arg("30")
             .process_group(0)
@@ -80,19 +80,16 @@ fn premature_successful_generation_worker_exit_reaps_unattributed_group() {
         "test must observe successful worker exit while guardian remains live"
     );
 
+    let group_reaper = reap_owned_child_with_deadline(group);
     let result = primary.poll_fatal();
-    let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
-    let mut group_status = group.try_wait().expect("inspect live registered group");
-    while group_status.is_none() && Instant::now() < deadline {
-        thread::yield_now();
-        group_status = group.try_wait().expect("observe native group retirement");
-    }
-    let group_retired = group_status.is_some();
-    if !group_retired {
-        // This fixture has one native group member and retains its Child.
-        group.kill().expect("kill exact unreaped native test child");
-        group.wait().expect("reap exact native test child");
-    }
+    assert_eq!(
+        group_reaper
+            .join()
+            .expect("exact group-child reaper completed")
+            .signal(),
+        Some(nix::libc::SIGKILL),
+        "fatal worker completion must signal the enrolled group"
+    );
     primary.shutdown_attributed = true; // Avoid stand-in Q/S ACK I/O.
     let guardian_shutdown = primary.shutdown();
     assert!(
@@ -105,7 +102,6 @@ fn premature_successful_generation_worker_exit_reaps_unattributed_group() {
         error.to_string().contains("acknowledged shutdown"),
         "missing typed premature-worker failure: {error}"
     );
-    assert!(group_retired, "worker success left the native group alive");
     assert!(
         lock_generation(&current_generation).is_none(),
         "host retained stale registered group authority"
@@ -116,7 +112,7 @@ fn premature_successful_generation_worker_exit_reaps_unattributed_group() {
 // worker/guardian left an enrolled process group on the host side.
 #[test]
 fn zero_guardian_exit_with_successful_worker_reaps_registered_group() {
-    let mut group = NativeChildOwner::new(
+    let group = NativeChildOwner::new(
         Command::new("/bin/sleep")
             .arg("30")
             .process_group(0)
@@ -169,24 +165,21 @@ fn zero_guardian_exit_with_successful_worker_reaps_registered_group() {
         shutdown_denial_fence: None,
     };
 
+    let group_reaper = reap_owned_child_with_deadline(group);
     let result = primary.shutdown();
-    let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
-    let mut group_status = group.try_wait().expect("inspect native child");
-    while group_status.is_none() && Instant::now() < deadline {
-        thread::yield_now();
-        group_status = group.try_wait().expect("observe group cleanup");
-    }
-    let group_retired = group_status.is_some();
-    if !group_retired {
-        group.kill().expect("kill exact unreaped native test child");
-        group.wait().expect("reap exact native test child");
-    }
+    assert_eq!(
+        group_reaper
+            .join()
+            .expect("exact group-child reaper completed")
+            .signal(),
+        Some(nix::libc::SIGKILL),
+        "unexpected successful Guardian exit must signal the retained group"
+    );
     let error = result.expect_err("registered group cannot survive successful shutdown");
     assert!(
         error.to_string().contains("registered group"),
         "missing orphan-group lifecycle failure: {error}"
     );
-    assert!(group_retired, "zero guardian exit leaked a native group");
     assert!(
         lock_generation(&current_generation).is_none(),
         "host retained a stale generation after guardian exit"
@@ -197,7 +190,7 @@ fn zero_guardian_exit_with_successful_worker_reaps_registered_group() {
 // return ECHILD. Inspection failure must not strand the enrolled group.
 #[test]
 fn poll_fatal_inspection_error_reaps_registered_group() {
-    let mut group = NativeChildOwner::new(
+    let group = NativeChildOwner::new(
         Command::new("/bin/sleep")
             .arg("30")
             .process_group(0)
@@ -254,19 +247,16 @@ fn poll_fatal_inspection_error_reaps_registered_group() {
         #[cfg(test)]
         shutdown_denial_fence: None,
     };
+    let group_reaper = reap_owned_child_with_deadline(group);
     let result = primary.poll_fatal();
-    let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
-    let mut group_status = group.try_wait().expect("inspect registered group");
-    while group_status.is_none() && Instant::now() < deadline {
-        thread::yield_now();
-        group_status = group.try_wait().expect("observe group retirement");
-    }
-    let group_retired = group_status.is_some();
-    if !group_retired {
-        // A red-phase regression must never leave its own group alive.
-        group.kill().expect("kill exact unreaped native test child");
-        group.wait().expect("reap exact native test child");
-    }
+    assert_eq!(
+        group_reaper
+            .join()
+            .expect("exact group-child reaper completed")
+            .signal(),
+        Some(nix::libc::SIGKILL),
+        "inspection failure must signal the original registered group"
+    );
     // The guardian was already externally reaped, so avoid Drop's Q/S I/O.
     primary.liveness_writer.take();
     let error = result.expect_err("failed child inspection must be fatal");
@@ -274,7 +264,6 @@ fn poll_fatal_inspection_error_reaps_registered_group() {
         error.to_string().contains("generation process inspection"),
         "unexpected inspection error: {error}"
     );
-    assert!(group_retired, "inspection failure stranded a native group");
     assert!(
         lock_generation(&current_generation).is_none(),
         "failed guardian inspection retained stale group authority"

@@ -25,6 +25,7 @@ use super::test_support::NativeChildOwner;
 mod witness;
 use self::witness::await_denial_witness;
 mod cleanup_authority;
+mod echild_custody;
 
 const FORGED_GROUP_ENV: &str = "KELD_TEST_KGR1_FOREIGN_GROUP";
 const FORGED_GROUP_ROLE: &str =

@@ -169,6 +169,11 @@ fn first_attempt_still_cleans_a_live_member_after_its_leader_is_reaped() {
     let registered =
         RegisteredPrimaryGeneration::authenticated(1, test_group_identity(leader.id()));
     reap_leader(&mut leader, raw);
+    // A group-wide signal alone cannot establish whole-group absence while
+    // an unreaped child remains. Model the Guardian's exclusive exact-child
+    // reap in a separate owner so terminal absence can be observed in-budget.
+    let member_reaper =
+        std::thread::spawn(move || member.wait().expect("reap the signalled test-owned member"));
     let mut primary = primary_with_dead_guardian(registered, 17, true);
     let first = first_poll_fatal_error(&mut primary);
     assert!(
@@ -182,7 +187,10 @@ fn first_attempt_still_cleans_a_live_member_after_its_leader_is_reaped() {
         "the first attested cleanup must succeed: {first}"
     );
     assert_eq!(
-        member.wait().expect("reap the killed member").signal(),
+        member_reaper
+            .join()
+            .expect("exact-child reaper finished")
+            .signal(),
         Some(9),
         "the first attempt signals the original group"
     );

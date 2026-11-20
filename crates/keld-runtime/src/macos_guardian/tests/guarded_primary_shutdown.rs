@@ -8,12 +8,22 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use nix::errno::Errno;
+use nix::sys::signal::{Signal, kill};
+use nix::unistd::Pid;
+
+use super::super::guarded_primary::NativeSignalAuthority;
+use super::super::process_group::{
+    require_attested_group_absence, terminate_attested_group_with_observers_for_test,
+};
 use super::super::{
     GENERATION_CONTROL_POLL, GUARDIAN_SHUTDOWN_DEADLINE, GuardedPrimary, GuardedPrimaryUpdate,
     GuardianBootstrap, RecoveryState, RegisteredPrimaryGeneration, RoleEvent, RuntimeError,
     SUPERVISED_GUARDIAN_ARG, lifecycle_error, lock_generation, lock_recovery,
 };
-use super::test_support::NativeChildOwner;
+use super::test_support::{NativeChildOwner, reap_owned_child_with_deadline};
+
+mod echild_custody;
 
 struct PersistentPrimaryFixture {
     primary: GuardedPrimary,
@@ -320,8 +330,152 @@ fn poll_fatal_rejects_owned_guardian_zero_even_after_shutdown_attribution() {
 }
 
 #[test]
+fn terminal_cleanup_does_not_reprobe_an_absence_proven_reused_pgid() {
+    // The first observer represents birth A already absent (dual ESRCH).
+    // A live test-owned group now occupies the same numeric PID/PGID with
+    // birth B. A second probe of A must refuse B, but terminal cleanup must
+    // consume the completed proof instead of running that second probe.
+    let mut reused = NativeChildOwner::new(
+        Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("own live replacement group leader"),
+    );
+    let replacement_birth = super::test_support::test_group_identity(reused.id());
+    let original_birth = replacement_birth.altered_birth_for_test();
+    assert_ne!(original_birth, replacement_birth);
+
+    let first_absence_proofs = std::cell::Cell::new(0_u8);
+    let mut generation = RegisteredPrimaryGeneration::authenticated(1, original_birth);
+    generation
+        .signal_if_armed_with_for_test(|identity, _deadline| {
+            terminate_attested_group_with_observers_for_test(
+                identity,
+                || {
+                    Err(lifecycle_error(
+                        "test original group leader already absent",
+                        io::Error::from_raw_os_error(Errno::ESRCH as i32),
+                    ))
+                },
+                |_| (Err(Errno::ESRCH), Err(Errno::ESRCH)),
+                || panic!("dual ESRCH must not authorize a group signal"),
+                || {
+                    first_absence_proofs.set(first_absence_proofs.get() + 1);
+                    Ok(())
+                },
+            )
+        })
+        .expect("the first dual-ESRCH observation proves original birth A absent");
+    assert_eq!(first_absence_proofs.get(), 1);
+    assert_eq!(
+        generation.native_signal,
+        NativeSignalAuthority::AbsenceProven,
+        "the owner must retain the exact completed outcome"
+    );
+
+    let duplicate =
+        require_attested_group_absence(original_birth, Instant::now() + Duration::from_secs(1))
+            .expect_err("a second probe would see replacement birth B at the same PGID");
+    assert!(
+        matches!(&duplicate, RuntimeError::Lifecycle { source, .. }
+            if source.kind() == io::ErrorKind::PermissionDenied
+                && source.to_string().contains("birth changed")),
+        "the negative control must reject the replacement birth: {duplicate}"
+    );
+
+    let mut registered = Some(generation);
+    super::super::guarded_primary::terminate_and_release_generation_for_test(&mut registered)
+        .expect("terminal cleanup must consume the completed absence proof");
+    assert!(registered.is_none(), "the original generation is released");
+    assert!(
+        reused
+            .try_wait()
+            .expect("inspect the replacement child")
+            .is_none(),
+        "terminal cleanup must not signal the replacement group"
+    );
+    let replacement_pid = Pid::from_raw(i32::try_from(reused.id()).expect("replacement PID fits"));
+    kill(replacement_pid, Some(Signal::SIGTERM))
+        .expect("signal only the exact test-owned replacement");
+    assert_eq!(
+        reused
+            .wait()
+            .expect("reap the exact replacement child")
+            .signal(),
+        Some(Signal::SIGTERM as i32),
+        "the replacement must survive product cleanup and exit only from test-owned SIGTERM"
+    );
+}
+
+#[test]
+fn terminal_cleanup_composes_spent_and_delivered_absence_proofs_once() {
+    let identity = super::super::process_group::GroupIdentity::unverified_for_test(123);
+    let deadline = Instant::now() + Duration::from_secs(1);
+
+    // A previously spent generation performs its one read-only proof inside
+    // `terminate`. The terminal wrapper must not run a second proof after it.
+    let mut spent = RegisteredPrimaryGeneration::authenticated(1, identity);
+    spent.native_signal = NativeSignalAuthority::Delivered {
+        reap_deadline: deadline,
+    };
+    let mut registered = Some(spent);
+    let spent_proofs = std::cell::Cell::new(0_u8);
+    let duplicate_proofs = std::cell::Cell::new(0_u8);
+    super::super::guarded_primary::terminate_and_release_generation_with_for_test(
+        &mut registered,
+        |generation| {
+            assert!(matches!(
+                generation.native_signal,
+                NativeSignalAuthority::Delivered { .. }
+            ));
+            spent_proofs.set(spent_proofs.get() + 1);
+            Ok(())
+        },
+        |_, _| {
+            duplicate_proofs.set(duplicate_proofs.get() + 1);
+            Err(lifecycle_error(
+                "test duplicate terminal absence proof",
+                io::Error::other("the second proof must not run"),
+            ))
+        },
+    )
+    .expect("spent generation's completed proof is sufficient");
+    assert_eq!(spent_proofs.get(), 1);
+    assert_eq!(duplicate_proofs.get(), 0);
+    assert!(registered.is_none());
+
+    // An armed generation that delivered SIGKILL still needs one post-signal
+    // absence proof. This control prevents a false fix that skips all probes.
+    let armed = RegisteredPrimaryGeneration::authenticated(2, identity);
+    let mut registered = Some(armed);
+    let post_signal_proofs = std::cell::Cell::new(0_u8);
+    super::super::guarded_primary::terminate_and_release_generation_with_for_test(
+        &mut registered,
+        |generation| {
+            generation.native_signal = NativeSignalAuthority::Delivered {
+                reap_deadline: deadline,
+            };
+            Ok(())
+        },
+        |seen, seen_deadline| {
+            assert_eq!(seen, identity);
+            assert_eq!(seen_deadline, deadline);
+            post_signal_proofs.set(post_signal_proofs.get() + 1);
+            Ok(())
+        },
+    )
+    .expect("delivered SIGKILL gets its required absence proof");
+    assert_eq!(post_signal_proofs.get(), 1);
+    assert!(registered.is_none());
+}
+
+#[test]
 fn shutdown_worker_error_reaps_registered_group_after_zero_guardian_exit() {
-    let mut group = NativeChildOwner::new(
+    let group = NativeChildOwner::new(
         Command::new("/bin/sleep")
             .arg("30")
             .process_group(0)
@@ -377,32 +531,24 @@ fn shutdown_worker_error_reaps_registered_group_after_zero_guardian_exit() {
         shutdown_denial_fence: None,
     };
 
+    let group_reaper = reap_owned_child_with_deadline(group);
     let error = primary.shutdown().expect_err("worker failure stays fatal");
     let guardian_status = primary
         .child
         .try_wait()
         .expect("owned guardian reaped")
         .expect("guardian exited");
-    let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
-    let mut group_status = group.try_wait().expect("inspect owned group");
-    while group_status.is_none() && Instant::now() < deadline {
-        thread::yield_now();
-        group_status = group.try_wait().expect("observe group retirement");
-    }
-    let fail_safe_reaped = group_status.is_some();
-    if !fail_safe_reaped {
-        // This fixture has only one test-owned /bin/sleep group member.
-        // Rescue the exact unreaped Child, never a possibly recycled PGID.
-        group.kill().expect("kill exact retained test-owned child");
-        group.wait().expect("reap exact retained test-owned child");
-    }
+    assert_eq!(
+        group_reaper
+            .join()
+            .expect("exact group-child reaper completed")
+            .signal(),
+        Some(nix::libc::SIGKILL),
+        "terminal cleanup must signal the original registered group"
+    );
     assert!(
         guardian_status.success(),
         "test requires zero guardian exit"
-    );
-    assert!(
-        fail_safe_reaped,
-        "worker failure left a registered Bun process group alive: {error}"
     );
     assert!(
         lock_generation(&current_generation).is_none(),
