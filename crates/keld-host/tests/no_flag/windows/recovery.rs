@@ -393,10 +393,6 @@ fn windows_post_hello_pre_ready_exit_fails_startup_without_successor() {
         .expect("captured post-HELLO stderr")
         .read_to_string(&mut stderr)
         .expect("read post-HELLO stderr");
-    assert!(
-        stderr.contains("Bun terminated before the initial window became ready"),
-        "{stderr}"
-    );
     assert_emitted_pre_ready_bun_exit_evidence(&stderr, bun_pid);
     assert!(!stderr.contains("KELD-RUNTIME-002"), "{stderr}");
     // Corroboration only: this counts the window attempt; the held connection
@@ -431,6 +427,16 @@ fn assert_emitted_pre_ready_bun_exit_evidence(stderr: &str, bun_pid: u32) {
         .find(|line| line.starts_with("KELD-CORE-037"))
         .expect("real pre-Ready Host failure carries its original error code");
     assert!(
+        primary.starts_with(
+            "KELD-CORE-037: no-flag host failed during primary generation before Ready — "
+        ),
+        "wrong Host diagnostic phase: {primary}"
+    );
+    assert!(
+        primary.contains("Bun terminated before the initial window became ready"),
+        "wrong Host diagnostic cause: {primary}"
+    );
+    assert!(
         primary.contains(&format!(
             "supervised Bun exit pid={bun_pid} status=Some(19)"
         )),
@@ -443,10 +449,14 @@ fn assert_emitted_pre_ready_bun_exit_evidence(stderr: &str, bun_pid: u32) {
         .split_once(". Fix the app session failure and relaunch the no-flag host.")
         .expect("tail must precede the unchanged Host failure guidance");
     assert!(
-        bounded_tail.contains("GH814_PRE_READY_PUBLIC_MARKER"),
-        "real Bun stderr marker missing from bounded Host diagnostic: {primary}"
+        bounded_tail.ends_with("GH814_PRE_READY_PUBLIC_MARKER END"),
+        "real Bun stderr marker or scrubbed suffix missing: {primary}"
     );
-    assert!(bounded_tail.chars().count() <= 384, "unbounded Bun stderr");
+    assert_eq!(
+        bounded_tail.chars().count(),
+        384,
+        "Host diagnostic must retain exactly 384 characters from the oversized fixture"
+    );
     assert!(
         !bounded_tail.chars().any(char::is_control),
         "Host output retained terminal controls in the bounded Bun stderr"
