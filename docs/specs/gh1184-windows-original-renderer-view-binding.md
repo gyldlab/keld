@@ -3,7 +3,7 @@
 - Status: draft
 - Tracker: GH-1184
 - Owner: @0monish, GH531 Window Registry contract authority
-- Updated: 2026-11-19
+- Updated: 2026-11-20
 - Pin: 16a9545ccc417b72b2f0508520c360f9fd5e2ced
 
 ## 1. Goal & non-goals
@@ -175,19 +175,25 @@ Reuse the existing document, permission, writer, ledger and ownership boundaries
 
 ### AC-16: Partial publication preserves an eligible survivor
 
-- **Given:** The Registry accepted BuildOk and the original link received Created. The same native view remains Open.
-- **When:** Cause recoverable role loss before binding in one run and after written binding in another. Hold the Create reply before admission. Release the old publication turn before the authenticated successor subscribes.
-- **Then:** The original link receives zero correlated success frames. The same WindowRef and physical view survive. The successor receives one Created and one binding for that view in its ordered replay. It receives no old reply.
+- **Given:** The Registry accepted BuildOk. An independent native witness identifies the same Open view.
+- **When:** Hold the Create reply before admission. Cause recoverable role loss at each publication point in a separate run.
+  1. Refuse admission of the first Created record before the primary writer accepts it. The writer makes no physical attempt.
+  2. Admit the first Created record. The primary writer attempts it and reports `OutcomeUnknown`. Observe old-link bytes independently.
+  3. Created has a positive receipt and the writer has not offered the binding.
+  4. Created has a positive receipt. The primary writer attempts the binding and reports `OutcomeUnknown`. Observe old-link bytes independently.
+  5. The binding has a positive receipt.
+- Release the old publication turn before the authenticated successor subscribes.
+- **Then:** The original link receives zero correlated success frames. Without a positive Created receipt, the original writer offers zero binding frames. The same WindowRef and physical view survive. The successor receives one Created and one binding for that view in its ordered replay. It receives no old reply.
 - **Negative control:**
   - **Single fault:** Treat the partially published Open entry as Opening at original role retirement.
-  - **At-risk precondition:** The Host grants recovery. The view has no independent close or release, and the successor's Subscribe succeeds.
+  - **At-risk precondition:** The first Created write reports `OutcomeUnknown`. The Host grants recovery. The view has no independent close or release. The successor's Subscribe succeeds.
   - **Expected RED:** The same WindowRef and view fail to appear together in successor replay.
 
 ### AC-17: Session end releases a partially published view
 
-- **Given:** The Registry accepted BuildOk and the original link received Created. Use both partial-publication cuts from AC-16.
+- **Given:** The Registry accepted BuildOk. Use all five publication points from AC-16.
 - **When:** The Host accepts session end instead of recoverable role loss while the original Create reply remains unadmitted.
-- **Then:** The original link receives zero correlated success frames. The Registry changes the same entry to Closing and issues one teardown command for its view. Observe the checked native release separately. The entry never enters replay.
+- **Then:** The original link receives zero correlated success frames. Without a positive Created receipt, the original writer offers zero binding frames. The Registry changes the same entry to Closing and issues one teardown command for its view. Observe the checked native release separately. The entry never enters replay.
 - **Negative control:**
   - **Single fault:** Omit the Registry's per-entry teardown command for this Open window.
   - **At-risk precondition:** Observe the exact Core command boundary before terminal native cleanup can mask the omission.
@@ -223,6 +229,26 @@ Reuse the existing document, permission, writer, ledger and ownership boundaries
   - **At-risk precondition:** The gap close became pending on an otherwise replay-eligible survivor; no later close or teardown supersedes it.
   - **Expected RED:** The successor's Created fact loses the exact new pending close.
 
+### AC-21: The mirror rejects a physical view already bound to another window
+
+- **Given:** Feed two distinct live Created pairs through the actual WorkerLink to the canonical Window mirror.
+- **When:** Bind the first pair. Send a valid binding for the second pair with the same physical view.
+- **Then:** The mirror takes the existing terminal `KELD-IPC-005` path before the second association or its listener dispatch. A separate run with distinct physical views applies both bindings.
+- **Negative control:**
+  - **Single fault:** Remove only the mirror's check for an existing binding to another live pair.
+  - **At-risk precondition:** Both pairs are live. Both records pass codec checks and reach the same mirror.
+  - **Expected RED:** The mirror applies the second association without terminating the link.
+
+### AC-22: The normal XML app launch uses the selected binding
+
+- **Given:** Start the unchanged pinned draw.io app through normal `keld dev` with the matched Windows tuple.
+- **When:** The selected page sends `app-load-finished` and the app handles the matching window load.
+- **Then:** The main listener receives the genuine `WebContents` and authenticated frame. The app's `args-obj` response reaches that exact original view and document. Observe the existing listener's `loadArgs` call in the original document independently of the Host send.
+- **Negative control:**
+  - **Single fault:** Drop the app's `args-obj` delivery after its normal admission to the exact original view.
+  - **At-risk precondition:** The app has sent the response. The same admitted view, document and listener stay live.
+  - **Expected RED:** The original document shows no receipt of that response.
+
 ## 4. Design
 
 ### D-1: Physical association on WINDOW
@@ -252,7 +278,7 @@ The Registry can replay a surviving association independently of the retired cal
 
 Preserve the original writer outcome if publication fails or its receipt is unproved. Withhold later correlated success. If the reply write was attempted and its outcome is unknown, keep the exact writer's failure custody. An unknown receipt provides no proof of delivery. Never reissue the original success from replay.
 
-Accepted BuildOk changes Opening to Open before publication. After Created or after binding, a publication failure does not itself change that native phase. If the Host grants role recovery, keep the checked Open view and its WindowRef for the authenticated successor's ordered replay.
+Accepted BuildOk changes Opening to Open before publication. A refusal before Created admission or an unproved write does not itself change that phase. Without a positive Created receipt, do not offer the binding. If the Host grants role recovery, keep the checked Open view and its WindowRef for the authenticated successor's ordered replay.
 
 Follow the existing [GH531 abandoned-close rule](https://github.com/gyldlab/keld/blob/9a1559f3c0a5b7174144b6351d6a86985628dbb7/docs/specs/gh531-window-registry-close-state-machine.md#L809-L810) only for a close already pending at role loss. Preserve a native close that first arrives during the recovery gap and carry its sequence in the successor's
 [`Created.pending_close`](https://github.com/gyldlab/keld/blob/9a1559f3c0a5b7174144b6351d6a86985628dbb7/docs/specs/gh531-window-registry-close-state-machine.md#L300-L317). An independently Closing or Destroyed entry stays outside replay.
@@ -265,7 +291,7 @@ The [Open retirement rules](https://github.com/gyldlab/keld/blob/9a1559f3c0a5b71
 
 ### D-3: Mirror, applied state and deferred dispatch
 
-Apply the binding in the canonical Window mirror. Require the exact live Created pair. Reject an unknown, destroyed, foreign, changed or multiply bound view through the existing invalid-fact terminal path. An identical repeat may be idempotent. Retain one scalar association per row.
+Apply the binding in the canonical Window mirror. Require the exact live Created pair. Reject an unknown, destroyed, foreign or changed association through the existing invalid-fact terminal path. Use that path if a different live pair already owns the physical view. An identical repeat may be idempotent. Retain one scalar association per row.
 
 Use the existing qualified navigation facts for document state. Route selected `DocumentRecovered` and `NavigationFinishedUnitPinchV1` through their existing owners. Recovery grants no registration. Qualified finishes complete each load once.
 
@@ -311,7 +337,7 @@ Use the existing Rust WINDOW receive owner, Core Registry and primary writer. Up
 ### T-4: Qualify selected delivery and retirement
 
 - **Blocked by:** T-2, T-3, B-2
-- Join approved GH540 DATA and CONTROL using the existing Guard, writer and ledger. Run AC-1 through AC-20 on one exact Windows Host, CLI and SDK tuple.
+- Join approved GH540 DATA and CONTROL using the existing Guard, writer and ledger. Run AC-1 through AC-22 on one exact Windows Host, CLI and SDK tuple.
 
 ## 7. Test plan & evidence
 
@@ -340,6 +366,8 @@ Use the existing Rust WINDOW receive owner, Core Registry and primary writer. Up
 **FACT:** The installed decoder SHA-256 is `668a9c6e284ffbda1b983dc6ff8fc2cd642e7cbde425e2eba684c544fd5e9c5c`. It accepted `06 01 82 02` and rejected `0c 01 82 02 07` with `KELD-IPC-003`.
 
 Keep byte, writer-frame, state-applier, listener and native-effect witnesses independent. Test the correct order and the specified single-fault schedule separately. Identify a source-owner probe separately from a live link test.
+
+Keep the two-view identity fixture in AC-1. Record the unchanged-app launch in AC-22 separately. Link its receipt from the GH1185 workflow report for the same tuple.
 
 ## 8. Review gates triggered
 
