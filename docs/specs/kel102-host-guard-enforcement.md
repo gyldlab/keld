@@ -23,6 +23,13 @@ Decision digest: `sha256:868aaef5991a03ce4e394943d96f6ead62e725444ad66280a906a60
 > window/web, native, media and role authority are not added. No product change or
 > merge is authorized here; GH #552 and #542 retain separate implementation-spec gates.
 
+The pending GH541/GH552 amendment preserves the existing five-argument native function.
+It delegates to the typed dispatch body in the same IPC module.
+Upon exact approval, this call chain supersedes the corresponding D5, section 4 and section 7 sole-caller assertions.
+That body calls Guard-owned `evaluate_query` and alone invokes the effect callback.
+The native query delegates its pure decision to `evaluate`.
+This proposal requires its own exact-content decision.
+
 ## 1. Goal & non-goals
 
 Make `keld-guard` an actual host-enforced policy boundary for every live
@@ -99,7 +106,7 @@ trailing newline. Its SHA-256 is recorded in the header.
 | `KEL-102-D2` | Approve the exact public APIs in §4: `keld_guard::verified_manifest::load_verified_manifest`, `keld_core::app_session::run_guarded`, and the non-cloneable `keld_wv::MediaPolicy`/borrowed `WebEngine::create` injection seam. `GuardSnapshot`, `TrustedDispatchContext`, raw policy bytes, manifest fields, and callback leases remain private. |
 | `KEL-102-D3` | `KEL-102/T2` consumes the `KEL-96/T1a` acceptance row from one landed atomic T1a+T1b `host-boot-and-session` artifact. It does not accept the stale standalone `host-boot-descriptor` terminal and does not depend on KEL-96 T2-T5. |
 | `KEL-102-D4` | One host-accepted authenticated v0 app link maps to `Principal::AppProcess`. Frame data, token text, PID, environment, working directory, role name, and Electron options cannot select identity. Role generations remain KEL-75/KEL-97. |
-| `KEL-102-D5` | `keld_ipc::guard_dispatch::dispatch_privileged` is the sole production guard-before-handler boundary and sole production caller of `keld_guard::evaluate`. After the principal decision but before an FS handler, its private allocation-free request check enforces the guard-owned component grammar; direct `evaluate` retains literal matcher semantics for permission-explain tooling. Its `Allow(ScopePermit)` result lends `&ScopePermit` to the callback; the callback result cannot borrow it, and the permit has no public constructor. `keld-native` uses that borrow to select the first-match retained grant for registered native channels; other direct consumers ignore it. `keld-core` resolves trusted context, decodes, validates, and routes; it never evaluates, accepts a permit/index, or adds a second authorization check. |
+| `KEL-102-D5` | `keld_ipc::guard_dispatch::dispatch_privileged` is the native v0 guard-before-handler boundary and sole native dispatch caller of `keld_guard::evaluate` at the original pin. The proposed GH541/GH552 amendment above specifies the successor call chain and supersedes that caller restriction only upon approval. After the principal decision but before an FS handler, its private allocation-free request check enforces the guard-owned component grammar; direct `evaluate` retains literal matcher semantics for permission-explain tooling. Its `Allow(ScopePermit)` result lends `&ScopePermit` to the callback; the callback result cannot borrow it, and the permit has no public constructor. `keld-native` uses that borrow to select the first-match retained grant for registered native channels; other direct consumers ignore it. `keld-core` resolves trusted context, decodes, validates, and routes; it never evaluates, accepts a permit/index, or adds a second authorization check. |
 | `KEL-102-D6` | Freeze the order `KEL-102/T2` verified load/snapshot → `T3` reachable filesystem vertical → `T4` webview media injection → `T5` role-generation binding after KEL-97. Set `kel97_predecessor_task_id=none`: KEL-97 owns role-link identity independently; KEL-102/T5 consumes KEL-97, never the reverse. |
 | `KEL-102-D7` | KEL-78 OS containment is complementary to broker authorization, neither a blocker nor a substitute. KEL-102 alone cannot support a strict-profile or release-containment claim. |
 | `KEL-102-D8` | Controlled reload is outside this specification until a separately approved revocation-before-reprovision contract exists. |

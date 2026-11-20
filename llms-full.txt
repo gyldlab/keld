@@ -1897,7 +1897,7 @@ below; they do not authorize wildcard channel grants.
 **Approved channel contract, unimplemented:**
 [GH #541](../specs/gh541-channel-grants-navigation.md) defines exact incoming `el:`
 literals with no wildcard authority and records the separate delegated approval.
-The example below uses illustrative literals, not a draw.io channel census.
+The example below illustrates the target schema. It is not a runnable product manifest. GH541 section 4.3 supplies the minimal opted-in channel fixture.
 The current evaluator still ignores `windows` and denies non-AppProcess principals.
 Channel grants require the separately approved #552/#542 implementation and evidence.
 
@@ -1924,6 +1924,7 @@ manifest decoder.
     "auth":    { "begin": ["https://login.microsoftonline.com/common"],
                  "token": ["https://login.microsoftonline.com/common"] }
   },
+  "$keldWindowChannelGrants": 1,
   "windows": {
     "main":  { "channels": ["el:rendererReq", "el:saveFile"], "web": { "csp": "default" } },
     "about": { "channels": [], "web": { "csp": "static-only" } }
@@ -2002,8 +2003,8 @@ manifest decoder.
   uniqueness. Neither lexical rule resolves filesystem aliases.
 - **Schema-declared channels:** a channel's declared native capability set
   (from `.k.ts` contracts) must be ⊆ the caller's grants. This schema-layer rule
-  does not interpret opaque Electron application payloads. The approved GH #541
-  contract defines exact `windows.<w>.channels` literals for incoming
+  does not interpret opaque Electron application payloads. The proposed GH #541 amendment
+  requires the exact integer opt-in shown above before interpreting `windows.<w>.channels` literals for incoming
   Electron message routes, with denial before Bun. A route grant does not grant a
   native capability; every native operation requested by Bun still requires its
   own native guard decision. Channel evaluation remains unimplemented until its

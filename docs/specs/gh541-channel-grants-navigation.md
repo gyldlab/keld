@@ -1,12 +1,12 @@
 # Spec: exact channel grants and host-owned navigation identity
 
-Status: approved contract, unmerged — explicit repository-owner delegation; separate implementation gates remain
+Status: draft amendment for P01 and typed dispatch. The historical approval applies to its recorded bytes.
 
 Tracker: [GH #541](https://github.com/gyldlab/keld/issues/541), F04-T7. Reference: KEL-102. Implementing owners: [#552](https://github.com/gyldlab/keld/issues/552), F04-T8, and [#542](https://github.com/gyldlab/keld/issues/542), F04-T9. Contract owner: GYLDLAB. Reviewed: 2026-10-23.
 
-Source pin: `442f3ebcef777f204cec7073932dc06edfab3a2e` (immutable review baseline). The approved technical commit is `7e0c1b89c4767f2e6625cd2bfc4d36d86b30fc26`, based on `ef491ebd67ae794e004977a6d6578cdbb7235d61`. At approval time, main's delta from the review pin comprised two KEL-254 Windows files, the Tokio lock entry and its CI-input digest; no reviewed Keld source or proposed documentation target had changed. Original KEL-102 and KEL-142 approval records remain scoped to their original content. New exact-content decision: KEL-102 comment `8fa29b34-bdb6-470f-9f97-9cdf0aa1d0eb`; decision SHA-256 `2da2c23a53848d618f08612a1106d53283b7488601be7fd3eaa5ed95038df5af`. The digest covers the decision JSON line, excluding its newline, and its five-file manifest binds the approved technical content. This follow-up records provenance and tracker metadata only. Independent-human approval is not claimed. No implementation or merge is authorized by this document.
+Source pin: `442f3ebcef777f204cec7073932dc06edfab3a2e` (immutable review baseline). The approved technical commit is `7e0c1b89c4767f2e6625cd2bfc4d36d86b30fc26`, based on `ef491ebd67ae794e004977a6d6578cdbb7235d61`. At approval time, main's delta from the review pin comprised two KEL-254 Windows files, the Tokio lock entry and its CI-input digest; no reviewed Keld source or proposed documentation target had changed. Original KEL-102 and KEL-142 approval records remain scoped to their original content. New exact-content decision: KEL-102 comment `8fa29b34-bdb6-470f-9f97-9cdf0aa1d0eb`; decision SHA-256 `2da2c23a53848d618f08612a1106d53283b7488601be7fd3eaa5ed95038df5af`. The digest covers the decision JSON line, excluding its newline, and its five-file manifest binds the approved technical content. That historical follow-up recorded provenance and tracker metadata only. Independent-human approval is not claimed. No implementation or merge is authorized by this document.
 
-Integration-base refresh: `f19c8847787aaf0e9a14e07c0af008fc5a4c2a1f` subsequently merged #1096's documentation. This branch preserves that owner's KEL-142 §7 correction and the generated error-registry text. The #541 contract requirements and original decision artifact are unchanged; #1105's implementation remains unmerged. Historical references below to #1096 being unmerged describe the approval-time snapshot.
+Integration-base refresh: `f19c8847787aaf0e9a14e07c0af008fc5a4c2a1f` subsequently merged #1096's documentation. This branch preserves that owner's KEL-142 §7 correction and the generated error-registry text. At that refresh, the #541 contract requirements and original decision artifact were unchanged; #1105's implementation remains unmerged. Historical references below to #1096 being unmerged describe the approval-time snapshot.
 
 ## 1. Goal & non-goals
 
@@ -51,12 +51,12 @@ KEL-102/T3 is already landed at `66ccbbc68c3dd44be55878bb0c14e9788e25a4b1` throu
 
 Each criterion names an observable, not an implementation assertion. Section 7 maps them to tests.
 
-1. A valid policy with exact channel strings loads once from the verified host-selected snapshot. Missing `windows`, a missing window, missing `channels`, or `[]` grants nothing.
-2. A malformed windows/channel structure, non-string member, decoded wildcard, invalid channel spelling, or duplicate decoded object key rejects the whole policy with `KELD-GUARD005` before application resources. There is no filtering, partial policy, or fallback.
+1. An explicitly opted-in valid policy with exact channel strings loads once from the verified host-selected snapshot. Missing `windows`, a missing window, missing `channels`, or `[]` grants nothing.
+2. In an opted-in policy, a malformed windows/channel structure, non-string member, decoded wildcard, invalid channel spelling, or duplicate decoded object key rejects the whole policy with `KELD-GUARD005` before application resources. There is no filtering, partial policy, or fallback.
 3. Given an authentic current document bound to window A and a usable matching app link, an unlisted channel yields the existing `ChannelForbidden` contract and zero app-link writes and zero Bun handler entries. A listed exact literal in the same fixture produces one observed forwarding operation.
 4. The same literal in window B, `/app` scopes, another role, a renderer field, or a dynamically registered handler cannot grant window A authority.
 5. Prefix, suffix, case, whitespace, percent-encoding, and Unicode-normalization variants do not match unless independently listed as valid distinct literals. JSON escape variants of the same decoded string are the same literal.
-6. Every authority-bearing channel path calls `dispatch_privileged`; its callback is the sole place that can forward the message. `evaluate` remains inside that helper for authoritative decisions. Diagnostic explain is the named non-dispatch exception. Repository-wide sole-caller completion additionally requires the accepted KEL-102/T4 media-integration evidence; this channel amendment does not waive that gate.
+6. Every authority-bearing channel path calls `dispatch_privileged`; its callback is the sole place that can forward the message. The typed dispatcher calls Guard-owned `evaluate_query`. The existing native call signature delegates to that dispatcher. Diagnostic explain is the named non-dispatch exception. Repository-wide sole-caller completion additionally requires the accepted KEL-102/T4 media-integration evidence; this channel amendment does not waive that gate.
 7. The warmed exact-allow policy/dispatcher path performs zero heap allocations, measured with a counting allocator around the actual path. Channel serialization and transport allocations are measured separately, never hidden inside the result.
 8. MCP (Model Context Protocol) permission explain uses the same pure decision logic and returns the same channel decision. Its hypothetical window selection cannot mint a live principal or dispatch permission.
 9. One host-owned navigation source supplies both admitted request stamps and `Principal::Webview { id, generation }`. Their values must be equal. No renderer identity, pointer conversion, URL, token text, numeric manifest key guess, or separate counter supplies authority.
@@ -104,6 +104,7 @@ Illustrative policy only; these names are not a claim about draw.io's extracted 
 
 ```jsonc
 {
+  "$keldWindowChannelGrants": 1,
   "windows": {
     "main": { "channels": ["el:rendererReq", "el:saveFile"] },
     "about": { "channels": [] }
@@ -113,10 +114,15 @@ Illustrative policy only; these names are not a claim about draw.io's extracted 
 
 Rules for this slice:
 
-- `windows`, each window value, and `channels` have the object/object/array-of-strings shapes shown. Omitted fields are empty authority; explicitly wrong types, including `null`, are policy errors.
+- Only JSON integer `1` in the top-level `$keldWindowChannelGrants` field opts into exact channel grants.
+- An absent or unsupported marker grants zero incoming channels. Legacy profile selection alone grants none.
+- Preserve the independent window response-policy owner's validation and CSP selection for every marker value.
+- When no other window contract applies, unmarked legacy metadata retains its previous parse result, including scalar metadata.
+- Preserve the existing unique-key decoder and whole-input size limit for every marker value.
+- With opt-in, `windows`, each window value, and `channels` have the object/object/array-of-strings shapes shown. Omitted fields are empty authority; explicitly wrong types, including `null`, are policy errors.
 - Each grant is a decoded, well-formed Unicode string whose UTF-8 bytes begin with ASCII `el:` and have a nonempty suffix. It contains no U+002A `*`, NUL, C0/C1 control, or DEL. Surrogate halves are rejected by the string/wire validation boundary; they are not replaced or normalized into a granted value.
 - Match the validated decoded UTF-8 string exactly. Do not trim, case-fold, normalize Unicode, percent-decode, interpret regular expressions, apply path `/**`, or perform prefix/suffix matching. Punctuation other than the explicitly forbidden characters is literal, never a pattern language.
-- Reject `el:*`, `el:**`, `el:rendererReq*`, and their JSON-escaped forms after decoding. A mixed valid/wildcard list rejects the complete policy. This is stricter than loading an inert wildcard.
+- Reject `el:*`, `el:**`, `el:rendererReq*`, and their JSON-escaped forms after decoding. An opted-in mixed valid/wildcard list rejects the complete policy. This is stricter than loading an inert wildcard.
 - Duplicate decoded object keys remain invalid under the existing parser. Repeated identical strings in an array add no authority; preserve deterministic first-match behavior and let migration deduplicate them.
 - The existing 64 KiB total manifest limit remains. #540 owns message channel-length and envelope budgets; no larger unbounded channel allocation is implied here.
 - The Electron adapter maps an application channel `c` to the canonical name by exactly one `"el:" + c` construction. No repeated-prefix stripping, alias, URL decoding, or case conversion is allowed. keld-ipc receives a generic channel string and has no Electron or codec knowledge.
@@ -309,7 +315,7 @@ a state model, or a page-only observer cannot prove a native effect boundary.
 
 | ID / criteria | Contract under test | Independent required oracle | Single-fault negative control |
 |---|---|---|---|
-| P01 / 1–2 | Strict policy parsing | Malformed/wildcard/escaped-star inputs fail with GUARD005 before real application resources; paired valid policy loads. | Remove decoded-string validation. |
+| P01 / 1–2 | Opt-in and strict channel parsing | An unmarked exact list grants nothing. Marking it enables exact channels only. Malformed opted-in input yields GUARD005. Existing CSP validation runs in both cases. | Ignore the marker. Separately disable decoded-string validation. |
 | P02 / 3 | Guard-before-Bun forwarding | Pin GUARD003 and its complete text; independently observe zero app-link writes and zero handler entries on denial, one each for the exact permitted control. | Bypass dispatch_privileged. |
 | P03 / 4 | Per-window grant isolation | A host-authenticated window lacking a literal cannot use another window's grant; independently observe no ingress. | Use a global grant union or renderer-selected window key. |
 | P04 / 5 | Exact channel equality | Distinct prefix, suffix, case and Unicode spellings are denied unless separately granted. | Replace equality with prefix matching or normalization. |
