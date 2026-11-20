@@ -1,6 +1,10 @@
 /** Source-exact asynchronous Electron Message facade. The Host, not this
  * module, owns the verified permission, window identity and native panel. */
-import { invokeFileDialog, invokeMessageDialog } from "@keld/api/internal/app";
+import {
+  invokeFileDialog,
+  invokeMessageDialog,
+  invokeMessageDialogBlocking,
+} from "@keld/api/internal/app";
 import type { MessageOptions } from "@keld/api/internal/dialog-codec";
 import type { WindowRef } from "@keld/api/internal/window-codec";
 import { linkError } from "@keld/kipc";
@@ -123,6 +127,44 @@ export function showMessageBox(
   return submit(parent, options);
 }
 
+/** Return the actual native button index without re-entering the app loop. */
+export function showMessageBoxSync(options: MessageBoxOptions): number;
+export function showMessageBoxSync(
+  parent: unknown,
+  options: MessageBoxOptions,
+): number;
+export function showMessageBoxSync(
+  parentOrOptions: unknown,
+  suppliedOptions?: MessageBoxOptions,
+): number {
+  const withParent = arguments.length === 2;
+  if (arguments.length !== 1 && !withParent) {
+    throw new TypeError(
+      "KELD-COMPAT-010: showMessageBoxSync takes options or BrowserWindow and options",
+    );
+  }
+  const parent =
+    withParent && parentOrOptions != null
+      ? readDialogParentRef(parentOrOptions)
+      : null;
+  const options = normalizeMessageOptions(
+    withParent ? suppliedOptions : parentOrOptions,
+  );
+  if (process.platform !== "darwin" && process.platform !== "win32") {
+    throw linkError(
+      "KELD-NATIVE-010",
+      "native synchronous Message dialogs require macOS or Windows",
+    );
+  }
+  const reply = invokeMessageDialogBlocking(parent, options);
+  if (reply.variant !== "Message") {
+    throw new Error(
+      "KELD-IPC-003: native Message returned another operation's disposition",
+    );
+  }
+  return reply.response;
+}
+
 function fileParent(input: unknown): WindowRef | null {
   return input == null ? null : readDialogParentRef(input);
 }
@@ -199,6 +241,7 @@ export function showSaveDialog(
 
 export const dialog = Object.freeze({
   showMessageBox,
+  showMessageBoxSync,
   showOpenDialog,
   showSaveDialog,
 });

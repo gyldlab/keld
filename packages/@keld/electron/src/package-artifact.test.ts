@@ -115,6 +115,11 @@ for (const name of ['electron','electron/main','electron/renderer','electron/com
  const esm = await import(name); const cjs = require(name);
  assert.equal(esm.app, main.app); assert.equal(cjs.app, main.app);
  assert.equal(esm.default, main.default); assert.equal(cjs.default, main.default);
+ assert.equal(typeof esm.dialog.showMessageBoxSync, 'function');
+ assert.equal(esm.dialog.showMessageBoxSync, main.dialog.showMessageBoxSync);
+ assert.equal(cjs.dialog.showMessageBoxSync, main.dialog.showMessageBoxSync);
+ assert.throws(() => esm.dialog.showMessageBoxSync({ message: 'Confirm' }),
+  error => error.code === 'KELD-CORE-040');
  for (const name of ['session','Menu','shell','ClipboardItem','clipboard','nativeImage']) {
   assert.equal(esm[name], main[name]); assert.equal(cjs[name], main[name]);
  }

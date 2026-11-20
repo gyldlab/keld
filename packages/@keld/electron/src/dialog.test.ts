@@ -31,7 +31,7 @@ test("Message refuses unsupported platforms before touching the app link", () =>
       `
     import assert from "node:assert/strict";
     import { app } from "../../api/src/app.ts";
-    import { showMessageBox } from "./dialog.ts";
+    import { showMessageBox, showMessageBoxSync } from "./dialog.ts";
     let readinessCalls = 0;
     const sentinel = new Error("readiness sentinel");
     app.whenReady = () => {
@@ -46,6 +46,10 @@ test("Message refuses unsupported platforms before touching the app link", () =>
         await assert.rejects(result, error => error.code === "KELD-NATIVE-010");
       }
       assert.equal(readinessCalls, 0);
+      if (platform === "linux") {
+        assert.throws(() => showMessageBoxSync({ message: "Confirm" }),
+          error => error.code === "KELD-NATIVE-010");
+      }
       assert.throws(() => showMessageBox({ message: "Confirm", unsupported: true }), /KELD-COMPAT-010/);
     }
     Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
@@ -84,14 +88,17 @@ function dialogMethod(exports: unknown, method: string): unknown {
   return member(member(exports, "dialog"), method);
 }
 
-// Electron dialog.md: `Returns Integer - the index of the clicked button.`
-// Independent negative control: add any showMessageBoxSync export, even a
-// Promise-returning shim. The present absence assertions must fail. After #564,
-// the inverted test must invoke the real native method and check clicked index,
-// non-Promise behavior, denied authority, and native teardown separately.
-test("dialog.show-message-box-sync.clicked-index today: no synchronous native dialog method is exported", () => {
-  expect(dialogMethod(electron, "showMessageBoxSync")).toBeUndefined();
-  expect(dialogMethod(electron.default, "showMessageBoxSync")).toBeUndefined();
+// This checks only the export and deterministic pre-Ready refusal. Actual
+// native index, permission and physical cleanup require a matched Host run.
+test("dialog.show-message-box-sync exports the same method and refuses before Ready", () => {
+  const method = dialogMethod(electron, "showMessageBoxSync");
+  expect(typeof method).toBe("function");
+  expect(dialogMethod(electron.default, "showMessageBoxSync")).toBe(method);
+  expect(() =>
+    Reflect.apply(method as Function, electron.dialog, [
+      { message: "Confirm" },
+    ]),
+  ).toThrow("KELD-CORE-040");
 });
 
 // Real parented Open returns a native selected path or canceled: true with an
