@@ -7,7 +7,7 @@
  * its separate no-flag Host test exercises three OS clicks, actual checkbox
  * state, physical quiescence and 257+1 same-link operations. The parentless
  * overload remains unsupported, so the broad Message cell stays expected-fail
- * alongside sync Message, Open and Save until parentless and remaining OS gates pass.
+ * alongside sync Message, Open and Save until parentless and native OS gates pass.
  *
  * The Electron docs guarantee a blocking numeric clicked index for the
  * sync variant and distinct Promise result shapes for three async variants.
@@ -31,7 +31,7 @@ test("Message refuses unsupported platforms before touching the app link", () =>
       `
     import assert from "node:assert/strict";
     import { app } from "../../api/src/app.ts";
-    import { showMessageBox } from "./dialog.ts";
+    import { showMessageBox, showMessageBoxSync } from "./dialog.ts";
     let readinessCalls = 0;
     const sentinel = new Error("readiness sentinel");
     app.whenReady = () => {
@@ -46,9 +46,15 @@ test("Message refuses unsupported platforms before touching the app link", () =>
         await assert.rejects(result, error => error.code === "KELD-NATIVE-010");
       }
       assert.equal(readinessCalls, 0);
+      if (platform === "linux") {
+        assert.throws(() => showMessageBoxSync({ message: "Confirm" }),
+          error => error.code === "KELD-NATIVE-010");
+      }
       assert.throws(() => showMessageBox({ message: "Confirm", unsupported: true }), /KELD-COMPAT-010/);
     }
     Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    assert.throws(() => showMessageBoxSync({ message: "Confirm" }),
+      error => error.code === "KELD-NATIVE-010");
     await assert.rejects(showMessageBox({ message: "Confirm" }), error => error === sentinel);
     assert.equal(readinessCalls, 1);
     console.log("platform refusal and macOS delegation checks pass");
@@ -84,14 +90,19 @@ function dialogMethod(exports: unknown, method: string): unknown {
   return member(member(exports, "dialog"), method);
 }
 
-// Electron dialog.md: `Returns Integer - the index of the clicked button.`
-// Independent negative control: add any showMessageBoxSync export, even a
-// Promise-returning shim. The present absence assertions must fail. After #564,
-// the inverted test must invoke the real native method and check clicked index,
-// non-Promise behavior, denied authority, and native teardown separately.
-test("dialog.show-message-box-sync.clicked-index today: no synchronous native dialog method is exported", () => {
-  expect(dialogMethod(electron, "showMessageBoxSync")).toBeUndefined();
-  expect(dialogMethod(electron.default, "showMessageBoxSync")).toBeUndefined();
+// This checks only the export and deterministic pre-Ready refusal. Actual
+// native index, permission and physical cleanup require a matched Host run.
+test("dialog.show-message-box-sync exports the same method and refuses before Ready", () => {
+  const method = dialogMethod(electron, "showMessageBoxSync");
+  expect(typeof method).toBe("function");
+  expect(dialogMethod(electron.default, "showMessageBoxSync")).toBe(method);
+  const code =
+    process.platform === "win32" ? "KELD-CORE-040" : "KELD-NATIVE-010";
+  expect(() =>
+    Reflect.apply(method as Function, electron.dialog, [
+      { message: "Confirm" },
+    ]),
+  ).toThrow(code);
 });
 
 // Real parented Open returns a native selected path or canceled: true with an

@@ -1592,6 +1592,175 @@ fn gh478_a13_257_dialog_timeout_cancel_cycles_release_abandoned_originals() {
 
 /// Criterion 25: a 4 MiB ring (a power of two) opens and carries a call.
 #[test]
+fn dialog_cancel_follows_only_a_local_caller_timeout() {
+    let (mut stream, role) = start("dialog-timeout-provenance");
+    long_reads(&stream);
+    for index in 0_u8..3 {
+        let (call, bytes) = read_call(&mut stream);
+        assert_eq!(&bytes[..2], &[0, index + 1]);
+        host_reply(&mut stream, call, &[0, index, 0]);
+    }
+    let (remote, bytes) = read_call(&mut stream);
+    assert_eq!(remote.channel, keld_ipc::channel_table::DIALOG.id());
+    assert_eq!(&bytes[..2], &[0, 4]);
+    write_call_error(
+        &mut stream,
+        remote.channel,
+        remote.corr,
+        &CallError {
+            code: "KELD-IPC-006".to_owned(),
+            message: "host terminal timeout".to_owned(),
+        },
+    )
+    .expect("host sends actual terminal error");
+    // If the consumer invents a Cancel for the remote ERR, this read sees
+    // that extra CALL instead of the expected echo and fails.
+    let after_remote = read_call_named(&mut stream, "after-remote");
+    host_reply(&mut stream, after_remote, b"remote-ok");
+    let (original, bytes) = read_call(&mut stream);
+    assert_eq!(&bytes[..2], &[0, 5]);
+    host_event(&mut stream, 0, 8); // Host progresses while Bun is parked.
+    let (cancel, bytes) = read_call(&mut stream);
+    assert_eq!(cancel.channel, original.channel);
+    assert_ne!(cancel.corr, original.corr);
+    assert_eq!(bytes, [1, 5]); // Cancel carries the original nonce.
+    write_call_error(
+        &mut stream,
+        original.channel,
+        original.corr,
+        &CallError {
+            code: "KELD-NATIVE-015".to_owned(),
+            message: "original cancelled".to_owned(),
+        },
+    )
+    .expect("original gets its own terminal");
+    host_reply(&mut stream, cancel, &[1, 0]); // Separate Cancel ACK.
+    let after_local = read_call_named(&mut stream, "after-local");
+    host_reply(&mut stream, after_local, b"local-ok");
+    let (async_remote, bytes) = read_call(&mut stream);
+    assert_eq!(&bytes[..2], &[0, 6]);
+    write_call_error(
+        &mut stream,
+        async_remote.channel,
+        async_remote.corr,
+        &CallError {
+            code: "KELD-IPC-006".to_owned(),
+            message: "host terminal timeout".to_owned(),
+        },
+    )
+    .expect("host sends async terminal error");
+    let after_async_remote = read_call_named(&mut stream, "async-after-remote");
+    host_reply(&mut stream, after_async_remote, b"async-remote-ok");
+    let (async_original, bytes) = read_call(&mut stream);
+    assert_eq!(&bytes[..2], &[0, 7]);
+    let (async_cancel, bytes) = read_call(&mut stream);
+    assert_ne!(async_cancel.corr, async_original.corr);
+    assert_eq!(bytes, [1, 7]);
+    write_call_error(
+        &mut stream,
+        async_original.channel,
+        async_original.corr,
+        &CallError {
+            code: "KELD-NATIVE-015".to_owned(),
+            message: "async original cancelled".to_owned(),
+        },
+    )
+    .expect("async original gets terminal");
+    host_reply(&mut stream, async_cancel, &[1, 0]);
+    let after_async_local = read_call_named(&mut stream, "async-after-local");
+    host_reply(&mut stream, after_async_local, b"async-local-ok");
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("wire-index-0", "0"),
+            ("wire-index-1", "1"),
+            ("wire-index-2", "2"),
+            ("remote-code", "KELD-IPC-006"),
+            ("after-remote", "remote-ok"),
+            ("local-code", "KELD-IPC-006"),
+            ("callbacks-before-return", "0"),
+            ("after-local", "local-ok"),
+            ("callbacks-after-return", "1"),
+            ("async-remote-code", "KELD-IPC-006"),
+            ("async-after-remote", "async-remote-ok"),
+            ("async-local-code", "KELD-IPC-006"),
+            ("async-after-local", "async-local-ok"),
+            ("done", "true"),
+        ],
+    );
+}
+
+/// Criterion 25: a 4 MiB ring (a power of two) opens and carries a call.
+#[test]
+fn remote_and_local_006_have_distinct_timeout_provenance() {
+    let (mut stream, role) = start("timeout-provenance");
+    long_reads(&stream);
+    macro_rules! next_call {
+        ($name:expr) => {{
+            match read_frame(&mut stream) {
+                Ok((header, payload)) => {
+                    assert_eq!(header.kind, FrameKind::Call);
+                    assert_eq!(String::from_utf8_lossy(&payload), $name);
+                    header
+                }
+                Err(error) => {
+                    let output = role.finish();
+                    panic!("waiting for {}: {error}; {}", $name, output.diagnostics());
+                }
+            }
+        }};
+    }
+    for name in ["remote-async", "remote-block"] {
+        let call = next_call!(name);
+        write_call_error(
+            &mut stream,
+            call.channel,
+            call.corr,
+            &CallError {
+                code: "KELD-IPC-006".to_owned(),
+                message: "host reports a terminal timeout".to_owned(),
+            },
+        )
+        .expect("host sends correlated terminal error");
+    }
+    let async_original = next_call!("local-async");
+    let blocking_original = next_call!("local-block");
+    // The subsequent call is sent only after both caller deadlines fired.
+    let healthy = next_call!("healthy");
+    for call in [async_original, blocking_original] {
+        write_call_error(
+            &mut stream,
+            call.channel,
+            call.corr,
+            &CallError {
+                code: "KELD-NATIVE-015".to_owned(),
+                message: "abandoned original retired".to_owned(),
+            },
+        )
+        .expect("host retires abandoned original");
+    }
+    host_reply(&mut stream, healthy, b"healthy-ok");
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("remote-async-code", "KELD-IPC-006"),
+            ("remote-async-local", "false"),
+            ("remote-block-code", "KELD-IPC-006"),
+            ("remote-block-local", "false"),
+            ("local-async-code", "KELD-IPC-006"),
+            ("local-async-local", "true"),
+            ("local-block-code", "KELD-IPC-006"),
+            ("local-block-local", "true"),
+            ("healthy", "healthy-ok"),
+            ("done", "true"),
+        ],
+    );
+}
+
+/// Criterion 25: a 4 MiB ring (a power of two) opens and carries a call.
+#[test]
 fn criterion25_four_mib_ring_opens() {
     let (mut stream, role) = start("ring-4mib");
     let call = read_call_named(&mut stream, "four-mib");

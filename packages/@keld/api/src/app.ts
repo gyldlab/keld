@@ -472,6 +472,22 @@ export async function invokeAuth(
   return link.callAuth(payload, deadlineMs);
 }
 
+/** Consume the existing Ready session synchronously without connecting. */
+export function invokeMessageDialogBlocking(
+  parent: WindowRef | null,
+  options: MessageOptions,
+): DialogReplyV1 {
+  if (linkDead !== undefined) throw linkDead;
+  const session = connectedLink;
+  if (!hostReady || session === undefined) {
+    throw linkError(
+      "KELD-CORE-040",
+      "native message dialog requires Host Ready on the existing app link",
+    );
+  }
+  return session.callMessageDialogBlocking(parent, options);
+}
+
 /** Native Message request over the already-connected, authenticated app link.
  * Nonces and both call correlations belong to LifecycleLink/WorkerLink, not
  * Electron or a second socket; the Host decides actual native authority. */

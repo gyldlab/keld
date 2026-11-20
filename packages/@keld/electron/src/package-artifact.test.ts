@@ -115,6 +115,11 @@ for (const name of ['electron','electron/main','electron/renderer','electron/com
  const esm = await import(name); const cjs = require(name);
  assert.equal(esm.app, main.app); assert.equal(cjs.app, main.app);
  assert.equal(esm.default, main.default); assert.equal(cjs.default, main.default);
+ assert.equal(typeof esm.dialog.showMessageBoxSync, 'function');
+ assert.equal(esm.dialog.showMessageBoxSync, main.dialog.showMessageBoxSync);
+ assert.equal(cjs.dialog.showMessageBoxSync, main.dialog.showMessageBoxSync);
+ assert.throws(() => esm.dialog.showMessageBoxSync({ message: 'Confirm' }),
+  error => error.code === (process.platform === 'win32' ? 'KELD-CORE-040' : 'KELD-NATIVE-010'));
  for (const name of ['session','Menu','shell','ClipboardItem','clipboard','nativeImage']) {
   assert.equal(esm[name], main[name]); assert.equal(cjs[name], main[name]);
  }
@@ -125,7 +130,13 @@ for (const name of ['electron','electron/main','electron/renderer','electron/com
       success(run([runtime, "probe.mjs"], consumer));
     writeFileSync(
       join(consumer, "consumer.ts"),
-      `import electron, {type OpenDialogOptions, BrowserWindow, session, Menu, shell, ClipboardItem, clipboard, nativeImage} from 'electron'; const x: OpenDialogOptions = {}; void [electron, BrowserWindow, x, session, Menu, shell, ClipboardItem, clipboard, nativeImage];`,
+      `import electron, {type OpenDialogOptions, BrowserWindow, session, Menu, shell, ClipboardItem, clipboard, nativeImage} from 'electron';
+const x: OpenDialogOptions = {};
+declare const parent: BrowserWindow;
+const result: number = electron.dialog.showMessageBoxSync(parent, {message: 'Confirm'});
+// @ts-expect-error arbitrary objects do not carry a BrowserWindow identity
+electron.dialog.showMessageBoxSync({}, {message: 'Confirm'});
+void [electron, BrowserWindow, x, session, Menu, shell, ClipboardItem, clipboard, nativeImage, result];`,
     );
     writeFileSync(
       join(consumer, "tsconfig.json"),

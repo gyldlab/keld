@@ -37,7 +37,10 @@ import {
   type WorkerLinkTestHooks,
 } from "../src/test-hooks.ts";
 import { attachMirror, type MirrorSource } from "../../api/src/mirror.ts";
+import { LifecycleLink } from "../../api/src/link.ts";
+import type { MessageOptions } from "../../api/src/dialog.generated.ts";
 import { MIRROR_FACT_MARKER, mirrorRetention } from "./mirror-retention.ts";
+import * as transport from "../src/transport.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -1197,6 +1200,127 @@ async function dialogTimeoutCancel(): Promise<void> {
   );
 }
 
+// An actual remote ERR may use the same code as a local abandoned CALL. Only
+// the latter is eligible for the dialog owner's fresh same-link Cancel.
+async function timeoutProvenance(): Promise<void> {
+  const { link } = await open();
+  const predicate = Reflect.get(transport, "isLocalCallTimeout");
+  if (typeof predicate !== "function")
+    throw new Error("local deadline provenance is missing");
+  const record = (name: string, error: unknown): void => {
+    report(`${name}-code`, codeOf(error));
+    report(`${name}-local`, predicate(error));
+  };
+  try {
+    await link.call(DIALOG_CHANNEL, text("remote-async"), 30_000);
+  } catch (e) {
+    record("remote-async", e);
+  }
+  try {
+    link.callBlocking(DIALOG_CHANNEL, text("remote-block"), 30_000);
+  } catch (e) {
+    record("remote-block", e);
+  }
+  try {
+    await link.call(DIALOG_CHANNEL, text("local-async"), 100);
+  } catch (e) {
+    record("local-async", e);
+  }
+  try {
+    link.callBlocking(DIALOG_CHANNEL, text("local-block"), 100);
+  } catch (e) {
+    record("local-block", e);
+  }
+  report(
+    "healthy",
+    decoder.decode(link.callBlocking(ECHO_CHANNEL, text("healthy"), 30_000)),
+  );
+}
+
+async function dialogTimeoutProvenance(): Promise<void> {
+  const { link } = await open();
+  const session = Reflect.construct(LifecycleLink, [link]) as LifecycleLink;
+  const options: MessageOptions = {
+    message: "Confirm",
+    kind: "Question",
+    buttons: ["&Save", "&Discard Changes", "Cancel"],
+    default_id: 0,
+    cancel_id: 2,
+    normalize_access_keys: true,
+    title: null,
+    detail: null,
+    no_link: true,
+    checkbox_label: null,
+    checkbox_checked: null,
+  };
+  let callbacks = 0;
+  link.onEvent(LIFECYCLE_CHANNEL, () => {
+    callbacks += 1;
+  });
+  for (const expected of [0, 1, 2]) {
+    const result = session.callMessageDialogBlocking(null, options);
+    report(
+      `wire-index-${expected}`,
+      result.variant === "Message" ? result.response : "wrong-variant",
+    );
+  }
+  try {
+    session.callMessageDialogBlocking(null, options);
+  } catch (e) {
+    report("remote-code", codeOf(e));
+  }
+  report(
+    "after-remote",
+    decoder.decode(await link.call(ECHO_CHANNEL, text("after-remote"), 30_000)),
+  );
+  const original = link.callBlocking.bind(link);
+  // The fixture shortens only the caller deadline; the unmodified real
+  // WorkerLink still owns timing, correlations and its actual pipe.
+  link.callBlocking = (channel, payload, ms) =>
+    original(channel, payload, channel === DIALOG_CHANNEL ? 100 : ms);
+  try {
+    session.callMessageDialogBlocking(null, options);
+  } catch (e) {
+    report("local-code", codeOf(e));
+  }
+  report("callbacks-before-return", callbacks);
+  report(
+    "after-local",
+    decoder.decode(await link.call(ECHO_CHANNEL, text("after-local"), 30_000)),
+  );
+  report("callbacks-after-return", callbacks);
+  try {
+    await session.callMessageDialog(null, options);
+  } catch (e) {
+    report("async-remote-code", codeOf(e));
+  }
+  report(
+    "async-after-remote",
+    decoder.decode(
+      await link.call(ECHO_CHANNEL, text("async-after-remote"), 30_000),
+    ),
+  );
+  const originalCall = link.call.bind(link);
+  link.call = (channel, payload, ms, beforeReply) =>
+    originalCall(
+      channel,
+      payload,
+      channel === DIALOG_CHANNEL && payload[0] === 0 ? 100 : ms,
+      beforeReply,
+    );
+  try {
+    await session.callMessageDialog(null, options);
+  } catch (e) {
+    report("async-local-code", codeOf(e));
+  }
+  report(
+    "async-after-local",
+    decoder.decode(
+      await link.call(ECHO_CHANNEL, text("async-after-local"), 30_000),
+    ),
+  );
+}
+
 // Criterion 25: a 4 MiB ring opens; byte counters wrap at 2^32 without loss.
 async function ring4MiB(): Promise<void> {
   const { link } = await open({ ringBytes: 4 * 1024 * 1024 });
@@ -1621,6 +1745,8 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
   "inbound-admitted": inboundAdmitted,
   "abandoned-cap": abandonedCap,
   "dialog-timeout-cancel": dialogTimeoutCancel,
+  "timeout-provenance": timeoutProvenance,
+  "dialog-timeout-provenance": dialogTimeoutProvenance,
   "ring-4mib": ring4MiB,
   "counter-wrap": counterWrap,
   "async-dispatch": asyncDispatch,
