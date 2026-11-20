@@ -26,6 +26,39 @@ def git_environment():
             if not name.upper().startswith("GIT_")}
 
 
+def inert_git_filters(repo, *, status=False):
+    """Override configured Git filter programs before invoking a working-tree scan.
+
+    Git status can run filter.<name>.clean/process even when core.fsmonitor is
+    disabled. Read effective config without running repository helpers, then
+    mask every configured filter program in the invocation being validated.
+    This can conservatively classify filter-dependent files as dirty; it must
+    never execute a checkout- or user-configured program to decide admission.
+    """
+    result = subprocess.run([GIT_EXECUTABLE, "-c", "core.fsmonitor=false",
+                             "-C", str(repo), "config", "--list", "--name-only", "--null"],
+                            check=True, capture_output=True, timeout=30,
+                            env=git_environment())
+    if status:
+        index = subprocess.run([GIT_EXECUTABLE, "-c", "core.fsmonitor=false",
+                                "-C", str(repo), "ls-files", "--stage", "-z"],
+                               check=True, capture_output=True, timeout=30,
+                               env=git_environment())
+        require(not any(entry.startswith(b"160000 ") for entry in index.stdout.split(b"\0")),
+                "submodule status cannot be validated without executing nested Git; record handoff")
+    options = []
+    for raw in result.stdout.split(b"\0"):
+        if not raw:
+            continue
+        key = raw.decode("utf-8", errors="strict")
+        if not re.fullmatch(r"filter\..+\.(?:clean|smudge|process)", key, re.IGNORECASE):
+            continue
+        require("\n" not in key and "\r" not in key,
+                "invalid Git filter configuration key")
+        options.extend(("-c", key + "="))
+    return options
+
+
 class Invalid(ValueError):
     """A receipt fails an observable closeout contract."""
 
@@ -329,7 +362,9 @@ def check(receipt_path):
             require(digest.hexdigest() == expected, "untracked file hash mismatch: " + relative)
     dirty = False
     if live:
-        status = subprocess.run([GIT_EXECUTABLE, "-c", "core.fsmonitor=false", "-C", str(repo), "status", "--porcelain", "--untracked-files=no"],
+        status = subprocess.run([GIT_EXECUTABLE, "-c", "core.fsmonitor=false", *inert_git_filters(repo, status=True),
+                                 "-C", str(repo), "status", "--porcelain",
+                                 "--untracked-files=no", "--ignore-submodules=all"],
                                 check=True, capture_output=True, text=True, encoding="utf-8", timeout=30,
                                 env=git_environment())
         dirty = bool(status.stdout.strip())

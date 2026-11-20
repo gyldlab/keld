@@ -72,7 +72,15 @@ def task_name(value):
 
 
 def git(cwd, *args, check=True):
-    result = subprocess.run([session_closeout.GIT_EXECUTABLE, "-c", "core.fsmonitor=false", "-C", str(cwd), *args],
+    command = list(args)
+    options = (session_closeout.inert_git_filters(cwd, status=args[0] == "status")
+               if args[0] in {"status", "diff"} else [])
+    if args[0] == "status":
+        command.append("--ignore-submodules=all")
+    if args[0] == "diff":
+        command.extend(["--no-ext-diff", "--no-textconv"])
+    result = subprocess.run([session_closeout.GIT_EXECUTABLE, "-c", "core.fsmonitor=false",
+                             *options, "-C", str(cwd), *command],
                             capture_output=True, timeout=30, env=session_closeout.git_environment())
     if check and result.returncode:
         raise WorkspaceError("Git " + args[0] + " failed. Inspect repository state before retrying: " +
