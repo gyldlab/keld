@@ -21,6 +21,7 @@ targets = [
 yanked = "deny"
 # Scope: direct workspace deps only (not all/transitive). Promote to "all" once tree stabilizes.
 unmaintained = "workspace"
+# No advisory ignores: a reintroduced vulnerable dependency must fail cargo-deny.
 
 [licenses]
 # Keld itself is MIT OR Apache-2.0 (pending final GYLDLAB licensing call — see
