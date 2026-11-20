@@ -221,3 +221,25 @@ fn process_contains_same_object(
         }) != 0
     })
 }
+
+/// GH-1081 round-1 research only: the kernel object-type index of a live handle
+/// this test process owns, read from the same raw system handle table.
+pub(crate) fn own_handle_type_index(handle: &OwnedHandle) -> u16 {
+    let value = handle.as_raw_handle().addr();
+    raw_process_handle_census(std::process::id())
+        .iter()
+        .find(|entry| entry.handle_value == value)
+        .map(|entry| entry.object_type_index)
+        .expect("own handle exists in the raw handle table")
+}
+
+/// GH-1081 round-1 research only: duplicates of every handle of one object type
+/// that `pid` holds, for read-only membership queries by the caller.
+pub(crate) fn duplicate_handles_of_type(pid: u32, type_index: u16) -> Vec<OwnedHandle> {
+    let process = open_process_for_census(pid);
+    census_matching_handle_count(&process, pid)
+        .iter()
+        .filter(|entry| entry.object_type_index == type_index)
+        .filter_map(|entry| duplicate_process_handle(&process, entry.handle_value))
+        .collect()
+}
