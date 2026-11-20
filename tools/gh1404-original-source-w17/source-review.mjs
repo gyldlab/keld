@@ -200,17 +200,55 @@ export async function produceReview(rootInput, adapterInput, outputInput) {
   const module = await import(
     "data:text/javascript;base64," + adapterBytes.toString("base64")
   );
-  const patched = module.patchOriginalMainText(
+  const adapterMain = module.patchOriginalMainText(
     source["src/main/electron.js"].toString("utf8"),
   );
-  // The reviewed source bytes are authoritative, not runtime-specific toString output.
+  // Preserve the exact, independently pinned #1506 helper bytes. The original
+  // source proposal adds two separate reviewed import/file-intent corrections.
   if (
-    sha256(Buffer.from(patched)) !==
+    sha256(Buffer.from(adapterMain)) !==
     "f2969473b298e6b8ad55577b7e6494db691b8273f22d69ef8ad5cf33c477fa9b"
   )
     throw new Error(
       "GH1404 generated main pin mismatch; use the qualified Node producer",
     );
+  const oldImport =
+    "import { hostLaunchFacts, runtimeProcessFactsSelected } from '@keld/kipc';";
+  if (adapterMain.split(oldImport).length !== 2)
+    throw new Error("GH1404 original transport import anchor mismatch");
+  let patched = adapterMain.replace(
+    oldImport,
+    [
+      "// Use the same graph-bound transport that the signed Host preloads.",
+      "// Package aliases and ancestor node_modules never select process facts.",
+      "import { hostLaunchFacts, runtimeProcessFactsSelected } from '../../node_modules/@keld/kipc/transport.js';",
+    ].join("\n"),
+  );
+  const selectedAt = patched.indexOf(
+    "app.on('second-instance', (event, commandLine, workingDirectory) => {",
+  );
+  const grantAt = patched.indexOf(
+    "var potFile = commandLine.pop();",
+    selectedAt,
+  );
+  const oldGuard = "\t\t\t\tif (loadEvtCount == 2)";
+  const guardAt = patched.indexOf(oldGuard, selectedAt);
+  if (selectedAt < 0 || grantAt < 0 || guardAt < 0 || guardAt >= grantAt)
+    throw new Error("GH1404 second-instance source anchor mismatch");
+  patched =
+    patched.slice(0, guardAt) +
+    [
+      "\t\t\t\t// A selected installed launch has NO user CLI arguments. The",
+      "\t\t\t\t// second instance's trailing token is the sealed bootstrap,",
+      "\t\t\t\t// never an open-file grant. Native open-file/picker own intent.",
+      "\t\t\t\tif (loadEvtCount == 2 && runtimeProcessFactsSelected === false)",
+    ].join("\n") +
+    patched.slice(guardAt + oldGuard.length);
+  if (
+    sha256(Buffer.from(patched)) !==
+    "cc240f18df8eb102c4fc3c0d75f4f6da21129a8d32835b43fe260b6a3bfbc0de"
+  )
+    throw new Error("GH1404 reviewed original patch bytes differ");
   for (const marker of [
     "ipcMain.on('isModified-result'",
     "mainWindow.webContents.send('saveAndClose'",

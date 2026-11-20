@@ -59,9 +59,13 @@ test(
     assert.match(main, /app\.on\("open-file"/);
     assert.doesNotMatch(main, /argv\.unshift\(null\)/);
     assert.equal(sha256(Buffer.from(main)), manifest.proposed_main_sha256);
+    const diskManifest = JSON.parse(
+      readFileSync(join(output, "REVIEW-MANIFEST.UNAPPROVED.json"), "utf8"),
+    );
+    assert.deepEqual(diskManifest, manifest);
     assert.equal(
       manifest.proposed_main_sha256,
-      "f2969473b298e6b8ad55577b7e6494db691b8273f22d69ef8ad5cf33c477fa9b",
+      "cc240f18df8eb102c4fc3c0d75f4f6da21129a8d32835b43fe260b6a3bfbc0de",
     );
     assert.equal(
       manifest.parser_proposal_commit,
@@ -216,7 +220,7 @@ test(
       assert.equal(applied.status, 0, applied.stderr);
       assert.equal(
         sha256(readFileSync(main)),
-        "f2969473b298e6b8ad55577b7e6494db691b8273f22d69ef8ad5cf33c477fa9b",
+        "cc240f18df8eb102c4fc3c0d75f4f6da21129a8d32835b43fe260b6a3bfbc0de",
         "patch and reviewed producer must emit the same immutable source",
       );
       // An isolated one-token patch mutation must fail the independent digest.
@@ -238,7 +242,7 @@ test(
       assert.equal(mutated.status, 0, mutated.stderr);
       assert.notEqual(
         sha256(readFileSync(main)),
-        "f2969473b298e6b8ad55577b7e6494db691b8273f22d69ef8ad5cf33c477fa9b",
+        "cc240f18df8eb102c4fc3c0d75f4f6da21129a8d32835b43fe260b6a3bfbc0de",
         "mutation must break source approval hash",
       );
     } finally {
@@ -377,3 +381,118 @@ test("side-effectful bytes getter cannot install nested symlink after output cla
     rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+test(
+  "selected second-instance source grants no internal argv file",
+  {
+    skip: !root,
+  },
+  () => {
+    const scratch = mkdtempSync(join(tmpdir(), "gh1404-selected-second-"));
+    try {
+      const relative = "src/main/electron.js";
+      mkdirSync(join(scratch, "src/main"), { recursive: true });
+      writeFileSync(
+        join(scratch, relative),
+        readFileSync(join(root, relative)),
+      );
+      const patch = readFileSync(
+        new URL("./electron-argv.UNAPPROVED.patch", import.meta.url),
+      );
+      const applied = spawnSync(
+        "git",
+        ["apply", "--unidiff-zero", "--whitespace=error", "-"],
+        { cwd: scratch, input: patch, encoding: "utf8" },
+      );
+      assert.equal(applied.status, 0, applied.stderr);
+      const main = readFileSync(join(scratch, relative), "utf8");
+      function simulateSecondInstance(source, selected) {
+        const start = source.indexOf("app.on('second-instance',");
+        assert(start >= 0);
+        const handler = source
+          .slice(start)
+          .match(
+            /^app\.on\('second-instance',[\s\S]*?^[ \t]*\}\)[ \t]*$/m,
+          )?.[0];
+        assert(handler, "real original second-instance callback is present");
+        const appEvents = new Map();
+        const windowEvents = new Map();
+        const ipcEvents = new Map();
+        const grants = [];
+        const sends = [];
+        const win = {
+          webContents: {
+            on(name, callback) {
+              windowEvents.set(name, callback);
+            },
+            send(name, body) {
+              sends.push([name, body]);
+            },
+            setVisualZoomLevelLimits() {},
+          },
+        };
+        runInNewContext(handler, {
+          app: {
+            on(name, callback) {
+              appEvents.set(name, callback);
+            },
+          },
+          ipcMain: {
+            once(name, callback) {
+              ipcEvents.set(name, callback);
+            },
+          },
+          createWindow() {
+            return win;
+          },
+          validateSender() {
+            return true;
+          },
+          statSafe() {
+            return {
+              isFile() {
+                return true;
+              },
+            };
+          },
+          blessPath(path) {
+            grants.push(path);
+          },
+          runtimeProcessFactsSelected: selected,
+          appZoom: 1,
+          dialogOpen: false,
+        });
+        appEvents.get("second-instance")(
+          {},
+          ["bun", "/sealed/original.js"],
+          "/",
+        );
+        windowEvents.get("did-finish-load")();
+        ipcEvents.get("app-load-finished")({ senderFrame: {} });
+        return { grants, sends };
+      }
+      const selected = simulateSecondInstance(main, true);
+      assert.deepEqual(selected.grants, []);
+      assert.equal(selected.sends.length, 0);
+      const ordinary = simulateSecondInstance(main, false);
+      assert.deepEqual(ordinary.grants, ["/sealed/original.js"]);
+      assert.equal(ordinary.sends.length, 1);
+      const unguarded = main.replace(
+        "if (loadEvtCount == 2 && runtimeProcessFactsSelected === false)",
+        "if (loadEvtCount == 2)",
+      );
+      assert.notEqual(
+        unguarded,
+        main,
+        "negative mutation must change exact source",
+      );
+      assert.deepEqual(
+        simulateSecondInstance(unguarded, true).grants,
+        ["/sealed/original.js"],
+        "removing selected guard must restore the unsafe grant",
+      );
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
