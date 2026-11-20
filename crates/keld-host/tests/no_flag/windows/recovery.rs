@@ -445,17 +445,29 @@ fn assert_emitted_pre_ready_bun_exit_evidence(stderr: &str, bun_pid: u32) {
     let (_, after_tail_prefix) = primary
         .split_once("; bounded Bun stderr tail: ")
         .expect("real Host failure must carry the matched Bun stderr tail");
-    let (bounded_tail, _) = after_tail_prefix
-        .split_once(". Fix the app session failure and relaunch the no-flag host.")
-        .expect("tail must precede the unchanged Host failure guidance");
-    assert!(
-        bounded_tail.ends_with("GH814_PRE_READY_PUBLIC_MARKER END"),
-        "real Bun stderr marker or scrubbed suffix missing: {primary}"
+    // Core appends cleanup diagnostics after the exact 384-character tail.
+    // Slice by the contract length; cleanup text is not an escaped delimiter
+    // and can also occur in the child-provided stderr.
+    let bounded_tail: String = after_tail_prefix.chars().take(384).collect();
+    let suffix = &after_tail_prefix[bounded_tail.len()..];
+    let marker = "GH814_PRE_READY_PUBLIC_MARKER END";
+    let expected_tail = format!("{}{marker}", "A".repeat(384 - marker.chars().count()));
+    assert_eq!(
+        bounded_tail, expected_tail,
+        "Host diagnostic must preserve the exact 384-character scrubbed fixture tail: {primary}"
     );
     assert_eq!(
         bounded_tail.chars().count(),
         384,
         "Host diagnostic must retain exactly 384 characters from the oversized fixture"
+    );
+    // Cleanup bodies may contain nested HostAppError guidance. This test owns
+    // the tail boundary, not the independent cleanup diagnostic contents.
+    assert!(
+        suffix.starts_with("; supervisor cleanup failed: ")
+            || suffix.starts_with("; cleanup: ")
+            || suffix.starts_with(". Fix the app session failure and relaunch the no-flag host."),
+        "bounded Bun stderr must end before cleanup details or Host failure guidance: {primary}"
     );
     assert!(
         !bounded_tail.chars().any(char::is_control),
