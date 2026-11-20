@@ -1,8 +1,25 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
-import { pins, assertPinned, produceReview, sha256 } from "./source-review.mjs";
+import {
+  pins,
+  assertPinned,
+  produceReview,
+  sha256,
+  materializeReviewFiles,
+  claimNewReviewDirectory,
+} from "./source-review.mjs";
 const root = process.env.GH1404_PINNED_PRISTINE_DESKTOP;
 const adapter = process.env.GH1404_PINNED_1506_ADAPTER;
 const output = process.env.GH1404_WORKER17_SOURCE_OUTPUT;
@@ -83,3 +100,220 @@ test(
     );
   },
 );
+
+test("reviewed digest pairs are immutable, including exported receipt pins", () => {
+  for (const [name, pair] of Object.entries(pins)) {
+    assert.equal(Object.isFrozen(pair), true, name + " digest pair is mutable");
+    assert.throws(() => {
+      pair[0] = "0".repeat(64);
+    }, TypeError);
+    assert.throws(() => {
+      pair[1] = "0".repeat(40);
+    }, TypeError);
+  }
+  assert.throws(
+    () => assertPinned("src/main/electron.js", Buffer.from("replaced")),
+    /SOURCE PIN MISMATCH/,
+  );
+});
+
+test("review output requires an exclusive new directory, never adopts foreign files", () => {
+  const root = mkdtempSync(join(tmpdir(), "gh1404-source-review-exclusive-"));
+  try {
+    const output = join(root, "review");
+    assert.equal(existsSync(output), false);
+    // A second owner creates this destination after the early absence check.
+    mkdirSync(output);
+    writeFileSync(join(output, "foreign.txt"), "keep this foreign record");
+    assert.throws(
+      () =>
+        materializeReviewFiles(output, [["src/main/electron.js", "candidate"]]),
+      /existing output|EEXIST/,
+    );
+    assert.equal(
+      readFileSync(join(output, "foreign.txt"), "utf8"),
+      "keep this foreign record",
+    );
+    assert.equal(existsSync(join(output, "src")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("late write failure removes only the owned partial source review", () => {
+  const root = mkdtempSync(join(tmpdir(), "gh1404-source-review-rollback-"));
+  try {
+    const output = join(root, "review");
+    assert.throws(
+      () =>
+        materializeReviewFiles(output, [
+          ["src/main/generated.js", "first author file"],
+          ["src/main/generated.js", "duplicate must refuse exclusive creation"],
+        ]),
+      /EEXIST/,
+    );
+    assert.equal(
+      existsSync(output),
+      false,
+      "no partial review is left looking complete",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ordinary reviewed output writes exact bytes without granting approval", () => {
+  const root = mkdtempSync(join(tmpdir(), "gh1404-source-review-valid-"));
+  try {
+    const output = join(root, "review");
+    materializeReviewFiles(output, [
+      ["src/main/electron.js", "verified source"],
+      ["REVIEW-MANIFEST.UNAPPROVED.json", '{"status":"UNAPPROVED"}\n'],
+    ]);
+    assert.equal(
+      readFileSync(join(output, "src/main/electron.js"), "utf8"),
+      "verified source",
+    );
+    assert.equal(
+      readFileSync(join(output, "REVIEW-MANIFEST.UNAPPROVED.json"), "utf8"),
+      '{"status":"UNAPPROVED"}\n',
+    );
+    assert.throws(
+      () => materializeReviewFiles(output, []),
+      /existing output|EEXIST/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test(
+  "checked-in proposal patch applied to pinned pristine main yields exact reviewed bytes",
+  { skip: !root },
+  () => {
+    const scratch = mkdtempSync(
+      join(tmpdir(), "gh1404-patch-versus-candidate-"),
+    );
+    try {
+      const main = join(scratch, "src/main/electron.js");
+      mkdirSync(join(scratch, "src/main"), { recursive: true });
+      const pristine = readFileSync(join(root, "src/main/electron.js"));
+      assertPinned("src/main/electron.js", pristine);
+      writeFileSync(main, pristine);
+      const patch = readFileSync(
+        new URL("./electron-argv.UNAPPROVED.patch", import.meta.url),
+      );
+      const applied = spawnSync(
+        "git",
+        ["apply", "--unidiff-zero", "--whitespace=error", "-"],
+        {
+          cwd: scratch,
+          input: patch,
+          encoding: "utf8",
+        },
+      );
+      assert.equal(applied.status, 0, applied.stderr);
+      assert.equal(
+        sha256(readFileSync(main)),
+        "f2969473b298e6b8ad55577b7e6494db691b8273f22d69ef8ad5cf33c477fa9b",
+        "patch and reviewed producer must emit the same immutable source",
+      );
+      // An isolated one-token patch mutation must fail the independent digest.
+      writeFileSync(main, pristine);
+      const corrupt = Buffer.from(
+        patch
+          .toString("utf8")
+          .replace("runtimeProcessFactsSelected", "runtimeProcessFactsAltered"),
+      );
+      const mutated = spawnSync(
+        "git",
+        ["apply", "--unidiff-zero", "--whitespace=error", "-"],
+        {
+          cwd: scratch,
+          input: corrupt,
+          encoding: "utf8",
+        },
+      );
+      assert.equal(mutated.status, 0, mutated.stderr);
+      assert.notEqual(
+        sha256(readFileSync(main)),
+        "f2969473b298e6b8ad55577b7e6494db691b8273f22d69ef8ad5cf33c477fa9b",
+        "mutation must break source approval hash",
+      );
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "unreviewed adapter bytes are refused before source materialization",
+  { skip: !(root && adapter) },
+  async () => {
+    const scratch = mkdtempSync(join(tmpdir(), "gh1404-adapter-tamper-"));
+    try {
+      const modified = join(scratch, "modified-adapter.mjs");
+      writeFileSync(
+        modified,
+        Buffer.concat([
+          readFileSync(adapter),
+          Buffer.from("\\n// independent tamper negative\\n"),
+        ]),
+      );
+      const destination = join(scratch, "unapproved");
+      await assert.rejects(
+        () => produceReview(root, modified, destination),
+        /exact #1506 adapter pin mismatch/,
+      );
+      assert.equal(existsSync(destination), false);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
+test("failed owned producer preserves an independently inserted foreign file", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "gh1404-source-review-foreign-"));
+  try {
+    const destination = join(scratch, "owned-review");
+    const late = ["late.js"];
+    Object.defineProperty(late, 1, {
+      get() {
+        writeFileSync(join(destination, "foreign.txt"), "not ours");
+        throw new Error("controlled late source failure");
+      },
+    });
+    assert.throws(
+      () =>
+        materializeReviewFiles(destination, [
+          ["src/main/owned.js", "ours"],
+          late,
+        ]),
+      /controlled late source failure/,
+    );
+    assert.equal(
+      readFileSync(join(destination, "foreign.txt"), "utf8"),
+      "not ours",
+    );
+    assert.equal(existsSync(join(destination, "src/main/owned.js")), false);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("late competing creation is refused at the atomic output claim", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "gh1404-atomic-new-dir-"));
+  try {
+    const output = join(scratch, "claimed");
+    assert.equal(existsSync(output), false, "earlier absence is not a lock");
+    mkdirSync(output); // A competing producer creates it after preflight.
+    writeFileSync(join(output, "foreign.txt"), "untouched");
+    assert.throws(() => claimNewReviewDirectory(output), /EEXIST/);
+    assert.equal(
+      readFileSync(join(output, "foreign.txt"), "utf8"),
+      "untouched",
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});

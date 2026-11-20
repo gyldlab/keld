@@ -5,13 +5,18 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  openSync,
+  closeSync,
+  fstatSync,
+  rmdirSync,
+  unlinkSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, resolve, join } from "node:path";
-import { pathToFileURL, fileURLToPath } from "node:url";
+import { dirname, resolve, join, isAbsolute } from "node:path";
+import { fileURLToPath } from "node:url";
 
-export const pins = Object.freeze({
+const PIN_DIGESTS = {
   LICENSE: [
     "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
     "f288702d2fa16d3cdf0035b15a9fcbc552cd88e7",
@@ -36,7 +41,15 @@ export const pins = Object.freeze({
     "55505e690d37070344be172a68ad997ab48c687302dc5dee30a988d4f153770d",
     "b57b5e2047710e829bfc25ab09f32b09ad2114d7",
   ],
-});
+};
+export const pins = Object.freeze(
+  Object.fromEntries(
+    Object.entries(PIN_DIGESTS).map(([name, pair]) => [
+      name,
+      Object.freeze([...pair]),
+    ]),
+  ),
+);
 const pinnedAdapterSha =
   "530a1e951911e7475122af2899731211cc476724bb70e200c0d1ce2690d28968";
 export const sha256 = (bytes) =>
@@ -65,10 +78,90 @@ function readPinned(root, name) {
   assertPinned(name, bytes);
   return bytes;
 }
-function newFile(path, bytes) {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, bytes, { flag: "wx" });
+/** Claim the final output name with one atomic, nonrecursive filesystem operation. */
+export function claimNewReviewDirectory(output) {
+  mkdirSync(output);
 }
+
+/**
+ * Write a complete, non-installable review into an exclusively claimed path.
+ * Never adopt another producer's directory. Roll back only files opened by
+ * this invocation, then remove owned directories only if they are empty.
+ */
+export function materializeReviewFiles(outputInput, entries) {
+  const output = resolve(outputInput);
+  if (existsSync(output))
+    throw new Error("GH1404 refuse existing output directory");
+  for (const [name] of entries) {
+    if (
+      typeof name !== "string" ||
+      isAbsolute(name) ||
+      !name ||
+      name.split(/[\\/]/).some((part) => !part || part === "." || part === "..")
+    )
+      throw new Error("GH1404 invalid review output name");
+  }
+  mkdirSync(dirname(output), { recursive: true });
+  // Nonrecursive mkdir is the atomic claim after any awaited source work.
+  claimNewReviewDirectory(output);
+  const files = [];
+  const directories = [];
+  try {
+    for (const [name, bytes] of entries) {
+      const destination = join(output, name);
+      let parent = dirname(destination);
+      const missing = [];
+      while (parent !== output && !existsSync(parent)) {
+        missing.push(parent);
+        parent = dirname(parent);
+      }
+      for (let i = missing.length - 1; i >= 0; i -= 1) {
+        mkdirSync(missing[i]);
+        directories.push(missing[i]);
+      }
+      // Exclusive creation prevents replacing any earlier or foreign file.
+      const fd = openSync(destination, "wx", 0o600);
+      try {
+        const identity = fstatSync(fd);
+        files.push({ path: destination, dev: identity.dev, ino: identity.ino });
+        writeFileSync(fd, bytes);
+      } finally {
+        closeSync(fd);
+      }
+    }
+  } catch (error) {
+    // If another process replaced a file, preserve it. Never recurse-delete
+    // the directory, which may contain someone else's new entries.
+    for (let i = files.length - 1; i >= 0; i -= 1) {
+      const file = files[i];
+      try {
+        const current = lstatSync(file.path);
+        if (
+          current.isFile() &&
+          current.dev === file.dev &&
+          current.ino === file.ino
+        )
+          unlinkSync(file.path);
+      } catch {
+        // Keep the original error and any files not demonstrably ours.
+      }
+    }
+    for (let i = directories.length - 1; i >= 0; i -= 1) {
+      try {
+        rmdirSync(directories[i]);
+      } catch {
+        /* Foreign entries remain. */
+      }
+    }
+    try {
+      rmdirSync(output);
+    } catch {
+      /* Foreign entries remain. */
+    }
+    throw error;
+  }
+}
+
 export async function produceReview(rootInput, adapterInput, outputInput) {
   if (!rootInput || !adapterInput || !outputInput)
     throw new Error(
@@ -82,12 +175,16 @@ export async function produceReview(rootInput, adapterInput, outputInput) {
   const source = Object.fromEntries(
     Object.keys(pins).map((name) => [name, readPinned(root, name)]),
   );
-  if (
-    !lstatSync(adapter).isFile() ||
-    sha256(readFileSync(adapter)) !== pinnedAdapterSha
-  )
+  if (!lstatSync(adapter).isFile())
     throw new Error("GH1404 exact #1506 adapter pin mismatch");
-  const module = await import(pathToFileURL(adapter).href);
+  const adapterBytes = readFileSync(adapter);
+  if (sha256(adapterBytes) !== pinnedAdapterSha)
+    throw new Error("GH1404 exact #1506 adapter pin mismatch");
+  // Evaluate the exact captured bytes that passed the pin check. Do not
+  // import the mutable path again after the asynchronous module boundary.
+  const module = await import(
+    "data:text/javascript;base64," + adapterBytes.toString("base64")
+  );
   const patched = module.patchOriginalMainText(
     source["src/main/electron.js"].toString("utf8"),
   );
@@ -117,32 +214,22 @@ export async function produceReview(rootInput, adapterInput, outputInput) {
     patched.includes("process.argv =")
   )
     throw new Error("GH1404 unsafe argv patch");
-  newFile(join(output, "src/main/electron.js"), patched);
-  newFile(
-    join(output, "src/main/electron-preload.js"),
-    source["src/main/electron-preload.js"],
-  );
-  newFile(join(output, "src/main/args.js"), source["src/main/args.js"]);
-  newFile(
-    join(output, "package.json.UPSTREAM_NOT_MIGRATED"),
-    source["package.json"],
-  );
-  newFile(
-    join(output, "package-lock.json.UPSTREAM_NOT_MIGRATED"),
-    source["package-lock.json"],
-  );
-  newFile(
-    join(output, "LICENSE.UPSTREAM_NOT_DISTRIBUTION_APPROVAL"),
-    source.LICENSE,
-  );
-  newFile(
-    join(output, "keld.permissions.MISSING_OWNER_APPROVAL.txt"),
-    "No owner-selected Legacy Guard/CSP policy exists. No permissions were granted, and this is NOT an installable JSONC policy.\n",
-  );
-  newFile(
-    join(output, "DO-NOT-BUILD-OR-INSTALL.txt"),
-    "GH1404 UNAPPROVED incomplete original source proposal. No current provider archives, full webapp, migrated lock, permission policy, CLI/Host pairing or independent license approval. DO NOT BUILD OR INSTALL.\n",
-  );
+  const files = [
+    ["src/main/electron.js", patched],
+    ["src/main/electron-preload.js", source["src/main/electron-preload.js"]],
+    ["src/main/args.js", source["src/main/args.js"]],
+    ["package.json.UPSTREAM_NOT_MIGRATED", source["package.json"]],
+    ["package-lock.json.UPSTREAM_NOT_MIGRATED", source["package-lock.json"]],
+    ["LICENSE.UPSTREAM_NOT_DISTRIBUTION_APPROVAL", source.LICENSE],
+    [
+      "keld.permissions.MISSING_OWNER_APPROVAL.txt",
+      "No owner-selected Legacy Guard/CSP policy exists. No permissions were granted, and this is NOT an installable JSONC policy.\n",
+    ],
+    [
+      "DO-NOT-BUILD-OR-INSTALL.txt",
+      "GH1404 UNAPPROVED incomplete original source proposal. No current provider archives, full webapp, migrated lock, permission policy, CLI/Host pairing or independent license approval. DO NOT BUILD OR INSTALL.\n",
+    ],
+  ];
   const receipt = {
     schema: "gh1404-worker17-source-only-review/v1",
     status: "UNAPPROVED_INCOMPLETE_NOT_INSTALLABLE",
@@ -163,10 +250,11 @@ export async function produceReview(rootInput, adapterInput, outputInput) {
     approved_original_signed_artifact: null,
     independent_owner_approval_count: 0,
   };
-  newFile(
-    join(output, "REVIEW-MANIFEST.UNAPPROVED.json"),
+  files.push([
+    "REVIEW-MANIFEST.UNAPPROVED.json",
     JSON.stringify(receipt, null, 2) + "\n",
-  );
+  ]);
+  materializeReviewFiles(output, files);
   return receipt;
 }
 if (
