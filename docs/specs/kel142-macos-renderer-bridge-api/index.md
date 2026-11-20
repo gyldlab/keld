@@ -16,6 +16,17 @@ part and heading, not the directory alone. The historical design assumptions are
 in [design-api](design-api.md#3-historical-design-facts-approved-2026-09-30), with separately
 verified API ownership facts at `Pin`. Other historical claims remain unqualified.
 
+> **Approved navigation companion, unmerged (GH #541).** The approval JSON,
+> content head and digest above remain the historical KEL-142 approval. The
+> [companion amendment](../gh541-channel-grants-navigation/index.md) records the explicitly
+> marked qualifications in sections 5.2, 6, AC-5 and AC-6 in the source parts. Its separate delegated
+> approval is KEL-102 comment `8fa29b34-bdb6-470f-9f97-9cdf0aa1d0eb`, decision SHA-256
+> `2da2c23a53848d618f08612a1106d53283b7488601be7fd3eaa5ed95038df5af`, technical content
+> `7e0c1b89c4767f2e6625cd2bfc4d36d86b30fc26`. The earlier approval is unchanged.
+> GH #542 retains its own approved implementation-spec and native-evidence gates;
+> this contract decision does not authorize implementation or merge. KEL-142's
+> historical Done status does not qualify the new navigation implementation.
+
 ## 1. Goal & non-goals
 
 Ship the smallest real macOS renderer-to-app slice required by KEL-139:

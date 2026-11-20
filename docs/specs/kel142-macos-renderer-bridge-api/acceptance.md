@@ -100,6 +100,13 @@ are INFERRED where the approved text has none.
   - **At-risk precondition:** UNKNOWN: the approved text names none
   - **Expected RED:** UNKNOWN: the approved text names none
 
+**Approved GH #541 AC5 contract qualification (unimplemented):** replace the broad "old nonce
+after navigation begins" case with independent zero-dispatch cases after
+cross-document commit and after the earlier host full-document-load invalidation.
+Add paired positive controls proving that same-document navigation and a cancelled
+renderer provisional navigation preserve the original valid document identity.
+These tests still require real native observations; no pass is claimed here.
+
 ### AC-6: slow consumer and disconnect
 
 - **Given:** a renderer invoke is admitted.
@@ -116,6 +123,12 @@ are INFERRED where the approved text has none.
   - **Single fault:** UNKNOWN: the approved text names none
   - **At-risk precondition:** UNKNOWN: the approved text names none
   - **Expected RED:** UNKNOWN: the approved text names none
+
+**Approved GH #541 AC6 contract qualification (unimplemented):** apply the same event
+classification in [section 6](design-bridge.md#6-ordering-backpressure-disconnect). Preserve the pending call across same-document or
+cancelled renderer provisional navigation, and retire it at replacement commit,
+early host full-document-load invalidation, destruction or app-link loss. Do not
+replay or rebind work admitted under the old Bun session to a successor session.
 
 ### AC-7: fuzz boundary
 

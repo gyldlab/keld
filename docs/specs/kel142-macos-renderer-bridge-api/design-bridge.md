@@ -46,6 +46,17 @@ Each main-frame document performs an internal bind through the isolated world:
 6. provisional/new navigation invalidates the previous nonce before the new
    document may dispatch.
 
+**Approved GH #541 contract qualification (unimplemented):** replace item 6's broad
+provisional-navigation rule with revocation at a native cross-document commit,
+including reload or same-URL document replacement. A trusted host full-document
+load/reload revokes earlier, before engine invocation, and blocks old-document
+rebind until a qualified commit. Failed/cancelled host loads never restore old
+authority. Renderer provisional navigation that is cancelled without replacement
+commit preserves the current nonce and generation; same-document navigation does
+not rotate either. The companion amendment owns the checked generation and
+trusted document-eligibility rules. These approved requirements still need native
+implementation and qualification; the historical approval remains unchanged.
+
 The page-world `invoke` payload contains only channel + application payload.
 It never supplies the document nonce or any app authority.
 
@@ -114,6 +125,14 @@ Rules:
 - no automatic replay occurs after reconnect/recovery;
 - Quit/quiesce prevents new renderer dispatch before link teardown;
 - no UI thread blocks on Bun, app-link I/O, or handler completion.
+
+**Approved GH #541 contract qualification (unimplemented):** for the amended slice,
+"navigation" in the invalidation rules above means a committed cross-document
+replacement or earlier trusted host full-document load/reload. Close still revokes
+immediately. Same-document navigation and cancelled renderer provisional navigation
+preserve valid pending work. Host-load failure does not roll revocation back. A
+queued request must retain its original document and Bun-session identity; recovery
+must not retarget old work to the successor link. Bun recovery remains KEL-143-owned.
 
 KEL-143 owns successor-generation recovery and a successful post-recovery
 second guarded call. KEL-142 only makes the renderer/app call retirement

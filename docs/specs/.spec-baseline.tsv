@@ -9,7 +9,7 @@ docs/specs/gh531-window-registry-close-state-machine.md	1673	119800	262	exempt
 docs/specs/gh532-first-proof-evidence-rules.md	691	43313	-	exempt
 docs/specs/gh566-corpus-manifest-owner.md	1421	84867	97	exempt
 docs/specs/kel101-windows-named-pipe-dacl.md	-	-	1336	exempt
-docs/specs/kel102-host-guard-enforcement.md	865	60432	3820	exempt
+docs/specs/kel102-host-guard-enforcement.md	864	60426	3820	exempt
 docs/specs/kel130-retained-filesystem.md	1011	88401	10432	exempt
 docs/specs/kel132-webview-gpu-media.md	-	-	-	exempt
 docs/specs/kel133-kipc-receiver-semantics.md	-	-	228	exempt
