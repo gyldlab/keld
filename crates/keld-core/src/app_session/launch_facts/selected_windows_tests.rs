@@ -6,7 +6,7 @@ use crate::app_session::publish_windows_lease_observation;
 use crate::app_session::windows_instance_election::tests::{elect_at_for_test, fixture};
 use crate::app_session::{GRAPH_FILE, SessionShutdownState, WindowsDevLeaseObservation};
 use sha2::{Digest as _, Sha256};
-use std::{fs, path::Path, sync::mpsc};
+use std::{fs, sync::mpsc};
 
 fn observation() -> native::Observation {
     native::Observation {
