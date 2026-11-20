@@ -94,9 +94,9 @@ impl MacosBundleMetadata {
         {
             return Err(invalid("invalid application name or bundle identifier"));
         }
-        // Current Apple Bundle Resources documents one to three numeric build
-        // components and exactly three short-version components. No suffix or
-        // extra component is silently removed.
+        // Apple's version readers normalize numeric components. Require a
+        // unique bounded spelling so a signed/receipted build never gains a
+        // different effective version through leading zeroes or overflow.
         if !numeric_version(&self.version, 3, 3)
             || !numeric_version(&self.bundle_version, 1, 3)
             || !numeric_version(&self.minimum_system_version, 1, 3)
@@ -228,7 +228,10 @@ fn numeric_version(value: &str, minimum: usize, maximum: usize) -> bool {
     let count = components.clone().count();
     (minimum..=maximum).contains(&count)
         && components.clone().all(|component| {
-            !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
+            !component.is_empty()
+                && component.bytes().all(|byte| byte.is_ascii_digit())
+                && (component.len() == 1 || !component.starts_with('0'))
+                && component.parse::<u32>().is_ok()
         })
 }
 
@@ -522,5 +525,46 @@ mod tests {
         let mut value = metadata();
         value.app_id = "org.example/escape".to_owned();
         assert!(value.to_plist().is_err());
+    }
+
+    #[test]
+    fn version_components_refuse_aliases_that_apple_silently_normalizes() {
+        // Apple's CFBundleVersion semantics drop leading zeroes from numeric
+        // components. The signed metadata and build receipt must identify one
+        // exact version, not distinct text representations of the same version.
+        for (field, variants) in [
+            (
+                "release",
+                &["01.2.3", "1.02.3", "1.2.03", "4294967296.2.3"][..],
+            ),
+            ("build", &["04", "4.00", "4.01", "4294967296"][..]),
+            ("minimum OS", &["013.0", "13.00", "4294967296.0"][..]),
+        ] {
+            for version in variants {
+                let mut value = metadata();
+                let original = match field {
+                    "release" => std::mem::replace(&mut value.version, (*version).to_owned()),
+                    "build" => std::mem::replace(&mut value.bundle_version, (*version).to_owned()),
+                    "minimum OS" => {
+                        std::mem::replace(&mut value.minimum_system_version, (*version).to_owned())
+                    }
+                    _ => unreachable!("test field is fixed"),
+                };
+                assert!(
+                    value.to_plist().is_err(),
+                    "accepted noncanonical {field} version {version}"
+                );
+                let replacement = encoded().replacen(
+                    &format!("<string>{original}</string>"),
+                    &format!("<string>{version}</string>"),
+                    1,
+                );
+                assert_ne!(replacement, encoded(), "fixture mutation did not apply");
+                assert!(
+                    MacosBundleMetadata::from_plist(replacement.as_bytes()).is_err(),
+                    "installed metadata reader accepted noncanonical {field} version {version}"
+                );
+            }
+        }
     }
 }
