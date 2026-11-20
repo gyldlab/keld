@@ -41,6 +41,13 @@ use std::io::Read;
 use std::os::unix::net::{UnixDatagram, UnixListener};
 use std::path::Path;
 
+fn dev_stage_id(root: &Path) -> String {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let metadata = std::fs::metadata(root).expect("retained stage identity fixture");
+    format!("{}:{}", metadata.dev(), metadata.ino())
+}
+
 #[test]
 fn keld_dev_helper_process() {
     let Some(project) = std::env::var_os("KELD_T2_HELPER_PROJECT") else {

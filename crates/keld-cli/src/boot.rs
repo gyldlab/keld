@@ -43,6 +43,8 @@ const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
 pub struct DevBootStage {
     root: PathBuf,
     host: PathBuf,
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    cleanup_dir: cap_std::fs::Dir,
     #[cfg(windows)]
     launch_guards: Vec<File>,
 }
@@ -58,6 +60,25 @@ impl DevBootStage {
     #[must_use]
     pub fn host(&self) -> &Path {
         &self.host
+    }
+
+    /// Identity of the directory retained since stage creation, for host cleanup admission.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) fn stage_identity(&self) -> io::Result<(u64, u64)> {
+        use cap_std::fs::MetadataExt as _;
+
+        let metadata = self.cleanup_dir.dir_metadata()?;
+        Ok((metadata.dev(), metadata.ino()))
+    }
+
+    /// Remove the original staged directory, even if an ancestor pathname changed.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) fn cleanup(self) -> io::Result<()> {
+        match self.cleanup_dir.remove_open_dir_all() {
+            Ok(()) => Ok(()),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(source),
+        }
     }
 
     /// Releases the Windows namespace pins after the staged host and its
@@ -198,8 +219,11 @@ impl std::error::Error for BootCompileError {}
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct StageGuard {
+    #[cfg(windows)]
     root: PathBuf,
     keep: bool,
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    cleanup_dir: Option<cap_std::fs::Dir>,
     #[cfg(windows)]
     launch_guards: Vec<File>,
 }
@@ -208,9 +232,15 @@ struct StageGuard {
 impl Drop for StageGuard {
     fn drop(&mut self) {
         if !self.keep {
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            if let Some(directory) = self.cleanup_dir.take() {
+                let _ = directory.remove_open_dir_all();
+            }
             #[cfg(windows)]
-            self.launch_guards.clear();
-            let _ = fs::remove_dir_all(&self.root);
+            {
+                self.launch_guards.clear();
+                let _ = fs::remove_dir_all(&self.root);
+            }
         }
     }
 }
@@ -435,11 +465,21 @@ where
     let launch_guards = prepare_windows_launch_parents(&project_root, &dev_root)?;
     let root = create_launch_root(&dev_root)?;
     let mut guard = StageGuard {
+        #[cfg(windows)]
         root: root.clone(),
         keep: false,
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        cleanup_dir: None,
         #[cfg(windows)]
         launch_guards,
     };
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        guard.cleanup_dir = Some(
+            cap_std::fs::Dir::open_ambient_dir(&root, cap_std::ambient_authority())
+                .map_err(|source| BootCompileError::new("stage handle", source.to_string()))?,
+        );
+    }
     #[cfg(windows)]
     {
         guard.launch_guards.push(open_windows_launch_guard(&root)?);
@@ -588,10 +628,16 @@ where
     }
     #[cfg(windows)]
     let launch_guards = std::mem::take(&mut guard.launch_guards);
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let cleanup_dir = guard.cleanup_dir.take().ok_or_else(|| {
+        BootCompileError::new("stage handle", "missing retained directory handle")
+    })?;
     guard.keep = true;
     Ok(DevBootStage {
         root,
         host: staged_host,
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        cleanup_dir,
         #[cfg(windows)]
         launch_guards,
     })
@@ -1488,3 +1534,49 @@ mod tests {
 #[allow(clippy::expect_used, clippy::panic)]
 // test fixture failures are assertion oracles, as in the sibling unit-test module
 mod permissions_tests;
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+mod retained_cleanup_tests {
+    use super::DevBootStage;
+    use std::fs;
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+    #[test]
+    fn cli_retained_stage_cleanup_does_not_follow_replaced_ancestor() {
+        let temp = tempfile::tempdir().expect("private stage fixture");
+        let relative = ".keld/dev/0123456789abcdef0123456789abcdef";
+        let project = temp.path().join("project");
+        let stage_root = project.join(relative);
+        fs::create_dir_all(&stage_root).expect("original stage");
+        fs::set_permissions(&stage_root, fs::Permissions::from_mode(0o700)).expect("private stage");
+        fs::write(stage_root.join("original"), b"original").expect("original data");
+        let directory =
+            cap_std::fs::Dir::open_ambient_dir(&stage_root, cap_std::ambient_authority())
+                .expect("retain stage handle");
+        let stage = DevBootStage {
+            root: stage_root.clone(),
+            host: stage_root.join("keld-host"),
+            cleanup_dir: directory,
+        };
+        let original_identity = stage.stage_identity().expect("retained inode");
+
+        let victim = temp.path().join("victim");
+        let victim_root = victim.join(relative);
+        fs::create_dir_all(&victim_root).expect("replacement stage");
+        fs::write(victim_root.join("keep"), b"victim").expect("victim data");
+        let moved = temp.path().join("moved");
+        fs::rename(&project, &moved).expect("move original ancestor");
+        symlink(&victim, &project).expect("redirect old pathname");
+
+        assert_eq!(
+            stage.stage_identity().expect("retained inode after rename"),
+            original_identity
+        );
+        stage.cleanup().expect("remove only original stage");
+        assert!(!moved.join(relative).exists(), "original stage was removed");
+        assert_eq!(
+            fs::read(victim_root.join("keep")).expect("victim survives"),
+            b"victim"
+        );
+    }
+}

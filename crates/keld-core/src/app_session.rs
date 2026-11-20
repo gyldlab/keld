@@ -179,6 +179,10 @@ const DIGEST_PREFIX: &str = "sha256:";
 const GUARDIAN_OWNER_REPLY_DEADLINE: Duration = Duration::from_secs(6);
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const DEV_LEASE_ENV: &str = "KELD_DEV_LEASE";
+/// Private CLI-to-Host device/inode binding for a retained Unix dev-stage directory.
+/// The Guardian inherits it until cleanup; application children must not.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+pub const DEV_STAGE_ID_ENV: &str = "KELD_DEV_STAGE_ID";
 #[cfg(any(target_os = "macos", windows))]
 const NATIVE_WINDOW_FACADE_ENV: &str = "KELD_NATIVE_WINDOW_FACADE";
 /// Child-only test admission of a Windows schema-2 boot (GH-1188 D2): compiled out of
@@ -3424,6 +3428,7 @@ fn windows_primary_config(
             if native_facade { "1" } else { "0" },
         )
         .env_remove(DEV_LEASE_ENV)
+        .env_remove(DEV_STAGE_ID_ENV)
         .env_remove(keld_runtime::windows_job::WINDOWS_LAUNCH_GATE_ENV);
     #[cfg(debug_assertions)]
     let config = config
@@ -3966,7 +3971,8 @@ fn linux_strict_primary_config_x86(
         .arg(LINUX_BUN_ENTRY)
         .env("HOME", "/app")
         .env("TMPDIR", "/tmp")
-        .env_remove(DEV_LEASE_ENV);
+        .env_remove(DEV_LEASE_ENV)
+        .env_remove(DEV_STAGE_ID_ENV);
     #[cfg(debug_assertions)]
     let config = {
         let mut config = config;

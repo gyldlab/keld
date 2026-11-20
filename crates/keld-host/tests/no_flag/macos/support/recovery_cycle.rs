@@ -74,6 +74,10 @@ impl RecoveryCycle {
         let mut command = Command::new(stage.host());
         command
             .env("KELD_DEV_LEASE", "stdin-v1")
+            .env(
+                keld_core::app_session::DEV_STAGE_ID_ENV,
+                crate::dev_stage_id(stage.root()),
+            )
             .stdin(Stdio::piped())
             .env("KELD_T1B_CONTROL", &control_path)
             .stdout(Stdio::piped())

@@ -253,6 +253,10 @@ pub(crate) fn assert_invalid_stage_is_resource_free(
     if dev_lease {
         command
             .env("KELD_DEV_LEASE", "stdin-v1")
+            .env(
+                keld_core::app_session::DEV_STAGE_ID_ENV,
+                crate::dev_stage_id(stage.root()),
+            )
             .stdin(Stdio::piped());
     } else {
         command.env_remove("KELD_DEV_LEASE");

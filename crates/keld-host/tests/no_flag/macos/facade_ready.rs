@@ -71,6 +71,10 @@ fn shipping_schema_two_host_emits_ready_without_an_initial_native_window() {
         .env("KELD_T1B_CONTROL", &control_path)
         .env("KELD_T4_SKIP_DESCENDANT", "1")
         .env("KELD_DEV_LEASE", "stdin-v1")
+        .env(
+            keld_core::app_session::DEV_STAGE_ID_ENV,
+            crate::dev_stage_id(stage.root()),
+        )
         .env("KELD_T2_EXIT_ON_LINK_EOF", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -165,6 +169,10 @@ fn shipping_schema_two_stalled_init_exits_through_the_binary_terminal_once() {
         .env("KELD_T4_SKIP_DESCENDANT", "1")
         .env("KELD_T1B_STALL_BEFORE_INIT", "1")
         .env("KELD_DEV_LEASE", "stdin-v1")
+        .env(
+            keld_core::app_session::DEV_STAGE_ID_ENV,
+            crate::dev_stage_id(stage.root()),
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -300,6 +308,10 @@ fn electron_facade_ready_and_when_ready_agree_on_the_real_zero_window_host() {
         .current_dir(stage.root())
         .env("KELD_T1B_CONTROL", &path)
         .env("KELD_DEV_LEASE", "stdin-v1")
+        .env(
+            keld_core::app_session::DEV_STAGE_ID_ENV,
+            crate::dev_stage_id(stage.root()),
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
