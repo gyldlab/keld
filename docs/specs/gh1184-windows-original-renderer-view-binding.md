@@ -76,12 +76,12 @@ Reuse the existing document, permission, writer, ledger and ownership boundaries
 ### AC-6: The binding has a hard received limit
 
 - **Given:** An overlong tag encodes ordinal 12 before the complete maximum tuple.
-- **When:** Receive `8c 00 ff ff ff ff 0f ff ff ff ff ff ff ff ff ff 01 ff ff ff ff 0f` through each supported raw entry point.
-- **Then:** The 22-byte record refuses before the mirror sees it. The equivalent 21-byte canonical record succeeds.
+- **When:** Send `8c 00 ff ff ff ff 0f ff ff ff ff ff ff ff ff ff 01 ff ff ff ff 0f` through each Window receive owner.
+- **Then:** Each receive owner refuses the 22-byte record before state application. The equivalent 21-byte canonical record succeeds.
 - **Negative control:**
   - **Single fault:** Remove the raw size check for detected ordinal 12.
   - **At-risk precondition:** The payload fits the general WINDOW limit and its fields are valid.
-  - **Expected RED:** The decoder accepts the oversized binding.
+  - **Expected RED:** The affected receive owner accepts the oversized binding.
 
 ### AC-7: WorkerLink applies observations before DATA
 
@@ -249,6 +249,36 @@ Reuse the existing document, permission, writer, ledger and ownership boundaries
   - **At-risk precondition:** The app has sent the response. The same admitted view, document and listener stay live.
   - **Expected RED:** The original document shows no receipt of that response.
 
+### AC-23: The generic decoder retains structural semantics
+
+- **Given:** A valid unrelated Postcard value starts with the overlong encoding of ordinal 12.
+- **When:** Decode the value through `codec::decode`.
+- **Then:** The unrelated value keeps its earlier result. Generic decoding alone does not admit a Window fact.
+- **Negative control:**
+  - **Single fault:** Apply the Window-only size limit to every generic Postcard payload.
+  - **At-risk precondition:** The unrelated value exceeds 21 bytes and otherwise decodes successfully.
+  - **Expected RED:** Generic decode refuses the unrelated value.
+
+### AC-24: Rust raw decode is not admission
+
+- **Given:** The 22-byte AC-6 binding has valid nonzero fields.
+- **When:** Decode the payload through generic Postcard and the Rust Window receive owner.
+- **Then:** Generic decode accepts its structural value. The Window receive owner refuses admission.
+- **Negative control:**
+  - **Single fault:** Bypass the Rust receive owner's raw size check.
+  - **At-risk precondition:** Generic decode accepts the same 22-byte value.
+  - **Expected RED:** The Rust Window receive owner admits the oversized value.
+
+### AC-25: SDK ingress rejects the oversized binding
+
+- **Given:** An actual WorkerLink carries a live Created fact for the maximum Window pair. The AC-6 view is unbound. The same WorkerLink carries the 22-byte binding.
+- **When:** The SDK WindowSource applies ordered facts.
+- **Then:** The checked ingress refuses before mirror application or listener dispatch.
+- **Negative control:**
+  - **Single fault:** Bypass the SDK receive owner's raw size check.
+  - **At-risk precondition:** The payload otherwise decodes and names a live unbound Window pair.
+  - **Expected RED:** The actual Window mirror applies the oversized binding.
+
 ## 4. Design
 
 ### D-1: Physical association on WINDOW
@@ -266,7 +296,16 @@ Append `WindowEventValue::OriginalRendererViewBound { window: WindowRef, webview
 
 Use `EVENT`, flags 0, WINDOW channel 5 and correlation 0. The literal for `(1,258,7)` is `0c 01 82 02 07`. The canonical maximum is `0c ff ff ff ff 0f ff ff ff ff ff ff ff ff ff 01 ff ff ff ff 0f`.
 
-Check the 21-byte received limit for detected ordinal 12 before field decode. Count the original tag bytes. Share the existing discriminant reader. Each supported raw receive entry point must enforce the same bound. A decoded value alone cannot prove the received size. Preserve unrelated Window and COMPAT receive limits.
+The channel-aware Window receive owner checks the original bytes before state application. It counts all tag bytes. It enforces the 21-byte limit for ordinal 12 before field decode. It uses the existing Postcard discriminant reader. Each Window receive owner enforces the same bound and nonzero identities. Preserve unrelated Window and COMPAT receive limits.
+
+The Rust Window receive owner delegates value parsing to the existing shared codec.
+Route every framework Rust Window ingress through that owner.
+Route `crates/keld-ipc/tests/receiver_corpus.rs` stage two through it.
+Route the SDK `WindowSource` carrier ingress through its corresponding checked decoder.
+**FACT:** The selected source census found no product Rust Window ingress at
+`7ff95f99c3fc6ba7ed0bdd327e526297142174a1`. A new Rust Window ingress must use the same owner.
+
+`codec::decode::<WindowEvent>` remains a generic structural Postcard decoder. It is not a channel admission boundary. Generic decode and directly constructed events do not prove the received size or identity checks. Do not feed them directly to a framework Window mirror. Preserve unrelated generic decoding and the borrowed decoder API.
 
 ### D-2: Publication and replay
 
@@ -322,7 +361,7 @@ Use the existing Rust WINDOW receive owner, Core Registry and primary writer. Up
 ### T-1: Freeze the exact codec
 
 - **Blocked by:** B-1, B-3
-- Add literal accepted and rejected vectors to the existing receive tests. Move the new suite's old ordinal-12 unknown test to a free tag. Preserve old rejection in the earlier-provider fixture. Reuse the existing generator.
+- Add literal accepted and rejected vectors to each Window receive owner. Test each zero identity independently. Test malformed tags, overflow, trailing bytes and previous records. Test an unrelated generic Postcard payload. Move the new suite's old ordinal-12 unknown test to a free tag. Preserve old rejection in the earlier-provider fixture. Reuse the existing generator.
 
 ### T-2: Join native publication and mirror application
 
@@ -337,7 +376,7 @@ Use the existing Rust WINDOW receive owner, Core Registry and primary writer. Up
 ### T-4: Qualify selected delivery and retirement
 
 - **Blocked by:** T-2, T-3, B-2
-- Join approved GH540 DATA and CONTROL using the existing Guard, writer and ledger. Run AC-1 through AC-22 on one exact Windows Host, CLI and SDK tuple.
+- Join approved GH540 DATA and CONTROL using the existing Guard, writer and ledger. Run AC-1 through AC-25 on one exact Windows Host, CLI and SDK tuple.
 
 ## 7. Test plan & evidence
 
