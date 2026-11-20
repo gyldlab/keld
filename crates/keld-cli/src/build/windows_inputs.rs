@@ -2,7 +2,7 @@
 //!
 //! This explicit check creates no package, stage, process, profile or grant.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
@@ -47,8 +47,9 @@ pub(super) fn stable_file_at_parent(path: &Path, parents: &[File]) -> Result<Pat
     let mut ordinary = Path::new(leaf).components();
     if !matches!(
         (ordinary.next(), ordinary.next()),
-        (Some(Component::Normal(_)), None)
-    ) {
+        (Some(Component::Normal(parsed)), None) if parsed == leaf
+    ) || leaf.as_encoded_bytes().contains(&b'/')
+    {
         return Err(BuildError::input(
             "Windows local file",
             "leaf must be one ordinary path component",
@@ -128,14 +129,18 @@ fn stable_local_target_from_pinned_root(
     drive_root: &Path,
     root_pins: Vec<File>,
 ) -> Result<(PathBuf, Vec<File>), BuildError> {
-    let relative = path.strip_prefix(drive_root).map_err(|_| {
+    path.strip_prefix(drive_root).map_err(|_| {
         BuildError::input(
             "Windows local target",
             "target differs from retained drive root",
         )
     })?;
     let mut stable_target = stable_local_path(&root_pins)?;
-    for component in relative.components() {
+    let mut pins = root_pins;
+    let mut missing_suffix = false;
+    // Iterate the original verbatim stream. Removing its prefix first can
+    // split an embedded '/' into separate, apparently valid descendants.
+    for component in path.components().skip(2) {
         let Component::Normal(name) = component else {
             return Err(BuildError::input(
                 "Windows local target",
@@ -148,43 +153,41 @@ fn stable_local_target_from_pinned_root(
         let mut ordinary = Path::new(name).components();
         if !matches!(
             (ordinary.next(), ordinary.next()),
-            (Some(Component::Normal(_)), None)
+            (Some(Component::Normal(parsed)), None) if parsed == name
         ) || name.as_encoded_bytes().contains(&b':')
+            || name.as_encoded_bytes().contains(&b'/')
         {
             return Err(BuildError::input(
                 "Windows local target",
                 "target component is not one ordinary filename",
             ));
         }
-        stable_target.push(name);
-    }
-    let mut suffix = Vec::<OsString>::new();
-    let mut cursor = stable_target.as_path();
-    loop {
-        match std::fs::symlink_metadata(cursor) {
+        let candidate = stable_target.join(name);
+        if missing_suffix {
+            // After the first absent child, never query a descendant in an
+            // uncreated namespace. Keep only the validated ordinary spelling.
+            stable_target = candidate;
+            continue;
+        }
+        // This candidate has only already-retained, no-follow directory
+        // guards above it. A full-target probe before validating its earlier
+        // ancestors could traverse a junction before refusing it.
+        match std::fs::symlink_metadata(&candidate) {
             Ok(_) => {
-                let ancestor_pins = pin_input_root(cursor)?;
-                let stable_ancestor = stable_local_path(&ancestor_pins)?;
-                let mut pins = root_pins;
-                pins.extend(ancestor_pins);
-                let mut stable = stable_ancestor;
-                for component in suffix.iter().rev() {
-                    stable.push(component);
-                }
-                return Ok((stable, pins));
+                let guard = boot::open_windows_input_directory_guard(&candidate)
+                    .map_err(|error| BuildError::input("Windows local target", error))?;
+                stable_target = keld_update::fixed_local_dos_path(&guard)
+                    .map_err(|error| BuildError::input("Windows local volume", error))?;
+                pins.push(guard);
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let name = cursor.file_name().ok_or_else(|| {
-                    BuildError::input("Windows local target", "no existing ancestor")
-                })?;
-                suffix.push(name.to_os_string());
-                cursor = cursor.parent().ok_or_else(|| {
-                    BuildError::input("Windows local target", "no existing ancestor")
-                })?;
+                missing_suffix = true;
+                stable_target = candidate;
             }
             Err(error) => return Err(BuildError::input("Windows local target", error)),
         }
     }
+    Ok((stable_target, pins))
 }
 
 pub(super) struct CapturedInputs {
@@ -223,13 +226,15 @@ pub(super) fn pin_input_root(root: &Path) -> Result<Vec<File>, BuildError> {
     ancestors.push(first);
     #[cfg(test)]
     windows_local_volume_tests::run_after_first_root_pin();
-    let relative = root.strip_prefix(drive_root).map_err(|_| {
+    root.strip_prefix(drive_root).map_err(|_| {
         BuildError::input(
             "Windows authoring namespace",
             "root differs from retained volume",
         )
     })?;
-    for component in relative.components() {
+    // An original verbatim component may contain '/', which must be rejected
+    // before a nonverbatim strip_prefix() reinterprets its boundaries.
+    for component in root.components().skip(2) {
         let Component::Normal(name) = component else {
             return Err(BuildError::input(
                 "Windows authoring namespace",
@@ -786,6 +791,96 @@ mod windows_local_volume_tests {
         assert_eq!(stable, stable_root.join("new-install").join("updates"));
         assert!(!stable.exists());
         assert!(stable_local_target_path(&owned.path().join("..").join("escape")).is_err());
+    }
+
+    #[test]
+    fn target_refuses_embedded_slash_in_original_verbatim_component() {
+        let owned = tempfile::tempdir().expect("private Windows fixture");
+        std::fs::create_dir_all(owned.path().join("nested").join("updates"))
+            .expect("ordinary positive target");
+        let verbatim = PathBuf::from(format!(r"\\?\{}", owned.path().display()));
+        for suffix in ["nested/updates", "nested/", "nested./"] {
+            let ambiguous = PathBuf::from(format!(r"{}\{suffix}", verbatim.display()));
+            assert!(
+                ambiguous.components().any(|component| {
+                    matches!(component, Component::Normal(name) if name.as_encoded_bytes().contains(&b'/'))
+                }),
+                "negative control must contain an unsplit original verbatim component"
+            );
+            let error = stable_local_target_path(&ambiguous)
+                .expect_err("an embedded slash cannot be reinterpreted in DOS syntax");
+            assert!(
+                error.to_string().contains("not one ordinary filename"),
+                "wrong refusal for verbatim {suffix:?}: {error}"
+            );
+        }
+        assert!(stable_local_target_path(&verbatim.join(r"nested\updates")).is_ok());
+    }
+
+    #[test]
+    fn input_root_refuses_embedded_slash_in_original_verbatim_component() {
+        let owned = tempfile::tempdir().expect("private Windows fixture");
+        std::fs::create_dir_all(owned.path().join("nested").join("updates"))
+            .expect("ordinary positive input directory");
+        let verbatim = PathBuf::from(format!(r"\\?\{}", owned.path().display()));
+        let ambiguous = PathBuf::from(format!(r"{}\nested/updates", verbatim.display()));
+        assert!(
+            ambiguous.components().any(|component| {
+                matches!(component, Component::Normal(name) if name.as_encoded_bytes().contains(&b'/'))
+            }),
+            "negative control must contain an unsplit original verbatim component"
+        );
+        let error = pin_input_root(&ambiguous)
+            .expect_err("an embedded slash cannot be interpreted after stripping verbatim syntax");
+        assert!(
+            error.to_string().contains("ambiguous ancestor component"),
+            "wrong refusal for verbatim component: {error}"
+        );
+        assert!(pin_input_root(&verbatim.join(r"nested\updates")).is_ok());
+    }
+
+    #[test]
+    fn retained_file_leaf_refuses_verbatim_trailing_separator_alias() {
+        let owned = tempfile::tempdir().expect("fixed-local parent");
+        let parents = pin_input_root(owned.path()).expect("retained parent");
+        let verbatim = PathBuf::from(format!(r"\\?\{}", owned.path().display()));
+        for suffix in ["session./", "session /", "session/"] {
+            let disguised = PathBuf::from(format!(r"{}\{suffix}", verbatim.display()));
+            let error = stable_file_at_parent(&disguised, &parents)
+                .expect_err("verbatim trailing slash may not select another ordinary DOS leaf");
+            assert!(
+                error.to_string().contains("one ordinary path component"),
+                "wrong leaf refusal for {suffix:?}: {error}"
+            );
+        }
+        assert!(stable_file_at_parent(&verbatim.join("session"), &parents).is_ok());
+    }
+
+    #[test]
+    #[ignore = "requires a controlled native Windows junction fixture"]
+    fn target_refuses_junction_before_descendant_query() {
+        let selected = tempfile::tempdir().expect("selected fixed-local parent");
+        let outside = tempfile::tempdir().expect("outside junction destination");
+        std::fs::create_dir(outside.path().join("nested")).expect("outside child positive control");
+        let junction = selected.path().join("junction");
+        let status = Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(&junction)
+            .arg(outside.path())
+            .status()
+            .expect("create controlled test junction");
+        assert!(status.success(), "junction fixture required");
+        let descendant = junction.join("nested").join("future");
+        let error = stable_local_target_path(&descendant)
+            .expect_err("junction must be refused before inspecting descendants");
+        assert!(
+            error.to_string().contains("not a real directory"),
+            "refuse at the junction guard, not after crossing into the outside target: {error}"
+        );
+        std::fs::remove_dir(&junction).expect("remove only test junction");
+        assert!(outside.path().join("nested").is_dir());
     }
 
     #[test]

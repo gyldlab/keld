@@ -4,6 +4,7 @@ use super::{
     BuildError,
     compiler_toolchain::{BoundCompilerEntry, CapturedCompilerToolchain},
     local_images::PreparedLocalPair,
+    local_source,
     windows_archive::{self, Content, Member},
     windows_compiler::{self, CapturedModules},
     windows_inputs,
@@ -13,7 +14,7 @@ use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::os::windows::fs::OpenOptionsExt as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
 
 pub(super) struct LocalArchiveCandidate<'images> {
@@ -46,8 +47,7 @@ impl LocalArchiveCandidate<'_> {
         receipt: keld_pack::ProducedFull,
     ) -> Result<Self, BuildError> {
         use std::io::Write as _;
-        boot::create_windows_stage_root(root).map_err(refuse)?;
-        let directories = windows_inputs::pin_input_root(root)?;
+        let directories = create_archive_stage(root)?;
         let root = windows_inputs::stable_local_path(&directories)?;
         let path = root.join("test-only-archive.candidate");
         let mut file = OpenOptions::new()
@@ -78,6 +78,14 @@ fn refuse(e: impl std::fmt::Display) -> BuildError {
     BuildError::input("local application archive", e)
 }
 
+// Keep the retained DOS identity for archive custody, but use the extended
+// spelling at the direct Win32 create/ACL boundary on deep fixed-local roots.
+fn create_archive_stage(path: &Path) -> Result<Vec<File>, BuildError> {
+    let api_path = local_source::win32_extended_if_long(path)?;
+    boot::create_windows_stage_root(&api_path).map_err(refuse)?;
+    windows_inputs::pin_input_root(path)
+}
+
 /// The compiler entry comes only from pair.source; a generated pinned preload
 /// binds its TypeScript imports to the captured official package. No path/receipt
 /// for external Host/helper images is accepted here.
@@ -100,8 +108,7 @@ pub(super) fn prepare<'images>(
         &sources,
     )?;
     let root = pair.session.join("local-app-archive");
-    boot::create_windows_stage_root(&root).map_err(refuse)?;
-    let directories = windows_inputs::pin_input_root(&root)?;
+    let directories = create_archive_stage(&root)?;
     let root = windows_inputs::stable_local_path(&directories)?;
     let compiler = BoundCompilerEntry::bind(sources, tools, &root)?;
     let mut request = OpenOptions::new()
@@ -213,6 +220,38 @@ pub(super) fn reopen_emitted_archive(
 mod handoff_tests {
     use super::*;
     use std::io::Write as _;
+
+    #[test]
+    fn archive_stage_uses_extended_win32_path_at_private_create_boundary() {
+        use std::os::windows::ffi::OsStrExt as _;
+
+        let owned = tempfile::tempdir().expect("fixed-local private archive fixture");
+        let root_units = owned.path().as_os_str().encode_wide().count();
+        let parent = if root_units + 1 + "local-app-archive".len() >= 248 {
+            owned.path().to_path_buf()
+        } else {
+            let width = 245 - root_units - 1;
+            assert!(width <= 255, "parent must fit one NTFS component");
+            let parent = owned.path().join("p".repeat(width));
+            std::fs::create_dir(&parent).expect("ordinary fixed-local parent");
+            parent
+        };
+        let archive = parent.join("local-app-archive");
+        assert!(
+            local_source::win32_extended_if_long(&archive)
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(r"\\?\"),
+            "deep archive root must receive extended Win32 spelling"
+        );
+        let pins =
+            create_archive_stage(&archive).expect("private archive stage on deep local root");
+        let stable = windows_inputs::stable_local_path(&pins).expect("retained archive stage");
+        assert_eq!(
+            stable.canonicalize().unwrap(),
+            archive.canonicalize().unwrap()
+        );
+    }
     fn output(path: &std::path::Path) -> File {
         let mut file = OpenOptions::new()
             .read(true)

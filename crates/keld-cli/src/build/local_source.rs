@@ -891,7 +891,7 @@ fn pin_directories(path: &Path) -> Result<Vec<File>, BuildError> {
 // short SUBST locator expands beyond the ordinary Win32 directory limit.
 // This is syntax conversion only: neither the path nor its owner is trusted
 // without the independent retained-handle and principal checks.
-fn win32_extended_if_long(path: &Path) -> Result<PathBuf, BuildError> {
+pub(super) fn win32_extended_if_long(path: &Path) -> Result<PathBuf, BuildError> {
     use std::os::windows::ffi::OsStrExt as _;
     use std::path::{Component, Prefix};
 
