@@ -238,13 +238,18 @@ fn returns_normalized_public_pinned_url() {
 }
 
 #[test]
-fn preserves_encoded_literals_in_pinned_github_file_paths() {
+fn preserves_encoded_literals_in_pinned_public_paths() {
     let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
     let original = format!("https://github.com/gyldlab/keld/commit/{sha}");
     let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denominator");
     for prefix in [
         format!("https://github.com/gyldlab/keld/blob/{sha}"),
+        format!("https://github.com/gyldlab/keld/tree/{sha}"),
+        format!("https://github.com/gyldlab/keld/raw/{sha}"),
         format!("https://raw.githubusercontent.com/gyldlab/keld/{sha}"),
+        format!("https://gitlab.com/org/repo/-/blob/{sha}"),
+        format!("https://bitbucket.org/org/repo/src/{sha}"),
+        format!("https://example.com/evidence/{sha}"),
     ] {
         for path in [
             "docs/issue%23notes.md",
@@ -257,6 +262,12 @@ fn preserves_encoded_literals_in_pinned_github_file_paths() {
             let record =
                 parse_evidence(json.as_bytes()).unwrap_or_else(|err| panic!("{uri}: {err}"));
             assert_eq!(record.evidence_uri(), uri);
+            let mut envelope: serde_json::Value =
+                serde_json::from_str(&json).expect("valid evidence envelope");
+            envelope["evidence_uri"] = serde_json::Value::String(record.evidence_uri().to_owned());
+            let serialized = serde_json::to_vec(&envelope).expect("serialize evidence envelope");
+            let roundtrip = parse_evidence(&serialized).expect("encoded evidence path round trip");
+            assert_eq!(roundtrip.evidence_uri(), uri);
             let mut constructed = parse_ok();
             constructed.evidence_uri = uri;
             score(&denom, &[constructed], AS_OF).expect("pinned path is eligible for scoring");

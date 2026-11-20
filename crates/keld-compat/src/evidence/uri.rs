@@ -40,7 +40,7 @@ pub(super) fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
         };
         // Trailing FQDN dots are the same host (RFC 1034); compare once.
         let host = host.trim_end_matches('.').to_ascii_lowercase();
-        let path = decoded_policy_path(&host, url.path(), trimmed)?;
+        let path = decoded_policy_path(url.path(), trimmed)?;
         if host_is_forbidden(&host) {
             return Err(EvidenceError::NonNormativeEvidence {
                 detail: format!("`{trimmed}` is not a public https location"),
@@ -84,26 +84,9 @@ pub(super) fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
 
 /// Decode each segment once for policy checks without allowing new segment
 /// boundaries, dot navigation, or nested escapes to acquire another meaning.
-fn decoded_policy_path(host: &str, path: &str, original: &str) -> Result<String, EvidenceError> {
-    let raw_segments: Vec<_> = path.split('/').collect();
-    // Only repository path segments after a literal commit pin can carry
-    // escaped punctuation. Return the original encoded URL, not this policy view.
-    let pinned_tail = match (host, raw_segments.as_slice()) {
-        ("github.com", ["", owner, repo, "blob", pin, _, ..])
-            if !owner.is_empty() && !repo.is_empty() && is_git_object_id(pin) =>
-        {
-            Some(5)
-        }
-        ("raw.githubusercontent.com", ["", owner, repo, pin, _, ..])
-            if !owner.is_empty() && !repo.is_empty() && is_git_object_id(pin) =>
-        {
-            Some(4)
-        }
-        _ => None,
-    };
-    let mut segments = Vec::with_capacity(raw_segments.len());
-    for (index, &segment) in raw_segments.iter().enumerate() {
-        let literal_path = pinned_tail.is_some_and(|first| index >= first);
+fn decoded_policy_path(path: &str, original: &str) -> Result<String, EvidenceError> {
+    let mut segments = Vec::new();
+    for segment in path.split('/') {
         let decoded = percent_encoding::percent_decode_str(segment)
             .decode_utf8()
             .map_err(|_| EvidenceError::NonNormativeEvidence {
@@ -127,17 +110,26 @@ fn decoded_policy_path(host: &str, path: &str, original: &str) -> Result<String,
         if malformed_escape
             || nested_escape
             || matches!(decoded.as_ref(), "." | "..")
-            || decoded.bytes().any(|b| {
-                matches!(b, b'/' | b'\\')
-                    || b.is_ascii_control()
-                    || (!literal_path && matches!(b, b'%' | b'?' | b'#'))
-            })
+            || decoded
+                .bytes()
+                .any(|b| matches!(b, b'/' | b'\\') || b.is_ascii_control())
         {
             return Err(EvidenceError::NonNormativeEvidence {
                 detail: format!("`{original}` has an ambiguous encoded path"),
             });
         }
-        segments.push(decoded.into_owned());
+        // Keep escaped URL punctuation as path data in the policy view. The
+        // caller still validates the immutable ref and returns the parsed URL.
+        if decoded.contains(['%', '?', '#']) {
+            segments.push(
+                decoded
+                    .replace('%', "%25")
+                    .replace('?', "%3F")
+                    .replace('#', "%23"),
+            );
+        } else {
+            segments.push(decoded.into_owned());
+        }
     }
     Ok(segments.join("/"))
 }
