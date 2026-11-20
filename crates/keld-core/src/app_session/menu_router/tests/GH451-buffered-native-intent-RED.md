@@ -199,3 +199,42 @@ commit so the green suite is not misrepresented as a fix. The unresolved
 GH-451 choice is how to bind an OS Quit request to its originating
 generation through AppKit, WV, and Core. Fresh Quit must still reach a
 current G2 owner; prior G1 intent must be rejected.
+
+## 20 November 2026 isolated source regression closeout
+
+The historical reproduction above remains unchanged as a record of the old
+untyped protocol and first RED. A new **registered** test,
+`buffered_g1_native_intent_must_not_reach_ready_g2`, was added on the macOS
+`agent/gh1404-native-quit-product-20261120` branch, based on
+`808dc999671a021c607dfdabafa81b685b4cd537`. It failed **before the source
+correction** with exit `101`: the G2 socket received `[2]` after its own Ready
+`[0]` (1 failed, 427 filtered). This is a real Core socket negative; it is not
+an installed AppKit result.
+
+After the isolated source correction, the AppKit bridge captures the selected
+Core generation when the native callback occurs. WV preserves that stamp; Core
+rejects it if the source role is retired, unsubscribed, or lacks its own Ready.
+The following are **actual macOS arm64 local test results**, not expected
+outcomes or installed G0-G12 acceptance:
+
+```console
+$ cargo test -p keld-core --lib native_os_quit -- --nocapture
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 424 filtered out
+# Exit code: 0
+$ cargo test -p keld-core --lib renderer_dispatch_cleanup -- --nocapture
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 429 filtered out
+# Exit code: 0
+$ cargo test -p keld-wv --lib native_quit -- --nocapture
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 153 filtered out
+# Exit code: 0
+```
+
+The separate fresh-G2 positive, Ready-before-Subscribe and Subscribe-before-Ready
+controls pass. A held renderer cleanup worker cannot yield a success receipt
+before its actual join. Existing WV wake-worker joins also precede profile
+cleanup. These checks do not prove a complete native Quit transaction: AppKit
+still returns `NSTerminateCancel`, the renderer-owned unsaved-change veto and
+deferred accepted reply remain GH-451 architecture decisions, and signed
+installed AppleEvent/Dock Quit plus complete Host/Guardian/Bun retirement
+have **no new qualifying proof**. Do not promote this source-only result into
+the GH-1404 installed acceptance matrix.

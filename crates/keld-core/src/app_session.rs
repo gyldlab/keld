@@ -2976,6 +2976,7 @@ fn run_app(
         window_commands_rx,
         window_events_tx,
         primary_view,
+        presentation_router.native_os_quit_source()?,
         ready_trigger,
         &mut |main_thread, anchor, dialog_parent, request_close, stopping| {
             if let Err(error) = presentation_router.window_main_owner_stopping(stopping) {
@@ -5001,6 +5002,47 @@ fn join_renderer_dispatch(dispatch: RendererDispatch) -> Result<(), HostAppError
         .map_err(|_| app_detail("renderer dispatch thread", "thread panicked"))?
 }
 
+#[cfg(all(test, target_os = "macos"))]
+#[test]
+fn renderer_dispatch_cleanup_does_not_report_success_before_its_worker_joins() {
+    let (started_tx, started_rx) = mpsc::sync_channel(0);
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let stop = Arc::new(AtomicBool::new(false));
+    let observed_stop = Arc::clone(&stop);
+    let handle = thread::spawn(move || {
+        started_tx.send(()).expect("renderer worker entered");
+        release_rx.recv().expect("renderer worker can finish");
+        assert!(
+            observed_stop.load(Ordering::Acquire),
+            "stop must precede worker join"
+        );
+        Ok(())
+    });
+    started_rx.recv().expect("renderer worker started");
+
+    let (result_tx, result_rx) = mpsc::channel();
+    let joiner = thread::spawn(move || {
+        result_tx
+            .send(join_renderer_dispatch(RendererDispatch { stop, handle }))
+            .expect("join receipt observed");
+    });
+    assert!(
+        matches!(
+            result_rx.recv_timeout(Duration::from_millis(50)),
+            Err(RecvTimeoutError::Timeout)
+        ),
+        "a stop request or worker completion message is not an actual join"
+    );
+    release_tx
+        .send(())
+        .expect("release renderer cleanup worker");
+    result_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("real cleanup worker joined")
+        .expect("cleaned renderer dispatch completed");
+    joiner.join().expect("join owner completed");
+}
+
 #[cfg(target_os = "macos")]
 fn cleanup_window_start_failure(
     primary: &HostAppError,
@@ -5399,7 +5441,9 @@ fn coordinate_window_events(
                 outcome,
             } => router.dialog_native_finished(attempt, nonce, outcome),
             #[cfg(target_os = "macos")]
-            AppWindowEvent::NativeQuitRequested => router.native_os_quit_requested(),
+            AppWindowEvent::NativeQuitRequested { source_attempt } => {
+                router.native_os_quit_requested(source_attempt)
+            }
             AppWindowEvent::LastWindowClosed if router.windows.is_none() => {
                 router.signal_last_window_closed().map(drop)
             }
@@ -6867,6 +6911,46 @@ struct PrimaryEchoCall {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 impl PrimaryRouterHandle {
+    #[cfg(target_os = "macos")]
+    fn native_os_quit_source(&self) -> Result<Arc<AtomicU32>, HostAppError> {
+        let Some(windows) = &self.windows else {
+            // Legacy mode has no original source; AppKit safely cancels Quit.
+            return Ok(Arc::new(AtomicU32::new(0)));
+        };
+        let session = windows
+            .lock()
+            .map_err(|_| app_detail("native OS Quit source", "window registry lock poisoned"))?;
+        Ok(Arc::clone(&session.native_quit_source_attempt))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn publish_native_quit_ready_guarded(&self) -> Result<(), HostAppError> {
+        // The caller holds the shutdown transition. Publish source authority
+        // only after this exact generation's Ready was written successfully.
+        let current = self
+            .current
+            .lock()
+            .map_err(|_| app_detail("native OS Quit Ready", "current generation lock poisoned"))?;
+        let Some(active) = current.as_ref() else {
+            return Ok(());
+        };
+        let Some(windows) = &self.windows else {
+            return Ok(());
+        };
+        let mut session = windows
+            .lock()
+            .map_err(|_| app_detail("native OS Quit Ready", "window registry lock poisoned"))?;
+        let selected = session.original_menu_quit_selected(window_registry::WindowOwner::new(
+            active.identity,
+            active.attempt,
+        ));
+        session.native_quit_ready_attempt = active.attempt;
+        session
+            .native_quit_source_attempt
+            .store(if selected { active.attempt } else { 0 }, Ordering::Release);
+        Ok(())
+    }
+
     fn signal_ready(&self) -> Result<(), HostAppError> {
         let arm_reply = {
             let _transition = self.shutdown.transition_guard();
@@ -6884,6 +6968,8 @@ impl PrimaryRouterHandle {
             }
             if self.recovery_armed.load(Ordering::Acquire) {
                 self.write_event_guarded(LifecycleEvent::Ready)?;
+                #[cfg(target_os = "macos")]
+                self.publish_native_quit_ready_guarded()?;
                 self.window_ready.store(true, Ordering::Release);
                 return Ok(());
             }
@@ -6891,6 +6977,8 @@ impl PrimaryRouterHandle {
                 self.guardian.deny_recovery();
                 return Err(error.into());
             }
+            #[cfg(target_os = "macos")]
+            self.publish_native_quit_ready_guarded()?;
             // Publish Ready and enqueue its arm under the same transition as
             // accepted shutdown. A later tail cannot overtake this command.
             self.window_ready.store(true, Ordering::Release);

@@ -364,9 +364,12 @@ impl PrimaryRouterHandle {
     /// Forward Dock/AppleEvent Quit only to the already subscribed, Ready,
     /// current original-app owner. `AppKit` has already canceled termination.
     /// Bun's existing before-quit and GH531 RequestClose/CloseReply own veto.
-    pub(super) fn native_os_quit_requested(&self) -> Result<(), HostAppError> {
+    pub(super) fn native_os_quit_requested(&self, source_attempt: u32) -> Result<(), HostAppError> {
         let _transition = self.shutdown.transition_guard();
-        if !self.shutdown.is_running() || !self.window_ready.load(super::Ordering::Acquire) {
+        if source_attempt == 0
+            || !self.shutdown.is_running()
+            || !self.window_ready.load(super::Ordering::Acquire)
+        {
             return Ok(());
         }
         let mut current = self
@@ -376,7 +379,7 @@ impl PrimaryRouterHandle {
         let Some(active) = current.as_ref() else {
             return Ok(());
         };
-        if active.reader_stop.load(super::Ordering::Acquire) {
+        if active.attempt != source_attempt || active.reader_stop.load(super::Ordering::Acquire) {
             return Ok(());
         }
         let attempt = active.attempt;
@@ -387,8 +390,15 @@ impl PrimaryRouterHandle {
                     let windows = windows.lock().map_err(|_| {
                         app_detail("native OS Quit", "original registry lock poisoned")
                     })?;
-                    Ok(windows
-                        .original_menu_quit_selected(WindowOwner::new(active.identity, attempt)))
+                    Ok(windows.native_quit_ready_attempt == source_attempt
+                        && windows
+                            .native_quit_source_attempt
+                            .load(super::Ordering::Acquire)
+                            == source_attempt
+                        && windows.original_menu_quit_selected(WindowOwner::new(
+                            active.identity,
+                            attempt,
+                        )))
                 })?;
         if !selected {
             return Ok(());

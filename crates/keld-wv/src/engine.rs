@@ -317,7 +317,11 @@ pub enum AppWindowEvent {
     /// `AppKit` canceled an OS Quit and posted its intent to the current Core
     /// owner. This is not a terminal decision or permission to close a window.
     #[cfg(target_os = "macos")]
-    NativeQuitRequested,
+    NativeQuitRequested {
+        /// Core-minted original generation captured synchronously by AppKit.
+        /// A retired or zero attempt grants no native or lifecycle authority.
+        source_attempt: u32,
+    },
     /// The application loop delivered its actual first Init turn.
     /// The timestamp is sampled on the UI thread, not by the possibly delayed
     /// coordinator. It is not inferred from HELLO, navigation or a queued reply.

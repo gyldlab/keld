@@ -19,7 +19,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -312,7 +312,9 @@ enum WkUserEvent {
     App(AppWindowCommand),
     Renderer(RendererBridgeOutcome),
     // An AppKit Quit intent is never an accepted terminal command.
-    NativeQuitRequested,
+    NativeQuitRequested {
+        source_attempt: u32,
+    },
     RendererCustody,
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
     PreloadFixtureSnapshot {
@@ -643,6 +645,7 @@ impl WkWebViewEngine {
             commands,
             events,
             None,
+            Arc::new(AtomicU32::new(0)),
             AppReadyTrigger::NavigationReady,
             &mut |_, _, _, _, _| Ok((true, None)),
             (&mut unproved, || {}),
@@ -680,6 +683,7 @@ impl WkWebViewEngine {
         commands: Receiver<AppWindowCommand>,
         events: Sender<AppWindowEvent>,
         anchor: Option<WebviewId>,
+        native_quit_source_attempt: Arc<AtomicU32>,
         ready_trigger: AppReadyTrigger,
         service: &mut F,
         // Keep the main-custody result paired with the loop-entry clock handoff.
@@ -708,7 +712,11 @@ impl WkWebViewEngine {
             )));
         };
         let proxy = event_loop.create_proxy();
-        let native_quit = macos_termination::NativeQuitBridge::bind(main_thread, proxy.clone())?;
+        let native_quit = macos_termination::NativeQuitBridge::bind(
+            main_thread,
+            proxy.clone(),
+            native_quit_source_attempt,
+        )?;
         let resource_wake = proxy.clone();
         let stop_bridge = Arc::new(AtomicBool::new(false));
         let stop_for_bridge = Arc::clone(&stop_bridge);
@@ -1016,13 +1024,13 @@ impl WkWebViewEngine {
                             let _ = events.send(AppWindowEvent::LastWindowClosed);
                         }
                     }
-                    Event::UserEvent(WkUserEvent::NativeQuitRequested) => {
+                    Event::UserEvent(WkUserEvent::NativeQuitRequested { source_attempt }) => {
                         // An AppKit CloseRequested does not include the renderer's
                         // close/preventDefault decision for legacy windows. Core
                         // may forward only a qualified selected original intent;
                         // it never receives native authority to destroy a view.
                         native_quit.retain_unqualified_quit();
-                        if let Err(error) = forward_native_quit_intent(&events) {
+                        if let Err(error) = forward_native_quit_intent(&events, source_attempt) {
                             main_owner_failure.get_or_insert(error);
                             // A lost Core observer cannot give a renderer close
                             // veto or native retirement receipt. Preserve the
@@ -1561,9 +1569,15 @@ fn join_app_bridge_workers(
     }
 }
 
-fn forward_native_quit_intent(events: &Sender<AppWindowEvent>) -> Result<(), WvError> {
+fn forward_native_quit_intent(
+    events: &Sender<AppWindowEvent>,
+    source_attempt: u32,
+) -> Result<(), WvError> {
+    if source_attempt == 0 {
+        return Ok(());
+    }
     events
-        .send(AppWindowEvent::NativeQuitRequested)
+        .send(AppWindowEvent::NativeQuitRequested { source_attempt })
         .map_err(|_| {
             WvError::EventLoop(String::from(
                 "native Quit request could not reach its current Core owner",
@@ -1972,10 +1986,13 @@ mod startup_tests {
     #[test]
     fn native_quit_observation_requires_live_core_and_never_sends_terminal_command() {
         let (current, accepted) = std::sync::mpsc::channel();
-        super::forward_native_quit_intent(&current).expect("live Core observer");
+        super::forward_native_quit_intent(&current, 0)
+            .expect("unarmed native source is canceled without delivery");
+        assert!(accepted.try_recv().is_err(), "zero source is never posted");
+        super::forward_native_quit_intent(&current, 1).expect("live Core observer");
         assert!(matches!(
             accepted.try_recv(),
-            Ok(super::AppWindowEvent::NativeQuitRequested)
+            Ok(super::AppWindowEvent::NativeQuitRequested { source_attempt: 1 })
         ));
         assert!(
             accepted.try_recv().is_err(),
@@ -1983,7 +2000,7 @@ mod startup_tests {
         );
 
         drop(accepted);
-        let failure = super::forward_native_quit_intent(&current)
+        let failure = super::forward_native_quit_intent(&current, 1)
             .expect_err("missing Core owner cannot authorize native release");
         assert!(
             failure
@@ -1991,6 +2008,21 @@ mod startup_tests {
                 .contains("could not reach its current Core owner"),
             "{failure}"
         );
+    }
+
+    #[test]
+    fn native_quit_observation_preserves_queued_origin_across_source_change() {
+        let (core, received) = std::sync::mpsc::channel();
+        super::forward_native_quit_intent(&core, 41).expect("G1 callback posted");
+        super::forward_native_quit_intent(&core, 42).expect("G2 callback posted");
+        assert!(matches!(
+            received.recv().expect("queued G1 origin"),
+            super::AppWindowEvent::NativeQuitRequested { source_attempt: 41 }
+        ));
+        assert!(matches!(
+            received.recv().expect("fresh G2 origin"),
+            super::AppWindowEvent::NativeQuitRequested { source_attempt: 42 }
+        ));
     }
 }
 

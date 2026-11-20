@@ -569,6 +569,7 @@ pub(super) fn run(source: Arc<AdmittedWebAppSource>, case: &str) -> Result<Value
         incoming_commands,
         events,
         None,
+        Arc::new(std::sync::atomic::AtomicU32::new(0)),
         AppReadyTrigger::HostInitialized,
         &mut |_, _, _, _, terminal| {
             if Instant::now() >= scenario_deadline {

@@ -16,7 +16,8 @@
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, CString};
 use std::rc::{Rc, Weak};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use objc2::encode::Encode;
 use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
@@ -30,6 +31,7 @@ struct Owner {
     application: usize,
     delegate: usize,
     proxy: EventLoopProxy<WkUserEvent>,
+    source_attempt: Arc<AtomicU32>,
     pending: Cell<bool>,
     delivery_failed: Cell<bool>,
 }
@@ -58,6 +60,7 @@ impl NativeQuitBridge {
     pub(super) fn bind(
         main_thread: MainThreadMarker,
         proxy: EventLoopProxy<WkUserEvent>,
+        source_attempt: Arc<AtomicU32>,
     ) -> Result<Self, WvError> {
         let (application, delegate, class) = native_scope(main_thread)?;
         let registered = HOOK_CLASS.get_or_init(|| install_method(class));
@@ -70,6 +73,7 @@ impl NativeQuitBridge {
             application,
             delegate,
             proxy,
+            source_attempt,
             pending: Cell::new(false),
             delivery_failed: Cell::new(false),
         });
@@ -211,13 +215,19 @@ unsafe extern "C-unwind" fn should_terminate(
     if let Some(owner) = owner
         && owner.application == application as usize
         && owner.delegate == delegate as usize
-        && !owner.pending.replace(true)
-        && owner
-            .proxy
-            .send_event(WkUserEvent::NativeQuitRequested)
-            .is_err()
     {
-        owner.delivery_failed.set(true);
+        // Capture Core's original role on this AppKit callback, before Tao
+        // can buffer the event across a recovery. Zero is a safe cancel.
+        let source_attempt = owner.source_attempt.load(Ordering::Acquire);
+        if source_attempt != 0
+            && !owner.pending.replace(true)
+            && owner
+                .proxy
+                .send_event(WkUserEvent::NativeQuitRequested { source_attempt })
+                .is_err()
+        {
+            owner.delivery_failed.set(true);
+        }
     }
     0 // NSTerminateCancel: only the existing application Quit call may terminate.
 }
