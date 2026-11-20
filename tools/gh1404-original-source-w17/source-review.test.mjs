@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -279,6 +280,9 @@ test("failed owned producer preserves an independently inserted foreign file", (
     const late = ["late.js"];
     Object.defineProperty(late, 1, {
       get() {
+        // An input getter can create a competing output directory before
+        // our atomic claim; its foreign bytes must never be removed.
+        mkdirSync(destination);
         writeFileSync(join(destination, "foreign.txt"), "not ours");
         throw new Error("controlled late source failure");
       },
@@ -313,6 +317,62 @@ test("late competing creation is refused at the atomic output claim", () => {
       readFileSync(join(output, "foreign.txt"), "utf8"),
       "untouched",
     );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("one-time entry-name snapshot cannot escape the claimed output after validation", () => {
+  const scratch = mkdtempSync(
+    join(tmpdir(), "gh1404-source-review-name-snapshot-"),
+  );
+  try {
+    const output = join(scratch, "review");
+    const entry = ["safe.txt", "reviewed bytes"];
+    let reads = 0;
+    Object.defineProperty(entry, 0, {
+      get() {
+        reads += 1;
+        return reads === 1 ? "safe.txt" : "../outside.txt";
+      },
+    });
+    materializeReviewFiles(output, [entry]);
+    assert.equal(
+      reads,
+      1,
+      "name must be captured once before output is created",
+    );
+    assert.equal(
+      readFileSync(join(output, "safe.txt"), "utf8"),
+      "reviewed bytes",
+    );
+    assert.equal(existsSync(join(scratch, "outside.txt")), false);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("side-effectful bytes getter cannot install nested symlink after output claim", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "gh1404-source-review-symlink-"));
+  try {
+    const outside = join(scratch, "foreign");
+    const output = join(scratch, "review");
+    mkdirSync(outside);
+    const entry = ["nested/output.js", "source"];
+    Object.defineProperty(entry, 1, {
+      get() {
+        // Simulate an untrusted caller attempting to install an alias at the
+        // next output directory after the destination claim.
+        mkdirSync(output, { recursive: true });
+        symlinkSync(outside, join(output, "nested"));
+        return "attacker bytes";
+      },
+    });
+    assert.throws(
+      () => materializeReviewFiles(output, [entry]),
+      /EEXIST|existing output directory/,
+    );
+    assert.equal(existsSync(join(outside, "output.js")), false);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

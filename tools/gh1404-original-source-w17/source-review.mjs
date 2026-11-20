@@ -92,22 +92,37 @@ export function materializeReviewFiles(outputInput, entries) {
   const output = resolve(outputInput);
   if (existsSync(output))
     throw new Error("GH1404 refuse existing output directory");
-  for (const [name] of entries) {
+  // Capture and validate every caller-provided name and byte buffer BEFORE
+  // creating the destination. No getters, iterators or coercions may run
+  // during writes and change the path after validation.
+  const prepared = Array.from(entries, (entry) => {
+    if (!Array.isArray(entry) || entry.length !== 2)
+      throw new Error("GH1404 invalid review output entry");
+    const name = entry[0];
+    const bytes = entry[1];
     if (
       typeof name !== "string" ||
       isAbsolute(name) ||
       !name ||
-      name.split(/[\\/]/).some((part) => !part || part === "." || part === "..")
+      name
+        .split(/[\\\\/]/)
+        .some((part) => !part || part === "." || part === "..")
     )
       throw new Error("GH1404 invalid review output name");
-  }
+    if (typeof bytes !== "string" && !Buffer.isBuffer(bytes))
+      throw new Error("GH1404 invalid review output bytes");
+    return {
+      name,
+      bytes: Buffer.isBuffer(bytes) ? Buffer.from(bytes) : bytes,
+    };
+  });
   mkdirSync(dirname(output), { recursive: true });
   // Nonrecursive mkdir is the atomic claim after any awaited source work.
   claimNewReviewDirectory(output);
   const files = [];
   const directories = [];
   try {
-    for (const [name, bytes] of entries) {
+    for (const { name, bytes } of prepared) {
       const destination = join(output, name);
       let parent = dirname(destination);
       const missing = [];
