@@ -23,15 +23,16 @@ pub(super) fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
     if let Some(rest) = trimmed.strip_prefix("https://") {
         // Preserve strict authority syntax (including empty userinfo/ports) before
         // WHATWG parsing, which otherwise repairs some malformed inputs.
-        parse_https_host_and_path(rest, trimmed)?;
-        if trimmed.bytes().any(|b| b.is_ascii_control() || b == b'\\') {
+        let authority_and_path = rest
+            .split_once(['?', '#'])
+            .map_or(rest, |(prefix, _)| prefix);
+        parse_https_host_and_path(authority_and_path, trimmed)?;
+        if trimmed.bytes().any(|b| b.is_ascii_control()) || authority_and_path.contains('\\') {
             return Err(EvidenceError::NonNormativeEvidence {
                 detail: format!("`{trimmed}` contains ambiguous URL characters"),
             });
         }
-        let url = url::Url::parse(trimmed).map_err(|_| EvidenceError::NonNormativeEvidence {
-            detail: format!("`{trimmed}` is not a public https location"),
-        })?;
+        let url = parse_credential_free_https_url(trimmed)?;
         let host = match url.host() {
             Some(url::Host::Domain(host)) => host.to_owned(),
             Some(url::Host::Ipv4(host)) => host.to_string(),
@@ -82,16 +83,25 @@ pub(super) fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
     })
 }
 
+fn parse_credential_free_https_url(uri: &str) -> Result<url::Url, EvidenceError> {
+    let url = url::Url::parse(uri).map_err(|_| EvidenceError::NonNormativeEvidence {
+        detail: format!("`{uri}` is not a public https location"),
+    })?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(EvidenceError::NonNormativeEvidence {
+            detail: "HTTPS evidence locations must not contain credentials".to_owned(),
+        });
+    }
+    Ok(url)
+}
+
 /// Decode each segment once for policy checks without allowing new segment
 /// boundaries, dot navigation, or nested escapes to acquire another meaning.
 fn decoded_policy_path(path: &str, original: &str) -> Result<String, EvidenceError> {
+    const POLICY_ESCAPES: &percent_encoding::AsciiSet =
+        &percent_encoding::CONTROLS.add(b'%').add(b'?').add(b'#');
     let mut segments = Vec::new();
     for segment in path.split('/') {
-        let decoded = percent_encoding::percent_decode_str(segment)
-            .decode_utf8()
-            .map_err(|_| EvidenceError::NonNormativeEvidence {
-                detail: format!("`{original}` has an invalid encoded path"),
-            })?;
         let malformed_escape = segment
             .as_bytes()
             .iter()
@@ -103,33 +113,24 @@ fn decoded_policy_path(path: &str, original: &str) -> Result<String, EvidenceErr
                         .get(offset + 1..offset + 3)
                         .is_some_and(|pair| pair.iter().all(u8::is_ascii_hexdigit))
             });
+        let decoded: Vec<_> = percent_encoding::percent_decode_str(segment).collect();
         let nested_escape = decoded
-            .as_bytes()
             .windows(3)
             .any(|bytes| bytes[0] == b'%' && bytes[1..].iter().all(u8::is_ascii_hexdigit));
         if malformed_escape
             || nested_escape
-            || matches!(decoded.as_ref(), "." | "..")
+            || matches!(decoded.as_slice(), b"." | b"..")
             || decoded
-                .bytes()
-                .any(|b| matches!(b, b'/' | b'\\') || b.is_ascii_control())
+                .iter()
+                .any(|&b| matches!(b, b'/' | b'\\') || b.is_ascii_control())
         {
             return Err(EvidenceError::NonNormativeEvidence {
                 detail: format!("`{original}` has an ambiguous encoded path"),
             });
         }
-        // Keep escaped URL punctuation as path data in the policy view. The
-        // caller still validates the immutable ref and returns the parsed URL.
-        if decoded.contains(['%', '?', '#']) {
-            segments.push(
-                decoded
-                    .replace('%', "%25")
-                    .replace('?', "%3F")
-                    .replace('#', "%23"),
-            );
-        } else {
-            segments.push(decoded.into_owned());
-        }
+        // Preserve non-ASCII filename bytes and escaped punctuation in the
+        // policy view. Pin and route tokens use ASCII; the returned URL is unchanged.
+        segments.push(percent_encoding::percent_encode(&decoded, POLICY_ESCAPES).to_string());
     }
     Ok(segments.join("/"))
 }
@@ -151,26 +152,23 @@ fn is_lead_not_location(uri: &str) -> bool {
 }
 
 fn parse_https_host_and_path(
-    rest: &str,
+    authority_and_path: &str,
     original: &str,
 ) -> Result<(String, String), EvidenceError> {
-    let without_hash = rest.split_once('#').map_or(rest, |(p, _)| p);
-    let without_query = without_hash
-        .split_once('?')
-        .map_or(without_hash, |(p, _)| p);
-    if without_query.is_empty() || authority_has_userinfo(without_query) {
+    if authority_and_path.is_empty() || authority_has_userinfo(authority_and_path) {
         return Err(EvidenceError::NonNormativeEvidence {
             detail: format!("`{original}` is not a public https location"),
         });
     }
-    if without_query.starts_with('[') {
-        let end = without_query
-            .find(']')
-            .ok_or_else(|| EvidenceError::NonNormativeEvidence {
-                detail: format!("`{original}` is not a resolvable https URL with a path"),
-            })?;
-        let host = without_query[1..end].to_owned();
-        let after = &without_query[end + 1..];
+    if authority_and_path.starts_with('[') {
+        let end =
+            authority_and_path
+                .find(']')
+                .ok_or_else(|| EvidenceError::NonNormativeEvidence {
+                    detail: format!("`{original}` is not a resolvable https URL with a path"),
+                })?;
+        let host = authority_and_path[1..end].to_owned();
+        let after = &authority_and_path[end + 1..];
         let path = match after.strip_prefix(':') {
             Some(port_and_path) => {
                 let path_at =
@@ -203,13 +201,13 @@ fn parse_https_host_and_path(
         };
         return Ok((host, path));
     }
-    if without_query.matches(':').count() > 1 {
+    if authority_and_path.matches(':').count() > 1 {
         return Err(EvidenceError::NonNormativeEvidence {
             detail: format!("`{original}` is not a resolvable https URL with a path"),
         });
     }
-    let slash = without_query.find('/');
-    let hostport = slash.map_or(without_query, |i| &without_query[..i]);
+    let slash = authority_and_path.find('/');
+    let hostport = slash.map_or(authority_and_path, |i| &authority_and_path[..i]);
     if hostport.is_empty() {
         return Err(EvidenceError::NonNormativeEvidence {
             detail: format!("`{original}` is not a public https location"),
@@ -226,7 +224,7 @@ fn parse_https_host_and_path(
         }
         None => hostport.to_owned(),
     };
-    let path = slash.map_or(String::new(), |i| without_query[i..].to_owned());
+    let path = slash.map_or(String::new(), |i| authority_and_path[i..].to_owned());
     Ok((host, path))
 }
 
@@ -372,7 +370,21 @@ fn is_git_object_id(segment: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Ipv4Addr, ipv4_is_non_public};
+    use super::{Ipv4Addr, ipv4_is_non_public, parse_credential_free_https_url};
+
+    #[test]
+    fn parsed_https_urls_reject_credentials() {
+        for uri in [
+            "https://reader@example.com/pinned-evidence",
+            "https://:placeholder@example.com/pinned-evidence",
+        ] {
+            let err = parse_credential_free_https_url(uri).expect_err("credentials are forbidden");
+            assert_eq!(err.code(), "KELD-COMPAT-007");
+        }
+        let uri = "https://example.com/pinned-evidence";
+        let url = parse_credential_free_https_url(uri).expect("no credentials");
+        assert_eq!(url.as_str(), uri);
+    }
 
     #[test]
     fn ipv4_policy_classifies_special_use_and_public_unicast() {

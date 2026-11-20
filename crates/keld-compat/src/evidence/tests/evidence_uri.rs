@@ -1,8 +1,8 @@
 //! Reject untrusted evidence locations and accept immutable, pinned evidence.
 
 use super::{
-    AS_OF, DIGEST_A, parse_denominator, parse_evidence, parse_ok, score, valid_denominator_json,
-    valid_evidence_json,
+    AS_OF, DIGEST_A, Denominator, parse_denominator, parse_evidence, parse_ok, score,
+    valid_denominator_json, valid_evidence_json,
 };
 
 #[test]
@@ -240,7 +240,6 @@ fn returns_normalized_public_pinned_url() {
 #[test]
 fn preserves_encoded_literals_in_pinned_public_paths() {
     let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
-    let original = format!("https://github.com/gyldlab/keld/commit/{sha}");
     let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denominator");
     for prefix in [
         format!("https://github.com/gyldlab/keld/blob/{sha}"),
@@ -257,20 +256,53 @@ fn preserves_encoded_literals_in_pinned_public_paths() {
             "docs/100%25ready.md",
             "issue%23notes/question%3Fnotes/100%25ready/README.md",
         ] {
-            let uri = format!("{prefix}/{path}");
-            let json = valid_evidence_json().replace(&original, &uri);
-            let record =
-                parse_evidence(json.as_bytes()).unwrap_or_else(|err| panic!("{uri}: {err}"));
-            assert_eq!(record.evidence_uri(), uri);
-            let mut envelope: serde_json::Value =
-                serde_json::from_str(&json).expect("valid evidence envelope");
-            envelope["evidence_uri"] = serde_json::Value::String(record.evidence_uri().to_owned());
-            let serialized = serde_json::to_vec(&envelope).expect("serialize evidence envelope");
-            let roundtrip = parse_evidence(&serialized).expect("encoded evidence path round trip");
-            assert_eq!(roundtrip.evidence_uri(), uri);
-            let mut constructed = parse_ok();
-            constructed.evidence_uri = uri;
-            score(&denom, &[constructed], AS_OF).expect("pinned path is eligible for scoring");
+            assert_canonical_pinned_uri(&denom, &format!("{prefix}/{path}"));
         }
     }
+}
+
+#[test]
+fn preserves_encoded_filename_bytes_in_pinned_public_paths() {
+    let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
+    let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denominator");
+    for prefix in [
+        format!("https://github.com/gyldlab/keld/blob/{sha}"),
+        format!("https://raw.githubusercontent.com/gyldlab/keld/{sha}"),
+    ] {
+        for path in ["docs/Caf%C3%A9.md", "docs/file%FF.md", "dir%FE/file%FF.md"] {
+            assert_canonical_pinned_uri(&denom, &format!("{prefix}/{path}"));
+        }
+    }
+}
+
+#[test]
+fn preserves_backslash_data_in_pinned_url_query_and_fragment() {
+    let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denominator");
+    let pin = parse_ok();
+    for suffix in [
+        r"?label=chapter\section",
+        r"#chapter\section?note",
+        "?label=chapter%5Csection",
+        "#chapter%5Csection",
+    ] {
+        assert_canonical_pinned_uri(&denom, &format!("{}{suffix}", pin.evidence_uri()));
+    }
+}
+
+fn assert_canonical_pinned_uri(denom: &Denominator, uri: &str) {
+    let mut envelope: serde_json::Value =
+        serde_json::from_str(&valid_evidence_json()).expect("valid evidence envelope");
+    envelope["evidence_uri"] = serde_json::Value::String(uri.to_owned());
+    let input = serde_json::to_vec(&envelope).expect("serialize evidence input");
+    let record = parse_evidence(&input).unwrap_or_else(|err| panic!("{uri}: {err}"));
+    assert_eq!(record.evidence_uri(), uri);
+    envelope["evidence_uri"] = serde_json::Value::String(record.evidence_uri().to_owned());
+    let serialized = serde_json::to_vec(&envelope).expect("serialize canonical evidence");
+    let roundtrip = parse_evidence(&serialized).expect("evidence URI round trip");
+    assert_eq!(roundtrip.evidence_uri(), uri);
+
+    score(denom, &[record], AS_OF).expect("parsed URI is eligible for scoring");
+    let mut constructed = parse_ok();
+    constructed.evidence_uri = uri.to_owned();
+    score(denom, &[constructed], AS_OF).expect("constructed URI is eligible for scoring");
 }
