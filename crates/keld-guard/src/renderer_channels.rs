@@ -4,6 +4,28 @@ use serde::{Deserialize, Deserializer, de::Error as _};
 
 use crate::{Decision, DenyReason, PermissionsManifest, Principal, ScopePermit, evaluate};
 
+/// Prepare only channel fields; the existing window/CSP and native parsers still
+/// validate the complete document. Unique-key decoding precedes this projection.
+#[cfg(windows)]
+pub(super) fn select_legacy_channels(mut value: serde_json::Value) -> serde_json::Value {
+    if value
+        .get("$keldWindowChannelGrants")
+        .and_then(serde_json::Value::as_u64)
+        != Some(1)
+        && let Some(windows) = value
+            .get_mut("windows")
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        for window in windows
+            .values_mut()
+            .filter_map(serde_json::Value::as_object_mut)
+        {
+            window.remove("channels");
+        }
+    }
+    value
+}
+
 pub(super) fn deserialize_channels<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Vec<String>, D::Error> {

@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ManifestError, PermissionsManifest, ResolvedWindowCsp, WindowCspProfile, parse_manifest_at,
-    read_manifest_bytes,
+    ManifestContext, ManifestError, PermissionsManifest, ResolvedWindowCsp, WindowCspProfile,
+    parse_manifest_at, read_manifest_bytes,
 };
 
 /// Parsed permissions paired with the SHA-256 verified over its exact source bytes.
@@ -144,13 +144,44 @@ pub fn load_verified_manifest(
     display_path: PathBuf,
     expected_sha256: [u8; 32],
 ) -> Result<VerifiedManifest, ManifestError> {
-    load_verified_reader(file, display_path, expected_sha256)
+    load_verified_reader(
+        file,
+        display_path,
+        expected_sha256,
+        ManifestContext::Ordinary,
+    )
+}
+
+/// Loads the Host-selected Windows Legacy artifact with opt-in window channel grants.
+///
+/// The trusted caller selects this entry and supplies the retained handle and
+/// expected digest from its verified boot inputs. The marker selects channel
+/// semantics only within those bytes. This entry does not admit a session.
+///
+/// # Errors
+///
+/// Returns the same verification and policy errors as [`load_verified_manifest`].
+/// Requires an explicit Legacy declaration. Malformed opted-in grants reject
+/// the entire policy with [`ManifestError::Parse`].
+#[cfg(windows)]
+pub fn load_selected_windows_legacy_manifest(
+    file: File,
+    display_path: PathBuf,
+    expected_sha256: [u8; 32],
+) -> Result<VerifiedManifest, ManifestError> {
+    load_verified_reader(
+        file,
+        display_path,
+        expected_sha256,
+        ManifestContext::SelectedWindowsLegacy,
+    )
 }
 
 fn load_verified_reader(
     reader: impl Read,
     display_path: PathBuf,
     expected_sha256: [u8; 32],
+    context: ManifestContext,
 ) -> Result<VerifiedManifest, ManifestError> {
     let bytes = read_manifest_bytes(reader, &display_path)?;
     let actual: [u8; 32] = Sha256::digest(&bytes).into();
@@ -165,7 +196,16 @@ fn load_verified_reader(
         path: display_path.clone(),
         detail: source.to_string(),
     })?;
-    let manifest = parse_manifest_at(text, Some(&display_path))?;
+    let manifest = parse_manifest_at(text, Some(&display_path), context)?;
+    #[cfg(windows)]
+    if matches!(context, ManifestContext::SelectedWindowsLegacy)
+        && manifest.declared_profile() != Some(crate::DeclaredProfile::Legacy)
+    {
+        return Err(ManifestError::Parse {
+            path: Some(display_path),
+            detail: "the selected Windows Legacy artifact requires an explicit root /profile of \"legacy\"".to_owned(),
+        });
+    }
     Ok(VerifiedManifest {
         manifest,
         verified_sha256: actual,
@@ -189,8 +229,13 @@ mod tests {
     #[test]
     fn retained_handle_read_failure_is_guard004() {
         let path = PathBuf::from("/diagnostic/keld.permissions.jsonc");
-        let error = load_verified_reader(FailingReader, path.clone(), [0_u8; 32])
-            .expect_err("read failure must fail closed");
+        let error = load_verified_reader(
+            FailingReader,
+            path.clone(),
+            [0_u8; 32],
+            ManifestContext::Ordinary,
+        )
+        .expect_err("read failure must fail closed");
         assert_eq!(error.code(), "KELD-GUARD004");
         assert!(
             matches!(error, ManifestError::Read { path: ref actual, .. } if actual == &path),
@@ -204,8 +249,13 @@ mod tests {
         let bytes = br#"{"app":{"auth":{"token":["\u0000unresolved"]}}}"#;
         let digest: [u8; 32] = Sha256::digest(bytes).into();
         let path = PathBuf::from("/diagnostic/keld.permissions.jsonc");
-        let error = load_verified_reader(io::Cursor::new(bytes), path.clone(), digest)
-            .expect_err("matching digest must not bypass auth grant validation");
+        let error = load_verified_reader(
+            io::Cursor::new(bytes),
+            path.clone(),
+            digest,
+            ManifestContext::Ordinary,
+        )
+        .expect_err("matching digest must not bypass auth grant validation");
         assert!(
             matches!(
                 error,

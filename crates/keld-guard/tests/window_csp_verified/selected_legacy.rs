@@ -1,7 +1,7 @@
 //! Channel adoption in an explicitly selected, independently digest-verified Legacy policy.
-use std::fs::File;
+use std::{error::Error, fs::File};
 
-use keld_guard::verified_manifest::{VerifiedManifest, load_verified_manifest as load_selected};
+use keld_guard::verified_manifest::{VerifiedManifest, load_selected_windows_legacy_manifest};
 use keld_guard::{
     Decision, DenyReason, ManifestError, Principal, RendererChannelPermit, RendererChannelQuery,
     evaluate, evaluate_query,
@@ -24,13 +24,20 @@ fn policy(marker: &str) -> String {
     }
 }
 
-fn selected(text: &str) -> Result<VerifiedManifest, ManifestError> {
-    let file = PolicyFile::new(text.as_bytes()).expect("create policy file");
-    load_selected(
-        File::open(&file.0).expect("retained handle"),
+fn selected(text: &str) -> Result<VerifiedManifest, Box<dyn Error>> {
+    let file = PolicyFile::new(text.as_bytes())?;
+    Ok(load_selected_windows_legacy_manifest(
+        File::open(&file.0)?,
         file.0.clone(),
         Sha256::digest(text.as_bytes()).into(),
-    )
+    )?)
+}
+
+fn policy_error(text: &str) -> Result<ManifestError, Box<dyn Error>> {
+    match selected(text) {
+        Ok(_) => Err("invalid policy was accepted".into()),
+        Err(error) => error.downcast::<ManifestError>().map(|error| *error),
+    }
 }
 
 fn channel(policy: &VerifiedManifest, key: &str, topic: &str) -> Decision<RendererChannelPermit> {
@@ -129,7 +136,7 @@ fn inactive_malformed_channels_preserve_csp_and_active_malformed_channels_refuse
             let text = policy(marker).replace(r#"["el:open"]"#, bad);
             if marker == "1" {
                 assert_eq!(
-                    selected(&text).expect_err("bad active list").code(),
+                    policy_error(&text).expect("bad active list").code(),
                     "KELD-GUARD005"
                 );
             } else {
@@ -159,11 +166,81 @@ fn independent_window_structure_and_csp_errors_refuse_every_marker() {
             ),
         ] {
             assert_eq!(
-                selected(&text)
-                    .expect_err("invalid window policy or ambiguous input")
+                policy_error(&text)
+                    .expect("invalid window policy or ambiguous input")
                     .code(),
                 "KELD-GUARD005"
             );
         }
     }
+}
+
+#[test]
+fn ordinary_loaders_keep_their_prior_behavior_and_only_explicit_legacy_can_be_selected() {
+    for profile in [r#""profile":"strict","#, "", r#""profile":"legacy","#] {
+        let text = policy("").replace(r#""profile":"legacy","#, profile);
+        let file = PolicyFile::new(text.as_bytes()).expect("ordinary policy");
+        let ordinary = file
+            .verified(text.as_bytes())
+            .expect("ordinary verified policy");
+        assert!(matches!(
+            channel(&ordinary, "editor", "open"),
+            Decision::Allow(_)
+        ));
+        let bad = text.replace(r#"["el:open"]"#, "null");
+        assert!(keld_guard::parse_manifest(&bad).is_err());
+        let file = PolicyFile::new(bad.as_bytes()).expect("malformed ordinary policy");
+        assert!(file.verified(bad.as_bytes()).is_err());
+        if profile != r#""profile":"legacy","# {
+            let marked = SOURCE.replace(r#""profile":"legacy","#, profile);
+            assert_eq!(
+                policy_error(&marked)
+                    .expect("outside selected profile")
+                    .code(),
+                "KELD-GUARD005"
+            );
+        }
+    }
+}
+
+#[test]
+fn selected_loader_enforces_the_verified_byte_and_size_boundary() {
+    let stripped = policy("");
+    let file = PolicyFile::new(stripped.as_bytes()).expect("stripped policy");
+    let error = load_selected_windows_legacy_manifest(
+        File::open(&file.0).expect("retained stripped handle"),
+        file.0.clone(),
+        Sha256::digest(SOURCE.as_bytes()).into(),
+    )
+    .expect_err("digest from marked source must refuse the stripped source");
+    assert_eq!(error.code(), "KELD-GUARD016");
+    let exact = SOURCE.to_owned() + &" ".repeat(64 * 1024 - SOURCE.len());
+    assert!(selected(&exact).is_ok());
+    assert_eq!(
+        policy_error(&(exact + " ")).expect("over cap").code(),
+        "KELD-GUARD017"
+    );
+}
+
+#[test]
+fn marked_literal_bounds_use_the_original_utf8_suffix_bytes() {
+    let topic = "é".repeat(128);
+    let source = SOURCE.replace("el:open", &format!(r#"el:{topic}","el:é"#));
+    let admitted = selected(&source).expect("256 byte suffix");
+    assert!(matches!(
+        channel(&admitted, "editor", &topic),
+        Decision::Allow(_)
+    ));
+    assert!(matches!(
+        channel(&admitted, "editor", "é"),
+        Decision::Allow(_)
+    ));
+    assert_miss(&admitted, "editor", "e\u{301}");
+    assert_miss(&admitted, "editor", "%C3%A9");
+    assert_eq!(
+        policy_error(&source.replace(&topic, &(topic.clone() + "a")))
+            .expect("257 byte suffix")
+            .code(),
+        "KELD-GUARD005"
+    );
 }

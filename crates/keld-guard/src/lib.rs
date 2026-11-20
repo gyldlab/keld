@@ -735,7 +735,7 @@ pub fn json_pointer_for(capability: &str) -> String {
 /// for auth issuer grants containing `**` or C0/DEL/C1 controls.
 pub fn parse_manifest(text: &str) -> Result<PermissionsManifest, ManifestError> {
     ensure_manifest_size(text.len(), None)?;
-    parse_manifest_at(text, None)
+    parse_manifest_at(text, None, ManifestContext::Ordinary)
 }
 
 /// Reads and parses `keld.permissions.jsonc` from `path`.
@@ -765,7 +765,7 @@ pub fn load_manifest(path: &Path) -> Result<PermissionsManifest, ManifestError> 
         path: path.to_path_buf(),
         detail: error.to_string(),
     })?;
-    parse_manifest_at(&text, Some(path))
+    parse_manifest_at(&text, Some(path), ManifestContext::Ordinary)
 }
 
 /// Captures permissions-manifest bytes from an already selected reader.
@@ -802,9 +802,17 @@ fn ensure_manifest_size(length: usize, path: Option<&Path>) -> Result<(), Manife
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum ManifestContext {
+    Ordinary,
+    #[cfg(windows)]
+    SelectedWindowsLegacy,
+}
+
 fn parse_manifest_at(
     text: &str,
     path: Option<&Path>,
+    context: ManifestContext,
 ) -> Result<PermissionsManifest, ManifestError> {
     let stripped = strip_jsonc_comments(text).map_err(|detail| ManifestError::Parse {
         path: path.map(Path::to_path_buf),
@@ -822,6 +830,11 @@ fn parse_manifest_at(
         path: path.map(Path::to_path_buf),
         detail: detail.to_owned(),
     })?;
+    let value = match context {
+        ManifestContext::Ordinary => value,
+        #[cfg(windows)]
+        ManifestContext::SelectedWindowsLegacy => renderer_channels::select_legacy_channels(value),
+    };
     let manifest: PermissionsManifest =
         serde_json::from_value(value).map_err(|e| ManifestError::Parse {
             path: path.map(Path::to_path_buf),
