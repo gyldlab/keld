@@ -259,3 +259,6 @@ fn webview_principal_is_denied_even_with_an_in_scope_grant() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[path = "guard_dispatch/typed.rs"]
+mod typed;
