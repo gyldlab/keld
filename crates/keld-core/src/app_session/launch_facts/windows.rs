@@ -82,6 +82,21 @@ fn prepare_selected(
     observe: impl FnOnce() -> Result<native::Observation, HostAppError>,
     elect: impl FnOnce(&SingleInstanceDeclaration) -> Result<Election, HostAppError>,
 ) -> Result<PreparedLaunch, HostAppError> {
+    prepare_selected_inner(
+        selected,
+        observe,
+        elect,
+        #[cfg(test)]
+        None,
+    )
+}
+
+fn prepare_selected_inner(
+    selected: SelectedLaunch<'_>,
+    observe: impl FnOnce() -> Result<native::Observation, HostAppError>,
+    elect: impl FnOnce(&SingleInstanceDeclaration) -> Result<Election, HostAppError>,
+    #[cfg(test)] witness_preload: Option<&Path>,
+) -> Result<PreparedLaunch, HostAppError> {
     let graph = selected.source.launch_graph();
     let wrapper = graph.windows_runtime_entry(selected.root, selected.entry)?;
     let mut facts = OriginalFacts::new(&selected)?;
@@ -98,7 +113,16 @@ fn prepare_selected(
         // The selected original route joins the GH481 snapshot replay. The
         // public BOOT8 gate stays closed until that route is qualified.
         .arg("--define=__KELD_WINDOWS_DESKTOP_SNAPSHOT__:true")
-        .arg(facts.bun_argument()?)
+        .arg(facts.bun_argument()?);
+    // This observation hook is absent from production binaries. The fixture
+    // instruments the real Worker without changing its packaged module bytes.
+    #[cfg(test)]
+    let config = if let Some(preload) = witness_preload {
+        config.arg(format!("--preload={}", preload.display()))
+    } else {
+        config
+    };
+    let config = config
         .arg("run")
         .arg(wrapper)
         .arg(selected.root.join(selected.entry))

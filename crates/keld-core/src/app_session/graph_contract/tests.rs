@@ -588,6 +588,65 @@ pub(in crate::app_session) fn prepared_pinned_launch_source(
     (fixture.owned, source, fixture.root, Path::new(MAIN))
 }
 
+/// Private receipt for the independently packed 0c5c3bbc joined SDK. This is
+/// fixture-only: it never changes the compiled distribution qualification.
+pub(in crate::app_session) fn prepared_witness_launch_source(
+    provider_root: &Path,
+    entry: &str,
+) -> (
+    tempfile::TempDir,
+    crate::app_session::original_webapp::PreparedOriginalSource,
+    PathBuf,
+    &'static Path,
+) {
+    use crate::app_session::original_webapp::PreparedOriginalSource;
+    use std::sync::Arc;
+
+    let mut fixture = fixture_with_entry();
+    fixture.root = fixture.root.canonicalize().expect("verbatim fixture root");
+    for name in ["electron", "@keld/api", "@keld/kipc"] {
+        copy_provider_tree(
+            &provider_root.join(name),
+            &fixture.root.join("node_modules").join(name),
+        )
+        .expect("disposable copy of the recorded witness provider");
+    }
+    Fixture::write(&fixture.root, MAIN, entry.as_bytes());
+    let mut expected = approved();
+    expected.expected_package_trees = [
+        "cca2f778fd5520f89fdf6d867e21527392c5a13e430f6a0ef44bae0e8ced37a0",
+        "dde0e043a8b15efe7e69727a3e0d2ef38cf44012cc8425eebea21726194d7b65",
+        "cbbf7a62c101ec6d4089644dedd7d98910fcb6c54b4ab3964cd03244da94a84a",
+    ]
+    .map(fixture_digest);
+    let qualification = WindowsDistributionQualification {
+        target: windows_graph_target(),
+        provider_trees: expected.expected_package_trees,
+    };
+    let bytes = make_graph_leaf_from_retained_root(
+        &fixture.root,
+        &fixture.held,
+        &expected,
+        &fixture.selected,
+        MAIN,
+    )
+    .expect("capture exact joined witness providers");
+    Fixture::write(&fixture.root, GRAPH_FILE, &bytes);
+    let graph = bind_with_qualification(
+        &fixture.root,
+        &fixture.held,
+        Sha256::digest(bytes).into(),
+        Path::new(MAIN),
+        &fixture.selected,
+        Some(&qualification),
+    )
+    .expect("private witness receipt binds the selected providers");
+    let (policy, _) = original_fixture_policy(&fixture);
+    let source =
+        PreparedOriginalSource::prepare(Arc::new(graph), policy, None).expect("verified fixture");
+    (fixture.owned, source, fixture.root, Path::new(MAIN))
+}
+
 fn copy_provider_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     fs::create_dir_all(to)?;
     for member in fs::read_dir(from)? {
