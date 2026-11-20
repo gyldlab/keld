@@ -1,0 +1,200 @@
+{
+  "schema": "keld.compat.corpus/v1",
+  "corpus_id": "electron-ipc-v1",
+  "scope": "GH-464 slice 1 and GH-466 registration slice: main-process ipcMain cells for the macOS draw.io first-proof IPC path at Electron 44.4.5. Registration cells (listener array, invoke-handler table) pass; delivery cells stay pending for GH-466 (listeners) and GH-547 (invoke). No renderer transport, native WebKit, product compatibility or whole-family completion claim.",
+  "panel": "showcase",
+  "kind": "primary_workflow",
+  "artifact_digest": "manifest_bytes",
+  "engine": {
+    "macos": "wkwebview"
+  },
+  "doc_snapshots": {
+    "docs/api/ipc-main.md": "sha256:50eb49eae6b3d7785e6fc70772bf9bda7b9993c29b89c01dd684030198401f51"
+  },
+  "upstream": {
+    "electron_version": "44.4.5",
+    "electron_commit": "694f45852a0f1726cd23bfd379854de489cccb65"
+  },
+  "cells": [
+    {
+      "operation_id": "ipc-main.on",
+      "oracle_id": "electron-v44.4.5.ipc-main.on",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/ipc-main.md#ipcmainonchannel-listener",
+        "quote": "Listens to `channel`, when a new message arrives `listener` would be called with\n`listener(event, args...)`.",
+        "quote_sha256": "sha256:32d3ffcaa291fa044aa2ef903dd115258e48f1966b3f4559a6873a4338fe3fc3"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-466",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/ipc.test.ts",
+      "test_name": "ipc-main.on today: ipcMain.on registers the listener, but no message can arrive: no IpcMainEvent value exists and the listener is never invoked",
+      "negative_control": "Today: an exported IpcMainEvent value, or any Keld path that invokes the registered listener without an admitted renderer message, makes this mapped current-behaviour case fail. After the GH-466 delivery slice flips it, removing listener dispatch must produce zero callbacks instead of the expected event and arguments."
+    },
+    {
+      "operation_id": "ipc-main.once",
+      "oracle_id": "electron-v44.4.5.ipc-main.once",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/ipc-main.md#ipcmainoncechannel-listener",
+        "quote": "Adds a one time `listener` function for the event. This `listener` is invoked\nonly the next time a message is sent to `channel`, after which it is removed.",
+        "quote_sha256": "sha256:49b9321f95df2dfc853d65e95d2a01aaff0e3c18e250c02848d67a649be639ff"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-466",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/ipc.test.ts",
+      "test_name": "ipc-main.once today: ipcMain.once registers a one-time listener, but no message can arrive: no IpcMainEvent value exists and the listener is never invoked",
+      "negative_control": "Today: registering the original function instead of EventEmitter's once wrapper, exporting an IpcMainEvent value, or invoking the listener without an admitted message makes this mapped case fail. After GH-466 flips it, replacing once with on must make two admitted messages invoke the callback twice instead of once; a reentrant send must not call the removed listener again."
+    },
+    {
+      "operation_id": "ipc-main.remove-listener",
+      "oracle_id": "electron-v44.4.5.ipc-main.remove-listener",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/ipc-main.md#ipcmainremovelistenerchannel-listener",
+        "quote": "Alias for [`ipcMain.off`](#ipcmainoffchannel-listener).",
+        "quote_sha256": "sha256:9458754849773efd8d457ae9f64093b9a250da2c8b83ddf55c6acd79b01400f7"
+      },
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/ipc-main.test.ts",
+      "test_name": "ipc-main.remove-listener: removeListener removes exactly one occurrence like off, including a once registration by its original function",
+      "negative_control": "A removeListener that removes every occurrence, removes nothing, or cannot find a once registration by its original function fails the exact listener-array comparison; replacing it with off's behaviour keeps the case green, which is the cited alias."
+    },
+    {
+      "operation_id": "ipc-main.event-emitter",
+      "oracle_id": "electron-v44.4.5.ipc-main.event-emitter",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/ipc-main.md#ipcmain",
+        "quote": "The `ipcMain` module is an [Event Emitter][event-emitter].",
+        "quote_sha256": "sha256:1b32ffca41869a04d5a52f0bf7cba917213914f07af14bacd70bd4d32d361bb1"
+      },
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/ipc-main.test.ts",
+      "test_name": "ipc-main.event-emitter: ipcMain is one node:events EventEmitter instance shared by the named and default electron exports",
+      "negative_control": "Exporting a plain object with hand-written on/once methods, or a different object on the default export, fails the instanceof and identity assertions; the listener-array cells then fail independently."
+    },
+    {
+      "operation_id": "ipc-main.off.removes-listener",
+      "oracle_id": "electron-v44.4.5.ipc-main.off",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/ipc-main.md#ipcmainoffchannel-listener",
+        "quote": "Removes the specified `listener` from the listener array for the specified\n`channel`.",
+        "quote_sha256": "sha256:6fafef1174cb11acfbca8552ae703d1710f129175748a3625ebc04671b8fbcb5"
+      },
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/ipc-main.test.ts",
+      "test_name": "ipc-main.off.removes-listener: off removes exactly the given listener from the channel's listener array and leaves the other entries in order",
+      "negative_control": "An off that clears the whole channel, removes a different listener, or reorders the survivors fails the exact listeners() array comparison before and after the call."
+    },
+    {
+      "operation_id": "ipc-main.remove-all-listeners",
+      "oracle_id": "electron-v44.4.5.ipc-main.remove-all-listeners",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/ipc-main.md#ipcmainremovealllistenerschannel",
+        "quote": "Removes all listeners from the specified `channel`. Removes all listeners from all channels if no channel is specified.",
+        "quote_sha256": "sha256:e2178e82fbd37f715b3770c496a8bb2a2a7f48a82ffd23b73c712701fe40fcef"
+      },
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/ipc-main.test.ts",
+      "test_name": "ipc-main.remove-all-listeners: removeAllListeners(channel) empties only that channel; with no channel an observer child sees every channel emptied",
+      "negative_control": "A removeAllListeners(channel) that also empties a neighbouring channel fails the in-process count assertion; a no-argument call that leaves any channel, including Electron's internal error listener, non-empty fails the observer child's eventNames census."
+    },
+    {
+      "operation_id": "ipc-main.add-listener.alias",
+      "oracle_id": "electron-v44.4.5.ipc-main.add-listener",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/ipc-main.md#ipcmainaddlistenerchannel-listener",
+        "quote": "Alias for [`ipcMain.on`](#ipcmainonchannel-listener).",
+        "quote_sha256": "sha256:f54e249cf00dd736a0d462a1d1583399c6cd44e4e5a31839e362c7b57490a066"
+      },
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/ipc-main.test.ts",
+      "test_name": "ipc-main.add-listener.alias: addListener appends to the same listener array as on, in registration order with duplicates kept",
+      "negative_control": "An addListener that deduplicates, prepends, or writes to a table on cannot see fails the exact listeners() array built from interleaved on and addListener calls."
+    },
+    {
+      "operation_id": "ipc-main.handle.registers",
+      "oracle_id": "electron-v44.4.5.ipc-main.handle.registers",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/ipc-main.md#ipcmainhandlechannel-listener",
+        "quote": "Adds a handler for an `invoke`able IPC.",
+        "quote_sha256": "sha256:3292554c8e9d95d65e4ab847e48f22990b2164e51a8d49e9ba0f51c1b3447648"
+      },
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/ipc-main.test.ts",
+      "test_name": "ipc-main.handle.registers: handle records one invoke handler per channel and refuses a second with KELD-COMPAT-098 before checking the handler type",
+      "negative_control": "A handle that records nothing lets the second registration succeed and fails the KELD-COMPAT-098 assertion; checking the handler type before the duplicate makes handle(channel, 42) on an occupied channel raise KELD-COMPAT-099 and fails the ordering assertion."
+    },
+    {
+      "operation_id": "ipc-main.handle.invoked",
+      "oracle_id": "electron-v44.4.5.ipc-main.handle.invoked",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/ipc-main.md#ipcmainhandlechannel-listener",
+        "quote": "This handler will be called whenever a\nrenderer calls `ipcRenderer.invoke(channel, ...args)`.",
+        "quote_sha256": "sha256:d3686b1067792d6031cbd5f30223eed648dc126f4bd3b59cb2a1d82bbc24fb6c"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-547",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/ipc.test.ts",
+      "test_name": "ipc-main.handle.invoked today: ipcMain.handle records the handler, but no renderer invoke can reach it: no IpcMainInvokeEvent value exists and the handler is never called",
+      "negative_control": "Today: an exported IpcMainInvokeEvent value, or any Keld path that calls the recorded handler without an admitted renderer invoke, makes this mapped case fail. After GH-547 flips it, disconnecting invoke dispatch must leave the handler uncalled instead of returning its value to the caller."
+    },
+    {
+      "operation_id": "ipc-main.handle-once",
+      "oracle_id": "electron-v44.4.5.ipc-main.handle-once",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/ipc-main.md#ipcmainhandleoncechannel-listener",
+        "quote": "Handles a single `invoke`able IPC message, then removes the listener.",
+        "quote_sha256": "sha256:c557cd372dbd2edaf24c2399a0c98d12080854acef29f81cee4617785a66b1d4"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-547",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/ipc.test.ts",
+      "test_name": "ipc-main.handle-once today: ipcMain.handleOnce records a single-use handler, but no renderer invoke can reach it: nothing is handled or removed because nothing is sent",
+      "negative_control": "Today: a handleOnce that records nothing lets a later handle on the same channel succeed and fails the KELD-COMPAT-098 assertion; invoking the wrapper without an admitted invoke fails the zero-call assertion. After GH-547 flips it, a second invoke must find no handler instead of being handled twice."
+    },
+    {
+      "operation_id": "ipc-main.remove-handler",
+      "oracle_id": "electron-v44.4.5.ipc-main.remove-handler",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/ipc-main.md#ipcmainremovehandlerchannel",
+        "quote": "Removes any handler for `channel`, if present.",
+        "quote_sha256": "sha256:1a331a0c738fe1d08872ebe70b93dfc788b988a8a27249711bb2ce5c91884b42"
+      },
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/ipc-main.test.ts",
+      "test_name": "ipc-main.remove-handler: removeHandler clears the channel's handler if present so handle registers again, and is a no-op for an absent channel",
+      "negative_control": "A removeHandler that leaves the handler in place makes the following handle raise KELD-COMPAT-098; one that throws for an absent channel fails the no-op assertion."
+    }
+  ]
+}
