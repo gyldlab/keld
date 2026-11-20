@@ -1086,7 +1086,10 @@ Why this shape (each competitor fails differently — see `docs/research/library
 1. **Compatibility is the product.** The Electron surface is a protocol to implement
    (Rspack/Rolldown lesson). Every design must answer: "how does this behave under
    `@keld/electron`?"
-2. **The host owns privileged OS resources; JS owns the app.** Application APIs expose
+2. **The host owns privileged OS resources; application roles own app logic.**
+   The current application path is Bun/TypeScript. Native application roles remain the
+   draft KEL-75 T9a target below, not available functionality. Bun remains the default
+   and Electron-compatibility runtime. Application APIs expose
    capability-scoped ids, never reusable file/window/process handles. A supervised role
    receives only its IPC endpoint and, when validated, an optional role-private bulk
    mapping handle; those transport handles cannot authorize another OS operation.
@@ -1095,9 +1098,12 @@ Why this shape (each competitor fails differently — see `docs/research/library
 4. **Hot paths are state machines** (Bun-rewrite lesson): the host core runs on platform
    event loops with readiness-driven callbacks; no Tokio in the message path. Async Rust
    is allowed in cold tooling (CLI, packager, updater fetches).
-5. **No Rust toolchain for app developers.** Prebuilt host + npm distribution
-   (esbuild lesson); the host in a shipped app is signed. Rust is the *plugin* path, not
-   the entry fee. Target behaviour on Windows (KEL-19 T3, blocked on an authenticated
+5. **No Rust toolchain for Bun app developers in the target prebuilt workflow.**
+   Prebuilt host + npm distribution is the target (esbuild lesson), not the current
+   source-built demo. The host in a shipped app is signed. Rust is currently the
+   plugin-authoring path; optional native application authoring is a separately
+   qualified target, never a prerequisite for the Bun application path.
+   Target behaviour on Windows (KEL-19 T3, blocked on an authenticated
    Keld release channel): the packaging-input host is distributed unsigned, and
    `keld build` verifies its digest from that channel and embeds the app identity before
    the app publisher applies the only signature

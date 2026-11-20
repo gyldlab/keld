@@ -40,7 +40,16 @@ Governing contracts:
 - `docs/specs/kel75-principalized-bun-child-roles.md`: approved role-generation, restart and revocation state machine;
 - KEL-78 owns real-OS containment; KEL-98 owns shared contract/codegen qualification.
 
-This draft intentionally does not change architecture 01's normative “JS owns the app” wording. Promotion to `approved` requires the synchronized architecture/config/public-contract delta that replaces that destination with runtime-neutral application roles while preserving Bun as the default and Electron-compatibility runtime.
+Architecture 01 and its onboarding mirror distinguish the runtime-neutral ownership
+principle from current Bun/TypeScript support. Native application roles remain a draft
+target; Bun remains the default and Electron-compatibility runtime. Current CLI/config
+syntax, source-demo instructions and product-status evidence remain unchanged because
+this draft introduces no public native declaration or implemented native-role support.
+Promotion to `approved` still requires exact-head review and the B-2 document gates.
+
+**No boundary change.** Handle ownership, crash ownership and principal minting remain
+with their existing owners. This documentation does not admit a native artifact or
+authorize T9b; the draft, B-1/B-2 and implementation-entry gates remain in force.
 
 ## 3. Acceptance criteria
 
