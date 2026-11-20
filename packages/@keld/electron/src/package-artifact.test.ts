@@ -97,6 +97,11 @@ test("packed Electron uses one declared API/KIPC graph and all five aliases", ()
         consumer,
       ),
     );
+    // The current Bun Electron packer preserves class names in its ESM output.
+    const electronEntry = join(consumer, "node_modules/electron/dist/index.js");
+    expect(readFileSync(electronEntry, "utf8")).not.toMatch(
+      /\bclass\s+WorkerLink\s*\{/,
+    );
     writeFileSync(
       join(consumer, "probe.mjs"),
       `
