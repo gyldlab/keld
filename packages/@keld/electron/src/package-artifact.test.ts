@@ -55,7 +55,6 @@ test("ipcMain bundling keeps the canonical KIPC provider external", async () => 
     target: "node",
     format: "esm",
     packages: "external",
-    write: false,
   });
   expect(result.success).toBe(true);
   expect(result.outputs).toHaveLength(1);
