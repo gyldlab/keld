@@ -332,6 +332,8 @@ fn preserves_generic_host_ref_named_directories_after_pin() {
             "docs/blob/main.md",
             "docs/tree/main.md",
             "docs/raw/main.md",
+            "docs/commits/main.md",
+            "docs/%63ommits/main.md",
             "docs/%61pi/main.md",
         ] {
             assert_canonical_pinned_uri(

@@ -100,10 +100,12 @@ Non-goals:
     git object id there, even if an owner or project slug looks like an id.
     Generic hosted `src/branch` and `src/tag` routes are mutable; a `src/commit`
     route requires a full immutable ref, as does a direct `src/<ref>` route.
+    A plural `commits` history route must also name a full immutable revision
+    rather than a branch or tag, even if an earlier project slug resembles a SHA.
     Safe encoded directory names remain allowed outside these routes; unsafe
     encoded separators, controls and dot navigation are still refused.
     On an unrecognized public host, a suffix shaped like a nested GitLab
-    `/-/blob/<branch>` route is intentionally rejected even after a
+    `/-/blob/<branch>` or `/-/commits/<branch>` route is intentionally rejected even after a
     SHA-looking earlier segment: this ambiguous shape cannot prove whether
     the SHA is a project name or a revision. Use a `sha256:` evidence digest
     instead when an otherwise pinned file path has this ambiguous suffix.

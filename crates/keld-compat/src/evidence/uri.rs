@@ -408,7 +408,7 @@ fn generic_host_has_live_provider_ref(segments: &[&str]) -> bool {
     let is_route = |segment: &str| {
         matches!(
             segment.to_ascii_lowercase().as_str(),
-            "commit" | "blob" | "tree" | "raw"
+            "commit" | "commits" | "blob" | "tree" | "raw"
         )
     };
     // GitLab self-hosted instances support nested groups before /-/blob/<ref>.
@@ -421,7 +421,16 @@ fn generic_host_has_live_provider_ref(segments: &[&str]) -> bool {
         return !is_git_object_id(route[2]);
     }
     // Gitea uses /<owner>/<repo>/src/branch/<mutable-ref> and
-    // /src/commit/<immutable-sha>. A Bitbucket-like /src/<ref> must
+    // /src/commit/<immutable-sha>. Its /commits/branch/<ref> route is
+    // also mutable, even when a project name resembles a SHA.
+    if segments
+        .get(2)
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("commits"))
+    {
+        let ref_kind = segments.get(3).copied().unwrap_or_default();
+        return !is_git_object_id(ref_kind);
+    }
+    // A Bitbucket-like /src/<ref> must
     // also pin the ref at its actual position.
     if segments
         .get(2)
@@ -446,7 +455,7 @@ fn has_pinned_provider_ref(host: &str, segments: &[&str]) -> bool {
     let is_git_route = |segment: &str| {
         matches!(
             segment.to_ascii_lowercase().as_str(),
-            "commit" | "blob" | "tree" | "raw"
+            "commit" | "commits" | "blob" | "tree" | "raw"
         )
     };
     match host {
@@ -477,7 +486,9 @@ fn path_has_live_git_ref(path: &str, stop_at_immutable_pin: bool) -> bool {
             break;
         }
         let kind = pair[0].to_ascii_lowercase();
-        if matches!(kind.as_str(), "blob" | "tree" | "raw") && !is_git_object_id(pair[1]) {
+        if matches!(kind.as_str(), "blob" | "tree" | "raw" | "commits")
+            && !is_git_object_id(pair[1])
+        {
             return true;
         }
     }
