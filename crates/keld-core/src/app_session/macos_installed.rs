@@ -936,7 +936,7 @@ impl MacLocalGuardianFacts {
 /// Refuse a resolver root which Bun could consult outside the admitted app.
 ///
 /// Bun's --no-install prevents fetching packages but still loads packages from
-/// ancestor node_modules. The installed graph owns the app-root node_modules;
+/// ancestor `node_modules`. The installed graph owns the app-root `node_modules`;
 /// every parent, including one inside the bundle, must be physically absent.
 /// This is checked again when Core/Guardian revalidate a new Bun generation.
 /// An external same-user writer can still create a parent directory after
