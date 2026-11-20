@@ -319,7 +319,9 @@ function dispatchObservedLifecycle(
     }
   }
 }
-function onLastWindowClosed(): void {
+function onLastWindowClosed(session: LifecycleLink): void {
+  // A stale/retired G1 app-link must never publish a LastWindowClosed as G2.
+  if (connectedLink !== session || linkDead !== undefined) return;
   dispatchObservedLifecycle("last-window-closed");
 }
 function onHostQuitRequested(session: LifecycleLink): void {
@@ -487,6 +489,7 @@ export function getWindowSnapshots(): readonly WindowSnapshot[] {
 /** Package-private, read-only scope for the root-approved original single-window handoff. */
 export interface OriginalWindowQuitScope {
   readonly window: Readonly<WindowRef>;
+  ownsCurrentGeneration(): boolean;
   isCurrentPending(window: WindowRef, closeSeq: bigint): boolean;
   dispatchedPendingClose(): bigint | null;
   requestClose(): Promise<WindowResponse>;
@@ -560,6 +563,21 @@ export function captureOriginalWindowQuitScope(
   const source = session.windowSource;
   if (!source) return undefined;
   const ref = Object.freeze({ id: window.id, incarnation: window.incarnation });
+  let selected: WindowSnapshot | undefined;
+  try {
+    selected = source.get(ref);
+  } catch {
+    return undefined;
+  }
+  if (
+    !selected ||
+    selected.host_destroyed ||
+    !selected.document?.current ||
+    !selected.document.finished
+  ) return undefined;
+  // Document recovery can reuse the physical WindowRef in this same app-link.
+  // A later native close for its successor cannot inherit this Quit attempt.
+  const originalDocumentGeneration = selected.document.generation;
   const current = (): WindowSnapshot | undefined => {
     if (
       connectedLink !== session ||
@@ -572,7 +590,8 @@ export function captureOriginalWindowQuitScope(
       return snapshot &&
         !snapshot.host_destroyed &&
         snapshot.document?.current &&
-        snapshot.document.finished
+        snapshot.document.finished &&
+        snapshot.document.generation === originalDocumentGeneration
         ? snapshot
         : undefined;
     } catch {
@@ -586,6 +605,24 @@ export function captureOriginalWindowQuitScope(
     current()?.pending_close === closeSeq;
   return {
     window: ref,
+    ownsCurrentGeneration(): boolean {
+      // A retired G1 close must never suppress the successor's lifecycle.
+      // The current document may change while the native window survives.
+      if (currentOriginalWindowSession() !== session || session.windowSource !== source)
+        return false;
+      try {
+        const snapshot = source.get(ref);
+        // The Host's Destroyed fact can remove the tombstone after dispatch.
+        // The caller also revokes this scope when any mismatched document fact
+        // is observed before that removal.
+        return snapshot === undefined || (
+          snapshot.document?.generation === originalDocumentGeneration &&
+          (snapshot.host_destroyed || snapshot.document.current)
+        );
+      } catch {
+        return false;
+      }
+    },
     isCurrentPending,
     dispatchedPendingClose(): bigint | null {
       // Mirror application alone is insufficient: this existing owner records
@@ -651,7 +688,7 @@ export function getDesktopSnapshot(): DesktopSnapshot {
 export function flushAppliedLastWindowClosedAfterDestroy(): void {
   const session = connectedLink;
   if (!session) return;
-  if (session.consumeAppliedLastWindowClosed()) onLastWindowClosed();
+  if (session.consumeAppliedLastWindowClosed()) onLastWindowClosed(session);
 }
 
 /** Observe window facts only after their state was applied by the one WorkerLink. */

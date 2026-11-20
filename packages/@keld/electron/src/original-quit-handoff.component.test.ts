@@ -26,10 +26,7 @@ let code =
   "\n" +
   app
     .slice(start, end)
-    .replace(
-      "export function joinOriginalQuitBeforeClose",
-      "function joinOriginalQuitBeforeClose",
-    );
+    .replaceAll("export function ", "function ");
 const mutation = process.env.KELD_QUIT_HANDOFF_MUTATION;
 if (mutation === "omit-handoff-resolve")
   code = code.replace("  attempt.resolve();", "");

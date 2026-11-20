@@ -191,7 +191,7 @@ assert.equal(contents.isDestroyed(), true);
 assert.equal(closed, 1);
 assert.equal(released, 1);
 assert.deepEqual(BrowserWindow.getAllWindows(), []);
-handlers.onLastWindowClosed();
+handlers.onLastWindowClosed(session as LifecycleLink);
 assert.equal(
   allClosed,
   1,

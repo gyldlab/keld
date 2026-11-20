@@ -123,6 +123,8 @@ const creationEvents: { name: string; value: unknown }[] = [];
 mock.module("./app.ts", () => ({
   // This controlled window-fact role owns no original Quit handoff attempt.
   joinOriginalQuitBeforeClose: () => false,
+  noteOriginalQuitVetoApplied: () => {},
+  noteOriginalQuitWindowDestroyed: () => {},
   emitNativeAppEvent: (name: string, _event: unknown, value: unknown) => {
     creationEvents.push({ name, value });
   },

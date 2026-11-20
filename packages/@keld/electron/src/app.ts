@@ -13,6 +13,7 @@ import {
   type OriginalWindowQuitScope,
   getWindowSnapshots,
   hasObservedHostReady,
+  onWindowFactApplied,
   onNativeQuitRequested,
 } from "@keld/api/internal/app";
 
@@ -177,6 +178,39 @@ function removeAppListener(event: string, listener: AppListener): void {
 // delivers this event and ends the application session 10 s later if it has not
 // requested quit by then (KEL-53 §4 "Profile handover", the quit deadline D).
 function onLastWindowClosed(): void {
+  const original = pendingOriginalQuitClose;
+  if (original) {
+    // The actual Host LastWindowClosed, with no surviving native window, is
+    // the only suppression receipt. A delayed G1 event cannot consume G2.
+    if (!original.scope.ownsCurrentGeneration()) {
+      pendingOriginalQuitClose = undefined;
+      // The API proved this LastWindowClosed belongs to its current link.
+      // A stale original handoff cannot swallow the successor's event.
+    } else {
+      if (!apiApp.isReady()) return;
+      try {
+        const live = liveWindowSnapshots();
+        if (live.length !== 0) {
+          // An early Host callback while the original is still alive proves
+          // nothing. Once only a replacement remains, this Quit's suppression
+          // has no authority over that replacement's later final close.
+          let originalLive = false;
+          for (let i = 0; i < live.length; i += 1) {
+            const current = live[i];
+            if (current && sameOriginalWindow(current.window, original.window)) {
+              originalLive = true;
+            }
+          }
+          if (!originalLive) pendingOriginalQuitClose = undefined;
+          return;
+        }
+      } catch {
+        return;
+      }
+      pendingOriginalQuitClose = undefined;
+      return;
+    }
+  }
   // Only an admitted Quit suppresses this notification. A `before-quit`
   // listener can close the final window synchronously and then veto Quit;
   // suppressing at preflight entry would lose its `window-all-closed` event.
@@ -220,6 +254,61 @@ interface QuitAttempt {
 }
 let activeQuitAttempt: QuitAttempt | undefined;
 
+// The nonterminal original close handoff settles its JS Promise at an
+// authenticated CloseRequested, but that is neither a native Destroyed nor
+// a Veto. Keep one session-bound suppression owner until the actual outcome.
+interface OriginalQuitClose {
+  readonly attempt: QuitAttempt;
+  readonly scope: OriginalWindowQuitScope;
+  readonly window: Readonly<WindowRef>;
+  closeSeq: bigint | null;
+}
+let pendingOriginalQuitClose: OriginalQuitClose | undefined;
+
+function sameOriginalWindow(left: Readonly<WindowRef>, right: Readonly<WindowRef>): boolean {
+  return left.id === right.id && left.incarnation === right.incarnation;
+}
+
+/** @internal The existing close owner calls only after Host ReplyApplied(Veto). */
+export function noteOriginalQuitVetoApplied(window: WindowRef, closeSeq: bigint): void {
+  const claim = pendingOriginalQuitClose;
+  if (
+    claim &&
+    sameOriginalWindow(window, claim.window) &&
+    claim.closeSeq === closeSeq &&
+    claim.scope.ownsCurrentGeneration()
+  ) pendingOriginalQuitClose = undefined;
+}
+
+/** @internal The existing BrowserWindow owner calls after actual Host Destroyed. */
+export function noteOriginalQuitWindowDestroyed(window: WindowRef): void {
+  const claim = pendingOriginalQuitClose;
+  if (!claim) return;
+  if (!claim.scope.ownsCurrentGeneration()) {
+    pendingOriginalQuitClose = undefined;
+    return;
+  }
+  try {
+    const live = liveWindowSnapshots();
+    if (sameOriginalWindow(window, claim.window)) {
+      // An original window's Destroyed with a surviving replacement cannot
+      // produce LastWindowClosed. Do not suppress the replacement's later close.
+      if (live.length !== 0) pendingOriginalQuitClose = undefined;
+      return;
+    }
+    // A different window was destroyed. Retain the claim only while its
+    // original native window is still a member of this exact generation.
+    let originalLive = false;
+    for (let i = 0; i < live.length; i += 1) {
+      const current = live[i];
+      if (current && sameOriginalWindow(current.window, claim.window)) originalLive = true;
+    }
+    if (!originalLive) pendingOriginalQuitClose = undefined;
+  } catch {
+    // An unproven Source cannot release a pending Quit suppression.
+  }
+}
+
 function fulfillQuitAttempt(attempt: QuitAttempt): void {
   if (attempt.settled) return;
   attempt.settled = true;
@@ -232,6 +321,19 @@ export function joinOriginalQuitBeforeClose(
   window: WindowRef,
   closeSeq: bigint,
 ): boolean {
+  const claim = pendingOriginalQuitClose;
+  if (claim && sameOriginalWindow(window, claim.window)) {
+    if (
+      !claim.scope.ownsCurrentGeneration() ||
+      (claim.closeSeq !== null && claim.closeSeq !== closeSeq)
+    ) {
+      // The prior close was vetoed or retired; a later user close owns
+      // its own LastWindowClosed notification.
+      pendingOriginalQuitClose = undefined;
+    } else if (claim.scope.isCurrentPending(window, closeSeq)) {
+      claim.closeSeq = closeSeq;
+    }
+  }
   const attempt = activeQuitAttempt;
   if (!attempt?.handoff?.isCurrentPending(window, closeSeq)) return false;
   fulfillQuitAttempt(attempt);
@@ -242,6 +344,11 @@ function requestQuitAfterBeforeEvent(
   terminal: (attempt: QuitAttempt) => Promise<void>,
 ): Promise<void> {
   if (activeQuitAttempt) return activeQuitAttempt.promise;
+  const stillClosing = pendingOriginalQuitClose;
+  if (stillClosing) {
+    if (stillClosing.scope.ownsCurrentGeneration()) return stillClosing.attempt.promise;
+    pendingOriginalQuitClose = undefined;
+  }
   let resolveAttempt!: () => void;
   let rejectAttempt!: (error: unknown) => void;
   const promise = new Promise<void>((resolve, reject) => {
@@ -260,8 +367,12 @@ function requestQuitAfterBeforeEvent(
     fulfillQuitAttempt(attempt);
     return promise;
   }
+  // GH531 criterion 34: suppress LastWindowClosed while the facade Quit
+  // attempt is active, including a reentrant will-quit listener.
   attempt.closing = true;
   const failed = (error: unknown): void => {
+    if (pendingOriginalQuitClose?.attempt === attempt)
+      pendingOriginalQuitClose = undefined;
     if (attempt.settled) {
       // This request may fail after its genuine close fact already completed
       // the nonterminal handoff. A fresh active attempt must not be cleared.
@@ -307,6 +418,12 @@ function quit(): Promise<void> {
         const scope = captureOriginalWindowQuitScope(live[0]!.window);
         if (scope) {
           attempt.handoff = scope;
+          pendingOriginalQuitClose = {
+            attempt,
+            scope,
+            window: scope.window,
+            closeSeq: null,
+          };
           const pending = scope.dispatchedPendingClose();
           if (
             pending !== null &&
@@ -323,6 +440,21 @@ function quit(): Promise<void> {
                 "KELD-IPC-003",
                 "original single-window Quit handoff received an invalid close response",
               );
+            if (
+              reply.variant === "AlreadyClosing" &&
+              pendingOriginalQuitClose?.attempt === attempt &&
+              pendingOriginalQuitClose.closeSeq === null
+            ) {
+              throw linkError(
+                "KELD-CORE-054",
+                "original Quit cannot bind an already-closing window without its dispatched close sequence",
+              );
+            }
+            if (reply.variant !== "AlreadyClosing") {
+              const claim = pendingOriginalQuitClose;
+              if (claim?.attempt === attempt && claim.closeSeq === null)
+                claim.closeSeq = reply.close_seq;
+            }
           });
         }
       }
@@ -339,7 +471,13 @@ function quit(): Promise<void> {
     // The Host remains alive on will-quit veto, including after a previous
     // close removed every window. A later app.quit() must start a fresh D2
     // attempt and emit before-quit/will-quit again.
-    if (emitCancelable("will-quit")) return Promise.resolve();
+    if (emitCancelable("will-quit")) {
+      // A listener may already have queued a retry microtask. Retire D2
+      // synchronously after the veto, before that retry runs; no Host Quit
+      // was admitted and the next call must receive a fresh before-quit.
+      fulfillQuitAttempt(attempt);
+      return Promise.resolve();
+    }
     // A synchronous will-quit listener may construct another native window.
     // The prior zero-window census is no authority to force-close that window.
     if (
@@ -361,6 +499,17 @@ function quit(): Promise<void> {
 }
 
 apiApp.onLastWindowClosed(onLastWindowClosed);
+onWindowFactApplied((fact) => {
+  const claim = pendingOriginalQuitClose;
+  if (!claim || fact.variant === "DesktopSnapshot") return;
+  // This callback observes the actual Source AFTER a Host fact is applied
+  // but BEFORE a Destroyed tombstone is removed. A new document generation
+  // in the same native WindowRef revokes the earlier Quit suppression.
+  if (
+    sameOriginalWindow(fact.window, claim.window) &&
+    !claim.scope.ownsCurrentGeneration()
+  ) pendingOriginalQuitClose = undefined;
+});
 onNativeQuitRequested(() => {
   // Same framework Quit owner/D2 preflight, never a caller MenuItem click or
   // a forceful Host terminal request while the original document is live.

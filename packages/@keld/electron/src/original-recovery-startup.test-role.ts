@@ -168,6 +168,8 @@ export function makeFixture() {
       getDispatchedPendingWindowCloses: () => [],
       flushAppliedLastWindowClosedAfterDestroy: () => {},
       joinOriginalQuitBeforeClose: () => false,
+      noteOriginalQuitVetoApplied: () => {},
+      noteOriginalQuitWindowDestroyed: () => {},
       emitNativeAppEvent: (name: string) => appEvents.push(name),
       onWindowFactApplied: (listener: (event: HostFact) => void) => {
         onFact = listener;
