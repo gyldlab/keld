@@ -57,7 +57,7 @@ Non-goals:
   generations and role grants; KEL-102 does not duplicate that registry.
 - `docs/specs/kel78-strict-profile-sandbox.md`: strict-profile admission is a
   separate, fail-closed OS-containment gate.
-- `docs/specs/kel96-no-flag-host-boot.md`: the prerequisite no-flag host boot
+- `kel96-no-flag-host-boot/index.md`: the prerequisite no-flag host boot
   artifact and process-lifecycle owner.
 
 This spec makes the destination enforcement stated in architecture 03

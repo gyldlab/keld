@@ -115,7 +115,7 @@ Non-goals:
   (`keld-pack`, cross-host assembly target, signer tools), §4 client verification step 1
   (on Windows direct installs the prebuilt host carries the key, app id, channel and
   target in its signed `ExpectedAppIdentity` payload).
-- `docs/specs/kel96-no-flag-host-boot.md` T1a (prebuilt `keld-host[.exe]` plus compiled
+- `kel96-no-flag-host-boot/boot.md` T1a (prebuilt `keld-host[.exe]` plus compiled
   app files) and `docs/specs/kel135-persistent-profile-identity.md` (Windows carrier:
   exactly one Authenticode signature; `SPC_SP_OPUS_INFO` program name
   `keld.app-id/v1:<canonical-app-id>`; no fallback carrier).

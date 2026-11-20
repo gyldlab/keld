@@ -190,12 +190,21 @@ explains normal close, interrupt shutdown, and platform-specific diagnostics.
 Open `hello-keld/index.html`, change the visible text or styles, then stop and
 restart `keld dev`. **Live reload is not implemented yet.**
 
-| File in your generated app | What it controls |
-|---|---|
-| `index.html` | The interface rendered in the native window. |
-| `src/main.ts` | The Bun-side app logic, including the demo's echo and shutdown handling. |
-| `src/echo.generated.ts` | Rust-derived compile-time declarations for the demo's echo payloads. |
-| `keld.config.ts` | The app's configuration, including its name and entry paths. |
+| File in your generated app | What it controls | Current `keld dev` staging |
+|---|---|---|
+| `index.html` | The interface rendered in the native window. | Copied when selected as the renderer. |
+| `src/main.ts` | The Bun-side app logic, including the demo's echo and shutdown handling. | Copied when selected as the entry. |
+| `src/kipc-transport.ts` | The scaffold's runtime KIPC transport. | Copied when this exact relative file exists. |
+| `src/echo.generated.ts` | Rust-derived compile-time declarations for the demo's echo payloads. | Not copied. |
+| `keld.config.ts` | The app's configuration, including its name and entry paths. | Read to compile the boot descriptor; not copied. |
+
+The current stage does not copy imported sibling modules, so an entry that
+imports a sibling file such as `./sibling.ts` fails to start. Relative
+stylesheet and image references in the renderer do not load at all: the inline
+renderer page's base address is `about:blank`, so those references cannot
+resolve, whether or not the files are staged. Serving renderer files is tracked
+separately as KEL-79. Multi-file staging is being verified and specified in
+[#1037](https://github.com/gyldlab/keld/issues/1037); it is not implemented yet.
 
 The scaffold also includes its KIPC transport; there are no package dependencies
 to install for this demo. Start it through `keld dev`, not `bun src/main.ts`:

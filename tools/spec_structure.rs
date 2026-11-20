@@ -67,7 +67,7 @@ const INDEX_MAX_LINES: usize = 120;
 const INDEX_MAX_BYTES: usize = 8 * 1024;
 
 /// Exact baseline row count. Lower it when a row drains; never raise it.
-const BASELINE_ROWS: usize = 43;
+const BASELINE_ROWS: usize = 42;
 /// Every baseline path must exist in this commit: the last `main` before the standard.
 /// Moving it forward is legitimate only for a merge of `main` that landed a spec, or
 /// changed a listed one, before the standard.
