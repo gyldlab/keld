@@ -2140,6 +2140,77 @@ test("B3 Bun setup ownership rejects duplicated and rogue post-cache savers", ()
   expect(() => check(rogue)).toThrow("B3 Bun cache action not approved in job");
 });
 
+const gh502NodeAction =
+  "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1";
+
+function gh502NodeStep(f: Fixture): Step {
+  const matches = f.jobs["bun-test"]!.steps.filter(
+    (candidate) => candidate.uses === gh502NodeAction,
+  );
+  expect(matches.length).toBe(1);
+  return matches[0]!;
+}
+
+test("GH502 Node oracle pins exact version and disables package-manager caching", () => {
+  const original = gh502NodeStep(fixture());
+  expect(original.with).toEqual({
+    "node-version": "26.10.0",
+    "check-latest": false,
+    "package-manager-cache": false,
+  });
+  for (const [key, bad] of [
+    ["node-version", "24.0.0"],
+    ["node-version", "${{ vars.NODE_VERSION }}"],
+    ["node-version", undefined],
+    ["check-latest", true],
+    ["check-latest", undefined],
+    ["package-manager-cache", true],
+    ["package-manager-cache", undefined],
+    ["cache", "npm"],
+  ] as const) {
+    const f = fixture();
+    const inputs = gh502NodeStep(f).with as Step;
+    if (bad === undefined) delete inputs[key];
+    else inputs[key] = bad;
+    expect(() => check(f), `${key}=${String(bad)}`).toThrow(
+      "GH502 Node oracle",
+    );
+  }
+});
+
+test("GH502 Node oracle requires one pinned step in the Bun test lane", () => {
+  const missing = fixture();
+  const steps = missing.jobs["bun-test"]!.steps;
+  const originalIndex = steps.indexOf(gh502NodeStep(missing));
+  const [original] = steps.splice(originalIndex, 1);
+  expect(() => check(missing)).toThrow("GH502 Node oracle");
+
+  const duplicate = fixture();
+  duplicate.jobs["bun-test"]!.steps.push({ ...gh502NodeStep(duplicate) });
+  expect(() => check(duplicate)).toThrow("GH502 Node oracle");
+
+  const moved = fixture();
+  const movedSteps = moved.jobs["bun-test"]!.steps;
+  const [node] = movedSteps.splice(movedSteps.indexOf(gh502NodeStep(moved)), 1);
+  movedSteps.push(node!);
+  expect(() => check(moved)).toThrow("GH502 Node oracle");
+
+  const rogue = fixture();
+  rogue.jobs["linux-gui-smoke"]!.steps.push({ ...gh502NodeStep(rogue) });
+  expect(() => check(rogue)).toThrow("GH502 Node oracle");
+
+  const misplaced = fixture();
+  const misplacedSteps = misplaced.jobs["bun-test"]!.steps;
+  const [nodeFromBun] = misplacedSteps.splice(
+    misplacedSteps.indexOf(gh502NodeStep(misplaced)),
+    1,
+  );
+  misplacedSteps.splice(1, 0, nodeFromBun!);
+  expect(() => check(misplaced)).toThrow("GH502 Node oracle");
+
+  expect(original?.uses).toBe(gh502NodeAction);
+});
+
 const b3RustCacheJobs = [
   "check",
   "windows-media",

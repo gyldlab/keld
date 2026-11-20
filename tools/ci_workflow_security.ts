@@ -439,6 +439,55 @@ function checkB3BunCachePolicy(stepsByJob: Map<string, Mapping[]>): void {
   }
 }
 
+/** GH-502: the installed-package oracle must run on one pinned, uncached Node. */
+function checkGH502NodeOracle(stepsByJob: Map<string, Mapping[]>): void {
+  const label = "GH502 Node oracle";
+  const bunAction =
+    "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6";
+  const nodeAction =
+    "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1";
+  for (const [jobName, steps] of stepsByJob) {
+    const nodeSteps = steps.filter(
+      (step) =>
+        typeof step.uses === "string" &&
+        actionName(step.uses) === "actions/setup-node",
+    );
+    if (jobName !== "bun-test") {
+      if (nodeSteps.length) {
+        fail(`${label} must not run outside the reviewed bun-test lane.`);
+      }
+      continue;
+    }
+    if (nodeSteps.length !== 1) {
+      fail(`${label} setup must appear exactly once in bun-test.`);
+    }
+    const nodeStep = nodeSteps[0]!;
+    exactKeys(nodeStep, ["uses", "with"], label);
+    if (nodeStep.uses !== nodeAction) {
+      fail(`${label} must use the exact reviewed setup-node action SHA.`);
+    }
+    inputsMatch(
+      mapping(nodeStep.with, `${label} inputs`),
+      {
+        "node-version": "26.10.0",
+        "check-latest": "false",
+        "package-manager-cache": "false",
+      },
+      label,
+    );
+    const index = steps.indexOf(nodeStep);
+    if (
+      index < 1 ||
+      steps[index - 1]?.uses !== bunAction ||
+      steps[index + 1]?.name !== "frozen install, typecheck, and bun test"
+    ) {
+      fail(
+        `${label} must run immediately after pinned Bun setup and before the installed-package oracle.`,
+      );
+    }
+  }
+}
+
 /** The CodeQL languages, each analysed by its own job `codeql-<language>`. */
 export const codeqlLanguages = [
   "rust",
@@ -1843,6 +1892,7 @@ export function checkWorkflowSecurity(source: string): void {
   // Globally reject unknown Actions SHAs before checking approved Bun cache
   // owners. This preserves the upstream unreviewed-action failure diagnostic.
   checkB3BunCachePolicy(stepsByJob);
+  checkGH502NodeOracle(stepsByJob);
   // This broad safety net runs AFTER the narrower, previously reviewed
   // executable-step checks. That keeps their deterministic negative-control
   // diagnostics while also rejecting an otherwise permitted earlier step
