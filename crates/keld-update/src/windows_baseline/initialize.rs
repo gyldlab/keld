@@ -124,6 +124,7 @@ pub(super) enum BaselineBoundary {
     LastKnownGoodPublished,
     RootsVerified,
     ProvenancePublished,
+    FinalReadbackVerified,
 }
 
 #[cfg(test)]
@@ -282,6 +283,8 @@ fn initialize_with_authority_and_token_check(
     drop(roots);
     let loaded: LoadedWindowsBaseline = super::load_windows_baseline(trust)?;
     let version = super::load::validate_initial_seed(&loaded.roots)?;
+    observe(BaselineBoundary::FinalReadbackVerified)
+        .map_err(|cause| error("final readback boundary", cause))?;
     drop(retained_source);
     Ok(WindowsBaselineReceipt {
         loaded,

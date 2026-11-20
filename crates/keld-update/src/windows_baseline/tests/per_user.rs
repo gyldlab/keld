@@ -163,6 +163,7 @@ fn per_user_initializer_pins_source_until_final_protected_readback() {
                 | BaselineBoundary::ActivationLockCreated
                 | BaselineBoundary::RootsVerified
                 | BaselineBoundary::ProvenancePublished
+                | BaselineBoundary::FinalReadbackVerified
         ) {
             let error = fs::rename(&source, &renamed)
                 .expect_err("the validated archive must remain open during final readback");
@@ -178,8 +179,8 @@ fn per_user_initializer_pins_source_until_final_protected_readback() {
     })
     .expect("the same source stays retained through the committed readback");
     assert_eq!(
-        held_boundaries, 4,
-        "source is held before locks and through readback"
+        held_boundaries, 5,
+        "source is held before locks, after commit and through final readback"
     );
     drop(receipt);
 
@@ -215,6 +216,50 @@ fn per_user_missing_archive_refuses_before_bootstrap_effects() {
         assert!(
             !absent.exists(),
             "source admission must precede every installer effect: {}",
+            absent.display()
+        );
+    }
+}
+
+#[test]
+fn per_user_changed_signed_archive_refuses_before_bootstrap_effects() {
+    support::assert_user_principal_token();
+    let (_temp, trust, source) = fixture();
+    let verified = support::baseline(&trust);
+    let mut bytes = fs::read(&source).expect("read private canonical TAR fixture");
+    // The immutable fixture's nest/multi file payload starts at offset 4,096;
+    // mutate content rather than a TAR header or its checksum.
+    bytes[4096] ^= 1;
+    fs::write(&source, bytes).expect("tamper only the private archive fixture");
+
+    let error = initialize_windows_per_user_baseline(&verified, &source, &trust)
+        .expect_err("a signed archive with different content must refuse before any writer effect");
+    assert!(
+        matches!(
+            error,
+            UpdateError::ArtifactDigestMismatch {
+                domain: crate::ArtifactDomain::Content,
+                ..
+            }
+        ),
+        "the unchanged canonical TAR layout must reach the content digest predicate: {error}"
+    );
+    for absent in [
+        trust.installation.update_root.join("bootstrap.lock"),
+        trust.installation.update_root.join("activation.lock"),
+        trust.installation.update_root.join("version-floor"),
+        trust.installation.update_root.join("current"),
+        trust.installation.update_root.join("last-known-good"),
+        trust
+            .installation
+            .update_root
+            .join("versions")
+            .join("1.0.0"),
+        trust.installation.install_root.join("install-provenance"),
+    ] {
+        assert!(
+            !absent.exists(),
+            "signed-content refusal must precede every installer effect: {}",
             absent.display()
         );
     }
