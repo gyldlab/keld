@@ -700,6 +700,25 @@ fn event_take_failure_is_terminal_without_application_exception() {
     );
 }
 
+/// Admission observes Worker death before deferred onEnd dispatch.
+#[test]
+fn call_admission_closes_before_deferred_end_callback() {
+    let (mut stream, role) = start("admission-observe");
+    let _ = read_call_named(&mut stream, "admission-observe");
+    stream.shutdown_app_link().expect("host closes link");
+    drop(stream);
+    expect_report(
+        &role.finish(),
+        &[
+            ("admission-while-open", "true"),
+            ("admission-after-peer-death", "false"),
+            ("admission-before-end-callback", "0"),
+            ("admission-after-local-close", "false"),
+            ("done", "true"),
+        ],
+    );
+}
+
 /// One decode per record; exact object identity and captured source receiver.
 #[test]
 fn mirror_decodes_once_and_dispatches_the_exact_applied_object() {
@@ -2190,6 +2209,8 @@ fn local_close_rejects_pending_calls_with_022() {
         &[
             ("pending-code", "KELD-IPC-022"),
             ("pending-returned", "false"),
+            ("local-admission-before", "true"),
+            ("local-admission-after", "false"),
             ("state", "22"),
             ("later-code", "KELD-IPC-022"),
             ("send-after-close", "KELD-IPC-022"),

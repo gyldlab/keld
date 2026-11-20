@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:f07898e39ac3141f19456034319dad66177b34a2927fb7676ce9e132d0d7dca6
+// @keld/kipc-transport sha256:3825a529f71c7fbf7264766d0a1c4b5985869fd4c5f4326d991c5c7ce0dc586b
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -3247,6 +3247,15 @@ export class WorkerLink {
       this.#blockingCorr = 0;
       this.#blockingInFlight = false;
     }
+  }
+
+  /** @internal Read-only transport admission observation; grants no authority. */
+  get callAdmissionOpen(): boolean {
+    return (
+      atomicLoad(this.#ctrl, STATE) === 0 &&
+      !this.#finalized &&
+      !this.#terminated
+    );
   }
 
   /**

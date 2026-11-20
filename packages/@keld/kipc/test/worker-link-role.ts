@@ -448,6 +448,32 @@ async function afterRingTakeFailure(): Promise<void> {
   link.close();
 }
 
+async function admissionObservedBeforeEnd(): Promise<void> {
+  let retained: (() => void) | undefined;
+  let ended = 0;
+  const { link, control } = await open(
+    {},
+    {
+      deferDispatch(task) {
+        retained = task;
+      },
+    },
+  );
+  link.onEnd(() => {
+    ended += 1;
+  });
+  report("admission-while-open", link.callAdmissionOpen);
+  void link
+    .call(ECHO_CHANNEL, text("admission-observe"), 30_000)
+    .catch(() => undefined);
+  awaitWord(control, WORKER_LINK_CONTROL.STATE, (value) => value !== 0);
+  report("admission-after-peer-death", link.callAdmissionOpen);
+  report("admission-before-end-callback", ended);
+  if (retained) retained();
+  link.close();
+  report("admission-after-local-close", link.callAdmissionOpen);
+}
+
 // Criteria 1, 2, 3 and 9: the #418 arm-B load during one park.
 const ARM_B_EVENTS = 11_000;
 async function armB(): Promise<void> {
@@ -1730,7 +1756,9 @@ async function malformedErr(): Promise<void> {
 async function localClose(): Promise<void> {
   const { link, control } = await open();
   const pending = link.call(LIFECYCLE_CHANNEL, text("pending"), 30_000);
+  report("local-admission-before", link.callAdmissionOpen);
   link.close();
+  report("local-admission-after", link.callAdmissionOpen);
   await expectReject("pending", pending);
   report("state", word(control, WORKER_LINK_CONTROL.STATE));
   expectThrow("later", () =>
@@ -1945,6 +1973,7 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
   "arm-b": armB,
   "wake-rule": wakeRule,
   "after-ring-release": afterRingRelease,
+  "admission-observe": admissionObservedBeforeEnd,
   "after-ring-failure": afterRingReleaseFailure,
   "after-ring-take-failure": afterRingTakeFailure,
   "after-ring-dispatch-failure": afterRingDispatchFailure,
