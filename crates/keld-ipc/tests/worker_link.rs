@@ -1234,6 +1234,28 @@ fn compat_apply_uses_preapplication_typed_array_intrinsics() {
     );
 }
 
+/// A second synchronous call does not invoke app-replaced builtins.
+#[test]
+fn outbound_call_uses_preapplication_intrinsics() {
+    let (mut stream, role) = start("outbound-intrinsic-poison");
+    long_reads(&stream);
+    let first = read_call_named(&mut stream, "outbound-before-poison");
+    host_reply(&mut stream, first, b"ok");
+    let second = read_call_named(&mut stream, "outbound-after-poison");
+    host_reply(&mut stream, second, b"ok");
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("outbound-finite-callbacks", "0"),
+            ("outbound-integer-callbacks", "0"),
+            ("outbound-map-callbacks", "0"),
+            ("outbound-instance-callbacks", "0"),
+            ("outbound-length-callbacks", "0"),
+        ],
+    );
+}
+
 /// Criterion 11: a second `open` in the realm is `KELD-IPC-005` before any
 /// connect; a second connect to the consumed locator is refused by the OS;
 /// the first link keeps working.

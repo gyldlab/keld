@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:1f390ae13aea37812c34505c948d7fbbc974c28553bdf54919414793b42519a4
+// @keld/kipc-transport sha256:16b951cb793b0b5184cf7d4c0a2c99c82fb6bf501eefe0ead69dbd77a94c8ce8
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -403,6 +403,7 @@ const intrinsicIsNativeError = isNativeError;
 const intrinsicOwnKeys = Reflect.ownKeys;
 const intrinsicIsArray = Array.isArray;
 const intrinsicInteger = Number.isInteger;
+const intrinsicFinite = Number.isFinite;
 const intrinsicBigInt = BigInt;
 const intrinsicMin = Math.min;
 const intrinsicMax = Math.max;
@@ -2698,7 +2699,7 @@ function inboundTable(
 export function requireDeadline(deadlineMs: number): void {
   if (
     typeof deadlineMs !== "number" ||
-    !Number.isFinite(deadlineMs) ||
+    !intrinsicFinite(deadlineMs) ||
     deadlineMs <= 0 ||
     deadlineMs > MAX_BLOCKING_CALL_DEADLINE_MS
   ) {
@@ -2713,7 +2714,7 @@ export function requireDeadline(deadlineMs: number): void {
 function requireOutboundFrame(channel: number, payload: Uint8Array): void {
   if (
     typeof channel !== "number" ||
-    !Number.isInteger(channel) ||
+    !intrinsicInteger(channel) ||
     channel < 0 ||
     channel > 0xffff
   ) {
@@ -2725,10 +2726,10 @@ function requireOutboundFrame(channel: number, payload: Uint8Array): void {
   if (channel === HANDSHAKE_CHANNEL) {
     throw linkError("KELD-IPC-005", "channel 0 carries only HELLO");
   }
-  if (!(payload instanceof Uint8Array)) {
+  if (!stateIsUint8Array(payload)) {
     throw linkError("KELD-IPC-003", "frame payload must be a Uint8Array");
   }
-  if (payload.byteLength > MAX_FRAME_LEN) {
+  if (stateByteLength(payload) > MAX_FRAME_LEN) {
     throw linkError(
       "KELD-IPC-004",
       `frame payload exceeds MAX_FRAME_LEN (${MAX_FRAME_LEN} bytes). Shrink the payload or move large transfers to the bulk plane.`,
@@ -3477,7 +3478,8 @@ export class WorkerLink {
     for (;;) {
       const corr = this.#nextCorr;
       this.#nextCorr = corr === 0xffff_ffff ? 1 : corr + 1;
-      if (corr !== this.#blockingCorr && !this.#pending.has(corr)) return corr;
+      if (corr !== this.#blockingCorr && !stateMapHas(this.#pending, corr))
+        return corr;
     }
   }
 

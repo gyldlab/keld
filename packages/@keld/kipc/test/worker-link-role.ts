@@ -1050,6 +1050,67 @@ async function compatDecodeIntrinsicPoison(): Promise<void> {
   report("compat-diagnostic-callbacks", diagnosticCalls);
 }
 
+async function outboundIntrinsicPoison(): Promise<void> {
+  const { link } = await open();
+  const first = text("outbound-before-poison");
+  const second = text("outbound-after-poison");
+  link.callBlocking(ECHO_CHANNEL, first, 30_000);
+  const finite = Number.isFinite;
+  const integer = Number.isInteger;
+  const mapHas = Map.prototype.has;
+  const Original = globalThis.Uint8Array;
+  const typedPrototype = Object.getPrototypeOf(Original.prototype);
+  const length = Object.getOwnPropertyDescriptor(typedPrototype, "byteLength")!;
+  let active = false;
+  let finiteCalls = 0;
+  let integerCalls = 0;
+  let hasCalls = 0;
+  let instanceCalls = 0;
+  let lengthCalls = 0;
+  class Poison extends Original {
+    static override [Symbol.hasInstance](value: unknown): boolean {
+      if (active) instanceCalls += 1;
+      return value instanceof Original;
+    }
+  }
+  Number.isFinite = (value) => {
+    if (active) finiteCalls += 1;
+    return finite(value);
+  };
+  Number.isInteger = (value) => {
+    if (active) integerCalls += 1;
+    return integer(value);
+  };
+  Map.prototype.has = function (key) {
+    if (active) hasCalls += 1;
+    return Reflect.apply(mapHas, this, [key]);
+  };
+  Object.defineProperty(typedPrototype, "byteLength", {
+    ...length,
+    get() {
+      if (active) lengthCalls += 1;
+      return Reflect.apply(length.get!, this, []);
+    },
+  });
+  globalThis.Uint8Array = Poison;
+  try {
+    active = true;
+    link.callBlocking(ECHO_CHANNEL, second, 30_000);
+  } finally {
+    active = false;
+    Number.isFinite = finite;
+    Number.isInteger = integer;
+    Map.prototype.has = mapHas;
+    Object.defineProperty(typedPrototype, "byteLength", length);
+    globalThis.Uint8Array = Original;
+  }
+  report("outbound-finite-callbacks", finiteCalls);
+  report("outbound-integer-callbacks", integerCalls);
+  report("outbound-map-callbacks", hasCalls);
+  report("outbound-instance-callbacks", instanceCalls);
+  report("outbound-length-callbacks", lengthCalls);
+}
+
 function overflow(bound: "bytes" | "records"): () => Promise<void> {
   return async () => {
     const retained = bound === "bytes" ? 1024 : 8;
@@ -2139,6 +2200,7 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
   "overflow-bytes": overflow("bytes"),
   "overflow-records": overflow("records"),
   "compat-intrinsic-poison": compatDecodeIntrinsicPoison,
+  "outbound-intrinsic-poison": outboundIntrinsicPoison,
   "second-link": () => secondLink(true),
   "second-open": () => secondLink(false),
   correlation,
