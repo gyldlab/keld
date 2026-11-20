@@ -5,11 +5,15 @@ import {
   stateDefineProperty,
   stateMap,
   stateMapGet,
+  stateMapForEach,
   stateMapHas,
   stateMapSet,
   stateMapSize,
   stateMapValues,
   stateMapClear,
+  stateWeakMap,
+  stateWeakMapGet,
+  stateWeakMapSet,
   linkError,
   type KeldCallError,
 } from "@keld/kipc";
@@ -17,11 +21,12 @@ import type { MirrorSource } from "./mirror.ts";
 import {
   decodeWindowEvent,
   decodeWindowEventWithDesktop,
+  decodeWindowCarrierEvent,
   validateDesktopEpoch,
   validateDesktopFacts,
   type DesktopFacts,
   type DesktopFact,
-  type WindowEventWithDesktop,
+  type WindowCarrierEvent,
   type Rect,
   type WindowEvent,
   type WindowRef,
@@ -30,6 +35,15 @@ import {
 
 /** Source-owned immutable host facts; Electron-facing tombstones are separate. */
 export interface WindowSnapshot {
+  /** Authenticated selected native association; identity only, never a grant. */
+  readonly webview?: number;
+  /** Qualified selected document observation; no registration authority. */
+  readonly document?: Readonly<{
+    generation: number;
+    native_url: string;
+    finished: boolean;
+    current: boolean;
+  }>;
   readonly window: Readonly<WindowRef>;
   readonly state: Readonly<Omit<WindowState, "bounds">> & {
     readonly bounds: Readonly<Rect>;
@@ -130,6 +144,8 @@ function snapshot(
   state: WindowState,
   pending_close: bigint | null,
   host_destroyed: boolean,
+  webview?: number,
+  document?: WindowSnapshot["document"],
 ): WindowSnapshot {
   // Copy every object: neither retained dispatch facts nor caller snapshots own
   // aliases into mutable map state, or into the transport's payload storage.
@@ -148,8 +164,17 @@ function snapshot(
     }),
     pending_close,
     host_destroyed,
+    ...(webview === undefined ? {} : { webview }),
+    ...(document === undefined ? {} : { document: stateFreeze(document) }),
   });
 }
+
+type SourceEvent = WindowCarrierEvent;
+export type OriginalFinish = Extract<
+  WindowCarrierEvent,
+  { variant: "NavigationFinished" | "NavigationFinishedUnitPinchV1" }
+>;
+const isInteger = Number.isInteger;
 
 /**
  * No socket, identity minting, permission policy, optimistic write or event queue.
@@ -163,21 +188,47 @@ function snapshot(
  * Production attachment still requires independently qualified heap bytes,
  * callback/record aliases and lifetimes per approved GH1142/1149.
  */
-export class WindowSource implements MirrorSource<WindowEventWithDesktop> {
+export class WindowSource implements MirrorSource<SourceEvent> {
   readonly channel = WINDOW_CHANNEL;
   // Null keeps exact observed-ID membership and the historical census without
   // retaining the terminal snapshot's four-object graph after dispatch.
   readonly #windows = stateMap<number, WindowSnapshot | null>();
   readonly #desktopSelected: boolean;
+  readonly #originalSelected: boolean;
+  #lookupActive = false;
+  #lookupView = 0;
+  #lookupResult: WindowSnapshot | undefined;
+  #lookupAmbiguous = false;
+  readonly #visitView = (candidate: WindowSnapshot | null): void => {
+    if (
+      !candidate ||
+      candidate.host_destroyed ||
+      candidate.webview !== this.#lookupView
+    )
+      return;
+    if (this.#lookupResult !== undefined) this.#lookupAmbiguous = true;
+    else this.#lookupResult = candidate;
+  };
   #desktop: DesktopSnapshot | undefined;
   #desktopEpoch = 0n;
   #onFact: ((fact: WindowEvent) => void) | undefined;
+  #onOriginalFinish: ((fact: OriginalFinish) => void) | undefined;
+  #pendingFinishes: WeakMap<OriginalFinish, boolean> | undefined;
+  #dispatchingUnitPinch: OriginalFinish | undefined;
   #failureCode: string | undefined;
   #failureMessage = "";
+  #ended = false;
 
-  constructor(onFact: (fact: WindowEvent) => void, desktopSelected = false) {
+  constructor(
+    onFact: (fact: WindowEvent) => void,
+    desktopSelected = false,
+    originalSelected = false,
+    onOriginalFinish?: (fact: OriginalFinish) => void,
+  ) {
     this.#onFact = onFact;
     this.#desktopSelected = desktopSelected;
+    this.#originalSelected = originalSelected;
+    this.#onOriginalFinish = onOriginalFinish;
   }
 
   #diagnostic(code: string): KeldCallError {
@@ -206,12 +257,14 @@ export class WindowSource implements MirrorSource<WindowEventWithDesktop> {
   }
 
   /** Decode once through the shared codec, freezing its bounded known graph. */
-  decode(payload: Uint8Array): WindowEventWithDesktop {
+  decode(payload: Uint8Array): SourceEvent {
     this.#requireLive();
     try {
-      const fact = this.#desktopSelected
-        ? decodeWindowEventWithDesktop(payload)
-        : decodeWindowEvent(payload);
+      const fact: SourceEvent = this.#originalSelected
+        ? decodeWindowCarrierEvent(payload)
+        : this.#desktopSelected
+          ? decodeWindowEventWithDesktop(payload)
+          : decodeWindowEvent(payload);
       if (fact.variant === "DesktopSnapshot") {
         validateDesktopEpoch(fact.epoch);
         if (fact.snapshot !== null) {
@@ -245,7 +298,7 @@ export class WindowSource implements MirrorSource<WindowEventWithDesktop> {
   }
 
   /** Apply only host-confirmed facts; Created first, exact pair, Destroyed last. */
-  apply(fact: WindowEventWithDesktop): void {
+  apply(fact: SourceEvent): void {
     this.#requireLive();
     try {
       if (fact.variant === "DesktopSnapshot") {
@@ -285,10 +338,95 @@ export class WindowSource implements MirrorSource<WindowEventWithDesktop> {
         previous.host_destroyed
       )
         throw this.#reject();
+      if (fact.variant === "OriginalRendererViewBound") {
+        if (
+          !this.#originalSelected ||
+          !isInteger(fact.webview) ||
+          fact.webview <= 0 ||
+          fact.webview > 0xffff_ffff
+        )
+          throw this.#reject();
+        if (previous.webview !== undefined && previous.webview !== fact.webview)
+          throw this.#reject();
+        const candidates = stateMapValues(this.#windows);
+        for (let index = 0; index < candidates.length; index += 1) {
+          const candidate = candidates[index];
+          if (
+            candidate &&
+            !candidate.host_destroyed &&
+            candidate.webview === fact.webview &&
+            candidate.window.id !== fact.window.id
+          )
+            throw this.#reject();
+        }
+        if (previous.webview === fact.webview) return;
+        stateMapSet(
+          this.#windows,
+          fact.window.id,
+          snapshot(
+            fact.window,
+            previous.state,
+            previous.pending_close,
+            false,
+            fact.webview,
+            previous.document,
+          ),
+        );
+        return;
+      }
       let state: WindowState = previous.state;
       let pending_close = previous.pending_close;
       let host_destroyed = false;
+      let document = previous.document;
       switch (fact.variant) {
+        case "NavigationCommitted":
+        case "DocumentRecovered":
+          if (
+            !this.#originalSelected ||
+            previous.webview === undefined ||
+            !isInteger(fact.document_generation) ||
+            fact.document_generation <= 0 ||
+            fact.document_generation > 0xffff_ffff ||
+            typeof fact.native_url !== "string"
+          )
+            throw this.#reject();
+          if (fact.variant === "DocumentRecovered" && document !== undefined)
+            throw this.#reject();
+          if (document && fact.document_generation < document.generation)
+            return;
+          if (document?.generation === fact.document_generation) {
+            if (document.native_url !== fact.native_url) throw this.#reject();
+            return;
+          }
+          document = {
+            generation: fact.document_generation,
+            native_url: fact.native_url,
+            finished: fact.variant === "DocumentRecovered",
+            current: true,
+          };
+          break;
+        case "NavigationFinished":
+        case "NavigationFinishedUnitPinchV1":
+          if (
+            !this.#originalSelected ||
+            this.#onOriginalFinish === undefined ||
+            !isInteger(fact.document_generation) ||
+            fact.document_generation <= 0 ||
+            fact.document_generation > 0xffff_ffff ||
+            !document ||
+            fact.document_generation > document.generation
+          )
+            throw this.#reject();
+          if (
+            !document.current ||
+            fact.document_generation !== document.generation
+          )
+            return;
+          if (document.finished) return;
+          this.#pendingFinishes ??= stateWeakMap();
+          stateWeakMapSet(this.#pendingFinishes, fact, true);
+          document = { ...document, finished: true };
+          break;
         case "Bounds":
           state = { ...state, bounds: fact.bounds };
           break;
@@ -314,7 +452,14 @@ export class WindowSource implements MirrorSource<WindowEventWithDesktop> {
       stateMapSet(
         this.#windows,
         fact.window.id,
-        snapshot(fact.window, state, pending_close, host_destroyed),
+        snapshot(
+          fact.window,
+          state,
+          pending_close,
+          host_destroyed,
+          previous.webview,
+          document,
+        ),
       );
     } catch {
       throw this.#reject();
@@ -328,8 +473,44 @@ export class WindowSource implements MirrorSource<WindowEventWithDesktop> {
   }
 
   /** Existing dispatch owns ordering and isolates listener exceptions. */
-  dispatch(fact: WindowEventWithDesktop): void {
+  dispatch(fact: SourceEvent): void {
     if (fact.variant === "DesktopSnapshot") return;
+    if (
+      fact.variant === "OriginalRendererViewBound" ||
+      fact.variant === "NavigationCommitted" ||
+      fact.variant === "DocumentRecovered"
+    )
+      return;
+    if (
+      fact.variant === "NavigationFinished" ||
+      fact.variant === "NavigationFinishedUnitPinchV1"
+    ) {
+      if (
+        !this.#pendingFinishes ||
+        !stateWeakMapGet(this.#pendingFinishes, fact)
+      )
+        return;
+      stateWeakMapSet(this.#pendingFinishes, fact, false);
+      const current = stateMapGet(this.#windows, fact.window.id);
+      if (
+        !current ||
+        current.window.incarnation !== fact.window.incarnation ||
+        current.host_destroyed ||
+        !current.document?.current ||
+        !current.document.finished ||
+        current.document.generation !== fact.document_generation
+      )
+        return;
+      const prior = this.#dispatchingUnitPinch;
+      this.#dispatchingUnitPinch =
+        fact.variant === "NavigationFinishedUnitPinchV1" ? fact : undefined;
+      try {
+        this.#onOriginalFinish?.(fact);
+      } finally {
+        this.#dispatchingUnitPinch = this.#ended ? undefined : prior;
+      }
+      return;
+    }
     // Earlier applied records still drain after a later source fact fails.
     // After terminal end the transport has already drained earlier records:
     // never revive its former application callback/closure via a stale source.
@@ -368,7 +549,14 @@ export class WindowSource implements MirrorSource<WindowEventWithDesktop> {
       stateMapSet(
         this.#windows,
         window.id,
-        snapshot(window, previous.state, null, false),
+        snapshot(
+          window,
+          previous.state,
+          null,
+          false,
+          previous.webview,
+          previous.document,
+        ),
       );
     // An older ack still advances the dispatched receipt watermark; only the
     // exact pending sequence above may clear current Source state.
@@ -380,6 +568,73 @@ export class WindowSource implements MirrorSource<WindowEventWithDesktop> {
     this.#requireLive();
     const value = stateMapGet(this.#windows, window.id);
     return value?.window.incarnation === window.incarnation ? value : undefined;
+  }
+
+  /** Resolve only a unique live native association from this same Window owner. */
+  getByWebview(webview: number): WindowSnapshot | undefined {
+    this.#requireLive();
+    if (
+      !this.#originalSelected ||
+      !isInteger(webview) ||
+      webview <= 0 ||
+      webview > 0xffff_ffff
+    )
+      return undefined;
+    if (this.#lookupActive) throw this.#reject();
+    this.#lookupActive = true;
+    this.#lookupView = webview;
+    this.#lookupResult = undefined;
+    this.#lookupAmbiguous = false;
+    try {
+      stateMapForEach(this.#windows, this.#visitView);
+      return this.#lookupAmbiguous ? undefined : this.#lookupResult;
+    } finally {
+      this.#lookupActive = false;
+      this.#lookupView = 0;
+      this.#lookupResult = undefined;
+      this.#lookupAmbiguous = false;
+    }
+  }
+
+  /** True only inside this exact, still-current selected finish callback. */
+  isDispatchingUnitPinch(fact: OriginalFinish): boolean {
+    if (
+      fact.variant !== "NavigationFinishedUnitPinchV1" ||
+      this.#dispatchingUnitPinch !== fact
+    )
+      return false;
+    const current = stateMapGet(this.#windows, fact.window.id);
+    return (
+      current?.host_destroyed === false &&
+      current.window.incarnation === fact.window.incarnation &&
+      current.document?.current === true &&
+      current.document.finished &&
+      current.document.generation === fact.document_generation
+    );
+  }
+
+  /** Invalidate only the exact already-observed native document. */
+  retireNativeDocument(window: WindowRef, generation: number): void {
+    const previous = this.get(window);
+    if (
+      !previous ||
+      previous.host_destroyed ||
+      previous.document?.generation !== generation ||
+      !previous.document.current
+    )
+      return;
+    stateMapSet(
+      this.#windows,
+      window.id,
+      snapshot(
+        window,
+        previous.state,
+        previous.pending_close,
+        false,
+        previous.webview,
+        { ...previous.document, current: false },
+      ),
+    );
   }
 
   /** Immutable snapshots in host-id order; terminal ones remain until dispatch. */
@@ -394,6 +649,7 @@ export class WindowSource implements MirrorSource<WindowEventWithDesktop> {
 
   /** Called by the future link owner only after its retained-record drain. */
   end(error: KeldCallError): void {
+    this.#ended = true;
     if (this.#failureCode === undefined) {
       this.#failureMessage = error.message;
       this.#failureCode = error.code;
@@ -404,5 +660,8 @@ export class WindowSource implements MirrorSource<WindowEventWithDesktop> {
     // LifecycleLink still holds the terminated Source. It must not, in turn,
     // retain the captured application handler and its complete external graph.
     this.#onFact = undefined;
+    this.#onOriginalFinish = undefined;
+    this.#pendingFinishes = undefined;
+    this.#dispatchingUnitPinch = undefined;
   }
 }

@@ -46,7 +46,7 @@ import {
 } from "./dialog.generated.ts";
 import type { WindowRef } from "./window-codec.ts";
 import { attachMirror } from "./mirror.ts";
-import { WindowSource } from "./window-source.ts";
+import { WindowSource, type OriginalFinish } from "./window-source.ts";
 import {
   decodeWindowResponse,
   encodeWindowRequest,
@@ -110,6 +110,8 @@ export type LifecycleHandler = {
   onConnected?: (session: LifecycleLink) => void;
   /** Host-owned window facts, dispatched only after the mirror applied them. */
   onWindowFact?: (fact: WindowEvent) => void;
+  /** Selected native finish after its exact live document was applied. */
+  onOriginalFinish?: (fact: OriginalFinish) => void;
   onApplicationCall?: (
     channel: number,
     payload: Uint8Array,
@@ -154,6 +156,17 @@ export class LifecycleLink {
   /** Only a completed, accepted replay makes the native window mirror observable. */
   get windowSource(): WindowSource | undefined {
     return this.#windowSource;
+  }
+
+  /** @internal Observation of this link's existing window admission state. */
+  get windowAdmissionOpen(): boolean {
+    return (
+      !this.#closed &&
+      this.#dead === undefined &&
+      this.#quitPromise === undefined &&
+      this.#windowSource !== undefined &&
+      this.#link.callAdmissionOpen
+    );
   }
 
   /** Internal recheck after deferred public readiness publication. */
@@ -214,6 +227,8 @@ export class LifecycleLink {
       ? new WindowSource(
           (fact) => handlers.onWindowFact?.(fact),
           desktopSelected,
+          undefined,
+          handlers.onOriginalFinish,
         )
       : undefined;
     const session = new LifecycleLink(workerLink, windowSource);

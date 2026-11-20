@@ -47,6 +47,14 @@ function accept(source: WindowSource, bytes: Uint8Array): WindowEvent {
   const fact = source.decode(bytes);
   if (fact.variant === "DesktopSnapshot")
     throw new Error("unexpected desktop fact");
+  if (
+    fact.variant === "OriginalRendererViewBound" ||
+    fact.variant === "NavigationCommitted" ||
+    fact.variant === "DocumentRecovered" ||
+    fact.variant === "NavigationFinished" ||
+    fact.variant === "NavigationFinishedUnitPinchV1"
+  )
+    throw new Error("unexpected original-window fact");
   source.apply(fact);
   return fact;
 }

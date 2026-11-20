@@ -719,6 +719,72 @@ fn call_admission_closes_before_deferred_end_callback() {
     );
 }
 
+/// Selected Window facts apply before the parked caller resumes; callbacks wait.
+#[test]
+fn selected_original_binding_and_finish_apply_before_blocking_return() {
+    use keld_ipc::codec::encode;
+    use keld_ipc::window::{Rect, WindowEvent, WindowGeneration, WindowId, WindowRef, WindowState};
+    let (mut stream, role) = start("original-mirror-park");
+    long_reads(&stream);
+    let call = read_call_named(&mut stream, "original-mirror-park");
+    let window = WindowRef {
+        id: WindowId(7),
+        incarnation: WindowGeneration(300),
+    };
+    let created = WindowEvent::Created {
+        window,
+        state: WindowState {
+            bounds: Rect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 480,
+            },
+            focused: true,
+            maximized: false,
+            full_screen: false,
+        },
+        pending_close: None,
+    };
+    let commit = WindowEvent::NavigationCommitted {
+        window,
+        document_generation: 5,
+        native_url: String::from("file:///a"),
+    };
+    let finish = WindowEvent::NavigationFinishedUnitPinchV1 {
+        window,
+        document_generation: 5,
+    };
+    for body in [
+        encode(&created).expect("Created"),
+        vec![12, 7, 0xac, 2, 5],
+        encode(&commit).expect("commit"),
+        encode(&finish).expect("finish"),
+    ] {
+        host_write(
+            &mut stream,
+            FrameKind::Event,
+            keld_ipc::channel_table::WINDOW.id(),
+            CorrelationId(0),
+            &body,
+        );
+    }
+    host_reply(&mut stream, call, b"park-reply");
+    expect_report(
+        &role.finish(),
+        &[
+            ("original-park-reply", "park-reply"),
+            ("original-view-at-return", "5"),
+            ("original-document-at-return", "5"),
+            ("original-finished-at-return", "true"),
+            ("original-callbacks-at-return", "0"),
+            ("original-pinch-exact", "true"),
+            ("original-callbacks-after", "1"),
+            ("done", "true"),
+        ],
+    );
+}
+
 /// One decode per record; exact object identity and captured source receiver.
 #[test]
 fn mirror_decodes_once_and_dispatches_the_exact_applied_object() {

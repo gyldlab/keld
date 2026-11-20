@@ -38,6 +38,7 @@ import {
   type WorkerLinkTestHooks,
 } from "../src/test-hooks.ts";
 import { attachMirror, type MirrorSource } from "../../api/src/mirror.ts";
+import { WindowSource } from "../../api/src/window-source.ts";
 import { LifecycleLink } from "../../api/src/link.ts";
 import type { MessageOptions } from "../../api/src/dialog.generated.ts";
 import { MIRROR_FACT_MARKER, mirrorRetention } from "./mirror-retention.ts";
@@ -472,6 +473,43 @@ async function admissionObservedBeforeEnd(): Promise<void> {
   if (retained) retained();
   link.close();
   report("admission-after-local-close", link.callAdmissionOpen);
+}
+
+async function originalMirrorPark(): Promise<void> {
+  const { link } = await open({
+    receive: { eventChannels: [WINDOW_CHANNEL], callReceivers: [] },
+  });
+  let completed: () => void = () => undefined;
+  const dispatched = new Promise<void>((resolve) => {
+    completed = resolve;
+  });
+  let callbacks = 0;
+  let source!: WindowSource;
+  source = new WindowSource(
+    () => {},
+    true,
+    true,
+    (fact) => {
+      callbacks += 1;
+      report("original-pinch-exact", source.isDispatchingUnitPinch(fact));
+      completed();
+    },
+  );
+  attachMirror(link, source);
+  const reply = link.callBlocking(
+    ECHO_CHANNEL,
+    text("original-mirror-park"),
+    30_000,
+  );
+  const snapshot = source.get({ id: 7, incarnation: 300n });
+  report("original-park-reply", decoder.decode(reply));
+  report("original-view-at-return", snapshot?.webview ?? 0);
+  report("original-document-at-return", snapshot?.document?.generation ?? 0);
+  report("original-finished-at-return", snapshot?.document?.finished ?? false);
+  report("original-callbacks-at-return", callbacks);
+  await dispatched;
+  report("original-callbacks-after", callbacks);
+  link.close();
 }
 
 // Criteria 1, 2, 3 and 9: the #418 arm-B load during one park.
@@ -1974,6 +2012,7 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
   "wake-rule": wakeRule,
   "after-ring-release": afterRingRelease,
   "admission-observe": admissionObservedBeforeEnd,
+  "original-mirror-park": originalMirrorPark,
   "after-ring-failure": afterRingReleaseFailure,
   "after-ring-take-failure": afterRingTakeFailure,
   "after-ring-dispatch-failure": afterRingDispatchFailure,

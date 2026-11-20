@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:3825a529f71c7fbf7264766d0a1c4b5985869fd4c5f4326d991c5c7ce0dc586b
+// @keld/kipc-transport sha256:b3958a3683bafb6a5bdcac35a7ccac6681de75faeb1e0baa5e158166f7919fe7
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -415,6 +415,7 @@ const intrinsicMapSet = Map.prototype.set;
 const intrinsicMapDelete = Map.prototype.delete;
 const intrinsicMapClear = Map.prototype.clear;
 const intrinsicMapValues = Map.prototype.values;
+const intrinsicMapForEach = Map.prototype.forEach;
 const intrinsicMapNext = Object.getPrototypeOf(
   new IntrinsicMap().values(),
 ).next;
@@ -550,6 +551,13 @@ export const stateMapGet: <K, V>(
   Function.prototype.call,
   [intrinsicMapGet],
 );
+/** @internal Visit private source rows using one captured native iterator owner. */
+export const stateMapForEach: <K, V>(
+  map: ReadonlyMap<K, V>,
+  visit: (value: V) => void,
+) => void = intrinsicApply(Function.prototype.bind, Function.prototype.call, [
+  intrinsicMapForEach,
+]);
 /** @internal Native Source membership lookup. */
 export function stateMapHas<K, V>(map: Map<K, V>, key: K): boolean {
   return intrinsicApply(intrinsicMapHas, map, [key]);

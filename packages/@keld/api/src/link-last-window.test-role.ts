@@ -7,6 +7,7 @@ const appliers = new Map<number, (payload: Uint8Array) => void>();
 const listeners = new Map<number, (payload: Uint8Array) => void>();
 const worker = {
   stateFactCapacity: 16,
+  callAdmissionOpen: true,
   setStateApplier(channel: number, handler: (payload: Uint8Array) => void) {
     appliers.set(channel, handler);
   },
@@ -41,6 +42,15 @@ const session = await LifecycleLink.connect("controlled-link", {
     throw new Error("no unexpected link death");
   },
 });
+assert.equal(session.windowAdmissionOpen, true);
+worker.callAdmissionOpen = false;
+assert.equal(
+  session.windowAdmissionOpen,
+  false,
+  "transport death closes admission before onEnd",
+);
+worker.callAdmissionOpen = true;
+assert.equal(session.windowAdmissionOpen, true);
 const apply = (channel: number) => appliers.get(channel)?.(Uint8Array.of(1));
 const dispatch = (channel: number) =>
   listeners.get(channel)?.(Uint8Array.of(1));
