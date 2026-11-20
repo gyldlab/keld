@@ -1,0 +1,36 @@
+{
+  "electron": "44.4.5",
+  "earlyType": "browser",
+  "argv": [
+    "<electron-executable>",
+    "<fixture-directory>",
+    "gh569-alpha",
+    "gh569-beta"
+  ],
+  "userArgs": [
+    "gh569-alpha",
+    "gh569-beta"
+  ],
+  "facts": {
+    "defaultApp": {
+      "kind": "boolean",
+      "value": true
+    },
+    "mas": {
+      "kind": "undefined"
+    },
+    "windowsStore": {
+      "kind": "undefined"
+    },
+    "sandboxed": {
+      "kind": "undefined"
+    },
+    "contextIsolated": {
+      "kind": "undefined"
+    },
+    "resourcesPath": {
+      "kind": "string",
+      "value": "<resources-directory>"
+    }
+  }
+}
