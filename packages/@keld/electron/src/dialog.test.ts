@@ -96,13 +96,28 @@ test("dialog.show-message-box-sync exports the same method and refuses before Re
   const method = dialogMethod(electron, "showMessageBoxSync");
   expect(typeof method).toBe("function");
   expect(dialogMethod(electron.default, "showMessageBoxSync")).toBe(method);
-  const code =
-    process.platform === "win32" ? "KELD-CORE-040" : "KELD-NATIVE-010";
-  expect(() =>
-    Reflect.apply(method as Function, electron.dialog, [
-      { message: "Confirm" },
-    ]),
-  ).toThrow(code);
+  // Other test files may already have driven the singleton through Ready.
+  // Verify the pre-Ready behavior in a fresh realm instead of sharing it.
+  const child = spawnSync(
+    process.execPath,
+    [
+      "--eval",
+      `
+      import assert from "node:assert/strict";
+      import { dialog } from "./dialog.ts";
+      const code = process.platform === "win32" ? "KELD-CORE-040" : "KELD-NATIVE-010";
+      assert.throws(() => dialog.showMessageBoxSync({ message: "Confirm" }), error => error.code === code);
+    `,
+    ],
+    {
+      cwd: fileURLToPath(new URL(".", import.meta.url)),
+      encoding: "utf8",
+      timeout: 10_000,
+    },
+  );
+  expect(child.error).toBeUndefined();
+  expect(child.signal).toBeNull();
+  expect(child.status, child.stderr).toBe(0);
 });
 
 // Real parented Open returns a native selected path or canceled: true with an
