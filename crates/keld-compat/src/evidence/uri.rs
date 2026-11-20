@@ -86,14 +86,24 @@ pub(super) fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
 /// boundaries, dot navigation, or nested escapes to acquire another meaning.
 fn decoded_policy_path(host: &str, path: &str, original: &str) -> Result<String, EvidenceError> {
     let raw_segments: Vec<_> = path.split('/').collect();
-    let pinned_github_blob = host == "github.com"
-        && matches!(raw_segments.as_slice(), ["", owner, repo, "blob", pin, _, ..]
-            if !owner.is_empty() && !repo.is_empty() && is_git_object_id(pin));
+    // Only repository path segments after a literal commit pin can carry
+    // escaped punctuation. Return the original encoded URL, not this policy view.
+    let pinned_tail = match (host, raw_segments.as_slice()) {
+        ("github.com", ["", owner, repo, "blob", pin, _, ..])
+            if !owner.is_empty() && !repo.is_empty() && is_git_object_id(pin) =>
+        {
+            Some(5)
+        }
+        ("raw.githubusercontent.com", ["", owner, repo, pin, _, ..])
+            if !owner.is_empty() && !repo.is_empty() && is_git_object_id(pin) =>
+        {
+            Some(4)
+        }
+        _ => None,
+    };
     let mut segments = Vec::with_capacity(raw_segments.len());
     for (index, &segment) in raw_segments.iter().enumerate() {
-        // Only the terminal filename of a commit-pinned GitHub blob may carry
-        // these literals. The canonical URL remains encoded when returned.
-        let literal_filename = pinned_github_blob && index + 1 == raw_segments.len();
+        let literal_path = pinned_tail.is_some_and(|first| index >= first);
         let decoded = percent_encoding::percent_decode_str(segment)
             .decode_utf8()
             .map_err(|_| EvidenceError::NonNormativeEvidence {
@@ -120,7 +130,7 @@ fn decoded_policy_path(host: &str, path: &str, original: &str) -> Result<String,
             || decoded.bytes().any(|b| {
                 matches!(b, b'/' | b'\\')
                     || b.is_ascii_control()
-                    || (!literal_filename && matches!(b, b'%' | b'?' | b'#'))
+                    || (!literal_path && matches!(b, b'%' | b'?' | b'#'))
             })
         {
             return Err(EvidenceError::NonNormativeEvidence {
@@ -366,4 +376,38 @@ fn is_git_object_id(segment: &str) -> bool {
         && segment
             .bytes()
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Ipv4Addr, ipv4_is_non_public};
+
+    #[test]
+    fn ipv4_policy_classifies_special_use_and_public_unicast() {
+        for (octets, expected_non_public) in [
+            ([0, 1, 2, 3], true),         // This network
+            ([192, 0, 0, 8], true),       // IETF protocol assignments
+            ([192, 0, 0, 9], false),      // PCP anycast
+            ([192, 0, 0, 10], false),     // TURN anycast
+            ([192, 0, 0, 11], true),      // IETF protocol assignments
+            ([192, 0, 2, 1], true),       // TEST-NET-1
+            ([192, 88, 99, 1], true),     // Deprecated 6to4 relay anycast
+            ([198, 18, 0, 1], true),      // Benchmarking lower /16
+            ([198, 19, 255, 254], true),  // Benchmarking upper /16
+            ([198, 51, 100, 1], true),    // TEST-NET-2
+            ([203, 0, 113, 1], true),     // TEST-NET-3
+            ([224, 1, 2, 3], true),       // Multicast
+            ([239, 255, 0, 1], true),     // Multicast upper boundary
+            ([240, 1, 2, 3], true),       // Reserved
+            ([255, 255, 255, 255], true), // Limited broadcast
+            ([8, 8, 8, 8], false),        // Public unicast (classification only)
+        ] {
+            let address = Ipv4Addr::from(octets);
+            assert_eq!(
+                ipv4_is_non_public(address),
+                expected_non_public,
+                "{address}"
+            );
+        }
+    }
 }

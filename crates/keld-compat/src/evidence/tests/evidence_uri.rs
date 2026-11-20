@@ -238,15 +238,28 @@ fn returns_normalized_public_pinned_url() {
 }
 
 #[test]
-fn preserves_encoded_literals_in_a_pinned_github_filename() {
+fn preserves_encoded_literals_in_pinned_github_file_paths() {
     let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
     let original = format!("https://github.com/gyldlab/keld/commit/{sha}");
     let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denominator");
-    for filename in ["issue%23notes.md", "question%3Fnotes.md", "100%25ready.md"] {
-        let uri = format!("https://github.com/gyldlab/keld/blob/{sha}/docs/{filename}");
-        let json = valid_evidence_json().replace(&original, &uri);
-        let record = parse_evidence(json.as_bytes()).expect("literal filename remains a pin");
-        assert_eq!(record.evidence_uri(), uri);
-        score(&denom, &[record], AS_OF).expect("pinned filename is eligible for scoring");
+    for prefix in [
+        format!("https://github.com/gyldlab/keld/blob/{sha}"),
+        format!("https://raw.githubusercontent.com/gyldlab/keld/{sha}"),
+    ] {
+        for path in [
+            "docs/issue%23notes.md",
+            "docs/question%3Fnotes.md",
+            "docs/100%25ready.md",
+            "issue%23notes/question%3Fnotes/100%25ready/README.md",
+        ] {
+            let uri = format!("{prefix}/{path}");
+            let json = valid_evidence_json().replace(&original, &uri);
+            let record =
+                parse_evidence(json.as_bytes()).unwrap_or_else(|err| panic!("{uri}: {err}"));
+            assert_eq!(record.evidence_uri(), uri);
+            let mut constructed = parse_ok();
+            constructed.evidence_uri = uri;
+            score(&denom, &[constructed], AS_OF).expect("pinned path is eligible for scoring");
+        }
     }
 }
