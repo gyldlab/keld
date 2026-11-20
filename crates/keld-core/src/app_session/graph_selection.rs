@@ -7,8 +7,49 @@ use super::{HostAppError, target_error};
 pub(super) const MAX_COMPONENTS: usize = 64;
 pub(super) const MAX_PATH_BYTES: usize = 4_096;
 
+const PROTECTED_COMPONENTS: &[&str] = &[
+    ".git",
+    ".keld",
+    ".keld-work",
+    "node_modules",
+    "tests",
+    "__tests__",
+    "test-harness",
+    "private-evidence",
+    "keld.config.ts",
+    "keld.build.ts",
+    "keld.permissions.jsonc",
+    "keld.boot.json",
+    "keld.stage-graph.json",
+    ".npmrc",
+    ".netrc",
+    ".env",
+];
+
 fn graph_error(phase: &'static str, detail: impl std::fmt::Display) -> HostAppError {
     target_error("graph admission", format!("{phase}: {detail}"))
+}
+
+#[cfg(windows)]
+fn protected_component(name: &str) -> Result<bool, HostAppError> {
+    let compare = |candidate: &str| {
+        keld_guard::windows_package_components_equal(name, candidate)
+            .map_err(|error| graph_error("selected source", error))
+    };
+    for protected in PROTECTED_COMPONENTS {
+        if compare(protected)? {
+            return Ok(true);
+        }
+    }
+    if let Some((_, suffix)) = name.strip_prefix('.').and_then(|tail| tail.split_once('.')) {
+        return compare(&format!(".env.{suffix}"));
+    }
+    Ok(false)
+}
+
+#[cfg(not(windows))]
+fn protected_component(name: &str) -> bool {
+    PROTECTED_COMPONENTS.contains(&name) || name.starts_with(".env.")
 }
 
 /// Data selected by a closed application boot descriptor.
@@ -43,20 +84,19 @@ impl SelectedRendererSource {
         let entry = relative_path(entry)?;
         let preload_path = relative_path(preload_path)?;
         for path in [&root, &entry, &preload_path] {
-            if path.components().any(|component| {
-                matches!(component, Component::Normal(name) if {
-                    let name = name.to_string_lossy();
-                    matches!(name.as_ref(), ".git" | ".keld" | ".keld-work" | "node_modules"
-                        | "tests" | "__tests__" | "test-harness" | "private-evidence"
-                        | "keld.config.ts" | "keld.build.ts" | "keld.permissions.jsonc"
-                        | "keld.boot.json" | "keld.stage-graph.json" | ".npmrc" | ".netrc")
-                        || name == ".env" || name.starts_with(".env.")
-                })
-            }) {
-                return Err(graph_error(
-                    "selected source",
-                    "protected source or preload member",
-                ));
+            for component in path.components() {
+                if let Component::Normal(name) = component {
+                    #[cfg(windows)]
+                    let protected = protected_component(&name.to_string_lossy())?;
+                    #[cfg(not(windows))]
+                    let protected = protected_component(&name.to_string_lossy());
+                    if protected {
+                        return Err(graph_error(
+                            "selected source",
+                            "protected source or preload member",
+                        ));
+                    }
+                }
             }
         }
         // Validate the combined wire path with its canonical slash separator.
@@ -157,6 +197,41 @@ mod tests {
                 SelectedRendererSource::new(invalid, "editor.html", "runtime/preload.cjs", [7; 32])
                     .is_err(),
                 "{invalid}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn selected_source_rejects_windows_casefold_protected_component_aliases() {
+        // NTFS commonly resolves these spellings to protected source members.
+        // This is a lexical rejection test, not proof of physical admission.
+        let mut admitted = Vec::new();
+        for (root, entry, preload) in [
+            ("app/.GIT", "index.html", "runtime/preload.cjs"),
+            ("app", "NODE_MODULES/index.html", "runtime/preload.cjs"),
+            ("app", "index.html", "runtime/.ENV.PRODUCTION"),
+            ("app", "index.html", "runtime/KELD.BOOT.JSON"),
+            ("app", "__TESTS__/index.html", "runtime/preload.cjs"),
+            ("app", "index.html", "runtime/.KELD-WORK/preload.cjs"),
+        ] {
+            if SelectedRendererSource::new(root, entry, preload, [7; 32]).is_ok() {
+                admitted.push((root, entry, preload));
+            }
+        }
+        assert!(
+            admitted.is_empty(),
+            "protected Windows path aliases admitted: {admitted:?}"
+        );
+        for ordinary in [
+            "runtime/Settings.Production",
+            "runtime/.environment.production",
+            "runtime/.enviro.production",
+            "runtime/Editor.HTML",
+        ] {
+            assert!(
+                SelectedRendererSource::new("app", "index.html", ordinary, [7; 32]).is_ok(),
+                "ordinary Windows source refused: {ordinary}"
             );
         }
     }
