@@ -3,11 +3,11 @@
 #![allow(clippy::expect_used)] // Assertion-only integration fixture; callbacks contain unwinds.
 
 use std::cell::{Cell, RefCell};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HWND, LPARAM};
@@ -118,6 +118,89 @@ impl Probe {
 
 thread_local! {
     static PROBE: RefCell<Option<Rc<Probe>>> = const { RefCell::new(None) };
+    static PRE_DISPLAY_SCAN: RefCell<Option<PreDisplayScan>> = const { RefCell::new(None) };
+}
+
+struct PreDisplayScan {
+    parent: HWND,
+    panels: Vec<(isize, bool)>,
+}
+
+#[allow(unsafe_code)] // Read-only enumeration of the test's current STA windows.
+unsafe extern "system" fn scan_pre_display_window(hwnd: HWND, _: LPARAM) -> BOOL {
+    let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let parent = PRE_DISPLAY_SCAN
+            .try_with(|slot| {
+                slot.try_borrow()
+                    .ok()
+                    .and_then(|scan| scan.as_ref().map(|scan| scan.parent))
+            })
+            .ok()
+            .flatten();
+        let Some(parent) = parent else { return false };
+        // SAFETY: opaque current-thread HWND queries; never mutate a window.
+        // No TLS borrow is held across either User32 operation.
+        if unsafe { GetWindow(hwnd, GW_OWNER) }.ok() != Some(parent) {
+            return true;
+        }
+        // The parent can already own unrelated hidden windows before native
+        // entry. Match the fixture's actual TaskDialog class and exact title.
+        let mut class = [0_u16; 32];
+        let mut title = [0_u16; 128];
+        // SAFETY: these read-only queries use the freshly enumerated HWND and
+        // bounded, writable stack buffers on the owning fixture thread.
+        let class_len = unsafe { GetClassNameW(hwnd, &mut class) };
+        let title_len = unsafe { GetWindowTextW(hwnd, &mut title) };
+        let Ok(class_len) = usize::try_from(class_len) else {
+            return false;
+        };
+        let Ok(title_len) = usize::try_from(title_len) else {
+            return false;
+        };
+        if class_len > class.len()
+            || title_len > title.len()
+            || String::from_utf16_lossy(&class[..class_len]) != "#32770"
+            || String::from_utf16_lossy(&title[..title_len]) != "Keld dialog proof"
+        {
+            return true;
+        }
+        let visible = unsafe { IsWindowVisible(hwnd).as_bool() };
+        PRE_DISPLAY_SCAN
+            .try_with(|slot| {
+                let Ok(mut slot) = slot.try_borrow_mut() else {
+                    return false;
+                };
+                let Some(scan) = slot.as_mut() else {
+                    return false;
+                };
+                scan.panels.push((hwnd.0 as isize, visible));
+                true
+            })
+            .unwrap_or(false)
+    }));
+    BOOL(i32::from(observed.unwrap_or(false)))
+}
+
+#[allow(unsafe_code)] // Test-only enumeration of current STA, without raw context pointers.
+fn scan_pre_display(parent: isize) -> Result<Option<(isize, bool)>, ()> {
+    PRE_DISPLAY_SCAN.set(Some(PreDisplayScan {
+        parent: HWND(parent as *mut std::ffi::c_void),
+        panels: Vec::new(),
+    }));
+    // SAFETY: the callback is synchronous and accesses only this thread's TLS.
+    let enumerated = unsafe {
+        EnumThreadWindows(
+            GetCurrentThreadId(),
+            Some(scan_pre_display_window),
+            LPARAM(0),
+        )
+    }
+    .as_bool();
+    let scan = PRE_DISPLAY_SCAN.take().ok_or(())?;
+    if !enumerated || scan.panels.len() > 1 {
+        return Err(());
+    }
+    Ok(scan.panels.into_iter().next())
 }
 fn probe() -> Option<Rc<Probe>> {
     PROBE
@@ -507,6 +590,115 @@ fn run(
         observe.0.started.elapsed().as_millis()
     );
     result
+}
+
+#[test]
+#[ignore = "opens actual Windows native dialogs; run serially with desktop custody"]
+#[allow(unsafe_code)] // Only IsWindow on the exact current test-owned dialog HWND.
+fn message_cancel_after_entry_before_first_display() {
+    let parent = Parent::new();
+    let options = message(false);
+    let supervised =
+        std::env::var_os("KELD_B6_EXTERNAL_OBSERVER").is_some_and(|value| value == "1");
+    if supervised {
+        // SAFETY: querying the ID of this fixture's own current thread only.
+        let thread = unsafe { GetCurrentThreadId() };
+        println!(
+            "KELD_B6_READY {} {} {}",
+            std::process::id(),
+            thread,
+            parent.hwnd().0 as isize
+        );
+        std::io::stdout().flush().expect("flush observer handoff");
+        let mut gate = String::new();
+        std::io::stdin()
+            .read_line(&mut gate)
+            .expect("observer start handoff");
+        assert_eq!(
+            gate.trim(),
+            "go",
+            "observer must be active before native entry"
+        );
+    }
+
+    // Request cancellation only after the OS reports a unique dialog owned by
+    // this test parent. No assumption about predicate call count is required.
+    let hwnd = Arc::new(AtomicIsize::new(0));
+    let observed_visible = Arc::new(AtomicBool::new(false));
+    let scan_failed = Arc::new(AtomicBool::new(false));
+    let parent_raw = parent.hwnd().0 as isize;
+    let predicate = {
+        let hwnd = Arc::clone(&hwnd);
+        let observed_visible = Arc::clone(&observed_visible);
+        let scan_failed = Arc::clone(&scan_failed);
+        Arc::new(move || match scan_pre_display(parent_raw) {
+            Ok(None) => false,
+            Ok(Some((found, visible))) => {
+                hwnd.store(found, Ordering::SeqCst);
+                observed_visible.store(visible, Ordering::SeqCst);
+                true
+            }
+            Err(()) => {
+                scan_failed.store(true, Ordering::SeqCst);
+                true
+            }
+        })
+    };
+    let result = show(
+        parent_raw,
+        WindowsDialogOptions::Message(&options),
+        predicate,
+    )
+    .expect("native cancellation must complete");
+    assert!(result.is_none(), "cancellation is not a user button result");
+    assert!(
+        !scan_failed.load(Ordering::SeqCst),
+        "the OS window census must succeed"
+    );
+    let exact = hwnd.load(Ordering::SeqCst);
+    assert_ne!(exact, 0, "the callback observed exactly one owned dialog");
+    if supervised {
+        println!(
+            "KELD_B6_RESULT {} {}",
+            exact,
+            observed_visible.load(Ordering::SeqCst)
+        );
+        std::io::stdout()
+            .flush()
+            .expect("flush exact native result");
+        let mut gate = String::new();
+        std::io::stdin()
+            .read_line(&mut gate)
+            .expect("observer result handoff");
+        assert_eq!(
+            gate.trim(),
+            "continue",
+            "observer must inspect before handle reuse"
+        );
+    }
+    // SAFETY: read-only query on the exact dialog from this test's owned STA.
+    assert!(
+        !unsafe { IsWindow(Some(HWND(exact as *mut std::ffi::c_void))).as_bool() },
+        "dialog HWND must be physically destroyed"
+    );
+    assert!(
+        !observed_visible.load(Ordering::SeqCst),
+        "cancellation first observed only after the dialog became visible"
+    );
+    assert!(
+        matches!(
+            run(
+                &parent,
+                WindowsDialogOptions::Message(&options),
+                Action::MessageUntoggled { response: 2 }
+            ),
+            Some(DialogReplyV1::Message {
+                response: 2,
+                checkbox_checked: false
+            })
+        ),
+        "healthy real Message after cancellation"
+    );
 }
 
 #[test]

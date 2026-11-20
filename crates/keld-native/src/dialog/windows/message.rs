@@ -32,6 +32,7 @@ struct State {
     created: Cell<u32>,
     destroyed: Cell<u32>,
     clicked: Cell<Option<i32>>,
+    closing: Cell<bool>,
 }
 
 thread_local! {
@@ -213,6 +214,7 @@ pub(super) fn show(
         created: Cell::new(0),
         destroyed: Cell::new(0),
         clicked: Cell::new(None),
+        closing: Cell::new(false),
     });
     ACTIVE.set(Some(Rc::clone(&state)));
     let registration = Registration(Rc::clone(&state));
@@ -268,6 +270,33 @@ pub(super) fn show(
     }))
 }
 
+/// Keep a synchronous close from dispatching a second close during reentry.
+#[allow(unsafe_code)] // Existing TaskDialog callback HWND and TDM_CLICK_BUTTON allowance.
+fn request_cancel(window: HWND, state: &State) {
+    struct Reset<'a>(&'a Cell<bool>);
+    impl Drop for Reset<'_> {
+        fn drop(&mut self) {
+            self.0.set(false);
+        }
+    }
+    if state.closing.replace(true) {
+        return;
+    }
+    let _reset = Reset(&state.closing);
+    // SAFETY: the window is supplied to this exact current TaskDialog callback;
+    // its retained state owns the operation. The TLS lookup borrow has ended.
+    // TDM_CLICK_BUTTON(IDCANCEL) invokes the real native cancel path, whose
+    // button and destroy callbacks may synchronously reenter this function.
+    unsafe {
+        SendMessageW(
+            window,
+            TDM_CLICK_BUTTON.0 as u32,
+            Some(WPARAM(IDCANCEL.0 as usize)),
+            None,
+        );
+    }
+}
+
 #[allow(unsafe_code)] // Exact Windows dialog ABI in this directory's AGENTS.md.
 unsafe extern "system" fn callback(
     window: HWND,
@@ -289,7 +318,14 @@ unsafe extern "system" fn callback(
     let Some(state) = state else { return S_FALSE };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         match notification {
-            TDN_CREATED => state.created.set(state.created.get().saturating_add(1)),
+            TDN_CREATED => {
+                state.created.set(state.created.get().saturating_add(1));
+                // The OS sends this after creation but before display. A
+                // cancellation that already won must not wait for TDN_TIMER.
+                if state.cancel.check() {
+                    request_cancel(window, &state);
+                }
+            }
             TDN_DESTROYED => state.destroyed.set(state.destroyed.get().saturating_add(1)),
             TDN_BUTTON_CLICKED => {
                 let Ok(id) = i32::try_from(wparam.0) else {
@@ -303,17 +339,7 @@ unsafe extern "system" fn callback(
                 }
             }
             TDN_TIMER if state.cancel.check() => {
-                // SAFETY: TDN_TIMER supplies the currently live TaskDialog
-                // HWND; TDM_CLICK_BUTTON(IDCANCEL) closes via its real native
-                // callback under ALLOW_DIALOG_CANCELLATION. No synthetic result.
-                unsafe {
-                    SendMessageW(
-                        window,
-                        TDM_CLICK_BUTTON.0 as u32,
-                        Some(WPARAM(IDCANCEL.0 as usize)),
-                        None,
-                    );
-                }
+                request_cancel(window, &state);
             }
             _ => {}
         }
