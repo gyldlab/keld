@@ -302,14 +302,28 @@ python3 tools/gh1404_renderer_proposal/stage_production_source.py \
   --output-root /path/to/new/gh1404-g1-source-overlay
 git -C /path/to/pristine/drawio-source apply --check --whitespace=error \
   /path/to/new/gh1404-g1-source-overlay/gh1404-g1-production.patch
-python3 -B tools/gh1404_renderer_proposal/test_stage_production_source.py
+GH1404_PINNED_SOURCE_ROOT=/path/to/pristine/drawio-source \
+  python3 -B tools/gh1404_renderer_proposal/test_stage_production_source.py
 ```
 
 The overlay contains the two full corrected JavaScript files at their original
 application paths, the combined source patch and an input/output hash manifest.
 The tool refuses unexpected upstream digests, an already-existing output, and
 an output path inside any `.app` bundle, including a symlink alias to one.
-It does not mutate the source checkout, compile the renderer or install an app.
+It pins the existing destination ancestor through POSIX no-follow directory
+handles **before** the four source generators run. Missing intermediate parents
+and the final output directory are created relative to those handles; all
+subdirectories and files use directory-relative no-follow/exclusive operations.
+An output parent renamed and replaced by a symlink during source verification
+causes a refusal before output creation. A symlink substituted immediately
+after output or source-directory creation is also refused. If the pathname
+changes after opening the output directory, writes stay on the original
+directory handle and the final output is marked unqualified.
+This controls pathname substitution; a separately privileged process with
+authority to physically relocate an **already opened directory inode** into an
+application bundle is outside the source-staging tool's guarantees. Run only
+in an isolated task-owned staging folder. This tool does not modify its input
+checkout, compile the renderer or install an app.
 It does not carry the original application's `drawio/LICENSE` or other graph
 resources: the separately qualified original application build must preserve
 those source inputs and record their hashes before any installed test.
