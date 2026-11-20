@@ -80,12 +80,21 @@ if (mode === "observer-retires") {
 }
 const { app } = await import("../src/app.ts");
 const { captureOriginalWindowQuitScope } = await import("../../api/src/app.ts");
+const beforeAttack = mode?.startsWith("zero-before-") === true;
+const willAttack =
+  mode === "zero-will-overwrite" ||
+  mode?.startsWith("zero-will-global-") === true ||
+  mode?.startsWith("zero-will-reflect-") === true ||
+  mode?.startsWith("zero-will-slice-") === true ||
+  mode === "zero-will-getter-spoof";
 let before = 0;
 let willQuit = 0;
 let quitEvents = 0;
 const sequence: string[] = [];
 const beforeVetoEvents: Array<{ readonly defaultPrevented: boolean }> = [];
 const willVetoEvents: Array<{ readonly defaultPrevented: boolean }> = [];
+const beforeVetoPreFlags: boolean[] = [];
+const willVetoPreFlags: boolean[] = [];
 let nested: Promise<void> | undefined;
 app.on("before-quit", (event: unknown) => {
   before++;
@@ -93,10 +102,15 @@ app.on("before-quit", (event: unknown) => {
   nested = app.quit();
   if (mode === "veto") (event as { preventDefault(): void }).preventDefault();
 });
-if (mode === "zero-before-overwrite") {
+if (beforeAttack) {
   app.on("before-quit", (event: unknown) => {
     sequence.push("before-sabotage");
-    (event as { preventDefault(): void }).preventDefault = () => {};
+    if (mode === "zero-before-getter-spoof")
+      Object.defineProperty(event, "defaultPrevented", {
+        get: () => true,
+      });
+    else if (!mode?.includes("-reflect-") && !mode?.includes("-slice-"))
+      (event as { preventDefault(): void }).preventDefault = () => {};
   });
   app.on("before-quit", (event: unknown) => {
     sequence.push("before-veto");
@@ -104,14 +118,21 @@ if (mode === "zero-before-overwrite") {
       readonly defaultPrevented: boolean;
       preventDefault(): void;
     };
-    cancel.preventDefault();
+    const preVeto = cancel.defaultPrevented;
+    beforeVetoPreFlags.push(preVeto);
+    if (!preVeto) cancel.preventDefault();
     beforeVetoEvents.push(cancel);
   });
 }
-if (mode === "zero-will-overwrite") {
+if (willAttack) {
   app.on("will-quit", (event: unknown) => {
     sequence.push("will-sabotage");
-    (event as { preventDefault(): void }).preventDefault = () => {};
+    if (mode === "zero-will-getter-spoof")
+      Object.defineProperty(event, "defaultPrevented", {
+        get: () => true,
+      });
+    else if (!mode?.includes("-reflect-") && !mode?.includes("-slice-"))
+      (event as { preventDefault(): void }).preventDefault = () => {};
   });
 }
 if (mode?.startsWith("zero-will")) {
@@ -124,12 +145,14 @@ if (mode?.startsWith("zero-will")) {
     }
     if (mode === "zero-will-throw" && willQuit === 1)
       throw new Error("controlled will-quit listener failure");
-    if (mode === "zero-will-overwrite") {
+    if (willAttack) {
       const cancel = event as {
         readonly defaultPrevented: boolean;
         preventDefault(): void;
       };
-      cancel.preventDefault();
+      const preVeto = cancel.defaultPrevented;
+      willVetoPreFlags.push(preVeto);
+      if (!preVeto) cancel.preventDefault();
       willVetoEvents.push(cancel);
       return;
     }
@@ -144,6 +167,51 @@ if (mode?.startsWith("zero-will")) {
 const ready = app.whenReady();
 if (mode !== "pre-ready") await ready;
 assert.ok(handlers);
+if (mode?.startsWith("live-census-")) snapshot.document.current = false;
+// Poison one ordinary global at a time, only during the actual native intent.
+// Source imports already captured their framework intrinsics before this point.
+const dispatchWithPoison = (): unknown => {
+  const originalDefine = Object.defineProperty;
+  const originalApply = Reflect.apply;
+  const originalSlice = Array.prototype.slice;
+  const originalFilter = Array.prototype.filter;
+  const originalSome = Array.prototype.some;
+  try {
+    if (mode?.endsWith("-global-noop"))
+      Object.defineProperty = ((target: object) =>
+        target) as typeof Object.defineProperty;
+    if (mode?.endsWith("-global-throw"))
+      Object.defineProperty = (() => {
+        throw new Error("controlled global defineProperty replacement");
+      }) as typeof Object.defineProperty;
+    if (mode?.endsWith("-reflect-noop"))
+      Reflect.apply = (() => undefined) as typeof Reflect.apply;
+    if (mode?.endsWith("-reflect-throw"))
+      Reflect.apply = (() => {
+        throw new Error("controlled global Reflect.apply replacement");
+      }) as typeof Reflect.apply;
+    if (mode?.endsWith("-slice-noop"))
+      Array.prototype.slice = (() => []) as typeof Array.prototype.slice;
+    if (mode?.endsWith("-slice-throw"))
+      Array.prototype.slice = (() => {
+        throw new Error("controlled global Array.slice replacement");
+      }) as typeof Array.prototype.slice;
+    if (mode === "live-census-filter-only" || mode === "live-census-both")
+      Array.prototype.filter = (() => []) as typeof Array.prototype.filter;
+    if (mode === "live-census-some-only" || mode === "live-census-both")
+      Array.prototype.some = (() => false) as typeof Array.prototype.some;
+    handlers?.onQuitRequested?.(session as unknown as LifecycleLink);
+    return undefined;
+  } catch (error) {
+    return error;
+  } finally {
+    Object.defineProperty = originalDefine;
+    Reflect.apply = originalApply;
+    Array.prototype.slice = originalSlice;
+    Array.prototype.filter = originalFilter;
+    Array.prototype.some = originalSome;
+  }
+};
 if (mode?.startsWith("scope-")) {
   snapshot.pending_close = 1n;
   const scope = captureOriginalWindowQuitScope(window);
@@ -181,7 +249,9 @@ if (mode?.startsWith("scope-")) {
       new Error("KELD-IPC-004: controlled predecessor ended"),
     );
   const current = mode === "wrong-session" ? { ...session } : session;
-  handlers.onQuitRequested?.(current as unknown as LifecycleLink);
+  if (beforeAttack || willAttack || mode?.startsWith("live-census-"))
+    assert.equal(dispatchWithPoison(), undefined, "native Quit must not throw");
+  else handlers.onQuitRequested?.(current as unknown as LifecycleLink);
   if (
     [
       "missing-selection",
@@ -223,16 +293,27 @@ if (mode?.startsWith("scope-")) {
       1,
       "queued predecessor intent cannot run after terminal admission",
     );
-  } else if (mode === "zero-before-overwrite") {
+  } else if (mode?.startsWith("live-census-")) {
+    await assert.rejects(nested, /KELD-COMPAT-012/);
+    assert.equal(before, 1);
+    assert.equal(requests, 0);
+    assert.equal(
+      terminals,
+      0,
+      "a live unqualified native window must block Quit",
+    );
+  } else if (beforeAttack) {
     await nested;
     assert.equal(before, 1);
     assert.equal(beforeVetoEvents.length, 1);
+    assert.deepEqual(beforeVetoPreFlags, [false]);
     assert.equal(beforeVetoEvents[0]!.defaultPrevented, true);
     assert.equal(terminals, 0, "before-quit veto must retain the role");
-    handlers.onQuitRequested?.(session as unknown as LifecycleLink);
+    assert.equal(dispatchWithPoison(), undefined, "retry must not throw");
     await nested;
     assert.equal(before, 2);
     assert.equal(beforeVetoEvents.length, 2);
+    assert.deepEqual(beforeVetoPreFlags, [false, false]);
     assert.equal(beforeVetoEvents[1]!.defaultPrevented, true);
     assert.equal(terminals, 0, "repeated veto must retain the role");
     assert.deepEqual(sequence, [
@@ -243,19 +324,21 @@ if (mode?.startsWith("scope-")) {
       "before-sabotage",
       "before-veto",
     ]);
-  } else if (mode === "zero-will-overwrite") {
+  } else if (willAttack) {
     await nested;
     assert.equal(before, 1);
     assert.equal(willQuit, 1);
     assert.equal(willVetoEvents.length, 1);
+    assert.deepEqual(willVetoPreFlags, [false]);
     assert.equal(willVetoEvents[0]!.defaultPrevented, true);
     assert.equal(terminals, 0, "will-quit veto must retain the Host");
     assert.equal(quitEvents, 0);
-    handlers.onQuitRequested?.(session as unknown as LifecycleLink);
+    assert.equal(dispatchWithPoison(), undefined, "retry must not throw");
     await nested;
     assert.equal(before, 2);
     assert.equal(willQuit, 2);
     assert.equal(willVetoEvents.length, 2);
+    assert.deepEqual(willVetoPreFlags, [false, false]);
     assert.equal(willVetoEvents[1]!.defaultPrevented, true);
     assert.equal(terminals, 0, "repeated will-quit veto must retain the Host");
     assert.equal(quitEvents, 0);

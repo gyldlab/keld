@@ -19,6 +19,8 @@ import {
 import {
   nativeFacadeBootSelected,
   linkError,
+  stateApply,
+  stateDefineProperty,
   stateMap,
   stateMapDelete,
   stateMapGet,
@@ -47,10 +49,19 @@ let readyObservation: Promise<void> | undefined;
 function emit(event: string, ...args: unknown[]): boolean {
   const snapshot = stateMapGet(listeners, event);
   if (!snapshot) return false;
+  // Snapshot listener membership before user callbacks can add or remove it.
+  // Application code may replace Array.prototype.slice or Reflect.apply.
+  const callbacks: AppListener[] = [];
+  for (let index = 0; index < snapshot.length; index += 1)
+    callbacks[index] = snapshot[index]!;
   let listenerFailed = false;
-  for (const listener of snapshot.slice()) {
+  for (let index = 0; index < callbacks.length; index += 1) {
     try {
-      Reflect.apply(listener, undefined, args);
+      stateApply(
+        callbacks[index]! as (...args: unknown[]) => void,
+        undefined,
+        args,
+      );
     } catch {
       listenerFailed = true;
       // A user callback must not break lifecycle delivery.
@@ -70,10 +81,13 @@ function emitCancelable(eventName: string): boolean {
       prevented = true;
     },
   };
-  // Listeners may attach data, but cannot replace another listener's veto
-  // authority before it is called. A failed mutation also cancels Quit.
-  Object.defineProperty(event, "preventDefault", {
+  // A listener cannot replace the next listener's veto method or spoof the
+  // veto-state getter. Never use application-mutable global intrinsics here.
+  stateDefineProperty(event, "preventDefault", {
     writable: false,
+    configurable: false,
+  });
+  stateDefineProperty(event, "defaultPrevented", {
     configurable: false,
   });
   return emit(eventName, event) || prevented;
@@ -120,6 +134,19 @@ function hasListeners(event: string): boolean {
   return list !== undefined && list.length > 0;
 }
 
+/** Read the authenticated mirror without mutable Array prototype methods. */
+function liveWindowSnapshots() {
+  const snapshots = getWindowSnapshots();
+  const live: Array<(typeof snapshots)[number]> = [];
+  for (let index = 0; index < snapshots.length; index += 1) {
+    const window = snapshots[index];
+    if (!window)
+      throw new Error("KELD-COMPAT-012: native window census is incomplete");
+    if (!window.host_destroyed) live[live.length] = window;
+  }
+  return live;
+}
+
 function removeAppListener(event: string, listener: AppListener): void {
   const list = stateMapGet(listeners, event);
   if (!list) return;
@@ -152,7 +179,7 @@ function onLastWindowClosed(): void {
   if (nativeFacadeBootSelected) {
     if (!apiApp.isReady()) return;
     try {
-      if (getWindowSnapshots().some((window) => !window.host_destroyed)) return;
+      if (liveWindowSnapshots().length !== 0) return;
     } catch {
       return;
     }
@@ -262,9 +289,7 @@ function quit(): Promise<void> {
       );
     }
     try {
-      const live = getWindowSnapshots().filter(
-        (window) => !window.host_destroyed,
-      );
+      const live = liveWindowSnapshots();
       if (live.length === 1) {
         const scope = captureOriginalWindowQuitScope(live[0]!.window);
         if (scope) {
@@ -306,8 +331,7 @@ function quit(): Promise<void> {
     // The prior zero-window census is no authority to force-close that window.
     if (
       nativeFacadeBootSelected &&
-      (!apiApp.isReady() ||
-        getWindowSnapshots().some((window) => !window.host_destroyed))
+      (!apiApp.isReady() || liveWindowSnapshots().length !== 0)
     ) {
       return Promise.reject(
         new Error(

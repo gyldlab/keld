@@ -56,6 +56,9 @@ function setup() {
   });
   vm.runInContext(
     `
+// This VM runs the exact extracted handoff logic without module imports.
+// Native captured-intrinsic behavior is exercised by native_quit_requested.
+const stateDefineProperty = Object.defineProperty;
 let beforeCalls=0;
 function emit() { beforeCalls++; return false; }
 const trace=[], lateErrors=[];
