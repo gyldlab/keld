@@ -154,7 +154,7 @@ fn original_refusal_detail(error: keld_wv::NativeNavigationRefusal) -> &'static 
 pub(super) struct WindowSession {
     registry: WindowRegistry,
     native_supported: bool,
-    /// One Core-owned source shared read-only with the AppKit Quit callback.
+    /// One Core-owned source shared read-only with the `AppKit` Quit callback.
     #[cfg(target_os = "macos")]
     pub(super) native_quit_source_attempt: std::sync::Arc<AtomicU32>,
     /// Last actual Ready-published generation; global Ready survives recovery.
@@ -1023,6 +1023,33 @@ impl PrimaryRouterHandle {
             (_, result) => result,
         }
     }
+    #[cfg(target_os = "macos")]
+    fn arm_native_quit_on_window_subscribe(
+        &self,
+        caller: &PrimaryCallerContext,
+        channel: u16,
+    ) -> Result<(), HostAppError> {
+        // The real Ready and correlated Subscribe may arrive in either order.
+        // The last completing one arms the source while the writer lock is held.
+        if channel != keld_ipc::channel_table::WINDOW.wire_id() {
+            return Ok(());
+        }
+        let Some(windows) = &self.windows else {
+            return Ok(());
+        };
+        let session = windows
+            .lock()
+            .map_err(|_| app_detail("native Quit subscription", "registry lock poisoned"))?;
+        if session.native_quit_ready_attempt == caller.attempt
+            && session
+                .original_menu_quit_selected(WindowOwner::new(caller.identity, caller.attempt))
+        {
+            session
+                .native_quit_source_attempt
+                .store(caller.attempt, Ordering::Release);
+        }
+        Ok(())
+    }
     pub(super) fn subscribe_window(
         &self,
         caller: &PrimaryCallerContext,
@@ -1114,28 +1141,8 @@ impl PrimaryRouterHandle {
                 )
             })();
             #[cfg(target_os = "macos")]
-            let result = result.and_then(|()| {
-                // The real Ready and this correlated Subscribe may arrive in
-                // either order. The last completing one arms the same source.
-                if channel == keld_ipc::channel_table::WINDOW.wire_id()
-                    && let Some(windows) = &self.windows
-                {
-                    let session = windows.lock().map_err(|_| {
-                        app_detail("native Quit subscription", "registry lock poisoned")
-                    })?;
-                    if session.native_quit_ready_attempt == caller.attempt
-                        && session.original_menu_quit_selected(WindowOwner::new(
-                            caller.identity,
-                            caller.attempt,
-                        ))
-                    {
-                        session
-                            .native_quit_source_attempt
-                            .store(caller.attempt, Ordering::Release);
-                    }
-                }
-                Ok(())
-            });
+            let result =
+                result.and_then(|()| self.arm_native_quit_on_window_subscribe(caller, channel));
             self.finish_window_write(current, failed, result)
         });
         if let Some(attempt) = failed {

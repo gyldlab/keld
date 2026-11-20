@@ -645,8 +645,10 @@ impl WkWebViewEngine {
             commands,
             events,
             None,
-            Arc::new(AtomicU32::new(0)),
-            AppReadyTrigger::NavigationReady,
+            (
+                Arc::new(AtomicU32::new(0)),
+                AppReadyTrigger::NavigationReady,
+            ),
             &mut |_, _, _, _, _| Ok((true, None)),
             (&mut unproved, || {}),
         )
@@ -655,6 +657,8 @@ impl WkWebViewEngine {
     /// Runs the same application loop with a main-owned native presentation service.
     ///
     /// `anchor` is the host-created view, never a caller-supplied selector.
+    /// `native_quit_startup` pairs Core's selected generation with the Ready
+    /// trigger; neither field is supplied by a renderer or an application.
     /// The resolver returns its actual `AppKit` window through wry's safe accessor.
     /// `service` receives the main-thread marker, the legacy Auth anchor,
     /// an explicit `WebviewId` resolver for Host-validated dialog parents,
@@ -683,8 +687,7 @@ impl WkWebViewEngine {
         commands: Receiver<AppWindowCommand>,
         events: Sender<AppWindowEvent>,
         anchor: Option<WebviewId>,
-        native_quit_source_attempt: Arc<AtomicU32>,
-        ready_trigger: AppReadyTrigger,
+        native_quit_startup: (Arc<AtomicU32>, AppReadyTrigger),
         service: &mut F,
         // Keep the main-custody result paired with the loop-entry clock handoff.
         // Neither moves its underlying AppKit/profile owner to another thread.
@@ -699,6 +702,7 @@ impl WkWebViewEngine {
             bool,
         ) -> Result<(bool, Option<Instant>), WvError>,
     {
+        let (native_quit_source_attempt, ready_trigger) = native_quit_startup;
         let (retains_main_custody, on_loop_entry) = startup;
         *retains_main_custody = false;
         let Some(main_thread) = MainThreadMarker::new() else {

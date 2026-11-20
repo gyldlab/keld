@@ -318,7 +318,7 @@ pub enum AppWindowEvent {
     /// owner. This is not a terminal decision or permission to close a window.
     #[cfg(target_os = "macos")]
     NativeQuitRequested {
-        /// Core-minted original generation captured synchronously by AppKit.
+        /// Core-minted original generation captured synchronously by `AppKit`.
         /// A retired or zero attempt grants no native or lifecycle authority.
         source_attempt: u32,
     },

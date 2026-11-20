@@ -2976,8 +2976,7 @@ fn run_app(
         window_commands_rx,
         window_events_tx,
         primary_view,
-        presentation_router.native_os_quit_source()?,
-        ready_trigger,
+        (presentation_router.native_os_quit_source()?, ready_trigger),
         &mut |main_thread, anchor, dialog_parent, request_close, stopping| {
             if let Err(error) = presentation_router.window_main_owner_stopping(stopping) {
                 let detail = error.to_string();
