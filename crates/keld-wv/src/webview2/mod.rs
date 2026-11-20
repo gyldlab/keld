@@ -4371,9 +4371,6 @@ impl WebView2Engine {
             ) {
                 exiting_with_candidate = managed.retains_native_app_run();
                 *control_flow = ControlFlow::Exit;
-                if exiting_with_candidate {
-                    return;
-                }
             } else {
                 release_in_loop.schedule(control_flow);
                 managed.schedule(control_flow,
@@ -4391,10 +4388,12 @@ impl WebView2Engine {
             // U7's independent wake is posted once, after the actual exit
             // decision, and never consumes/publishes in this callback.
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-            if let Err(error) = managed.post_deferred_destroyed(
-                terminal_has_run,
-                release_in_loop.fault().is_some() || release_in_loop.exit_ready(),
-            ) {
+            if !exiting_with_candidate
+                && let Err(error) = managed.post_deferred_destroyed(
+                    terminal_has_run,
+                    release_in_loop.fault().is_some() || release_in_loop.exit_ready(),
+                )
+            {
                 eprintln!("KELD_WV_DEFERRED_DESTROYED_FAILED {error}");
                 fatal_in_loop.store(true, Ordering::Release);
                 stop_app_views(&mut views, &mut managed, stop_in_loop.as_ref(),
