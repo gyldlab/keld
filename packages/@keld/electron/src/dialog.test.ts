@@ -104,9 +104,21 @@ test("dialog.show-message-box-sync exports the same method and refuses before Re
       "--eval",
       `
       import assert from "node:assert/strict";
-      import { dialog } from "./dialog.ts";
+      import { LifecycleLink, parseAppLink } from "../../api/src/link.ts";
+      let connections = 0;
+      LifecycleLink.connect = () => { connections++; throw new Error("unexpected connection"); };
+      const slash = String.fromCharCode(92);
+      const endpoint = process.platform === "win32"
+        ? slash + slash + "." + slash + "pipe" + slash + "keld-" + "ab".repeat(32)
+        : "/tmp/keld-b6-test";
+      process.env.KELD_APP_LINK = endpoint + "#" + "a".repeat(64);
+      assert.doesNotThrow(() => parseAppLink(process.env.KELD_APP_LINK));
+      const publicEntry = await import("./index.ts");
+      const dialog = publicEntry.dialog;
+      assert.strictEqual(publicEntry.default.dialog, dialog);
       const code = process.platform === "win32" ? "KELD-CORE-040" : "KELD-NATIVE-010";
       assert.throws(() => dialog.showMessageBoxSync({ message: "Confirm" }), error => error.code === code);
+      assert.equal(connections, 0);
     `,
     ],
     {
