@@ -12,16 +12,17 @@ use std::num::NonZeroU64;
 fn committed(
     owner: &mut NativeDocumentOwner,
     source: VerifiedSourceId,
-) -> CheckedNativeDocumentLease {
-    let attempt = owner.begin_host_load(source).expect("modeled Host attempt");
+) -> Result<CheckedNativeDocumentLease, String> {
+    let attempt = owner
+        .begin_host_load(source)
+        .map_err(|error| format!("modeled Host attempt: {error:?}"))?;
+    let native_id = NonZeroU64::new(17).ok_or("nonzero modeled native identity")?;
     let stamp = owner
-        .commit_admitted(
-            attempt,
-            source,
-            NativeCommitIdentity(NonZeroU64::new(17).expect("nonzero modeled native identity")),
-        )
-        .expect("modeled native commit");
-    CheckedNativeDocumentLease(owner.lease_for(stamp).expect("existing owner lease"))
+        .commit_admitted(attempt, source, NativeCommitIdentity(native_id))
+        .map_err(|error| format!("modeled native commit: {error:?}"))?;
+    Ok(CheckedNativeDocumentLease(
+        owner.lease_for(stamp).ok_or("existing owner lease")?,
+    ))
 }
 
 #[test]
@@ -30,12 +31,12 @@ fn admission_rechecks_living_owner_exact_lease_and_retained_source() {
     let source = fixture.source_arc();
     let mut owner = NativeDocumentOwner::new(WebviewId(7));
     owner.bind_source(&source).expect("real source binding");
-    let lease = committed(&mut owner, source.source_id());
+    let lease = committed(&mut owner, source.source_id()).expect("committed fixture");
     let mut foreign = NativeDocumentOwner::new(WebviewId(7));
     foreign
         .bind_source(&source)
         .expect("same source, other owner");
-    let other = committed(&mut foreign, source.source_id());
+    let other = committed(&mut foreign, source.source_id()).expect("committed fixture");
     assert_eq!(
         lease.stamp(),
         other.stamp(),
@@ -48,7 +49,7 @@ fn admission_rechecks_living_owner_exact_lease_and_retained_source() {
     assert_eq!(event.id(), 9);
     assert!(event.lease().same_binding(&lease));
     let mut unbound = NativeDocumentOwner::new(WebviewId(7));
-    let unbound_lease = committed(&mut unbound, source.source_id());
+    let unbound_lease = committed(&mut unbound, source.source_id()).expect("committed fixture");
     assert!(PendingOriginalEvent::begin(&unbound, 9, unbound_lease, "original".into()).is_err());
     owner.destroy();
     assert!(!lease.is_current());
@@ -61,7 +62,7 @@ fn consumer_receipt_matches_original_once_even_after_revocation() {
     let source = fixture.source_arc();
     let mut owner = NativeDocumentOwner::new(WebviewId(7));
     owner.bind_source(&source).unwrap();
-    let lease = committed(&mut owner, source.source_id());
+    let lease = committed(&mut owner, source.source_id()).expect("committed fixture");
     let mut event = PendingOriginalEvent::begin(&owner, 9, lease, "original".into()).unwrap();
     assert!(event.consumed_handed_off().is_err());
     assert!(
@@ -103,10 +104,10 @@ fn native_receipt_requires_original_id_and_irreversible_lease() {
     let source = fixture.source_arc();
     let mut owner = NativeDocumentOwner::new(WebviewId(7));
     owner.bind_source(&source).unwrap();
-    let lease = committed(&mut owner, source.source_id());
+    let lease = committed(&mut owner, source.source_id()).expect("committed fixture");
     let mut foreign = NativeDocumentOwner::new(WebviewId(7));
     foreign.bind_source(&source).unwrap();
-    let other = committed(&mut foreign, source.source_id());
+    let other = committed(&mut foreign, source.source_id()).expect("committed fixture");
     assert_eq!(lease.stamp(), other.stamp());
     let mut event =
         PendingOriginalEvent::begin(&owner, 9, lease.clone(), "original".into()).unwrap();
@@ -137,7 +138,7 @@ fn core_release_requires_exact_generation_id_and_handed_off_native_completion() 
     let source = fixture.source_arc();
     let mut owner = NativeDocumentOwner::new(WebviewId(7));
     owner.bind_source(&source).unwrap();
-    let lease = committed(&mut owner, source.source_id());
+    let lease = committed(&mut owner, source.source_id()).expect("committed fixture");
     let navigation = u64::from(lease.stamp().observed_generation());
     let mut event =
         PendingOriginalEvent::begin(&owner, 9, lease.clone(), "original".into()).unwrap();
@@ -171,7 +172,7 @@ fn live_native_completion_does_not_manufacture_consumer_or_core_release() {
     let source = fixture.source_arc();
     let mut owner = NativeDocumentOwner::new(WebviewId(7));
     owner.bind_source(&source).unwrap();
-    let lease = committed(&mut owner, source.source_id());
+    let lease = committed(&mut owner, source.source_id()).expect("committed fixture");
     let mut event =
         PendingOriginalEvent::begin(&owner, 9, lease.clone(), "original".into()).unwrap();
     assert!(event.observe_native_quiescence(9, &lease, true));
@@ -199,7 +200,7 @@ fn windows_event_cleanup_keeps_original_stopped_role() {
     let source = fixture.source_arc();
     let mut owner = NativeDocumentOwner::new(WebviewId(7));
     owner.bind_source(&source).unwrap();
-    let lease = committed(&mut owner, source.source_id());
+    let lease = committed(&mut owner, source.source_id()).expect("committed fixture");
     let stop = Arc::new(AtomicBool::new(false));
     let role = RendererRoleWitness::new(Arc::clone(&stop));
     let event = PendingOriginalEvent::begin_windows(

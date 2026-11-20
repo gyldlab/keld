@@ -270,6 +270,6 @@ fn terminal_intent_at_native_return_blocks_both_init_publications() {
         calls > 0
     }));
     assert_eq!(calls(), 1);
-    assert!(values(&rx).is_empty());
+    assert_eq!(values(&rx), []);
     assert!(!session.initialized);
 }
