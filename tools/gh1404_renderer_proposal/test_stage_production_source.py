@@ -228,12 +228,12 @@ class ProductionStageDestinationTests(unittest.TestCase):
         original_write = stage.write_overlay
         changes = 0
 
-        def write_after_swap(*args: object, **kwargs: object) -> None:
+        def write_after_swap(*args: object, **kwargs: object) -> object:
             nonlocal changes
             changes += 1
             parent.rename(parked)
             parent.symlink_to(bundle, target_is_directory=True)
-            original_write(*args, **kwargs)
+            return original_write(*args, **kwargs)
 
         with mock.patch.object(stage, "write_overlay", side_effect=write_after_swap), \
                 mock.patch.object(stage.subprocess, "run",
@@ -252,6 +252,112 @@ class ProductionStageDestinationTests(unittest.TestCase):
         self.assertEqual(list(bundle.iterdir()), [], "pinned output descriptor was redirected")
         self.assertTrue((parked / "new-overlay" / "source-manifest.json").is_file(),
                         "write must stay anchored to the original directory inode")
+
+    def _publication_rebind_control(self, *, nested_directory: bool) -> None:
+        # Run the actual pinned generator pair. Only the newly staged output
+        # namespace is hostile; the source checkout is untouched.
+        source = self._sources(pinned=True)
+        output = self.root / "source-overlay"
+        bundle = self.root / "disposable.app" / "Contents" / "Resources"
+        bundle.mkdir(parents=True)
+        original_create = stage.create_directory
+        original_write = stage.write_new_file
+        swaps = 0
+
+        def swap_dir_after_open(parent_fd: int, name: str, stack: object) -> int:
+            nonlocal swaps
+            opened = original_create(parent_fd, name, stack)
+            if nested_directory and name == "src" and swaps == 0:
+                os.rename(name, "parked-src", src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+                os.symlink(bundle, name, dir_fd=parent_fd)
+                swaps += 1
+            return opened
+
+        def swap_file_after_write(
+            parent_fd: int, name: str, data: bytes
+        ) -> tuple[int, int, int, str]:
+            nonlocal swaps
+            receipt = original_write(parent_fd, name, data)
+            if not nested_directory and name == "mxSvgCanvas2D.js" and swaps == 0:
+                os.rename(name, "parked-mxSvgCanvas2D.js",
+                          src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+                os.symlink(bundle / "missing.js", name, dir_fd=parent_fd)
+                swaps += 1
+            return receipt
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch.object(stage, "create_directory", side_effect=swap_dir_after_open), \
+                mock.patch.object(stage, "write_new_file", side_effect=swap_file_after_write), \
+                mock.patch.object(sys, "argv",
+                                  [str(SCRIPT), "--source-root", str(source),
+                                   "--output-root", str(output)]), \
+                redirect_stdout(stdout), redirect_stderr(stderr):
+            try:
+                stage.main()
+            except SystemExit as failure:
+                exit_code = failure.code
+            else:
+                exit_code = 0
+
+        self.assertEqual(swaps, 1, "the requested exact name swap was not injected")
+        self.assertEqual(exit_code, 2,
+                         "rebound published path was falsely accepted: " + stdout.getvalue())
+        self.assertEqual(stdout.getvalue(), "", "a rejected overlay must not print success JSON")
+        self.assertIn("destination", stderr.getvalue())
+        self.assertEqual(list(bundle.iterdir()), [], "staging changed a disposable app bundle")
+
+    def test_pinned_source_nested_dir_rebound_after_open_fails_publication(self) -> None:
+        self._publication_rebind_control(nested_directory=True)
+
+    def test_pinned_source_file_rebound_after_write_fails_publication(self) -> None:
+        self._publication_rebind_control(nested_directory=False)
+
+    def _publication_file_content_control(self, *, same_bytes_new_inode: bool) -> None:
+        source = self._sources(pinned=True)
+        output = self.root / "source-overlay"
+        original_write = stage.write_new_file
+        changes = 0
+
+        def modify_written_file(
+            parent_fd: int, name: str, data: bytes
+        ) -> tuple[int, int, int, str]:
+            nonlocal changes
+            receipt = original_write(parent_fd, name, data)
+            if name == "mxSvgCanvas2D.js" and changes == 0:
+                if same_bytes_new_inode:
+                    os.rename(name, "parked-mxSvgCanvas2D.js",
+                              src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+                    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                                 os.O_NOFOLLOW, 0o600, dir_fd=parent_fd)
+                    with os.fdopen(fd, "wb") as target:
+                        target.write(data)
+                else:
+                    fd = os.open(name, os.O_WRONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                    with os.fdopen(fd, "wb") as target:
+                        target.write(b"!")
+                changes += 1
+            return receipt
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(stage, "write_new_file", side_effect=modify_written_file), \
+                mock.patch.object(sys, "argv",
+                                  [str(SCRIPT), "--source-root", str(source),
+                                   "--output-root", str(output)]), \
+                redirect_stdout(stdout), redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as rejected:
+                stage.main()
+
+        self.assertEqual(changes, 1)
+        self.assertEqual(rejected.exception.code, 2)
+        self.assertEqual(stdout.getvalue(), "", "corrupt overlay cannot print success")
+        self.assertIn("destination", stderr.getvalue())
+
+    def test_pinned_source_in_place_byte_change_refuses_publication(self) -> None:
+        self._publication_file_content_control(same_bytes_new_inode=False)
+
+    def test_pinned_source_same_bytes_different_inode_refuses_publication(self) -> None:
+        self._publication_file_content_control(same_bytes_new_inode=True)
 
 
 if __name__ == "__main__":

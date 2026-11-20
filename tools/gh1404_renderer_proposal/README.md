@@ -319,10 +319,18 @@ causes a refusal before output creation. A symlink substituted immediately
 after output or source-directory creation is also refused. If the pathname
 changes after opening the output directory, writes stay on the original
 directory handle and the final output is marked unqualified.
-This controls pathname substitution; a separately privileged process with
-authority to physically relocate an **already opened directory inode** into an
-application bundle is outside the source-staging tool's guarantees. Run only
-in an isolated task-owned staging folder. This tool does not modify its input
+Before printing success, the tool reopens every advertised nested directory
+and output file using no-follow directory handles. It requires each name to
+retain its captured device/inode identity and every file to match its original
+length and SHA-256. A name rebound after source writing therefore refuses the
+overlay even when all writes remained within the original directory handles.
+These checks are point-in-time evidence: a separate process running under the
+**same UID** with write permission can still mutate paths after verification,
+or physically move an already-open directory inode into an application bundle.
+The latter could put staged bytes inside the bundle before the CLI refuses;
+the staging tool does not provide containment against that actor. Only run it
+in an isolated task-owned staging folder, and require new source/build-owner
+verification at the consumption boundary. It does not modify its input
 checkout, compile the renderer or install an app.
 It does not carry the original application's `drawio/LICENSE` or other graph
 resources: the separately qualified original application build must preserve

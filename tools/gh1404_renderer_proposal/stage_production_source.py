@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 
@@ -83,18 +84,23 @@ def create_directory(parent_fd: int, name: str, stack: ExitStack) -> int:
     return child
 
 
-def write_new_file(parent_fd: int, name: str, data: bytes) -> None:
+def write_new_file(parent_fd: int, name: str, data: bytes) -> tuple[int, int, int, str]:
     """O_EXCL and O_NOFOLLOW refuse replacement names instead of following them."""
     flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW |
              getattr(os, "O_CLOEXEC", 0))
     fd = os.open(name, flags, 0o600, dir_fd=parent_fd)
     with os.fdopen(fd, "wb") as stream:
         stream.write(data)
+        identity = os.fstat(stream.fileno())
+    return identity.st_dev, identity.st_ino, len(data), sha256(data)
 
 
-def write_overlay(root_fd: int, files: list[tuple[str, bytes]], stack: ExitStack) -> None:
-    """Retain every created subdirectory handle for all later source writes."""
+def write_overlay(
+    root_fd: int, files: list[tuple[str, bytes]], stack: ExitStack
+) -> tuple[dict[tuple[str, ...], int], dict[tuple[str, ...], tuple[int, int, int, str]]]:
+    """Retain created directories and their file identities until verification."""
     dirs = {(): root_fd}
+    written = {}
     for relative_path, data in files:
         parts = Path(relative_path).parts
         if (not parts or Path(relative_path).is_absolute() or
@@ -105,7 +111,46 @@ def write_overlay(root_fd: int, files: list[tuple[str, bytes]], stack: ExitStack
             key = parts[:depth]
             if key not in dirs:
                 dirs[key] = create_directory(dirs[key[:-1]], parts[depth - 1], stack)
-        write_new_file(dirs[parts[:-1]], parts[-1], data)
+        written[parts] = write_new_file(dirs[parts[:-1]], parts[-1], data)
+    return dirs, written
+
+
+def verify_published_overlay(
+    root_fd: int,
+    dirs: dict[tuple[str, ...], int],
+    files: dict[tuple[str, ...], tuple[int, int, int, str]],
+    stack: ExitStack,
+) -> None:
+    """Reopen each advertised path without following symlinks before success.
+
+    This checks the current named paths, independent of handles used to write.
+    A later namespace mutation still requires build-owner custody at consume time.
+    """
+    verified = {(): root_fd}
+    for key, pinned in dirs.items():
+        if not key:
+            continue
+        fd = os.open(key[-1], directory_flags(), dir_fd=verified[key[:-1]])
+        stack.callback(os.close, fd)
+        observed, expected = os.fstat(fd), os.fstat(pinned)
+        if (observed.st_dev, observed.st_ino) != (expected.st_dev, expected.st_ino):
+            raise RuntimeError(f"destination published directory changed: {'/'.join(key)}")
+        verified[key] = fd
+    for parts, (device, inode, size, digest) in files.items():
+        name = parts[-1]
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW |
+                     getattr(os, "O_CLOEXEC", 0), dir_fd=verified[parts[:-1]])
+        with os.fdopen(fd, "rb") as source:
+            observed = os.fstat(source.fileno())
+            if (not stat.S_ISREG(observed.st_mode) or
+                    (observed.st_dev, observed.st_ino, observed.st_size) !=
+                    (device, inode, size)):
+                raise RuntimeError(f"destination published file changed: {'/'.join(parts)}")
+            hasher = hashlib.sha256()
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                hasher.update(chunk)
+            if hasher.hexdigest() != digest:
+                raise RuntimeError(f"destination published content changed: {'/'.join(parts)}")
 
 
 def main() -> None:
@@ -196,9 +241,10 @@ def main() -> None:
         content.append(("gh1404-g1-production.patch", patch))
         content.append(("source-manifest.json", (json.dumps(manifest, indent=2) + "\n").encode()))
         try:
-            write_overlay(output_fd, content, stack)
-        except OSError as error:
-            parser.error(f"destination changed or unsafe during source write: {error}")
+            dirs, records = write_overlay(output_fd, content, stack)
+            verify_published_overlay(output_fd, dirs, records, stack)
+        except (OSError, RuntimeError) as error:
+            parser.error(f"destination changed or unsafe during source publication: {error}")
         if not same_directory_at_path(output_root, output_fd):
             parser.error("destination changed after source staging; output is unqualified")
         print(json.dumps(manifest, indent=2))
