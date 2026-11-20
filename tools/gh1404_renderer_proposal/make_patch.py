@@ -171,6 +171,15 @@ HTML_ANCHOR = """mxSvgCanvas2D.prototype.updateTextNodes = function(x, y, w, h, 
 {
 	var s = this.state.scale;
 """
+UPDATE_TEXT_ANCHOR = """		if (node.firstChild.firstChild != null && node.firstChild.firstChild.nodeName == 'foreignObject')"""
+UPDATE_TEXT_REPLACEMENT = """		// addForeignObject uses addTitle, so an existing HTML label
+		// can begin with <title> followed by <foreignObject>.
+		var firstTextChild = node.firstChild.firstChild;
+		if (firstTextChild != null && firstTextChild.nodeName == 'title')
+		{
+			firstTextChild = firstTextChild.nextSibling;
+		}
+		if (firstTextChild != null && firstTextChild.nodeName == 'foreignObject')"""
 HTML_REPLACEMENT = """mxSvgCanvas2D.prototype.updateTextNodes = function(x, y, w, h, align, valign, wrap, overflow, clip, rotation, dir, g)
 {
 	rotation = (rotation != null) ? rotation : 0;
@@ -359,6 +368,14 @@ def main() -> None:
             parser.error(f"HTML text renderer region changed: {before}")
         html_owner = html_owner.replace(before, after, 1)
     candidate = candidate[:begin_html] + html_owner + candidate[end_html:]
+    begin_update = candidate.index("mxSvgCanvas2D.prototype.updateText = function(")
+    end_update = candidate.index("\n};", begin_update)
+    update_owner = candidate[begin_update:end_update]
+    if update_owner.count(UPDATE_TEXT_ANCHOR) != 1:
+        parser.error("HTML text update dispatch changed from pinned source")
+    candidate = (candidate[:begin_update] +
+                 update_owner.replace(UPDATE_TEXT_ANCHOR, UPDATE_TEXT_REPLACEMENT, 1) +
+                 candidate[end_update:])
     candidate = candidate.replace(ANCHOR, REPLACEMENT, 1)
     # Constrain the valid-update change to plainText, not other SVG call sites.
     begin = candidate.index("mxSvgCanvas2D.prototype.plainText = function(")

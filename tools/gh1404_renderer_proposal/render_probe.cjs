@@ -91,9 +91,10 @@ function compileHtmlText(source) {
   const compile = new Function('mxSvgCanvas2D', 'mxConstants', 'mxUtils',
     optionalNumericHelper(source) + '\n' +
     extractFunction(source, 'mxSvgCanvas2D.createCss = function(') + '\n' +
+    extractFunction(source, 'mxSvgCanvas2D.prototype.updateText = function(') + '\n' +
     extractFunction(source, 'mxSvgCanvas2D.prototype.updateTextNodes = function(') +
     '\n' + extractFunction(source, 'mxSvgCanvas2D.prototype.getTextCss = function(') +
-    '\nreturn [mxSvgCanvas2D.prototype.updateTextNodes, ' +
+    '\nreturn [mxSvgCanvas2D.prototype.updateText, mxSvgCanvas2D.prototype.updateTextNodes, ' +
     'mxSvgCanvas2D.prototype.getTextCss];');
   function Canvas() {}
   const constants = {
@@ -103,7 +104,7 @@ function compileHtmlText(source) {
     FONT_BOLD: 1, FONT_ITALIC: 2, FONT_UNDERLINE: 4,
     FONT_STRIKETHROUGH: 8, FONT_UNDERLINE_DOTTED: 16,
   };
-  const [updateTextNodes, getTextCss] = compile(Canvas, constants, {
+  const [updateText, updateTextNodes, getTextCss] = compile(Canvas, constants, {
     bind: (self, fn) => fn.bind(self),
     htmlEntities: (value) => String(value),
     parseCssFontFamily: (family) => family,
@@ -112,7 +113,7 @@ function compileHtmlText(source) {
       y: valign === 'middle' ? -0.5 : valign === 'bottom' ? -1 : 0,
     }),
   });
-  return { updateTextNodes, getTextCss, constants };
+  return { updateText, updateTextNodes, getTextCss, constants };
 }
 
 function htmlWith(updateTextNodes, content = 'VISIBLE-HTML') {
@@ -143,6 +144,7 @@ function htmlWith(updateTextNodes, content = 'VISIBLE-HTML') {
     getLightDarkColor: () => ({ light: '#000000', cssText: '#000000' }),
     getTextCss: htmlTextCss,
     updateTextNodes,
+    updateText: htmlUpdateText,
   };
   return { canvas, svg, group, fo, div, box, text, doc };
 }
@@ -200,6 +202,7 @@ if (baseline) {
 }
 const plainText = compilePlainText(source);
 const {
+  updateText: htmlUpdateText,
   updateTextNodes: htmlText,
   getTextCss: htmlTextCss,
   constants: htmlConstants,
@@ -411,6 +414,46 @@ const cases = [
     assert.notEqual(fo.getAttribute('height'), null);
     assert.match(div.style.cssText, /padding-top: 120px;/);
     assert.match(div.style.cssText, /margin-left: 120px;/);
+  }],
+  ['title-first foreignObject geometry update dispatches to HTML and preserves rotation', () => {
+    const { canvas, group, fo, doc, text } = htmlWith(htmlText, 'TITLED-HTML');
+    const title = doc.createElement('title');
+    title.textContent = 'OWNED-TITLE';
+    group.removeChild(fo);
+    group.appendChild(title);
+    group.appendChild(fo);
+    const outer = doc.createElement('g');
+    outer.appendChild(group);
+    canvas.plainText = () => { throw new Error('titled HTML routed to native plainText'); };
+    canvas.updateText(120, 120, 150, 50, 'center', 'middle',
+      true, '', false, 0, null, outer);
+    assert.equal(fo.getAttribute('width'), '196');
+    assert.equal(text.textContent, 'TITLED-HTML');
+    assert.equal(group.firstChild, title);
+    canvas.state.rotation = '20';
+    canvas.updateText(120, 120, 150, 50, 'center', 'middle',
+      true, '', false, '30', null, outer);
+    assert.equal(group.getAttribute('transform'), 'rotate(50 120 120)');
+    assert.equal(group.firstChild, title);
+  }],
+  ['title-first native SVG label continues to use plainText geometry updates', () => {
+    const { canvas, group, fo, doc } = htmlWith(htmlText, 'SVG-FALLBACK');
+    const title = doc.createElement('title');
+    const nativeText = doc.createElement('text');
+    group.removeChild(fo);
+    group.appendChild(title);
+    group.appendChild(nativeText);
+    const outer = doc.createElement('g');
+    outer.appendChild(group);
+    let fallbackCalls = 0;
+    canvas.plainText = (...args) => {
+      fallbackCalls++;
+      assert.equal(args[13], group);
+    };
+    canvas.updateText(120, 120, 150, 50, 'center', 'middle',
+      false, '', false, 0, null, outer);
+    assert.equal(fallbackCalls, 1);
+    assert.equal(group.firstChild, title);
   }],
   ['foreignObject unwrapped rich text preserves overflow viewport', () => {
     const { canvas, group, fo, text } = htmlWith(htmlText, 'NORMAL-CELL');
@@ -641,6 +684,7 @@ const baselineMustPass = new Set([
   'valid clip coordinates retain original finite clipping geometry',
   'converted rich label retains its native SVG child',
   'foreignObject original label keeps finite in-viewport coordinates',
+  'title-first native SVG label continues to use plainText geometry updates',
   'foreignObject real getTextCss retains ordinary relative line-height',
   'foreignObject real getTextCss retains ordinary absolute line-height',
   'foreignObject clipped label retains bounded centered margin',

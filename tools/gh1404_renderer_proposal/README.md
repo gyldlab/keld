@@ -265,11 +265,20 @@ trace found an independent feedback route:
 The new production patch uses bounded pixel `foreignObject` dimensions for
 **wrapped horizontal labels with positive width**, derived from their own SVG
 coordinates. Unwrapped and vertical labels retain the original percentage
-overflow viewport. It also caps wrapped HTML DOM width entering graph bounds
-at the authored label width plus the original text-width padding. Real text
-measurement below that cap, non-wrapped overflow, `overflow=width`, rich
-children, rotation, invalid-number rejection and stale-text recovery are
-preserved in the focused source regression.
+overflow viewport. It caps only the same positive-width horizontal wrapped
+HTML DOM measurements entering graph bounds, at the authored label width plus
+the original text-width padding. A zero-width horizontal label and a vertical
+label retain their natural measured width: `mxSvgCanvas2D.createCss` gates
+horizontal wrapping on positive width, but vertical wrapping on height.
+
+`mxSvgCanvas2D.addForeignObject` can insert a `<title>` before the
+`<foreignObject>`. Both `mxSvgCanvas2D.updateText` dispatch and
+`mxText.updateBoundingBox` now skip this optional first title and follow the
+same HTML path as an untitled label. Native SVG nodes still use the existing
+`plainText`/`getBBox` path, and the title remains attached. Focused source
+regressions preserve real text measurement below the cap, non-wrapped
+overflow, `overflow=width`, rich children, 90-degree rotation, invalid-number
+rejection and stale-text recovery.
 
 The upstream application sources are pinned at
 `jgraph/drawio@24b76c2cbd55d88e354042e8d329a2e4708972bc`.
@@ -277,11 +286,11 @@ The two source files and accepted hashes are:
 
 | Upstream application path | Pinned SHA-256 | Current candidate SHA-256 |
 | --- | --- | --- |
-| `src/main/webapp/mxgraph/src/util/mxSvgCanvas2D.js` | `0daef9812e3b8c530bc9556791ffaea53fe9a57091a86534bd909ca31e4485b3` | `da599813f25eedb76bfabd7a9d9d55e9d5284121cb568dc4e1a2a9e379c2e0c9` |
-| `src/main/webapp/mxgraph/src/shape/mxText.js` | `a6c0f2c748403a74b11405c864a8278bfcdad216f80ea5b290c1e917d13f9772` | `7cb3533a0ece22a987856cae64eb39da6410d395f74db7314791d43262a2fd39` |
+| `src/main/webapp/mxgraph/src/util/mxSvgCanvas2D.js` | `0daef9812e3b8c530bc9556791ffaea53fe9a57091a86534bd909ca31e4485b3` | `838862ae4d8f8af0a0dc1d4acb1f9fa7613afbab23419e8cbacf7cb61c0328b3` |
+| `src/main/webapp/mxgraph/src/shape/mxText.js` | `a6c0f2c748403a74b11405c864a8278bfcdad216f80ea5b290c1e917d13f9772` | `c67a67cc2d0ae435baee216ead31c672236cff79eec38cd84de8d8bf6138658e` |
 
 The combined `gh1404-g1-production.patch` SHA-256 is
-`d9dec12e1a7f78bd1922ab28663d9ffdeb12ddea470c9e2603e098253d0c0ab6`.
+`d31486a5d7d1cbcfaec2aedd9309bb3d44e1b0efc06d11fb915164a98eb457e5`.
 This is an application-source patch with exact original paths and a strictly
 verified separate source overlay. It can be handed to the owner of a **new**
 qualified Draw.io application build. It must not replace the signed assigned V3
@@ -304,9 +313,9 @@ It does not mutate the source checkout, compile the renderer or install an app.
 
 | Test oracle | Pinned original | Patched original-source functions |
 | --- | --- | --- |
-| `render_probe.cjs` (SVG/HTML geometry, wrap, clip, zoom, rotation, reused DOM and malformed inputs) | RED: 15/38 | GREEN: 38/38 |
-| `bounds_probe.cjs` (real `mxText.updateBoundingBox`, oversized wrapped node, page layout, recovery, unwrapped/width controls) | RED: 3/6 | GREEN: 6/6 |
-| Fault controls | Original percent sizing fails four current source cases; replacement with fixed oversized viewport fails four | Removing the wrapped-bounds cap fails four cases |
+| `render_probe.cjs` (SVG/HTML geometry, wrap, clip, zoom, title-first update dispatch, rotation, reused DOM and malformed inputs) | RED: 16/40 | GREEN: 40/40 |
+| `bounds_probe.cjs` (real `mxText.updateBoundingBox` and `getActualTextDirection`, title-first HTML, oversized width, page layout, zero-width, vertical direction, 90-degree rotation and native SVG fallback) | RED: 7/13 | GREEN: 13/13 |
+| Fault controls | Old wrapped-bounds cap fails zero-width and vertical controls; original title-first detection falls back to oversized `getBBox` | All five independent in-memory mutations fail their matching source tests: restore zero-width clamp, remove vertical exclusion, remove bounding-box title skip, invert width clamp, or remove `updateText` title dispatch |
 | Source staging | Modified one byte in `mxText.js` gives deterministic SHA-256 refusal and no output directory | Combined patch passes `git apply --check --whitespace=error`; both generated JS files pass `node --check` |
 
 An independent real `WKWebView` 900-by-600 fixture checked six SVG
