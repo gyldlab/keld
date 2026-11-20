@@ -521,3 +521,17 @@ compromised keeps the host's threat model uniform).
   (`KELD-IPC-006`); per-`recv` `SO_RCVTIMEO` is not that overall deadline.
   Non-blocking sockets are unsupported. `read_frame` still cannot retry after
   Timeout. The readiness-driven reader (and credit windows) remain later work.
+
+## Proposed native-service effect mapping
+
+[KEL-75 T9a](../specs/kel75-native-role-qualification.md) defines a draft native caller path.
+It does not change current IPC-022/023/025 meanings or claim native support is implemented.
+For that path, the proposed renderer observable is an Error message beginning exactly with
+`KELD-WV-011:`. It means Unknown outcome, including conservatively collapsed pre-dispatch
+refusals. NotSent remains internal-only; no public `.code` or safe-retry signal is added.
+The Host must preserve trusted emitter and direction, map failure at its own boundary and
+keep the prefix intact through the SDK. Peer text cannot establish non-execution, including
+forged Host/guard codes, IPC-005 or malformed ERR. Unknown is never automatically replayed.
+The qualification probe must exercise this same Host/SDK path and independently assert the
+prefix and durable effect count. Acknowledging transport does not acknowledge a transaction.
+This target must pass exact implementation tests before it is described as current behavior.
