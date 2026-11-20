@@ -14,6 +14,7 @@ class SvgNode {
     this.childNodes = [];
     this.parentNode = null;
     this.attributes = new Map();
+    this.style = { cssText: '' };
     this._text = '';
   }
   appendChild(child) {
@@ -56,15 +57,25 @@ class SvgDocument {
   createDocumentFragment() { return new SvgNode('#document-fragment', this); }
 }
 
-function compilePlainText(source) {
-  const marker = 'mxSvgCanvas2D.prototype.plainText = function(';
+function extractFunction(source, marker) {
   const start = source.indexOf(marker);
   const end = source.indexOf('\n};', start);
-  assert(start >= 0 && end > start, 'pinned plainText definition missing');
+  assert(start >= 0 && end > start, `pinned definition missing: ${marker}`);
   assert.equal(source.indexOf(marker, start + marker.length), -1,
-    'multiple plainText definitions');
+    `multiple definitions: ${marker}`);
+  return source.slice(start, end + 3);
+}
+
+function optionalNumericHelper(source) {
+  const marker = 'mxSvgCanvas2D.areValidRendererNumbers = function(';
+  return source.includes(marker) ? extractFunction(source, marker) : '';
+}
+
+function compilePlainText(source) {
   const compile = new Function('mxSvgCanvas2D', 'mxConstants', 'mxUtils',
-    source.slice(start, end + 3) + '\nreturn mxSvgCanvas2D.prototype.plainText;');
+    optionalNumericHelper(source) + '\n' +
+    extractFunction(source, 'mxSvgCanvas2D.prototype.plainText = function(') +
+    '\nreturn mxSvgCanvas2D.prototype.plainText;');
   function Canvas() {}
   return compile(Canvas, {
     ALIGN_CENTER: 'center', ALIGN_RIGHT: 'right',
@@ -74,6 +85,61 @@ function compilePlainText(source) {
     trim: (value) => value.trim(),
     write: (node, value) => { node.textContent = value; },
   });
+}
+
+function compileHtmlText(source) {
+  const compile = new Function('mxSvgCanvas2D', 'mxConstants', 'mxUtils',
+    optionalNumericHelper(source) + '\n' +
+    extractFunction(source, 'mxSvgCanvas2D.createCss = function(') + '\n' +
+    extractFunction(source, 'mxSvgCanvas2D.prototype.updateTextNodes = function(') +
+    '\nreturn mxSvgCanvas2D.prototype.updateTextNodes;');
+  function Canvas() {}
+  return compile(Canvas, {
+    ALIGN_LEFT: 'left', ALIGN_CENTER: 'center', ALIGN_RIGHT: 'right',
+    ALIGN_TOP: 'top', ALIGN_MIDDLE: 'middle', ALIGN_BOTTOM: 'bottom',
+    WORD_WRAP: 'break-word',
+  }, {
+    bind: (self, fn) => fn.bind(self),
+    getAlignmentAsPoint: (align, valign) => ({
+      x: align === 'center' ? -0.5 : align === 'right' ? -1 : 0,
+      y: valign === 'middle' ? -0.5 : valign === 'bottom' ? -1 : 0,
+    }),
+  });
+}
+
+function htmlWith(updateTextNodes, content = 'VISIBLE-HTML') {
+  const doc = new SvgDocument();
+  const svg = doc.createElement('svg');
+  const group = doc.createElement('g');
+  const fo = doc.createElement('foreignObject');
+  const div = doc.createElement('div');
+  const box = doc.createElement('div');
+  const text = doc.createElement('div');
+  text.textContent = content;
+  box.appendChild(text);
+  div.appendChild(box);
+  fo.appendChild(div);
+  group.appendChild(fo);
+  svg.appendChild(group);
+  const canvas = {
+    state: {
+      scale: 1, rotation: 0, dx: 0, dy: 0, alpha: 1,
+      fontSize: 16, fontColor: '#000000',
+      fontBackgroundColor: null, fontBorderColor: null,
+    },
+    foreignObjectPadding: 2, foOffset: 0, rotateHtml: true,
+    setCssText: (node, css) => { node.style.cssText = css; },
+    getLightDarkColor: () => ({ light: '#000000', cssText: '#000000' }),
+    getTextCss: () => 'font-size: 16px;',
+    updateTextNodes,
+  };
+  return { canvas, svg, group, fo, div, box, text, doc };
+}
+
+function drawHtml(canvas, group, rotation = 0, coords = [120, 120, 150, 50],
+    wrap = false, clip = false) {
+  return canvas.updateTextNodes(...coords, 'center', 'middle',
+    wrap, '', clip, rotation, null, group);
 }
 
 function canvasWith(plainText) {
@@ -122,6 +188,7 @@ if (baseline) {
     'baseline source must match the pinned upstream input');
 }
 const plainText = compilePlainText(source);
+const htmlText = compileHtmlText(source);
 const cases = [
   ['ordinary numeric coordinates render unchanged', () => {
     const { canvas, svg } = canvasWith(plainText);
@@ -319,6 +386,126 @@ const cases = [
     draw(second.canvas, 'ZERO-SCALE');
     assert.equal(collect(second.svg, 'text').length, 0);
   }],
+  ['foreignObject original label keeps finite in-viewport coordinates', () => {
+    const { canvas, group, fo, div, text, svg } = htmlWith(htmlText, 'HTML-VISIBLE');
+    drawHtml(canvas, group);
+    assert.equal(svg.contains(text), true);
+    assert.equal(group.getAttribute('display'), null);
+    assert.equal(group.getAttribute('transform'), null);
+    assert.equal(fo.getAttribute('width'), '100%');
+    assert.equal(fo.getAttribute('height'), '100%');
+    assert.match(div.style.cssText, /padding-top: 120px;/);
+    assert.match(div.style.cssText, /margin-left: 120px;/);
+  }],
+  ['foreignObject clipped label retains bounded centered margin', () => {
+    const { canvas, group, div, text } = htmlWith(htmlText, 'HTML-CLIPPED');
+    drawHtml(canvas, group, 0, [120, 120, 150, 50], false, true);
+    assert.equal(group.getAttribute('display'), null);
+    assert.equal(text.textContent, 'HTML-CLIPPED');
+    assert.match(div.style.cssText, /padding-top: 120px;/);
+    assert.match(div.style.cssText, /margin-left: 44px;/);
+  }],
+  ['foreignObject wrap preserves visible rich label and half-scale layout', () => {
+    const { canvas, group, fo, text } = htmlWith(htmlText, 'RICH-WRAPPED');
+    canvas.state.scale = 0.5;
+    drawHtml(canvas, group, 0, [120, 120, 150, 50], true);
+    assert.equal(text.textContent, 'RICH-WRAPPED');
+    assert.equal(group.getAttribute('display'), null);
+    assert.equal(fo.getAttribute('width'), '200%');
+    assert.match(text.style.cssText, /white-space: normal; word-wrap: break-word;/);
+    assert.equal(group.getAttribute('transform'), 'scale(0.5)');
+  }],
+  ['foreignObject numeric strings normalize HTML geometry and rotation', () => {
+    const { canvas, group, div, text } = htmlWith(htmlText, 'STRING-HTML');
+    canvas.state.rotation = '20';
+    canvas.state.dx = '0';
+    drawHtml(canvas, group, '30', ['120', '120', '150', '50']);
+    assert.equal(text.textContent, 'STRING-HTML');
+    assert.equal(group.getAttribute('display'), null);
+    assert.equal(group.getAttribute('transform'), 'rotate(50 120 120)');
+    assert.match(div.style.cssText, /margin-left: 120px;/);
+  }],
+  ['foreignObject malformed rotation is never live SVG transform', () => {
+    const { canvas, group, text } = htmlWith(htmlText, 'MALFORMED');
+    const returned = drawHtml(canvas, group, '0) scale(4) rotate(0');
+    assert.equal(returned, false);
+    assert.equal(group.getAttribute('display'), 'none');
+    assert.equal(group.getAttribute('transform'), null);
+    assert.equal(text.textContent, 'MALFORMED');
+  }],
+  ['foreignObject reused invalid geometry hides stale label and restores it', () => {
+    const { canvas, svg, group, text, doc } = htmlWith(htmlText, 'OLD-HTML');
+    const sibling = doc.createElement('text');
+    sibling.textContent = 'SIBLING-KEEP';
+    svg.appendChild(sibling);
+    drawHtml(canvas, group, 30);
+    assert.equal(group.getAttribute('display'), null);
+    drawHtml(canvas, group, '0) scale(4) rotate(0');
+    assert.equal(group.getAttribute('display'), 'none');
+    assert.equal(group.getAttribute('transform'), null);
+    assert.equal(svg.contains(text), true);
+    assert.equal(svg.contains(sibling), true);
+    drawHtml(canvas, group, '0) scale(4) rotate(0');
+    assert.equal(group.getAttribute('display'), 'none');
+    drawHtml(canvas, group, 0);
+    assert.equal(group.getAttribute('display'), null);
+    assert.equal(group.getAttribute('transform'), null);
+    assert.equal(text.textContent, 'OLD-HTML');
+    assert.equal(sibling.textContent, 'SIBLING-KEEP');
+  }],
+  ['foreignObject rejected updates retain an existing hidden display policy', () => {
+    const { canvas, group, text } = htmlWith(htmlText, 'INTENTIONALLY-HIDDEN');
+    group.setAttribute('display', 'inline');
+    drawHtml(canvas, group);
+    assert.equal(group.getAttribute('display'), 'inline');
+    drawHtml(canvas, group, '0) scale(4) rotate(0');
+    assert.equal(group.getAttribute('display'), 'none');
+    drawHtml(canvas, group, '0) scale(4) rotate(0');
+    drawHtml(canvas, group, 0);
+    assert.equal(group.getAttribute('display'), 'inline');
+    assert.equal(text.textContent, 'INTENTIONALLY-HIDDEN');
+    group.setAttribute('display', 'none');
+    drawHtml(canvas, group, 0);
+    assert.equal(group.getAttribute('display'), 'none');
+  }],
+  ['foreignObject finite inputs with derived Infinity CSS must refuse', () => {
+    const { canvas, group, fo } = htmlWith(htmlText, 'BAD-HTML-GEOMETRY');
+    canvas.state.dx = 1e308;
+    const returned = drawHtml(canvas, group, 0, [1e308, 0, 150, 50]);
+    assert.equal(returned, false);
+    assert.equal(group.getAttribute('display'), 'none');
+    assert.equal(fo.getAttribute('width'), null);
+  }],
+  ['foreignObject near-zero scale cannot emit Infinity percent', () => {
+    const { canvas, group, fo } = htmlWith(htmlText, 'BAD-HTML-SCALE');
+    canvas.state.scale = 1e-308;
+    const returned = drawHtml(canvas, group);
+    assert.equal(returned, false);
+    assert.equal(group.getAttribute('display'), 'none');
+    assert.equal(fo.getAttribute('width'), null);
+  }],
+  ['foreignObject full repaint shows edited value without stale text', () => {
+    const { canvas, svg, group, doc } = htmlWith(htmlText, 'ORIGINAL');
+    drawHtml(canvas, group, 0);
+    const original = group;
+    svg.removeChild(original);
+    const next = doc.createElement('g');
+    const fo = doc.createElement('foreignObject');
+    const div = doc.createElement('div');
+    const box = doc.createElement('div');
+    const edit = doc.createElement('div');
+    edit.textContent = 'GH1404-EDIT-OK';
+    box.appendChild(edit);
+    div.appendChild(box);
+    fo.appendChild(div);
+    next.appendChild(fo);
+    svg.appendChild(next);
+    drawHtml(canvas, next, 0);
+    assert.equal(svg.textContent, 'GH1404-EDIT-OK');
+    assert.equal(next.getAttribute('display'), null);
+    assert.equal(svg.contains(original), false);
+    assert.equal(svg.contains(edit), true);
+  }],
 ];
 
 let failures = 0;
@@ -331,6 +518,10 @@ const baselineMustPass = new Set([
   'ordinary multiline text retains each line and its baseline',
   'valid clip coordinates retain original finite clipping geometry',
   'converted rich label retains its native SVG child',
+  'foreignObject original label keeps finite in-viewport coordinates',
+  'foreignObject clipped label retains bounded centered margin',
+  'foreignObject wrap preserves visible rich label and half-scale layout',
+  'foreignObject full repaint shows edited value without stale text',
 ]);
 for (const [name, test] of cases) {
   try {

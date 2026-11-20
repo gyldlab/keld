@@ -22,7 +22,23 @@ ANCHOR = """mxSvgCanvas2D.prototype.plainText = function(x, y, w, h, str, align,
 
 	var s = this.state;
 """
-REPLACEMENT = """mxSvgCanvas2D.prototype.plainText = function(x, y, w, h, str, align, valign, wrap, overflow, clip, rotation, dir, textElement, node, blockTextHeight, htmlContentWidth)
+REPLACEMENT = """mxSvgCanvas2D.areValidRendererNumbers = function(values)
+{
+	for (var i = 0; i < values.length; i++)
+	{
+		var value = values[i];
+		if (!(typeof value == 'number' ||
+			(typeof value == 'string' && value.trim() != '')) ||
+			!isFinite(Number(value)))
+		{
+			return false;
+		}
+	}
+
+	return true;
+};
+
+mxSvgCanvas2D.prototype.plainText = function(x, y, w, h, str, align, valign, wrap, overflow, clip, rotation, dir, textElement, node, blockTextHeight, htmlContentWidth)
 {
 	rotation = (rotation != null) ? rotation : 0;
 
@@ -34,14 +50,8 @@ REPLACEMENT = """mxSvgCanvas2D.prototype.plainText = function(x, y, w, h, str, a
 
 	// Reject geometry that cannot be represented as finite SVG coordinates.
 	// Numeric strings remain accepted, including exponent notation.
-	var valid = Number(s.scale) > 0;
-	for (var i = 0; valid && i < values.length; i++)
-	{
-		var value = values[i];
-		valid = (typeof value == 'number' ||
-			(typeof value == 'string' && value.trim() != '')) &&
-			isFinite(Number(value));
-	}
+	var valid = Number(s.scale) > 0 &&
+		mxSvgCanvas2D.areValidRendererNumbers(values);
 
 	if (valid)
 	{
@@ -157,6 +167,73 @@ REPLACEMENT = """mxSvgCanvas2D.prototype.plainText = function(x, y, w, h, str, a
 	}
 """
 
+HTML_ANCHOR = """mxSvgCanvas2D.prototype.updateTextNodes = function(x, y, w, h, align, valign, wrap, overflow, clip, rotation, dir, g)
+{
+	var s = this.state.scale;
+"""
+HTML_REPLACEMENT = """mxSvgCanvas2D.prototype.updateTextNodes = function(x, y, w, h, align, valign, wrap, overflow, clip, rotation, dir, g)
+{
+	rotation = (rotation != null) ? rotation : 0;
+	var values = [x, y, w, h, rotation, this.state.scale, this.state.dx,
+		this.state.dy, this.state.rotation, this.state.alpha, this.foOffset,
+		this.foreignObjectPadding, this.state.fontSize];
+	var valid = Number(this.state.scale) > 0 &&
+		mxSvgCanvas2D.areValidRendererNumbers(values);
+	var s = Number(this.state.scale);
+
+	if (valid)
+	{
+		x = Number(x); y = Number(y); w = Number(w); h = Number(h);
+		rotation = Number(rotation);
+		var anchor = mxUtils.getAlignmentAsPoint(align, valign);
+		var width = w + Number(this.foreignObjectPadding);
+		var left = x + Number(this.state.dx);
+		var top = y + Number(this.state.dy);
+		var angle = ((this.rotateHtml) ? Number(this.state.rotation) : 0) + rotation;
+		var percent = Math.ceil(1 / Math.min(1, s) * 100);
+		valid = isFinite(width) && isFinite(left) && isFinite(top) &&
+			isFinite(angle) && isFinite(percent) &&
+			isFinite(Math.round(left + anchor.x * width)) &&
+			isFinite(Math.round(top + anchor.y * h)) &&
+			isFinite(left * s) && isFinite(top * s) &&
+			isFinite(width * s) && isFinite(h * s) &&
+			isFinite(Number(this.state.fontSize) * s);
+
+		// Background and border padding becomes CSS pixel geometry.
+		if (valid && this.state.labelPadding != null)
+		{
+			var padding = this.state.labelPadding;
+			valid = mxSvgCanvas2D.areValidRendererNumbers(
+				[padding.top, padding.right, padding.bottom, padding.left]);
+		}
+	}
+
+	if (!valid)
+	{
+		// Hide reused rich-label descendants without destroying the DOM
+		// needed for a later valid geometry or zoom update.
+		if (!g.mxRendererHiddenForInvalidGeometry)
+		{
+			g.mxRendererPreviousDisplay = g.getAttribute('display');
+			g.mxRendererHiddenForInvalidGeometry = true;
+		}
+		g.setAttribute('display', 'none');
+		g.removeAttribute('transform');
+		g.removeAttribute('opacity');
+		return false;
+	}
+
+	if (g.mxRendererHiddenForInvalidGeometry)
+	{
+		if (g.mxRendererPreviousDisplay == null)
+			g.removeAttribute('display');
+		else
+			g.setAttribute('display', g.mxRendererPreviousDisplay);
+		delete g.mxRendererPreviousDisplay;
+		delete g.mxRendererHiddenForInvalidGeometry;
+	}
+"""
+
 # Original layout is moved before any SVG mutation to validate its derived
 # floating-point values once; subsequent painting reuses the same variables.
 LAYOUT_ANCHOR = """	var lines = str.split('\\n');
@@ -235,9 +312,25 @@ def main() -> None:
     if observed != UPSTREAM_SHA256:
         parser.error(f"unexpected source digest: {observed}; expected {UPSTREAM_SHA256}")
     original = original_bytes.decode("utf-8")
-    if original.count(ANCHOR) != 1:
-        parser.error("plainText entry does not match the pinned source")
-    candidate = original.replace(ANCHOR, REPLACEMENT, 1)
+    if original.count(ANCHOR) != 1 or original.count(HTML_ANCHOR) != 1:
+        parser.error("text renderer entry does not match the pinned source")
+    candidate = original.replace(HTML_ANCHOR, HTML_REPLACEMENT, 1)
+    begin_html = candidate.index("mxSvgCanvas2D.prototype.updateTextNodes = function(")
+    end_html = candidate.index("\n};", begin_html)
+    html_owner = candidate[begin_html:end_html]
+    substitutions = (
+        ("w + this.foreignObjectPadding", "w + Number(this.foreignObjectPadding)"),
+        ("x += this.state.dx;", "x += Number(this.state.dx);"),
+        ("y += this.state.dy;", "y += Number(this.state.dy);"),
+        ("var r = ((this.rotateHtml) ? this.state.rotation : 0) + ((rotation != null) ? rotation : 0);",
+         "var r = ((this.rotateHtml) ? Number(this.state.rotation) : 0) + rotation;"),
+    )
+    for before, after in substitutions:
+        if html_owner.count(before) != 1:
+            parser.error(f"HTML text renderer region changed: {before}")
+        html_owner = html_owner.replace(before, after, 1)
+    candidate = candidate[:begin_html] + html_owner + candidate[end_html:]
+    candidate = candidate.replace(ANCHOR, REPLACEMENT, 1)
     # Constrain the valid-update change to plainText, not other SVG call sites.
     begin = candidate.index("mxSvgCanvas2D.prototype.plainText = function(")
     end = candidate.index("\n};", begin)

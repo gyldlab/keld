@@ -17,6 +17,12 @@ protected source graph, or infer G0–G12 acceptance from these tests.
   two original labels invisible; a retry reported AX bounds
   `(31777,-345,18614,10)` outside a `(360,85,1200,800)` window. The native
   output does not itself isolate the error to this function.
+- The read-only original acceptance fixture
+  `.keld-work/reports/gh1404-w6-acceptance-20261119/fixtures/baseline.drawio`
+  has **ordinary finite geometry**: two `html=1` cells at
+  `(100,110,320,80)` and `(100,260,320,80)`. The installed V3 renderer
+  retained the pristine upstream `mxSvgCanvas2D.js` input. Those cells take
+  the `foreignObject` branch because no `convertToSvg=1` is selected.
 - Prior V7 `make-guard-v2.py` and `stale-svg-falsifier.js` survived in
   `.keld-work/scratch/gh1404-renderer-worker1-20261120`; their referenced
   `compiled-v7` source and runner are missing. Their logs show missing
@@ -29,19 +35,23 @@ protected source graph, or infer G0–G12 acceptance from these tests.
 | Graph import | `mxCodec.decode` through `Editor.setGraphXml`; the graph owns cell value and geometry | No malformed imported file has been proven to cause the observed off-screen label |
 | Label model → canvas | `mxText.paint` calls `mxSvgCanvas2D.text/updateText` | Ordinary numeric positions and converted SVG text remain usable |
 | Native SVG text | `mxSvgCanvas2D.plainText` uses coordinates, rotation, text node and SVG attributes | Invalid numeric/combined geometry must produce no live text or forged transform; valid reuse restores the original child |
-| HTML/foreignObject text | `mxSvgCanvas2D.updateTextNodes` and `createCss` | **Outside this candidate.** Full HTML and foreignObject behavior remains unverified |
+| HTML/foreignObject text | `mxSvgCanvas2D.updateTextNodes` and `createCss` | Source-level finite numeric/derived CSS geometry, rotation, zoom, existing DOM and wrapping tested; native WebKit layout and actual imported original cells remain unverified |
 | Save and reopen | `mxGraphModel.setValue` → `Editor.getGraphXml` → `EditorUi.getFileData/saveData` | The V3 `-EDIT-OK` XML result followed unreliable automated keyboard input; it does not establish a model/serializer defect |
 
-The source-level test uses a small fake SVG tree to check the native SVG
-`plainText` contract. It cannot prove WebKit, application import, HTML
-layout, an editor keystroke, saved file integrity, or installed G1/G3/G4.
+The source-level test runs the actual pinned `plainText`, `updateTextNodes`
+and `createCss` function bodies against a small fake SVG/HTML tree. It does
+not run full `mxSvgCanvas2D.text` dispatch, `addForeignObject`, `mxText.paint`,
+CSS layout, native WebKit, app import, an editor keystroke, disk serialization,
+or installed G1/G3/G4. Assertions about DOM attributes and label presence
+cannot establish pixel visibility or accessibility bounds.
 The `NEW-LABEL` test models a full shape clear/repaint. Its route was
 independently checked in the pinned `mxText.redraw` and
 `mxShape.redraw/clear` sources, but those caller functions are not
 executed by this test. Direct in-place `plainText` reuse is a same-value
 geometry update and cannot be used to change the label text.
-The test also exercises native SVG text converted from HTML in a single
-node, but it is not a full rich-label/foreignObject compatibility test.
+The test exercises a converted SVG rich-text child and a separate
+`foreignObject` layout path. It does not run actual HTML-to-SVG conversion
+or prove complete rich-text/export parity.
 
 ## Proposed behavior and explicit open decisions
 
@@ -55,8 +65,15 @@ document fragment and its stale transform/clip/opacity is removed. The next
 valid update restores the children. Upstream's `mxText` paint/update caller
 passes groups it owns, but the public canvas method also accepts an explicit
 node; that wider ownership case needs approval and independent verification.
-A valid
-zero-rotation/full-alpha update also clears stale transform/opacity.
+A valid zero-rotation/full-alpha update also clears stale transform/opacity.
+The same generated patch guards the `foreignObject` layout before its
+`createCss` callback: it requires finite coordinates, scaled dimensions,
+derived offsets/rotation and zoom percentages. Numeric strings are converted
+before arithmetic so rotation `'20' + '30'` cannot silently become `'2030'`.
+An invalid reused HTML group is hidden with `display=none`, keeping its
+descendants intact for a later valid update; the exact previous display
+attribute, including an intentionally hidden label, is restored. These are
+proposed error semantics and remain subject to owner approval.
 
 ### Follow-up: actual finite-input overflow in the first candidate
 
@@ -69,7 +86,8 @@ guard, `x=y=w=h=0`, `scale=2`, `fontSize=1e308` emitted a live
 finite individual inputs could overflow after adding `textOffset` or
 computing a clip anchor. The first candidate passes **13 of the 19** source
 tests, with six derived-overflow regressions failing. Original pinned
-upstream passes **7/19**, and the revised inert candidate passes **19/19**.
+upstream passes **7/19**, and the earlier hardened inert candidate passes
+**19/19**, on that earlier test revision.
 
 The revision calculates line height, text height, and initial center/bottom
 baseline before touching the SVG node; the renderer reuses those same
@@ -81,33 +99,45 @@ multiline text, large but finite fonts, numeric strings, original clipping
 and existing rich native SVG children still pass.
 
 The guard does not compute browser-derived `getBBox()` width in
-`adjustBlockTextOverflow`, so its dynamic rich-text shift, HTML
-`foreignObject`, text backgrounds and all export variants remain unproved.
+`adjustBlockTextOverflow`; full HTML layout, converted/wrapped SVG exports,
+text backgrounds and all other export variants remain unproved.
 The installed G1 labels' finite off-screen AX bounds
 `(31777,-345,18614,10)` are a **different unresolved geometry problem**.
-This guard does not prove those labels will move into the viewport.
+The actual two original `html=1` cells have ordinary coordinates. Potential
+failure boundaries include WKWebView `foreignObject` percentage sizing and
+CSS coordinate mapping, root transforms, `EditorUi.getPagePadding`,
+`extendCanvas` and `resetScrollbars`. No one of these is yet established
+as the cause. **The source guard is not a verified fix for installed G1.**
+The necessary independent native falsifier compares `html=1` and `html=0`
+with identical bounded geometry and records SVG/FO element bounds,
+`getBoundingClientRect()`, computed CSS, graph scale/translation, native
+screen visibility and AX coordinates before and after Reset View. That test
+requires an approved, separately qualified source/graph build; do not
+mutate the installed V3.
 G3's `-EDIT-OK` save followed unverified keyboard input; it is not proof
 that the serializer changes the cell value incorrectly.
 
 ### Source-only verification receipt (20 November 2026)
 
-The source input, first-candidate output and revised output are all
+The source input, prior first candidate and revised two-path candidate are
 reproducible using the commands below; no local installed app was used.
-The failure logs retain actual `Infinitypx`, `Infinity` and `NaN` SVG
-attributes observed from the pinned function.
+The prior preserved failure logs retain actual `Infinitypx`, `Infinity`
+and `NaN` SVG attributes observed from the pinned function. Those logs
+refer to the earlier 19-case run and must not be used as 29-case evidence.
 
 | Input | Source-level oracle | Shell exit |
 | --- | --- | --- |
-| Upstream pinned Draw.io | **7/19** passed; original numeric-string defect and invalid-geometry failures visible | 0 (`--baseline` expects RED) |
-| First candidate at `10e279957` | **13/19** passed; all six new derived-overflow tests fail | 1 |
-| Corrected inert candidate | **19/19** passed; finite large font, clip and multiline positive controls retained | 0 |
+| Upstream pinned Draw.io (current tests) | **11/29** passed; 18 defects detected, ordinary source-label, wrap and repaint controls retained | 0 (`--baseline` expects RED) |
+| First candidate at `10e279957` (earlier tests) | **13/19** passed; six derived-overflow tests failed | 1 |
+| Hardened native SVG-only at `2bc8336c8` (earlier tests) | **19/19** passed, native path only | 0 |
+| Revised inert SVG + HTML candidate (current tests) | **29/29** passed; positive HTML geometry, wrapped label, native SVG, malformed rotation, HTML reused group/display, overflow and repaint checks | 0 |
 
 - Original `mxSvgCanvas2D.js` SHA-256:
   `0daef9812e3b8c530bc9556791ffaea53fe9a57091a86534bd909ca31e4485b3`.
-- Corrected unified source patch SHA-256:
-  `8b575a9dd1fe673bb1e9d3a428248424fdf6c99d5ca27c3777d2c31a891b1618`.
-- Corrected candidate JavaScript SHA-256:
-  `1d6351d9ffe1c0e6d26339bcc5bc96edffb6e3b0c5a75fc09ca0eaebe9ad0ff3`.
+- Revised two-path unified source patch SHA-256:
+  `cf569f2a0ebdc04844b5c9be64ed8f054142d31a9f4ed2f493622454680dc892`.
+- Revised two-path candidate JavaScript SHA-256:
+  `2599400cacb00fec39578874d7c4be4cef6a495f0fc571ea71d12bedce91e33a`.
 - `evidence/upstream-baseline-red.log` SHA-256:
   `efa0e733b9e6fa61a38f485950f436fe4fb29d87c8381767f65f732e4436e19f`.
 - `evidence/first-candidate-red.log` SHA-256:
@@ -115,10 +145,15 @@ attributes observed from the pinned function.
 - `evidence/hardened-candidate-green.log` SHA-256:
   `421597548cfde528cd0176ad58b7fd1ff6429883068199b5518946fb027509e4`.
 
-The corrected patch passed `git apply --check --whitespace=error`, was
+The revised patch passed `git apply --check --whitespace=error`, was
 applied and reversed against an independent temporary copy, and recovered
-the original bytes exactly. A one-byte source change caused deterministic
-SHA refusal. The generated source passed `node --check`.
+the original bytes exactly. Its source input is SHA-pinned; the earlier
+one-byte source negative control caused deterministic digest refusal.
+The generated JavaScript passed `node --check`. Disabling the HTML
+invalid-geometry guard in-memory makes **five current regressions fail**:
+malformed rotation, stale reused label, preservation of prior display,
+derived coordinate overflow and overflowing zoom percentage.
+No installed-WebKit acceptance is implied.
 
 Approval decisions still owned by the user/product/source owner:
 
@@ -126,16 +161,17 @@ Approval decisions still owned by the user/product/source owner:
    original renderer and 3,339 webapp blob identities. Approve an explicit
    renderer amendment and independent new source/provider/graph hash
    qualification before any compiled app consumes altered source.
-2. **Malformed geometry behavior.** Confirm that hiding only invalid
-   entire reused SVG group, while allowing restoration on a
-   healthy update, is the desired policy. Custom descendants within a passed
-   group would also be hidden. This changes behavior for
-   non-numeric objects, blank numeric strings and invalid geometry; the
-   existing product contract does not authorize that rejection policy.
-3. **Remaining renderer coverage.** Approve and qualify the complete HTML
-   `foreignObject`/SVG block/wrap/update path separately. This proposal
-   covers `plainText` only and must not be labelled a complete G1 fix.
-4. **Installed oracle.** Verify one real editable label before typing;
+2. **Malformed geometry behavior.** Confirm native SVG child parking and
+   temporary whole-group hiding on invalid HTML geometry with exact display
+   restoration. Custom descendants in the passed SVG group are also parked,
+   and unsupported non-numeric/blank inputs now reject. This policy is not
+   authorized by the existing source contract.
+3. **Finite G1 and export parity.** Independently diagnose actual original
+   HTML labels' off-screen finite bounds with DOM/CSS/graph/AX observations;
+   qualify the complete `foreignObject`, HTML-to-SVG, wrap, export and
+   text-background path. The current proposal is insufficient to mark G1
+   fixed or the entire rich renderer compatible.
+4. **Installed edit/save/reopen oracle.** Verify one real editable label before typing;
    record exact `GH1404-EDIT-OK` in the editor and disk XML; reopen and
    compare; use separate disposable files for Cancel/Discard. The native
    device/GUI owner performs these checks after a qualified separate build.
@@ -170,5 +206,7 @@ gh api 'repos/jgraph/drawio/contents/src/main/webapp/mxgraph/src/util/mxSvgCanva
 
 Baseline is required to fail at least one defect case while preserving
 the ordinary numeric/rich-label cases. Candidate must pass every case.
-The guard itself is the single-fault control: remove it, and the malformed
-fresh and reused SVG cases must become failures again.
+Each path has independent defect cases. Disabling only the HTML invalid-input
+guard makes five current HTML regressions fail while the other paths remain
+unchanged. Existing native SVG invalid-geometry and stale-node tests also
+fail on the pinned original source.
