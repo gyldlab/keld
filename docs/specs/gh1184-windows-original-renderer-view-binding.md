@@ -14,11 +14,12 @@ Reuse the existing document, permission, writer, ledger and ownership boundaries
 
 ## 2. Spec refs
 
-- [GH531](https://github.com/gyldlab/keld/issues/531) owns the Window pair and replay. Its approved [recovery rule](https://github.com/gyldlab/keld/blob/9a1559f3c0a5b7174144b6351d6a86985628dbb7/docs/specs/gh531-window-registry-close-state-machine.md#L291-L295) requires the full Created census first.
-- [GH540 exact approval](https://github.com/gyldlab/keld/issues/540#issuecomment-6371793024) owns DATA and CONTROL. Sections 4.8 and 4.9 separate applied state and deferred dispatch.
-- [GH1184 approved Windows XML scope](https://github.com/gyldlab/keld/issues/1184#issuecomment-6801094337), [GH1185](https://github.com/gyldlab/keld/issues/1185) and [GH1188](https://github.com/gyldlab/keld/issues/1188) own selected preload, native navigation and the Windows window adapter. Architecture 02 section 2 owns framing. Architecture 03 owns default-deny.
-- The pinned main defines the logical pair at `crates/keld-ipc/src/window.rs:27`. The published Windows candidate allocates the physical view independently at #1531 `crates/keld-wv/src/webview2/view_build.rs:277@1a8325d4262ea5cab5799aa2ecdb1987b2512e71`.
-- The published candidate has Window event ordinals 0 through 10 at #1531 `crates/keld-ipc/src/window.rs:95@1a8325d4262ea5cab5799aa2ecdb1987b2512e71`. The final shared base must reconcile the qualified GH1185 finish at 11 before this proposal allocates 12.
+- **FACT:** [GH531](https://github.com/gyldlab/keld/issues/531) owns the Window pair and replay. Its approved [recovery rule](https://github.com/gyldlab/keld/blob/9a1559f3c0a5b7174144b6351d6a86985628dbb7/docs/specs/gh531-window-registry-close-state-machine.md#L291-L295) requires the full Created census first.
+- **FACT:** [GH540 exact approval](https://github.com/gyldlab/keld/issues/540#issuecomment-6371793024) owns DATA and CONTROL. Sections 4.8 and 4.9 separate applied state and deferred dispatch.
+- **FACT:** [GH1184 approved Windows XML scope](https://github.com/gyldlab/keld/issues/1184#issuecomment-6801094337), [GH1185](https://github.com/gyldlab/keld/issues/1185) and [GH1188](https://github.com/gyldlab/keld/issues/1188) own selected preload, native navigation and the Windows window adapter. Architecture 02 section 2 owns framing. Architecture 03 owns default-deny.
+- **FACT:** The pinned main defines the logical pair at `crates/keld-ipc/src/window.rs:27`. The published Windows candidate allocates the physical view independently at #1531 `crates/keld-wv/src/webview2/view_build.rs:277@1a8325d4262ea5cab5799aa2ecdb1987b2512e71`.
+- **FACT:** The published candidate has Window event ordinals 0 through 10 at #1531 `crates/keld-ipc/src/window.rs:95@1a8325d4262ea5cab5799aa2ecdb1987b2512e71`.
+- **UNKNOWN:** The final shared base has not yet reconciled the qualified GH1185 finish at 11 or confirmed ordinal 12 is free. See B-3.
 
 ## 3. Acceptance criteria
 
@@ -212,6 +213,16 @@ Reuse the existing document, permission, writer, ledger and ownership boundaries
   - **At-risk precondition:** The source and correlation are otherwise eligible. A positive binding receipt exercises the successful admission path separately.
   - **Expected RED:** The origin offers correlated success without a proved binding.
 
+### AC-20: Replay distinguishes closes before and after role loss
+
+- **Given:** A surviving selected view has a pending close when its old role is lost. In a separate run, the same kind of view is Open at loss and gets a native close during the recovery gap.
+- **When:** The Host grants recovery and the authenticated successor subscribes.
+- **Then:** In the first run, the old pending close follows the GH531 abandoned-close rule and is not delivered to the successor. In the second run, the native close remains pending and the successor receives its sequence in `Created.pending_close`. No close event writes to the retired link.
+- **Negative control:**
+  - **Single fault:** Apply the role-loss abandoned-close rule to the new recovery-gap close.
+  - **At-risk precondition:** The gap close became pending on an otherwise replay-eligible survivor; no later close or teardown supersedes it.
+  - **Expected RED:** The successor's Created fact loses the exact new pending close.
+
 ## 4. Design
 
 ### D-1: Physical association on WINDOW
@@ -243,7 +254,8 @@ Preserve the original writer outcome if publication fails or its receipt is unpr
 
 Accepted BuildOk changes Opening to Open before publication. After Created or after binding, a publication failure does not itself change that native phase. If the Host grants role recovery, keep the checked Open view and its WindowRef for the authenticated successor's ordered replay.
 
-A pending close follows the existing [abandoned-close rule](https://github.com/gyldlab/keld/blob/9a1559f3c0a5b7174144b6351d6a86985628dbb7/docs/specs/gh531-window-registry-close-state-machine.md#L809-L810) before replay. An independently Closing or Destroyed entry stays outside replay.
+Follow the existing [GH531 abandoned-close rule](https://github.com/gyldlab/keld/blob/9a1559f3c0a5b7174144b6351d6a86985628dbb7/docs/specs/gh531-window-registry-close-state-machine.md#L809-L810) only for a close already pending at role loss. Preserve a native close that first arrives during the recovery gap and carry its sequence in the successor's
+[`Created.pending_close`](https://github.com/gyldlab/keld/blob/9a1559f3c0a5b7174144b6351d6a86985628dbb7/docs/specs/gh531-window-registry-close-state-machine.md#L300-L317). An independently Closing or Destroyed entry stays outside replay.
 
 If the Host accepts session end, move the same Open view to Closing and wait for its checked native release through normal teardown. Session end supplies no replay. If role loss or session end wins while the entry is still Opening, use the late-build cleanup from AC-13. An unproved native handoff cannot qualify for replay.
 
@@ -271,7 +283,9 @@ Use the existing admitted graph, distribution tuple and per-generation Runtime s
 
 A physical graph receipt alone does not prove either later import. Unproved custody takes the existing refusal path before selected output.
 
-Earlier decoders refuse the new tag. Keep other dialects unchanged. Reuse the sealed GH540 delivery layout. A repeated Window pair in every DATA frame or a second document acknowledgement would duplicate existing ownership. A URL, focus or numerical identity inference cannot distinguish equal-generation views.
+Require an earlier installed decoder to refuse the new tag. **FACT:** The earlier BOOT8 decoder in E-2 refused the literal binding; this does not establish a result for every earlier decoder. Keep other dialects unchanged. Reuse the sealed GH540 delivery layout.
+
+**INFERRED:** Repeating the Window pair in every DATA frame or adding a second document acknowledgment would duplicate the ownership in this design. URL, focus and numeric coincidence do not provide the exact association; AC-1 tests identical URLs and equal document generations.
 
 ## 5. Boundaries
 
@@ -297,7 +311,7 @@ Use the existing Rust WINDOW receive owner, Core Registry and primary writer. Up
 ### T-4: Qualify selected delivery and retirement
 
 - **Blocked by:** T-2, T-3, B-2
-- Join approved GH540 DATA and CONTROL using the existing Guard, writer and ledger. Run AC-1 through AC-19 on one exact Windows Host, CLI and SDK tuple.
+- Join approved GH540 DATA and CONTROL using the existing Guard, writer and ledger. Run AC-1 through AC-20 on one exact Windows Host, CLI and SDK tuple.
 
 ## 7. Test plan & evidence
 
@@ -305,17 +319,17 @@ Use the existing Rust WINDOW receive owner, Core Registry and primary writer. Up
 
 - **Run:** Independently inspect sealed specs and pinned sources. Calculate the literal vectors and enumerate replay and deferred-dispatch schedules.
 - **n:** Two independent review lenses and a separate refutation of their proposed findings.
-- **Environment:** Windows x64, local source inspection and data-only controls on 2026-11-19.
+- **Environment:** **FACT:** Windows x64, local source inspection and data-only controls on 2026-11-19.
 - **Limits:** These checks do not execute the proposed product behavior or prove Windows acceptance.
 
 ### E-2: The earlier qualified provider refuses the binding
 
 - **Run:** Independently recompute the three pinned provider tree digests. Decode an existing Window fact and the new literal with the earlier installed SDK module.
-- **n:** Three matching provider digests, one accepted existing fact and one rejected binding.
-- **Environment:** Windows x64 and Bun 1.4.4 on 2026-11-19.
-- **Limits:** This runs the earlier decoder in isolation. It proves neither physical link ingress nor the new provider boundary.
+- **n:** **FACT:** Three matching provider digests, one accepted existing fact and one rejected binding.
+- **Environment:** **FACT:** Windows x64 and Bun 1.4.4 on 2026-11-19.
+- **Limits:** This receipt covers only the earlier decoder in isolation. **UNKNOWN:** Physical link ingress and the new provider boundary remain unverified.
 
-This receipt uses an earlier local BOOT8 distribution. The [published #1531 candidate](https://github.com/gyldlab/keld/pull/1531) supplies the code structure reference.
+**FACT:** This receipt uses an earlier local BOOT8 distribution. The [published #1531 candidate](https://github.com/gyldlab/keld/pull/1531) supplies the code structure reference.
 
 | Earlier provider | Tree SHA-256 |
 | --- | --- |
@@ -323,7 +337,7 @@ This receipt uses an earlier local BOOT8 distribution. The [published #1531 cand
 | API | `a0f3d878d278a19e5f45fcf7ded4e59f6be90d15673251b0c6c5d0de35381ac2` |
 | KIPC | `b7f34a14bdf4aa5de79aa1b2fb897dac878324e0d745d94025306985b184f009` |
 
-The installed decoder SHA-256 is `668a9c6e284ffbda1b983dc6ff8fc2cd642e7cbde425e2eba684c544fd5e9c5c`. It accepted `06 01 82 02` and rejected `0c 01 82 02 07` with `KELD-IPC-003`.
+**FACT:** The installed decoder SHA-256 is `668a9c6e284ffbda1b983dc6ff8fc2cd642e7cbde425e2eba684c544fd5e9c5c`. It accepted `06 01 82 02` and rejected `0c 01 82 02 07` with `KELD-IPC-003`.
 
 Keep byte, writer-frame, state-applier, listener and native-effect witnesses independent. Test the correct order and the specified single-fault schedule separately. Identify a source-owner probe separately from a live link test.
 
@@ -333,7 +347,7 @@ Public API and wire protocol. The implementation requires independent architectu
 
 ## 9. Perf impact
 
-The new layout has one bounded 21-byte record per selected view at construction or replay. DATA has no added bytes. Use the existing writer and bounded accepted record lifetime. Measure actual retention under a held receipt before a performance claim.
+**INFERRED:** Under the proposed layout, construction or replay adds one record of at most 21 bytes per selected view. DATA adds no bytes. Use the existing writer and bounded accepted record lifetime. **UNKNOWN:** Actual retention under a held receipt remains unmeasured.
 
 ## 10. Open questions, blockers & unknowns
 
