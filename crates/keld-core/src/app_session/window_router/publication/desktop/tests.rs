@@ -15,6 +15,7 @@ use std::io::{self, Read as _};
 use std::sync::{Mutex, atomic::AtomicBool, mpsc::Receiver};
 use std::time::Duration;
 
+mod binding;
 mod watchdog;
 
 type TestError = Box<dyn std::error::Error>;

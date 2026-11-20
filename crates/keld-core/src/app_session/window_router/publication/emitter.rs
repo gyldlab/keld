@@ -13,6 +13,7 @@ use super::super::{
 };
 use super::{PublicationResult, WindowEmitter};
 use keld_ipc::window::{WindowEvent, WindowRef};
+use keld_wv::WebviewId;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -199,9 +200,23 @@ impl WindowEmitter<'_, '_> {
             )
     }
 
-    pub(super) fn fact(&self, fact: &OwnedWindowEvent) -> PublicationResult<()> {
+    pub(super) fn prepare_original_view_binding(
+        &self,
+        window: WindowRef,
+        view: WebviewId,
+    ) -> Result<PreparedFrame, HostAppError> {
+        if view.0 == 0 {
+            return Err(app_detail("Window view binding", "native view is zero"));
+        }
+        self.prepare_fact(&WindowEvent::OriginalRendererViewBound {
+            window,
+            webview: view.0,
+        })
+    }
+
+    pub(super) fn fact_written(&self, fact: &OwnedWindowEvent) -> PublicationResult<bool> {
         if fact.owner != self.owner() {
-            return Ok(());
+            return Ok(false);
         }
         let window = fixed_event_window(&fact.event).ok_or_else(|| {
             app_detail(
@@ -218,8 +233,11 @@ impl WindowEmitter<'_, '_> {
                         .matches_publication_fact(self.owner(), &fact.event)
             },
             "Window fact completion",
-        )?;
-        Ok(())
+        )
+    }
+
+    pub(super) fn fact(&self, fact: &OwnedWindowEvent) -> PublicationResult<()> {
+        self.fact_written(fact).map(drop)
     }
 
     pub(super) fn last_window(

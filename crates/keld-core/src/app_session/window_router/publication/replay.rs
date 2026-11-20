@@ -141,8 +141,36 @@ impl WindowEmitter<'_, '_> {
                     if !self.admit_by_deadline(frame, check, phase)? {
                         return Ok(false);
                     }
-                } else {
-                    self.admit(frame, check, phase)?;
+                } else if !self.admit(frame, check, phase)? {
+                    return Ok(false);
+                }
+                after = window.id.0;
+            }
+
+            // Finish the entire Created census before exposing any selected
+            // associations. The Registry holds the only retained physical view.
+            let mut after = 0;
+            while let Some((window, view)) = self
+                .with_registry("Window binding replay", |session, _| {
+                    Ok(session.registry.next_original_view_after(owner, after))
+                })?
+                .flatten()
+            {
+                let frame = self.prepare_original_view_binding(window, view)?;
+                let check = |session: &super::super::WindowSession| {
+                    session.subscribed.is_none()
+                        && session
+                            .registry
+                            .original_view_for_publication(owner, window)
+                            == Some(view)
+                };
+                let phase = "Window binding replay completion";
+                if selected {
+                    if !self.admit_by_deadline(frame, check, phase)? {
+                        return Ok(false);
+                    }
+                } else if !self.admit(frame, check, phase)? {
+                    return Ok(false);
                 }
                 after = window.id.0;
             }

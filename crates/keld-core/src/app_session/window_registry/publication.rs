@@ -2,6 +2,8 @@
 
 use super::{Phase, Teardown, WindowError, WindowEvent, WindowOwner, WindowRef, WindowRegistry};
 use keld_wv::AppWindowEvent;
+#[cfg(windows)]
+use keld_wv::WebviewId;
 use std::ops::Bound::{Excluded, Unbounded};
 
 pub(in crate::app_session) enum ClosingCleanup {
@@ -22,11 +24,54 @@ pub(in crate::app_session) fn fixed_event_window(fact: &WindowEvent) -> Option<W
         | WindowEvent::DocumentRecovered { .. }
         | WindowEvent::NavigationFinished { .. }
         | WindowEvent::NavigationFinishedUnitPinchV1 { .. }
+        | WindowEvent::OriginalRendererViewBound { .. }
         | WindowEvent::DesktopSnapshot { .. } => None,
     }
 }
 
 impl WindowRegistry {
+    /// Observe the retained selected view; never derive it from a logical ID.
+    /// Recovery transfers the Registry owner before the original caller is
+    /// rebound at Adopt, so the old caller pointer is not a replay predicate.
+    #[cfg(windows)]
+    pub(in crate::app_session) fn original_view_for_publication(
+        &self,
+        owner: WindowOwner,
+        window: WindowRef,
+    ) -> Option<WebviewId> {
+        if !self.ready || self.ending {
+            return None;
+        }
+        let entry = self.entries.get(&window.id.0)?;
+        if entry.window != window
+            || !entry.created
+            || !entry.owner_live
+            || entry.owner != owner
+            || entry.original.is_none()
+        {
+            return None;
+        }
+        match entry.phase {
+            Phase::Open(native) | Phase::ClosePending(native, _) => Some(native.view),
+            Phase::Opening(_) | Phase::Closing(_) | Phase::Destroyed(_) => None,
+        }
+    }
+
+    /// A second scalar cursor follows the entire Created replay census.
+    #[cfg(windows)]
+    pub(in crate::app_session) fn next_original_view_after(
+        &self,
+        owner: WindowOwner,
+        after: u32,
+    ) -> Option<(WindowRef, WebviewId)> {
+        self.entries
+            .range((Excluded(after), Unbounded))
+            .find_map(|(_, entry)| {
+                self.original_view_for_publication(owner, entry.window)
+                    .map(|view| (entry.window, view))
+            })
+    }
+
     /// A single ordered snapshot from the retained Registry. The source holds
     /// only the cursor and one fact through writer capacity and physical write.
     pub(in crate::app_session) fn next_created_after(
@@ -91,6 +136,7 @@ impl WindowRegistry {
             | WindowEvent::DocumentRecovered { .. }
             | WindowEvent::NavigationFinished { .. }
             | WindowEvent::NavigationFinishedUnitPinchV1 { .. }
+            | WindowEvent::OriginalRendererViewBound { .. }
             | WindowEvent::DesktopSnapshot { .. } => false,
         }
     }
@@ -140,5 +186,105 @@ impl WindowRegistry {
             Phase::Destroyed(Some(view)) if view == action.view => Ok(ClosingCleanup::Released),
             _ => Err(WindowError::StaleWindow),
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use crate::app_session::{
+        PrimaryCallerContext, PrimaryLinkIdentity,
+        graph_contract::tests::retained_original_window_resources,
+        window_registry::{BuildOutcome, CreateOutcome, OriginalWindowResources},
+    };
+    use keld_ipc::CorrelationId;
+    use keld_ipc::window::{Rect, WindowState};
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    #[test]
+    fn selected_view_snapshot_uses_retained_pair_and_successor_owner() {
+        let (_stage, source, preload) = retained_original_window_resources();
+        let caller = PrimaryCallerContext {
+            identity: PrimaryLinkIdentity::Fixture,
+            attempt: 1,
+            reader_stop: Arc::new(AtomicBool::new(false)),
+        };
+        let old = WindowOwner::new(caller.identity, caller.attempt);
+        let successor = WindowOwner::new(caller.identity, 2);
+        let mut registry = WindowRegistry::new();
+        assert!(registry.mark_ready());
+        let CreateOutcome::Build { build, window, .. } = registry
+            .create_original_for_caller(
+                &caller,
+                CorrelationId(1),
+                (640, 480),
+                (None, None),
+                OriginalWindowResources { source, preload },
+            )
+            .expect("selected entry")
+        else {
+            panic!("new selected entry expected")
+        };
+        assert!(
+            registry
+                .original_view_for_publication(old, window)
+                .is_none(),
+            "Opening must not publish"
+        );
+        let state = WindowState {
+            bounds: Rect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 480,
+            },
+            focused: false,
+            maximized: false,
+            full_screen: false,
+        };
+        assert!(matches!(
+            registry.native_built(build, WebviewId(7), state),
+            BuildOutcome::Created { .. }
+        ));
+        assert_eq!(
+            registry.original_view_for_publication(old, window),
+            Some(WebviewId(7))
+        );
+        let CreateOutcome::Build {
+            build: ordinary_build,
+            window: ordinary_window,
+            ..
+        } = registry
+            .create(old, CorrelationId(2), 640, 480, None, None)
+            .expect("ordinary entry")
+        else {
+            panic!("new ordinary entry expected")
+        };
+        assert!(matches!(
+            registry.native_built(ordinary_build, WebviewId(8), state),
+            BuildOutcome::Created { .. }
+        ));
+        assert_eq!(
+            registry.original_view_for_publication(old, ordinary_window),
+            None,
+            "ordinary windows never receive selected binding facts"
+        );
+        registry.role_lost(old, |_| panic!("no pending close"));
+        assert_eq!(registry.original_view_for_publication(old, window), None);
+        registry.subscribe_successor(successor);
+        assert_eq!(
+            registry.next_original_view_after(successor, 0),
+            Some((window, WebviewId(7)))
+        );
+        assert_eq!(
+            registry.next_original_view_after(successor, window.id.0),
+            None
+        );
+        registry.session_end(|_| {});
+        assert_eq!(
+            registry.original_view_for_publication(successor, window),
+            None,
+            "session end excludes Closing"
+        );
     }
 }

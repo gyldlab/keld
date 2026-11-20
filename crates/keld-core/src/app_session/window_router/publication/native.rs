@@ -1,6 +1,6 @@
 //! Ordinary native facts retain the original Registry entry and writer target.
 
-use super::super::super::primary_writer::WriterLink;
+use super::super::super::primary_writer::{ControlMessage, WriterLink};
 use super::super::native_outcome::{
     NativeOutcome, build_refusal, report_ignored_build, report_ignored_build_failure,
     report_native_close, report_native_fact, report_release,
@@ -192,8 +192,61 @@ impl WindowEmitter<'_, '_> {
     fn native(&self, source: WindowRef, outcome: NativeOutcome) -> PublicationResult<()> {
         match outcome {
             NativeOutcome::Build(BuildOutcome::Created { fact, reply }) => {
-                self.fact(&fact)?;
-                self.owned_reply(reply, source)?;
+                // A superseded source may return without admission; only a
+                // positive physical Created receipt permits the next record.
+                if !self.fact_written(&fact)? {
+                    return Ok(());
+                }
+                let Some((current, original_view)) =
+                    self.with_registry("Window Create binding selection", |session, _| {
+                        Ok((
+                            self.subscribed(session, Some(source))
+                                && session
+                                    .registry
+                                    .matches_publication_fact(self.owner(), &fact.event),
+                            session
+                                .registry
+                                .original_view_for_publication(self.owner(), source),
+                        ))
+                    })?
+                else {
+                    return Ok(());
+                };
+                if !current {
+                    return Ok(());
+                }
+                if let Some(view) = original_view {
+                    let written = self.admit(
+                        self.prepare_original_view_binding(source, view)?,
+                        |session| {
+                            self.subscribed(session, Some(source))
+                                && session
+                                    .registry
+                                    .original_view_for_publication(self.owner(), source)
+                                    == Some(view)
+                        },
+                        "Window view binding completion",
+                    )?;
+                    if !written || reply.owner != self.owner() {
+                        return Ok(());
+                    }
+                    self.control(
+                        ControlMessage::WindowReply {
+                            correlation: reply.correlation,
+                            response: reply.response,
+                        },
+                        |session| {
+                            self.subscribed(session, Some(source))
+                                && session
+                                    .registry
+                                    .original_view_for_publication(self.owner(), source)
+                                    == Some(view)
+                        },
+                        "Window Create reply completion",
+                    )?;
+                } else {
+                    self.owned_reply(reply, source)?;
+                }
             }
             NativeOutcome::Build(BuildOutcome::Cleanup(action)) => self
                 .router
