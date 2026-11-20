@@ -112,12 +112,28 @@ Illustrative policy only; these names are not a claim about draw.io's extracted 
 }
 ```
 
+**Windows Legacy P01 decision.** Adopt the exact marker for the deliberately prepared Windows Legacy first-proof artifact.
+This decision qualifies only that artifact. It does not introduce a per-app allowlist in the pure parser.
+The stage adds no live renderer route. Other artifacts receive no enrollment, migration or delivery authority from this decision.
+Preserve existing parse and admission outcomes for the ordinary and strict-profile entry paths.
+P01 does not establish compatibility for other stored manifests, profiles or platforms.
+GH499 retains automatic migration ownership.
+
+Record the path and SHA-256 of the final emitted manifest that the Windows Host actually verifies.
+Review its exact window keys, literal grants and CSP. Deliberately adopt the integer marker in the authored input.
+Use a fresh verified snapshot for each paired probe. In the second input remove only the marker.
+Recompute dependent integrity metadata for each input. Both must reach the same Guard decision owner.
+At the pure policy boundary, supply the same WebView-shaped query and Host-selected window borrow to both variants.
+The approved literal is eligible only with the marker. GH542 separately proves real document authentication.
+Its neighboring literal stays denied. The stripped copy denies both. CSP selection is identical.
+Capture tagged bytes and frozen GUARD003 denials independently of any wire or Bun-delivery qualification.
+
 Rules for this slice:
 
 - Only JSON integer `1` in the top-level `$keldWindowChannelGrants` field opts into exact channel grants.
 - An absent or unsupported marker grants zero incoming channels. Legacy profile selection alone grants none.
 - Preserve the independent window response-policy owner's validation and CSP selection for every marker value.
-- When no other window contract applies, unmarked legacy metadata retains its previous parse result, including scalar metadata.
+- The selected artifact retains its existing window structure and CSP checks. V0 scalar metadata is historical evidence only.
 - Preserve the existing unique-key decoder and whole-input size limit for every marker value.
 - With opt-in, `windows`, each window value, and `channels` have the object/object/array-of-strings shapes shown. Omitted fields are empty authority; explicitly wrong types, including `null`, are policy errors.
 - Each grant is a decoded, well-formed Unicode string whose UTF-8 bytes begin with ASCII `el:` and have a nonempty suffix. It contains no U+002A `*`, NUL, C0/C1 control, or DEL. Surrogate halves are rejected by the string/wire validation boundary; they are not replaced or normalized into a granted value.
@@ -315,7 +331,7 @@ a state model, or a page-only observer cannot prove a native effect boundary.
 
 | ID / criteria | Contract under test | Independent required oracle | Single-fault negative control |
 |---|---|---|---|
-| P01 / 1–2 | Opt-in and strict channel parsing | An unmarked exact list grants nothing. Marking it enables exact channels only. Malformed opted-in input yields GUARD005. Existing CSP validation runs in both cases. | Ignore the marker. Separately disable decoded-string validation. |
+| P01 / 1–2 | Selected Windows Legacy artifact opt-in and strict channel parsing | An unmarked exact list grants nothing. Marking it enables exact channels only. Malformed opted-in input yields GUARD005. Existing CSP validation runs in both cases. | Ignore the marker. Separately disable decoded-string validation. |
 | P02 / 3 | Guard-before-Bun forwarding | Pin GUARD003 and its complete text; independently observe zero app-link writes and zero handler entries on denial, one each for the exact permitted control. | Bypass dispatch_privileged. |
 | P03 / 4 | Per-window grant isolation | A host-authenticated window lacking a literal cannot use another window's grant; independently observe no ingress. | Use a global grant union or renderer-selected window key. |
 | P04 / 5 | Exact channel equality | Distinct prefix, suffix, case and Unicode spellings are denied unless separately granted. | Replace equality with prefix matching or normalization. |

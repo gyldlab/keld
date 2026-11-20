@@ -2004,7 +2004,7 @@ manifest decoder.
 - **Schema-declared channels:** a channel's declared native capability set
   (from `.k.ts` contracts) must be ⊆ the caller's grants. This schema-layer rule
   does not interpret opaque Electron application payloads. The proposed GH #541 amendment
-  requires the exact integer opt-in shown above before interpreting `windows.<w>.channels` literals for incoming
+  scopes the exact integer opt-in shown above to a deliberately adopted Windows Legacy artifact before interpreting `windows.<w>.channels` literals for incoming
   Electron message routes, with denial before Bun. A route grant does not grant a
   native capability; every native operation requested by Bun still requires its
   own native guard decision. Channel evaluation remains unimplemented until its
