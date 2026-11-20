@@ -12,6 +12,7 @@ use nix::errno::Errno;
 use nix::sys::signal::kill;
 use nix::unistd::{Pid, getpgid};
 
+use super::super::super::guarded_primary::NativeSignalAuthority;
 use super::super::super::process_group::{
     GroupIdentity, observe_group_identity, require_attested_group_absence, terminate_attested_group,
 };
@@ -479,4 +480,112 @@ fn early_kgc1_clear_reaps_live_bun_and_same_group_descendant_before_cleared() {
     let _ = host_worker
         .join()
         .expect("host control worker joins after test shutdown");
+}
+
+#[test]
+fn authenticated_clear_consumes_completed_absence_without_reprobing_reused_pgid() {
+    // An actual test-owned replacement group has birth B. Test-only state
+    // injection represents the already completed dual-ESRCH absence proof
+    // for birth A, whose numeric PID has subsequently been recycled to B.
+    // The real KGC1 worker must consume proof A without observing/sending to B.
+    let mut replacement = NativeChildOwner::new(
+        Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn test-owned replacement process group"),
+    );
+    let replacement_pid = replacement.id();
+    let replacement_birth =
+        observe_group_identity(replacement_pid).expect("test-owned replacement birth");
+    let original_birth = replacement_birth.altered_birth_for_test();
+    let duplicate =
+        require_attested_group_absence(original_birth, Instant::now() + Duration::from_secs(1))
+            .expect_err("negative control: a repeated old-birth probe sees new birth B");
+    assert!(
+        matches!(duplicate, RuntimeError::Lifecycle { source, .. }
+            if source.kind() == io::ErrorKind::PermissionDenied),
+        "the negative control must detect birth change"
+    );
+
+    let (host, mut guardian) = UnixStream::pair().expect("authenticated KGC1 pair");
+    guardian
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .expect("bounded control read");
+    let (updates_tx, updates_rx) = mpsc::channel::<GuardedPrimaryUpdate>();
+    let current = Arc::new(Mutex::new(None));
+    let recovery = Arc::new(Mutex::new(RecoveryState::new()));
+    lock_recovery(&recovery).arm();
+    let host_worker = start_generation_host_fixture(
+        host,
+        updates_tx,
+        Arc::clone(&current),
+        Arc::clone(&recovery),
+    );
+    let prepared = guardian_exchange(
+        &mut guardian,
+        &GenerationControlRecord::new(CONTROL_PREPARE, 1),
+        CONTROL_PREPARED,
+    );
+    let app_link = String::from_utf8(prepared.payload).expect("authenticated app link");
+    guardian_exchange(
+        &mut guardian,
+        &GenerationControlRecord::new(CONTROL_SPAWNED, 1).with_pid(replacement_pid),
+        CONTROL_REGISTERED,
+    );
+    let (endpoint, token) = parse_app_link(&app_link).expect("host-minted app link");
+    let mut app = UnixStream::connect(endpoint).expect("connect actual app link");
+    handshake_client(&mut app, &token).expect("authenticate replacement generation");
+    let bound = loop {
+        match updates_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("bounded generation authentication")
+        {
+            GuardedPrimaryUpdate::Bound(bound) => break bound,
+            GuardedPrimaryUpdate::Role(_) => {}
+        }
+    };
+    guardian_exchange(
+        &mut guardian,
+        &GenerationControlRecord::new(CONTROL_REVOKE, 1)
+            .with_cause(RevocationCause::AdmissionFailed),
+        CONTROL_REVOKED,
+    );
+    {
+        let mut owner = current.lock().expect("host owner mutex");
+        let registered = owner.as_mut().expect("original authenticated generation");
+        assert_eq!(registered.group_identity, Some(replacement_birth));
+        registered.group_identity = Some(original_birth);
+        registered.native_signal = NativeSignalAuthority::AbsenceProven;
+    }
+    write_generation_control(
+        &mut guardian,
+        &GenerationControlRecord::new(CONTROL_CLEAR, 1).with_pid(replacement_pid),
+    )
+    .expect("send authenticated CLEAR with spent absence proof");
+    let cleared = read_generation_control(&mut guardian)
+        .expect("completed absence proof permits CLEARED without a second kernel probe");
+    assert_eq!(
+        (cleared.kind, cleared.attempt, cleared.pid),
+        (CONTROL_CLEARED, 1, replacement_pid)
+    );
+    assert!(
+        current.lock().expect("host owner mutex").is_none(),
+        "completed birth A proof releases only its original owner"
+    );
+    assert!(
+        replacement
+            .try_wait()
+            .expect("inspect exact replacement child")
+            .is_none(),
+        "CLEAR must not kill the recycled birth B"
+    );
+    lock_recovery(&recovery).deny();
+    drop((bound, app, guardian));
+    let _ = host_worker
+        .join()
+        .expect("join host worker after control EOF");
 }
