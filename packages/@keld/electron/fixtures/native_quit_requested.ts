@@ -86,7 +86,8 @@ const willAttack =
   mode?.startsWith("zero-will-global-") === true ||
   mode?.startsWith("zero-will-reflect-") === true ||
   mode?.startsWith("zero-will-slice-") === true ||
-  mode === "zero-will-getter-spoof";
+  mode === "zero-will-getter-spoof" ||
+  mode === "zero-will-index-setter";
 let before = 0;
 let willQuit = 0;
 let quitEvents = 0;
@@ -176,6 +177,7 @@ const dispatchWithPoison = (): unknown => {
   const originalSlice = Array.prototype.slice;
   const originalFilter = Array.prototype.filter;
   const originalSome = Array.prototype.some;
+  const originalNumeric = Object.getOwnPropertyDescriptor(Array.prototype, "0");
   try {
     if (mode?.endsWith("-global-noop"))
       Object.defineProperty = ((target: object) =>
@@ -200,6 +202,14 @@ const dispatchWithPoison = (): unknown => {
       Array.prototype.filter = (() => []) as typeof Array.prototype.filter;
     if (mode === "live-census-some-only" || mode === "live-census-both")
       Array.prototype.some = (() => false) as typeof Array.prototype.some;
+    if (
+      mode === "zero-will-index-setter" ||
+      mode === "live-census-index-setter"
+    )
+      Object.defineProperty(Array.prototype, "0", {
+        configurable: true,
+        set(_value: unknown) {},
+      });
     handlers?.onQuitRequested?.(session as unknown as LifecycleLink);
     return undefined;
   } catch (error) {
@@ -210,6 +220,9 @@ const dispatchWithPoison = (): unknown => {
     Array.prototype.slice = originalSlice;
     Array.prototype.filter = originalFilter;
     Array.prototype.some = originalSome;
+    if (originalNumeric)
+      Object.defineProperty(Array.prototype, "0", originalNumeric);
+    else delete (Array.prototype as unknown as Record<string, unknown>)["0"];
   }
 };
 if (mode?.startsWith("scope-")) {
@@ -294,6 +307,12 @@ if (mode?.startsWith("scope-")) {
       "queued predecessor intent cannot run after terminal admission",
     );
   } else if (mode?.startsWith("live-census-")) {
+    if (mode === "live-census-index-setter")
+      assert.equal(
+        terminals,
+        0,
+        "a live window must prevent forceful terminal Quit",
+      );
     await assert.rejects(nested, /KELD-COMPAT-012/);
     assert.equal(before, 1);
     assert.equal(requests, 0);
@@ -324,6 +343,18 @@ if (mode?.startsWith("scope-")) {
       "before-sabotage",
       "before-veto",
     ]);
+  } else if (mode === "zero-will-index-setter") {
+    await nested;
+    assert.equal(before, 1, "before listener still receives first Quit");
+    assert.equal(willQuit, 1, "will listener still receives first Quit");
+    assert.equal(terminals, 0, "will-quit veto still retains Host");
+    assert.equal(quitEvents, 0, "veto must not emit Quit");
+    assert.equal(dispatchWithPoison(), undefined);
+    await nested;
+    assert.equal(before, 2, "fresh attempt replays before listener");
+    assert.equal(willQuit, 2, "fresh attempt replays will listener");
+    assert.equal(terminals, 0, "retry veto still retains Host");
+    assert.equal(quitEvents, 0);
   } else if (willAttack) {
     await nested;
     assert.equal(before, 1);

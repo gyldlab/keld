@@ -53,7 +53,13 @@ function emit(event: string, ...args: unknown[]): boolean {
   // Application code may replace Array.prototype.slice or Reflect.apply.
   const callbacks: AppListener[] = [];
   for (let index = 0; index < snapshot.length; index += 1)
-    callbacks[index] = snapshot[index]!;
+    stateDefineProperty(callbacks, index, {
+      __proto__: null,
+      value: snapshot[index]!,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    } as PropertyDescriptor);
   let listenerFailed = false;
   for (let index = 0; index < callbacks.length; index += 1) {
     try {
@@ -142,7 +148,14 @@ function liveWindowSnapshots() {
     const window = snapshots[index];
     if (!window)
       throw new Error("KELD-COMPAT-012: native window census is incomplete");
-    if (!window.host_destroyed) live[live.length] = window;
+    if (!window.host_destroyed)
+      stateDefineProperty(live, live.length, {
+        __proto__: null,
+        value: window,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      } as PropertyDescriptor);
   }
   return live;
 }

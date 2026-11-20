@@ -85,6 +85,8 @@ const modes = [
   "live-census-filter-only",
   "live-census-some-only",
   "live-census-both",
+  "live-census-index-setter",
+  "zero-will-index-setter",
   "multi",
   "missing-selection",
   "pre-ready",
