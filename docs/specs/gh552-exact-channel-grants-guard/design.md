@@ -75,7 +75,7 @@ Owns: section 4
 - **Output:** The same pure decision and trusted JSON pointer.
 - **Failure:** No live principal, permit, Bun link or effect callback.
 - **Observable:** The manifest and app link remain unchanged.
-- **Negative control:** Construct a live permit from the hypothetical key. The no-effect test must fail.
+- **Negative control:** Return the offline Allow permit alongside the diagnostic result. The public result-type fixture must fail compilation.
 
 ### D-8: OS containment
 
@@ -98,7 +98,7 @@ Owns: section 4
 - **Negative control:** Replace the real handler with a canned result. The effect oracle must fail.
 
 **INFERRED — reuse decision:** The existing unique-key JSONC loader must remain the parser.
-The existing native `ScopePermit`, evaluator and `dispatch_privileged` remain authoritative.
+Guard owns pure `evaluate_query` on the selected candidate. IPC owns the sole callback invocation.
 The canonical kipc receiver and native identity mint also remain in their current owners.
 Do not add a second policy parser, global window registry, JS permission cache, protocol,
 socket, transport reader or helper-only authority.
@@ -129,8 +129,11 @@ See `crates/keld-guard/src/lib.rs:621-629`.
 GH541 must approve this amendment before implementation.
 The proposal has three cases:
 
-- If the marker is absent or not integer `1`, preserve v0 behavior.
-  Treat every `windows` value as inert unknown metadata, regardless of type.
+- If the marker is absent or unsupported, ignore channel-list contents for channel admission.
+  Preserve the independent loader's size, duplicate-key, window structure, and response-policy checks.
+  The selected Windows candidate requires window objects even without channel opt-in.
+  The v0 pin accepts scalar metadata because it has no window response-policy contract.
+  Preserve each existing contract when porting the channel feature.
   Preserve existing `app` grants and unrelated metadata.
   Grant zero incoming channel authority, even for grant-shaped legacy objects.
   Never infer opt-in from a `channels` key, document, page or CLI argument.
@@ -171,66 +174,32 @@ Count UTF-8 bytes, not scalar values or JSON escape syntax.
 
 ### 4.3 Proposed typed query and one authoritative dispatcher
 
-**INFERRED — proposed design only:** The query value types below require independent
-permission-model and public-API approval. They are not implemented declarations.
+**INFERRED:** Reuse the selected Guard's sealed `GuardQuery`, existing query types, and associated permits.
+Guard owns only pure evaluation. IPC alone invokes the callback.
+The proposed typed entry resides at `keld_ipc::guard_dispatch::typed::dispatch_privileged`.
 
 ~~~rust
-// Each query infers only its own handler parameter.
-// RendererChannelPermit is opaque and disjoint from native ScopePermit.
-struct NativeCapabilityQuery<'a, NativeHandler> {
-    operation: &'a str,
-    resource: &'a str,
-    on_allow: NativeHandler,
-}
-struct RendererChannelQuery<'a, ChannelHandler> {
-    channel: &'a str,
-    current_window: BorrowedHostWindowGrants<'a>,
-    on_allow: ChannelHandler,
-}
-
-// A sealed, module-internal adapter has exactly two implementations:
-// NativeCapabilityQuery<'a, H> where H: for<'p> FnOnce(&'p ScopePermit) -> T;
-// RendererChannelQuery<'a, H> where H: for<'p> FnOnce(&'p RendererChannelPermit) -> T.
-// The trait exports no independently callable authorization method.
-// External query implementations are forbidden.
-// Keep dispatch_privileged as the single public authority-bearing entry.
-fn dispatch_privileged<T, Q>(
+pub fn dispatch_privileged<Q: GuardQuery, T>(
     manifest: &PermissionsManifest,
-    principal: Principal, // Host-derived, never decoded from page
+    principal: Principal,
     query: Q,
+    handler: impl for<'p> FnOnce(&'p Q::Permit) -> T,
 ) -> Result<T, DenyReason>
-where
-    Q: SealedPrivilegedQuery<T>; // conceptual bound, not a public API
 ~~~
 
-The two query types replace the unconstructible two-handler enum.
-A native query does not require a renderer callback.
-A renderer query does not require a native callback.
-Each sealed implementation calls the same evaluator through one dispatcher.
-Do not box handlers or allocate on the warmed Allow path.
-Do not export another effect-capable trait method.
-Compile-positive fixtures must prove independent inference.
-Compile-fail fixtures must reject wrong callbacks and cross-kind conversion.
-They must also reject a permit borrow that escapes its callback.
-
-**INFERRED:** `BorrowedHostWindowGrants` represents a selection from the immutable snapshot.
-The Host obtains it from the existing trusted WebView-to-window association.
-Page metadata cannot deserialize, rename or choose that selection.
-A numeric `Principal::Webview` or page URL alone is not authentication.
-The existing AppProcess matcher keeps its native `/**` behavior.
-The renderer query matches only exact `el:` literals.
-The dispatcher calls only the selected typed callback on Allow.
-A denial calls neither callback.
-The renderer permit cannot authorize native media or filesystem work.
-The native filesystem callback accepts only `&ScopePermit`.
-Neither permit borrow can escape through the callback result.
-
-There is only one Guard evaluator for effect-bearing decisions.
-The proposed signature may require adapting native filesystem callsites.
-Any such edit needs the native owner's review and its golden tests.
-This DRAFT does not authorize that source edit.
-A compatibility shim, if required, must use the same dispatcher.
-It must not become a second effect-bearing entrypoint.
+Keep `keld_ipc::guard_dispatch::dispatch_privileged<T>` as the five-argument native compatibility function.
+It constructs `NativeCapabilityQuery { operation, path }` and forwards the original handler.
+It performs no evaluation, path validation or callback invocation.
+Use the typed function for the renderer.
+Only that body calls `evaluate_query` and invokes the handler after Allow.
+Preserve native principal refusal before filesystem grammar and filesystem grammar before grant-shape errors.
+Use the existing `GuardQuery::native_capability` to select the existing IPC filesystem validator.
+Renderer queries never enter native filesystem validation.
+The renderer query borrows immutable window grants from the same manifest.
+Native and renderer callbacks borrow distinct permits and cannot return those borrows.
+Use compile-positive checks for each query and unchanged native callers.
+Use compile-fail checks for crossed permit types and escaped borrows.
+The callback owner adds no heap allocation to warmed Allow.
 
 A current valid channel miss returns the existing `ChannelForbidden` variant.
 Preserve its GUARD003 code, kind and fix text from GH541.
@@ -259,7 +228,7 @@ It must perform these steps:
 3. Bound, charge and copy opaque payload metadata through GH540's existing owners.
    At the final nonblocking handoff, order revocation against forwarding.
    Compare the captured document and authenticated Bun role with current authority.
-   Then call `dispatch_privileged` exactly once.
+   Then call `guard_dispatch::typed::dispatch_privileged` exactly once.
 4. Only the Allow closure may begin the original app-link write.
    A grant denial invokes no handler and writes no Bun frame.
    If revocation or role replacement wins first, never retarget old work.
@@ -301,12 +270,15 @@ The caller asks what a Host-selected window would receive.
 The selection never authorizes an actual WebView.
 The query needs no running Host and mints no native principal.
 It selects no live Bun link and returns neither live permit type.
-It uses the same pure evaluator, not a second string matcher.
+It uses the same pure evaluator on a separately loaded offline snapshot.
+  Convert the public diagnostic channel to its operand by removing exactly one leading `el:` prefix.
 On denial, it returns the same GUARD003 code, message and fix.
 It may also return a separate trusted JSON pointer.
 Construct `/windows/<escaped-key>/channels`.
 Escape `~` as `~0`, then `/` as `~1`.
-The diagnostic path constructs no Host grant borrow or live permit.
+Select grants from the offline manifest. The hypothetical numeric WebView is local input to pure evaluation.
+Drop the pure result after projecting Allow or the frozen denial into the diagnostic response.
+The offline path cannot borrow a live Host snapshot, dispatch a handler, or export a permit.
 A suggested patch is advisory and never changes the manifest.
 
 When the marker is absent, keep the frozen GUARD003 `CallError` unchanged.
@@ -342,7 +314,7 @@ They do not qualify WebView2 or WebKitGTK native behavior.
 KEL-78 owns OS sandbox and strict confinement.
 
 **INFERRED — migration rule:** Do not rewrite stored user data automatically.
-The proposed opt-in preserves v0 accepted `windows` metadata and native `/app` scopes.
+The opt-in preserves native `/app` scopes and the independently owned response-policy contract on each source baseline.
 Without the approved marker, even grant-shaped legacy metadata grants nothing.
 Adding a channel while the marker is absent does not grant authority.
 Before enabling the marker, users must review all legacy `windows` metadata.

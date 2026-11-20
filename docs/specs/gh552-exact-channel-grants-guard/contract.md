@@ -86,6 +86,13 @@ See `crates/keld-cli/src/mcp/permissions.rs:14-33,90-132`.
 They do not implement a checked-u32 navigation mint or v2 Send.
 No source behavior is approved by this specification.
 
+**FACT:** The selected Windows integration candidate is separate from this specification's main pin.
+At `crates/keld-guard/src/renderer_channels.rs:192@1f6c5730e63ed8f1d057c4fb82915ec1ca7f32bd`, Guard already owns sealed pure queries and distinct permit kinds.
+Its unmarked Legacy fixture expects exact Allow in `crates/keld-guard/tests/renderer_channels.rs:17@1f6c5730e63ed8f1d057c4fb82915ec1ca7f32bd`.
+Window response-policy checks share the namespace at `crates/keld-guard/src/window_csp.rs:81@1f6c5730e63ed8f1d057c4fb82915ec1ca7f32bd`.
+The public native dispatcher at `crates/keld-ipc/src/guard_dispatch.rs:48@1f6c5730e63ed8f1d057c4fb82915ec1ca7f32bd` takes five arguments.
+The selected candidate therefore requires a marker regression before an effect-bearing renderer can consume these queries.
+
 ### Conformance and evidence owners
 
 **FACT:** GH464 owns Electron compatibility evidence.
@@ -106,8 +113,8 @@ Resolve any cross-spec discrepancy through its owner before implementation.
 ### AC-1: Strict immutable policy admission
 
 - **Given:** One Host-loaded JSONC policy within the existing 64 KiB input cap.
-- **When:** The Host parses the policy with the marker absent or exactly integer `1`.
-- **Then:** An absent or unsupported marker preserves v0 `windows` metadata and grants zero channel authority.
+- **When:** The Host parses the policy with the marker absent, unsupported, or exactly JSON integer `1`.
+- **Then:** An absent or unsupported marker grants zero channel authority. Existing independent CSP and structural checks still apply.
   Exact integer `1` enables strict window and channel validation.
   Missing `windows`, window, `channels` or an empty list grants no authority.
   An input above 64 KiB returns `ManifestError::TooLarge` / `KELD-GUARD017` before parsing.
@@ -154,6 +161,7 @@ Resolve any cross-spec discrepancy through its owner before implementation.
 - **Given:** One native capability query and one renderer channel query.
 - **When:** Each query enters the shared policy evaluator and dispatcher.
 - **Then:** Each query has its own inferred callback type.
+  The unchanged five-argument native entry delegates to the same typed dispatch body.
   Native callbacks accept only `&ScopePermit`.
   Renderer callbacks accept only `&RendererChannelPermit`.
   Neither permit converts to the other.
@@ -209,9 +217,9 @@ Resolve any cross-spec discrepancy through its owner before implementation.
   Never invoke an effect or write the manifest.
   Preserve existing app-only explain callers.
 - **Negative control:**
-  - **Single fault:** Construct a live renderer permit from the hypothetical selector.
+  - **Single fault:** Expose the offline Allow permit alongside the public diagnostic success result.
   - **At-risk precondition:** The explain query names a valid window and channel.
-  - **Expected RED:** The no-effect or permit-construction oracle fails.
+  - **Expected RED:** The compile-positive fixture for the existing diagnostic result type no longer compiles.
 
 ### AC-8: Final identity and revocation ordering
 

@@ -26,8 +26,8 @@ Each slice needs a separate PR and a fresh winning claim.
 #### One shared guarded query
 
 - Candidate path: `crates/keld-ipc/src/guard_dispatch.rs` and its existing tests.
-- Add only the narrow typed query API.
-- Native filesystem callsite changes require the current owner's review.
+- Reuse the selected Guard query API and add the sole typed IPC callback body.
+- Keep existing native callsites and their five-argument source contract.
 - Do not add another authorized dispatcher.
 
 #### Diagnostic-only explain
@@ -82,8 +82,8 @@ No production task is authorized while the status remains draft.
 ### T-3: One authoritative dispatch API
 
 - **Blocked by:** B-1, B-2
-- Implement the approved sealed query types inside the existing `dispatch_privileged`.
-- Adapt native callers only with their owner's review.
+- Consume the existing sealed query types in the typed IPC dispatcher.
+- Delegate the unchanged native entry to the typed dispatcher.
 - Prove independent handler inference and compile-fail type isolation.
 - Prove failure-first Allow/Deny callbacks and callback-scoped permits.
 - Measure zero allocations on warmed Allow.
@@ -136,6 +136,10 @@ Timeouts are kill switches, not proof of no effect.
 
 - **Positive and denial observable:** Unmarked legacy `windows` grants zero authority.
   Editing a channel list without the marker grants nothing.
+  Exercise missing, null, string, boolean, unsupported integer, decimal and exponent markers.
+  Compare valid CSP selection and invalid CSP refusal with each marker.
+  Pair malformed channel-list data with valid CSP. Expect inert channels without opt-in and GUARD005 with opt-in.
+  Compare v0 scalar acceptance against selected Windows scalar refusal at their respective pins.
   The diagnostic tells users to review all legacy metadata before opt-in.
   A 64 KiB plus one byte input returns GUARD017.
   Within-cap opted-in schema failures return GUARD005.
@@ -194,8 +198,8 @@ Timeouts are kill switches, not proof of no effect.
 - **Positive and denial observable:** A hypothetical window returns the same pure result and escaped pointer.
   It writes neither the manifest nor the app link.
   Existing app queries remain unchanged.
-- **Single fault / Expected RED:** Use an alternate matcher or leak a live permit.
-  The parity or no-effect oracle must fail.
+- **Single fault / Expected RED:** Return the offline Allow permit alongside the diagnostic success value.
+  The existing public result-type compile fixture must reject the changed return type.
 
 ### G552-N02-revoke — AC-8
 
@@ -265,19 +269,12 @@ No diagram or benchmark threshold is required in this documentation-only PR.
 ### Q-1: Public Rust query shape and callsite compatibility
 
 **Owner:** Amisha, GH552 and the existing native-dispatch owner.
-Approve two independently inferable query types:
-`NativeCapabilityQuery<'a, H>` and `RendererChannelQuery<'a, H>`.
-Use one sealed internal dispatch adapter and one public `dispatch_privileged` entry.
-Keep the Host-selected grant borrow and disjoint callback permit types.
-Alternatively, select a comparably narrow type with compile-positive and compile-fail proof.
-
-The previous `GuardQuery<'a, NativeHandler, ChannelHandler>` enum is not acceptable.
-Its inactive generic handler has no inferred type.
-It also must satisfy the opposite `FnOnce` bound.
-Approve a lint-clean sealed implementation.
-Do not export another callable dispatch method.
-Decide whether native AppProcess callsites may be adapted in the future GH552 PR.
-If not, name the separately claimed owner change.
+Approve the existing sealed query types and separate callback parameter from section 4.3.
+Approve one IPC callback body with a forwarding-only native compatibility function.
+Confirm unchanged native callsites compile, including explicit result type arguments.
+Confirm both permit types remain callback-scoped.
+Require one production invocation of the effect callback across the native and typed surfaces.
+Review the existing native denial precedence with the native-dispatch owner.
 No renderer-query/native-capability fallback is allowed.
 
 ### Q-2: MCP public diagnostic input
@@ -309,7 +306,10 @@ Approve or replace the exact `"$keldWindowChannelGrants": 1` opt-in.
 Approve a matching GH541 P01 amendment before implementation.
 V0 ignores all `windows` shapes, including scalar `{"windows":"legacy"}`.
 GH541's strict wrong-shape rule conflicts with preserving those files.
-Until approval, legacy files keep their old parse behavior and grant zero channel authority.
+The selected Windows candidate already has an independent window CSP schema.
+Keep its current window structure and CSP errors with any marker.
+V0 scalar acceptance applies only where that schema is absent.
+Neither candidate grants incoming channel authority from unmarked metadata under this proposal.
 Acceptance must cover legacy scalar/object metadata, absent/wrong marker,
 valid and invalid opted-in grants, unrelated metadata and unchanged native `app` rules.
 No auto-migration, new error code or mutable hot reload is allowed.

@@ -20,8 +20,8 @@ in that window's immutable `windows.<window>.channels` list.
 Missing authority returns `ChannelForbidden / KELD-GUARD003` before any Bun app-link
 frame or application handler effect.
 
-Keep the existing Rust Guard policy and `dispatch_privileged` as the only
-authority-bearing dispatch boundary.
+Reuse Guard-owned `evaluate_query` and one typed IPC effect body.
+The unchanged five-argument native entry delegates to that body.
 A bounded typed Core adapter may call it only after GH542 authenticates identity
 and GH540/465 establishes the canonical one-link v2 carriage.
 The warmed policy/dispatcher Allow decision performs zero heap allocations.
