@@ -604,7 +604,7 @@ fn canonical_borrowed_window_urls_preserve_owned_wire_at_empty_unicode_and_limit
                 decode::<WindowEvent>(&borrowed_bytes).expect("owned decode"),
                 owned
             );
-            let mut storage = [0; super::NAVIGATION_EVENT_STORAGE_BYTES];
+            let mut storage = vec![0_u8; super::NAVIGATION_EVENT_STORAGE_BYTES].into_boxed_slice();
             assert_eq!(
                 encode_into(&borrowed, &mut storage).expect("bounded output"),
                 borrowed_bytes
