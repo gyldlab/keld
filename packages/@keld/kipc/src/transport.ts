@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:b3958a3683bafb6a5bdcac35a7ccac6681de75faeb1e0baa5e158166f7919fe7
+// @keld/kipc-transport sha256:1f390ae13aea37812c34505c948d7fbbc974c28553bdf54919414793b42519a4
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -626,6 +626,26 @@ export function stateIsUint8Array(value: unknown): value is Uint8Array {
 /** @internal Read native storage length without an application getter. */
 export function stateByteLength(value: Uint8Array): number {
   return intrinsicApply(intrinsicByteLength, value, []);
+}
+/** @internal A borrowed byte range without application-controlled prototypes. */
+export function stateByteView(
+  value: Uint8Array,
+  start: number,
+  end: number,
+): Uint8Array {
+  return new IntrinsicUint8Array(
+    intrinsicApply(intrinsicBuffer, value, []),
+    intrinsicApply(intrinsicByteOffset, value, []) + start,
+    end - start,
+  );
+}
+/** @internal Copy a borrowed range using the captured intrinsic constructor. */
+export function stateByteCopy(
+  value: Uint8Array,
+  start: number,
+  end: number,
+): Uint8Array {
+  return new IntrinsicUint8Array(stateByteView(value, start, end));
 }
 /** @internal Private dense helper backing; bounded own indices preserve its shape. */
 export function stateSlots<T>(capacity: number): (T | undefined)[] {

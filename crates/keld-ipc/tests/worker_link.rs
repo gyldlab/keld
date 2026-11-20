@@ -1201,6 +1201,39 @@ fn criterion10_record_bound_overflow_fails_closed_with_026() {
     overflow("overflow-records", 20, "8");
 }
 
+/// No app-overridden typed-array operation may run inside synchronous apply.
+#[test]
+fn compat_apply_uses_preapplication_typed_array_intrinsics() {
+    let (mut stream, role) = start("compat-intrinsic-poison");
+    long_reads(&stream);
+    let call = read_call_named(&mut stream, "compat-intrinsic-poison");
+    let data = [
+        0, 1, 2, 3, 9, b'f', b'i', b'l', b'e', b':', b'/', b'/', b'/', b'a', 4, b'n', b'u', b'l',
+        b'l', 1, b'x', 3, 0, 1, 255,
+    ];
+    host_write(
+        &mut stream,
+        FrameKind::Event,
+        keld_ipc::channel_table::COMPAT_CONTROL.id(),
+        CorrelationId(0),
+        &data,
+    );
+    host_reply(&mut stream, call, b"ok");
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("compat-applied", "1"),
+            ("compat-subarray-callbacks", "0"),
+            ("compat-length-callbacks", "0"),
+            ("compat-instance-callbacks", "0"),
+            ("compat-constructor-callbacks", "0"),
+            ("compat-iterator-callbacks", "0"),
+            ("compat-diagnostic-callbacks", "0"),
+        ],
+    );
+}
+
 /// Criterion 11: a second `open` in the realm is `KELD-IPC-005` before any
 /// connect; a second connect to the consumed locator is refused by the OS;
 /// the first link keeps working.

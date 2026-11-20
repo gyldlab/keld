@@ -18,6 +18,10 @@ import {
   encodePostcardString,
   encodeVarint,
   kipcError,
+  stateByteCopy,
+  stateByteLength,
+  stateByteView,
+  stateIsUint8Array,
 } from "./transport.ts";
 
 type ErrorFields = ReturnType<typeof decodeCallError>;
@@ -64,19 +68,31 @@ function checkedBytes(value: Uint8Array): [Uint8Array, Uint8Array] {
 }
 
 function validCode(code: string): boolean {
-  return (
-    code.length > 5 &&
-    code.length <= ERROR_CODE_MAX &&
-    code.startsWith("KELD-") &&
-    !/[^A-Z0-9-]/.test(code)
-  );
+  if (
+    code.length <= 5 ||
+    code.length > ERROR_CODE_MAX ||
+    code[0] !== "K" ||
+    code[1] !== "E" ||
+    code[2] !== "L" ||
+    code[3] !== "D" ||
+    code[4] !== "-"
+  )
+    return false;
+  for (let i = 5; i < code.length; i += 1) {
+    const c = code[i];
+    if (!((c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c === "-"))
+      return false;
+  }
+  return true;
 }
 
 function checkDiagnosticLength(bytes: Uint8Array, at: number): void {
-  const [codeLength, codeStart] = decodeVarint(bytes, at);
+  const codeRecord = decodeVarint(bytes, at);
+  const codeLength = codeRecord[0],
+    codeStart = codeRecord[1];
   if (codeLength > ERROR_CODE_MAX)
     return invalid("compat diagnostic code exceeds field limit");
-  const [messageLength] = decodeVarint(bytes, codeStart + codeLength);
+  const messageLength = decodeVarint(bytes, codeStart + codeLength)[0];
   if (messageLength > ERROR_MESSAGE_MAX)
     return invalid("compat diagnostic message exceeds field limit");
 }
@@ -97,7 +113,9 @@ function encodeDiagnostic(value: ErrorFields): Uint8Array {
 }
 
 function readIdentity(bytes: Uint8Array, at: number): [number, number] {
-  const [value, next] = decodeVarint(bytes, at);
+  const record = decodeVarint(bytes, at);
+  const value = record[0],
+    next = record[1];
   if (value === 0) return invalid("zero compat native identity");
   return [value, next];
 }
@@ -107,24 +125,28 @@ function readText(
   at: number,
   max: number,
 ): [string, number] {
-  const [length] = decodeVarint(bytes, at);
+  const length = decodeVarint(bytes, at)[0];
   if (length > max) return invalid("compat string exceeds declared bound");
   return decodePostcardStringAt(bytes, at);
 }
 
 function readBytes(bytes: Uint8Array, at: number): [Uint8Array, number] {
-  const [count, start] = decodeVarint(bytes, at);
-  if (count > VALUE_MAX || count > bytes.byteLength - start)
+  const record = decodeVarint(bytes, at);
+  const count = record[0],
+    start = record[1];
+  if (count > VALUE_MAX || count > stateByteLength(bytes) - start)
     return invalid("compat endpoint bytes exceed declared bound");
-  return [new Uint8Array(bytes.subarray(start, start + count)), start + count];
+  return [stateByteCopy(bytes, start, start + count), start + count];
 }
 
 function readDiagnostic(bytes: Uint8Array, at: number): [ErrorFields, number] {
   checkDiagnosticLength(bytes, at);
   // A diagnostic is the final field of each closed operation that carries it.
-  const error = decodeCallError(bytes.subarray(at));
+  const error = decodeCallError(
+    stateByteView(bytes, at, stateByteLength(bytes)),
+  );
   if (!validCode(error.code)) return invalid("invalid compat diagnostic code");
-  return [error, bytes.byteLength];
+  return [error, stateByteLength(bytes)];
 }
 
 export type ConsumerDisposition =
@@ -154,7 +176,9 @@ function decodeConsumerDispositionAt(
   wireBytes: Uint8Array,
   start: number,
 ): [ConsumerDisposition, number] {
-  const [tag, afterTag] = decodeVarint(wireBytes, start);
+  const tagRecord = decodeVarint(wireBytes, start);
+  const tag = tagRecord[0],
+    afterTag = tagRecord[1];
   switch (tag) {
     case 0: {
       return [{ variant: "Consumed" }, afterTag];
@@ -164,8 +188,9 @@ function decodeConsumerDispositionAt(
     }
     case 2: {
       let at = afterTag;
-      const [error, next_error] = readDiagnostic(wireBytes, at);
-      at = next_error;
+      const decoded_error = readDiagnostic(wireBytes, at);
+      const error = decoded_error[0];
+      at = decoded_error[1];
       return [{ variant: "Refused", error }, at];
     }
     default:
@@ -193,7 +218,9 @@ function decodeDispatchCertaintyAt(
   wireBytes: Uint8Array,
   start: number,
 ): [DispatchCertainty, number] {
-  const [tag, afterTag] = decodeVarint(wireBytes, start);
+  const tagRecord = decodeVarint(wireBytes, start);
+  const tag = tagRecord[0],
+    afterTag = tagRecord[1];
   switch (tag) {
     case 0: {
       return [{ variant: "NotDispatched" }, afterTag];
@@ -242,7 +269,9 @@ function decodeTerminalDispositionAt(
   wireBytes: Uint8Array,
   start: number,
 ): [TerminalDisposition, number] {
-  const [tag, afterTag] = decodeVarint(wireBytes, start);
+  const tagRecord = decodeVarint(wireBytes, start);
+  const tag = tagRecord[0],
+    afterTag = tagRecord[1];
   switch (tag) {
     case 0: {
       return [{ variant: "Consumed" }, afterTag];
@@ -255,17 +284,16 @@ function decodeTerminalDispositionAt(
     }
     case 3: {
       let at = afterTag;
-      const [error, next_error] = readDiagnostic(wireBytes, at);
-      at = next_error;
+      const decoded_error = readDiagnostic(wireBytes, at);
+      const error = decoded_error[0];
+      at = decoded_error[1];
       return [{ variant: "Refused", error }, at];
     }
     case 4: {
       let at = afterTag;
-      const [certainty, next_certainty] = decodeDispatchCertaintyAt(
-        wireBytes,
-        at,
-      );
-      at = next_certainty;
+      const decoded_certainty = decodeDispatchCertaintyAt(wireBytes, at);
+      const certainty = decoded_certainty[0];
+      at = decoded_certainty[1];
       return [{ variant: "RouteRetired", certainty }, at];
     }
     default:
@@ -342,28 +370,37 @@ function decodeCompatControlRequestAt(
   wireBytes: Uint8Array,
   start: number,
 ): [CompatControlRequest, number] {
-  const [tag, afterTag] = decodeVarint(wireBytes, start);
+  const tagRecord = decodeVarint(wireBytes, start);
+  const tag = tagRecord[0],
+    afterTag = tagRecord[1];
   switch (tag) {
     case 0: {
       let at = afterTag;
-      const [webview, next_webview] = readIdentity(wireBytes, at);
-      at = next_webview;
-      const [topic, next_topic] = readText(wireBytes, at, TOPIC_MAX);
-      at = next_topic;
-      const [payload, next_payload] = readBytes(wireBytes, at);
-      at = next_payload;
+      const decoded_webview = readIdentity(wireBytes, at);
+      const webview = decoded_webview[0];
+      at = decoded_webview[1];
+      const decoded_topic = readText(wireBytes, at, TOPIC_MAX);
+      const topic = decoded_topic[0];
+      at = decoded_topic[1];
+      const decoded_payload = readBytes(wireBytes, at);
+      const payload = decoded_payload[0];
+      at = decoded_payload[1];
       return [{ variant: "DeliverToCurrentMain", webview, topic, payload }, at];
     }
     case 1: {
       let at = afterTag;
-      const [webview, next_webview] = readIdentity(wireBytes, at);
-      at = next_webview;
-      const [navigation, next_navigation] = readIdentity(wireBytes, at);
-      at = next_navigation;
-      const [topic, next_topic] = readText(wireBytes, at, TOPIC_MAX);
-      at = next_topic;
-      const [payload, next_payload] = readBytes(wireBytes, at);
-      at = next_payload;
+      const decoded_webview = readIdentity(wireBytes, at);
+      const webview = decoded_webview[0];
+      at = decoded_webview[1];
+      const decoded_navigation = readIdentity(wireBytes, at);
+      const navigation = decoded_navigation[0];
+      at = decoded_navigation[1];
+      const decoded_topic = readText(wireBytes, at, TOPIC_MAX);
+      const topic = decoded_topic[0];
+      at = decoded_topic[1];
+      const decoded_payload = readBytes(wireBytes, at);
+      const payload = decoded_payload[0];
+      at = decoded_payload[1];
       return [
         {
           variant: "DeliverToOriginalDocument",
@@ -376,20 +413,21 @@ function decodeCompatControlRequestAt(
       ];
     }
     case 2: {
-      if (wireBytes.byteLength > CONTROL_MAX)
+      if (stateByteLength(wireBytes) > CONTROL_MAX)
         return invalid("release exceeds control limit");
       let at = afterTag;
-      const [webview, next_webview] = readIdentity(wireBytes, at);
-      at = next_webview;
-      const [navigation, next_navigation] = readIdentity(wireBytes, at);
-      at = next_navigation;
-      const [message, next_message] = readIdentity(wireBytes, at);
-      at = next_message;
-      const [disposition, next_disposition] = decodeConsumerDispositionAt(
-        wireBytes,
-        at,
-      );
-      at = next_disposition;
+      const decoded_webview = readIdentity(wireBytes, at);
+      const webview = decoded_webview[0];
+      at = decoded_webview[1];
+      const decoded_navigation = readIdentity(wireBytes, at);
+      const navigation = decoded_navigation[0];
+      at = decoded_navigation[1];
+      const decoded_message = readIdentity(wireBytes, at);
+      const message = decoded_message[0];
+      at = decoded_message[1];
+      const decoded_disposition = decodeConsumerDispositionAt(wireBytes, at);
+      const disposition = decoded_disposition[0];
+      at = decoded_disposition[1];
       return [
         {
           variant: "ReleaseConsumed",
@@ -409,12 +447,12 @@ function decodeCompatControlRequestAt(
 export function decodeCompatControlRequest(
   payload: Uint8Array,
 ): CompatControlRequest {
-  if (!(payload instanceof Uint8Array) || payload.byteLength > DATA_MAX)
+  if (!stateIsUint8Array(payload) || stateByteLength(payload) > DATA_MAX)
     return invalid("invalid compat frame envelope");
-  const [value, after] = decodeCompatControlRequestAt(payload, 0);
-  if (after !== payload.byteLength)
+  const decoded = decodeCompatControlRequestAt(payload, 0);
+  if (decoded[1] !== stateByteLength(payload))
     return invalid("trailing bytes after compat frame");
-  return value;
+  return decoded[0];
 }
 
 export type CompatControlEvent =
@@ -468,24 +506,33 @@ function decodeCompatControlEventAt(
   wireBytes: Uint8Array,
   start: number,
 ): [CompatControlEvent, number] {
-  const [tag, afterTag] = decodeVarint(wireBytes, start);
+  const tagRecord = decodeVarint(wireBytes, start);
+  const tag = tagRecord[0],
+    afterTag = tagRecord[1];
   switch (tag) {
     case 0: {
       let at = afterTag;
-      const [webview, next_webview] = readIdentity(wireBytes, at);
-      at = next_webview;
-      const [navigation, next_navigation] = readIdentity(wireBytes, at);
-      at = next_navigation;
-      const [message, next_message] = readIdentity(wireBytes, at);
-      at = next_message;
-      const [url, next_url] = readText(wireBytes, at, URL_MAX);
-      at = next_url;
-      const [origin, next_origin] = readText(wireBytes, at, ORIGIN_MAX);
-      at = next_origin;
-      const [topic, next_topic] = readText(wireBytes, at, TOPIC_MAX);
-      at = next_topic;
-      const [payload, next_payload] = readBytes(wireBytes, at);
-      at = next_payload;
+      const decoded_webview = readIdentity(wireBytes, at);
+      const webview = decoded_webview[0];
+      at = decoded_webview[1];
+      const decoded_navigation = readIdentity(wireBytes, at);
+      const navigation = decoded_navigation[0];
+      at = decoded_navigation[1];
+      const decoded_message = readIdentity(wireBytes, at);
+      const message = decoded_message[0];
+      at = decoded_message[1];
+      const decoded_url = readText(wireBytes, at, URL_MAX);
+      const url = decoded_url[0];
+      at = decoded_url[1];
+      const decoded_origin = readText(wireBytes, at, ORIGIN_MAX);
+      const origin = decoded_origin[0];
+      at = decoded_origin[1];
+      const decoded_topic = readText(wireBytes, at, TOPIC_MAX);
+      const topic = decoded_topic[0];
+      at = decoded_topic[1];
+      const decoded_payload = readBytes(wireBytes, at);
+      const payload = decoded_payload[0];
+      at = decoded_payload[1];
       return [
         {
           variant: "RendererMessage",
@@ -501,13 +548,15 @@ function decodeCompatControlEventAt(
       ];
     }
     case 1: {
-      if (wireBytes.byteLength > RETIRED_MAX)
+      if (stateByteLength(wireBytes) > RETIRED_MAX)
         return invalid("retirement exceeds control limit");
       let at = afterTag;
-      const [webview, next_webview] = readIdentity(wireBytes, at);
-      at = next_webview;
-      const [navigation, next_navigation] = readIdentity(wireBytes, at);
-      at = next_navigation;
+      const decoded_webview = readIdentity(wireBytes, at);
+      const webview = decoded_webview[0];
+      at = decoded_webview[1];
+      const decoded_navigation = readIdentity(wireBytes, at);
+      const navigation = decoded_navigation[0];
+      at = decoded_navigation[1];
       return [{ variant: "DocumentRetired", webview, navigation }, at];
     }
     default:
@@ -518,12 +567,12 @@ function decodeCompatControlEventAt(
 export function decodeCompatControlEvent(
   payload: Uint8Array,
 ): CompatControlEvent {
-  if (!(payload instanceof Uint8Array) || payload.byteLength > DATA_MAX)
+  if (!stateIsUint8Array(payload) || stateByteLength(payload) > DATA_MAX)
     return invalid("invalid compat frame envelope");
-  const [value, after] = decodeCompatControlEventAt(payload, 0);
-  if (after !== payload.byteLength)
+  const decoded = decodeCompatControlEventAt(payload, 0);
+  if (decoded[1] !== stateByteLength(payload))
     return invalid("trailing bytes after compat frame");
-  return value;
+  return decoded[0];
 }
 
 export type CompatControlResponse =
@@ -552,15 +601,15 @@ function decodeCompatControlResponseAt(
   wireBytes: Uint8Array,
   start: number,
 ): [CompatControlResponse, number] {
-  const [tag, afterTag] = decodeVarint(wireBytes, start);
+  const tagRecord = decodeVarint(wireBytes, start);
+  const tag = tagRecord[0],
+    afterTag = tagRecord[1];
   switch (tag) {
     case 0: {
       let at = afterTag;
-      const [disposition, next_disposition] = decodeTerminalDispositionAt(
-        wireBytes,
-        at,
-      );
-      at = next_disposition;
+      const decoded_disposition = decodeTerminalDispositionAt(wireBytes, at);
+      const disposition = decoded_disposition[0];
+      at = decoded_disposition[1];
       return [{ variant: "Deliver", disposition }, at];
     }
     case 1: {
@@ -574,10 +623,10 @@ function decodeCompatControlResponseAt(
 export function decodeCompatControlResponse(
   payload: Uint8Array,
 ): CompatControlResponse {
-  if (!(payload instanceof Uint8Array) || payload.byteLength > CONTROL_MAX)
+  if (!stateIsUint8Array(payload) || stateByteLength(payload) > CONTROL_MAX)
     return invalid("invalid compat frame envelope");
-  const [value, after] = decodeCompatControlResponseAt(payload, 0);
-  if (after !== payload.byteLength)
+  const decoded = decodeCompatControlResponseAt(payload, 0);
+  if (decoded[1] !== stateByteLength(payload))
     return invalid("trailing bytes after compat frame");
-  return value;
+  return decoded[0];
 }

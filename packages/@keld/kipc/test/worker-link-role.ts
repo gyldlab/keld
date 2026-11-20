@@ -16,6 +16,7 @@ import {
 } from "node:worker_threads";
 
 import {
+  COMPAT_CONTROL_CHANNEL,
   DIALOG_CHANNEL,
   ECHO_CHANNEL,
   FrameKind,
@@ -43,6 +44,11 @@ import { LifecycleLink } from "../../api/src/link.ts";
 import type { MessageOptions } from "../../api/src/dialog.generated.ts";
 import { MIRROR_FACT_MARKER, mirrorRetention } from "./mirror-retention.ts";
 import * as transport from "../src/transport.ts";
+import {
+  decodeCompatControlEvent,
+  decodeCompatControlRequest,
+  encodeCompatControlRequest,
+} from "../src/compat-control.generated.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -943,6 +949,107 @@ function workerFault(kind: "throw" | "exit" | "wedge"): () => Promise<void> {
 }
 
 // Criterion 10: a full ring fails closed with 026 and keeps what it retained.
+async function compatDecodeIntrinsicPoison(): Promise<void> {
+  const { link } = await open({
+    receive: { eventChannels: [COMPAT_CONTROL_CHANNEL], callReceivers: [] },
+  });
+  let applied = 0;
+  let inApply = false;
+  const diagnostic = encodeCompatControlRequest({
+    variant: "ReleaseConsumed",
+    webview: 1,
+    navigation: 2,
+    message: 3,
+    disposition: {
+      variant: "Refused",
+      error: { code: "KELD-IPC-003", message: "bounded" },
+    },
+  });
+  link.setStateApplier(COMPAT_CONTROL_CHANNEL, (payload) => {
+    inApply = true;
+    try {
+      const value = decodeCompatControlEvent(payload);
+      const receipt = decodeCompatControlRequest(diagnostic);
+      if (value.variant === "RendererMessage" && value.payload[2] === 255)
+        applied +=
+          receipt.variant === "ReleaseConsumed" &&
+          receipt.disposition.variant === "Refused"
+            ? 1
+            : 0;
+    } finally {
+      inApply = false;
+    }
+  });
+  const request = text("compat-intrinsic-poison");
+  const Original = globalThis.Uint8Array;
+  const subarray = Original.prototype.subarray;
+  const typedPrototype = Object.getPrototypeOf(Original.prototype);
+  const byteLength = Object.getOwnPropertyDescriptor(
+    typedPrototype,
+    "byteLength",
+  )!;
+  const arrayIterator = Array.prototype[Symbol.iterator];
+  const startsWith = String.prototype.startsWith;
+  const regexpTest = RegExp.prototype.test;
+  let subarrayCalls = 0;
+  let getterCalls = 0;
+  let hasInstanceCalls = 0;
+  let constructorCalls = 0;
+  let iteratorCalls = 0;
+  let diagnosticCalls = 0;
+  class PoisonUint8Array extends Original {
+    constructor(...args: ConstructorParameters<typeof Uint8Array>) {
+      if (inApply) constructorCalls += 1;
+      super(...args);
+    }
+    static override [Symbol.hasInstance](value: unknown): boolean {
+      if (inApply) hasInstanceCalls += 1;
+      return value instanceof Original;
+    }
+  }
+  Original.prototype.subarray = function (...args) {
+    if (inApply) subarrayCalls += 1;
+    return Reflect.apply(subarray, this, args);
+  };
+  Object.defineProperty(typedPrototype, "byteLength", {
+    ...byteLength,
+    get() {
+      if (inApply) getterCalls += 1;
+      return Reflect.apply(byteLength.get!, this, []);
+    },
+  });
+  Array.prototype[Symbol.iterator] = function () {
+    if (inApply) iteratorCalls += 1;
+    return Reflect.apply(arrayIterator, this, []);
+  };
+  String.prototype.startsWith = function (...args) {
+    if (inApply) diagnosticCalls += 1;
+    return Reflect.apply(startsWith, this, args);
+  };
+  RegExp.prototype.test = function (...args) {
+    if (inApply) diagnosticCalls += 1;
+    return Reflect.apply(regexpTest, this, args);
+  };
+  globalThis.Uint8Array = PoisonUint8Array;
+  try {
+    link.callBlocking(ECHO_CHANNEL, request, 30_000);
+  } finally {
+    globalThis.Uint8Array = Original;
+    Original.prototype.subarray = subarray;
+    Object.defineProperty(typedPrototype, "byteLength", byteLength);
+    Array.prototype[Symbol.iterator] = arrayIterator;
+    String.prototype.startsWith = startsWith;
+    RegExp.prototype.test = regexpTest;
+  }
+  report("compat-applied", applied);
+  report("compat-subarray-callbacks", subarrayCalls);
+  report("compat-length-callbacks", getterCalls);
+  report("compat-instance-callbacks", hasInstanceCalls);
+  report("compat-constructor-callbacks", constructorCalls);
+  report("compat-iterator-callbacks", iteratorCalls);
+  report("compat-diagnostic-callbacks", diagnosticCalls);
+}
+
 function overflow(bound: "bytes" | "records"): () => Promise<void> {
   return async () => {
     const retained = bound === "bytes" ? 1024 : 8;
@@ -2031,6 +2138,7 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
   "worker-wedge": workerFault("wedge"),
   "overflow-bytes": overflow("bytes"),
   "overflow-records": overflow("records"),
+  "compat-intrinsic-poison": compatDecodeIntrinsicPoison,
   "second-link": () => secondLink(true),
   "second-open": () => secondLink(false),
   correlation,
