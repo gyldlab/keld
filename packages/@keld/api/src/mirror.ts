@@ -1,5 +1,25 @@
 /** Internal decode/apply/dispatch owner; not an application export (GH-531 §4.d). */
-import { linkError, stateApply, stateSlots, type WorkerLink } from "@keld/kipc";
+import {
+  WorkerLink,
+  linkError,
+  stateApply,
+  stateFreeze,
+  stateOwnDescriptor,
+  stateSlots,
+} from "@keld/kipc";
+
+const workerPrototype = WorkerLink.prototype;
+const admissionGetter =
+  workerPrototype === undefined
+    ? undefined
+    : stateOwnDescriptor(workerPrototype, "callAdmissionOpen")?.get;
+const noArguments = stateSlots<never>(0) as [];
+
+/** Internal view of the existing retained FIFO; it never owns another queue. */
+export interface PendingMirror<Fact> {
+  /** Visit only still-queued applied facts, in FIFO order, synchronously. */
+  visitPending(visitor: (fact: Fact) => void): void;
+}
 
 /** Framework-owned facts; each production source requires its own heap/alias review. */
 export interface MirrorSource<Fact> {
@@ -24,7 +44,7 @@ export function attachMirror<Fact>(
   link: WorkerLink,
   source: MirrorSource<Fact>,
   released?: (fact: Fact) => void,
-): void {
+): PendingMirror<Fact> {
   const channel = source.channel;
   const decode = source.decode;
   const apply = source.apply;
@@ -35,7 +55,12 @@ export function attachMirror<Fact>(
   const pending = stateSlots<Fact>(capacity);
   let head = 0;
   let count = 0;
+  let scanning = false;
+  let applying = false;
   const applyFact = (payload: Uint8Array): void => {
+    if (scanning || applying)
+      throw linkError("KELD-IPC-005", "mirror apply reentered its state owner");
+    applying = true;
     try {
       const fact = stateApply(decode, source, [payload]);
       stateApply(apply, source, [fact]);
@@ -53,9 +78,16 @@ export function attachMirror<Fact>(
         "KELD-IPC-005",
         "mirror decode or apply failed. Check the source codec and state contract before restarting the role.",
       );
+    } finally {
+      applying = false;
     }
   };
   const take = (): Fact => {
+    if (scanning || applying)
+      throw linkError(
+        "KELD-IPC-005",
+        "mirror dispatch reentered a pending scan",
+      );
     if (count === 0) {
       throw linkError(
         "KELD-IPC-005",
@@ -94,4 +126,33 @@ export function attachMirror<Fact>(
       throw error;
     }
   }
+  const admitted = (): boolean =>
+    admissionGetter !== undefined &&
+    stateApply(admissionGetter, link, noArguments) === true;
+  return stateFreeze({
+    visitPending(visitor: (fact: Fact) => void): void {
+      if (released === undefined || scanning || applying || !admitted()) {
+        throw linkError("KELD-IPC-005", "pending mirror scan is unavailable");
+      }
+      scanning = true;
+      try {
+        const retained = count;
+        for (let index = 0; index < retained; index += 1) {
+          if (!admitted())
+            throw linkError(
+              "KELD-IPC-005",
+              "mirror link ended during pending scan",
+            );
+          visitor(pending[(head + index) % capacity] as Fact);
+          if (!admitted())
+            throw linkError(
+              "KELD-IPC-005",
+              "mirror link ended during pending scan",
+            );
+        }
+      } finally {
+        scanning = false;
+      }
+    },
+  });
 }
