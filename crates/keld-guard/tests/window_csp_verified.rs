@@ -220,3 +220,7 @@ fn retained_verified_policy_cannot_follow_later_path_or_manifest_changes()
     assert_eq!(mismatch.code(), "KELD-GUARD016");
     Ok(())
 }
+
+#[cfg(windows)]
+#[path = "window_csp_verified/selected_legacy.rs"]
+mod selected_legacy;
