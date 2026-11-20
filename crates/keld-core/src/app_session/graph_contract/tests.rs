@@ -665,3 +665,100 @@ pub(in crate::app_session) fn prepared_original_launch_source() -> (
         .expect("prepare the same selected source");
     (fixture.owned, source, fixture.root, Path::new(MAIN))
 }
+
+#[test]
+fn windows_provider_custody_blocks_replacement_until_graph_retirement() {
+    let f = fixture_with_entry();
+    let graph =
+        std::sync::Arc::new(bind(&f, Some(&qualification())).expect("qualified fixture graph"));
+    let successor = graph.clone();
+    for relative in [
+        "node_modules/electron/dist/index.js",
+        "node_modules/@keld/api/package.json",
+        "node_modules/@keld/kipc/package.json",
+    ] {
+        let path = f.root.join(relative);
+        assert!(
+            !fs::read(&path)
+                .expect("provider remains readable")
+                .is_empty()
+        );
+        assert!(
+            fs::write(&path, b"substituted").is_err(),
+            "provider write must fail: {relative}"
+        );
+        assert!(
+            fs::remove_file(&path).is_err(),
+            "provider deletion must fail: {relative}"
+        );
+    }
+    let provider = f.root.join("node_modules/@keld/kipc");
+    let moved = f.root.join("node_modules/@keld/moved");
+    assert!(
+        fs::rename(&provider, &moved).is_err(),
+        "provider namespace must stay stable"
+    );
+    graph.recheck().expect("graph remains valid while retained");
+    drop(graph);
+    assert!(
+        fs::write(
+            f.root.join("node_modules/@keld/kipc/package.json"),
+            b"early"
+        )
+        .is_err(),
+        "a successor retaining the graph keeps custody"
+    );
+    drop(successor);
+    fs::write(
+        f.root.join("node_modules/@keld/kipc/package.json"),
+        b"released",
+    )
+    .expect("last graph owner releases provider");
+    fs::rename(provider, moved).expect("provider directory releases after retirement");
+}
+
+#[test]
+fn windows_provider_custody_refuses_an_already_open_writer() {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+    let f = fixture_with_entry();
+    let writer = fs::OpenOptions::new()
+        .write(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(f.root.join("node_modules/@keld/kipc/package.json"))
+        .expect("open competing writer");
+    assert!(
+        bind(&f, Some(&qualification())).is_err(),
+        "cannot admit a provider whose bytes remain writable"
+    );
+    drop(writer);
+    bind(&f, Some(&qualification())).expect("same unchanged fixture binds after writer release");
+}
+
+#[test]
+fn failed_provider_custody_releases_previously_opened_files() {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+    let f = fixture_with_entry();
+    let bytes = f.compile().expect("fixture graph");
+    fs::write(f.root.join(GRAPH_FILE), &bytes).expect("graph leaf");
+    let digest = Sha256::digest(&bytes).into();
+    let parsed = super::parse_bound_graph(&bytes, digest, Path::new(MAIN)).expect("bound graph");
+    let mut graph = super::bind_bound_graph(&f.root, &f.held, &bytes, digest, parsed)
+        .expect("pre-custody graph");
+    let writer = fs::OpenOptions::new()
+        .write(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(f.root.join("node_modules/electron/package.json"))
+        .expect("hold competing writer at later provider");
+    assert!(graph.retain_windows_providers().is_err());
+    let earlier = f.root.join("node_modules/@keld/api/package.json");
+    let original = fs::read(&earlier).expect("earlier provider bytes");
+    fs::write(&earlier, original).expect("failed partial acquisition released earlier provider");
+    drop(writer);
+    graph
+        .retain_windows_providers()
+        .expect("retry after conflicting writer retires");
+}

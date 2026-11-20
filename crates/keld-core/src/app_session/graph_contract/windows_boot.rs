@@ -3,14 +3,16 @@
 //! avoiding a self-hash cycle in the running Host.
 
 use super::{
-    AdmittedStageGraph, GRAPH_FILE, HostAppError, MAX_GRAPH_BYTES, SelectedRendererSource,
-    bind_bound_graph, borrow_retained_root, graph_error, graph_hash, open_relative_file,
-    parse_bound_graph, parse_sha, read_bounded, root_identity, verify_provider_rows,
-    verify_selected_rows,
+    AdmittedStageGraph, GRAPH_FILE, HostAppError, MAX_GRAPH_BYTES, PACKAGES,
+    SelectedRendererSource, bind_bound_graph, borrow_retained_root, file_metadata, graph_error,
+    graph_hash, open_relative_file, parse_bound_graph, parse_sha, path_metadata, read_bounded,
+    read_hash, root_identity, same_identity, verify_provider_rows, verify_selected_rows,
 };
 use crate::app_session::original_runtime_entry::{
     ORIGINAL_RUNTIME_ENTRY_PATH, windows_original_entry_bootstrap_source,
 };
+use keld_update::{WindowsGraphChildKind, open_retained_graph_child};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -140,6 +142,7 @@ pub(super) fn bind_with_qualification(
         bind_bound_graph(root_path, &retained, &bytes, expected_graph_sha256, graph)?;
     admitted.bind_selected_source(selected)?;
     admitted.retain_windows_runtime_entry()?;
+    admitted.retain_windows_providers()?;
     if root_identity(&admitted.root, &admitted.retained_root)? != admitted.root_identity {
         return Err(graph_error(
             "retained root",
@@ -150,6 +153,72 @@ pub(super) fn bind_with_qualification(
 }
 
 impl AdmittedStageGraph {
+    pub(super) fn retain_windows_providers(&mut self) -> Result<(), HostAppError> {
+        if self.windows_provider_custody.is_some() {
+            return Err(graph_error("Windows provider custody", "already retained"));
+        }
+        let mut directories = BTreeMap::<String, File>::new();
+        let mut files = Vec::new();
+        for row in self.graph.files.iter().filter(|row| {
+            PACKAGES.iter().any(|(prefix, _)| {
+                row.path
+                    .strip_prefix(prefix)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+            })
+        }) {
+            let mut parent_path = String::new();
+            let mut components = row.path.split('/').peekable();
+            while let Some(name) = components.next() {
+                let parent = if parent_path.is_empty() {
+                    &self.retained_root
+                } else {
+                    directories.get(&parent_path).ok_or_else(|| {
+                        graph_error("Windows provider custody", "missing retained parent")
+                    })?
+                };
+                if components.peek().is_some() {
+                    let path = if parent_path.is_empty() {
+                        name.to_owned()
+                    } else {
+                        format!("{parent_path}/{name}")
+                    };
+                    if !directories.contains_key(&path) {
+                        let child = open_retained_graph_child(
+                            parent,
+                            name,
+                            WindowsGraphChildKind::Directory,
+                        )
+                        .map_err(|error| graph_error("Windows provider directory", error))?;
+                        directories.insert(path.clone(), child);
+                    }
+                    parent_path = path;
+                } else {
+                    let file =
+                        open_retained_graph_child(parent, name, WindowsGraphChildKind::RegularFile)
+                            .map_err(|error| graph_error("Windows provider file", error))?;
+                    let metadata = file_metadata(&file)
+                        .map_err(|error| graph_error("Windows provider identity", error))?;
+                    let named = path_metadata(self.root.join(&row.path))
+                        .map_err(|error| graph_error("Windows provider identity", error))?;
+                    if !same_identity(&metadata, &named) || metadata.len() != row.size {
+                        return Err(graph_error("Windows provider identity", &row.path));
+                    }
+                    let reader = file
+                        .try_clone()
+                        .map_err(|error| graph_error("Windows provider file", error))?;
+                    let (digest, size) = read_hash(reader)?;
+                    if size != row.size || digest != parse_sha(&row.sha256)? {
+                        return Err(graph_error("Windows provider digest", &row.path));
+                    }
+                    files.push(file);
+                }
+            }
+        }
+        files.extend(directories.into_values());
+        self.windows_provider_custody = Some(files);
+        Ok(())
+    }
+
     fn retain_windows_runtime_entry(&mut self) -> Result<(), HostAppError> {
         if self.windows_runtime_entry.is_some() {
             return Err(graph_error(

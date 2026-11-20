@@ -82,6 +82,10 @@ pub struct AdmittedStageGraph {
     /// all sessions and any retained fatal native owner.
     #[cfg(windows)]
     windows_runtime_entry: Option<File>,
+    /// Qualified provider leaves and every path ancestor remain held while the
+    /// graph has consumers, including replacement Runtime generations.
+    #[cfg(windows)]
+    windows_provider_custody: Option<Vec<File>>,
 }
 
 fn graph_error(phase: &'static str, detail: impl std::fmt::Display) -> HostAppError {
@@ -834,6 +838,8 @@ fn admit_graph_against_expected(
         selected_file_identities: None,
         #[cfg(windows)]
         windows_runtime_entry: None,
+        #[cfg(windows)]
+        windows_provider_custody: None,
     };
     // Preserve the exact retained root against replacement during final
     // source/provider admission, including the last digest calculation.
@@ -891,6 +897,8 @@ fn bind_bound_graph(
         selected_file_identities: None,
         #[cfg(windows)]
         windows_runtime_entry: None,
+        #[cfg(windows)]
+        windows_provider_custody: None,
     };
     if root_identity(&result.root, &result.retained_root)? != result.root_identity {
         return Err(graph_error("retained root", "bound root changed"));

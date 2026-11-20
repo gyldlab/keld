@@ -279,8 +279,8 @@ fn expected_selected_probe(root: &Path, display_id: u32) -> Value {
 
 #[test]
 #[ignore = "requires the qualified Windows x64 provider fixture and inherited command probe environment"]
-fn selected_command_delivers_pinned_facts_and_rechecks_provider_before_successor()
--> Result<(), Box<dyn Error>> {
+fn selected_command_holds_provider_and_rechecks_app_before_successor() -> Result<(), Box<dyn Error>>
+{
     assert_probe_environment();
     let (_guard, source, root, entry) = prepared_pinned_launch_source(
         &pinned_providers(),
@@ -289,19 +289,26 @@ fn selected_command_delivers_pinned_facts_and_rechecks_provider_before_successor
     let (supervisor, recovery) = start_selected_probe(&source, &root, entry)?;
     let mut stream = receive_selected_probe(&supervisor, 1)?.into_stream();
     accept_selected_subscriptions(&mut stream, FIRST_DISPLAY_ID)?;
-    // Change one byte in a nonexecuted, otherwise admitted provider member.
-    // G1 already captured the real provider and cannot finish before Ready.
+    // G1 is live: the retained graph must deny changing a provider while a
+    // successor may need it. The app entry remains a separate recheck input.
     let changed = root.join(CHANGED_PROVIDER);
     let mut bytes = fs::read(&changed)?;
     bytes[0] ^= 1;
-    fs::write(changed, bytes)?;
+    assert!(
+        fs::write(changed, bytes).is_err(),
+        "provider must remain held"
+    );
+    let changed_app = root.join(entry);
+    let mut app_bytes = fs::read(&changed_app)?;
+    app_bytes.push(b' ');
+    fs::write(changed_app, app_bytes)?;
     send_ready(&mut stream)?;
     assert!(recovery.arm());
     let (outcome, events) = terminal(&supervisor);
     assert!(
         matches!(outcome, SupervisorOutcome::Failed(RuntimeError::Lifecycle {
             phase: "retained role source recheck", ref source,
-        }) if source.to_string().contains(CHANGED_PROVIDER)),
+        }) if source.to_string().contains(entry.to_str().expect("fixture entry is UTF-8"))),
         "{outcome:?} / {events:?}"
     );
     assert!(
@@ -335,10 +342,18 @@ fn selected_command_delivers_pinned_facts_to_two_authenticated_generations()
         &format!("{ENV_SAMPLE}{ORIGINAL_PROBE}"),
     );
     let (supervisor, recovery) = start_selected_probe(&source, &root, entry)?;
+    drop(source);
     let first = receive_selected_probe(&supervisor, 1)?;
     let first_generation = first.generation();
     let mut stream = first.into_stream();
     accept_selected_subscriptions(&mut stream, FIRST_DISPLAY_ID)?;
+    let held_providers = [
+        root.join("node_modules/@keld/api/app.js"),
+        root.join("node_modules/@keld/kipc/transport.js"),
+    ];
+    for provider in &held_providers {
+        assert!(fs::write(provider, b"first generation overwrite").is_err());
+    }
     // Ready prompts the probe's deliberate exit. A separate snapshot on G2
     // proves its app observed its own Worker traffic after Ready.
     send_ready(&mut stream)?;
@@ -348,6 +363,9 @@ fn selected_command_delivers_pinned_facts_to_two_authenticated_generations()
     assert_ne!(successor.generation(), first_generation);
     let mut successor_stream = successor.into_stream();
     accept_selected_subscriptions(&mut successor_stream, SUCCESSOR_DISPLAY_ID)?;
+    for provider in &held_providers {
+        assert!(fs::write(provider, b"successor overwrite").is_err());
+    }
     assert!(recovery.deny());
     send_ready(&mut successor_stream)?;
 
@@ -362,7 +380,6 @@ fn selected_command_delivers_pinned_facts_to_two_authenticated_generations()
         .collect();
     assert_eq!(retired_attempts, [1, 2], "{events:?}");
     assert!(supervisor.try_recv_bound_generation().is_none());
-    source.launch_graph().recheck()?;
     assert_eq!(
         read_probes(&supervisor)?,
         [
@@ -372,6 +389,10 @@ fn selected_command_delivers_pinned_facts_to_two_authenticated_generations()
         "{:?}",
         supervisor.output(),
     );
+    drop(supervisor);
+    for provider in &held_providers {
+        fs::write(provider, b"released after both generations")?;
+    }
     Ok(())
 }
 
