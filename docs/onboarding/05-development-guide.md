@@ -704,14 +704,31 @@ Review commands before enabling them. Do not install these project handlers glob
 | Claude Code >=2.1.196 | `.claude/settings.local.json` | session_id / prompt_id | block once; repeated failure terminates with explicit handoff |
 | Cursor | `.cursor/hooks.json` | conversation_id / generation_id | bounded repair follow-up; no terminal admission guarantee |
 
-All clients require locally generated registration. Keep machine-specific registration
-out of commits. The checked-in Codex registration is a disabled template: without
-`--git-executable`, the bootstrap fails closed and requests local generation before
-running Git or loading checkout modules. Replace existing registrations to receive
-this protection. All bootstrap and helper Git calls use the selected absolute path.
-No additional Python packages are required. All registrations pin exact source hashes:
-changed bytes require review and regeneration, followed by the client's normal trust/loading
-check. Regenerate when changing OS or Git installation.
+All clients require locally generated registration. For Codex, write the generated
+JSON to the ignored project file `.codex/hooks.json`. Keep other hooks already in
+that file, and replace only earlier Keld closeout entries. Review the loaded Keld
+prompt and Stop hooks via `/hooks` in the checkout. A linked worktree can use the
+main checkout's corresponding project hook file, so verify the source in `/hooks`.
+Trust the exact commands only after review. Verify that the prompt hook supplies
+the expected closeout paths and that Stop checks the current receipt. Until both
+work, run `just session-closeout <receipt>` explicitly and do not claim automatic
+enforcement. Do not also register these Keld hooks at user scope:
+[Codex loads matching hooks from all active scopes](https://learn.chatgpt.com/docs/hooks#where-codex-looks-for-hooks).
+
+The tracked `.codex/hooks.example.json` is a disabled sample, not a Codex discovery
+path. A checkout without local registration has no Keld hooks loaded by default.
+Copying the sample does not activate the hook: without `--git-executable`, its
+command refuses before running Git or loading checkout modules.
+
+If an older checkout has local edits in the formerly tracked `.codex/hooks.json`,
+back up that file outside the checkout before updating. Restore the tracked version
+only after confirming the backup and then update. Regenerate and merge the new Keld
+entries into the now-local file; restore the other backed-up hooks and review again.
+
+All bootstrap and helper Git calls use the selected absolute path. No additional
+Python packages are required. Registrations pin exact source hashes: changed bytes
+require review and regeneration, then the client's trust/loading check. Regenerate
+when changing OS or Git installation.
 
 
 

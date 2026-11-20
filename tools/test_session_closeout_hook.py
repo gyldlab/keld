@@ -138,7 +138,7 @@ class HookTests(unittest.TestCase):
         self.payload['cwd'] = str(renamed)
         self.receipt_path = renamed / '.git/keld-closeout/session_214/turn-1.json'
         root = Path(__file__).resolve().parent.parent
-        config = json.loads((root / '.codex/hooks.json').read_text(encoding='utf-8'))
+        config = json.loads((root / '.codex/hooks.example.json').read_text(encoding='utf-8'))
         self.assertEqual(config, hook.configuration())
         config = hook.configuration(git_executable=str(Path(shutil.which('git')).resolve()))
         self.assertEqual(set(config['hooks']), {'UserPromptSubmit', 'Stop'})
@@ -223,6 +223,52 @@ class HookTests(unittest.TestCase):
         answer = self.cli(json.dumps(self.payload))
         self.assertNotIn("decision", answer)
         self.assertIn("accepted: complete", answer["systemMessage"])
+
+    def test_local_codex_registration_keeps_completed_receipt_clean(self):
+        source_root = Path(__file__).resolve().parent.parent
+        # Mirror the project's tracked sample and ignored active registration.
+        sample = Path('.codex/hooks.example.json')
+        files = [Path('.gitignore'), sample, *(Path('tools') / (name + '.py')
+                 for name in ('session_closeout', 'workspace', 'session_closeout_hook'))]
+        for path in files:
+            (self.repo / path).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_root / path, self.repo / path)
+        self.fixture.git('add', '--', *(str(path) for path in files))
+        self.fixture.git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                         'commit', '-qm', 'track closeout sources')
+        head = self.fixture.git('rev-parse', 'HEAD')
+        self.fixture.receipt['head'] = head
+        self.fixture.receipt['checks'][0]['source_head'] = head
+        self.publish()
+
+        registration = subprocess.run(
+            [sys.executable, '-B', 'tools/session_closeout_hook.py', '--print-config',
+             '--harness', 'codex', '--git-executable', str(Path(shutil.which('git')).resolve())],
+            cwd=self.repo, check=True, capture_output=True, text=True, encoding='utf-8', timeout=30)
+        active = self.repo / '.codex/hooks.json'
+        active.write_text(registration.stdout, encoding='utf-8')
+        handler = json.loads(active.read_text(encoding='utf-8'))['hooks']['Stop'][0]['hooks'][0]
+        if os.name == 'nt':
+            command = ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', handler['commandWindows']]
+        else:
+            command = ['sh', '-c', handler['command']]
+
+        def stop():
+            result = subprocess.run(command, cwd=self.repo, check=True, input=json.dumps(self.payload),
+                                    capture_output=True, text=True, encoding='utf-8', timeout=60)
+            return json.loads(result.stdout)
+
+        answer = stop()
+        self.assertIn('accepted: complete', answer.get('systemMessage', str(answer)))
+        self.assertEqual(self.fixture.git('status', '--porcelain'), '')
+        self.assertEqual(self.fixture.git('check-ignore', '--', '.codex/hooks.json'), '.codex/hooks.json')
+        # Keep the same receipt and configuration; one unrelated tracked
+        # edit must still fail closed.
+        with (self.repo / '.gitignore').open('a', encoding='utf-8') as ignore:
+            ignore.write('\n# Uncommitted tracked edit.\n')
+        answer = stop()
+        self.assertEqual(answer['decision'], 'block')
+        self.assertIn('dirty tracked files', answer['reason'])
 
     def test_wrong_session_turn_and_repository_reject(self):
         self.publish()
@@ -318,7 +364,7 @@ class HookTests(unittest.TestCase):
 
     def test_native_config_shapes_platforms_and_exec_argv(self):
         codex = hook.configuration()
-        self.assertEqual(codex, json.loads((Path(__file__).parent.parent / ".codex/hooks.json").read_text(encoding='utf-8')))
+        self.assertEqual(codex, json.loads((Path(__file__).parent.parent / ".codex/hooks.example.json").read_text(encoding='utf-8')))
         claude = hook.configuration("claude", "windows")
         handler = claude["hooks"]["Stop"][0]["hooks"][0]
         self.assertEqual(handler["command"], "python.exe")
