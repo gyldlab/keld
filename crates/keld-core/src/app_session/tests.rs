@@ -30,6 +30,47 @@ use super::SESSION_HANDOVER;
 
 #[cfg(target_os = "macos")]
 #[test]
+fn guardian_reexec_uses_canonical_stage_child_not_a_replaceable_invocation_alias() {
+    use super::guardian_stage_executable;
+    use std::process::Command;
+
+    let temp = tempfile::tempdir().expect("isolated alias fixture");
+    let root = temp
+        .path()
+        .canonicalize()
+        .expect("canonical temporary root")
+        .join("stage");
+    fs::create_dir(&root).expect("stage root");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("private root");
+    let staged = root.join("keld-host");
+    fs::write(&staged, b"#!/bin/sh\nprintf 'STAGED_EXECUTED\\n'\n").expect("owned staged script");
+    fs::set_permissions(&staged, fs::Permissions::from_mode(0o700)).expect("owner executable");
+    let attacker = temp.path().join("foreign");
+    fs::write(&attacker, b"#!/bin/sh\nprintf 'FOREIGN_EXECUTED\\n'\n").expect("foreign script");
+    fs::set_permissions(&attacker, fs::Permissions::from_mode(0o700)).expect("foreign executable");
+
+    let alias = temp.path().join("mutable-invocation");
+    symlink(&staged, &alias).expect("original invocation alias");
+    let selected = guardian_stage_executable(&root).expect("canonical Host stage");
+    assert_eq!(selected, staged);
+    fs::remove_file(&alias).expect("retire invocation symlink");
+    symlink(&attacker, &alias).expect("replace untrusted alias");
+    let result = Command::new(&selected)
+        .output()
+        .expect("execute the selected staged Host, not invocation alias");
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(result.stdout, b"STAGED_EXECUTED\n");
+
+    fs::remove_file(&staged).expect("retire staged file for negative test");
+    symlink(&attacker, &staged).expect("substitute staged executable link");
+    assert!(
+        guardian_stage_executable(&root).is_err(),
+        "a symlink at the selected stage leaf must be refused"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn guardian_mode_argument_and_environment_share_the_validated_boot_decision() {
     use super::{AppReadyTrigger, NATIVE_WINDOW_FACADE_ENV, configure_guardian_boot_mode};
     for (trigger, expected) in [
