@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -97,6 +98,82 @@ test("source-only materializer does not write through a symlinked immediate pare
     assert.equal(existsSync(join(destination, "review")), false);
   } finally {
     rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("a caller getter cannot redirect the unclaimed review output through a new parent symlink", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "gh1404-review-getter-parent-"));
+  try {
+    const selected = join(scratch, "selected");
+    const parked = join(scratch, "parked");
+    const foreign = join(scratch, "foreign");
+    const output = join(selected, "review");
+    mkdirSync(selected);
+    mkdirSync(foreign);
+    const entry = ["src/main/generated.js", "reviewed bytes"];
+    Object.defineProperty(entry, 1, {
+      get() {
+        assert.equal(
+          existsSync(output),
+          false,
+          "getter runs before the output claim",
+        );
+        renameSync(selected, parked);
+        symlinkSync(foreign, selected, "dir");
+        return "reviewed bytes";
+      },
+    });
+    assert.throws(
+      () => materializeReviewFiles(output, [entry]),
+      /symlinked review output parent/,
+    );
+    assert.equal(existsSync(join(foreign, "review")), false);
+    assert.equal(existsSync(join(parked, "review")), false);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("final output claim refuses a late intermediate alias into the pristine source", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "gh1404-review-late-root-"));
+  try {
+    const pristine = join(scratch, "pristine");
+    const alias = join(scratch, "late-parent");
+    const output = join(alias, "nested", "review");
+    mkdirSync(join(pristine, "nested"), { recursive: true });
+    assert.equal(existsSync(alias), false, "initial output parent is absent");
+    // Model an output-ancestor change during the asynchronous adapter import.
+    await Promise.resolve();
+    symlinkSync(pristine, alias, "dir");
+    assert.throws(
+      () =>
+        materializeReviewFiles(output, [["main.js", "unapproved"]], pristine),
+      /review output overlaps pristine source/,
+    );
+    assert.equal(existsSync(join(pristine, "nested", "review")), false);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("final source containment still permits a distinct trusted scratch destination", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "gh1404-review-distinct-root-"));
+  try {
+    const pristine = join(scratch, "pristine");
+    const output = join(scratch, "scratch-output", "review");
+    mkdirSync(pristine);
+    materializeReviewFiles(
+      output,
+      [["src/main.js", "reviewed bytes"]],
+      pristine,
+    );
+    assert.equal(
+      readFileSync(join(output, "src/main.js"), "utf8"),
+      "reviewed bytes",
+    );
+    assert.equal(existsSync(join(pristine, "review")), false);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
   }
 });
 test(
@@ -418,7 +495,7 @@ test("one-time entry-name snapshot cannot escape the claimed output after valida
   }
 });
 
-test("side-effectful bytes getter cannot install nested symlink after output claim", () => {
+test("pre-claim bytes getter creating an output directory is refused without foreign writes", () => {
   const scratch = mkdtempSync(join(tmpdir(), "gh1404-source-review-symlink-"));
   try {
     const outside = join(scratch, "foreign");
@@ -427,8 +504,8 @@ test("side-effectful bytes getter cannot install nested symlink after output cla
     const entry = ["nested/output.js", "source"];
     Object.defineProperty(entry, 1, {
       get() {
-        // Simulate an untrusted caller attempting to install an alias at the
-        // next output directory after the destination claim.
+        // The bytes getter runs before the exclusive output claim.
+        assert.equal(existsSync(output), false, "the getter is pre-claim");
         mkdirSync(output, { recursive: true });
         symlinkSync(outside, join(output, "nested"));
         return "attacker bytes";

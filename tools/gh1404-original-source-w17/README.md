@@ -11,7 +11,9 @@ Run on an already verified immutable pristine original source root with a distin
 The output destination must be outside the pristine source tree, including
 physical paths reached through symbolic-link aliases. The producer refuses a
 symlinked immediate output parent and resolves other existing ancestors to
-their physical directory before claiming a new output path. A separately
+their physical directory **after** caller entry getters run. It checks the
+final physical output against the pristine source root again after loading
+the pinned adapter, immediately before claiming a new output path. A separately
 qualified builder must still protect the filesystem against same-user inode
 renames or changes after this point-in-time source-only receipt. This output
 must never be treated as an approved installed application.

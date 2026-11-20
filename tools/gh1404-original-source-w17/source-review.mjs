@@ -138,10 +138,11 @@ function assertReviewOutsideSource(root, output) {
  * Never adopt another producer's directory. Roll back only files opened by
  * this invocation, then remove owned directories only if they are empty.
  */
-export function materializeReviewFiles(outputInput, entries) {
-  const output = canonicalNewReviewOutput(outputInput);
-  if (existsSync(output))
-    throw new Error("GH1404 refuse existing output directory");
+export function materializeReviewFiles(
+  outputInput,
+  entries,
+  pristineRootInput,
+) {
   // Capture and validate every caller-provided name and byte buffer BEFORE
   // creating the destination. No getters, iterators or coercions may run
   // during writes and change the path after validation.
@@ -166,6 +167,18 @@ export function materializeReviewFiles(outputInput, entries) {
       bytes: Buffer.isBuffer(bytes) ? Buffer.from(bytes) : bytes,
     };
   });
+  // Caller getters may rename a parent or create an alias. Resolve the final
+  // physical destination only after all their callbacks have finished.
+  const output = canonicalNewReviewOutput(outputInput);
+  if (pristineRootInput !== undefined) {
+    if (typeof pristineRootInput !== "string")
+      throw new Error("GH1404 invalid pristine root for review output");
+    // Recheck after the producer's async adapter load, immediately before
+    // creating directories. The first preflight is not an output claim.
+    assertReviewOutsideSource(pristineRootInput, output);
+  }
+  if (existsSync(output))
+    throw new Error("GH1404 refuse existing output directory");
   mkdirSync(dirname(output), { recursive: true });
   // Nonrecursive mkdir is the atomic claim after any awaited source work.
   claimNewReviewDirectory(output);
@@ -358,7 +371,7 @@ export async function produceReview(rootInput, adapterInput, outputInput) {
     "REVIEW-MANIFEST.UNAPPROVED.json",
     JSON.stringify(receipt, null, 2) + "\n",
   ]);
-  materializeReviewFiles(output, files);
+  materializeReviewFiles(output, files, root);
   return receipt;
 }
 if (
