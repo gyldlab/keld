@@ -252,11 +252,26 @@ export class WindowSource implements MirrorSource<WindowEvent> {
   /** Immutable snapshots in host-id order; terminal ones remain until dispatch. */
   all(): readonly WindowSnapshot[] {
     this.#requireLive();
-    return stateFreeze(
-      stateMapValues(this.#windows)
-        .filter((value): value is WindowSnapshot => value !== null)
-        .sort((a, b) => a.window.id - b.window.id),
-    );
+    // stateMapValues creates dense own-data slots through captured intrinsics.
+    // Application code can replace Array.prototype.filter/sort after preload;
+    // use only those own slots for the bounded (1024-ID) census and ordering.
+    const values = stateMapValues(this.#windows);
+    let live = 0;
+    for (let i = 0; i < values.length; i += 1) {
+      const value = values[i];
+      if (value !== null) values[live++] = value;
+    }
+    values.length = live;
+    for (let i = 1; i < live; i += 1) {
+      const value = values[i]!;
+      let at = i;
+      while (at > 0 && values[at - 1]!.window.id > value.window.id) {
+        values[at] = values[at - 1];
+        at -= 1;
+      }
+      values[at] = value;
+    }
+    return stateFreeze(values as WindowSnapshot[]);
   }
 
   /** Called by the future link owner only after its retained-record drain. */
