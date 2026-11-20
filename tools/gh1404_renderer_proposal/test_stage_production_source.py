@@ -10,6 +10,7 @@ import io
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tempfile
@@ -359,6 +360,66 @@ class ProductionStageDestinationTests(unittest.TestCase):
     def test_pinned_source_same_bytes_different_inode_refuses_publication(self) -> None:
         self._publication_file_content_control(same_bytes_new_inode=True)
 
+    def _pinned_source_fifo_publication_control(self, *, directory: bool) -> None:
+        source = self._sources(pinned=True)
+        output = self.root / "staged-source"
+        kind = "directory" if directory else "file"
+        # Run the actual pinned source and file-descriptor code in a child.
+        # The timeout is a kill switch for the vulnerable blocking FIFO open.
+        try:
+            result = subprocess.run(
+                [sys.executable, "-B", str(Path(__file__).resolve()),
+                 "--fifo-child", kind, str(source), str(output)],
+                text=True, capture_output=True, check=False, timeout=5,
+            )
+        except subprocess.TimeoutExpired as error:
+            self.fail(f"source publication blocked on {kind} FIFO: {error}")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stdout, "", "unsafe stage emitted a success receipt")
+        self.assertIn("destination changed or unsafe during source publication", result.stderr)
+        fifo = (output / "src") if directory else (
+            output / "src/main/webapp/mxgraph/src/util/mxSvgCanvas2D.js"
+        )
+        self.assertTrue(stat.S_ISFIFO(fifo.lstat().st_mode),
+                        f"the test did not substitute a {kind} FIFO")
+
+    def test_pinned_source_rebound_js_fifo_refuses_without_hanging(self) -> None:
+        self._pinned_source_fifo_publication_control(directory=False)
+
+    def test_pinned_source_rebound_directory_fifo_refuses_without_hanging(self) -> None:
+        self._pinned_source_fifo_publication_control(directory=True)
+
+
+def _fifo_child(mode: str, source: Path, output: Path) -> None:
+    """Isolated adversarial staging callback; only the test-owned output is mutated."""
+    original_write = stage.write_new_file
+    original_dir = stage.create_directory
+
+    def publish_fifo_file(parent_fd: int, name: str, data: bytes) -> object:
+        receipt = original_write(parent_fd, name, data)
+        if mode == "file" and name == "mxSvgCanvas2D.js":
+            os.rename(name, "parked-mxSvgCanvas2D.js",
+                      src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            os.mkfifo(name, mode=0o600, dir_fd=parent_fd)
+        return receipt
+
+    def publish_fifo_directory(parent_fd: int, name: str, stack: object) -> int:
+        fd = original_dir(parent_fd, name, stack)
+        if mode == "directory" and name == "src":
+            os.rename(name, "parked-src", src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            os.mkfifo(name, mode=0o600, dir_fd=parent_fd)
+        return fd
+
+    with mock.patch.object(sys, "argv",
+                           [str(SCRIPT), "--source-root", str(source),
+                            "--output-root", str(output)]), \
+            mock.patch.object(stage, "write_new_file", side_effect=publish_fifo_file), \
+            mock.patch.object(stage, "create_directory", side_effect=publish_fifo_directory):
+        stage.main()
+
 
 if __name__ == "__main__":
-    unittest.main()
+    if len(sys.argv) == 5 and sys.argv[1] == "--fifo-child":
+        _fifo_child(sys.argv[2], Path(sys.argv[3]), Path(sys.argv[4]))
+    else:
+        unittest.main()

@@ -324,6 +324,10 @@ and output file using no-follow directory handles. It requires each name to
 retain its captured device/inode identity and every file to match its original
 length and SHA-256. A name rebound after source writing therefore refuses the
 overlay even when all writes remained within the original directory handles.
+Verification opens output files nonblocking and rejects non-regular inodes,
+including a FIFO swapped into the advertised JavaScript path, without waiting
+for a pipe writer. Directory-path FIFO replacements are refused by the
+directory-only open.
 These checks are point-in-time evidence: a separate process running under the
 **same UID** with write permission can still mutate paths after verification,
 or physically move an already-open directory inode into an application bundle.

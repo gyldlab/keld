@@ -138,7 +138,11 @@ def verify_published_overlay(
         verified[key] = fd
     for parts, (device, inode, size, digest) in files.items():
         name = parts[-1]
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW |
+        # O_NONBLOCK is essential here: a same-UID writer can replace the
+        # published regular file with a FIFO after its source bytes were
+        # written. Without it, the read-only open waits for a FIFO writer
+        # forever and never reaches our S_ISREG refusal.
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK |
                      getattr(os, "O_CLOEXEC", 0), dir_fd=verified[parts[:-1]])
         with os.fdopen(fd, "rb") as source:
             observed = os.fstat(source.fileno())
