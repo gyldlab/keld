@@ -41,8 +41,12 @@ def main() -> None:
         parser.error("output must be outside the original source tree")
     if output_root.exists():
         parser.error("output already exists; use a new isolated directory")
-    if any(path.suffix == ".app" for path in (source_root, *source_root.parents)):
+    if any(path.suffix.casefold() == ".app" for path in (source_root, *source_root.parents)):
         parser.error("refusing installed application input; use a source checkout")
+    # Resolve aliases first: writing an overlay anywhere inside a bundle would
+    # mutate its signed resource seal, even if the input checkout is pristine.
+    if any(path.suffix.casefold() == ".app" for path in (output_root, *output_root.parents)):
+        parser.error("refusing application bundle output; use an isolated staging directory")
 
     prepared = []
     full_patch = bytearray()
