@@ -1,5 +1,5 @@
 /** Public filesystem calls over the application's single canonical link. */
-import { kipcError } from "../../kipc/src/transport.ts";
+import { kipcError } from "@keld/kipc";
 import { invokeFs } from "./app.ts";
 import { decodeFsResponse, encodeFsRequest } from "./fs.generated.ts";
 

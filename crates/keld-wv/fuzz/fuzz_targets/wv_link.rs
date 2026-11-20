@@ -24,6 +24,9 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
                 assert_ne!(channel.get(), 0);
                 assert!(payload.len() <= 4096);
             }
+            WvLinkEnvelope::Send { .. } | WvLinkEnvelope::Consumed { .. } => {
+                unreachable!("legacy v1 decoder must never emit v2 envelopes");
+            }
         }
     }
 });

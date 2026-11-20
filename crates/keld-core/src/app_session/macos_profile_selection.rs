@@ -77,14 +77,27 @@ pub(super) fn select_macos_profile_mode_with(
     release_identity: impl FnOnce() -> Result<MacValidatedAppIdentity, HostAppError>,
 ) -> Result<WebProfileSelection, HostAppError> {
     if has_authenticated_dev_lease {
-        let mut launch_nonce = [0_u8; 32];
-        fill_os_random(&mut launch_nonce)
-            .map_err(|source| macos_identity_error(format!("host randomness failed: {source}")))?;
-        let profile = EphemeralProfile::from_host_random(launch_nonce)
-            .map_err(|source| macos_identity_error(source.to_string()))?;
-        return Ok(WebProfileSelection::ephemeral_dev(profile));
+        return host_random_ephemeral_profile();
     }
     release_identity()?.into_profile_selection()
+}
+
+/// A local ad-hoc bundle has no Apple publisher identity and must never be
+/// admitted to the KEL-135 persistent `WebView` store. The installed-origin
+/// owner alone selects this mode after validating that running bundle.
+#[cfg(target_os = "macos")]
+pub(super) fn local_bundle_ephemeral_profile() -> Result<WebProfileSelection, HostAppError> {
+    host_random_ephemeral_profile()
+}
+
+#[cfg(target_os = "macos")]
+fn host_random_ephemeral_profile() -> Result<WebProfileSelection, HostAppError> {
+    let mut launch_nonce = [0_u8; 32];
+    fill_os_random(&mut launch_nonce)
+        .map_err(|source| macos_identity_error(format!("host randomness failed: {source}")))?;
+    let profile = EphemeralProfile::from_host_random(launch_nonce)
+        .map_err(|source| macos_identity_error(source.to_string()))?;
+    Ok(WebProfileSelection::ephemeral_dev(profile))
 }
 
 #[cfg(target_os = "macos")]
@@ -111,4 +124,29 @@ pub(super) fn macos_identity_error(detail: impl Into<String>) -> HostAppError {
         detail,
         "Launch a validly signed macOS app with a canonical signed identifier, or use `keld dev` for a fresh nonpersistent profile.",
     )
+}
+
+#[cfg(test)]
+mod local_bundle_tests {
+    use super::local_bundle_ephemeral_profile;
+    use keld_wv::WebProfileSelection;
+
+    #[test]
+    fn local_ad_hoc_bundle_mints_fresh_ephemeral_profile_without_publisher_scope() {
+        let WebProfileSelection::EphemeralDev(first) =
+            local_bundle_ephemeral_profile().expect("first OS-random profile")
+        else {
+            panic!("local bundle must never select a persistent publisher store");
+        };
+        let WebProfileSelection::EphemeralDev(second) =
+            local_bundle_ephemeral_profile().expect("second OS-random profile")
+        else {
+            panic!("local bundle must never select a persistent publisher store");
+        };
+        assert_ne!(
+            first.launch_nonce(),
+            second.launch_nonce(),
+            "the same local app must receive isolated browser state on each launch"
+        );
+    }
 }

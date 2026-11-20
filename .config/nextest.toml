@@ -46,6 +46,20 @@
 # this bound whenever the reviewed Nextest binary pin changes.
 slow-timeout = { period = "60s", terminate-after = 10 }
 
+# Two real macOS packaging tests concurrently exercised hdiutil create/verify
+# on the same hosted runner (CI run 43704372827, first attempt). One observed
+# "Resource temporarily unavailable" in DMG verification while the sibling
+# native packaging test completed. Those fixtures do not test concurrent
+# DiskImages service access. Serialize the package's macOS integration rows,
+# preserving every signing, integrity, tamper, and failure assertion and keeping
+# nextest's no-retry policy unchanged.
+[test-groups.macos-native-dmg]
+max-threads = 1
+
+[[profile.ci.overrides]]
+filter = "package(keld-pack) & test(macos::tests::)"
+test-group = "macos-native-dmg"
+
 # Real macOS no-flag rows own native AppKit/WKWebView sessions. KEL-142 adds
 # an OS-injected pointer acceptance row whose target must not be obscured or
 # moved by another no-flag fixture while the click is in flight. The product

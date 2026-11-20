@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Installed via just hooks-install into Git's common directory after review.
+# Use Bun's formatter only: do not execute scripts from the checked-out revision.
+# Check the exact index blobs that Git is about to commit, never unstaged
+# working-tree content. This gate must not rewrite either the index or files.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+if ! command -v bun >/dev/null 2>&1; then
+  echo "pre-commit: Bun is required for the JavaScript/TypeScript formatting gate." >&2
+  exit 1
+fi
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/keld-precommit.XXXXXX")"
+trap 'rm -rf -- "$scratch"' EXIT
+while IFS= read -r -d '' path; do
+  case "$path" in
+    *.js|*.jsx|*.mjs|*.cjs|*.ts|*.tsx|*.mts|*.cts) ;;
+    *) continue ;;
+  esac
+  git show ":$path" >"$scratch/staged"
+  if ! bun fmt --no-script --stdin-filepath="$path" \
+    <"$scratch/staged" >"$scratch/formatted"; then
+    printf 'pre-commit: cannot format staged file %q.\n' "$path" >&2
+    exit 1
+  fi
+  if ! cmp -s "$scratch/staged" "$scratch/formatted"; then
+    printf 'pre-commit: staged file %q needs Bun formatting.\n' "$path" >&2
+    exit 1
+  fi
+done < <(git diff --cached --name-only --diff-filter=ACMR -z --)

@@ -263,7 +263,9 @@ assert.equal(source.get(ref)?.pending_close, null);
 // Veto. No obsolete receipt can manufacture a second CloseReply merely
 // because the module's static event subscription did not exist earlier.
 const originalCallCount = calls.length;
-const { BrowserWindow } = await import("../../electron/src/browser-window.ts");
+const { BrowserWindow } = await import(
+  new URL("../../electron/src/browser-window.ts", import.meta.url).href
+);
 const window = BrowserWindow.getAllWindows()[0];
 assert.equal(window.id, ref.id);
 await new Promise<void>((resolve) => setImmediate(resolve));
@@ -325,7 +327,7 @@ assert.equal(
   "only Host Destroyed tombstones window",
 );
 assert.deepEqual(
-  BrowserWindow.getAllWindows().map((item) => item.id),
+  BrowserWindow.getAllWindows().map((item: { readonly id: number }) => item.id),
   [another.id],
   "Destroying A cannot tombstone the independently live window B",
 );

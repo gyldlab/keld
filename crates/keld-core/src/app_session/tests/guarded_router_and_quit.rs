@@ -260,12 +260,12 @@ fn quit_drain_answers_are_bounded_when_the_peer_stops_reading() {
     shutdown
         .send(Ok(()))
         .expect("acknowledge guardian shutdown");
-    assert_eq!(
+    assert!(matches!(
         t.window
             .recv_timeout(Duration::from_secs(5))
             .expect("UI Quit"),
         AppWindowCommand::Quit
-    );
+    ));
     drop(client);
     flood.join().expect("flooding writer joins");
     t.router.shutdown().expect("router shutdown after Quit");
@@ -371,12 +371,12 @@ fn quit_drain_answers_received_calls_with_024_and_runs_none() {
         "the Quit REPLY, then only the FS CALL is answered"
     );
     assert!(!target.exists(), "a post-Quit FS CALL must not execute");
-    assert_eq!(
+    assert!(matches!(
         t.window
             .recv_timeout(Duration::from_secs(5))
             .expect("UI Quit"),
         AppWindowCommand::Quit
-    );
+    ));
     assert_router_shutdown_after_quit_with_trailing_call(t.router);
 }
 
@@ -469,11 +469,11 @@ fn quit_drain_answers_every_buffered_call_after_a_host_stall_then_eof() {
     shutdown
         .send(Ok(()))
         .expect("acknowledge guardian shutdown");
-    assert_eq!(
+    assert!(matches!(
         t.window
             .recv_timeout(Duration::from_secs(5))
             .expect("UI Quit"),
         AppWindowCommand::Quit
-    );
+    ));
     t.router.shutdown().expect("router shutdown after Quit");
 }
