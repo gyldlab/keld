@@ -74,7 +74,7 @@ One file. Reviewed like a lockfile. Path and URL wildcard rules are scoped
 below; they do not authorize wildcard channel grants.
 
 **Approved channel contract, unimplemented:**
-[GH #541](../specs/gh541-channel-grants-navigation.md) defines exact incoming `el:`
+[GH #541](../specs/gh541-channel-grants-navigation/index.md) defines exact incoming `el:`
 literals with no wildcard authority and records the separate delegated approval.
 The example below illustrates the target schema. It is not a runnable product manifest. GH541 section 4.3 supplies the minimal opted-in channel fixture.
 The current evaluator still ignores `windows` and denies non-AppProcess principals.
