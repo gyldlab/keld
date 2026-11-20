@@ -930,6 +930,30 @@ test("multiple host windows keep independent focus facts and stable host-id orde
   });
 });
 
+test("post-preload filter/sort poisoning cannot hide retained Host windows from the Source census", async () => {
+  const result = await sourceRole("window-source-array-poison.test-role.ts");
+  expect(result).toEqual({
+    filter: { ids: [3, 7], frozen: true },
+    sort: { ids: [3, 7], frozen: true },
+    both: { ids: [3, 7], frozen: true },
+    live: [3, 7],
+    tombstone: true,
+  });
+});
+
+test("post-preload inherited Array.prototype[0] setter cannot erase Host census facts", async () => {
+  const result = await sourceRole("window-source-array-poison.test-role.ts", [
+    "index-setter",
+  ]);
+  expect(result).toEqual({
+    ids: [3, 7],
+    size: 2,
+    ownZero: true,
+    frozen: true,
+    intercepted: 0,
+  });
+});
+
 test(
   "standalone source releases replaced and ended snapshot graphs using the same Bun executable",
   async () => {
