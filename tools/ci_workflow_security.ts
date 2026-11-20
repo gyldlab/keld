@@ -440,7 +440,10 @@ function checkB3BunCachePolicy(stepsByJob: Map<string, Mapping[]>): void {
 }
 
 /** GH-502: the installed-package oracle must run on one pinned, uncached Node. */
-function checkGH502NodeOracle(stepsByJob: Map<string, Mapping[]>): void {
+function checkGH502NodeOracle(
+  jobs: Mapping,
+  stepsByJob: Map<string, Mapping[]>,
+): void {
   const label = "GH502 Node oracle";
   const bunAction =
     "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6";
@@ -485,6 +488,49 @@ function checkGH502NodeOracle(stepsByJob: Map<string, Mapping[]>): void {
         `${label} must run immediately after pinned Bun setup and before the installed-package oracle.`,
       );
     }
+  }
+  // The Node setup is not an oracle if the next named step is replaced by a
+  // no-op, made conditional, or given NODE_OPTIONS/PATH from an extra job env.
+  // Freeze both the selected lane's routing and its complete parsed executable
+  // inventory, not just the immediate neighbors' action/name fields.
+  const bunJob = mapping(jobs["bun-test"], "jobs.bun-test");
+  exactKeys(
+    bunJob,
+    ["name", "runs-on", "timeout-minutes", "needs", "strategy", "if", "steps"],
+    label,
+  );
+  if (
+    bunJob.name !== "bun test (TypeScript, ${{ matrix.os }})" ||
+    bunJob["runs-on"] !== "${{ matrix.os }}" ||
+    scalar(bunJob["timeout-minutes"]) !== "10" ||
+    bunJob.needs !== "changes" ||
+    bunJob.if !== "needs.changes.outputs.ts == 'true'"
+  ) {
+    fail(`${label} must retain its reviewed runner, router and timeout.`);
+  }
+  const strategy = mapping(bunJob.strategy, `${label} strategy`);
+  exactKeys(strategy, ["fail-fast", "matrix"], label);
+  const matrix = mapping(strategy.matrix, `${label} platform matrix`);
+  exactKeys(matrix, ["os"], label);
+  if (
+    strategy["fail-fast"] !== false ||
+    !Array.isArray(matrix.os) ||
+    JSON.stringify(matrix.os) !==
+      JSON.stringify(["ubuntu-latest", "macos-latest", "windows-latest"])
+  ) {
+    fail(`${label} must run its complete reviewed three-platform matrix.`);
+  }
+  const reviewedBunTestStepsSha256 =
+    "a2bd372debbfd1a0349bf49939acc108b8c25b1bd179386b40ed662da4254eeb";
+  const bunSteps = stepsByJob.get("bun-test");
+  if (
+    !bunSteps ||
+    createHash("sha256").update(JSON.stringify(bunSteps)).digest("hex") !==
+      reviewedBunTestStepsSha256
+  ) {
+    fail(
+      `${label} must preserve the full reviewed Bun test-step inventory, commands, environment and ordering.`,
+    );
   }
 }
 
@@ -1892,7 +1938,7 @@ export function checkWorkflowSecurity(source: string): void {
   // Globally reject unknown Actions SHAs before checking approved Bun cache
   // owners. This preserves the upstream unreviewed-action failure diagnostic.
   checkB3BunCachePolicy(stepsByJob);
-  checkGH502NodeOracle(stepsByJob);
+  checkGH502NodeOracle(jobs, stepsByJob);
   // This broad safety net runs AFTER the narrower, previously reviewed
   // executable-step checks. That keeps their deterministic negative-control
   // diagnostics while also rejecting an otherwise permitted earlier step

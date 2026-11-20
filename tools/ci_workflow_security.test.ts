@@ -2211,6 +2211,146 @@ test("GH502 Node oracle requires one pinned step in the Bun test lane", () => {
   expect(original?.uses).toBe(gh502NodeAction);
 });
 
+test("GH502 Node oracle rejects test-step replacement and unreviewed prelude effects", () => {
+  const mutations: Array<[string, (f: Fixture) => void]> = [
+    [
+      "fake-green test command",
+      (f) => {
+        step(f, "bun-test", "frozen install, typecheck, and bun test").run =
+          "echo fake-green";
+      },
+    ],
+    [
+      "untrusted prelude before Bun",
+      (f) => {
+        f.jobs["bun-test"]!.steps.splice(1, 0, {
+          run: "printf 'attacker' > ./packages/@keld/api/src/entry.ts",
+        });
+      },
+    ],
+    [
+      "untrusted postlude",
+      (f) => {
+        f.jobs["bun-test"]!.steps.push({ run: "echo bypass" });
+      },
+    ],
+    [
+      "disabled test step",
+      (f) => {
+        step(f, "bun-test", "frozen install, typecheck, and bun test").if =
+          "false";
+      },
+    ],
+    [
+      "test step node preload",
+      (f) => {
+        step(f, "bun-test", "frozen install, typecheck, and bun test").env = {
+          NODE_OPTIONS: "--require=rogue.cjs",
+        };
+      },
+    ],
+    [
+      "test step PATH override",
+      (f) => {
+        const command = step(
+          f,
+          "bun-test",
+          "frozen install, typecheck, and bun test",
+        );
+        command.env = { ...(command.env as Step), PATH: "rogue-bin" };
+      },
+    ],
+    [
+      "test step shell override",
+      (f) => {
+        step(f, "bun-test", "frozen install, typecheck, and bun test").shell =
+          "sh";
+      },
+    ],
+    [
+      "test step extra cache",
+      (f) => {
+        step(f, "bun-test", "frozen install, typecheck, and bun test").env = {
+          ...(step(f, "bun-test", "frozen install, typecheck, and bun test")
+            .env as Step),
+          npm_config_cache: "/tmp/unreviewed",
+        };
+      },
+    ],
+  ];
+  for (const [name, mutate] of mutations) {
+    const f = fixture();
+    mutate(f);
+    expect(() => check(f), name).toThrow("GH502 Node oracle");
+  }
+});
+
+test("GH502 Node oracle freezes Bun lane routing and inherited environment", () => {
+  const mutations: Array<[string, (f: Fixture) => void]> = [
+    [
+      "job NODE_OPTIONS",
+      (f) => {
+        f.jobs["bun-test"]!.env = { NODE_OPTIONS: "--require=rogue.cjs" };
+      },
+    ],
+    [
+      "job PATH",
+      (f) => {
+        f.jobs["bun-test"]!.env = { PATH: "rogue-bin" };
+      },
+    ],
+    [
+      "job runner",
+      (f) => {
+        f.jobs["bun-test"]!["runs-on"] = "self-hosted";
+      },
+    ],
+    [
+      "job skip condition",
+      (f) => {
+        f.jobs["bun-test"]!.if = "false";
+      },
+    ],
+    [
+      "job router dependency",
+      (f) => {
+        f.jobs["bun-test"]!.needs = "fmt";
+      },
+    ],
+    [
+      "job timeout",
+      (f) => {
+        f.jobs["bun-test"]!["timeout-minutes"] = "1";
+      },
+    ],
+    [
+      "job matrix reduction",
+      (f) => {
+        f.jobs["bun-test"]!.strategy!.matrix.os = ["ubuntu-latest"];
+      },
+    ],
+    [
+      "job matrix fast-fail",
+      (f) => {
+        f.jobs["bun-test"]!.strategy!["fail-fast"] = true;
+      },
+    ],
+    [
+      "job inherited defaults",
+      (f) => {
+        f.jobs["bun-test"]!.defaults = {
+          run: { "working-directory": "rogue" },
+        };
+      },
+    ],
+  ];
+  for (const [name, mutate] of mutations) {
+    const f = fixture();
+    mutate(f);
+    expect(() => check(f), name).toThrow();
+  }
+});
+
 const b3RustCacheJobs = [
   "check",
   "windows-media",
