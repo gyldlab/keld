@@ -393,14 +393,14 @@ slices.
 - **Environment:** macOS26.5.1/25F80, Darwin25.5.0 arm64, Bun1.4.4, source-built debug Host.
 - **Limits:** Receipt attribution, not a new run. Injected sibling is unsupported. Raw loader stderr unavailable.
   Reproduction selector: `cargo test -p keld-host --test no_flag_macos multifile_staging -- --nocapture --test-threads=1`.
-  Use the pinned checkout and its build prerequisites. Count selected cases, not command exit alone.
+  Use E-1's recorded source and build prerequisites. A run at the document pin is separate evidence. Count selected cases, not command exit alone.
 ### E-2: Historical renderer calibration and falsifiers
 - **Run:** FACT: [R1 receipt](https://github.com/gyldlab/keld/issues/1037#issuecomment-6543683166) at `4d929512ff972788c41d59a7ef98c42a691d85d4`; [R2 receipt](https://github.com/gyldlab/keld/issues/1037#issuecomment-6546612116) at `67d0eeed7e3af604d8ef297c7d512a1d2bff83ea`.
 - **n:** R1:8 pure passes, healthy1/1, each omission0/1, restored1/1. R2:12 healthy passes, with separate mutation outcomes in receipt.
 - **Environment:** Same macOS26.5.1 arm64 and Bun1.4.4 as E-1.
 - **Limits:** Neither renderer resource delivery nor Drawio acceptance. Historical mutations are not new-head proof.
-  Reproduction selector: `cargo test -p keld-host --test no_flag_macos multifile_staging::shipping_stage_enforces -- --nocapture --test-threads=1`.
-  Apply only the receipt's named single fault in an isolated checkout, then restore exact source.
+  At the matching receipt's R1 or R2 source, run the pure cases: `cargo test -p keld-host --test no_flag_macos multifile_staging::renderer_oracle::tests -- --nocapture --test-threads=1`. R1 has eight and R2 ten pure cases; R2's 12 healthy passes were broader.
+  The `multifile_staging::shipping_stage_enforces` selector in the same test binary is native, not pure calibration. Historical mutation results remain receipt-only.
 ### E-3: Historical isolation qualification
 - **Run:** FACT: [publication receipt](https://github.com/gyldlab/keld/pull/1352#issuecomment-6551515046) at `78ad148ca6400c39117b6cda4ab74b686d51afad`.
 - **n:** CLI132 passed/1 ignored, lifecycle2 passed, app/quit1 passed, workspace1708 passed/17 skipped. The [prior control](https://github.com/gyldlab/keld/issues/1037#issuecomment-6550270910) reports three live-ancestor successes, three isolated refusals and one captured-relative success.

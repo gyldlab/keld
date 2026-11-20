@@ -75,8 +75,8 @@ Non-goals:
   Windows x64 canonical package, signed full-artifact identity, and unsupported-cell
   refusal.
 - `kel96-no-flag-host-boot/boot.md` §§3, 4.1 D4, 4.2, 4.3 and `kel96-no-flag-host-boot/lifecycle.md` §4.8:
-  strict boot descriptor, no caller-selected mode, and dev-stage-only consumer.
-  Proposed D4 successor only for Windows direct-installed packages.
+  Strict descriptor; no caller modes; consumer was dev-stage only.
+  Approved D4 successor KEL-254: the consumer now boots Windows direct installs.
   Windows dev-stage boot requires a lease (AC2).
 - `docs/specs/kel53-full-package-activation.md` §§3, 4, 5, 7, 8: installer-owned
   provenance, baseline/current/LKG package identity, candidate journal and endpoint,
