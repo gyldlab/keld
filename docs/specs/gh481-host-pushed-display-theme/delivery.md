@@ -1,0 +1,278 @@
+# Delivery and evidence
+
+Part of: [index](index.md)
+Owns: sections 5–7, 9 and 10
+
+## 5. Boundaries
+
+When (and only when) approved:
+- `keld-wv` macOS UI backend and existing `AppWindowEvent`/UI-thread
+  observation owner: bounded real OS snapshots and controlled teardown;
+  no raw AppKit objects leave the UI owner.
+- `keld-core` GH531 window/subscription producer and current primary role
+  writer: authoritatively serializes the desktop fact before the accepted
+  `Subscribed` REPLY and fences old generations.
+- `keld-ipc` **GH531-owned** window event enum/codec/golden vectors:
+  one append-only EVENT variant after explicit amendment; not a new ID.
+- `packages/@keld/api` **GH531-owned** existing mirror primitive and
+  authenticated role adapter: one decode/applier and one latest snapshot.
+- `packages/@keld/electron/src/screen.ts`, `native-theme.ts` and `index.ts`:
+  synchronous `screen` and `nativeTheme` read-only facade, with no Electron
+  runtime dependency.
+- GH477's existing `electron-native-v1` mapped tests must invert their four
+  corresponding cells in the implementation change, with real Mac proof.
+
+**Must not edit** any of these under *this spec-only PR*: all production
+Rust/TS, GH449/#1150/#1153 source worktrees or live GH446 readiness code,
+GH527 transport, fixed GH531 spec without approved amendment, generated
+channel table/allocations, KELD_KEL143_* handshakes, Host20/Guardian10/IPC
+clocks, root Cargo/workflow/input policy or Windows/Linux production.
+Any shared file requires the winning incumbent owner's claim plus
+independent exact-diff review and canonical generated-input rebinding.
+
+## 6. Tasks
+
+### T-1: Independent GH481 architecture/security review
+
+- **Blocked by:** B-1, B-2
+- Approve this exact public-read/mirror design and the narrow GH531 global desktop fact/before-Subscribed amendment. Do not treat this as a unilateral change to GH531.
+
+### T-2: Consume the GH477 expected-fail synchronous conformance cells
+
+- **Blocked by:** B-5
+- Reuse the existing pinned 44.4.5 conformance cases; do not add a new parser or duplicate source. Preserve all other cells.
+
+### T-3: Native macOS display/appearance observer and conversion
+
+- **Blocked by:** B-3
+- Implement in the existing UI owner with retained bounds, light/dark, negative offset, changing displays and physical callback teardown tests.
+
+### T-4: GH531 owner wire event and initial replay amendment
+
+- **Blocked by:** B-1, B-4
+- Append one wire event variant and extend current Subscribe replay/ack envelope with a first desktop snapshot, using one host-controlled epoch and bounded payload. Add hostile-frame/failure and old-code golden-vector tests.
+
+### T-5: GH531 singleton mirror and Ready barrier
+
+- **Blocked by:** B-1, B-2
+- Consume the new fact in one state applier for the current primary/admitted role only, before its public Ready barrier. Test recovery/reordered Ready and deferred user listeners.
+
+### T-6: Thin Electron screen/nativeTheme synchronous getters
+
+- **Blocked by:** B-1, B-2, B-3, B-4
+- Add zero-frame local reads with no Electron runtime dependency, atomic current snapshot and explicit pre-Ready/unsupported behavior.
+
+### T-7: Real paired Electron/KELD Mac evidence and release review
+
+- **Blocked by:** B-1, B-2, B-3, B-4, B-5
+- Prove primary/non-primary monitor, workArea DIP and light/dark; verify event/reader/role lifecycle controls; flip only the four owned GH477 cells; complete full required CI and independent review.
+
+T-3 can be developed as an isolated native observation test after T-1.
+T-4 and T-5 share one GH449/GH531 owner and cannot race its active branch.
+GH446 final implementation integration is a dependent review, not a license for a second Ready/Subscribe policy.
+
+## 7. Test plan & evidence
+
+### Test D1: authenticated primary subscription
+
+- **Positive:** An authenticated primary Subscribe receives one desktop EVENT. An app-bound or unsubscribed role receives no desktop or window fact.
+- **Negative control:** Broadcast the same frame to every authenticated link. A nonprimary role sees a fact and the test fails.
+
+### Test D2: initial snapshot and public Ready ordering
+
+- **Positive:** Test both Ready-first and Ready-last orderings. Ready-first is raw Ready, Subscribe(7), then valid native Init snapshot(1). Ready-last is Subscribe(7), valid native Init snapshot(1), then raw Ready.
+- **Positive:** Before the first sample, retain one bounded pending correlation only: no subscriber bit, EVENT, Subscribed(7) or public Ready. After the sample, require DesktopSnapshot(1), Created replay and Subscribed(7) in that order; public Ready follows application of the complete snapshot/replay and acceptance of that same-correlation reply.
+- **Deadline controls:** With an injected monotonic clock, an early Subscribe
+  must enter the UI loop within 10s, complete Init within the existing 15s from
+  loop entry, and settle the entire replay/Subscribed batch within 5s. The
+  absolute caller bound is 30s from first admission. A duplicate Subscribe or
+  replay progress cannot reset any clock. The 5s aggregate replay clock is
+  separate from the per-frame I/O timeout.
+- **Terminal controls:** A sample-first ordering is accepted. No sample or
+  malformed first sample at completed Init, whether Subscribe arrived before
+  or after, produces one same-correlation KELD-CORE-049 ERR, zero replay and
+  sticky rejected Ready. A missed 10s loop-entry or 15s Init bound uses GH446
+  KELD-CORE-037 and forbids late HostInitialized/Ready. Replay-batch timeout or
+  role/link death uses the GH527 terminal path. Unauthorized or second Subscribe
+  cannot consume the pending slot.
+- **Negative control:** Mutate pending admission to the original immediate ERR
+  on a pre-Init missing sample. Both healthy Ready-first and Ready-last orderings
+  fail. Reset any deadline on a duplicate/retry, start the caller clock only at
+  UI-loop entry, or reset the aggregate replay clock per frame; the boundary/no-
+  late-success oracle fails. Removing terminal settlement hangs whenReady;
+  admitting a second correlation or partial replay creates a ghost subscription.
+
+### Test D3: real primary and all-displays shape
+
+- **Positive:** A real Mac snapshot returns the Display array and primary id, finite DIP rectangles/scales and exactly one primary.
+- **Negative control:** Accept a duplicate id, nonfinite scale or zero displays. The exact boundary test fails.
+
+### Test D4: actual OS work areas
+
+- **Positive:** Paired pinned Electron 44.4.5 and KELD results agree for physical primary and negative-offset secondary workArea.
+- **Negative control:** Leave AppKit's bottom-left y-coordinate unchanged. The paired comparison fails.
+
+### Test D5: effective appearance
+
+- **Positive:** Paired light and dark runs on the actual Mac return the same shouldUseDarkColors boolean.
+- **Negative control:** Hardcode false. The dark-mode run fails.
+
+### Test D6: zero IPC on local reads
+
+- **Positive:** Count actual WorkerLink and Host frames before and after 1,000 calls each to all-displays, primary, workArea and dark-mode getters. The count remains zero.
+- **Negative control:** Replace a local getter with a per-read CALL. The real frame count increases.
+
+### Test D7: ordered updates and parked callers
+
+- **Positive:** Force observer epoch e+1 before Subscribe capture and immediately after capture. Require initial e+1, or replay e followed by Subscribed and live e+1, in order. A parked GH527 reply sees the applied fact before its listener.
+- **Negative control:** Let the native observer write outside the Core writer or enqueue e+1 before replay e. Monotonic order, Ready or parked-listener tests fail.
+
+### Test D8: lifetime and recovery
+
+- **Positive:** After Bun crash, the same app's successor receives the current snapshot and surviving windows. Duplicate same-epoch/same-value delivery is idempotent; contradictory same-epoch data is refused; retired links are fenced.
+- **Negative control:** Apply an old epoch to the successor or classify a legitimate e+1 Subscribe race as terminal stale state. The test fails.
+
+### Test D9: bounded representation
+
+- **Positive:** Test 1..32 displays, 32 KiB payload, malformed/truncated data, epoch exhaustion and invalid scale.
+- **Negative control:** Accept a 33rd display or a snapshot with no primary. The typed boundary test fails.
+
+### Test D10: default-deny role admission
+
+- **Positive:** An absent, forged or app-bound role receives zero frames and no new permission.
+- **Negative control:** Add screen facts to a public unguarded role. The refusal test fails.
+
+### Test D11: explicit unsupported boundaries
+
+- **Positive:** Pre-Ready getters and unsupported APIs return stable typed errors; no synthetic values are produced.
+- **Negative control:** Return false or an empty array as an unqualified default. The observer test fails.
+
+### Test D12: conformance flip only with native proof
+
+- **Positive:** Real native proof and the GH566 four-cell pending-to-pass flip occur in the same implementing diff.
+- **Negative control:** Flip a corpus cell based only on a TypeScript mock or without platform evidence. The corpus/product-acceptance gate fails.
+
+Actual Mac tests need native display access, two physical layouts and both light/dark modes.
+A headless CoreGraphics/TCC denial is an environment failure.
+It is not evidence of an empty display or correct conversion.
+Each OS fixture records the Electron binary/source pin and KELD commit.
+It records monitor identity/layout, appearance epoch and raw/native rectangles.
+It records normalized rectangles, event order and false/positive controls.
+Use actual OS/UI callbacks and compare state after an observed condition.
+Never sleep to synchronize tests.
+Record unavailable physical configurations as unknown.
+Do not weaken tests to make them pass.
+
+## 9. Perf impact
+
+No performance gain is claimed before measurement. Target **zero kipc
+frames per synchronous read** is an externally verified correctness
+condition. The cold native observer, one bounded snapshot serialization
+and host subscription replay may affect Startup and retained memory,
+so report exact frame counts/bytes, snapshot capacity, peak bounded
+copy budget, allocation count, first public-Ready latency and Host
+shutdown cleanup in the real Mac fixture. Compare with architecture 01
+§5; a >5% regression needs the existing written waiver process. No
+latency workaround may widen Host/Guardian/IPC deadlines or GH527 ring
+budgets.
+
+## 10. Open questions, blockers & unknowns
+
+### Q-1: GH531 global snapshot event owner
+
+Owner decision [#6959317402](https://github.com/gyldlab/keld/issues/481#issuecomment-6959317402) selects an append-only `WindowEvent::DesktopSnapshot` tag 7 on the existing window channel, before window-entity replay/`Subscribed`.
+Use GH531's same single writer and state applier. Implementation must preserve all old discriminants and prove the authenticated current-primary-only recipient rule.
+No second channel, writer, state store or app-link is authorized.
+### Q-2: GH446 facade barrier composition
+
+Owner decision [#6959317402](https://github.com/gyldlab/keld/issues/481#issuecomment-6959317402) selects B: one bounded pending authenticated Subscribe(c) before first native sample.
+Correction [#6959370922](https://github.com/gyldlab/keld/issues/481#issuecomment-6959370922) keeps the caller reply deadline separate from the 15-second native Init bound.
+There is no subscriber bit, EVENT, Subscribed reply or public Ready before sample. The first **applied** desktop snapshot joins the existing `raw Ready + accepted Subscribe + full replay + same-correlation Subscribed` public Ready gate.
+Owner decision [#6962777320](https://github.com/gyldlab/keld/issues/446#issuecomment-6962777320)
+selects one absolute 30-second caller deadline from first admitted Subscribe(c),
+with no reset: 10 seconds to enter the UI loop when Subscribe precedes loop
+entry, the existing 15-second Init deadline from actual loop entry, and one
+5-second aggregate snapshot/replay/Subscribe settlement deadline. The aggregate
+deadline does not reset per frame; the 5-second frame-I/O deadline remains a
+lower-level guard. GH446 KELD-CORE-037 owns UI-loop-entry/Init failure, reserved
+GH531/Core KELD-CORE-049 owns completed-Init missing/malformed snapshot, and
+GH527 owns role/link/replay terminal failure. Implementation and deterministic
+boundary tests remain required.
+No second Ready source or delayed-entry assumption is permitted.
+### Q-3: Snapshot limits, transaction and epoch
+
+Approve/revise proposed max **32** displays, max **32 KiB** encoded bytes, monotonic Core-writer
+   epoch and last-sent deduplication. Confirm one atomic Subscribe capture/
+   replay/Subscribed batch and the two deterministic interleavings; a
+   legitimate OS update must not become a stale-epoch terminal error.
+   These values/policies are **not authorized** by this draft alone.
+### Q-4: macOS coordinate/effective-appearance selection
+
+Choose the exact pinned OS display/appearance API and conversion only after a same-
+   machine Electron 44.4.5 paired native experiment; raw NSScreen
+   coordinates and a convenience appearance flag do not prove parity.
+### Q-5: Pre-Ready/terminal getter and native-snapshot failure
+
+Owner decision [#6962777320](https://github.com/gyldlab/keld/issues/446#issuecomment-6962777320)
+   reserves `KELD-CORE-049` for definitive Init-time
+   `DesktopSnapshotUnavailable`. The GH531/Core error-registry owner must add
+   its canonical message/fix before implementation. Preserve correlated
+   lifecycle CallError ERR, atomic zero-replay settlement, sticky public-ready
+   failure and typed unavailable getters. An early healthy Subscribe is
+   **pending**, not erroneous; absent/malformed final sample is terminal,
+   never an empty headless display or light-mode false. Waiters must settle.
+
+### B-1: GH531 global desktop fact amendment
+
+- **Status:** open
+- **Owner:** GH531 window-mirror contract owner
+- **Impact:** Owner decision [#6959317402](https://github.com/gyldlab/keld/issues/481#issuecomment-6959317402)
+  selects append-only `WindowEvent::DesktopSnapshot` tag 7 on the existing window
+  channel and the existing single Core writer/state applier. No production event
+  or source implementation is approved by this specification alone.
+- **Check:** Implement tag 7 without changing old discriminants; prove authenticated
+  current-primary-only delivery, one writer/applier, ordered snapshot-before-
+  Created*/Subscribed replay and old-code golden vectors.
+
+### B-2: GH446 readiness and pending Subscribe composition
+
+- **Status:** open
+- **Owner:** GH446 facade readiness owner and GH531 subscription owner
+- **Impact:** Owner decision [#6959317402](https://github.com/gyldlab/keld/issues/481#issuecomment-6959317402)
+  selects one bounded pending authenticated Subscribe(c), zero pre-sample
+  subscriber/EVENT/ACK/public-Ready effects, and ordered replay after the first
+  valid sample. Owner decision [#6962777320](https://github.com/gyldlab/keld/issues/446#issuecomment-6962777320)
+  sets the absolute 30-second caller deadline as 10s UI-loop entry + existing
+  15s Init + 5s aggregate replay settlement.
+- **Check:** Implement the three absolute clocks without reset. Retain the
+  5-second per-frame I/O guard as a lower-level limit. Use KELD-CORE-037 for
+  UI-loop-entry/Init failure, reserved KELD-CORE-049 for completed-Init
+  missing/malformed sample, and GH527 terminal handling for replay/role/link
+  failure. Prove exact boundary, duplicate/no-reset, Ready-first/Ready-last,
+  sticky failure and no-late-success controls.
+
+### B-3: Paired native macOS display and appearance evidence
+
+- **Status:** open
+- **Owner:** GH481 macOS UI/native implementation owner
+- **Impact:** DIP workArea, primary identity, secondary negative offset, dock/menu insets and effective light/dark parity remain unqualified.
+- **Check:** Compare the same physical Mac/layout/configuration against pinned Electron 44.4.5, including second display and both appearance modes.
+
+### B-4: Snapshot bounds, epoch and typed terminal error
+
+- **Status:** open
+- **Owner:** GH531/Core wire owner and KELD error-registry owner
+- **Impact:** The proposed 32-display/32-KiB bounds, writer transaction and epoch/deduplication remain unapproved. Owner decision [#6962777320](https://github.com/gyldlab/keld/issues/446#issuecomment-6962777320) reserves KELD-CORE-049 for DesktopSnapshotUnavailable; the canonical registry entry is still required.
+- **Check:** Approve limits and ordering, validate hostile frames/golden vectors, and add the canonical KELD-CORE-049 message/fix before implementation.
+
+### B-5: GH477/GH566 conformance and product acceptance
+
+- **Status:** open
+- **Owner:** GH477 compatibility owner and GH566 corpus-manifest owner
+- **Impact:** Four expected-fail cells cannot become passing compatibility evidence without real native paired results and zero-frame mirror proof.
+- **Check:** Flip only the four owned cells in the implementing diff after native macOS acceptance and full required CI.
+
+This spec is **DRAFT** and approval is a separate tracked decision. It
+neither merges/edits the active GH449/GH446 branches, implements any
+native module, qualifies real macOS product behavior, closes #481 nor
+flips the four pending GH477 conformance cells by itself.
