@@ -149,6 +149,78 @@ fn assert_per_user_baseline_seed() {
 }
 
 #[test]
+fn per_user_initializer_pins_source_until_final_protected_readback() {
+    support::assert_user_principal_token();
+    let (_temp, trust, source) = fixture();
+    let verified = support::baseline(&trust);
+    let renamed = source.with_file_name("source-after-readback.tar");
+    let mut held_boundaries = 0;
+
+    let receipt = initialize_per_user_with_observer(&verified, &source, &trust, |boundary| {
+        if matches!(
+            boundary,
+            BaselineBoundary::LockCreated
+                | BaselineBoundary::ActivationLockCreated
+                | BaselineBoundary::RootsVerified
+                | BaselineBoundary::ProvenancePublished
+        ) {
+            let error = fs::rename(&source, &renamed)
+                .expect_err("the validated archive must remain open during final readback");
+            assert_eq!(
+                error.raw_os_error(),
+                Some(32),
+                "the retained source must deny delete sharing, not fail for an unrelated reason"
+            );
+            assert_eq!(fs::read(&source)?, GOLDEN);
+            held_boundaries += 1;
+        }
+        Ok(())
+    })
+    .expect("the same source stays retained through the committed readback");
+    assert_eq!(
+        held_boundaries, 4,
+        "source is held before locks and through readback"
+    );
+    drop(receipt);
+
+    fs::rename(&source, &renamed)
+        .expect("after the verified initializer returns, source custody is released");
+    assert_eq!(fs::read(&renamed).unwrap(), GOLDEN);
+}
+
+#[test]
+fn per_user_missing_archive_refuses_before_bootstrap_effects() {
+    support::assert_user_principal_token();
+    let (_temp, trust, source) = fixture();
+    fs::remove_file(&source).expect("remove only the test fixture archive");
+    let verified = support::baseline(&trust);
+
+    let error = initialize_windows_per_user_baseline(&verified, &source, &trust)
+        .expect_err("a missing verified source cannot create the installation lock");
+    assert!(matches!(
+        error,
+        UpdateError::Baseline {
+            step: "baseline source admission",
+            ..
+        }
+    ));
+    for absent in [
+        trust.installation.update_root.join("bootstrap.lock"),
+        trust.installation.update_root.join("activation.lock"),
+        trust.installation.update_root.join("version-floor"),
+        trust.installation.update_root.join("current"),
+        trust.installation.update_root.join("last-known-good"),
+        trust.installation.install_root.join("install-provenance"),
+    ] {
+        assert!(
+            !absent.exists(),
+            "source admission must precede every installer effect: {}",
+            absent.display()
+        );
+    }
+}
+
+#[test]
 fn per_user_baseline_initializer_refuses_wrong_mode_before_path_admission() {
     support::assert_user_principal_token();
     let temp = tempfile::tempdir_in(local_app_data())
