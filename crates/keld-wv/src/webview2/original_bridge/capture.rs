@@ -134,7 +134,7 @@ impl OriginalBridge {
         args: &ICoreWebView2WebMessageReceivedEventArgs,
         credit: &CaptureCredit<'_>,
     ) -> Result<(), WvError> {
-        let _source_scratch = callback_credit(&self.navigation)
+        let source_scratch = callback_credit(&self.navigation)
             .map_err(|_| failure("selected Source scratch credit unavailable"))?;
         let captured = self
             .navigation
@@ -149,9 +149,20 @@ impl OriginalBridge {
             4 * ORIGINAL_WEBAPP_LIMITS.max_url_utf16_units,
         )
         .map_err(|_| failure("selected native message Source malformed"))?;
-        self.source
-            .qualify_document_url(&source)
-            .map_err(|_| failure("selected native message Source is outside its admitted entry"))?;
+        if let Some(document) = &captured {
+            crate::renderer_bridge::NativeMessageFacts::check_windows_source_url(
+                &source,
+                &self.source,
+                document,
+                &source_scratch,
+            )
+            .map_err(failure)?;
+        } else {
+            // The tokenless bind can precede the first native document commit.
+            self.source.qualify_document_url(&source).map_err(|_| {
+                failure("selected native message Source is outside its admitted entry")
+            })?;
+        }
         drop(source);
         let remaining = self
             .budget

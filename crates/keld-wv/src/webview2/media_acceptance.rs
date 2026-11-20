@@ -700,7 +700,7 @@ fn run_case(
         // SAFETY: token was recorded from this live view's actual registration.
         unsafe { view.webview.remove_PermissionRequested(token) }.map_err(failure)?;
     }
-    observe_request(&view.webview, mode, &url, message_tx)?;
+    observe_request(&view.webview, mode, &url, message_tx, |_| Ok(()))?;
     println!("KELD_MEDIA_PHASE observers-ready");
     release_tx
         .send(())
@@ -933,6 +933,7 @@ fn observe_request(
     mode: &str,
     expected_url: &str,
     message_tx: mpsc::Sender<Result<String, WvError>>,
+    check_source: impl Fn(&str) -> Result<(), WvError> + 'static,
 ) -> Result<(), WvError> {
     let mut control_token = 0;
     if mode != "guarded" {
@@ -1013,7 +1014,9 @@ fn observe_request(
                 args.TryGetWebMessageAsString(&raw mut value)?;
                 let result = source.and_then(|source| {
                     if source == expected_url {
-                        owned_string(value)
+                        let message = owned_string(value)?;
+                        check_source(&source)?;
+                        Ok(message)
                     } else {
                         // The string still belongs to this callback on mismatch.
                         let _ = owned_string(value);
@@ -1710,7 +1713,9 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
         let origin = page.origin.clone();
         let prepared = prepare_saved_grant_permission(&engine, view_id, &case, &origin)?;
         let view = engine.view(view_id)?;
-        observe_request(&view.webview, "guarded", &page.url, page.message_tx)?;
+        observe_request(&view.webview, "guarded", &page.url, page.message_tx, |_| {
+            Ok(())
+        })?;
         page.release
             .send(())
             .map_err(|_| failure("release saved-grant page"))?;

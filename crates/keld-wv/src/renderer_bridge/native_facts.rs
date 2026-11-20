@@ -60,25 +60,44 @@ impl NativeMessageFacts {
         lease: &crate::renderer_contract::CheckedNativeDocumentLease,
         scratch: &crate::resource_intake::RetainedByteCredit,
     ) -> Result<Self, &'static str> {
+        if !url.charged_to(&source.retained_credit_account()) {
+            return Err("native message metadata lacks its existing same-source scratch credit");
+        }
+        Self::check_windows_source_url(url.as_str(), source, lease, scratch)?;
+        Ok(Self {
+            url,
+            provenance: NativeMessageProvenance::SourceQualifiedWindowsFile,
+        })
+    }
+
+    /// Check a borrowed callback Source against the same current document before and
+    /// after the shared file parser runs. Registration may use its existing callback
+    /// scratch directly. Retained DATA additionally pays for its owned URL above.
+    #[cfg(windows)]
+    pub(crate) fn check_windows_source_url(
+        url: &str,
+        source: &std::sync::Arc<crate::resource_source::AdmittedWebAppSource>,
+        lease: &crate::renderer_contract::CheckedNativeDocumentLease,
+        scratch: &crate::resource_intake::RetainedByteCredit,
+    ) -> Result<(), &'static str> {
         use crate::resource_intake::MAX_PENDING_METADATA_BYTES;
-        let account = source.retained_credit_account();
-        if !url.charged_to(&account) || !scratch.covers(&account, MAX_PENDING_METADATA_BYTES) {
+        if !scratch.covers(
+            &source.retained_credit_account(),
+            MAX_PENDING_METADATA_BYTES,
+        ) {
             return Err("native message metadata lacks its existing same-source scratch credit");
         }
         if !lease.is_current() || !lease.belongs_to_source(source) {
             return Err("native message metadata lacks its current exact source lease");
         }
         let parsed = source
-            .qualify_document_url(url.as_str())
+            .qualify_document_url(url)
             .map_err(|_| "native message URL is not the selected source document")?;
         drop(parsed); // Release actual parser scratch before the final lease observation.
         if !lease.is_current() || !lease.belongs_to_source(source) {
             return Err("native message source lease retired during URL qualification");
         }
-        Ok(Self {
-            url,
-            provenance: NativeMessageProvenance::SourceQualifiedWindowsFile,
-        })
+        Ok(())
     }
 
     pub(crate) fn url(&self) -> &str {

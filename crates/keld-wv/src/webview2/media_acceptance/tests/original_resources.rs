@@ -110,7 +110,30 @@ fn serve_selected_graph(engine: &mut WebView2Engine) -> Result<(), WvError> {
             .map_err(failure)?;
         let (message_tx, message_rx) = mpsc::channel();
         let expected_url = format!("{}?{QUERY}", fixture.url(ENTRY));
-        observe_request(&native.webview, "guarded", &expected_url, message_tx)?;
+        let source_owner = Rc::clone(&navigation);
+        observe_request(
+            &native.webview,
+            "guarded",
+            &expected_url,
+            message_tx,
+            move |url| {
+                let scratch = crate::webview2::original_callbacks::callback_credit(&source_owner)
+                    .map_err(failure)?;
+                let (source, lease) = {
+                    let owner = source_owner.try_borrow().map_err(failure)?;
+                    (
+                        Arc::clone(owner.source()),
+                        owner.current_document().ok_or_else(|| {
+                            failure("message preceded the native document commit")
+                        })?,
+                    )
+                };
+                crate::renderer_bridge::NativeMessageFacts::check_windows_source_url(
+                    url, &source, &lease, &scratch,
+                )
+                .map_err(failure)
+            },
+        )?;
 
         let query = OriginalEntryQuery::from_optional_query(Some(QUERY)).map_err(failure)?;
         let (qualified, call) = PreparedNativeLoad::prepare(&resource, &query)
