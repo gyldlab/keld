@@ -12,9 +12,24 @@ authors.workspace = true
 name = "linux_media_guard"
 test = true
 
+# GH-1189 isolated native lifecycle evidence; not a shipping example or default feature.
+[[example]]
+name = "gh1189_taskdialog_fixture"
+path = "examples/gh1189_taskdialog_fixture.rs"
+required-features = ["gh1189-dialog-fixture"]
+test = false
+
+[[example]]
+name = "gh1189_winevent_observer"
+path = "examples/gh1189_winevent_observer.rs"
+required-features = ["gh1189-dialog-fixture"]
+test = false
+
 [features]
 # Explicit development fixture; absent from the shipping default build.
 media-acceptance = []
+# Isolated Windows dialog experiment only; absent from default and production flows.
+gh1189-dialog-fixture = []
 # Internal deterministic fault fixtures for downstream KEL-135 test binaries.
 # Release packages never enable this feature.
 profile-test-hooks = ["dep:block2", "objc2-foundation/NSNotification", "objc2-foundation/NSOperation", "objc2-foundation/block2"]
@@ -91,7 +106,7 @@ webview2-com = "0.38"
 # directory creation (Win32_Security/FileSystem), and CoInitializeEx/
 # CoTaskMemFree (Win32_System_Com). Same crate+version webview2-com pins — an explicit path
 # to a crate already in the graph rather than a second copy.
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_UI_Accessibility"] }
 
 [target.'cfg(target_os="linux")'.dependencies]
 tao = "0.35.3"
