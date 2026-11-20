@@ -173,7 +173,11 @@ Closed fields only (`deny_unknown_fields`):
 | `operation.oracle.id` / `revision` | non-empty; revision ≠ `latest` |
 | `result` | `pass` \| `fail` \| `unknown` \| `waived` |
 | `waiver` | required iff `waived`; `{owner, reason, expires_on: YYYY-MM-DD}` |
-| `evidence_uri` | `sha256:<64 hex>`, or HTTPS with a WHATWG-canonical public host and a 40/64-lowercase-hex git object id path segment; exclude userinfo, loopback, unspecified, IPv4 private/special-use, CGNAT, NAT64/6to4, link-local, unique-local and embedded variants; FQDN-dot and numeric IPv4 spellings are classified after canonicalization. A known `blob`/`tree`/`raw` or raw-CDN ref MUST be pinned at its route position; generic-host routes matching `/{owner}/{repo}/blob/<ref>` or `/-/blob/<ref>` also require that ref to be a pin. Safe encoded file/directory punctuation below an established immutable pin is allowed. Parse returns a canonical serialized HTTPS URL. Host checks are literal (no DNS); DNS-to-private remains a T1 residual. |
+| `evidence_uri` | `sha256:<64 hex>`, or HTTPS with a WHATWG-canonical public host and a 40/64-lowercase-hex git object id path segment; exclude userinfo, loopback, unspecified, IPv4 private/special-use, CGNAT, NAT64/6to4, link-local, unique-local and embedded variants; FQDN-dot and numeric IPv4 spellings are classified after canonicalization. A known `blob`/`tree`/`raw` or raw-CDN ref MUST be pinned at its route position; generic-host routes matching `/{owner}/{repo}/blob/<ref>` or `/-/blob/<ref>` also require that ref to be a pin. |
+
+Safe encoded file/directory punctuation below an established immutable pin is
+allowed. Parse returns a canonical serialized HTTPS URL. Host checks are
+literal (no DNS); DNS-to-private remains a T1 residual.
 
 The evidence JSON size cap is a limit on the supplied input bytes. HTTPS
 canonicalization can expand Unicode into percent-escaped URL bytes. A caller
