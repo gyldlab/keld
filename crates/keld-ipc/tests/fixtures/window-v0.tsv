@@ -51,3 +51,4 @@ desktop-captured	event	07ac02011101110000a00b84070030a00bec06000000000000004000
 desktop-unavailable	event	07ad0200
 desktop-epoch-maximum	event	07ffffffffffffffffff0100
 event-navigation-finished-unit-pinch-v1	event	0b07ac0205
+event-original-renderer-view-bound	event	0c07ac0205

@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use keld_ipc::link::{read_frame, read_validated_frame};
 use keld_ipc::receive::{AbsoluteDeadline, ReceivePolicy, validate_received_header};
-use keld_ipc::window::{WindowEvent, WindowRequest, WindowResponse};
+use keld_ipc::window::{WindowRequest, WindowResponse};
 use keld_ipc::{
     CallError, ChannelId, CorrelationId, EchoRequest, EchoResponse, FrameHeader, HEADER_LEN,
     IpcError, LifecycleEvent, LifecycleRequest, LifecycleResponse, SessionToken,
@@ -124,7 +124,7 @@ fn stage_two(policy_name: &str, header: FrameHeader, payload: &[u8]) -> Result<(
         }
         ("event-receiver", keld_ipc::FrameKind::Event) => {
             if header.channel == keld_ipc::channel_table::WINDOW.id() {
-                keld_ipc::codec::decode::<WindowEvent>(payload).map(|_| ())
+                keld_ipc::window::decode_event(payload).map(|_| ())
             } else {
                 keld_ipc::codec::decode::<LifecycleEvent>(payload).map(|_| ())
             }

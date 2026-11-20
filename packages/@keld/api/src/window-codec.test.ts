@@ -224,6 +224,10 @@ replay<WindowCarrierEvent>(
         document_generation: 5,
       },
     ],
+    [
+      "event-original-renderer-view-bound",
+      { variant: "OriginalRendererViewBound", window: WINDOW, webview: 5 },
+    ],
   ],
   encodeWindowCarrierEvent,
   decodeWindowCarrierEvent,
@@ -356,7 +360,7 @@ replay<CloseVerdict>(
 );
 
 test("every shared vector is replayed exactly once", () => {
-  expect(vectors.size).toBe(49);
+  expect(vectors.size).toBe(50);
   expect([...replayed].sort()).toEqual([...vectors.keys()].sort());
 });
 
@@ -365,7 +369,7 @@ test("unknown discriminants and malformed scalar bytes fail closed", () => {
     [decodeWindowEvent, [7]],
     [decodeWindowRequest, [6]],
     [decodeWindowResponse, [10]],
-    [decodeWindowCarrierEvent, [12, 7, 0xac, 2, 5]],
+    [decodeWindowCarrierEvent, [13, 7, 0xac, 2, 5]],
     [decodeCloseVerdict, [2]],
     [decodeWindowEvent, [2, 7, 0xac, 2, 2]],
     [decodeWindowRequest, [0, 0, 0, 2]],
@@ -569,4 +573,60 @@ test("ordinary Window decoder refuses complete appended event facts", () => {
     variant: "Destroyed",
     window: WINDOW,
   });
+});
+
+test("tag 12 binding receives exact bytes and rejects invalid wire", () => {
+  const literal = Uint8Array.from([0x0c, 7, 0xac, 2, 5]);
+  expect(decodeWindowCarrierEvent(literal)).toEqual({
+    variant: "OriginalRendererViewBound",
+    window: { id: 7, incarnation: 300n },
+    webview: 5,
+  });
+  const maximum = Uint8Array.from([
+    0x0c, 0xff, 0xff, 0xff, 0xff, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0x01, 0xff, 0xff, 0xff, 0xff, 0x0f,
+  ]);
+  expect(maximum.byteLength).toBe(21);
+  expect(decodeWindowCarrierEvent(maximum)).toEqual({
+    variant: "OriginalRendererViewBound",
+    window: { id: 0xffff_ffff, incarnation: 0xffff_ffff_ffff_ffffn },
+    webview: 0xffff_ffff,
+  });
+  const overlong = Uint8Array.from([0x8c, 0, ...maximum.slice(1)]);
+  expect(overlong.byteLength).toBe(22);
+  expect(() => decodeWindowCarrierEvent(overlong)).toThrow("KELD-IPC-003");
+  for (const invalid of [
+    [12, 0, 1, 1],
+    [12, 1, 0, 1],
+    [12, 1, 1, 0],
+  ]) {
+    expect(() => decodeWindowCarrierEvent(Uint8Array.from(invalid))).toThrow(
+      "KELD-IPC-003",
+    );
+  }
+  for (const invalid of [
+    { window: { id: 0, incarnation: 1n }, webview: 1 },
+    { window: { id: 1, incarnation: 0n }, webview: 1 },
+    { window: { id: 1, incarnation: 1n }, webview: 0 },
+  ]) {
+    expect(() =>
+      encodeWindowCarrierEvent({
+        variant: "OriginalRendererViewBound",
+        ...invalid,
+      }),
+    ).toThrow("KELD-IPC-003");
+  }
+  expect(() =>
+    encodeWindowCarrierEvent({
+      variant: "OriginalRendererViewBound",
+      webview: 1,
+    } as unknown as WindowCarrierEvent),
+  ).toThrow("KELD-IPC-003");
+  expect(() => decodeWindowCarrierEvent(Uint8Array.from([12, 1, 1]))).toThrow(
+    "KELD-IPC-003",
+  );
+  expect(() =>
+    decodeWindowCarrierEvent(Uint8Array.from([12, 1, 1, 1, 0])),
+  ).toThrow("KELD-IPC-003");
+  expect(() => decodeWindowEvent(literal)).toThrow("KELD-IPC-003");
 });

@@ -385,6 +385,10 @@ const NATIVE_SCHEMAS: Readonly<Record<NativeEnumName, NativeSchema>> = {
       window: "WindowRef",
       document_generation: "u32",
     },
+    OriginalRendererViewBound: {
+      window: "WindowRef",
+      webview: "u32",
+    },
   },
   FsRequest: {
     Read: { path: "String" },

@@ -519,6 +519,8 @@ function encodeEvent(value: WindowCarrierEvent, carrier: boolean): Uint8Array {
     }
     default:
       if (!carrier) throw invalid("unknown WindowEvent discriminant");
+      if (value.variant === "OriginalRendererViewBound")
+        validateOriginalRendererBinding(value.window, value.webview);
       return encodeWindowEventExtension(value);
   }
 }
@@ -543,7 +545,14 @@ function eventAt(
   const afterVariant = decoded14[1];
   if (carrier !== true && variant >= (carrier === "desktop" ? 8 : 7))
     throw invalid("unknown WindowEvent discriminant");
-  if (variant >= 8) return windowEventExtensionAt(bytes, variant, afterVariant);
+  if (variant >= 8) {
+    if (variant === 12 && stateByteLength(bytes) > 21)
+      throw invalid("original view binding exceeds its received limit");
+    const decoded = windowEventExtensionAt(bytes, variant, afterVariant);
+    if (decoded[0].variant === "OriginalRendererViewBound")
+      validateOriginalRendererBinding(decoded[0].window, decoded[0].webview);
+    return decoded;
+  }
   if (variant === 7) {
     if (stateByteLength(bytes) > MAX_DESKTOP_EVENT_BYTES)
       throw invalid("desktop WindowEvent exceeds the 32 KiB budget");
@@ -609,6 +618,15 @@ function eventAt(
       throw invalid("unknown WindowEvent discriminant");
   }
 }
+function validateOriginalRendererBinding(
+  window: WindowRef,
+  webview: number,
+): void {
+  requireObject(window);
+  if (window.id === 0 || window.incarnation === 0n || webview === 0)
+    throw invalid("original view binding identities must be nonzero");
+}
+
 /** Decode exactly one host fact; unknown facts must never be silently ignored. */
 export function decodeWindowEvent(payload: Uint8Array): WindowEvent {
   return exact(payload, (bytes, offset) => eventAt(bytes, offset));
@@ -1021,6 +1039,11 @@ type WindowEventExtension =
       variant: "NavigationFinishedUnitPinchV1";
       window: WindowRef;
       document_generation: number;
+    }
+  | {
+      variant: "OriginalRendererViewBound";
+      window: WindowRef;
+      webview: number;
     };
 function encodeWindowEventExtension(value: WindowEventExtension): Uint8Array {
   switch (value.variant) {
@@ -1049,6 +1072,12 @@ function encodeWindowEventExtension(value: WindowEventExtension): Uint8Array {
         encodeVarint(11),
         encodeWindowRef(value.window),
         encodeNativeDocumentGeneration(value.document_generation),
+      ]);
+    case "OriginalRendererViewBound":
+      return join([
+        encodeVarint(12),
+        encodeWindowRef(value.window),
+        encodeVarint(value.webview),
       ]);
     default:
       throw invalid("unknown WindowEvent extension");
@@ -1135,6 +1164,14 @@ function windowEventExtensionAt(
         },
         at,
       ];
+    }
+    case 12: {
+      let at = afterTag;
+      const [window, next_window] = windowRefAt(wireBytes, at);
+      at = next_window;
+      const [webview, next_webview] = decodeVarint(wireBytes, at);
+      at = next_webview;
+      return [{ variant: "OriginalRendererViewBound", window, webview }, at];
     }
     default:
       throw invalid("unknown WindowEvent extension tag");

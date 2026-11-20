@@ -182,10 +182,48 @@ pub enum WindowEventValue<T> {
         /// Same native-observed generation as the matching original document commit.
         document_generation: u32,
     },
+    /// Selected original physical view associated with an existing live window.
+    OriginalRendererViewBound {
+        /// Host-minted window identity.
+        window: WindowRef,
+        /// Nonzero physical view identifier; this is not a grant.
+        webview: u32,
+    },
 }
 
 /// Owned app decoder for the canonical host-to-app window facts.
 pub type WindowEvent = WindowEventValue<String>;
+
+/// Maximum received postcard bytes for the selected original-view binding.
+pub const ORIGINAL_VIEW_BINDING_MAX_BYTES: usize = 21;
+
+/// Decode and validate a received WINDOW event.
+///
+/// The generic [`crate::codec::decode`] checks postcard structure only.
+/// WINDOW ingress must use this function before applying the event.
+///
+/// # Errors
+///
+/// Refuses malformed payloads and invalid or oversized selected bindings.
+pub fn decode_event(payload: &[u8]) -> Result<WindowEvent, crate::IpcError> {
+    if payload.len() > ORIGINAL_VIEW_BINDING_MAX_BYTES {
+        let (tag, _) = postcard::take_from_bytes::<u32>(payload).map_err(crate::IpcError::Codec)?;
+        if tag == 12 {
+            return Err(crate::IpcError::Codec(
+                postcard::Error::DeserializeBadEncoding,
+            ));
+        }
+    }
+    let event: WindowEvent = crate::codec::decode(payload)?;
+    if let WindowEvent::OriginalRendererViewBound { window, webview } = &event
+        && (window.id.0 == 0 || window.incarnation.0 == 0 || *webview == 0)
+    {
+        return Err(crate::IpcError::Codec(
+            postcard::Error::DeserializeBadEncoding,
+        ));
+    }
+    Ok(event)
+}
 
 /// App-to-host window calls; discriminants are append-only, starting at zero.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
