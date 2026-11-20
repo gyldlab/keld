@@ -325,6 +325,31 @@ fn observation_time_left(
     Ok(deadline.saturating_duration_since(now))
 }
 
+// Emit only the case and required-phase presence flags on a failed gate.
+// The original phase journal stays on disk; no bearer values, endpoint URLs,
+// provider payloads, or free-form observer reports enter hosted CI output.
+fn phase_gate_diagnostic(
+    case: &Case,
+    status: &str,
+    present: [bool; 3],
+    report_count: usize,
+) -> String {
+    format!(
+        "KELD_KEL89_PHASE_GATE case={} status={} appReady={} pageReady={} appResult={} reports={}",
+        case.name, status, present[0], present[1], present[2], report_count
+    )
+}
+
+#[test]
+fn public_auth_phase_gate_diagnostic_identifies_missing_event() {
+    let message = phase_gate_diagnostic(&CASES[0], "timed-out", [true, false, true], 2);
+    assert_eq!(
+        message,
+        "KELD_KEL89_PHASE_GATE case=default-deny status=timed-out appReady=true pageReady=false appResult=true reports=2"
+    );
+    assert!(!message.contains("auth.token"));
+}
+
 fn await_phases(
     observation: &Observation,
     project: &Path,
@@ -348,6 +373,15 @@ fn await_phases(
                     std::sync::mpsc::RecvTimeoutError::Disconnected => "observer-disconnected",
                 };
                 persist_phase_status(project, status, &diagnostic_phases)?;
+                eprintln!(
+                    "{}",
+                    phase_gate_diagnostic(
+                        case,
+                        status,
+                        [app_ready.is_some(), page_ready.is_some(), result.is_some()],
+                        diagnostic_phases.len(),
+                    )
+                );
                 return Err(error.into());
             }
         };
@@ -444,8 +478,16 @@ fn assert_product_cleanup(
         "stock CLI left dev-stage root after public Quit",
     )?;
     require(
-        !session_dir.exists() && session_dirs_for(host).is_empty(),
-        "public Quit left owned app-link locator/session",
+        !session_dir.exists(),
+        "public Quit left the authenticated app-link session directory",
+    )?;
+    let other_session_dirs = session_dirs_for(host);
+    require(
+        other_session_dirs.is_empty(),
+        format!(
+            "public Quit left {} Host-owned app-link session directories",
+            other_session_dirs.len()
+        ),
     )?;
     Ok(())
 }
@@ -536,6 +578,32 @@ fn observed_auth_family(app_ready: &Value, cli_pid: u32) -> SmokeResult<[u32; 4]
     Ok([host, guardian, bun, descendant])
 }
 
+fn verify_completed_auth_quit(
+    output: &std::process::Output,
+    project: &Path,
+    case: &Case,
+) -> SmokeResult<()> {
+    require(
+        output.status.success(),
+        format!(
+            "shipping CLI public Quit failed; exit code {:?}",
+            output.status.code()
+        ),
+    )?;
+    require(
+        quit_diagnostics::completed_quit_checkpoints_visible(project, case.name),
+        "successful auth Quit did not expose fixed HTTP and correlated lifecycle checkpoints",
+    )
+}
+
+fn write_launch_status(project_root: &Path, status: &Value) -> SmokeResult<()> {
+    fs::write(
+        project_root.join("launch-status.json"),
+        serde_json::to_vec_pretty(status)?,
+    )?;
+    Ok(())
+}
+
 fn run_case(
     parent: &Path,
     repo: &Path,
@@ -549,11 +617,9 @@ fn run_case(
     let mut window = census.map(|path| NativeWindowObserver::arm_for_title(path, TITLE));
     let stdout = fs::File::create(project.root.join("cli.stdout"))?;
     let stderr = fs::File::create(project.root.join("cli.stderr"))?;
-    fs::write(
-        project.root.join("launch-status.json"),
-        serde_json::to_vec_pretty(&json!({
-            "status":"starting-cli", "case":case.name,
-        }))?,
+    write_launch_status(
+        &project.root,
+        &json!({"status":"starting-cli", "case":case.name}),
     )?;
     let cli_child = Command::new(cli)
         .arg("dev")
@@ -567,15 +633,14 @@ fn run_case(
         .spawn()?;
     let cli_pid = cli_child.id();
     let mut cleanup = ShippingLaunchCleanup::new(cli_child);
-    fs::write(
-        project.root.join("launch-status.json"),
-        serde_json::to_vec_pretty(&json!({
-            "status":"cli-spawned", "case":case.name, "cliPid":cli_pid,
-        }))?,
+    write_launch_status(
+        &project.root,
+        &json!({"status":"cli-spawned", "case":case.name, "cliPid":cli_pid}),
     )?;
     let (app_ready, page_ready, result, journal) = await_phases(&observation, &project.root, case)?;
     let [host, guardian, bun, descendant] = observed_auth_family(&app_ready, cli_pid)?;
     cleanup.record_authenticated_groups(process_group(host), process_group(bun));
+    cleanup.record_authenticated_members(guardian, descendant);
     let host_image = process_image_path(host);
     let boot = project.verify_stock_stage(&host_image, host_source, case)?;
     let windows = window.as_mut().map_or_else(Vec::new, |window| {
@@ -591,6 +656,11 @@ fn run_case(
         .ok_or("missing app endpoint parent")?
         .to_path_buf();
     assert_application_link_provenance(host, bun, &app_ready)?;
+    eprintln!(
+        "KELD_KEL89_APP_LINK_PREQUIT case={} original_session_dir_visible={}",
+        case.name,
+        session_dir.exists()
+    );
     require(
         page_ready["marker"] == "KEL89_AUTH_SMOKE_WINDOW",
         "actual configured document marker missing",
@@ -611,13 +681,7 @@ fn run_case(
         case,
         [host, guardian, bun, descendant],
     );
-    require(
-        output.status.success(),
-        format!(
-            "shipping CLI public Quit failed; exit code {:?}",
-            output.status.code()
-        ),
-    )?;
+    verify_completed_auth_quit(&output, &project.root, case)?;
     let exits = [
         host_exit.wait(),
         guardian_exit.wait(),

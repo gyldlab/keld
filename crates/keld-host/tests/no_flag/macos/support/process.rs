@@ -2,19 +2,557 @@ use crate::support::PROCESS_DEADLINE;
 use crate::support::control::wait_child_output;
 use crate::support::dev_cycle::ShippingLaunchCleanup;
 use std::fs;
-use std::io::BufRead;
 use std::io::BufReader;
+use std::io::{BufRead, Read, Write};
 use std::os::unix::process::CommandExt as _;
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::PathBuf;
+use std::process::Child;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::mpsc;
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 unsafe extern "C" {
     #[link_name = "kill"]
     fn kill_process(pid: i32, signal: i32) -> i32;
+}
+
+// Independent native test observer: mirror the exact macOS SDK
+// sys/proc_info.h `struct proc_bsdinfo` rather than using production
+// Guardian's identity helper. An independent kernel read is essential to
+// catch a broken production birth/parent/group admission oracle.
+// The layout is pinned below to the current Apple SDK ABI (136 bytes,
+// 8-byte alignment). Compile-time assertions detect edits to this mirror;
+// a new SDK must be checked independently. Any short kernel read fails closed.
+#[repr(C)]
+#[derive(Default)]
+struct DarwinProcBsdInfo {
+    pbi_flags: u32,
+    pbi_status: u32,
+    pbi_xstatus: u32,
+    pbi_pid: u32,
+    pbi_ppid: u32,
+    pbi_uid: u32,
+    pbi_gid: u32,
+    pbi_ruid: u32,
+    pbi_rgid: u32,
+    pbi_svuid: u32,
+    pbi_svgid: u32,
+    rfu_1: u32,
+    pbi_comm: [u8; 16],
+    pbi_name: [u8; 32],
+    pbi_nfiles: u32,
+    pbi_pgid: u32,
+    pbi_pjobc: u32,
+    e_tdev: u32,
+    e_tpgid: u32,
+    pbi_nice: i32,
+    pbi_start_tvsec: u64,
+    pbi_start_tvusec: u64,
+}
+
+const _: () = {
+    assert!(std::mem::size_of::<DarwinProcBsdInfo>() == 136);
+    assert!(std::mem::align_of::<DarwinProcBsdInfo>() == 8);
+    assert!(std::mem::offset_of!(DarwinProcBsdInfo, pbi_pid) == 12);
+    assert!(std::mem::offset_of!(DarwinProcBsdInfo, pbi_ppid) == 16);
+    assert!(std::mem::offset_of!(DarwinProcBsdInfo, pbi_ruid) == 28);
+    assert!(std::mem::offset_of!(DarwinProcBsdInfo, pbi_pgid) == 100);
+    assert!(std::mem::offset_of!(DarwinProcBsdInfo, pbi_start_tvsec) == 120);
+    assert!(std::mem::offset_of!(DarwinProcBsdInfo, pbi_start_tvusec) == 128);
+};
+
+#[link(name = "proc")]
+unsafe extern "C" {
+    // sys/libproc.h: proc_pidinfo(pid_t, int, uint64_t, void*, int)
+    fn proc_pidinfo(
+        pid: i32,
+        flavor: i32,
+        arg: u64,
+        buffer: *mut std::ffi::c_void,
+        buffer_size: i32,
+    ) -> i32;
+}
+
+#[allow(unsafe_code)] // fixed-size, read-only XNU process observation
+fn read_darwin_proc_bsdinfo(pid: u32) -> Option<DarwinProcBsdInfo> {
+    let raw = i32::try_from(pid).ok()?;
+    if raw <= 1 {
+        return None;
+    }
+    // SAFETY: repr(C) structure is value-only and zero-initialized. The
+    // kernel writes at most the supplied exact size and retains no pointer.
+    let mut info = DarwinProcBsdInfo::default();
+    let size = i32::try_from(std::mem::size_of::<DarwinProcBsdInfo>()).ok()?;
+    // SAFETY: checked positive PID, read-only PROC_PIDTBSDINFO flavor (3),
+    // exact-size aligned writable output and no signal or wait side effects.
+    let count = unsafe { proc_pidinfo(raw, 3, 0, (&raw mut info).cast(), size) };
+    (count == size && info.pbi_pid == pid).then_some(info)
+}
+
+/// Read-only native liveness observation for bounded macOS test diagnostics.
+/// `kill(pid, 0)` does not signal, mint PID authority or wait for an external
+/// helper; unlike `/bin/kill -0`, this cannot block on subprocess startup/reap.
+/// A numeric PID may be reused, so this is only a visibility hint, not custody.
+pub(crate) fn process_exists_native(pid: u32) -> bool {
+    let Ok(raw) = i32::try_from(pid) else {
+        return false;
+    };
+    if raw <= 1 {
+        return false;
+    }
+    // SAFETY: Darwin kill(2) with signal zero performs only the kernel
+    // existence/permission check for this positive, checked PID; no signal
+    // is delivered and no raw process-group broadcast is possible.
+    unsafe { kill_process(raw, 0) == 0 }
+}
+
+/// Test-only authority retained from an original *live* kernel process-group
+/// leader, not from a PID reported in an event or copied from another group.
+/// This is an observation/recheck, not a kernel-pinned group handle: a leader
+/// that has disappeared makes fallback group signaling fail closed.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NativeGroupBirth {
+    group: u32,
+    real_uid: u32,
+    start_sec: u64,
+    start_usec: u64,
+}
+
+/// Independent live member evidence retained while the owning leader exists.
+/// A reaped leader alone cannot authorize a signal to a numeric PGID.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NativeMemberBirth {
+    pid: u32,
+    group: u32,
+    real_uid: u32,
+    start_sec: u64,
+    start_usec: u64,
+}
+
+impl NativeGroupBirth {
+    pub(crate) const fn group(self) -> u32 {
+        self.group
+    }
+}
+
+fn native_group_birth(group: u32) -> Option<(NativeGroupBirth, u32)> {
+    let info = read_darwin_proc_bsdinfo(group)?;
+    if info.pbi_pgid != group {
+        return None;
+    }
+    Some((
+        NativeGroupBirth {
+            group,
+            real_uid: info.pbi_ruid,
+            start_sec: info.pbi_start_tvsec,
+            start_usec: info.pbi_start_tvusec,
+        },
+        info.pbi_ppid,
+    ))
+}
+
+fn native_member_birth(pid: u32) -> Option<(NativeMemberBirth, u32)> {
+    let info = read_darwin_proc_bsdinfo(pid)?;
+    Some((
+        NativeMemberBirth {
+            pid,
+            group: info.pbi_pgid,
+            real_uid: info.pbi_ruid,
+            start_sec: info.pbi_start_tvsec,
+            start_usec: info.pbi_start_tvusec,
+        },
+        info.pbi_ppid,
+    ))
+}
+
+/// Retain an independently verified original descendant while its group
+/// leader is still present; a PID reported by the fixture is insufficient.
+pub(crate) fn retain_parented_group_member(
+    member: u32,
+    parent: u32,
+    leader: NativeGroupBirth,
+) -> NativeMemberBirth {
+    let (observed, actual_parent) =
+        native_member_birth(member).expect("original fixture group member must be live");
+    assert_eq!(actual_parent, parent, "member must have the owned parent");
+    assert_eq!(
+        observed.group, leader.group,
+        "member must be in the original group"
+    );
+    assert_ne!(
+        observed.pid, leader.group,
+        "member must be independent of leader"
+    );
+    assert_eq!(
+        observed.real_uid, leader.real_uid,
+        "member and leader UID must match"
+    );
+    assert_ne!(observed.group, process_group(std::process::id()));
+    let (current, _) = native_group_birth(leader.group).expect("leader must still be live");
+    assert_eq!(
+        (current.real_uid, current.start_sec, current.start_usec),
+        (leader.real_uid, leader.start_sec, leader.start_usec),
+        "member must belong to the original live group leader"
+    );
+    observed
+}
+
+/// Fallback is valid only while this exact, earlier-attested member continues
+/// to exist in its original group. No unverified numeric group signal occurs.
+pub(crate) fn signal_group_via_attested_member(
+    signal: &str,
+    original: NativeGroupBirth,
+    member: NativeMemberBirth,
+) -> std::io::Result<()> {
+    let still_same = native_member_birth(member.pid).is_some_and(|(current, _)| {
+        current.pid == member.pid
+            && current.group == original.group
+            && current.group == member.group
+            && current.real_uid == member.real_uid
+            && current.real_uid == original.real_uid
+            && current.start_sec == member.start_sec
+            && current.start_usec == member.start_usec
+    });
+    if !still_same || member.pid == original.group {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "original attested group member disappeared or changed birth; refuse group signal",
+        ));
+    }
+    signal_process_group(signal, original.group)
+}
+
+/// Verify expected native parentage at capture time, independently of test
+/// fixture messages, and exclude the harness' own group from this authority.
+pub(crate) fn retain_parented_group_birth(group: u32, parent: u32) -> NativeGroupBirth {
+    let (birth, actual_parent) = native_group_birth(group)
+        .expect("original native group leader must be live when recording cleanup authority");
+    assert_eq!(
+        actual_parent, parent,
+        "group leader must have the owned parent"
+    );
+    assert_ne!(group, process_group(std::process::id()));
+    birth
+}
+
+/// Numeric PGID is never signal authority without the *earlier* original
+/// birth; a group leader missing after cleanup is not grounds to signal by
+/// reusable group number. The check/kill race is not kernel pinned.
+pub(crate) fn signal_attested_group(
+    signal: &str,
+    original: NativeGroupBirth,
+) -> std::io::Result<()> {
+    let same_birth = native_group_birth(original.group).is_some_and(|(observed, _)| {
+        observed.group == original.group
+            && observed.real_uid == original.real_uid
+            && observed.start_sec == original.start_sec
+            && observed.start_usec == original.start_usec
+    });
+    if !same_birth {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "original native group leader disappeared or changed birth; refuse group signal",
+        ));
+    }
+    signal_process_group(signal, original.group)
+}
+
+// Independent test-owned rescue: an assertion failure must not leave the
+// fixture's sleep descendant running after the leader was reaped. A saved
+// numeric PGID is never authority without the original kernel birth witness.
+struct AttestedFixtureMemberRescue {
+    original: NativeGroupBirth,
+    member: Option<NativeMemberBirth>,
+}
+
+impl Drop for AttestedFixtureMemberRescue {
+    fn drop(&mut self) {
+        if self.member.is_some_and(|member| {
+            signal_group_via_attested_member("-KILL", self.original, member).is_ok()
+        }) {
+            return;
+        }
+        let _ = signal_attested_group("-KILL", self.original);
+    }
+}
+
+// This sentinel is a real, freshly spawned, isolated OS process group, not an
+// arbitrary host PID. Its retained Child is the final independent rescue on
+// regression failure, even when ShippingLaunchCleanup drops in a panic.
+struct OwnedOutsider(Child);
+
+impl Drop for OwnedOutsider {
+    fn drop(&mut self) {
+        if matches!(self.0.try_wait(), Ok(None)) {
+            let _ = self.0.kill();
+        }
+        let _ = self.0.wait();
+    }
+}
+
+fn native_outsider() -> OwnedOutsider {
+    let outsider = OwnedOutsider(
+        Command::new("/bin/cat")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("owned isolated outsider"),
+    );
+    let outsider_pid = outsider.0.id();
+    assert_eq!(process_group(outsider_pid), outsider_pid);
+    assert_ne!(process_group(std::process::id()), outsider_pid);
+    outsider
+}
+
+fn assert_outsider_echo(outsider: &mut OwnedOutsider) {
+    outsider
+        .0
+        .stdin
+        .as_mut()
+        .expect("outsider stdin retained")
+        .write_all(b"still-here\n")
+        .expect("outsider survived cleanup");
+    let mut stdout = outsider.0.stdout.take().expect("outsider stdout retained");
+    let (tx, rx) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        let mut bytes = [0_u8; 11];
+        let outcome = stdout.read_exact(&mut bytes).map(|()| bytes);
+        let _ = tx.send(outcome);
+    });
+    let received = rx.recv_timeout(Duration::from_secs(2));
+    if received.is_err() {
+        let _ = outsider.0.kill();
+    }
+    reader
+        .join()
+        .expect("outsider read terminates after native rescue");
+    assert!(
+        matches!(received, Ok(Ok(bytes)) if bytes == *b"still-here\n"),
+        "unverified ShippingLaunchCleanup marker signaled the independent outsider"
+    );
+}
+
+#[test]
+fn shipping_cleanup_unverified_group_marker_cannot_signal_outsider() {
+    let mut outsider = native_outsider();
+    let cli = Command::new("/usr/bin/true")
+        .spawn()
+        .expect("harmless completed CLI owner");
+    let mut cleanup = ShippingLaunchCleanup::new(cli);
+    cleanup.host_group = Some(outsider.0.id()); // Unverified marker: NO authority.
+    drop(cleanup);
+    assert_outsider_echo(&mut outsider);
+}
+
+#[test]
+fn shipping_cleanup_replaced_group_marker_cannot_borrow_original_birth() {
+    let mut original = native_outsider();
+    let mut outsider = native_outsider();
+    let cli = Command::new("/usr/bin/true")
+        .spawn()
+        .expect("harmless completed CLI owner");
+    let mut cleanup = ShippingLaunchCleanup::new(cli);
+    cleanup.record_host_group(original.0.id(), std::process::id());
+    cleanup.host_group = Some(outsider.0.id()); // Replaced after valid capture.
+    drop(cleanup);
+    assert_outsider_echo(&mut outsider);
+    assert_outsider_echo(&mut original);
+}
+
+#[test]
+fn shipping_cleanup_wrong_original_birth_cannot_signal_outsider() {
+    let mut outsider = native_outsider();
+    let original = retain_parented_group_birth(outsider.0.id(), std::process::id());
+    let wrong = NativeGroupBirth {
+        start_usec: original.start_usec.wrapping_add(1),
+        ..original
+    };
+    let refused = signal_attested_group("-TERM", wrong)
+        .expect_err("altered original kernel birth cannot authorize group signaling");
+    assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
+    assert_outsider_echo(&mut outsider);
+}
+
+#[test]
+fn shipping_cleanup_reaped_leader_uses_only_original_live_member() {
+    let cli = Command::new("/usr/bin/true")
+        .spawn()
+        .expect("completed fixture CLI");
+    let mut cleanup = ShippingLaunchCleanup::new(cli);
+    let mut leader = Command::new("/bin/sh")
+        .args(["-c", "sleep 60 & child=$!; printf '%s\\n' \"$child\"; wait"])
+        .process_group(0)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("original fixture group leader");
+    let group = leader.id();
+    cleanup.record_host_group(group, std::process::id());
+    let original = retain_parented_group_birth(group, std::process::id());
+    let mut rescue = AttestedFixtureMemberRescue {
+        original,
+        member: None,
+    };
+    let mut line = String::new();
+    BufReader::new(leader.stdout.take().expect("member PID pipe"))
+        .read_line(&mut line)
+        .expect("member PID line");
+    let member = line.trim().parse::<u32>().expect("member PID");
+    assert_eq!(process_group(member), group);
+    let attested_member = retain_parented_group_member(member, group, original);
+    rescue.member = Some(attested_member);
+    cleanup.host_member = Some(attested_member);
+
+    kill_pid(group);
+    leader.wait().expect("reap original group leader");
+    assert!(
+        process_exists(member),
+        "member survives original leader reap"
+    );
+    assert_eq!(process_group(member), group);
+    let denied = signal_attested_group("-TERM", original)
+        .expect_err("reaped group leader cannot authorize the normal group signal");
+    assert_eq!(denied.kind(), std::io::ErrorKind::PermissionDenied);
+    drop(cleanup);
+    await_process_gone(member);
+}
+
+// Public-FS owns Host directly rather than through a shipping CLI. Its Bun
+// member enrollment must work without an authenticated host_group and must
+// rescue the descendant after the original Bun leader has been reaped.
+#[test]
+fn shipping_cleanup_public_fs_reaped_bun_uses_attested_descendant() {
+    let cli = Command::new("/usr/bin/true")
+        .spawn()
+        .expect("completed fixture Host");
+    let mut cleanup = ShippingLaunchCleanup::new(cli);
+    let mut leader = OwnedOutsider(
+        Command::new("/bin/sh")
+            .args(["-c", "sleep 60 & child=$!; printf '%s\\n' \"$child\"; wait"])
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("original fixture Bun group"),
+    );
+    let group = leader.0.id();
+    cleanup.record_bun_group(group, std::process::id());
+    let original = retain_parented_group_birth(group, std::process::id());
+    let mut rescue = AttestedFixtureMemberRescue {
+        original,
+        member: None,
+    };
+    let mut line = String::new();
+    BufReader::new(leader.0.stdout.take().expect("descendant PID pipe"))
+        .read_line(&mut line)
+        .expect("descendant PID line");
+    let descendant = line.trim().parse::<u32>().expect("descendant PID");
+    rescue.member = Some(retain_parented_group_member(descendant, group, original));
+    // A live process in another group cannot become this Bun's fallback.
+    let mut outsider = native_outsider();
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        cleanup.record_bun_member(outsider.0.id());
+    }));
+    assert!(refused.is_err(), "foreign member must fail closed");
+    assert_outsider_echo(&mut outsider);
+    cleanup.record_bun_member(descendant);
+    leader
+        .0
+        .kill()
+        .expect("terminate exact retained Bun leader");
+    leader.0.wait().expect("reap original Bun leader");
+    assert!(process_exists(descendant), "descendant survives Bun reap");
+    assert!(signal_attested_group("-TERM", original).is_err());
+    drop(cleanup);
+    // Verdict precedes rescue Drop: independent cleanup cannot create GREEN.
+    await_process_gone(descendant);
+}
+
+#[test]
+fn shipping_cleanup_forged_member_birth_refuses_group_signal() {
+    let mut leader = Command::new("/bin/sh")
+        .args(["-c", "sleep 60 & child=$!; printf '%s\\n' \"$child\"; wait"])
+        .process_group(0)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("fixture leader");
+    let group = leader.id();
+    let original = retain_parented_group_birth(group, std::process::id());
+    let mut rescue = AttestedFixtureMemberRescue {
+        original,
+        member: None,
+    };
+    let mut line = String::new();
+    BufReader::new(leader.stdout.take().expect("member PID pipe"))
+        .read_line(&mut line)
+        .expect("member PID line");
+    let member_pid = line.trim().parse::<u32>().expect("member PID");
+    let member = retain_parented_group_member(member_pid, group, original);
+    rescue.member = Some(member);
+    let forged = NativeMemberBirth {
+        start_usec: member.start_usec.wrapping_add(1),
+        ..member
+    };
+    let denied = signal_group_via_attested_member("-TERM", original, forged)
+        .expect_err("forged member birth cannot authorize original group signal");
+    assert_eq!(denied.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(process_exists(group));
+    assert!(process_exists(member_pid));
+    // The retained direct Child is the independent cleanup authority.
+    leader.kill().expect("cleanup fixture leader");
+    leader.wait().expect("reap fixture leader");
+    signal_group_via_attested_member("-TERM", original, member)
+        .expect("original member remains authority after leader reap");
+    await_process_gone(member_pid);
+}
+
+#[test]
+fn attested_fixture_member_rescue_cleans_on_unwind() {
+    let mut leader = Command::new("/bin/sh")
+        .args(["-c", "sleep 60 & child=$!; printf '%s\\n' \"$child\"; wait"])
+        .process_group(0)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("isolated fixture group leader");
+    let group = leader.id();
+    let original = retain_parented_group_birth(group, std::process::id());
+    let mut rescue = AttestedFixtureMemberRescue {
+        original,
+        member: None,
+    };
+    let mut line = String::new();
+    BufReader::new(leader.stdout.take().expect("member PID pipe"))
+        .read_line(&mut line)
+        .expect("member PID line");
+    let member_pid = line.trim().parse::<u32>().expect("member PID");
+    rescue.member = Some(retain_parented_group_member(member_pid, group, original));
+    kill_pid(group);
+    leader.wait().expect("reap original leader");
+    assert!(
+        process_exists(member_pid),
+        "fixture member must be live before rescue"
+    );
+    let unwound = std::panic::catch_unwind(move || {
+        let _rescue = rescue;
+        panic!("test-only unwind exercises independently attested cleanup");
+    });
+    assert!(unwound.is_err(), "native fixture unwind must execute");
+    await_process_gone(member_pid);
+}
+
+#[test]
+fn shipping_cleanup_unparented_birth_cannot_gain_group_authority() {
+    let mut outsider = native_outsider();
+    let refused = std::panic::catch_unwind(|| {
+        retain_parented_group_birth(outsider.0.id(), u32::MAX);
+    });
+    assert!(
+        refused.is_err(),
+        "foreign parent cannot enroll fixture authority"
+    );
+    assert_outsider_echo(&mut outsider);
 }
 
 #[test]
@@ -33,7 +571,7 @@ fn shipping_launch_cleanup_reaps_each_owned_process_group() {
         .spawn()
         .expect("launch disposable host group");
     let host_pid = host.id();
-    cleanup.host_group = Some(host_pid);
+    cleanup.record_host_group(host_pid, std::process::id());
     let mut descendant_line = String::new();
     let descendant_read = BufReader::new(host.stdout.take().expect("host child PID pipe"))
         .read_line(&mut descendant_line)
@@ -49,7 +587,7 @@ fn shipping_launch_cleanup_reaps_each_owned_process_group() {
         .spawn()
         .expect("launch disposable Bun group");
     let bun_pid = bun.id();
-    cleanup.bun_group = Some(bun_pid);
+    cleanup.record_bun_group(bun_pid, std::process::id());
     assert_eq!(process_group(cli_pid), cli_pid);
     assert_eq!(process_group(host_pid), host_pid);
     assert_eq!(process_group(bun_pid), bun_pid);

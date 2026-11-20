@@ -33,6 +33,9 @@ mod own_child_reap;
 #[path = "tests/own_child_reap_callers.rs"]
 mod own_child_reap_callers;
 
+#[path = "tests/real_eperm_eof.rs"]
+mod real_eperm_eof;
+
 #[test]
 fn native_role() {
     let Ok(role) = std::env::var(ROLE) else {
