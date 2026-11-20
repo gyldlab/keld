@@ -4,6 +4,7 @@ use std::cell::Cell;
 use super::super::native_text::{read_task_text, read_task_text_admitted};
 use super::super::original_callbacks::callback_credit;
 use super::{OriginalBridge, WvError, failure};
+use crate::renderer_bridge::NativeMessageFacts;
 use crate::resource_intake::ORIGINAL_WEBAPP_LIMITS;
 use crate::wv_link::decode_storage::{AppDecodeAdmission, initial_storage_bytes};
 use crate::wv_link::{AppWvLinkEnvelope, MAX_APP_WV_LINK_ENVELOPE_LEN, WvLinkEnvelope};
@@ -134,7 +135,7 @@ impl OriginalBridge {
         args: &ICoreWebView2WebMessageReceivedEventArgs,
         credit: &CaptureCredit<'_>,
     ) -> Result<(), WvError> {
-        let source_scratch = callback_credit(&self.navigation)
+        let scratch = callback_credit(&self.navigation)
             .map_err(|_| failure("selected Source scratch credit unavailable"))?;
         let captured = self
             .navigation
@@ -150,13 +151,8 @@ impl OriginalBridge {
         )
         .map_err(|_| failure("selected native message Source malformed"))?;
         if let Some(document) = &captured {
-            crate::renderer_bridge::NativeMessageFacts::check_windows_source_url(
-                &source,
-                &self.source,
-                document,
-                &source_scratch,
-            )
-            .map_err(failure)?;
+            NativeMessageFacts::check_windows_source_url(&source, &self.source, document, &scratch)
+                .map_err(failure)?;
         } else {
             // The tokenless bind can precede the first native document commit.
             self.source.qualify_document_url(&source).map_err(|_| {
