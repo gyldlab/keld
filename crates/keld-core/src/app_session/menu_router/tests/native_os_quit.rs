@@ -1,8 +1,14 @@
 //! Native OS Quit is intent for the selected current original owner, not a
 //! native close receipt. The actual app-link frames are the independent oracle.
 
-use super::*;
-use std::sync::Mutex;
+use super::{PrimaryRouterHandle, caller};
+use crate::app_session as app;
+use keld_ipc::codec::decode;
+use keld_ipc::link::{AppLinkDeadlines as _, read_frame};
+use keld_ipc::{CorrelationId, FrameKind, LIFECYCLE_CHANNEL, LifecycleEvent};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 
 fn install_original(handle: &mut PrimaryRouterHandle) -> tempfile::TempDir {
     handle.windows = Some(Arc::new(Mutex::new(
