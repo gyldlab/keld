@@ -1839,6 +1839,90 @@ export function checkWorkflowSecurity(source: string): void {
   // Globally reject unknown Actions SHAs before checking approved Bun cache
   // owners. This preserves the upstream unreviewed-action failure diagnostic.
   checkB3BunCachePolicy(stepsByJob);
+  // B-82 runs candidate-owned Python only after its trusted checkout and
+  // verifier checks. Pin the COMPLETE preflight execution context: a job or
+  // step BASH_ENV runs before Bash reads the first `set -euo pipefail`,
+  // so an apparently unchanged run script can be skipped with `exit 0`.
+  const hygieneContext =
+    "KEL-270 B-82 hygiene gate must preserve its reviewed execution context";
+  const hygieneJob = mapping(jobs.hygiene, "jobs.hygiene");
+  exactKeys(
+    hygieneJob,
+    ["name", "runs-on", "timeout-minutes", "needs", "if", "steps"],
+    hygieneContext,
+  );
+  const soleChangesDependency =
+    hygieneJob.needs === "changes" ||
+    (Array.isArray(hygieneJob.needs) &&
+      hygieneJob.needs.length === 1 &&
+      hygieneJob.needs[0] === "changes");
+  if (
+    hygieneJob.name !== "CODEOWNERS + templates" ||
+    hygieneJob["runs-on"] !== "ubuntu-24.04" ||
+    scalar(hygieneJob["timeout-minutes"]) !== "10" ||
+    !soleChangesDependency ||
+    hygieneJob.if !==
+      "needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'"
+  ) {
+    fail(hygieneContext);
+  }
+  const hygieneSteps = stepsByJob.get("hygiene");
+  if (!hygieneSteps || hygieneSteps.length < 3) fail(hygieneContext);
+  const hygieneCheckout = hygieneSteps[0]!;
+  exactKeys(hygieneCheckout, ["uses", "with"], hygieneContext);
+  if (
+    hygieneCheckout.uses !==
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+  ) {
+    fail(hygieneContext);
+  }
+  inputsMatch(
+    mapping(hygieneCheckout.with, "KEL-270 B-82 hygiene checkout inputs"),
+    { "fetch-depth": "0", "persist-credentials": "false" },
+    hygieneContext,
+  );
+  const hygieneRustInstaller = hygieneSteps[1]!;
+  exactKeys(hygieneRustInstaller, ["uses", "with"], hygieneContext);
+  if (
+    hygieneRustInstaller.uses !==
+    "dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8"
+  ) {
+    fail(hygieneContext);
+  }
+  const rustInputs = mapping(
+    hygieneRustInstaller.with,
+    "KEL-270 B-82 Rust installer inputs",
+  );
+  exactKeys(rustInputs, ["toolchain", "components"], hygieneContext);
+  // The workspace TOML-derived checkRustToolchainPins owns the exact Rust
+  // version. The B-82 gate only owns the immutable installer and components.
+  if (
+    !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(scalar(rustInputs.toolchain) ?? "") ||
+    scalar(rustInputs.components) !== "rustfmt, clippy"
+  ) {
+    fail(hygieneContext);
+  }
+  const evidenceStep = hygieneSteps[2]!;
+  exactKeys(evidenceStep, ["name", "shell", "run"], hygieneContext);
+  if (
+    evidenceStep.name !== "KEL-270 definition evidence (read-only)" ||
+    evidenceStep.shell !== "bash" ||
+    typeof evidenceStep.run !== "string"
+  ) {
+    fail(hygieneContext);
+  }
+  // An unchanged name/shell does not prove the executed body. Bind the full
+  // reviewed B-82 program, including receipt/verifier/source checks and
+  // failure handling. This check is defense-in-depth: candidate-owned CI
+  // cannot grant itself trusted-base authorization.
+  const reviewedB82RunSha256 =
+    "787c37ffddff7884073502989c9d1bb90f8f5c5fe22f7b84a62460e3e035b12a";
+  if (
+    createHash("sha256").update(evidenceStep.run).digest("hex") !==
+    reviewedB82RunSha256
+  ) {
+    fail(hygieneContext);
+  }
   // This broad safety net runs AFTER the narrower, previously reviewed
   // executable-step checks. That keeps their deterministic negative-control
   // diagnostics while also rejecting an otherwise permitted earlier step
@@ -1900,6 +1984,48 @@ export function checkWorkflowSecurity(source: string): void {
   }
 }
 
+// The hygiene gate runs candidate-owned workflow steps before its own
+// checkout validator. Read the event commit object, not only the mutable
+// worktree: a prior step could restore approved bytes after executing an
+// unreviewed program. This is a same-job false-green guard, not a replacement
+// for separately enforced protected-base admission before execution.
+export function checkCommittedWorkflowSnapshot(
+  root: string,
+  eventSha: string,
+  checkoutSource: string,
+): void {
+  const mismatch = "CI workflow checkout differs from exact Git event commit";
+  if (!/^[0-9a-f]{40}$/.test(eventSha)) fail(mismatch);
+  const head = Bun.spawnSync([
+    "git",
+    "-C",
+    root,
+    "rev-parse",
+    "--verify",
+    "HEAD",
+  ]);
+  if (
+    head.exitCode !== 0 ||
+    new TextDecoder().decode(head.stdout).trim() !== eventSha
+  ) {
+    fail(mismatch);
+  }
+  const object = Bun.spawnSync([
+    "git",
+    "-C",
+    root,
+    "show",
+    eventSha + ":.github/workflows/ci.yml",
+  ]);
+  if (
+    object.exitCode !== 0 ||
+    new TextDecoder().decode(object.stdout) !== checkoutSource
+  ) {
+    fail(mismatch);
+  }
+  checkWorkflowSecurity(new TextDecoder().decode(object.stdout));
+}
+
 if (import.meta.main) {
   try {
     const [, , command, root = ".", ...extra] = process.argv;
@@ -1909,6 +2035,17 @@ if (import.meta.main) {
       resolve(root, ".github/workflows/ci.yml"),
       "utf8",
     );
+    if (
+      process.env.GITHUB_ACTIONS === "true" &&
+      process.env.GITHUB_WORKSPACE &&
+      resolve(root) === resolve(process.env.GITHUB_WORKSPACE)
+    ) {
+      checkCommittedWorkflowSnapshot(
+        root,
+        process.env.GITHUB_SHA ?? "",
+        workflowSource,
+      );
+    }
     checkWorkflowSecurity(workflowSource);
     checkRustToolchainPins(
       workflowSource,

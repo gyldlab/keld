@@ -897,7 +897,7 @@ jobs:
 
   hygiene:
     name: CODEOWNERS + templates
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: changes
     if: needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'
@@ -910,6 +910,108 @@ jobs:
         with:
           toolchain: 1.99.1
           components: rustfmt, clippy
+      # KEL-270 B-82 candidate: synthetic definitions only; native product NOT_RUN.
+      # Use Ubuntu 24.04 / CPython 3.12 and SHA-256-pinned binary test dependencies.
+      # Keep the environment in runner temp, with no new action or write authority.
+      - name: KEL-270 definition evidence (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          checkout_root="$(pwd -P)"
+          if [[ ! "${GITHUB_SHA:-}" =~ ^[0-9a-f]{40}$ ]] ||
+             [[ "$checkout_root" != "$(realpath -e -- "${GITHUB_WORKSPACE:?}")" ]] ||
+             [[ "$checkout_root" != "$(git rev-parse --show-toplevel)" ]] ||
+             [[ "$GITHUB_SHA" != "$(git rev-parse --verify HEAD)" ]]; then
+            echo "KEL-270 B-82 checkout identity mismatch" >&2
+            exit 1
+          fi
+          require_checkout_file() {
+            local path="$1" mode kind object
+            read -r mode kind object _ <<< "$(git ls-tree "$GITHUB_SHA" -- "$path")"
+            if [[ ! -f "$path" || "$(realpath -e -- "$path")" != "$checkout_root/$path" ||
+                  "$mode" != 100644 || "$kind" != blob ||
+                  "$object" != "$(git hash-object --no-filters -- "$path")" ]]; then
+              echo "KEL-270 B-82 evidence file does not match checkout: $path" >&2
+              exit 1
+            fi
+          }
+          # The receipt supplies all 15 source hashes. Pin its reviewed bytes in
+          # protected CI so a candidate cannot repin both a source and its manifest.
+          receipt_path=docs/engineering/evidence/kel270-catalogue-admission-v2/review-receipt.json
+          require_checkout_file "$receipt_path"
+          if ! printf '%s  %s\n' \
+            '7b9e858738d51665120d4690929d13b1ab0ee7f80b0e6d82d6bb093ffcff0c42' \
+            "$receipt_path" | sha256sum --check --status; then
+            echo "KEL-270 B-82 trusted receipt SHA-256 mismatch" >&2
+            exit 1
+          fi
+          # A pull request can add sourceless imports (for example argparse.pyc)
+          # beside the verifier. -B alone prevents writes, not importing them.
+          # Clear runner-provided Python startup controls before the verifier and
+          # its child processes; re-enable only safe-path and no-user-site flags.
+          for variable in "${!PYTHON@}"; do
+            unset "$variable"
+          done
+          export PYTHONNOUSERSITE=1
+          export PYTHONSAFEPATH=1
+          require_checkout_file "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py"
+          # The receipt is pinned above, so its verifier digest is an independent
+          # trust anchor. Authenticate the verifier before executing candidate code.
+          verifier_path=docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py
+          python3 -I -S -c '
+          import hashlib, json, re, sys
+          receipt_path, verifier_path = sys.argv[1:]
+          with open(receipt_path, encoding="utf-8") as source:
+              receipt = json.load(source)
+          expected = receipt["published_file_sha256"].get(verifier_path)
+          if not isinstance(expected, str) or re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+              raise SystemExit("invalid verifier digest in trusted receipt")
+          with open(verifier_path, "rb") as source:
+              actual = hashlib.sha256(source.read()).hexdigest()
+          if actual != expected:
+              raise SystemExit("KEL-270 B-82 verifier SHA-256 mismatch")
+          ' "$receipt_path" "$verifier_path"
+          # Bind all receipt-pinned sources to regular blobs in the expected checkout.
+          python3 -I -S -c '
+          import json, pathlib, subprocess, sys
+          root = pathlib.Path.cwd()
+          commit = sys.argv[2]
+          with open(sys.argv[1], encoding="utf-8") as source:
+              paths = json.load(source)["published_file_sha256"]
+          for name in paths:
+              relative = pathlib.PurePosixPath(name)
+              path = root / relative
+              if (relative.is_absolute() or ".." in relative.parts
+                      or path.resolve(strict=True) != path or not path.is_file()):
+                  raise SystemExit("KEL-270 B-82 evidence source outside canonical checkout")
+              row = subprocess.check_output([
+                  "git", "--literal-pathspecs", "ls-tree",
+                  "--format=%(objectmode) %(objecttype) %(objectname)", commit, "--", name,
+              ]).decode("ascii").split()
+              if (len(row) != 3 or row[:2] != ["100644", "blob"]
+                      or row[2] != subprocess.check_output([
+                          "git", "hash-object", "--no-filters", "--", name,
+                      ]).decode("ascii").strip()):
+                  raise SystemExit("KEL-270 B-82 evidence source does not match checkout")
+          ' "$receipt_path" "$GITHUB_SHA"
+          python3.12 -I -m venv "$RUNNER_TEMP/kel270-evidence-python"
+          cat > "$RUNNER_TEMP/kel270-evidence-requirements.txt" <<'REQ'
+          cryptography==50.0.2 \
+              --hash=sha256:9dab55f57c74c3cad24c323bacbbd04be4705ba6eb0d92e920b1fc4837ed5079
+          cffi==2.0.0 \
+              --hash=sha256:3e17ed538242334bf70832644a32a7aae3d83b57567f9fd60a26257e992b79ba
+          pycparser==2.23 \
+              --hash=sha256:e5c6e8d3fbad53479cab09ac03729e0a9faf2bee3db8208a550daf5af81a5934
+          REQ
+          "$RUNNER_TEMP/kel270-evidence-python/bin/python" -I -m pip install \
+            --disable-pip-version-check --no-input --no-cache-dir \
+            --only-binary=:all: --require-hashes \
+            -r "$RUNNER_TEMP/kel270-evidence-requirements.txt"
+          "$RUNNER_TEMP/kel270-evidence-python/bin/python" -I -B -c \
+            'import cryptography; assert cryptography.__version__ == "50.0.2"'
+          require_checkout_file "$verifier_path"
+          "$RUNNER_TEMP/kel270-evidence-python/bin/python" -I -B \
+            docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py --check
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: "1.4.4"
