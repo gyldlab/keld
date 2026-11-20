@@ -197,7 +197,10 @@ function onLastWindowClosed(): void {
           let originalLive = false;
           for (let i = 0; i < live.length; i += 1) {
             const current = live[i];
-            if (current && sameOriginalWindow(current.window, original.window)) {
+            if (
+              current &&
+              sameOriginalWindow(current.window, original.window)
+            ) {
               originalLive = true;
             }
           }
@@ -265,19 +268,26 @@ interface OriginalQuitClose {
 }
 let pendingOriginalQuitClose: OriginalQuitClose | undefined;
 
-function sameOriginalWindow(left: Readonly<WindowRef>, right: Readonly<WindowRef>): boolean {
+function sameOriginalWindow(
+  left: Readonly<WindowRef>,
+  right: Readonly<WindowRef>,
+): boolean {
   return left.id === right.id && left.incarnation === right.incarnation;
 }
 
 /** @internal The existing close owner calls only after Host ReplyApplied(Veto). */
-export function noteOriginalQuitVetoApplied(window: WindowRef, closeSeq: bigint): void {
+export function noteOriginalQuitVetoApplied(
+  window: WindowRef,
+  closeSeq: bigint,
+): void {
   const claim = pendingOriginalQuitClose;
   if (
     claim &&
     sameOriginalWindow(window, claim.window) &&
     claim.closeSeq === closeSeq &&
     claim.scope.ownsCurrentGeneration()
-  ) pendingOriginalQuitClose = undefined;
+  )
+    pendingOriginalQuitClose = undefined;
 }
 
 /** @internal The existing BrowserWindow owner calls after actual Host Destroyed. */
@@ -301,7 +311,8 @@ export function noteOriginalQuitWindowDestroyed(window: WindowRef): void {
     let originalLive = false;
     for (let i = 0; i < live.length; i += 1) {
       const current = live[i];
-      if (current && sameOriginalWindow(current.window, claim.window)) originalLive = true;
+      if (current && sameOriginalWindow(current.window, claim.window))
+        originalLive = true;
     }
     if (!originalLive) pendingOriginalQuitClose = undefined;
   } catch {
@@ -346,7 +357,8 @@ function requestQuitAfterBeforeEvent(
   if (activeQuitAttempt) return activeQuitAttempt.promise;
   const stillClosing = pendingOriginalQuitClose;
   if (stillClosing) {
-    if (stillClosing.scope.ownsCurrentGeneration()) return stillClosing.attempt.promise;
+    if (stillClosing.scope.ownsCurrentGeneration())
+      return stillClosing.attempt.promise;
     pendingOriginalQuitClose = undefined;
   }
   let resolveAttempt!: () => void;
@@ -508,7 +520,8 @@ onWindowFactApplied((fact) => {
   if (
     sameOriginalWindow(fact.window, claim.window) &&
     !claim.scope.ownsCurrentGeneration()
-  ) pendingOriginalQuitClose = undefined;
+  )
+    pendingOriginalQuitClose = undefined;
 });
 onNativeQuitRequested(() => {
   // Same framework Quit owner/D2 preflight, never a caller MenuItem click or

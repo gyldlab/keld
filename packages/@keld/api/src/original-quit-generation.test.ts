@@ -9,11 +9,19 @@ const begin = source.indexOf("export function captureOriginalWindowQuitScope(");
 const end = source.indexOf("/** Current admitted desktop facts.", begin);
 expect(begin).toBeGreaterThan(0);
 expect(end).toBeGreaterThan(begin);
-let logicBody = source.slice(begin, end).replace("export function ", "function ");
+let logicBody = source
+  .slice(begin, end)
+  .replace("export function ", "function ");
 if (process.env.KELD_GH451_MUTANT === "drop-document-generation")
   logicBody = logicBody
-    .replaceAll("snapshot.document.generation === originalDocumentGeneration", "true")
-    .replaceAll("snapshot.document?.generation === originalDocumentGeneration", "true");
+    .replaceAll(
+      "snapshot.document.generation === originalDocumentGeneration",
+      "true",
+    )
+    .replaceAll(
+      "snapshot.document?.generation === originalDocumentGeneration",
+      "true",
+    );
 const logic = new Bun.Transpiler({ loader: "ts" }).transformSync(logicBody);
 
 function fixture() {

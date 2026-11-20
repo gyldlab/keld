@@ -47,7 +47,11 @@ const emitted: string[] = [];
 const session = await LifecycleLink.connect("controlled-link", {
   onReady() {},
   onLastWindowClosed(receipt) {
-    assert.equal(receipt, session, "actual LastWindowClosed must retain its link owner");
+    assert.equal(
+      receipt,
+      session,
+      "actual LastWindowClosed must retain its link owner",
+    );
     emitted.push("all-closed");
   },
   onLinkDead() {

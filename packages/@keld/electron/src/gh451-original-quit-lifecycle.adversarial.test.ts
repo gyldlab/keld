@@ -23,10 +23,7 @@ let sourceBodies = [
     "interface QuitAttempt {",
     "\napiApp.onLastWindowClosed(onLastWindowClosed);",
   ).replaceAll("export function ", "function "),
-  region(
-    "onWindowFactApplied((fact) => {",
-    "\nonNativeQuitRequested(() => {",
-  ),
+  region("onWindowFactApplied((fact) => {", "\nonNativeQuitRequested(() => {"),
 ].join("\n");
 if (process.env.KELD_GH451_MUTANT === "drop-close-suppression")
   sourceBodies = sourceBodies.replace(
@@ -141,7 +138,9 @@ test("GH531-34: matching CloseRequested cannot lift quit suppression before Host
   // Authenticated Host has only requested a close. It has NOT received the
   // app's Allow/Veto reply and has NOT issued its actual Destroyed receipt.
   f.run("pendingClose = 3n");
-  expect(f.run<boolean>("joinOriginalQuitBeforeClose(selectedWindow, 3n)")).toBe(true);
+  expect(
+    f.run<boolean>("joinOriginalQuitBeforeClose(selectedWindow, 3n)"),
+  ).toBe(true);
   f.run("resolveClose({variant:'CloseRequested',close_seq:3n})");
   await first;
 
@@ -190,7 +189,9 @@ test("controlled Host Veto keeps dirty window; later user close may emit window-
   const f = fixture();
   const first = f.run<Promise<void>>("quit()");
   f.run("pendingClose = 3n");
-  expect(f.run<boolean>("joinOriginalQuitBeforeClose(selectedWindow, 3n)")).toBe(true);
+  expect(
+    f.run<boolean>("joinOriginalQuitBeforeClose(selectedWindow, 3n)"),
+  ).toBe(true);
   f.run("resolveClose({variant:'CloseRequested',close_seq:3n})");
   await first;
   // A dirty-document preventDefault causes Host CloseReply(Veto). No Destroyed
@@ -202,21 +203,31 @@ test("controlled Host Veto keeps dirty window; later user close may emit window-
   // Only a separate successful user close, outside the vetoed Quit, creates
   // the actual Host Destroyed and LastWindowClosed used here.
   f.run("nativeAlive = false; onLastWindowClosed()");
-  expect(f.read<string[]>("trace")).toEqual(["before-quit", "window-all-closed"]);
+  expect(f.read<string[]>("trace")).toEqual([
+    "before-quit",
+    "window-all-closed",
+  ]);
 });
 
 test("a replacement window blocks stale LastWindowClosed and terminal Quit", async () => {
   const f = fixture();
   const first = f.run<Promise<void>>("quit()");
   f.run("pendingClose = 3n");
-  expect(f.run<boolean>("joinOriginalQuitBeforeClose(selectedWindow, 3n)")).toBe(true);
+  expect(
+    f.run<boolean>("joinOriginalQuitBeforeClose(selectedWindow, 3n)"),
+  ).toBe(true);
   f.run("resolveClose({variant:'CloseRequested',close_seq:3n})");
   await first;
-  f.run("nativeAlive = false; replacementAlive = true; noteOriginalQuitWindowDestroyed(selectedWindow); onLastWindowClosed()");
+  f.run(
+    "nativeAlive = false; replacementAlive = true; noteOriginalQuitWindowDestroyed(selectedWindow); onLastWindowClosed()",
+  );
   expect(f.read<string[]>("trace")).toEqual(["before-quit"]);
   expect(f.read<number>("terminalCalls")).toBe(0);
   f.run("replacementAlive = false; onLastWindowClosed()");
-  expect(f.read<string[]>("trace")).toEqual(["before-quit", "window-all-closed"]);
+  expect(f.read<string[]>("trace")).toEqual([
+    "before-quit",
+    "window-all-closed",
+  ]);
 });
 
 test("retired G1 suppression cannot swallow a CURRENT G2 LastWindowClosed", async () => {
@@ -225,7 +236,10 @@ test("retired G1 suppression cannot swallow a CURRENT G2 LastWindowClosed", asyn
   f.run("resolveClose({variant:'CloseRequested',close_seq:3n})");
   await first;
   f.run("generationCurrent = false; nativeAlive = false; onLastWindowClosed()");
-  expect(f.read<string[]>("trace")).toEqual(["before-quit", "window-all-closed"]);
+  expect(f.read<string[]>("trace")).toEqual([
+    "before-quit",
+    "window-all-closed",
+  ]);
   expect(f.read<number>("terminalCalls")).toBe(0);
 });
 
@@ -233,7 +247,9 @@ test("pending original Quit coalesces until Host Veto ReplyApplied, then retry e
   const f = fixture();
   const first = f.run<Promise<void>>("quit()");
   f.run("pendingClose = 3n");
-  expect(f.run<boolean>("joinOriginalQuitBeforeClose(selectedWindow, 3n)")).toBe(true);
+  expect(
+    f.run<boolean>("joinOriginalQuitBeforeClose(selectedWindow, 3n)"),
+  ).toBe(true);
   f.run("resolveClose({variant:'CloseRequested',close_seq:3n})");
   await first;
   expect(f.run<Promise<void>>("quit()")).toBe(first);
@@ -279,20 +295,40 @@ test("recovered document G2 in the SAME native WindowRef retires G1's pending Qu
   f.run("pendingClose=3n; joinOriginalQuitBeforeClose(selectedWindow,3n)");
   f.run("resolveClose({variant:'CloseRequested',close_seq:3n})");
   await first;
-  f.run("documentCurrent=false; windowFactCallback({variant:'DocumentRecovered',window:selectedWindow})");
+  f.run(
+    "documentCurrent=false; windowFactCallback({variant:'DocumentRecovered',window:selectedWindow})",
+  );
   f.run("nativeAlive=false; onLastWindowClosed()");
-  expect(f.read<string[]>("trace")).toEqual(["before-quit", "window-all-closed"]);
+  expect(f.read<string[]>("trace")).toEqual([
+    "before-quit",
+    "window-all-closed",
+  ]);
   expect(f.read<number>("terminalCalls")).toBe(0);
 });
 
 test("native Veto and Destroyed hooks stay behind actual Host receipts", () => {
-  const code = readFileSync(new URL("./browser-window.ts", import.meta.url), "utf8");
-  const vetoStart = code.indexOf("if (prevented) {", code.indexOf("  #nativeClose(close_seq: bigint)"));
-  const authenticated = code.indexOf('response.variant !== "ReplyApplied"', vetoStart);
-  const notifyVeto = code.indexOf("noteOriginalQuitVetoApplied(this.#ref, close_seq);", vetoStart);
+  const code = readFileSync(
+    new URL("./browser-window.ts", import.meta.url),
+    "utf8",
+  );
+  const vetoStart = code.indexOf(
+    "if (prevented) {",
+    code.indexOf("  #nativeClose(close_seq: bigint)"),
+  );
+  const authenticated = code.indexOf(
+    'response.variant !== "ReplyApplied"',
+    vetoStart,
+  );
+  const notifyVeto = code.indexOf(
+    "noteOriginalQuitVetoApplied(this.#ref, close_seq);",
+    vetoStart,
+  );
   const callbackStart = code.indexOf("  #closed(fromDestroy: boolean)");
   const userClosed = code.indexOf('this.emit("closed");', callbackStart);
-  const notifyDestroyed = code.indexOf("noteOriginalQuitWindowDestroyed(this.#ref);", callbackStart);
+  const notifyDestroyed = code.indexOf(
+    "noteOriginalQuitWindowDestroyed(this.#ref);",
+    callbackStart,
+  );
   expect(vetoStart).toBeGreaterThan(0);
   expect(authenticated).toBeGreaterThan(vetoStart);
   expect(notifyVeto).toBeGreaterThan(authenticated);
@@ -303,16 +339,15 @@ test("GH531 criterion34 suppresses last-window notification while will-quit is a
   const f = fixture();
   f.run("nativeAlive=false; vetoWillWithTemporaryClose=true");
   await f.run<Promise<void>>("quit()");
-  expect(f.read<string[]>("trace")).toEqual([
-    "before-quit",
-    "will-quit",
-  ]);
+  expect(f.read<string[]>("trace")).toEqual(["before-quit", "will-quit"]);
   expect(f.read<number>("terminalCalls")).toBe(0);
 });
 
 test("will-quit veto clears D2 before an already-queued next-turn Quit retry", async () => {
   const f = fixture();
-  const first = f.run<Promise<void>>("nativeAlive=false; enqueueRetryAfterWillVeto=true; quit()");
+  const first = f.run<Promise<void>>(
+    "nativeAlive=false; enqueueRetryAfterWillVeto=true; quit()",
+  );
   await first;
   await Promise.resolve();
   const retry = f.run<Promise<void> | null>("queuedRetry");

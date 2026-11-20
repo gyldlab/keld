@@ -24,9 +24,7 @@ expect(cancelEnd).toBeGreaterThan(cancelStart);
 let code =
   app.slice(cancelStart, cancelEnd) +
   "\n" +
-  app
-    .slice(start, end)
-    .replaceAll("export function ", "function ");
+  app.slice(start, end).replaceAll("export function ", "function ");
 const mutation = process.env.KELD_QUIT_HANDOFF_MUTATION;
 if (mutation === "omit-handoff-resolve")
   code = code.replace("  attempt.resolve();", "");

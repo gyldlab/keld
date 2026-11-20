@@ -574,7 +574,8 @@ export function captureOriginalWindowQuitScope(
     selected.host_destroyed ||
     !selected.document?.current ||
     !selected.document.finished
-  ) return undefined;
+  )
+    return undefined;
   // Document recovery can reuse the physical WindowRef in this same app-link.
   // A later native close for its successor cannot inherit this Quit attempt.
   const originalDocumentGeneration = selected.document.generation;
@@ -608,16 +609,20 @@ export function captureOriginalWindowQuitScope(
     ownsCurrentGeneration(): boolean {
       // A retired G1 close must never suppress the successor's lifecycle.
       // The current document may change while the native window survives.
-      if (currentOriginalWindowSession() !== session || session.windowSource !== source)
+      if (
+        currentOriginalWindowSession() !== session ||
+        session.windowSource !== source
+      )
         return false;
       try {
         const snapshot = source.get(ref);
         // The Host's Destroyed fact can remove the tombstone after dispatch.
         // The caller also revokes this scope when any mismatched document fact
         // is observed before that removal.
-        return snapshot === undefined || (
-          snapshot.document?.generation === originalDocumentGeneration &&
-          (snapshot.host_destroyed || snapshot.document.current)
+        return (
+          snapshot === undefined ||
+          (snapshot.document?.generation === originalDocumentGeneration &&
+            (snapshot.host_destroyed || snapshot.document.current))
         );
       } catch {
         return false;
