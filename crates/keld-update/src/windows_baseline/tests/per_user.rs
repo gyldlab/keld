@@ -45,6 +45,35 @@ fn fixture() -> (tempfile::TempDir, WindowsBaselineTrust, PathBuf) {
     (temp, trust, source)
 }
 
+fn assert_preprovisioned_scaffold_unchanged(trust: &WindowsBaselineTrust) {
+    let installation = &trust.installation;
+    let install_entries = fs::read_dir(&installation.install_root)
+        .expect("preprovisioned install root must remain readable")
+        .map(|entry| entry.expect("read install entry").file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        install_entries,
+        vec![installation.update_root.file_name().unwrap().to_os_string()],
+        "the initializer must not create any installation entry"
+    );
+    let update_entries = fs::read_dir(&installation.update_root)
+        .expect("preprovisioned update root must remain readable")
+        .map(|entry| entry.expect("read update entry").file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        update_entries,
+        vec![std::ffi::OsString::from("versions")],
+        "the initializer must not create bootstrap files or other update entries"
+    );
+    assert!(
+        fs::read_dir(installation.update_root.join("versions"))
+            .expect("preprovisioned versions root must remain readable")
+            .next()
+            .is_none(),
+        "no incomplete or published version may survive an admission refusal"
+    );
+}
+
 fn assert_user_directory(path: &Path) {
     let directory = support::directory(path);
     keld_guard::validate_windows_install_directory(&directory, PER_USER_PROFILE)
@@ -219,6 +248,7 @@ fn per_user_missing_archive_refuses_before_bootstrap_effects() {
             absent.display()
         );
     }
+    assert_preprovisioned_scaffold_unchanged(&trust);
 }
 
 #[test]
@@ -263,6 +293,7 @@ fn per_user_changed_signed_archive_refuses_before_bootstrap_effects() {
             absent.display()
         );
     }
+    assert_preprovisioned_scaffold_unchanged(&trust);
 }
 
 #[test]
