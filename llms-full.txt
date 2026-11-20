@@ -6411,6 +6411,18 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: The application tried to assign app.name, which this bounded session-facts surface does not support
 - fix: Declare the application name in keld.config.ts and rebuild. The Host owns the admitted name; setName remains separate work.
 
+## KELD-COMPAT-098
+
+- crate: @keld/electron
+- message: `ipcMain.handle()` was called for a channel that already has an invoke handler
+- fix: Keep one invoke handler per channel. Call `ipcMain.removeHandler(channel)` before registering a replacement, or register the handler once.
+
+## KELD-COMPAT-099
+
+- crate: @keld/electron
+- message: `ipcMain.handle()` received a handler that is not a function
+- fix: Pass an invoke handler function as the second argument of `ipcMain.handle(channel, handler)`; check the import or variable that produced the value.
+
 ## KELD-COMPAT-100
 
 - crate: @keld/kipc

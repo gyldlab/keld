@@ -16,6 +16,7 @@ import { dialog } from "./dialog";
 import { nativeTheme, screen } from "./desktop.ts";
 import { session } from "./session.ts";
 import { Menu } from "./menu.ts";
+import { ipcMain } from "./ipc-main.ts";
 import {
   ClipboardItem,
   clipboard,
@@ -38,6 +39,7 @@ export {
   ClipboardItem,
   clipboard,
   dialog,
+  ipcMain,
   Menu,
   nativeImage,
   nativeTheme,
@@ -46,6 +48,14 @@ export {
   shell,
 };
 export type { Display, DisplayRectangle } from "./desktop.ts";
+export type {
+  IpcMain,
+  IpcMainEvent,
+  IpcMainInvokeEvent,
+  IpcMainInvokeHandler,
+  IpcMainListener,
+  WebFrameMain,
+} from "./ipc-main.ts";
 export type {
   MessageBoxOptions,
   MessageBoxResult,
@@ -70,6 +80,7 @@ const electron = {
   ClipboardItem,
   clipboard,
   dialog,
+  ipcMain,
   Menu,
   nativeImage,
   session,

@@ -15,17 +15,22 @@ function namedDesktopBindings(entry: string): string {
   const path = JSON.stringify(entry);
   return `
 import bindingAssert from 'node:assert/strict';
-import alias, { session, Menu, shell, ClipboardItem, clipboard, nativeImage } from ${path};
-import * as bindingNamespace from ${path};
 import { WorkerLink } from '@keld/kipc';
 let bindingCalls = 0;
 WorkerLink.open = async () => { bindingCalls++; throw new Error('unexpected Host link'); };
+const bindingNamespace = await import(${path});
+const { default: alias, session, Menu, shell, ClipboardItem, clipboard, nativeImage, ipcMain } = bindingNamespace;
 for (const [name, member] of Object.entries({ session, Menu, shell, ClipboardItem, clipboard, nativeImage })) {
   bindingAssert.equal(alias[name], member);
   bindingAssert.ok(member, name);
 }
-bindingAssert.equal(Object.hasOwn(bindingNamespace, 'ipcMain'), false);
-bindingAssert.equal(Object.hasOwn(alias, 'ipcMain'), false);
+bindingAssert.equal(bindingNamespace.ipcMain, ipcMain);
+bindingAssert.equal(alias.ipcMain, ipcMain);
+const ipcProbe = () => {};
+ipcMain.on('keld-gh466-packed-probe', ipcProbe);
+bindingAssert.deepEqual(ipcMain.listeners('keld-gh466-packed-probe'), [ipcProbe]);
+ipcMain.removeListener('keld-gh466-packed-probe', ipcProbe);
+bindingAssert.equal(ipcMain.listenerCount('keld-gh466-packed-probe'), 0);
 const bindingRefusal = (kind, member, ticket) => (error) => {
   bindingAssert.deepEqual(
     [error.name, error.code, error.kind, error.member, error.ticket],
@@ -43,6 +48,21 @@ bindingAssert.throws(() => bindingItem.types, bindingRefusal('property', 'Clipbo
 bindingAssert.equal(bindingCalls, 0);
 `;
 }
+
+test("ipcMain bundling keeps the canonical KIPC provider external", async () => {
+  const result = await Bun.build({
+    entrypoints: [join(import.meta.dir, "ipc-main.ts")],
+    target: "node",
+    format: "esm",
+    packages: "external",
+    write: false,
+  });
+  expect(result.success).toBe(true);
+  expect(result.outputs).toHaveLength(1);
+  const source = await result.outputs[0]!.text();
+  expect(source).not.toMatch(/\bclass\s+WorkerLink\s*\{/);
+  expect(source).toContain('from "@keld/kipc"');
+});
 
 // Package graph evidence only, not native Host or original-application acceptance.
 test("packed Electron uses one declared API/KIPC graph and all five aliases", () => {
@@ -107,13 +127,15 @@ test("packed Electron uses one declared API/KIPC graph and all five aliases", ()
       `
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import * as main from 'electron';
 import { isCallError } from '@keld/kipc';
 const require = createRequire(import.meta.url);
+` + namedDesktopBindings("electron") + `
+const main = await import('electron');
 assert.equal(main.isCallError, isCallError);
 for (const name of ['electron','electron/main','electron/renderer','electron/common','electron/utility']) {
  const esm = await import(name); const cjs = require(name);
  assert.equal(esm.app, main.app); assert.equal(cjs.app, main.app);
+ assert.equal(esm.ipcMain, main.ipcMain); assert.equal(cjs.ipcMain, main.ipcMain);
  assert.equal(esm.default, main.default); assert.equal(cjs.default, main.default);
  assert.equal(typeof esm.dialog.showMessageBoxSync, 'function');
  assert.equal(esm.dialog.showMessageBoxSync, main.dialog.showMessageBoxSync);
@@ -124,7 +146,7 @@ for (const name of ['electron','electron/main','electron/renderer','electron/com
   assert.equal(esm[name], main[name]); assert.equal(cjs[name], main[name]);
  }
 }
-` + namedDesktopBindings("electron"),
+`,
     );
     for (const runtime of [process.execPath, "node"])
       success(run([runtime, "probe.mjs"], consumer));
@@ -199,8 +221,8 @@ test("source-copy staging preserves one resolvable declared graph", () => {
     }
     writeFileSync(
       join(root, "probe.mjs"),
-      `import {isCallError as e} from '@keld/electron'; import {isCallError as k} from '@keld/kipc'; if(e !== k) throw Error('split transport');` +
-        namedDesktopBindings("@keld/electron"),
+      namedDesktopBindings("@keld/electron") +
+        `const {isCallError: e} = await import('@keld/electron'); const {isCallError: k} = await import('@keld/kipc'); if(e !== k) throw Error('split transport');`,
     );
     const p = Bun.spawnSync([process.execPath, join(root, "probe.mjs")], {
       cwd: root,
