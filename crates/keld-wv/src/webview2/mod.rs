@@ -366,8 +366,37 @@ pub const WEBVIEW2_STARTUP_BOUND: Duration = EXCLUSIVE_UDF_PROBE_BOUND
     .saturating_add(PROFILE_LAUNCH_DEADLINE)
     .saturating_add(crate::INITIAL_NAVIGATION_DEADLINE);
 
+#[cfg(test)]
 const LAUNCH_DEADLINE_EXPIRED: &str =
     "the WebView2 launch deadline expired before the environment or controller completed";
+/// Preserve the public KELD-WV-009 category while identifying which COM
+/// completion missed its own unchanged launch deadline.
+#[derive(Clone, Copy)]
+enum WebView2LaunchPhase {
+    Environment,
+    Controller,
+}
+
+impl WebView2LaunchPhase {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Environment => "environment",
+            Self::Controller => "controller",
+        }
+    }
+
+    const fn timeout_context(self) -> &'static str {
+        match self {
+            Self::Environment => {
+                "the WebView2 launch deadline expired before the environment or controller completed; phase=environment"
+            }
+            Self::Controller => {
+                "the WebView2 launch deadline expired before the environment or controller completed; phase=controller"
+            }
+        }
+    }
+}
+
 const MESSAGE_WAIT_FAILED: &str = "the Win32 message wait failed while waiting for WebView2";
 const MESSAGE_PUMP_QUIT: &str = "WM_QUIT reached the profile wait before WebView2 completed";
 const BROWSER_EXIT_WAKE_UNREGISTERED: &str = "the browser-exit wake could not be registered, so the release barrier could not observe the browser's exit";
@@ -599,12 +628,36 @@ fn pump_message_or_handle(handles: Option<&[HANDLE]>, milliseconds: u32) -> Resu
 fn wait_for_launch_with_message_pump_until<T>(
     receiver: &Receiver<T>,
     deadline: Instant,
+    phase: WebView2LaunchPhase,
+    phase_started: Instant,
 ) -> Result<T, WvError> {
     loop {
         if Instant::now() >= deadline {
+            // Bounded, non-sensitive failure-only telemetry. The stable typed
+            // error remains KELD-WV-009; this does not re-arm a deadline.
+            let elapsed_ms = phase_started.elapsed().as_millis();
+            let remaining_ms = deadline
+                .saturating_duration_since(phase_started)
+                .as_millis();
+            // The loader version is a bounded dotted numeric identifier, not
+            // a path, profile identity, app token, or COM error description.
+            let runtime = runtime_version()
+                .ok()
+                .filter(|value| {
+                    !value.is_empty()
+                        && value.len() <= 64
+                        && value
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+                })
+                .unwrap_or_else(|| String::from("unavailable"));
+            eprintln!(
+                "KELD_GH814_WEBVIEW2_LAUNCH_TIMEOUT phase={} elapsed_ms={elapsed_ms} remaining_ms_at_phase_start={remaining_ms} loader_runtime_version={runtime}",
+                phase.name(),
+            );
             return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
-                LAUNCH_DEADLINE_EXPIRED,
+                phase.timeout_context(),
             ));
         }
         match receiver.try_recv() {
@@ -1621,6 +1674,7 @@ fn create_environment_with_options_until(
     options: CoreWebView2EnvironmentOptions,
     deadline: Instant,
 ) -> Result<ICoreWebView2Environment, WvError> {
+    let phase_started = Instant::now();
     let user_data = HSTRING::from(directory.as_os_str());
     let (tx, rx) = mpsc::channel();
 
@@ -1645,7 +1699,12 @@ fn create_environment_with_options_until(
     };
     launched.map_err(|error| environment_creation_error("launch", &error))?;
 
-    let environment = wait_for_launch_with_message_pump_until(&rx, deadline)?;
+    let environment = wait_for_launch_with_message_pump_until(
+        &rx,
+        deadline,
+        WebView2LaunchPhase::Environment,
+        phase_started,
+    )?;
     environment.map_err(|error| environment_creation_error("completion", &error))
 }
 
@@ -1717,6 +1776,7 @@ fn create_controller_observed_until(
     hwnd: HWND,
     deadline: Instant,
 ) -> Result<ICoreWebView2Controller, ControllerCreationError> {
+    let phase_started = Instant::now();
     let (tx, rx) = mpsc::channel();
 
     // SAFETY: `environment` was created on this thread (STA) and `hwnd` is a
@@ -1736,9 +1796,14 @@ fn create_controller_observed_until(
         )
     };
     launched.map_err(ControllerCreationError::Windows)?;
-    wait_for_launch_with_message_pump_until(&rx, deadline)
-        .map_err(ControllerCreationError::Pump)?
-        .map_err(ControllerCreationError::Windows)
+    wait_for_launch_with_message_pump_until(
+        &rx,
+        deadline,
+        WebView2LaunchPhase::Controller,
+        phase_started,
+    )
+    .map_err(ControllerCreationError::Pump)?
+    .map_err(ControllerCreationError::Windows)
 }
 
 fn webview_browser_process_id(webview: &ICoreWebView2) -> Option<u32> {
@@ -3916,23 +3981,127 @@ mod tests {
     }
 
     #[test]
-    fn real_controller_launch_deadline_keeps_its_profile_failure_kind() {
-        let (_sender, receiver) = std::sync::mpsc::channel::<()>();
-        let observed =
-            super::wait_for_launch_with_message_pump_until(&receiver, std::time::Instant::now())
-                .expect_err("a deadline that already elapsed must refuse before pumping messages");
-        let error = super::ControllerCreationError::Pump(observed).into_wv_error();
-        let WvError::ProfileSelection(profile) = error else {
-            panic!("the real pump deadline must preserve its typed profile error: {error}");
-        };
-        assert_eq!(profile.kind(), ProfileErrorKind::LifecycleUnproven);
-        let message = profile.to_string();
-        assert!(message.contains("KELD-WV-009"), "{message}");
-        assert!(
-            message.contains(super::LAUNCH_DEADLINE_EXPIRED),
-            "{message}"
+    fn real_launch_deadline_reports_exact_com_phase_and_preserves_error_kind() {
+        use super::WebView2LaunchPhase;
+
+        for (phase, expected, unexpected) in [
+            (
+                WebView2LaunchPhase::Environment,
+                "phase=environment",
+                "phase=controller",
+            ),
+            (
+                WebView2LaunchPhase::Controller,
+                "phase=controller",
+                "phase=environment",
+            ),
+        ] {
+            let (_sender, receiver) = std::sync::mpsc::channel::<()>();
+            let started = std::time::Instant::now();
+            let observed =
+                super::wait_for_launch_with_message_pump_until(&receiver, started, phase, started)
+                    .expect_err("an expired COM launch must refuse before pumping messages");
+            let error = super::ControllerCreationError::Pump(observed).into_wv_error();
+            let WvError::ProfileSelection(profile) = error else {
+                panic!("the real pump deadline must retain its typed profile error: {error}");
+            };
+            assert_eq!(profile.kind(), ProfileErrorKind::LifecycleUnproven);
+            let message = profile.to_string();
+            assert!(message.contains("KELD-WV-009"), "{message}");
+            assert!(
+                message.contains(super::LAUNCH_DEADLINE_EXPIRED),
+                "{message}"
+            );
+            assert!(message.contains(expected), "{message}");
+            assert!(!message.contains(unexpected), "{message}");
+            assert!(!message.contains("KELD-WV-008"), "{message}");
+        }
+
+        // A successfully completed asynchronous COM callback remains accepted
+        // before the same deadline; the diagnostic path cannot invent failure.
+        let (sender, receiver) = std::sync::mpsc::channel::<u32>();
+        sender.send(17).expect("queue callback before deadline");
+        let started = std::time::Instant::now();
+        assert_eq!(
+            super::wait_for_launch_with_message_pump_until(
+                &receiver,
+                started + std::time::Duration::from_secs(1),
+                WebView2LaunchPhase::Controller,
+                started,
+            )
+            .expect("ready callback before deadline"),
+            17,
         );
-        assert!(!message.contains("KELD-WV-008"), "{message}");
+    }
+
+    /// Captures the actual emitted timeout line in a separate test process.
+    /// Merely preserving typed metadata would not satisfy this contract.
+    #[test]
+    fn gh814_launch_timeout_log_child() {
+        let Ok(label) = std::env::var("KELD_GH814_LAUNCH_LOG_PHASE") else {
+            return;
+        };
+        let phase = match label.as_str() {
+            "environment" => super::WebView2LaunchPhase::Environment,
+            "controller" => super::WebView2LaunchPhase::Controller,
+            _ => panic!("unknown test-owned launch phase"),
+        };
+        let (_sender, receiver) = std::sync::mpsc::channel::<()>();
+        let started = std::time::Instant::now();
+        let failure =
+            super::wait_for_launch_with_message_pump_until(&receiver, started, phase, started)
+                .expect_err("expired native launch must fail");
+        assert!(
+            failure.to_string().contains("KELD-WV-009"),
+            "original lifecycle failure category changed"
+        );
+    }
+
+    #[test]
+    fn gh814_launch_timeout_emits_exact_phase_and_bounded_runtime() {
+        for (phase, unexpected) in [
+            ("environment", "phase=controller"),
+            ("controller", "phase=environment"),
+        ] {
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("current keld-wv test executable"),
+            )
+            .args([
+                "--exact",
+                "webview2::tests::gh814_launch_timeout_log_child",
+                "--nocapture",
+            ])
+            .env("KELD_GH814_LAUNCH_LOG_PHASE", phase)
+            .output()
+            .expect("launch isolated WebView2 diagnostic child");
+            assert!(
+                output.status.success(),
+                "the test-owned child must preserve typed WV-009: {output:?}"
+            );
+            let stderr = String::from_utf8(output.stderr).expect("UTF-8 phase diagnostic");
+            let emitted = stderr
+                .lines()
+                .find(|line| line.contains("KELD_GH814_WEBVIEW2_LAUNCH_TIMEOUT"))
+                .expect("real emitted timeout diagnostic");
+            assert!(emitted.contains(&format!("phase={phase}")), "{emitted}");
+            assert!(!emitted.contains(unexpected), "{emitted}");
+            assert!(emitted.contains("elapsed_ms="), "{emitted}");
+            assert!(
+                emitted.contains("remaining_ms_at_phase_start=0"),
+                "{emitted}"
+            );
+            let runtime = emitted
+                .split_once("loader_runtime_version=")
+                .expect("bounded Evergreen loader version")
+                .1;
+            assert!(
+                !runtime.is_empty()
+                    && runtime.len() <= 64
+                    && (runtime == "unavailable"
+                        || runtime.bytes().all(|b| b.is_ascii_digit() || b == b'.')),
+                "unbounded or unrecognized version: {emitted}"
+            );
+        }
     }
 
     #[test]

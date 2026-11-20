@@ -1,15 +1,16 @@
 //! Native delegated dev lifecycle, parent death and retained process cleanup.
 
 use crate::support::control::{
-    accept_ready_generation, accept_ready_generation_with_descendant,
+    LeasedReadyHost, accept_ready_generation, accept_ready_generation_with_descendant,
     accept_ready_generation_with_lease, read_control_line,
 };
 use crate::support::handles::assert_dev_lease_handle_isolation;
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-use crate::support::process::{PIPE_DRAIN_KILL_SWITCH, pipe_text_by, read_pipe_on_thread};
+use crate::support::process::{PIPE_DRAIN_KILL_SWITCH, pipe_text_by};
 use crate::support::process::{
-    assert_process_signaled, open_process_for_wait, process_exists, terminate_test_process,
-    wait_child, wait_for_child_process, wait_for_cleanup_sentinel, wait_process_gone,
+    assert_process_signaled, open_process_for_wait, process_exists, read_pipe_on_thread,
+    terminate_test_process, wait_child, wait_for_child_process, wait_for_cleanup_sentinel,
+    wait_process_gone,
 };
 use crate::support::product::ProductFixture;
 use crate::support::product_cycle::run_product_cycle;
@@ -21,8 +22,8 @@ use crate::{
 };
 use std::fs;
 use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::os::windows::io::AsRawHandle as _;
+use std::net::{TcpListener, TcpStream};
+use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
@@ -259,24 +260,57 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
         .spawn()
         .expect("launch leased keld dev helper");
     let cli_pid = cli.id();
-    let host_pid =
-        wait_for_child_process(&mut cli, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
-    let cleanup_pid = wait_for_cleanup_sentinel(&mut cli, Instant::now() + PRODUCT_DEADLINE);
-    let (mut reader, _writer, bun_pid, _, lease_handle) =
-        accept_ready_generation_with_lease(&control_listener, &mut cli);
-    expect_renderer_beacon(beacon, "lease renderer beacon");
-    let _window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
+    // The raw stdout handle remains in the controller's handle table while the
+    // reader thread owns its file object. Keep the existing lease census intact.
     let controller_pipe = cli
         .stdout
         .as_ref()
         .expect("captured CLI stdout for File object type")
-        .as_raw_handle()
-        .cast();
+        .as_handle()
+        .try_clone_to_owned()
+        .expect("retain the controller File handle for the lease census");
+    let stdout = read_pipe_on_thread(cli.stdout.take().expect("captured CLI stdout"));
+    let stderr = read_pipe_on_thread(cli.stderr.take().expect("captured CLI stderr"));
+    let host_pid =
+        wait_for_child_process(&mut cli, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
+    let host = open_process_for_wait(host_pid, false);
+    let cleanup_pid = wait_for_cleanup_sentinel(&mut cli, Instant::now() + PRODUCT_DEADLINE);
+    let runtime = keld_wv::webview2::runtime_version()
+        .ok()
+        .filter(|version| {
+            !version.is_empty()
+                && version.len() <= 64
+                && version
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || byte == b'.')
+        })
+        .unwrap_or_else(|| String::from("unavailable"));
+    let witness = LeasedReadyHost {
+        pid: host_pid,
+        process: &host,
+        stdout: &stdout,
+        stderr: &stderr,
+        runtime: &runtime,
+    };
+    let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        accept_ready_generation_with_lease(&control_listener, &mut cli, &witness)
+    }));
+    let (mut reader, _writer, bun_pid, _, lease_handle) = match observed {
+        Ok(ready) => ready,
+        Err(failure) => {
+            // Kill only the test-owned CLI helper; its closed dev lease causes
+            // the independently owned Host's original orderly shutdown.
+            let _ = cli.kill();
+            std::panic::resume_unwind(failure);
+        }
+    };
+    expect_renderer_beacon(beacon, "lease renderer beacon");
+    let _window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
     let handle_census = assert_dev_lease_handle_isolation(
         cli_pid,
         host_pid,
         bun_pid,
-        controller_pipe,
+        controller_pipe.as_raw_handle().cast(),
         lease_handle,
     );
 
@@ -293,7 +327,7 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
     println!(
         "KELD_WINDOWS_STAGE_CLEANUP cli_pid={cli_pid} host_pid={host_pid} bun_pid={bun_pid} \
          sentinel_pid={cleanup_pid} stage_count=0 cli_handles={} host_handles={} bun_handles={} \
-         lease_host_handle=0x{:x} lease_inheritable=false",
+         lease_host_handle=0x{:x} lease_inheritable=false webview2_runtime={runtime}",
         handle_census.cli_count,
         handle_census.host_count,
         handle_census.bun_count,

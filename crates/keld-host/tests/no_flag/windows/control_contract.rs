@@ -8,14 +8,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::support::control::{
-    HandshakeKillSwitches, accept_ready_generation_with_descendant,
-    accept_ready_generation_with_descendant_within, read_control_line_or_host_failure,
-    try_read_control_line,
+    HandshakeKillSwitches, LeasedReadyHost, accept_ready_generation_with_descendant,
+    accept_ready_generation_with_descendant_within, accept_ready_generation_with_lease,
+    read_control_line_or_host_failure, try_read_control_line,
 };
 use crate::support::process::{
-    PIPE_DRAIN_KILL_SWITCH, wait_for_child_process, wait_for_cleanup_sentinel,
+    PIPE_DRAIN_KILL_SWITCH, open_process_for_wait, pipe_text_by, read_pipe_on_thread,
+    wait_for_child_process, wait_for_cleanup_sentinel, wait_for_process_signal,
 };
 use crate::{CONTROL_LINE_LIMIT, PRODUCT_DEADLINE, startup_kill_switch, wait_child};
+use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
 
 #[test]
 fn control_line_preserves_the_byte_limit_and_expired_read_does_not_consume_data() {
@@ -220,6 +222,158 @@ fn startup_eof_before_ready_reports_live_host_without_consuming_output() {
     assert!(
         elapsed < Duration::from_secs(5),
         "terminal failure exceeded the existing bounded wait: {elapsed:?}"
+    );
+}
+
+/// This is a real Windows kernel-handle negative control: the Host is exited
+/// while its unrelated terminal-facing CLI helper is still alive. A diagnostic
+/// that only watches the CLI will report the wrong owner and fail this test.
+#[test]
+fn leased_ready_eof_reports_the_actual_exited_host_and_drained_output() {
+    let mut host = Command::new("cmd.exe")
+        .args(["/d", "/c", "more"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("test-owned Host stand-in");
+    let host_pid = host.id();
+    let host_handle = open_process_for_wait(host_pid, false);
+    assert_eq!(wait_for_process_signal(&host_handle, 0), WAIT_TIMEOUT);
+    drop(host.stdin.take());
+    let host_exit = wait_child(&mut host, Instant::now() + PRODUCT_DEADLINE);
+    let exit_code = host_exit.code().expect("Host stand-in exit code");
+    assert_eq!(wait_for_process_signal(&host_handle, 0), WAIT_OBJECT_0);
+
+    let mut cli = Command::new("cmd.exe")
+        .args([
+            "/d",
+            "/c",
+            "echo KELD_GH814_DRAIN_STDOUT & echo KELD-CORE-037: synthetic Host failure 1>&2 & set /p KELD814_INPUT=",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("live terminal-facing CLI stand-in");
+    let stdout = read_pipe_on_thread(cli.stdout.take().expect("CLI stdout"));
+    let stderr = read_pipe_on_thread(cli.stderr.take().expect("CLI stderr"));
+    let published = Instant::now() + PRODUCT_DEADLINE;
+    loop {
+        if pipe_text_by(&stdout, Instant::now()).contains("KELD_GH814_DRAIN_STDOUT")
+            && pipe_text_by(&stderr, Instant::now()).contains("KELD-CORE-037")
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < published,
+            "stand-in did not publish diagnostics"
+        );
+        thread::yield_now();
+    }
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("lease control listener");
+    let mut peer = TcpStream::connect(listener.local_addr().expect("control address"))
+        .expect("lease control peer");
+    peer.write_all(
+        b"HELLO 31337 fixture-private-app-link-token\nDESCENDANT 0\nLEASE_HANDLE 1\nLINK_EOF\n",
+    )
+    .expect("terminal lease records");
+    let witness = LeasedReadyHost {
+        pid: host_pid,
+        process: &host_handle,
+        stdout: &stdout,
+        stderr: &stderr,
+        runtime: "synthetic-runtime",
+    };
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        accept_ready_generation_with_lease(&listener, &mut cli, &witness)
+    }));
+    let helper_still_running = cli.try_wait().expect("observe actual CLI helper").is_none();
+    if helper_still_running {
+        cli.kill().expect("terminate only stand-in CLI");
+        wait_child(&mut cli, Instant::now() + PRODUCT_DEADLINE);
+    }
+    let failure = outcome.expect_err("LINK_EOF must not be accepted as leased READY");
+    let message = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .expect("panic detail");
+    for required in [
+        "control failed while awaiting READY",
+        "last valid phase=LEASE_HANDLE",
+        "LINK_EOF",
+        "cli_state=running",
+        "KELD_GH814_DRAIN_STDOUT",
+        "KELD-CORE-037: synthetic Host failure",
+        "webview2_runtime=synthetic-runtime",
+    ] {
+        assert!(message.contains(required), "missing {required}: {message}");
+    }
+    assert!(
+        message.contains(&format!(
+            "actual_host_pid={host_pid} actual_host_state=signaled exit_code={exit_code}"
+        )),
+        "the helper's liveness must not masquerade as the exited Host: {message}"
+    );
+    assert!(
+        helper_still_running,
+        "the CLI was not live for the negative control"
+    );
+    assert!(
+        !message.contains("fixture-private-app-link-token"),
+        "a diagnostic leaked the authenticated app link: {message}"
+    );
+}
+
+/// A complete lease generation retains the original positive protocol and
+/// receives READY/ECHO records without depending on any diagnostic output.
+#[test]
+fn leased_ready_host_observer_does_not_change_a_valid_generation() {
+    let mut host = Command::new("cmd.exe")
+        .args(["/d", "/c", "more"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("live Host stand-in");
+    let host_handle = open_process_for_wait(host.id(), false);
+    let mut cli = Command::new("cmd.exe")
+        .args(["/d", "/c", "more"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("live CLI stand-in");
+    let stdout = read_pipe_on_thread(cli.stdout.take().expect("CLI stdout"));
+    let stderr = read_pipe_on_thread(cli.stderr.take().expect("CLI stderr"));
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("lease control listener");
+    let mut peer = TcpStream::connect(listener.local_addr().expect("control address"))
+        .expect("lease control peer");
+    peer.write_all(
+        b"HELLO 31337 fixture-private-app-link-token\nDESCENDANT 0\nLEASE_HANDLE 1\nREADY\nECHO1\nECHO2\n",
+    )
+    .expect("valid lease records");
+    let witness = LeasedReadyHost {
+        pid: host.id(),
+        process: &host_handle,
+        stdout: &stdout,
+        stderr: &stderr,
+        runtime: "synthetic-runtime",
+    };
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        accept_ready_generation_with_lease(&listener, &mut cli, &witness)
+    }));
+    let host_live = wait_for_process_signal(&host_handle, 0) == WAIT_TIMEOUT;
+    let _ = cli.kill();
+    let _ = cli.wait();
+    let _ = host.kill();
+    let _ = host.wait();
+    let (_, _, pid, link, lease) = outcome.expect("completed lease READY remains accepted");
+    assert_eq!(
+        (pid, link.as_str(), lease),
+        (31337, "fixture-private-app-link-token", 1)
+    );
+    assert!(
+        host_live,
+        "the positive control's actual Host exited too early"
     );
 }
 
