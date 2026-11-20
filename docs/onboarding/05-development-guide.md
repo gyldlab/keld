@@ -679,24 +679,47 @@ Codex/Claude/Cursor identity, loading or stopping behavior.
 
 <!-- coderabbit-ai-generated-section:v1:5d5f25f06d15c44a35615a87a67e08eb723dd7a25f0ea5823ecb495447f26788 -->
 
-Generate registration from this reviewed checkout with a trusted absolute Git executable
-path outside the checkout. Review that executable and its installation before use;
-multi-link executables are refused because an outside hard link could refer to
-checkout-owned code. Registration binds the path, not its binary contents.
-For example, on Linux:
+The tracked `.codex/hooks.json` is the project-level Codex discovery entrypoint.
+Unlike a generated local registration, it is present on a fresh checkout and
+does not contain any machine-specific Git path. Its hash-bound handlers **refuse**
+hook admission with an explicit setup message until this checkout has a reviewed
+local trusted Git binding. No source module or Git command is run before that
+refusal. From a reviewed clone, install the binding once using a trusted,
+**reviewed absolute Git path** (macOS Homebrew example):
 
 ```text
-python3 -B tools/session_closeout_hook.py --print-config --harness codex --git-executable /usr/bin/git
+python3 -B tools/session_closeout_hook.py --configure-codex --git-executable /opt/homebrew/bin/git
+```
+
+Do not select the trusted Git path from an unreviewed `PATH` lookup. On Windows,
+run with the prerequisite Python interpreter and an absolute path
+to the trusted Git installation, for example:
+
+```text
+python -B tools/session_closeout_hook.py --configure-codex --git-executable "C:\Program Files\Git\cmd\git.exe"
+```
+
+This writes an owner-private, per-checkout trust manifest **outside the repository**
+(macOS/Linux: `~/.config/keld/codex-hook-trust/`; Windows:
+`%LOCALAPPDATA%\Keld\codex-hook-trust\`), preserving the tracked
+`.codex/hooks.json` and any unrelated project hooks. It will not replace a
+different existing binding without the explicit `--replace-local-binding` flag.
+Review the selected executable and its installation: an executable inside the
+checkout or with multiple hard links is refused. The manifest binds the canonical
+checkout, Git common directory, absolute Git path **and Git binary SHA-256**.
+An updated Git binary requires explicit re-enrollment and review.
+
+Other native clients still require generated registration:
+
+```text
 python3 -B tools/session_closeout_hook.py --print-config --harness claude --git-executable /usr/bin/git
 python3 -B tools/session_closeout_hook.py --print-config --harness cursor --git-executable /usr/bin/git
 ```
 
-On Windows, use the prerequisite Python interpreter and the absolute path of your trusted
-Git installation. Generate on the machine that will run the hook. The generator selects
-the running OS; `--platform windows` or `--platform posix` selects command syntax only.
-It prints JSON without changing settings. Save UTF-8 output and merge its `hooks`
-entries into the project configuration below, preserving existing settings/hooks.
-Review commands before enabling them. Do not install these project handlers globally.
+For Claude/Cursor, save the UTF-8 generator output and merge its hooks with other
+project hooks without discarding them. Generate on the target machine; the
+`--platform windows` or `--platform posix` switch changes command syntax only.
+Do not install these project handlers globally.
 
 | Client | Project registration | Native identity | Completion behavior |
 |---|---|---|---|
@@ -704,31 +727,29 @@ Review commands before enabling them. Do not install these project handlers glob
 | Claude Code >=2.1.196 | `.claude/settings.local.json` | session_id / prompt_id | block once; repeated failure terminates with explicit handoff |
 | Cursor | `.cursor/hooks.json` | conversation_id / generation_id | bounded repair follow-up; no terminal admission guarantee |
 
-All clients require locally generated registration. For Codex, write the generated
-JSON to the ignored project file `.codex/hooks.json`. Keep other hooks already in
-that file, and replace only earlier Keld closeout entries. Review the loaded Keld
-prompt and Stop hooks via `/hooks` in the checkout. A linked worktree can use the
-main checkout's corresponding project hook file, so verify the source in `/hooks`.
-Trust the exact commands only after review. Verify that the prompt hook supplies
-the expected closeout paths and that Stop checks the current receipt. Until both
-work, run `just session-closeout <receipt>` explicitly and do not claim automatic
-enforcement. Do not also register these Keld hooks at user scope:
+Codex discovers tracked `.codex/hooks.json` from a **trusted** project layer.
+An untrusted fresh clone is not automatically authorized: Codex skips untrusted
+hooks until the user reviews/trusts their exact commands in `/hooks`. After
+configuring the local Git binding, review the Keld prompt and Stop hooks there
+and verify that they load from the intended checkout. Linked worktrees need their
+own local Git binding; never inherit a parent checkout's binding implicitly.
+Verify that prompt guidance names the current checkout and Stop checks the current
+receipt. Until trust and both native checks succeed, run
+`just session-closeout <receipt>` explicitly and **do not claim automatic
+enforcement**. Do not also register these Keld hooks at user scope:
 [Codex loads matching hooks from all active scopes](https://learn.chatgpt.com/docs/hooks#where-codex-looks-for-hooks).
 
-The tracked `.codex/hooks.example.json` is a disabled sample, not a Codex discovery
-path. A checkout without local registration has no Keld hooks loaded by default.
-Copying the sample does not activate the hook: without `--git-executable`, its
-command refuses before running Git or loading checkout modules.
-
-If an older checkout has local edits in the formerly tracked `.codex/hooks.json`,
-back up that file outside the checkout before updating. Restore the tracked version
-only after confirming the backup and then update. Regenerate and merge the new Keld
-entries into the now-local file; restore the other backed-up hooks and review again.
+If a checkout still has the preceding PR's ignored, generated `.codex/hooks.json`,
+back up its *other* project hooks before switching to this tracked entrypoint.
+Do not overwrite the reviewed tracked entrypoint with machine-local content.
+Merge any unrelated hooks into the tracked project configuration through
+normal review. Keep the machine-specific Git selection in the protected
+per-user manifest, not under the checkout.
 
 All bootstrap and helper Git calls use the selected absolute path. No additional
 Python packages are required. Registrations pin exact source hashes: changed bytes
-require review and regeneration, then the client's trust/loading check. Regenerate
-when changing OS or Git installation.
+require review and regeneration of the tracked Codex entrypoint, then Codex's
+trust/loading check. Re-run the explicit local setup when changing Git installation.
 
 
 

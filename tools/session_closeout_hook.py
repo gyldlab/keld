@@ -126,10 +126,10 @@ def write_atomic(path, value):
     while probe != probe.parent:
         if os.path.lexists(probe):
             metadata = probe.lstat()
-            session_closeout.require(not stat.S_ISLNK(metadata.st_mode), "Cursor metadata path contains a symlink")
+            session_closeout.require(not stat.S_ISLNK(metadata.st_mode), "Hook metadata path contains a symlink")
             if os.name == "nt":
                 session_closeout.require(not metadata.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT,
-                                         "Cursor metadata path contains a reparse point")
+                                         "Hook metadata path contains a reparse point")
         probe = probe.parent
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary = tempfile.mkstemp(prefix="current-", suffix=".json", dir=path.parent)
@@ -198,6 +198,79 @@ def cursor_response(payload):
         return {"continue": False, "user_message": "Closeout hook failed: " + str(error)}
 
 
+def trusted_git_executable(value, checkout=None):
+    """Validate the path before any invocation, including filesystem aliases."""
+    candidate = session_closeout.absolute(value).resolve(strict=True)
+    checkout = checkout or Path(__file__).resolve().parent.parent
+    session_closeout.require(not any(parent.samefile(checkout)
+                                    for parent in (candidate, *candidate.parents)),
+                             "Git executable must be outside the checkout")
+    session_closeout.require(candidate.is_file() and os.access(candidate, os.X_OK),
+                             "Git executable must be an executable file")
+    # A hard link outside the checkout can still execute checkout-owned bytes.
+    session_closeout.require(candidate.stat().st_nlink == 1,
+                             "Git executable must have only one hard link")
+    return str(candidate)
+
+
+def codex_trust_path(checkout):
+    """Locate a per-checkout enrollment in the user's non-repository config."""
+    if os.name == "nt":
+        base = Path(os.environ["LOCALAPPDATA"]) / "Keld"
+    else:
+        import pwd
+        base = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".config" / "keld"
+    directory = base / "codex-hook-trust"
+    key = hashlib.sha256(os.fsencode(str(checkout.resolve()))).hexdigest()
+    return directory / (key + ".json")
+
+
+def configure_codex_local(git_executable, replace=False):
+    """Bind a trusted Git path without editing Codex's tracked hook entrypoint."""
+    checkout = Path(__file__).resolve().parent.parent
+    directory = checkout / ".codex"
+    session_closeout.require(directory.is_dir() and not directory.is_symlink(),
+                             "Codex configuration directory must be a real directory")
+    tracked = directory / "hooks.json"
+    session_closeout.require(tracked.is_file() and not tracked.is_symlink(),
+                             "tracked .codex/hooks.json is required for hook discovery")
+    registered = json.loads(tracked.read_text(encoding="utf-8"))
+    expected = configuration()
+    session_closeout.require(isinstance(registered, dict) and
+                             isinstance(registered.get("hooks"), dict),
+                             "Codex hooks registration is malformed")
+    for event in ("UserPromptSubmit", "Stop"):
+        session_closeout.require(any(item in registered["hooks"].get(event, [])
+                                    for item in expected["hooks"][event]),
+                                 "Codex " + event + " entrypoint does not match reviewed source hashes")
+    selected = trusted_git_executable(git_executable, checkout)
+    common = subprocess.check_output([selected, "-C", str(checkout), "rev-parse",
+                                      "--path-format=absolute", "--git-common-dir"],
+                                     text=True, encoding="utf-8", timeout=30).strip()
+    session_closeout.require(common, "cannot resolve Git common directory")
+    data = {"version": 1, "checkout": str(checkout), "git_common_dir": str(Path(common).resolve()),
+            "git_executable": selected, "git_sha256": hashlib.sha256(Path(selected).read_bytes()).hexdigest()}
+    target = codex_trust_path(checkout)
+    session_closeout.require(not any(parent.is_symlink() for parent in
+                                    (target, target.parent, target.parent.parent)),
+                             "Codex trust path cannot contain a symlink")
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.name != "nt":
+        metadata = target.parent.stat()
+        session_closeout.require(metadata.st_uid == os.getuid() and not metadata.st_mode & 0o077,
+                                 "Codex trust directory must be user-owned and private")
+    if target.exists():
+        current = json.loads(target.read_text(encoding="utf-8"))
+        session_closeout.require(replace or current == data,
+                                 "Codex Git binding already differs; review it and use --replace-local-binding")
+        if current == data:
+            return target
+    write_atomic(target, data)
+    if os.name != "nt":
+        target.chmod(0o600)
+    return target
+
+
 def configuration(harness="codex", platform=None, git_executable=None):
     """Print project registration for the selected client and OS, without installing.
 
@@ -208,30 +281,60 @@ def configuration(harness="codex", platform=None, git_executable=None):
     session_closeout.require(platform in {None, "windows", "posix"}, "unsupported platform")
     selected = platform or ("windows" if os.name == "nt" else "posix")
     if git_executable is not None:
-        candidate = session_closeout.absolute(git_executable).resolve(strict=True)
-        checkout = Path(__file__).resolve().parent.parent
-        # A case-insensitive filesystem can preserve a caller's mixed-case
-        # spelling in resolve(), so lexical containment is insufficient.
-        # Match existing ancestor directory identities instead.
-        session_closeout.require(not any(parent.samefile(checkout)
-                                        for parent in (candidate, *candidate.parents)),
-                                 "Git executable must be outside the checkout")
-        session_closeout.require(candidate.is_file() and os.access(candidate, os.X_OK),
-                                 "Git executable must be an executable file")
-        # An outside pathname may hard-link to untrusted bytes inside the
-        # checkout. Reject multi-link executables rather than trusting a path
-        # that cannot prove the executable's independent custody.
-        session_closeout.require(candidate.stat().st_nlink == 1,
-                                 "Git executable must have only one hard link")
-        git_executable = str(candidate)
+        git_executable = trusted_git_executable(git_executable)
     specs = [(name, hashlib.sha256(Path(__file__).with_name(name + ".py").read_bytes()).hexdigest())
              for name in ("session_closeout", "workspace", "session_closeout_hook")]
-    bootstrap = """import hashlib,json,pathlib,subprocess,sys,types
+    bootstrap = """import hashlib,json,os,pathlib,subprocess,sys,types
 try:
  git=GIT_PATH
+ launch=pathlib.Path.cwd().resolve()
+ expected_root=None
+ expected_common=None
+ if git is None and HARNESS=='codex':
+  for location in (launch,*launch.parents):
+   if (location/'.codex'/'hooks.json').is_file():
+    expected_root=location
+    break
+  if expected_root is None or (expected_root/'.codex').is_symlink():
+   raise ValueError('Keld Codex project hook entrypoint is missing or unsafe')
+  if os.name=='nt':
+   store=pathlib.Path(os.environ['LOCALAPPDATA'])/'Keld'/'codex-hook-trust'
+  else:
+   store=pathlib.Path(__import__('pwd').getpwuid(os.getuid()).pw_dir)/'.config'/'keld'/'codex-hook-trust'
+  local=store/(hashlib.sha256(os.fsencode(str(expected_root.resolve()))).hexdigest()+'.json')
+  if any(parent.is_symlink() for parent in (local,store,store.parent)) or not local.is_file():
+   raise ValueError('Keld Codex setup required: --configure-codex --git-executable <trusted absolute Git path>')
+  if os.name!='nt':
+   mode=store.stat()
+   file_mode=local.stat()
+   if mode.st_uid!=os.getuid() or mode.st_mode & 0o077 or file_mode.st_uid!=os.getuid() or file_mode.st_mode & 0o077 or file_mode.st_nlink!=1:
+    raise ValueError('Keld Codex trust manifest must be private and owned by the current user')
+  setting=json.loads(local.read_text(encoding='utf-8'))
+  if not isinstance(setting,dict) or set(setting)!={'version','checkout','git_common_dir','git_executable','git_sha256'} or setting['version']!=1 or setting['checkout']!=str(expected_root):
+   raise ValueError('Keld Codex trust manifest does not belong to this checkout')
+  expected_common=pathlib.Path(setting['git_common_dir'])
+  git=setting['git_executable']
+  if not isinstance(git,str) or not pathlib.Path(git).is_absolute():
+   raise ValueError('Keld Codex Git binding must be an absolute path')
+  candidate=pathlib.Path(git).resolve(strict=True)
+  if any(parent.samefile(expected_root) for parent in (candidate,*candidate.parents)):
+   raise ValueError('Keld Codex Git executable must be outside the checkout')
+  if not candidate.is_file() or not os.access(candidate,os.X_OK):
+   raise ValueError('Keld Codex Git executable must be an executable file')
+  if candidate.stat().st_nlink!=1:
+   raise ValueError('Keld Codex Git executable must have only one hard link')
+  if hashlib.sha256(candidate.read_bytes()).hexdigest()!=setting['git_sha256']:
+   raise ValueError('Keld Codex trusted Git binary changed; review and reconfigure')
+  git=str(candidate)
  if git is None:
   raise ValueError('Generate local registration with --git-executable and a trusted absolute Git path outside the checkout')
- root=pathlib.Path(subprocess.check_output([git,'rev-parse','--show-toplevel'],text=True,encoding='utf-8',timeout=30).strip())
+ root=pathlib.Path(subprocess.check_output([git,'-C',str(launch),'rev-parse','--show-toplevel'],text=True,encoding='utf-8',timeout=30).strip()).resolve()
+ if expected_root is not None and not root.samefile(expected_root):
+  raise ValueError('Keld Codex hook registration belongs to another checkout')
+ if expected_common is not None:
+  actual=pathlib.Path(subprocess.check_output([git,'-C',str(root),'rev-parse','--path-format=absolute','--git-common-dir'],text=True,encoding='utf-8',timeout=30).strip()).resolve()
+  if not actual.samefile(expected_common):
+   raise ValueError('Keld Codex Git common directory changed; review and reconfigure')
  specs=SPECS
  blobs=[(name,(root/'tools'/(name+'.py')).read_bytes(),digest) for name,digest in specs]
  if any(hashlib.sha256(blob).hexdigest()!=digest for name,blob,digest in blobs):
@@ -250,6 +353,14 @@ except Exception as error:
  if HARNESS=='cursor':
   print('HANDOFF REQUIRED: repair trusted closeout registration. '+str(error),file=sys.stderr)
   sys.exit(1)
+ if HARNESS=='codex':
+  try:
+   event=json.loads(sys.stdin.read()).get('hook_event_name')
+  except Exception:
+   event=None
+  if event=='UserPromptSubmit':
+   print(json.dumps({'decision':'block','reason':str(error),'systemMessage':failure['systemMessage']}))
+   sys.exit(0)
  print(json.dumps(failure))
 """.replace("SPECS", repr(specs)).replace("HARNESS", repr(harness)).replace("GIT_PATH", repr(git_executable))
     code = "import base64;exec(base64.b64decode('" + base64.b64encode(bootstrap.encode()).decode() + "'))"
@@ -271,11 +382,25 @@ except Exception as error:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--print-config", action="store_true")
+    commands = parser.add_mutually_exclusive_group()
+    commands.add_argument("--print-config", action="store_true")
+    commands.add_argument("--configure-codex", action="store_true",
+                          help="Write a protected per-user trust manifest; keep tracked hooks unchanged")
     parser.add_argument("--git-executable", help="Trusted absolute Git path outside this checkout; omitted emits a disabled template")
+    parser.add_argument("--replace-local-binding", action="store_true",
+                        help="Explicitly replace an existing Codex Git path after review")
     parser.add_argument("--harness", choices=("codex", "claude", "cursor"), default="codex")
     parser.add_argument("--platform", choices=("windows", "posix"))
     args = parser.parse_args()
+    if args.configure_codex:
+        if not args.git_executable:
+            parser.error("--configure-codex requires --git-executable")
+        location = configure_codex_local(args.git_executable, args.replace_local_binding)
+        print("Codex trusted Git binding installed at " + str(location) +
+              "; review and trust tracked .codex/hooks.json via Codex /hooks.")
+        return 0
+    if args.replace_local_binding:
+        parser.error("--replace-local-binding requires --configure-codex")
     if args.print_config:
         print(json.dumps(configuration(args.harness, args.platform, args.git_executable), indent=2))
         return 0

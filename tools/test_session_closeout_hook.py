@@ -138,7 +138,7 @@ class HookTests(unittest.TestCase):
         self.payload['cwd'] = str(renamed)
         self.receipt_path = renamed / '.git/keld-closeout/session_214/turn-1.json'
         root = Path(__file__).resolve().parent.parent
-        config = json.loads((root / '.codex/hooks.example.json').read_text(encoding='utf-8'))
+        config = json.loads((root / '.codex/hooks.json').read_text(encoding='utf-8'))
         self.assertEqual(config, hook.configuration())
         config = hook.configuration(git_executable=str(Path(shutil.which('git')).resolve()))
         self.assertEqual(set(config['hooks']), {'UserPromptSubmit', 'Stop'})
@@ -226,9 +226,9 @@ class HookTests(unittest.TestCase):
 
     def test_local_codex_registration_keeps_completed_receipt_clean(self):
         source_root = Path(__file__).resolve().parent.parent
-        # Mirror the project's tracked sample and ignored active registration.
-        sample = Path('.codex/hooks.example.json')
-        files = [Path('.gitignore'), sample, *(Path('tools') / (name + '.py')
+        # Mirror a fresh clone: hooks are tracked, only the Git binding is local.
+        entrypoint = Path('.codex/hooks.json')
+        files = [Path('.gitignore'), entrypoint, *(Path('tools') / (name + '.py')
                  for name in ('session_closeout', 'workspace', 'session_closeout_hook'))]
         for path in files:
             (self.repo / path).parent.mkdir(parents=True, exist_ok=True)
@@ -241,13 +241,7 @@ class HookTests(unittest.TestCase):
         self.fixture.receipt['checks'][0]['source_head'] = head
         self.publish()
 
-        registration = subprocess.run(
-            [sys.executable, '-B', 'tools/session_closeout_hook.py', '--print-config',
-             '--harness', 'codex', '--git-executable', str(Path(shutil.which('git')).resolve())],
-            cwd=self.repo, check=True, capture_output=True, text=True, encoding='utf-8', timeout=30)
-        active = self.repo / '.codex/hooks.json'
-        active.write_text(registration.stdout, encoding='utf-8')
-        handler = json.loads(active.read_text(encoding='utf-8'))['hooks']['Stop'][0]['hooks'][0]
+        handler = json.loads((self.repo / entrypoint).read_text(encoding='utf-8'))['hooks']['Stop'][0]['hooks'][0]
         if os.name == 'nt':
             command = ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', handler['commandWindows']]
         else:
@@ -258,10 +252,58 @@ class HookTests(unittest.TestCase):
                                     capture_output=True, text=True, encoding='utf-8', timeout=60)
             return json.loads(result.stdout)
 
+        # Before setup, both discovered Keld handlers visibly refuse; there
+        # must be no fallback to PATH Git and no execution of checkout code.
+        answer = stop()
+        self.assertIs(answer['continue'], False)
+        self.assertIn('--configure-codex', answer['stopReason'])
+        prompt_payload = dict(self.payload, hook_event_name='UserPromptSubmit')
+        prompt_result = subprocess.run(command, cwd=self.repo, input=json.dumps(prompt_payload),
+                                       capture_output=True, text=True, encoding='utf-8', timeout=60)
+        self.assertEqual(prompt_result.returncode, 0, prompt_result.stderr)
+        self.assertEqual(json.loads(prompt_result.stdout)['decision'], 'block')
+        self.assertIn('--configure-codex', json.loads(prompt_result.stdout)['reason'])
+        self.assertEqual(self.fixture.git('status', '--porcelain'), '')
+        configured = subprocess.run(
+            [sys.executable, '-B', 'tools/session_closeout_hook.py', '--configure-codex',
+             '--git-executable', str(Path(shutil.which('git')).resolve())],
+            cwd=self.repo, check=True, capture_output=True, text=True, encoding='utf-8', timeout=30)
+        self.assertIn('trusted Git binding installed', configured.stdout)
+        local = hook.codex_trust_path(self.repo)
+        self.assertTrue(local.is_file())
+        self.addCleanup(lambda: local.unlink(missing_ok=True))
+        self.assertFalse((self.repo / '.codex/hooks.local.json').exists())
         answer = stop()
         self.assertIn('accepted: complete', answer.get('systemMessage', str(answer)))
+        prompt_result = subprocess.run(command, cwd=self.repo, input=json.dumps(prompt_payload),
+                                       capture_output=True, text=True, encoding='utf-8', timeout=60)
+        self.assertEqual(prompt_result.returncode, 0, prompt_result.stderr)
+        self.assertIn('session closeout requirements',
+                      json.loads(prompt_result.stdout)['hookSpecificOutput']['additionalContext'])
         self.assertEqual(self.fixture.git('status', '--porcelain'), '')
-        self.assertEqual(self.fixture.git('check-ignore', '--', '.codex/hooks.json'), '.codex/hooks.json')
+        self.assertEqual(self.fixture.git('ls-files', '--', '.codex/hooks.json'), '.codex/hooks.json')
+        # Neither an invalid replacement of the local trusted Git path nor a
+        # hostile executable from the checkout may run before hash validation.
+        fake = self.repo / 'fake-git'
+        fake.write_text('#!/bin/sh\necho HOSTILE_GIT_EXECUTED >&2\nexit 77\n', encoding='utf-8')
+        fake.chmod(0o755)
+        (self.repo / '.git/info/exclude').write_text('fake-git\n', encoding='utf-8')
+        original = json.loads(local.read_text(encoding='utf-8'))
+        local.write_text(json.dumps(dict(original, git_executable=str(fake))), encoding='utf-8')
+        rejected = stop()
+        self.assertIs(rejected['continue'], False)
+        self.assertIn('outside the checkout', rejected['stopReason'])
+        self.assertNotIn('HOSTILE_GIT_EXECUTED', json.dumps(rejected))
+        # An outside executable must also match the reviewed binary digest.
+        outside = self.fixture.root / 'outside-git'
+        outside.write_text('#!/bin/sh\necho OUTSIDE_HOSTILE_GIT >&2\nexit 77\n', encoding='utf-8')
+        outside.chmod(0o755)
+        local.write_text(json.dumps(dict(original, git_executable=str(outside))), encoding='utf-8')
+        rejected = stop()
+        self.assertIs(rejected['continue'], False)
+        self.assertIn('trusted Git binary changed', rejected['stopReason'])
+        self.assertNotIn('OUTSIDE_HOSTILE_GIT', json.dumps(rejected))
+        local.write_text(json.dumps(original), encoding='utf-8')
         # Keep the same receipt and configuration; one unrelated tracked
         # edit must still fail closed.
         with (self.repo / '.gitignore').open('a', encoding='utf-8') as ignore:
@@ -269,6 +311,43 @@ class HookTests(unittest.TestCase):
         answer = stop()
         self.assertEqual(answer['decision'], 'block')
         self.assertIn('dirty tracked files', answer['reason'])
+
+    def test_codex_linked_worktree_never_inherits_parent_binding(self):
+        source_root = Path(__file__).resolve().parent.parent
+        files = [Path('.gitignore'), Path('.codex/hooks.json'),
+                 *(Path('tools') / (name + '.py')
+                   for name in ('session_closeout', 'workspace', 'session_closeout_hook'))]
+        for path in files:
+            (self.repo / path).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_root / path, self.repo / path)
+        self.fixture.git('add', '--', *(str(path) for path in files))
+        self.fixture.git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                         'commit', '-qm', 'track native Codex entrypoint')
+        trusted_git = str(Path(shutil.which('git')).resolve())
+        setup = [sys.executable, '-B', 'tools/session_closeout_hook.py',
+                 '--configure-codex', '--git-executable', trusted_git]
+        subprocess.run(setup, cwd=self.repo, check=True, capture_output=True, timeout=30)
+        main_trust = hook.codex_trust_path(self.repo)
+        self.addCleanup(lambda: main_trust.unlink(missing_ok=True))
+        linked = self.fixture.root / 'linked-task'
+        self.fixture.git('worktree', 'add', '-b', 'task-hooks', str(linked))
+        registered = json.loads((linked / '.codex/hooks.json').read_text(encoding='utf-8'))
+        handler = registered['hooks']['Stop'][0]['hooks'][0]
+        command = (['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', handler['commandWindows']]
+                   if os.name == 'nt' else ['sh', '-c', handler['command']])
+        payload = dict(self.payload, cwd=str(linked))
+        def stop():
+            result = subprocess.run(command, cwd=linked, input=json.dumps(payload),
+                                    capture_output=True, text=True, encoding='utf-8', timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        self.assertIn('--configure-codex', stop()['stopReason'])
+        subprocess.run(setup, cwd=linked, check=True, capture_output=True, timeout=30)
+        linked_trust = hook.codex_trust_path(linked)
+        self.addCleanup(lambda: linked_trust.unlink(missing_ok=True))
+        self.assertIn('No activated Keld task', stop()['systemMessage'])
+        self.assertEqual(self.fixture.git('status', '--porcelain'), '')
+        self.assertEqual(self.fixture.git('-C', str(linked), 'status', '--porcelain'), '')
 
     def test_wrong_session_turn_and_repository_reject(self):
         self.publish()
@@ -364,7 +443,7 @@ class HookTests(unittest.TestCase):
 
     def test_native_config_shapes_platforms_and_exec_argv(self):
         codex = hook.configuration()
-        self.assertEqual(codex, json.loads((Path(__file__).parent.parent / ".codex/hooks.example.json").read_text(encoding='utf-8')))
+        self.assertEqual(codex, json.loads((Path(__file__).parent.parent / ".codex/hooks.json").read_text(encoding='utf-8')))
         claude = hook.configuration("claude", "windows")
         handler = claude["hooks"]["Stop"][0]["hooks"][0]
         self.assertEqual(handler["command"], "python.exe")

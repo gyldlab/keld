@@ -23,5 +23,5 @@ dist/
 # Generated native Cursor registration selects this machine's Python command.
 /.cursor/hooks.json
 
-# Generated project-local Codex registration selects this machine's trusted Git.
-/.codex/hooks.json
+# Tracked .codex/hooks.json is required for fresh-clone discovery.
+# Trusted Git enrollment lives in the user's protected config outside the repo.
