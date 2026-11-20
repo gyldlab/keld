@@ -98,7 +98,7 @@ fn terminal_writer_loss_retires_before_unlocked_owner_notification() {
             response: 0,
             checkbox_checked: false,
         };
-        dialog.record_native_outcome(owner, outcome).unwrap();
+        dialog.record_native_outcome(owner, outcome, None).unwrap();
         handle
             .current
             .lock()
@@ -181,7 +181,7 @@ fn fresh_cancel_keeps_its_ack_separate_from_the_original_terminal() {
         }
     );
     dialog
-        .record_native_outcome(owner, MacDialogUiOutcome::Dismissed)
+        .record_native_outcome(owner, MacDialogUiOutcome::Dismissed, None)
         .unwrap();
     handle
         .dialog_native_finished(1, 9, MacDialogUiOutcome::Dismissed)

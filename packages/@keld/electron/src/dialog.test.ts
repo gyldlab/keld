@@ -7,7 +7,7 @@
  * its separate no-flag Host test exercises three OS clicks, actual checkbox
  * state, physical quiescence and 257+1 same-link operations. The parentless
  * overload remains unsupported, so the broad Message cell stays expected-fail
- * alongside sync Message, Open and Save until their OS gates pass.
+ * alongside sync Message, Open and Save until parentless and remaining OS gates pass.
  *
  * The Electron docs guarantee a blocking numeric clicked index for the
  * sync variant and distinct Promise result shapes for three async variants.
@@ -23,7 +23,7 @@ import * as electron from "./index";
 // Exercise the platform gate in an isolated process so platform/readiness
 // overrides cannot affect another test. This proves facade routing, not native
 // Windows/Linux or AppKit acceptance. Removing the gate must fail this case.
-test("Message refuses unsupported platforms before touching the app link", () => {
+test("dialogs refuse unsupported platforms before touching the app link", () => {
   const result = spawnSync(
     process.execPath,
     [
@@ -31,26 +31,35 @@ test("Message refuses unsupported platforms before touching the app link", () =>
       `
     import assert from "node:assert/strict";
     import { app } from "../../api/src/app.ts";
-    import { showMessageBox } from "./dialog.ts";
+    import { showMessageBox, showOpenDialog, showSaveDialog } from "./dialog.ts";
     let readinessCalls = 0;
     const sentinel = new Error("readiness sentinel");
     app.whenReady = () => {
       readinessCalls++;
       return Promise.reject(sentinel);
     };
+    const operations = [
+      [showMessageBox, { message: "Confirm" }],
+      [showOpenDialog, { properties: ["openFile"] }],
+      [showSaveDialog, { defaultPath: "example.txt" }],
+    ];
     for (const platform of ["linux", "win32"]) {
       Object.defineProperty(process, "platform", { value: platform, configurable: true });
-      for (const args of [[{ message: "Confirm" }], [null, { message: "Confirm" }]]) {
-        const result = showMessageBox(...args);
-        assert.ok(result instanceof Promise);
-        await assert.rejects(result, error => error.code === "KELD-NATIVE-010");
+      for (const [showDialog, options] of operations) {
+        for (const args of [[options], [null, options]]) {
+          const result = showDialog(...args);
+          assert.ok(result instanceof Promise);
+          await assert.rejects(result, error => error.code === "KELD-NATIVE-010");
+        }
+        assert.throws(() => showDialog({ ...options, unsupported: true }), /KELD-COMPAT-010/);
       }
       assert.equal(readinessCalls, 0);
-      assert.throws(() => showMessageBox({ message: "Confirm", unsupported: true }), /KELD-COMPAT-010/);
     }
     Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
-    await assert.rejects(showMessageBox({ message: "Confirm" }), error => error === sentinel);
-    assert.equal(readinessCalls, 1);
+    for (const [showDialog, options] of operations) {
+      await assert.rejects(showDialog(options), error => error === sentinel);
+    }
+    assert.equal(readinessCalls, operations.length);
     console.log("platform refusal and macOS delegation checks pass");
   `,
     ],
@@ -94,19 +103,45 @@ test("dialog.show-message-box-sync.clicked-index today: no synchronous native di
   expect(dialogMethod(electron.default, "showMessageBoxSync")).toBeUndefined();
 });
 
-// Electron v44.4.5 dialog.md: open returns { canceled, filePaths }, where
-// cancellation requires an empty filePaths array. This red-until-implemented
-// case detects an actually added API rather than accepting an import-only shim.
-test("dialog.show-open-dialog.canceled-paths today: no asynchronous native file-open method is exported", () => {
-  expect(dialogMethod(electron, "showOpenDialog")).toBeUndefined();
-  expect(dialogMethod(electron.default, "showOpenDialog")).toBeUndefined();
+// Real parented Open returns a native selected path or canceled: true with an
+// empty array; the macOS Host fixture proves both with OS UI and file census.
+// The broad corpus cell stays expected-fail because parentless is incomplete.
+test("dialog.show-open-dialog.canceled-paths: parented native works; parentless remains incomplete", () => {
+  const method = dialogMethod(electron, "showOpenDialog");
+  expect(typeof method).toBe("function");
+  expect(dialogMethod(electron.default, "showOpenDialog")).toBe(method);
+  expect(() =>
+    Reflect.apply(method as Function, member(electron, "dialog"), [
+      { filters: [{ name: "Files", extensions: ["*.drawio"] }] },
+    ]),
+  ).toThrow("KELD-COMPAT-010");
+  const pending: unknown = Reflect.apply(
+    method as Function,
+    member(electron, "dialog"),
+    [{ properties: ["openFile", "openDirectory"] }],
+  );
+  expect(pending).toBeInstanceOf(Promise);
+  void (pending as Promise<unknown>).catch(() => {});
 });
 
-// Electron v44.4.5 dialog.md: save returns { canceled, filePath }, where
-// cancellation requires the empty string. Path selection is NOT a file write.
-test("dialog.show-save-dialog.canceled-path today: no asynchronous native file-save method is exported", () => {
-  expect(dialogMethod(electron, "showSaveDialog")).toBeUndefined();
-  expect(dialogMethod(electron.default, "showSaveDialog")).toBeUndefined();
+// Save is path-only; the OS fixture asserts positive native path without a
+// file write, plus empty canceled path. Parentless remains unimplemented.
+test("dialog.show-save-dialog.canceled-path: parented native works; parentless remains incomplete", () => {
+  const method = dialogMethod(electron, "showSaveDialog");
+  expect(typeof method).toBe("function");
+  expect(dialogMethod(electron.default, "showSaveDialog")).toBe(method);
+  expect(() =>
+    Reflect.apply(method as Function, member(electron, "dialog"), [
+      { securityScopedBookmarks: true },
+    ]),
+  ).toThrow("KELD-COMPAT-010");
+  const pending: unknown = Reflect.apply(
+    method as Function,
+    member(electron, "dialog"),
+    [{ defaultPath: "diagram.drawio", securityScopedBookmarks: false }],
+  );
+  expect(pending).toBeInstanceOf(Promise);
+  void (pending as Promise<unknown>).catch(() => {});
 });
 
 // Electron v44.4.5: real async facade exists on both export shapes; native

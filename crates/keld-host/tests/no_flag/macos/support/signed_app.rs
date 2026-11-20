@@ -68,12 +68,8 @@ pub(crate) fn valid_macos_codesign_hashes() -> Vec<String> {
         .filter_map(|line| {
             let rest = line.split_once(") ")?.1;
             let candidate = rest.split_whitespace().next()?;
-            (candidate.len() == 40
-                && candidate
-                    .as_bytes()
-                    .iter()
-                    .all(|byte| byte.is_ascii_hexdigit()))
-            .then(|| candidate.to_owned())
+            (candidate.len() == 40 && candidate.as_bytes().iter().all(u8::is_ascii_hexdigit))
+                .then(|| candidate.to_owned())
         })
         .collect()
 }
@@ -267,9 +263,11 @@ pub(crate) fn copy_profile_fixture_tree(source: &Path, destination: &Path) {
         let source = entry.path();
         let target = destination.join(entry.file_name());
         let metadata = fs::symlink_metadata(&source).expect("inspect signed fixture source");
-        if metadata.file_type().is_symlink() {
-            panic!("test fixture contains a symlink: {source:?}");
-        }
+        assert!(
+            !metadata.file_type().is_symlink(),
+            "test fixture contains a symlink: {}",
+            source.display()
+        );
         if metadata.is_dir() {
             fs::create_dir(&target).expect("create signed fixture directory");
             fs::set_permissions(&target, fs::Permissions::from_mode(0o700))
@@ -280,7 +278,7 @@ pub(crate) fn copy_profile_fixture_tree(source: &Path, destination: &Path) {
             fs::set_permissions(&target, metadata.permissions())
                 .expect("preserve staged fixture file permissions");
         } else {
-            panic!("unsupported signed fixture node: {source:?}");
+            panic!("unsupported signed fixture node: {}", source.display());
         }
     }
 }

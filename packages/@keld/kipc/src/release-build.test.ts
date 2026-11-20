@@ -11,38 +11,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const TRANSPORT = join(import.meta.dir, "transport.ts");
-
-/** Every hook name and the hook entry's env gate and seam key. */
-const HOOK_NAMES = [
-  "openWorkerLinkForTest",
-  "deferDispatch",
-  "claimFault",
-  "onBlockingCall",
-  "holdMessagesUntilBlocking",
-  "beforeStateCheck",
-  "beforeWakeDrain",
-  "beforeDeadlineCas",
-  "onDispatchIdle",
-  "counterStart",
-  "wedgeHoldingKick",
-  "onWorkerExit",
-  "beforeWorkerSpawn",
-  "KELD_KIPC_TEST_HOOKS",
-  "worker-link-test-seam",
-];
-
-async function build(release: boolean): Promise<string> {
-  const built = await Bun.build({
-    entrypoints: [TRANSPORT],
-    target: "bun",
-    format: "esm",
-    minify: { syntax: true },
-    ...(release ? { define: { KELD_KIPC_RELEASE: "true" } } : {}),
-  });
-  expect(built.success).toBe(true);
-  return built.outputs[0]!.text();
-}
+import {
+  buildReleaseTransport as build,
+  TEST_HOOK_NAMES as HOOK_NAMES,
+} from "../scripts/package-artifacts.ts";
 
 describe("a release build of the transport strips the WorkerLink test hooks", () => {
   test("it names no hook, and keeps the link, its Worker entry and the Quit", async () => {

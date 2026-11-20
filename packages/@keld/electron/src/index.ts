@@ -28,7 +28,14 @@ Object.defineProperty(proc, "type", {
 });
 
 export { app, BrowserWindow, dialog };
-export type { MessageBoxOptions, MessageBoxResult } from "./dialog";
+export type {
+  MessageBoxOptions,
+  MessageBoxResult,
+  OpenDialogOptions,
+  OpenDialogResult,
+  SaveDialogOptions,
+  SaveDialogResult,
+} from "./dialog";
 export type {
   BrowserWindowEventMap,
   BrowserWindowOptions,
@@ -37,7 +44,7 @@ export type {
   WebContentsEventMap,
   WebPreferences,
 } from "./browser-window";
-export { isCallError, type KeldCallError } from "./link";
+export { isCallError, type KeldCallError } from "@keld/kipc";
 
 const electron = { app, BrowserWindow, dialog };
 export default electron;

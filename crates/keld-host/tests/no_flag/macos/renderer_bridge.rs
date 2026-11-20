@@ -296,8 +296,13 @@ pub(crate) fn copy_public_package_sources(repo: &Path, destination: &Path) {
     for package in ["api", "electron", "kipc"] {
         copy_directory(
             &repo.join(format!("packages/@keld/{package}/src")),
-            &destination.join(format!("@keld/{package}/src")),
+            &destination.join(format!("node_modules/@keld/{package}/src")),
         );
+        fs::copy(
+            repo.join(format!("packages/@keld/{package}/package.json")),
+            destination.join(format!("node_modules/@keld/{package}/package.json")),
+        )
+        .expect("preserve declared source package exports");
     }
 }
 
