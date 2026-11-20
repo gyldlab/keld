@@ -1,6 +1,6 @@
 //! Real KGR1 terminal failure must report denied native group cleanup without
 //! waiting indefinitely for a still-executing, independently test-owned Child.
-use super::run_live_group;
+use super::{reap_owned_child_within_deadline, run_live_group};
 use crate::macos_guardian::process_group::{observe_group_identity, terminate_attested_group};
 use nix::errno::Errno;
 use nix::sys::signal::kill;
@@ -10,7 +10,74 @@ use std::fs::File;
 use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+#[test]
+fn expired_direct_child_deadline_never_sends_a_late_kill() {
+    // The retained direct child is deliberately still alive when its ORIGINAL
+    // cleanup deadline has elapsed. Do not grant a new signal budget.
+    let mut child = PendingDirectChild(Some(
+        Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("own real native direct child"),
+    ));
+    let owned = child.0.as_mut().expect("retain exact native child");
+    let expired = Instant::now() - Duration::from_millis(1);
+    let result = reap_owned_child_within_deadline(owned, expired);
+    assert!(
+        matches!(&result, Err(error) if error.kind() == std::io::ErrorKind::TimedOut),
+        "expired direct-child budget must return a typed timeout, got {result:?}"
+    );
+    // Give a mistakenly delivered SIGKILL time to retire the child. The
+    // PendingDirectChild guard only rescues it AFTER this observation.
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        matches!(owned.try_wait(), Ok(None)),
+        "expired cleanup deadline sent a late kill to the original live child"
+    );
+}
+
+#[test]
+fn expired_deadline_still_accepts_an_already_reaped_child() {
+    // Passive status observation is allowed to complete after the deadline.
+    let mut child = PendingDirectChild(Some(
+        Command::new("/usr/bin/true")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("own native direct child"),
+    ));
+    let owned = child.0.as_mut().expect("retain exact native child");
+    assert!(owned.wait().expect("complete exact child").success());
+    let status = reap_owned_child_within_deadline(owned, Instant::now() - Duration::from_secs(1))
+        .expect("already-reaped exact child needs no signal");
+    assert!(status.success());
+}
+
+#[test]
+fn active_deadline_still_reaps_a_running_original_child() {
+    let mut child = PendingDirectChild(Some(
+        Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("own native direct child"),
+    ));
+    let owned = child.0.as_mut().expect("retain exact native child");
+    let status = reap_owned_child_within_deadline(owned, Instant::now() + Duration::from_secs(2))
+        .expect("within-budget original child is signaled and reaped");
+    assert!(!status.success(), "sleep must not complete without cleanup");
+    assert!(owned.try_wait().expect("retain reap result").is_some());
+}
 
 // Own the actual spawned Child from the first fallible fixture assertion
 // until it is transferred to run_live_group. A setup panic must never leave

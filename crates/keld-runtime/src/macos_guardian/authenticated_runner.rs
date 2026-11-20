@@ -238,6 +238,15 @@ fn reap_owned_child_within_deadline(
     if let Some(status) = child.try_wait()? {
         return Ok(status);
     }
+    // The owner has already supplied the ORIGINAL terminal cleanup deadline.
+    // Observation above is safe after expiry, but signaling a still-running
+    // child must not silently obtain a fresh post-deadline kill allowance.
+    if Instant::now() >= deadline {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "original direct child cleanup deadline expired before a signal could be sent",
+        ));
+    }
     child.kill()?;
     loop {
         match child.try_wait()? {
