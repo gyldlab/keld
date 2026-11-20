@@ -16,7 +16,9 @@ import type {
 } from "./dialog.generated.ts";
 import {
   linkError,
+  hostLaunchFacts,
   runtimeProcessFactsSelected,
+  windowsOriginalDevelopmentSelected,
   windowsDesktopSnapshotSelected,
   stateMap,
   stateMapDelete,
@@ -25,6 +27,7 @@ import {
 } from "@keld/kipc";
 import type {
   WindowEvent,
+  WindowCarrierEvent,
   WindowRef,
   WindowRequest,
   WindowResponse,
@@ -120,13 +123,30 @@ let connectedLink: LifecycleLink | undefined;
 
 let nextListenerId = 1;
 const lastWindowClosedListeners = stateMap<number, () => void>();
-const windowFactListeners = new Set<(fact: WindowEvent) => void>();
+type OriginalFinish = Extract<
+  WindowCarrierEvent,
+  { variant: "NavigationFinished" | "NavigationFinishedUnitPinchV1" }
+>;
+type ObservedWindowFact = WindowEvent | OriginalFinish;
+const windowFactListeners = new Set<(fact: ObservedWindowFact) => void>();
 const deliveredWindowCloses = new WindowCloseReceipts();
 const readyWindowCatchUps = new Set<() => void>();
 
-function onWindowFact(fact: WindowEvent): void {
-  deliveredWindowCloses.observe(fact);
+function onWindowFact(fact: ObservedWindowFact): void {
+  const originalFinish =
+    fact.variant === "NavigationFinished" ||
+    fact.variant === "NavigationFinishedUnitPinchV1";
+  if (!originalFinish) deliveredWindowCloses.observe(fact);
   for (const listener of [...windowFactListeners]) {
+    // A listener may synchronously retire the link before the next dispatch.
+    // Never forward an original document fact from a dead or unready session.
+    if (
+      originalFinish &&
+      (!hostReady ||
+        linkDead !== undefined ||
+        !connectedLink?.windowAdmissionOpen)
+    )
+      return;
     try {
       listener(fact);
     } catch (error) {
@@ -262,6 +282,7 @@ function ensureLink(): Promise<LifecycleLink> {
         connectedLink = session;
       },
       onWindowFact,
+      onOriginalFinish: onWindowFact,
       onApplicationCall: dispatchApplicationCall,
       onLinkDead: failReadyWaiters,
     },
@@ -374,7 +395,7 @@ export function flushAppliedLastWindowClosedAfterDestroy(): void {
 
 /** Observe window facts only after their state was applied by the one WorkerLink. */
 export function onWindowFactApplied(
-  listener: (fact: WindowEvent) => void,
+  listener: (fact: ObservedWindowFact) => void,
   onReadyCatchUp?: () => void,
 ): Unsubscribe {
   windowFactListeners.add(listener);
@@ -386,6 +407,24 @@ export function onWindowFactApplied(
     windowFactListeners.delete(listener);
     if (onReadyCatchUp) readyWindowCatchUps.delete(onReadyCatchUp);
   };
+}
+
+/** @internal Only the admitted original Windows launch may expose this acknowledgement. */
+export function isWindowsOriginalUnitPinchSelected(): boolean {
+  return windowsOriginalDevelopmentSelected && hostLaunchFacts?.schema === 8;
+}
+
+/** @internal Recheck the exact currently dispatched native qualification. */
+export function isCurrentUnitPinchFinish(
+  fact: Extract<OriginalFinish, { variant: "NavigationFinishedUnitPinchV1" }>,
+): boolean {
+  if (linkDead !== undefined) throw linkDead;
+  return (
+    isWindowsOriginalUnitPinchSelected() &&
+    hostReady &&
+    connectedLink?.windowAdmissionOpen === true &&
+    connectedLink.windowSource?.isDispatchingUnitPinch(fact) === true
+  );
 }
 
 /** Host-minted synchronous Create / Destroy, unavailable until the full Ready barrier. */

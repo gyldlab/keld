@@ -54,6 +54,8 @@ function fact(event: WindowEvent, dispatch = true): void {
   if (dispatch) source.dispatch(decoded);
 }
 mock.module("../../api/src/app.ts", () => ({
+  isWindowsOriginalUnitPinchSelected: () => false,
+  isCurrentUnitPinchFinish: () => false,
   app: { isReady: () => true, whenReady: async () => {} },
   flushAppliedLastWindowClosedAfterDestroy: () => {},
   getDispatchedPendingWindowCloses: () => [],

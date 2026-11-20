@@ -12,15 +12,19 @@ import {
   getWindowSnapshots,
   invokeWindow,
   invokeWindowBlocking,
+  isCurrentUnitPinchFinish,
+  isWindowsOriginalUnitPinchSelected,
   onWindowFactApplied,
 } from "@keld/api/internal/app";
 import type {
   Rect,
   WindowEvent,
+  WindowCarrierEvent,
   WindowRef,
   WindowRequest,
 } from "@keld/api/internal/window-codec";
 import {
+  stateApply,
   stateDefineProperty,
   stateFreeze,
   stateMap,
@@ -33,6 +37,7 @@ import {
   stateWeakMapSet,
 } from "@keld/kipc";
 import { emitNativeAppEvent } from "./app.ts";
+import { UnsupportedMemberError } from "./unsupported.ts";
 
 /** Known draw.io preferences; other fields are reported, never made authoritative. */
 export interface WebPreferences {
@@ -84,11 +89,17 @@ export interface BrowserWindowEventMap {
 /** The single Host-created content view's first-window events. */
 export interface WebContentsEventMap {
   destroyed: [];
+  "did-finish-load": [];
 }
 
 /** Public content lifetime surface; the Host alone owns native release. */
 export interface WebContents {
   isDestroyed(): boolean;
+  /** Acknowledge the unit pinch policy already observed for this Windows load. */
+  setVisualZoomLevelLimits?(
+    minimumLevel: number,
+    maximumLevel: number,
+  ): Promise<void>;
   on<K extends keyof WebContentsEventMap>(
     event: K,
     listener: (...args: WebContentsEventMap[K]) => void,
@@ -211,11 +222,33 @@ const hostContentsRelease = stateWeakMap<
   () => void
 >();
 
+type OriginalFinish = Extract<
+  WindowCarrierEvent,
+  { variant: "NavigationFinished" | "NavigationFinishedUnitPinchV1" }
+>;
+type UnitPinchFinish = Extract<
+  OriginalFinish,
+  { variant: "NavigationFinishedUnitPinchV1" }
+>;
+let unitPinchDispatch:
+  { contents: BrowserWindowWebContents; fact: UnitPinchFinish } | undefined;
+const emitContentsEvent = EventEmitter.prototype.emit;
+
 class BrowserWindowWebContents extends EventEmitter {
   #destroyed = false;
+  readonly #windowRef: () => WindowRef;
 
-  constructor() {
+  constructor(windowRef: () => WindowRef) {
     super();
+    this.#windowRef = windowRef;
+    if (isWindowsOriginalUnitPinchSelected()) {
+      stateDefineProperty(this, "setVisualZoomLevelLimits", {
+        __proto__: null,
+        value: this.#acknowledgeUnitPinch,
+        writable: true,
+        configurable: true,
+      } as PropertyDescriptor);
+    }
     stateWeakMapSet(hostContentsRelease, this, () =>
       this.#releaseAfterHostDestroyed(),
     );
@@ -223,6 +256,38 @@ class BrowserWindowWebContents extends EventEmitter {
 
   isDestroyed(): boolean {
     return this.#destroyed;
+  }
+
+  override emit(event: string | symbol, ...args: unknown[]): boolean {
+    const prior = unitPinchDispatch;
+    unitPinchDispatch = undefined;
+    try {
+      return super.emit(event, ...args);
+    } finally {
+      unitPinchDispatch = prior;
+    }
+  }
+
+  #acknowledgeUnitPinch(
+    minimumLevel: number,
+    maximumLevel: number,
+  ): Promise<void> {
+    if (this.#destroyed || getWindowSnapshot(this.#windowRef())?.host_destroyed)
+      throw new Error("KELD-COMPAT-011: Object has been destroyed");
+    if (
+      arguments.length === 2 &&
+      minimumLevel === 1 &&
+      maximumLevel === 1 &&
+      unitPinchDispatch?.contents === this &&
+      isCurrentUnitPinchFinish(unitPinchDispatch.fact)
+    )
+      return Promise.resolve();
+    throw new UnsupportedMemberError(
+      "promise",
+      "webContents.setVisualZoomLevelLimits",
+      "GH-459",
+      "Use the default Windows Legacy zoom limits (1, 1) during this document's qualified did-finish-load callback.",
+    );
   }
 
   /** Only the module-private Host release capability can flip this bit. */
@@ -290,7 +355,7 @@ export class BrowserWindow extends EventEmitter {
   static #terminalMirrorReported = false;
   readonly id!: number;
   readonly #ref!: WindowRef;
-  readonly #contents = new BrowserWindowWebContents();
+  readonly #contents = new BrowserWindowWebContents(() => this.#ref);
   #destroyed = false;
   #insideClosed = false;
   readonly #recovered!: boolean;
@@ -783,7 +848,7 @@ export class BrowserWindow extends EventEmitter {
 
   static {
     onWindowFactApplied(
-      (fact: WindowEvent) => {
+      (fact: WindowEvent | OriginalFinish) => {
         if (fact.variant === "Created") {
           stateMapSet(BrowserWindow.#receivedBounds, fact.window.id, {
             incarnation: fact.window.incarnation,
@@ -828,6 +893,37 @@ export class BrowserWindow extends EventEmitter {
         if (!window || window.#ref.incarnation !== fact.window.incarnation)
           return;
         switch (fact.variant) {
+          case "NavigationFinished":
+          case "NavigationFinishedUnitPinchV1": {
+            const current = getWindowSnapshot(window.#ref);
+            if (
+              !window.#destroyed &&
+              current?.host_destroyed === false &&
+              current?.document?.current &&
+              current.document.generation === fact.document_generation &&
+              current.document.finished
+            ) {
+              try {
+                if (fact.variant === "NavigationFinishedUnitPinchV1") {
+                  if (!isCurrentUnitPinchFinish(fact)) break;
+                  const prior = unitPinchDispatch;
+                  unitPinchDispatch = { contents: window.#contents, fact };
+                  try {
+                    stateApply(emitContentsEvent, window.#contents, [
+                      "did-finish-load",
+                    ]);
+                  } finally {
+                    unitPinchDispatch = prior;
+                  }
+                } else {
+                  window.#contents.emit("did-finish-load");
+                }
+              } catch (error) {
+                reportNativeCallbackError("KELD load listener failed:", error);
+              }
+            }
+            break;
+          }
           case "Bounds":
             {
               const prior = window.#lastDispatchedBounds;

@@ -40,7 +40,14 @@ const state = {
 
 function fact(event: WindowEvent, dispatch = true): WindowEvent {
   const decoded = source.decode(encodeWindowEvent(event));
-  if (decoded.variant === "DesktopSnapshot")
+  if (
+    decoded.variant === "DesktopSnapshot" ||
+    decoded.variant === "NavigationCommitted" ||
+    decoded.variant === "NavigationFinished" ||
+    decoded.variant === "DocumentRecovered" ||
+    decoded.variant === "NavigationFinishedUnitPinchV1" ||
+    decoded.variant === "OriginalRendererViewBound"
+  )
     throw new Error("expected a window fact");
   source.apply(decoded);
   if (dispatch) source.dispatch(decoded);
@@ -70,6 +77,8 @@ function becomeReady(): void {
 // The mock is only the host transport; WindowSource's wire decode, apply and
 // dispatch remain real. The subprocess prevents mocks leaking into other tests.
 mock.module("../../api/src/app.ts", () => ({
+  isWindowsOriginalUnitPinchSelected: () => false,
+  isCurrentUnitPinchFinish: () => false,
   // This role controls Host window facts, not lifecycle LastWindowClosed.
   // Native E1 `closed -> all-closed -> Destroy return` is tested separately
   // through the real shipping macOS Host and actual lifecycle applier.
