@@ -2,22 +2,23 @@
 //!
 //! Architecture 03 §1's destination: the guard evaluates
 //! `(principal, channel, args)` before any handler with OS authority runs.
-//! [`dispatch_privileged`] is the single sanctioned entry point for that —
-//! a future privileged handler (host `fs.read`/`fs.write`, KEL-71; other
-//! native modules) MUST call it instead of running its body directly, so a
-//! deny can never be bypassed by a handler that forgets to check.
+//! [`dispatch_privileged`] preserves the native capability entry.
+//! It forwards to [`typed::dispatch_privileged`], which alone invokes the
+//! handler with its query-specific permit after Guard allows the operation.
 //!
 //! The echo channel (KEL-30) is deliberately NOT routed through this: it is
 //! an unprivileged demo, not an operation with OS authority
 //! (`crate::session::serve_echo_session` stays ungated).
 
 use keld_guard::{
-    Decision, DenyReason, PermissionsManifest, Principal, ScopePermit, capability, evaluate,
-    json_pointer_for, validate_fs_component,
+    DenyReason, NativeCapabilityQuery, PermissionsManifest, Principal, ScopePermit, capability,
+    validate_fs_component,
 };
 
+pub mod typed;
+
 /// Evaluates `(principal, operation, path)` against `manifest`; only calls
-/// `handler` on [`Decision::Allow`]. On [`Decision::Deny`], `handler`'s
+/// `handler` on [`Allow`](keld_guard::Decision::Allow). On [`Deny`](keld_guard::Decision::Deny), `handler`'s
 /// OS/side-effect never runs — the caller gets the typed [`DenyReason`]
 /// (`KELD-GUARD*`, with fix text) instead.
 ///
@@ -27,8 +28,7 @@ use keld_guard::{
 ///
 /// # Errors
 ///
-/// Returns the [`DenyReason`] `evaluate` produced when the decision is
-/// [`Decision::Deny`] — `handler` never runs in that case.
+/// Returns the typed Guard or native filesystem path denial before invoking the handler.
 ///
 /// The result type cannot borrow the callback-only permit:
 ///
@@ -52,22 +52,12 @@ pub fn dispatch_privileged<T>(
     path: &str,
     handler: impl FnOnce(&ScopePermit) -> T,
 ) -> Result<T, DenyReason> {
-    let decision = match evaluate(manifest, principal, operation, path) {
-        Decision::Deny(reason @ DenyReason::NotAppProcess { .. }) => return Err(reason),
-        decision => decision,
-    };
-    if !filesystem_dispatch_path_is_valid(operation, path) {
-        return Err(DenyReason::OutOfScope {
-            capability: operation.to_owned(),
-            scope: "absolute normalized filesystem request".to_owned(),
-            json_pointer: json_pointer_for(operation),
-            requested: path.to_owned(),
-        });
-    }
-    match decision {
-        Decision::Allow(permit) => Ok(handler(&permit)),
-        Decision::Deny(reason) => Err(reason),
-    }
+    typed::dispatch_privileged(
+        manifest,
+        principal,
+        NativeCapabilityQuery { operation, path },
+        handler,
+    )
 }
 
 fn filesystem_dispatch_path_is_valid(operation: &str, path: &str) -> bool {
