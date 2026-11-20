@@ -1,6 +1,8 @@
 //! Private macOS process-group validation and rejected-registration cleanup.
 use std::io;
 use std::process::{Child, ChildStdin, ExitStatus};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 #[cfg(test)]
@@ -172,6 +174,57 @@ fn run_test_group_signal_hook(group: u32, point: TestGroupSignalPoint) {
     if let Some((owner, mut hook)) = taken {
         hook(point);
         GROUP_SIGNAL_HOOK.with(|slot| *slot.borrow_mut() = Some((owner, hook)));
+    }
+}
+
+// Process-wide test observer for the shared killpg boundary. Unlike the
+// scheduling hook above, this counter also sees raw product cleanup calls
+// from other threads, including supervision_runner's direct fallback path.
+#[cfg(test)]
+static GROUP_SIGNAL_COUNTERS: Mutex<Vec<(u32, Arc<AtomicUsize>)>> = Mutex::new(Vec::new());
+
+#[cfg(test)]
+pub(super) struct TestGroupSignalCounter {
+    group: u32,
+    count: Arc<AtomicUsize>,
+}
+
+#[cfg(test)]
+impl TestGroupSignalCounter {
+    pub(super) fn count(&self) -> usize {
+        self.count.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestGroupSignalCounter {
+    fn drop(&mut self) {
+        GROUP_SIGNAL_COUNTERS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(group, count)| *group != self.group || !Arc::ptr_eq(count, &self.count));
+    }
+}
+
+#[cfg(test)]
+pub(super) fn install_test_group_signal_counter(group: u32) -> TestGroupSignalCounter {
+    let count = Arc::new(AtomicUsize::new(0));
+    GROUP_SIGNAL_COUNTERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push((group, Arc::clone(&count)));
+    TestGroupSignalCounter { group, count }
+}
+
+#[cfg(test)]
+fn record_test_group_signal_attempt(group: u32) {
+    let counters = GROUP_SIGNAL_COUNTERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for (expected, count) in counters.iter() {
+        if *expected == group {
+            count.fetch_add(1, Ordering::SeqCst);
+        }
     }
 }
 
@@ -590,9 +643,11 @@ pub(super) fn require_attested_group_absence_for_test(
 const GROUP_SIGNAL_PHASE: &str = "macOS guardian process-group signal";
 
 pub(super) fn terminate_registered_group(group: u32) -> Result<(), RuntimeError> {
-    let group = validate_group_pid(group)?;
-    let result = killpg(Pid::from_raw(group), Signal::SIGKILL);
-    finish_group_termination(result, || kill(Pid::from_raw(-group), None))
+    let raw = validate_group_pid(group)?;
+    #[cfg(test)]
+    record_test_group_signal_attempt(group);
+    let result = killpg(Pid::from_raw(raw), Signal::SIGKILL);
+    finish_group_termination(result, || kill(Pid::from_raw(-raw), None))
 }
 
 // A reaped process-group *leader* does not prove that its descendants left

@@ -1,10 +1,8 @@
 //! `HostGuardian`'s legacy fatal owner must not discard a group birth witness
 //! when the kernel denies a native signal. A native error is not group absence.
-use std::cell::Cell;
 use std::io;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Command, Stdio};
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use nix::errno::Errno;
@@ -12,7 +10,7 @@ use nix::sys::signal::{Signal, kill};
 use nix::unistd::{Pid, getpgid, getpgrp};
 
 use super::super::process_group::{
-    TestGroupSignalPoint, install_test_group_signal_hook, require_attested_group_absence,
+    install_test_group_signal_counter, require_attested_group_absence, terminate_registered_group,
 };
 use super::super::{GUARDIAN_SHUTDOWN_DEADLINE, GuardianCleanupCauses, HostGuardian, RuntimeError};
 use super::test_support::{NativeChildOwner, await_held_zombie_group, test_group_identity};
@@ -255,17 +253,9 @@ fn legacy_zero_exit_never_releases_birth_before_held_group_members_are_reaped() 
         Ok(Pid::from_raw(group_raw)),
         "both owned native children share the authenticated group"
     );
-    // The scoped hook counts attested calls on this thread. The exact child
-    // wait status below independently attributes the late member's exit.
-    let signals = Rc::new(Cell::new(0_u8));
-    let observed = Rc::clone(&signals);
-    let _signal_hook = install_test_group_signal_hook(
-        group_pid,
-        Box::new(move |point| {
-            assert_eq!(point, TestGroupSignalPoint::BeforeSignal);
-            observed.set(observed.get() + 1);
-        }),
-    );
+    // This process-wide counter observes every product killpg boundary for
+    // this PGID, including legacy raw-group cleanup from another thread.
+    let signals = install_test_group_signal_counter(group_pid);
     let error = guardian
         .shutdown_until(Instant::now() + Duration::from_secs(1))
         .expect_err("SIGKILL delivery before exact reaps cannot prove clean shutdown");
@@ -275,7 +265,7 @@ fn legacy_zero_exit_never_releases_birth_before_held_group_members_are_reaped() 
                 && source.kind() == io::ErrorKind::TimedOut),
         "original native absence failure must remain typed: {error:?}"
     );
-    assert_eq!(signals.get(), 1, "one attested group signal only");
+    assert_eq!(signals.count(), 1, "one attested group signal only");
     assert_eq!(
         guardian.group_identity_for_test(),
         Some(birth),
@@ -307,12 +297,12 @@ fn legacy_zero_exit_never_releases_birth_before_held_group_members_are_reaped() 
             if source.kind() == io::ErrorKind::NotConnected),
         "terminal HostGuardian must not re-enter shutdown after failed absence"
     );
-    assert_eq!(signals.get(), 1, "terminal retry must not signal again");
+    assert_eq!(signals.count(), 1, "terminal retry must not signal again");
 
     // SIGKILL delivery is asynchronous. Send SIGTERM to the exact late
     // joiner and inspect its wait status; a product group SIGKILL must win
     // this race and make the oracle RED instead of being masked by our own
-    // SIGKILL. The signal hook also checks the attested path.
+    // SIGKILL. The signal counter remains an additional independent guard.
     let fresh_member_pid =
         Pid::from_raw(i32::try_from(fresh_member.id()).expect("fresh member PID fits"));
     kill(fresh_member_pid, Some(Signal::SIGTERM))
@@ -336,8 +326,49 @@ fn legacy_zero_exit_never_releases_birth_before_held_group_members_are_reaped() 
     );
     drop(guardian);
     assert_eq!(
-        signals.get(),
+        signals.count(),
         1,
         "Guardian Drop must not signal the retained PGID again"
+    );
+}
+
+#[test]
+fn group_signal_counter_observes_raw_cleanup_from_another_thread() {
+    let mut leader = NativeChildOwner::new(
+        Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn a test-owned process-group leader"),
+    );
+    let group = leader.id();
+    let group_pid = Pid::from_raw(i32::try_from(group).expect("positive process-group PID"));
+    assert_eq!(
+        getpgid(Some(group_pid)),
+        Ok(group_pid),
+        "the child is the leader of its own process group"
+    );
+
+    let signals = install_test_group_signal_counter(group);
+    std::thread::spawn(move || terminate_registered_group(group))
+        .join()
+        .expect("raw product group cleanup thread must join")
+        .expect("raw product group cleanup must signal the exact test-owned group");
+
+    assert_eq!(
+        signals.count(),
+        1,
+        "the process-wide counter must observe a killpg attempt from another thread"
+    );
+    assert_eq!(
+        leader
+            .wait()
+            .expect("reap the exact test-owned group leader")
+            .signal(),
+        Some(9),
+        "the kernel exit status confirms the product SIGKILL"
     );
 }
