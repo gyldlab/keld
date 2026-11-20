@@ -38,7 +38,7 @@ Source: `crates/keld-ipc/src/guard_dispatch.rs:48@413c128e5375df3ffa241809db651b
 FACT: Principal has no installed-application identity.
 Source: `crates/keld-guard/src/lib.rs:136@413c128e5375df3ffa241809db651bf7fd27e498`.
 FACT: The bounded generator already emits filesystem and authentication enum bindings and codecs.
-Source: `packages/@keld/kipc/scripts/echo-codegen.ts:157@413c128e5375df3ffa241809db651bf7fd27e498`.
+Source: `packages/@keld/kipc/scripts/echo-codegen.ts:1144@413c128e5375df3ffa241809db651bf7fd27e498`.
 FACT: General keld gen and @keld/schema remain unimplemented.
 Source: `docs/architecture/06-runtime-and-tooling.md:503@413c128e5375df3ffa241809db651bf7fd27e498`.
 PROPOSED: Extend that bounded generator for service DTOs. Retain the canonical TypeScript-first destination.
