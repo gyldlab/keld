@@ -70,6 +70,12 @@ function emitCancelable(eventName: string): boolean {
       prevented = true;
     },
   };
+  // Listeners may attach data, but cannot replace another listener's veto
+  // authority before it is called. A failed mutation also cancels Quit.
+  Object.defineProperty(event, "preventDefault", {
+    writable: false,
+    configurable: false,
+  });
   return emit(eventName, event) || prevented;
 }
 

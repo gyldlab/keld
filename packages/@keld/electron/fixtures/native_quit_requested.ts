@@ -84,6 +84,8 @@ let before = 0;
 let willQuit = 0;
 let quitEvents = 0;
 const sequence: string[] = [];
+const beforeVetoEvents: Array<{ readonly defaultPrevented: boolean }> = [];
+const willVetoEvents: Array<{ readonly defaultPrevented: boolean }> = [];
 let nested: Promise<void> | undefined;
 app.on("before-quit", (event: unknown) => {
   before++;
@@ -91,6 +93,27 @@ app.on("before-quit", (event: unknown) => {
   nested = app.quit();
   if (mode === "veto") (event as { preventDefault(): void }).preventDefault();
 });
+if (mode === "zero-before-overwrite") {
+  app.on("before-quit", (event: unknown) => {
+    sequence.push("before-sabotage");
+    (event as { preventDefault(): void }).preventDefault = () => {};
+  });
+  app.on("before-quit", (event: unknown) => {
+    sequence.push("before-veto");
+    const cancel = event as {
+      readonly defaultPrevented: boolean;
+      preventDefault(): void;
+    };
+    cancel.preventDefault();
+    beforeVetoEvents.push(cancel);
+  });
+}
+if (mode === "zero-will-overwrite") {
+  app.on("will-quit", (event: unknown) => {
+    sequence.push("will-sabotage");
+    (event as { preventDefault(): void }).preventDefault = () => {};
+  });
+}
 if (mode?.startsWith("zero-will")) {
   app.on("will-quit", (event: unknown) => {
     willQuit++;
@@ -101,6 +124,15 @@ if (mode?.startsWith("zero-will")) {
     }
     if (mode === "zero-will-throw" && willQuit === 1)
       throw new Error("controlled will-quit listener failure");
+    if (mode === "zero-will-overwrite") {
+      const cancel = event as {
+        readonly defaultPrevented: boolean;
+        preventDefault(): void;
+      };
+      cancel.preventDefault();
+      willVetoEvents.push(cancel);
+      return;
+    }
     if (mode === "zero-will-veto" || willQuit === 1)
       (event as { preventDefault(): void }).preventDefault();
   });
@@ -191,6 +223,50 @@ if (mode?.startsWith("scope-")) {
       1,
       "queued predecessor intent cannot run after terminal admission",
     );
+  } else if (mode === "zero-before-overwrite") {
+    await nested;
+    assert.equal(before, 1);
+    assert.equal(beforeVetoEvents.length, 1);
+    assert.equal(beforeVetoEvents[0]!.defaultPrevented, true);
+    assert.equal(terminals, 0, "before-quit veto must retain the role");
+    handlers.onQuitRequested?.(session as unknown as LifecycleLink);
+    await nested;
+    assert.equal(before, 2);
+    assert.equal(beforeVetoEvents.length, 2);
+    assert.equal(beforeVetoEvents[1]!.defaultPrevented, true);
+    assert.equal(terminals, 0, "repeated veto must retain the role");
+    assert.deepEqual(sequence, [
+      "before-quit",
+      "before-sabotage",
+      "before-veto",
+      "before-quit",
+      "before-sabotage",
+      "before-veto",
+    ]);
+  } else if (mode === "zero-will-overwrite") {
+    await nested;
+    assert.equal(before, 1);
+    assert.equal(willQuit, 1);
+    assert.equal(willVetoEvents.length, 1);
+    assert.equal(willVetoEvents[0]!.defaultPrevented, true);
+    assert.equal(terminals, 0, "will-quit veto must retain the Host");
+    assert.equal(quitEvents, 0);
+    handlers.onQuitRequested?.(session as unknown as LifecycleLink);
+    await nested;
+    assert.equal(before, 2);
+    assert.equal(willQuit, 2);
+    assert.equal(willVetoEvents.length, 2);
+    assert.equal(willVetoEvents[1]!.defaultPrevented, true);
+    assert.equal(terminals, 0, "repeated will-quit veto must retain the Host");
+    assert.equal(quitEvents, 0);
+    assert.deepEqual(sequence, [
+      "before-quit",
+      "will-sabotage",
+      "will-quit",
+      "before-quit",
+      "will-sabotage",
+      "will-quit",
+    ]);
   } else if (
     mode === "zero-will-veto" ||
     mode === "zero-will-retry" ||
