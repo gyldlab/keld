@@ -1,9 +1,9 @@
 # Spec: local macOS application packaging and installed boot
 
-- Status: draft
+- Status: approved
 - Tracker: GH-1404
 - Owner: GYLDLAB
-- Updated: 2026-11-12
+- Updated: 2026-11-20
 - Pin: d7b273299bc31ff7d3d67d79f6ea2339632cfc6a
 
 Tracker of record: [GH-1404](https://github.com/gyldlab/keld/issues/1404).
@@ -50,7 +50,6 @@ and all other platform cells remain unverified until actually exercised.
 
 ## Current blockers
 
-- B-1
 - B-2
 - B-3
 

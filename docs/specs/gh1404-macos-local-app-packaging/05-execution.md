@@ -247,7 +247,7 @@ macOS implementation once its own approval and source dependencies are satisfied
 
 ### B-1: Exact specification approval
 
-- **Status:** open
+- **Status:** closed
 - **Owner:** GYLDLAB specification owner
 - **Impact:** T-1 cannot complete and implementation under this amended contract remains gated.
 - **Check:** Record exact-content approval of the complete index and all parts.
