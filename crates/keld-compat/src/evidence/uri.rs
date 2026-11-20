@@ -41,7 +41,7 @@ pub(super) fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
         };
         // Trailing FQDN dots are the same host (RFC 1034); compare once.
         let host = host.trim_end_matches('.').to_ascii_lowercase();
-        let path = decoded_policy_path(url.path(), trimmed)?;
+        let (path, nested_path) = decoded_policy_paths(url.path(), trimmed)?;
         if host_is_forbidden(&host) {
             return Err(EvidenceError::NonNormativeEvidence {
                 detail: format!("`{trimmed}` is not a public https location"),
@@ -60,7 +60,9 @@ pub(super) fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
                 detail: format!("`{trimmed}` is not a resolvable https URL with a path"),
             });
         }
-        if https_path_is_live_mutable(&host, &path) {
+        if https_path_is_live_mutable(&host, &path)
+            || https_path_is_live_mutable(&host, &nested_path)
+        {
             return Err(EvidenceError::NonNormativeEvidence {
                 detail: format!(
                     "`{trimmed}` has a live branch/tag path; \
@@ -68,7 +70,7 @@ pub(super) fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
                 ),
             });
         }
-        if !path_has_git_object_id(&path) {
+        if !path_has_git_object_id(&path) || !path_has_git_object_id(&nested_path) {
             return Err(EvidenceError::NonNormativeEvidence {
                 detail: format!(
                     "`{trimmed}` has no git object id in the path; \
@@ -95,12 +97,14 @@ fn parse_credential_free_https_url(uri: &str) -> Result<url::Url, EvidenceError>
     Ok(url)
 }
 
-/// Decode each segment once for policy checks without allowing new segment
-/// boundaries, dot navigation, or nested escapes to acquire another meaning.
-fn decoded_policy_path(path: &str, original: &str) -> Result<String, EvidenceError> {
+/// Check both the one-decode URL path and its deeply decoded safety view.
+/// A second decoding pass must never create the only accepted git pin.
+/// The serialized evidence URL is not rewritten here.
+fn decoded_policy_paths(path: &str, original: &str) -> Result<(String, String), EvidenceError> {
     const POLICY_ESCAPES: &percent_encoding::AsciiSet =
         &percent_encoding::CONTROLS.add(b'%').add(b'?').add(b'#');
     let mut segments = Vec::new();
+    let mut nested_segments = Vec::new();
     for segment in path.split('/') {
         let malformed_escape = segment
             .as_bytes()
@@ -113,12 +117,16 @@ fn decoded_policy_path(path: &str, original: &str) -> Result<String, EvidenceErr
                         .get(offset + 1..offset + 3)
                         .is_some_and(|pair| pair.iter().all(u8::is_ascii_hexdigit))
             });
-        let decoded: Vec<_> = percent_encoding::percent_decode_str(segment).collect();
-        let nested_escape = decoded
-            .windows(3)
-            .any(|bytes| bytes[0] == b'%' && bytes[1..].iter().all(u8::is_ascii_hexdigit));
+        // Reduce percent triplets to a fixed point in one linear pass. A
+        // decoded literal "%a1" filename is safe, but a multi-encoded
+        // slash, backslash, control or dot-only segment is not.
+        let once_decoded: Vec<_> = percent_encoding::percent_decode_str(segment).collect();
+        let decoded = fully_decode_path_segment(segment);
         if malformed_escape
-            || nested_escape
+            || matches!(once_decoded.as_slice(), b"." | b"..")
+            || once_decoded
+                .iter()
+                .any(|&b| matches!(b, b'/' | b'\\') || b.is_ascii_control())
             || matches!(decoded.as_slice(), b"." | b"..")
             || decoded
                 .iter()
@@ -130,9 +138,41 @@ fn decoded_policy_path(path: &str, original: &str) -> Result<String, EvidenceErr
         }
         // Preserve non-ASCII filename bytes and escaped punctuation in the
         // policy view. Pin and route tokens use ASCII; the returned URL is unchanged.
-        segments.push(percent_encoding::percent_encode(&decoded, POLICY_ESCAPES).to_string());
+        segments.push(percent_encoding::percent_encode(&once_decoded, POLICY_ESCAPES).to_string());
+        nested_segments
+            .push(percent_encoding::percent_encode(&decoded, POLICY_ESCAPES).to_string());
     }
-    Ok(segments.join("/"))
+    Ok((segments.join("/"), nested_segments.join("/")))
+}
+
+fn fully_decode_path_segment(segment: &str) -> Vec<u8> {
+    let mut decoded = Vec::with_capacity(segment.len());
+    for byte in segment.bytes() {
+        decoded.push(byte);
+        while let Some(start) = decoded.len().checked_sub(3) {
+            if decoded[start] != b'%' {
+                break;
+            }
+            let (Some(hi), Some(lo)) = (
+                hex_nibble(decoded[start + 1]),
+                hex_nibble(decoded[start + 2]),
+            ) else {
+                break;
+            };
+            decoded.truncate(start);
+            decoded.push((hi << 4) | lo);
+        }
+    }
+    decoded
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Turn citations and local temp *paths*. Not a substring search on https URLs.
@@ -339,18 +379,48 @@ fn path_has_git_object_id(path: &str) -> bool {
 /// `/{owner}/{repo}/{branch}/…` stay live-mutable even when a later segment is
 /// 40- or 64-hex. Commit-pinned `/blob/<object-id>/` is not this case.
 fn https_path_is_live_mutable(host: &str, path: &str) -> bool {
-    if path_has_live_git_ref(path) {
-        return true;
-    }
     let host = host.to_ascii_lowercase();
     let host = host.trim_end_matches('.');
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     if host == "raw.githubusercontent.com" {
-        let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         return segs
             .get(2)
             .is_some_and(|git_ref| !is_git_object_id(git_ref));
     }
-    false
+    // Once a known provider's route has an immutable ref, later "blob",
+    // "tree", or "raw" components are ordinary directory names.
+    if has_pinned_provider_ref(host, &segs) {
+        return false;
+    }
+    path_has_live_git_ref(path)
+}
+
+fn has_pinned_provider_ref(host: &str, segments: &[&str]) -> bool {
+    let is_git_route = |segment: &str| {
+        matches!(
+            segment.to_ascii_lowercase().as_str(),
+            "commit" | "blob" | "tree" | "raw"
+        )
+    };
+    match host {
+        "github.com" => {
+            segments.get(2).is_some_and(|segment| is_git_route(segment))
+                && segments
+                    .get(3)
+                    .is_some_and(|segment| is_git_object_id(segment))
+        }
+        "gitlab.com" => segments
+            .windows(3)
+            .find(|triple| triple[0] == "-" && is_git_route(triple[1]))
+            .is_some_and(|triple| is_git_object_id(triple[2])),
+        "bitbucket.org" => {
+            segments.get(2) == Some(&"src")
+                && segments
+                    .get(3)
+                    .is_some_and(|segment| is_git_object_id(segment))
+        }
+        _ => false,
+    }
 }
 
 fn path_has_live_git_ref(path: &str) -> bool {

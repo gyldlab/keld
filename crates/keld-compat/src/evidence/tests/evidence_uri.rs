@@ -289,6 +289,84 @@ fn preserves_backslash_data_in_pinned_url_query_and_fragment() {
     }
 }
 
+#[test]
+fn preserves_literal_percent_hex_filenames_after_one_decode() {
+    let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
+    let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denominator");
+    for prefix in [
+        format!("https://github.com/gyldlab/keld/blob/{sha}"),
+        format!("https://github.com/gyldlab/keld/tree/{sha}"),
+        format!("https://raw.githubusercontent.com/gyldlab/keld/{sha}"),
+        format!("https://gitlab.com/org/repo/-/blob/{sha}"),
+        format!("https://example.com/evidence/{sha}"),
+    ] {
+        for file in [
+            "docs/100%25a1.md",
+            "docs/file%25AB.txt",
+            "docs/report%25deadbeef.txt",
+            "docs/100%25ready.md",
+        ] {
+            assert_canonical_pinned_uri(&denom, &format!("{prefix}/{file}"));
+        }
+    }
+}
+
+#[test]
+fn preserves_ref_named_directories_below_immutable_git_refs() {
+    let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
+    let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denominator");
+    for prefix in [
+        format!("https://github.com/gyldlab/keld/blob/{sha}"),
+        format!("https://github.com/gyldlab/keld/tree/{sha}"),
+        format!("https://raw.githubusercontent.com/gyldlab/keld/{sha}"),
+        format!("https://gitlab.com/org/repo/-/blob/{sha}"),
+        format!("https://bitbucket.org/org/repo/src/{sha}"),
+    ] {
+        for file in [
+            "docs/%62lob/main.md",
+            "docs/%74ree/main.md",
+            "docs/%72aw/main.md",
+            "docs/%61pi/main.md",
+        ] {
+            assert_canonical_pinned_uri(&denom, &format!("{prefix}/{file}"));
+        }
+    }
+}
+
+#[test]
+fn rejects_multi_encoded_path_navigation_and_mutable_ref_routes() {
+    let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
+    let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denominator");
+    for uri in [
+        format!("https://github.com/gyldlab/keld/blob/{sha}/docs/%252e%252e/file.md"),
+        format!("https://github.com/gyldlab/keld/blob/{sha}/docs/%25252e%25252e/file.md"),
+        format!("https://github.com/gyldlab/keld/blob/{sha}/docs/file%252fother.md"),
+        format!("https://github.com/gyldlab/keld/blob/{sha}/docs/file%255cother.md"),
+        format!("https://github.com/gyldlab/keld/blob/{sha}/docs/file%2500other.md"),
+        format!("https://github.com/gyldlab/keld/%62lob/main/{sha}"),
+        format!("https://github.com/gyldlab/keld/blob/main/{sha}"),
+        format!("https://raw.githubusercontent.com/gyldlab/keld/main/{sha}"),
+        format!("https://gitlab.com/org/repo/-/blob/main/docs/-/blob/{sha}/README.md"),
+        format!("https://github.com/gyldlab/keld/blob/%2536{}", &sha[1..]),
+        format!(
+            "https://raw.githubusercontent.com/gyldlab/keld/%2536{}/file.md",
+            &sha[1..]
+        ),
+        format!("https://example.com/evidence/%2536{}/file.md", &sha[1..]),
+    ] {
+        let mut envelope: serde_json::Value =
+            serde_json::from_str(&valid_evidence_json()).expect("valid evidence envelope");
+        envelope["evidence_uri"] = serde_json::Value::String(uri.clone());
+        let input = serde_json::to_vec(&envelope).expect("serialize evidence input");
+        let err = parse_evidence(&input).expect_err(&uri);
+        assert_eq!(err.code(), "KELD-COMPAT-007", "{uri}");
+        let mut constructed = parse_ok();
+        constructed.evidence_uri = uri.clone();
+        let err = score(&denom, &[constructed], AS_OF).expect_err(&uri);
+        assert_eq!(err.code(), "KELD-COMPAT-007", "{uri}");
+    }
+}
+
 fn assert_canonical_pinned_uri(denom: &Denominator, uri: &str) {
     let mut envelope: serde_json::Value =
         serde_json::from_str(&valid_evidence_json()).expect("valid evidence envelope");
