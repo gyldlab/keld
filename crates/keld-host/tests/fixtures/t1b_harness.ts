@@ -298,6 +298,15 @@ if (preReadyHold === "1" || preReadyHold === "half-open") {
   if (command !== "EXIT_PRE_READY") {
     throw new Error(`KEL96 unexpected pre-Ready command ${command}`);
   }
+  if (process.env.KELD_T3_STDERR_PROBE === "1") {
+    // Exceed Core's display cap with public fixture data. Place the marker
+    // last so retaining the prefix instead of the tail also fails the test.
+    // Await the write and keep one control in the suffix to test scrubbing.
+    await Bun.write(
+      Bun.stderr,
+      "A".repeat(512) + "GH814_PRE_READY_PUBLIC_MARKER\x01END",
+    );
+  }
   process.exit(19);
 }
 if (generationAttempt === 2) {
