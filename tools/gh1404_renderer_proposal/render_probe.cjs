@@ -407,10 +407,48 @@ const cases = [
     assert.equal(svg.contains(text), true);
     assert.equal(group.getAttribute('display'), null);
     assert.equal(group.getAttribute('transform'), null);
-    assert.equal(fo.getAttribute('width'), '100%');
-    assert.equal(fo.getAttribute('height'), '100%');
+    assert.notEqual(fo.getAttribute('width'), null);
+    assert.notEqual(fo.getAttribute('height'), null);
     assert.match(div.style.cssText, /padding-top: 120px;/);
     assert.match(div.style.cssText, /margin-left: 120px;/);
+  }],
+  ['foreignObject unwrapped rich text preserves overflow viewport', () => {
+    const { canvas, group, fo, text } = htmlWith(htmlText, 'NORMAL-CELL');
+    drawHtml(canvas, group);
+    assert.equal(fo.getAttribute('width'), '100%');
+    assert.equal(fo.getAttribute('height'), '100%');
+    assert.equal(text.textContent, 'NORMAL-CELL');
+  }],
+  ['foreignObject vertical rich text preserves overflow viewport', () => {
+    const { canvas, group, fo, text } = htmlWith(htmlText, 'VERTICAL-CELL');
+    canvas.updateTextNodes(260, 150, 320, 80, 'center', 'middle',
+      true, '', false, 0, 'vertical-rl', group);
+    assert.equal(fo.getAttribute('width'), '100%');
+    assert.equal(fo.getAttribute('height'), '100%');
+    assert.equal(text.textContent, 'VERTICAL-CELL');
+  }],
+  ['foreignObject dimensions do not depend on the outer SVG viewport', () => {
+    const { canvas, fo, group, div, text } = htmlWith(htmlText, 'CELL-WRAPPED');
+    drawHtml(canvas, group, 0, [260, 150, 320, 80], true);
+    assert.equal(fo.getAttribute('width'), '421');
+    assert.equal(fo.getAttribute('height'), '230');
+    assert.match(div.style.cssText, /margin-left: 99px;/);
+    assert.equal(text.textContent, 'CELL-WRAPPED');
+    assert.doesNotMatch(fo.getAttribute('width'), /%/);
+    // The label's intrinsic SVG bounds do not change when its parent grows.
+    canvas.state.scale = 0.5;
+    drawHtml(canvas, group, 0, [260, 150, 320, 80], true);
+    assert.equal(fo.getAttribute('width'), '421');
+    assert.equal(fo.getAttribute('height'), '230');
+    assert.equal(group.getAttribute('transform'), 'scale(0.5)');
+  }],
+  ['foreignObject negative y remains anchored without viewport clipping', () => {
+    const { canvas, group, fo, div } = htmlWith(htmlText, 'NEGATIVE-Y');
+    drawHtml(canvas, group, 0, [260, -35, 320, 80], true);
+    assert.equal(fo.getAttribute('y'), '-35');
+    assert.equal(fo.getAttribute('width'), '421');
+    assert.equal(fo.getAttribute('height'), '80');
+    assert.match(div.style.cssText, /padding-top: 0;/);
   }],
   ['foreignObject real getTextCss retains ordinary relative line-height', () => {
     assert.equal(htmlConstants.ABSOLUTE_LINE_HEIGHT, false);
@@ -488,9 +526,16 @@ const cases = [
     drawHtml(canvas, group, 0, [120, 120, 150, 50], true);
     assert.equal(text.textContent, 'RICH-WRAPPED');
     assert.equal(group.getAttribute('display'), null);
-    assert.equal(fo.getAttribute('width'), '200%');
+    assert.notEqual(fo.getAttribute('width'), null);
     assert.match(text.style.cssText, /white-space: normal; word-wrap: break-word;/);
     assert.equal(group.getAttribute('transform'), 'scale(0.5)');
+  }],
+  ['foreignObject half-scale does not multiply viewport-relative width', () => {
+    const { canvas, group, fo } = htmlWith(htmlText, 'HALF-SCALE');
+    canvas.state.scale = 0.5;
+    drawHtml(canvas, group, 0, [120, 120, 150, 50], true);
+    assert.equal(fo.getAttribute('width'), '196');
+    assert.equal(fo.getAttribute('height'), '170');
   }],
   ['foreignObject numeric strings normalize HTML geometry and rotation', () => {
     const { canvas, group, div, text } = htmlWith(htmlText, 'STRING-HTML');
@@ -553,7 +598,7 @@ const cases = [
     assert.equal(group.getAttribute('display'), 'none');
     assert.equal(fo.getAttribute('width'), null);
   }],
-  ['foreignObject near-zero scale cannot emit Infinity percent', () => {
+  ['foreignObject near-zero scale rejects unrepresentable CSS zoom', () => {
     const { canvas, group, fo } = htmlWith(htmlText, 'BAD-HTML-SCALE');
     canvas.state.scale = 1e-308;
     const returned = drawHtml(canvas, group);

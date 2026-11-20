@@ -190,14 +190,17 @@ HTML_REPLACEMENT = """mxSvgCanvas2D.prototype.updateTextNodes = function(x, y, w
 		var left = x + Number(this.state.dx);
 		var top = y + Number(this.state.dy);
 		var angle = ((this.rotateHtml) ? Number(this.state.rotation) : 0) + rotation;
-		var percent = Math.ceil(1 / Math.min(1, s) * 100);
+		// Preserve the old subpixel-zoom refusal independently of FO sizing.
+		var reciprocalZoom = Math.ceil(100 / Math.min(1, s));
 		// Match getTextCss: either line-height mode can overflow after
 		// its individual numeric inputs and scaled font-size pass.
 		var lineHeight = (mxConstants.ABSOLUTE_LINE_HEIGHT) ?
 			Number(this.state.fontSize) * mxConstants.LINE_HEIGHT :
 			mxConstants.LINE_HEIGHT * Number(this.lineHeightCorrection);
 		valid = isFinite(width) && isFinite(left) && isFinite(top) &&
-			isFinite(angle) && isFinite(percent) && isFinite(lineHeight) &&
+			isFinite(angle) && isFinite(reciprocalZoom) && isFinite(lineHeight) &&
+			isFinite(left + width) && isFinite(left - width) &&
+			isFinite(top + h) && isFinite(top - h) &&
 			isFinite(Math.round(left + anchor.x * width)) &&
 			isFinite(Math.round(top + anchor.y * h)) &&
 			isFinite(left * s) && isFinite(top * s) &&
@@ -329,6 +332,27 @@ def main() -> None:
         ("y += this.state.dy;", "y += Number(this.state.dy);"),
         ("var r = ((this.rotateHtml) ? this.state.rotation : 0) + ((rotation != null) ? rotation : 0);",
          "var r = ((this.rotateHtml) ? Number(this.state.rotation) : 0) + rotation;"),
+        ("""// Workaround for clipping in Webkit with scrolling and zoom
+		fo.setAttribute('width', Math.ceil(1 / Math.min(1, s) * 100) + '%');
+		fo.setAttribute('height', Math.ceil(1 / Math.min(1, s) * 100) + '%');
+		var yp = Math.round(y + dy);""",
+         """// For wrapped horizontal labels, use a bounded pixel viewport in
+		// the label's SVG coordinates. Percentage extents depend on the
+		// outer SVG size, which itself depends on measured label bounds.
+		// Keep the legacy overflow viewport for unwrapped/vertical labels.
+		var yp = Math.round(y + dy);
+		if (wrap && w > 0 && !vertical)
+		{
+			fo.setAttribute('width', Math.max(1, Math.ceil(
+				Math.max(0, x + dx) + Math.max(0, w + Number(this.foreignObjectPadding)))));
+			fo.setAttribute('height', Math.max(1, Math.ceil(
+				Math.max(0, yp) + Math.max(0, h))));
+		}
+		else
+		{
+			fo.setAttribute('width', Math.ceil(1 / Math.min(1, s) * 100) + '%');
+			fo.setAttribute('height', Math.ceil(1 / Math.min(1, s) * 100) + '%');
+		}"""),
     )
     for before, after in substitutions:
         if html_owner.count(before) != 1:

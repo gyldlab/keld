@@ -1,8 +1,10 @@
 # GH-1404 Draw.io renderer: isolated source proposal
 
-**Status: candidate only — production integration is blocked.** This directory
-contains a deterministic proposal for a source file in the separate draw.io
-application. Neither its bytes nor its tests are an installed-app claim. Do
+**Status: real production-source patch prepared; qualified app integration is blocked.**
+The historical 33-case evidence below describes the earlier proposal at
+`b8da958c`. The current two-file G1 source patch and fresh regression receipts
+are in [G1 production-source handoff](#g1-production-source-handoff).
+Neither its bytes nor its tests are an installed-app claim. Do
 not patch the installed V3 application, substitute a provider input, change the
 protected source graph, or infer G0–G12 acceptance from these tests.
 
@@ -242,3 +244,75 @@ Each path has independent defect cases. Disabling only the HTML invalid-input
 guard makes five current HTML regressions fail while the other paths remain
 unchanged. Existing native SVG invalid-geometry and stale-node tests also
 fail on the pinned original source.
+
+## G1 production-source handoff
+
+The original G1 acceptance cells are ordinary wrapped `html=1` labels at
+`(100,110,320,80)` and `(100,260,320,80)`. The assigned V3 exposed both
+labels at out-of-window AX bounds `(31777,-345,18614,10)`. The source
+trace found an independent feedback route:
+
+1. `mxSvgCanvas2D.updateTextNodes` assigns viewport-relative percentages to
+   the `foreignObject` dimensions. A wrapped label lives in an SVG whose
+   `min-width` changes with graph bounds.
+2. `mxText.updateBoundingBox` feeds the HTML node's measured
+   `offsetWidth` directly into the graph's text bounding box, even when the
+   label has a fixed wrapping width.
+3. `mxGraphView.validate` includes that text box in `graphBounds`;
+   `mxGraph.sizeDidChange` and `EditorUi.initCanvas` use these bounds for
+   SVG minimum size, page layout and view translation.
+
+The new production patch uses bounded pixel `foreignObject` dimensions for
+**wrapped horizontal labels with positive width**, derived from their own SVG
+coordinates. Unwrapped and vertical labels retain the original percentage
+overflow viewport. It also caps wrapped HTML DOM width entering graph bounds
+at the authored label width plus the original text-width padding. Real text
+measurement below that cap, non-wrapped overflow, `overflow=width`, rich
+children, rotation, invalid-number rejection and stale-text recovery are
+preserved in the focused source regression.
+
+The upstream application sources are pinned at
+`jgraph/drawio@24b76c2cbd55d88e354042e8d329a2e4708972bc`.
+The two source files and accepted hashes are:
+
+| Upstream application path | Pinned SHA-256 | Current candidate SHA-256 |
+| --- | --- | --- |
+| `src/main/webapp/mxgraph/src/util/mxSvgCanvas2D.js` | `0daef9812e3b8c530bc9556791ffaea53fe9a57091a86534bd909ca31e4485b3` | `da599813f25eedb76bfabd7a9d9d55e9d5284121cb568dc4e1a2a9e379c2e0c9` |
+| `src/main/webapp/mxgraph/src/shape/mxText.js` | `a6c0f2c748403a74b11405c864a8278bfcdad216f80ea5b290c1e917d13f9772` | `7cb3533a0ece22a987856cae64eb39da6410d395f74db7314791d43262a2fd39` |
+
+The combined `gh1404-g1-production.patch` SHA-256 is
+`d9dec12e1a7f78bd1922ab28663d9ffdeb12ddea470c9e2603e098253d0c0ab6`.
+This is an application-source patch with exact original paths and a strictly
+verified separate source overlay. It can be handed to the owner of a **new**
+qualified Draw.io application build. It must not replace the signed assigned V3
+resource tree or bypass source-graph qualification.
+
+```sh
+python3 tools/gh1404_renderer_proposal/stage_production_source.py \
+  --source-root /path/to/pristine/drawio-source \
+  --output-root /path/to/new/gh1404-g1-source-overlay
+git -C /path/to/pristine/drawio-source apply --check --whitespace=error \
+  /path/to/new/gh1404-g1-source-overlay/gh1404-g1-production.patch
+```
+
+The overlay contains the two full corrected JavaScript files at their original
+application paths, the combined source patch and an input/output hash manifest.
+The tool refuses unexpected upstream digests and an already-existing output.
+It does not mutate the source checkout, compile the renderer or install an app.
+
+### Current focused evidence (20 November 2026)
+
+| Test oracle | Pinned original | Patched original-source functions |
+| --- | --- | --- |
+| `render_probe.cjs` (SVG/HTML geometry, wrap, clip, zoom, rotation, reused DOM and malformed inputs) | RED: 15/38 | GREEN: 38/38 |
+| `bounds_probe.cjs` (real `mxText.updateBoundingBox`, oversized wrapped node, page layout, recovery, unwrapped/width controls) | RED: 3/6 | GREEN: 6/6 |
+| Fault controls | Original percent sizing fails four current source cases; replacement with fixed oversized viewport fails four | Removing the wrapped-bounds cap fails four cases |
+| Source staging | Modified one byte in `mxText.js` gives deterministic SHA-256 refusal and no output directory | Combined patch passes `git apply --check --whitespace=error`; both generated JS files pass `node --check` |
+
+An independent real `WKWebView` 900-by-600 fixture checked six SVG
+minimum-size updates with original percentage and fixed-pixel `foreignObject`
+extents. Both were stable and the label was visible. Thus **percentage sizing
+alone has not been proven to cause the installed G1 failure**; these focused
+checks prove bounded renderer output and bounded graph layout, not native
+original-app label visibility. The required full original application build,
+renderer/HTML export parity and installed G0–G12 acceptance remain open.
