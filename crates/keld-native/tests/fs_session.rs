@@ -3,8 +3,11 @@
 #![allow(clippy::expect_used)] // extra test crate: expect is the assertion oracle
 
 use std::fs;
+use std::io::{ErrorKind, Write};
+use std::net::Shutdown;
 use std::sync::atomic::AtomicBool;
 use std::thread;
+use std::time::Duration;
 
 use keld_guard::Principal;
 use keld_guard::verified_manifest::{VerifiedManifest, load_verified_manifest};
@@ -98,6 +101,99 @@ fn call_fs(
             detail: "unexpected reply frame kind",
         }),
     }
+}
+
+fn finish_authenticated_fs_session(
+    manifest: VerifiedManifest,
+    bytes: &[u8],
+) -> Result<(), IpcError> {
+    let (mut client, mut server) = connected_pair();
+    // Kill switches only: EOF is observed through the real socket half-close.
+    for stream in [&client, &server] {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout");
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .expect("write timeout");
+    }
+    let handle = thread::spawn(move || {
+        let broker = FsBroker::prepare(&manifest).expect("prepare broker");
+        serve_fs_session(
+            &mut server,
+            &test_token(),
+            &broker,
+            &manifest,
+            Principal::AppProcess,
+            &AtomicBool::new(false),
+        )
+    });
+    handshake_client(&mut client, &test_token()).expect("authenticate");
+    client.write_all(bytes).expect("send frame prefix");
+    client.shutdown(Shutdown::Write).expect("close write side");
+    handle.join().expect("server thread")
+}
+
+/// KEL-133 AC9: an authenticated truncated frame remains the original I/O
+/// failure. Header/body byte prefixes and a real socket EOF are independent
+/// of the receiver's consumed-byte observation.
+#[test]
+fn partial_frame_eof_returns_001_without_filesystem_effects() {
+    let dir = temp_dir("partial-frame-eof");
+    let file = dir.join("must-not-exist.txt");
+    let payload = keld_ipc::codec::encode(&FsRequest::Write {
+        path: scope_path(&file),
+        bytes: b"incomplete".to_vec(),
+    })
+    .expect("encode");
+    let mut wire = Vec::new();
+    write_frame(
+        &mut wire,
+        FrameKind::Call,
+        0,
+        FS_CHANNEL,
+        CorrelationId(1),
+        &payload,
+    )
+    .expect("encode frame");
+
+    let cases = [
+        ("first header byte", 1),
+        ("short header", keld_ipc::HEADER_LEN - 1),
+        ("missing body", keld_ipc::HEADER_LEN),
+        ("short body", wire.len() - 1),
+    ];
+    let mut outcomes = Vec::new();
+    for (case, prefix_len) in cases {
+        let result = finish_authenticated_fs_session(manifest_for(&dir), &wire[..prefix_len]);
+        outcomes.push((case, result, file.exists()));
+    }
+    fs::remove_dir_all(&dir).expect("remove fixture");
+
+    assert!(
+        outcomes.iter().all(|(_, result, _)| matches!(
+            result,
+            Err(IpcError::Io(error)) if error.kind() == ErrorKind::UnexpectedEof
+        )),
+        "every truncated frame must retain UnexpectedEof: {outcomes:?}"
+    );
+    for (case, result, effect) in outcomes {
+        let error = result.expect_err("truncated frame");
+        assert!(
+            error.to_string().starts_with("KELD-IPC-001"),
+            "{case}: original transport error code: {error}"
+        );
+        assert!(!effect, "{case}: partial frame must not reach the broker");
+    }
+}
+
+#[test]
+fn clean_eof_after_hello_completes_the_fs_session() {
+    let dir = temp_dir("clean-hello-eof");
+    let manifest = verified_manifest(&dir, "{}");
+    let result = finish_authenticated_fs_session(manifest, &[]);
+    fs::remove_dir_all(&dir).expect("remove fixture");
+    result.expect("clean EOF between frames");
 }
 
 /// kel133 AC2 on the privileged receiver: a hostile *authenticated* CALL

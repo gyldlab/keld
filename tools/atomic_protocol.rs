@@ -5,6 +5,8 @@
 //! Cargo workspace. Compile with:
 //! `rustc --edition=2024 -D warnings tools/atomic_protocol.rs`
 
+#![forbid(unsafe_code)]
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};

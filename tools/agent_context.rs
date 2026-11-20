@@ -3,6 +3,8 @@
 //! This is std-only and outside the Cargo workspace. Compile with:
 //! `rustc --edition=2024 -D warnings tools/agent_context.rs`.
 
+#![forbid(unsafe_code)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;

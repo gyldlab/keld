@@ -701,20 +701,31 @@ printf '{"name":"@fake/bootstrap"}\n' >"$temp_dir/packages/@fake/bootstrap/packa
 printf 'import { test } from "bun:test";\n' >"$temp_dir/packages/@fake/bootstrap/src/unit.test.ts"
 printf 'fake-bin/\ntarget/\nbound/\n' >"$temp_dir/.gitignore"
 printf 'base\n' >"$temp_dir/README.md"
-# Keep the real shared native policy in this minimal graph fixture with its real
-# reader pattern, so TS selects hygiene through the edge and not an all-gate rescue.
+# Keep the real native-formatting and Repository hygiene consumers in this
+# minimal graph fixture. Their shared reader edge proves a TS-only diff selects
+# both Bun and hygiene without relying on an all-gate fallback. Hygiene has one
+# owner; the formatter owns only its unrelated local format check.
 "$python_command" -B - "$repo_root" "$temp_dir" <<'PY'
 import json, shutil, sys
 from pathlib import Path
 source, fixture = map(Path, sys.argv[1:])
 sys.path.insert(0, str(source / "tools"))
 import ci_inputs
-native = next(consumer for consumer in ci_inputs.load(source)["consumers"]
+consumers = ci_inputs.load(source)["consumers"]
+native = next(consumer for consumer in consumers
               if consumer["owner"] == "Native JavaScript formatting")
+hygiene = next(consumer for consumer in consumers
+               if consumer["owner"] == "Repository hygiene")
+assert "input_hygiene" not in native["outputs"]
+assert "input_hygiene" in hygiene["outputs"]
+selected = [native, hygiene]
+outputs = [output for consumer in selected for output in consumer["outputs"]]
+assert len(outputs) == len(set(outputs)), "fixture consumers must have one owner per output"
 shutil.copyfile(source / "tools/ci_inputs.py", fixture / "tools/ci_inputs.py")
 reader = {"patterns": ["tools/ci_inputs.py"]}
+reader_sets = {consumer["reader_set"]: reader for consumer in selected}
 contract = {"schema": ci_inputs.SCHEMA, "known_inputs": ["*"],
-            "reader_sets": {native["reader_set"]: reader}, "consumers": [native]}
+            "reader_sets": reader_sets, "consumers": selected}
 (fixture / "tools/ci-inputs.json").write_text(json.dumps(contract) + "\n", encoding="utf-8")
 PY
 git -C "$temp_dir" add README.md .gitignore tools/ci-inputs.json tools/ci_inputs.py packages

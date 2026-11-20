@@ -1,5 +1,7 @@
 //! Deterministic generator for Keld's agent-readable documentation corpus.
 
+#![forbid(unsafe_code)]
+
 #[path = "repo_path_contract.rs"]
 mod repo_path_contract;
 

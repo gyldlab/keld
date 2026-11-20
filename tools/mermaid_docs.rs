@@ -1,5 +1,7 @@
 //! Validates Mermaid documentation blocks without adding a workspace dependency.
 
+#![forbid(unsafe_code)]
+
 mod markdown_paths;
 
 use markdown_paths::is_markdown_path;
@@ -385,13 +387,7 @@ fn untracked_markdown(root: &Path) -> Result<Vec<PathBuf>, String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args([
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-            "-z",
-            "--",
-        ])
+        .args(["ls-files", "--others", "--exclude-standard", "-z", "--"])
         .output()
         .map_err(|error| {
             format!(
@@ -454,14 +450,7 @@ fn check_files(files: Vec<PathBuf>) -> Result<usize, String> {
 fn working_tree_mermaid_inputs(root: &Path, base: &str) -> Result<bool, String> {
     let diff = git_output(
         root,
-        &[
-            "diff",
-            "--no-renames",
-            "--name-status",
-            "-z",
-            base,
-            "--",
-        ],
+        &["diff", "--no-renames", "--name-status", "-z", base, "--"],
     )?;
     let fields: Vec<&[u8]> = diff
         .split(|byte| *byte == 0)
@@ -525,13 +514,7 @@ fn working_tree_mermaid_inputs(root: &Path, base: &str) -> Result<bool, String> 
 
     let untracked = git_output(
         root,
-        &[
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-            "-z",
-            "--",
-        ],
+        &["ls-files", "--others", "--exclude-standard", "-z", "--"],
     )?;
     for path in untracked
         .split(|byte| *byte == 0)
@@ -837,7 +820,10 @@ flowchart LR
 
         let followed_by_valid = format!("{colon_fence}{VALID}");
         assert_eq!(diagram_blocks(&followed_by_valid).len(), 2);
-        assert_eq!(validate_markdown(Path::new("doc.md"), &followed_by_valid).len(), 1);
+        assert_eq!(
+            validate_markdown(Path::new("doc.md"), &followed_by_valid).len(),
+            1
+        );
     }
 
     #[test]
@@ -888,7 +874,14 @@ flowchart LR
         git_fixture(root, &["add", "--all"]);
         git_fixture(
             root,
-            &["-c", "commit.gpgsign=false", "commit", "--quiet", "-m", message],
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                message,
+            ],
         );
         let output = Command::new("git")
             .args(["rev-parse", "HEAD"])
@@ -936,9 +929,15 @@ flowchart LR
         if !same_path {
             fs::remove_dir_all(&second).expect("remove second owned fixture");
         }
-        assert!(!same_path, "same-clock allocations reused the fixture namespace");
+        assert!(
+            !same_path,
+            "same-clock allocations reused the fixture namespace"
+        );
         assert_eq!(first_marker, b"first-owner");
-        assert!(!second_has_marker, "second fixture inherited the first owner's marker");
+        assert!(
+            !second_has_marker,
+            "second fixture inherited the first owner's marker"
+        );
     }
 
     #[test]
@@ -950,8 +949,7 @@ flowchart LR
         let next = AtomicU64::new(0);
         let first = create_fixture_root("keld-mermaid-exclusive", nonce, &next)
             .expect("create fixture owner");
-        fs::write(first.join("namespace-marker"), b"first-owner")
-            .expect("write owner marker");
+        fs::write(first.join("namespace-marker"), b"first-owner").expect("write owner marker");
         // This counter belongs only to this test. Force the actual allocator's
         // next candidate to be the already-owned directory, without a race.
         next.store(0, Ordering::Relaxed);
@@ -1044,10 +1042,7 @@ flowchart LR
         )
         .expect("add Mermaid CLI colon fence");
         let head = commit_fixture(&root, "colon Mermaid fence");
-        assert!(
-            changed_mermaid_inputs(&root, &base, &head)
-                .expect("classify colon Mermaid fence")
-        );
+        assert!(changed_mermaid_inputs(&root, &base, &head).expect("classify colon Mermaid fence"));
         fs::remove_dir_all(root).expect("remove colon-fence route fixture");
     }
 
@@ -1097,7 +1092,9 @@ flowchart LR
         fs::create_dir_all(root.join("docs/research")).expect("create nested research directory");
         fs::write(root.join("docs/research/.git"), "malformed gitdir marker\n")
             .expect("write malformed nested gitdir marker");
-        assert!(changed_mermaid_worktree(&root, &base).expect("fail safe for invalid nested checkout"));
+        assert!(
+            changed_mermaid_worktree(&root, &base).expect("fail safe for invalid nested checkout")
+        );
         fs::remove_dir_all(root.join("docs/research")).expect("remove malformed nested checkout");
         #[cfg(unix)]
         {
@@ -1199,14 +1196,10 @@ flowchart LR
                 let untracked = format!("untracked.{spelling}");
                 fs::write(root.join(&untracked), VALID).expect("write untracked diagram");
                 assert_eq!(check(&root).expect("tracked inventory unchanged"), 1);
-                assert_eq!(
-                    manifest(&root).expect("include untracked diagram").len(),
-                    2
-                );
+                assert_eq!(manifest(&root).expect("include untracked diagram").len(), 2);
                 assert!(super::working_tree_mermaid_inputs(&root, &restored).unwrap());
                 let current = commit_fixture(&root, "track second diagram");
-                fs::write(root.join("ignored.txt"), invalid)
-                    .expect("write non-Markdown control");
+                fs::write(root.join("ignored.txt"), invalid).expect("write non-Markdown control");
                 assert!(!super::working_tree_mermaid_inputs(&root, &current).unwrap());
                 assert_eq!(manifest(&root).expect("ignore non-Markdown").len(), 2);
                 fs::remove_dir_all(root).expect("remove extension fixture");
