@@ -18,6 +18,10 @@ use super::{
 ///
 /// Returns [`EvidenceError`] for oversize, encoding, JSON, schema, or field
 /// violations, including non-normative evidence URIs.
+///
+/// Accepted HTTPS evidence is stored as a canonical serialized URL; source
+/// spelling may change (for example, host case, default port or dot segments).
+/// Content-addressed `sha256:` evidence is preserved exactly.
 pub fn parse_evidence(bytes: &[u8]) -> Result<EvidenceRecord, EvidenceError> {
     let raw: RawEvidence = parse_object(bytes, MAX_EVIDENCE_BYTES)?;
     if raw.schema != EVIDENCE_SCHEMA {

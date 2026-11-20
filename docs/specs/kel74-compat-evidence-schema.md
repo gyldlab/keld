@@ -1,7 +1,7 @@
 # Spec: generic compatibility evidence schema (KEL-74)
 
 Status: implementing
-Linear: KEL-74 · Owner: GYLDLAB · Updated: 2026-10-07
+Linear: KEL-74 · Owner: GYLDLAB · Updated: 2026-11-20
 
 ## 1. Goal & non-goals
 
@@ -36,7 +36,10 @@ Non-goals:
 1. Given a well-formed `keld.compat.evidence/v1` JSON object under the size cap, when
    `parse_evidence` runs, then it returns a record with artifact SHA-256, platform,
    architecture, Keld/Bun/engine revisions, authority profile, operation + semantic
-   oracle, verdict, and an allowed immutable evidence URI.
+   oracle, verdict, and an allowed immutable evidence URI. Admitted HTTPS evidence
+   is stored in WHATWG-canonical form (including host case, default port and
+   dot-segment normalization); `sha256:` evidence remains unchanged. `score`
+   revalidates the stored URI.
 2. Given bytes larger than the cap, non-UTF-8, trailing junk, unknown `schema`,
    unknown fields, or a malformed `sha256:` digest, when parse runs, then it returns
    the matching `KELD-COMPAT-*` error whose message states the fix.
@@ -85,8 +88,15 @@ Non-goals:
     `:` (and a bracketed host with `]:port`) MUST have a non-empty decimal
     port in the `u16` range; `github.com:abc` and `github.com:65536` are
     not public https locations. Host checks are literal (no DNS).
-    Abbreviated IPv4 (`127.1`, `010.0.0.1`, `1.1`) and DNS-to-private names
-    (`10.0.0.1.nip.io`) are T1 residuals.
+    Numeric IPv4 host spellings (including abbreviated, octal and hexadecimal
+    forms) are normalized before the public-host policy applies. DNS-to-private
+    names (`10.0.0.1.nip.io`) remain a T1 residual. A real `blob`/`tree`/`raw`
+    route with a mutable ref before the first pin is rejected, even when a
+    later filename looks like a git object id. After the immutable ref at a
+    known provider route, or after the first object id on a generic public
+    HTTPS host, ordinary `blob`/`tree`/`raw` directory names are file-path
+    data. This includes safe percent-encoded and nested-encoded route names;
+    unsafe encoded separators, controls and dot navigation are still refused.
 11. Given two pass records that fill a 2-cell denom but disagree on artifact
     SHA-256, authority profile, or engine, when `score` runs, then `complete`
     is false and `unweighted_percent` is `None`.

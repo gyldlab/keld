@@ -231,10 +231,14 @@ fn returns_normalized_public_pinned_url() {
         format!("https://GITHUB.COM:443/unused/../gyldlab/keld/blob/{sha}/a%20b?download=1#L1");
     let json = valid_evidence_json().replace(&original, &uri);
     let record = parse_evidence(json.as_bytes()).expect("normalized public pin");
-    assert_eq!(
-        record.evidence_uri(),
-        format!("https://github.com/gyldlab/keld/blob/{sha}/a%20b?download=1#L1")
-    );
+    let canonical = format!("https://github.com/gyldlab/keld/blob/{sha}/a%20b?download=1#L1");
+    assert_eq!(record.evidence_uri(), canonical);
+    let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denominator");
+    score(&denom, &[record], AS_OF).expect("canonical HTTPS evidence scores");
+    let json = valid_evidence_json().replace(&original, &canonical);
+    let reparsed = parse_evidence(json.as_bytes()).expect("canonical evidence reparses");
+    assert_eq!(reparsed.evidence_uri(), canonical);
+    score(&denom, &[reparsed], AS_OF).expect("reparsed evidence scores");
 }
 
 #[test]
@@ -308,6 +312,61 @@ fn preserves_literal_percent_hex_filenames_after_one_decode() {
         ] {
             assert_canonical_pinned_uri(&denom, &format!("{prefix}/{file}"));
         }
+    }
+}
+
+#[test]
+fn preserves_generic_host_ref_named_directories_after_pin() {
+    let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
+    let sha64 = format!("{sha}0123456789abcdef01234567");
+    let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denominator");
+
+    for pin in [sha, sha64.as_str()] {
+        for path in [
+            "docs/%62lob/main.md",
+            "docs/%2562lob/main.md",
+            "docs/%74ree/main.md",
+            "docs/%2574ree/main.md",
+            "docs/%72aw/main.md",
+            "docs/%2572aw/main.md",
+            "docs/blob/main.md",
+            "docs/tree/main.md",
+            "docs/raw/main.md",
+            "docs/%61pi/main.md",
+        ] {
+            assert_canonical_pinned_uri(
+                &denom,
+                &format!("https://example.com/evidence/{pin}/{path}"),
+            );
+        }
+    }
+}
+
+#[test]
+fn generic_host_mutable_ref_before_pin_stays_rejected() {
+    let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
+    let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denominator");
+    for route in [
+        "blob/main",
+        "tree/main",
+        "raw/main",
+        "%62lob/main",
+        "%2562lob/main",
+        "%74ree/main",
+        "%2572aw/main",
+    ] {
+        let uri = format!("https://example.com/evidence/{route}/{sha}");
+        let mut envelope: serde_json::Value =
+            serde_json::from_str(&valid_evidence_json()).expect("valid evidence envelope");
+        envelope["evidence_uri"] = serde_json::Value::String(uri.clone());
+        let input = serde_json::to_vec(&envelope).expect("serialize evidence input");
+        let err = parse_evidence(&input).expect_err(&uri);
+        assert_eq!(err.code(), "KELD-COMPAT-007", "{uri}");
+
+        let mut constructed = parse_ok();
+        constructed.evidence_uri = uri.clone();
+        let err = score(&denom, &[constructed], AS_OF).expect_err(&uri);
+        assert_eq!(err.code(), "KELD-COMPAT-007", "{uri}");
     }
 }
 

@@ -392,7 +392,11 @@ fn https_path_is_live_mutable(host: &str, path: &str) -> bool {
     if has_pinned_provider_ref(host, &segs) {
         return false;
     }
-    path_has_live_git_ref(path)
+    // On an unknown public host, a git object id establishes the immutable
+    // location. Route-like directory names after it are file-path data.
+    // Named providers keep their existing route-position checks above.
+    let generic_host = !matches!(host, "github.com" | "gitlab.com" | "bitbucket.org");
+    path_has_live_git_ref(path, generic_host)
 }
 
 fn has_pinned_provider_ref(host: &str, segments: &[&str]) -> bool {
@@ -423,12 +427,18 @@ fn has_pinned_provider_ref(host: &str, segments: &[&str]) -> bool {
     }
 }
 
-fn path_has_live_git_ref(path: &str) -> bool {
+fn path_has_live_git_ref(path: &str, stop_at_immutable_pin: bool) -> bool {
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    segments.windows(2).any(|pair| {
+    for pair in segments.windows(2) {
+        if stop_at_immutable_pin && is_git_object_id(pair[0]) {
+            break;
+        }
         let kind = pair[0].to_ascii_lowercase();
-        matches!(kind.as_str(), "blob" | "tree" | "raw") && !is_git_object_id(pair[1])
-    })
+        if matches!(kind.as_str(), "blob" | "tree" | "raw") && !is_git_object_id(pair[1]) {
+            return true;
+        }
+    }
+    false
 }
 
 fn is_git_object_id(segment: &str) -> bool {
