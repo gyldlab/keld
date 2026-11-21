@@ -14,9 +14,7 @@
 use super::initial_admission_journal::InitialAdmissionJournalIo;
 use super::record_publication::read_optional_record;
 use super::repository_census::RepositoryLedgerCensus;
-use super::repository_member_diagnostics::{
-    require_no_unpointed_admissions, require_only_pointed_repository_member,
-};
+use super::repository_member_diagnostics::require_only_pointed_repository_member;
 use super::{error, publish_new_record};
 use crate::UpdateError;
 use crate::error::hex_digest;
@@ -391,7 +389,6 @@ impl<'lease> RepositoryMetadataIo<'lease> {
         // A missing D-68 pointer can follow a durable D-64/D-65/D-85 journal
         // or a crash that left a pending publication sibling. A local empty
         // scan is only a negative check; D-90 still owns full census proof.
-        require_no_unpointed_admissions(self.admissions)?;
         require_only_pointed_repository_member(
             self.admissions,
             self.recoveries,
