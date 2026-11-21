@@ -116,7 +116,9 @@ pub(crate) fn require_windows_repository_eligibility(
         ));
     };
     if request.requested_channel != commissioned
-        || request.source_channel.is_some_and(|source| source != commissioned)
+        || request
+            .source_channel
+            .is_some_and(|source| source != commissioned)
         || request
             .destination_channel
             .is_some_and(|destination| destination != commissioned)
@@ -132,16 +134,17 @@ pub(crate) fn require_windows_repository_eligibility(
             | WindowsRepositoryOperation::Rollback
             | WindowsRepositoryOperation::PlannedTransition
             | WindowsRepositoryOperation::ManualRecovery
-    )
-        && request.source_channel.is_none()
+    ) && request.source_channel.is_none()
     {
         return Err(refuse(
             "repository source membership",
             "D-90 requires authenticated source membership for an established operation",
         ));
     }
-    if matches!(request.operation, WindowsRepositoryOperation::FreshEnrollment)
-        && request.source_channel.is_some()
+    if matches!(
+        request.operation,
+        WindowsRepositoryOperation::FreshEnrollment
+    ) && request.source_channel.is_some()
     {
         return Err(refuse(
             "repository fresh membership",

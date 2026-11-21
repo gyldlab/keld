@@ -13,11 +13,10 @@ use super::{error, publish_new_record, read_record};
 use crate::UpdateError;
 use crate::error::hex_digest;
 use crate::records::{
-    AdmissionInspection, InitialAdmissionPhase, InitialAdmissionRecord,
-    PendingOperationKind, PendingRepositoryOperation, RepositoryAnchor,
-    decode_initial_admission_record, decode_pending_repository_operation,
-    encode_initial_admission_record, encode_pending_repository_operation,
-    inspect_initial_admission,
+    AdmissionInspection, InitialAdmissionPhase, InitialAdmissionRecord, PendingOperationKind,
+    PendingRepositoryOperation, RepositoryAnchor, decode_initial_admission_record,
+    decode_pending_repository_operation, encode_initial_admission_record,
+    encode_pending_repository_operation, inspect_initial_admission,
 };
 use cap_std::fs::Dir;
 use std::io;
@@ -137,7 +136,10 @@ impl<'lease> InitialAdmissionJournalIo<'lease> {
         mut record: InitialAdmissionRecord,
     ) -> Result<InitialAdmissionRecord, UpdateError> {
         if record.phase != InitialAdmissionPhase::Admitted {
-            return Err(error("initial journal phase", "first phase must be admitted"));
+            return Err(error(
+                "initial journal phase",
+                "first phase must be admitted",
+            ));
         }
         if self.read_pending()?.is_some() {
             return Err(error(
