@@ -16,6 +16,8 @@ mod reader;
 mod recovery_required;
 mod recovery_required_operator;
 mod repair_source;
+mod repository_source_reader;
+mod repository_writer_scope;
 mod role;
 mod selection;
 mod signed_host;

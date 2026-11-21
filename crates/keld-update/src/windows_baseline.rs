@@ -43,6 +43,13 @@ mod locate;
 mod repository_census;
 #[allow(dead_code)]
 mod repository_metadata;
+// Real KEL-53 installed-source and per-install writer observations are useful
+// for negative D-89/D-90 admission, but neither is the missing repository-wide
+// metadata lease or a qualified v1/v2 reader census producer.
+#[allow(dead_code)]
+mod repository_source_reader;
+#[allow(dead_code)]
+mod repository_writer_scope;
 
 #[cfg(test)]
 pub(crate) use activate::CRASH_CUT_HOOK;
