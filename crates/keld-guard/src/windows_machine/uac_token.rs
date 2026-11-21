@@ -50,7 +50,7 @@ pub use refusals::WindowsTokenError;
 ///
 /// The retained token is query-only, and the observation cannot cross threads.
 #[must_use = "a worker observation is not installation authorization"]
-pub struct WindowsPerUserWorkerPreflight {
+pub(crate) struct WindowsPerUserWorkerPreflight {
     worker_thread: ThreadId,
     process_token: OwnedHandle,
     initiating_session: u32,
@@ -65,7 +65,7 @@ impl WindowsPerUserWorkerPreflight {
     /// Refuses any impersonation, token-open/query failure, or process session
     /// different from the initiating session. The complete D-42 token profile
     /// remains unavailable until its native owner grant and implementation.
-    pub fn observe(initiating_session: u32) -> Result<Self, WindowsTokenError> {
+    pub(crate) fn observe(initiating_session: u32) -> Result<Self, WindowsTokenError> {
         require_unimpersonated_worker()?;
         let process_token = open_process_token()
             .map_err(|error| WindowsTokenError::os("OpenProcessToken(TOKEN_QUERY)", &error))?;
@@ -88,7 +88,7 @@ impl WindowsPerUserWorkerPreflight {
     /// # Errors
     /// Refuses another worker, impersonation, a wrong session, any token query
     /// failure, or an observation already invalidated by a previous failure.
-    pub fn revalidate(&mut self) -> Result<(), WindowsTokenError> {
+    pub(crate) fn revalidate(&mut self) -> Result<(), WindowsTokenError> {
         if self.invalidated {
             return Err(WindowsTokenError::os(
                 "D-42 worker preflight",
