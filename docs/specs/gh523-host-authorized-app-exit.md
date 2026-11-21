@@ -71,7 +71,7 @@ boundary and approves none of those changes.
 ### AC-4: A stale or unauthenticated role cannot exit the host
 - **Given:** A role's identity is stale or its request is unauthenticated.
 - **When:** That role requests application exit.
-- **Then:** No terminal decision commits. A live authenticated reply channel returns a typed refusal when applicable.
+- **Then:** No terminal decision commits. If the link is live, the host returns a typed refusal to the stale or unauthenticated caller without granting exit authority.
 - **Negative control:**
   - **Single fault:** Authorize exit using caller-supplied role identity.
   - **At-risk precondition:** A stale or forged role supplies a privileged identity.
