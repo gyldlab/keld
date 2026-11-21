@@ -38,7 +38,7 @@ fn existing_fixed_replacement_slots_cannot_name_repository_journals() {
     }
 }
 
-/// Failure-first mutation: changing publish_new's native replace flag from
+/// Failure-first mutation: changing `publish_new`'s native replace flag from
 /// false to true overwrites the independently planted D64 or D68 bytes and
 /// fails these assertions. The successful control uses the same native parent
 /// and generated sibling name, so unrelated early IO denial cannot pass the
