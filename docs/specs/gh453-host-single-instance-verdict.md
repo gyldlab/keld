@@ -1,7 +1,11 @@
 # Spec: Host-owned single-instance verdict
-Status: draft
-Linear: GH-453 (#517) · Owner: @0monish (approval pending) · Updated: 2026-11-06
-Source baseline: `0eb3ce203187f35c5276a4237189c906a5220d5a`
+- Status: draft
+- Tracker: GH-453
+- Owner: @0monish (draft owner; approval pending)
+- Updated: 2026-11-21
+- Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
+
+The original draft was dated 2026-11-06. GH-453 is the tracker of record under #517.
 Publication: grouped future implementation pack; docs only, do not merge.
 
 ## 1. Goal & non-goals
@@ -24,64 +28,104 @@ profile leasing and Windows/Linux lock qualification are separate.
 - [Reported kernel-lock observations](https://github.com/gyldlab/keld/issues/453#issuecomment-6560426753).
 - [Electron lock contract](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/app.md).
 
-Verified baseline: Current main's facade has no single-instance member. Public comments report local std::fs::File::try_lock
+Historical baseline at the pinned source: the facade had no single-instance member. Public comments report local std::fs::File::try_lock
 observations and an approved shared-ancestor/private-service correction. This session did not execute that fixture or inspect
 unpublished local code.
 
 All proposed API, schema, ownership and permission changes below are future contracts. This documentation PR changes no runtime
 boundary and approves none of those changes.
 
-## 3. Acceptance criteria (binary, each becomes a test)
+## 3. Acceptance criteria
 
-### AC1
+### AC-1: A declared winner reads the synchronous verdict at either call time
+- **Given:** An app declares one stable lock identity and no other process holds it.
+- **When:** Its host starts and the facade calls before or after Ready.
+- **Then:** `requestSingleInstanceLock()` returns true synchronously, and `hasSingleInstanceLock()` returns true.
+- **Negative control:**
+  - **Single fault:** Replace the winner's captured host verdict with false.
+  - **At-risk precondition:** A declared app starts as the sole lock contender.
+  - **Expected RED:** Both facade calls disagree with the host's successful election.
 
-Given a declared app and uncontended stable lock identity, when its host starts and the facade calls before or after ready, then
-both calls return true synchronously and hasSingleInstanceLock is true.
+### AC-2: A losing host still runs its selected Bun role
+- **Given:** Another host holds the same declared app lock.
+- **When:** A second host starts and its selected app requests `--version`.
+- **Then:** The second election is false, while its Bun role prints the version and exits successfully.
+- **Negative control:**
+  - **Single fault:** Exit the losing host before Bun spawn.
+  - **At-risk precondition:** The selected losing app has a reachable `--version` path.
+  - **Expected RED:** No app-produced version output appears for the second process.
 
-Independent negative control: Replace the host-issued fact with a facade-local constant; a second process must detect the lie.
+### AC-3: An undeclared app receives the typed migration error
+- **Given:** The compiled boot declaration has no single-instance entry.
+- **When:** The app calls `requestSingleInstanceLock()`.
+- **Then:** A registered typed compatibility error names the missing declaration and migration fix.
+- **Negative control:**
+  - **Single fault:** Return false silently for an undeclared app.
+  - **At-risk precondition:** The app has no compiled lock declaration.
+  - **Expected RED:** The typed-error and fix-it assertion fails.
 
-### AC2
+### AC-4: A safe shared ancestor is accepted without mutation
+- **Given:** The same-user Keld ancestor is stable, mode 0755, and has no group/other write grant.
+- **When:** The host admits a new private service directory.
+- **Then:** The ancestor stays unchanged. Private directories stay 0700. The single-link lease stays 0600.
+- **Negative control:**
+  - **Single fault:** Require mode 0700 on every ancestor.
+  - **At-risk precondition:** A valid same-user shared ancestor uses mode 0755.
+  - **Expected RED:** The valid shared-ancestor admission is refused.
 
-Given the same app lock is held, when a second host starts, then its verdict is false but its Bun role still runs and its own
---version path exits successfully.
+### AC-5: Unsafe namespace entries are refused before role spawn
+- **Given:** A symlink, replaced identity, multiply linked lease, or wrong private permission is present.
+- **When:** The host checks namespace admission.
+- **Then:** Admission refuses before role spawn and preserves the existing path without chmod, unlink, or truncate.
+- **Negative control:**
+  - **Single fault:** Follow a symlink during the admission walk.
+  - **At-risk precondition:** A symlink appears in the checked namespace path.
+  - **Expected RED:** The refusal or stable-identity assertion fails before Bun spawn.
 
-Independent negative control: Exit the losing host before Bun spawn; assert no version output.
+### AC-6: The kernel lock distinguishes contention from owner death
+- **Given:** A live holder owns a lease and later terminates normally or abruptly.
+- **When:** Another process retries acquisition using an explicit process-I/O barrier.
+- **Then:** It observes contention while the holder lives and acquisition after the kernel releases the lock.
+- **Negative control:**
+  - **Single fault:** Treat pathname existence as the held-lock verdict.
+  - **At-risk precondition:** The original holder crashes without deleting the lease path.
+  - **Expected RED:** The replacement cannot acquire after the kernel releases the descriptor.
 
-### AC3
+### AC-7: The pre-spawn election divergence is recorded
+- **Given:** A declared app delays its first compatibility call.
+- **When:** A second process contends before that call occurs.
+- **Then:** The first host already holds the lock, and the documented divergence identifies pre-spawn admission.
+- **Negative control:**
+  - **Single fault:** Defer host lock acquisition until the facade method runs.
+  - **At-risk precondition:** The declared first app delays its first lock method call.
+  - **Expected RED:** A second process acquires the lock while the declared first host is alive.
 
-Given no compiled declaration, when the member is called, then a registered typed compatibility error names the
-declaration/migration fix.
+### AC-8: Contention cannot be hidden behind a constant facade result
+- **Given:** The first declared host has already acquired the same stable lock.
+- **When:** The second host reads its initial verdict before or after Ready.
+- **Then:** The second `requestSingleInstanceLock()` returns false synchronously.
+- **Negative control:**
+  - **Single fault:** Replace the host-issued verdict with a facade-local constant true.
+  - **At-risk precondition:** Both processes declare the same lock identity.
+  - **Expected RED:** The second process reports a false winner.
 
-Independent negative control: Return false or true silently on an undeclared app.
+### AC-9: A writable shared ancestor is rejected
+- **Given:** A same-user shared ancestor grants group or other users write access.
+- **When:** A host attempts new private service-directory admission.
+- **Then:** Admission refuses and does not grant custody to the unsafe shared path.
+- **Negative control:**
+  - **Single fault:** Accept a writable shared ancestor as safe.
+  - **At-risk precondition:** A shared ancestor has a group/other write grant.
+  - **Expected RED:** The expected refusal changes to successful admission.
 
-### AC4
-
-Given a shared Keld ancestor owned by the user with mode 0755 and no group/other write, when a new private service directory is
-admitted, then the ancestor is accepted unchanged; private directories remain 0700 and the lease remains 0600.
-
-Independent negative control: Require every ancestor to be 0700, or accept a writable shared ancestor; test the two mutations
-independently.
-
-### AC5
-
-Given symlink, replaced identity, multiple-link lease or wrong private permissions, when admission runs, then it refuses before
-role spawn and does not chmod, unlink or truncate the existing path.
-
-Independent negative control: Follow a symlink or silently repair/delete an incumbent lease.
-
-### AC6
-
-Given a live holder and then normal or abrupt holder termination, when a separately synchronized process retries acquisition, then
-it observes contention while held and acquisition after kernel release.
-
-Independent negative control: Use existence of a pathname as the lock; the crash-recovery case must fail.
-
-### AC7
-
-Given a successful declaration, when the app delays its first call, then the documented divergence states the lock is already held
-from pre-spawn admission.
-
-Independent negative control: Claim Electron call-time acquisition without a test distinguishing pre-spawn contention.
+### AC-10: A rejected incumbent lease remains intact
+- **Given:** The existing lease has a multiple-link, identity or private-permission defect.
+- **When:** The host rejects admission.
+- **Then:** The host does not chmod, unlink, truncate, repair or replace the incumbent lease.
+- **Negative control:**
+  - **Single fault:** Unlink an incompatible incumbent lease during refusal.
+  - **At-risk precondition:** A second process presents a defective existing lease.
+  - **Expected RED:** The before/after inode and path-preservation checks detect mutation.
 
 ## 4. Design
 
@@ -132,28 +176,28 @@ leases, Strict defaults and shared ancestors. No lock-path cleanup or local work
 This publication changes only `docs/specs/gh453-host-single-instance-verdict.md` and grouped-PR/issue metadata. Shared policies,
 architecture, generated schemas, code and unrelated work remain with their existing owners.
 
-## 6. Tasks (ordered, each independently reviewable)
+## 6. Tasks
 
-### T1
+### T-1: Pin and approve the declaration and session-fact contracts
+- **Blocked by:** B-1
+- [ ] Pin the compiled declaration and session-fact schema. Record pending cells and the pre-spawn divergence.
 
-- [ ] Pin the current compiled declaration/session-fact schema and record pending cells plus the pre-spawn divergence.
+### T-2: Implement host lock admission with independent process controls
+- **Blocked by:** T-1, B-2
+- [ ] Implement stable lock admission and retained descriptor custody.
+- [ ] Run real two-process contention, holder-death and filesystem substitution negatives.
 
-### T2
+### T-3: Expose the synchronous host verdict through the owned facade
+- **Blocked by:** T-1, T-2, B-1
+- [ ] Thread the captured verdict through GH-452 session facts.
+- [ ] Expose both synchronous facade methods and the undeclared typed error.
 
-- [ ] Implement stable lock admission and descriptor custody with real two-process contention/release tests and filesystem
-substitution negatives.
+### T-4: Qualify the selected original application on macOS
+- **Blocked by:** T-3
+- [ ] Exercise original-app version, help, export and GUI loser behavior.
+- [ ] Qualify macOS; record Windows and Linux as unverified.
 
-### T3
-
-- [ ] Thread the captured verdict through GH452 and expose the two synchronous facade methods, including the undeclared typed
-error.
-
-### T4
-
-- [ ] Exercise selected original app version/help/export and GUI loser behavior; qualify macOS only and leave other platforms
-unknown.
-
-## 7. Test plan
+## 7. Test plan & evidence
 
 Every AC has a distinct observable and negative mutation in section 3. Map the resulting tests and evidence rows to GH-453;
 preserve pending-fail/unknown status until the actual implementing commit passes the relevant fixture.
@@ -162,11 +206,16 @@ Synchronize lock holders and contenders through process I/O, not sleeps. Record 
 permission refusal. Reproduce the reported kernel fixture independently; a mocked bool or single-process test cannot establish
 election.
 
-Documentation validation in this batch covers immutable reference/readback, all ten sections, independent controls,
-source-versus-proposal wording and file limits. Runtime, native and original-app tests are planned, not executed. GitHub CI status
-belongs to the exact published head; a documentation-only green run does not prove platform behavior.
-The user restricted this session to GitHub. Local `just ci`, native execution, hooks and machine session closeout were not run.
-Official upstream GitHub sources were used within that source restriction; no Context7 or external-machine evidence is claimed.
+Documentation validation covers immutable source readback, all ten sections, independent controls, proposal wording and file limits.
+Runtime, native and original-app tests remain planned, without new execution evidence from this specification migration.
+The original publishing session was GitHub-only and reported no local `just ci` or native run.
+Documentation checks in the migration cannot qualify any OS behavior.
+
+### E-1: Draft-source and structure evidence only
+- **Run:** `git diff --check` and the trusted `spec-structure check` against a separate merge-source verification checkout.
+- **n:** 1 GH-453 draft specification with 7 original criteria and 3 separated negative-control cases.
+- **Environment:** macOS source worktree at PR #1432 `bba88b22f58b0de6763028a9f6a8ce62bc854a57`.
+- **Limits:** Document structure and change hygiene only. No host election, kernel-lock or original-app acceptance is proved.
 
 ## 8. Review gates triggered
 
@@ -183,13 +232,42 @@ startup improvement or hostile-process safety claim.
 
 No numerical product performance claim is made without a reproducible pinned workload, environment and receipt.
 
-## 10. Open questions (block implementation)
+## 10. Open questions, blockers & unknowns
 
-1. Approve the compiled declaration and immutable session-facts representation with their owners.
-2. Confirm the current private-lock implementation matches the published correction and qualify its descriptor lifecycle.
-3. Keep Windows/Linux and hostile same-user replacement outside claimed acceptance until separately specified.
-4. Jointly approve GH524 release/current-state mirror semantics, synchronous API behavior and post-release reacquisition. Until
-that extension qualifies, release/reacquire stay typed unsupported; do not return stale initial success.
+### Q-1: Which compiled declaration and immutable session-fact schema can be admitted?
+Obtain the actual KEL-96 and GH-452 owner decisions before implementing T-1 or T-3.
+The historic schema-v1 wording alone does not approve the present schema.
+
+### Q-2: Does the current private-lock code implement the approved namespace correction?
+Compare the current owning source and actual two-process fixture with the published private-lock decision before T-2.
+
+### Q-3: What must qualify on other platforms?
+Keep Windows/Linux and hostile same-user replacement outside the macOS acceptance claim until separately specified.
+
+### Q-4: How may GH-524 release and reacquisition update the current lock fact?
+Joint approval must define host-confirmed release, the current-state mirror, synchronous methods and post-release reacquisition.
+Until that extension qualifies, release/reacquire stay typed unsupported. A stale initial success must never be returned.
+
+### B-1: Compiled declaration and session-fact owner approvals are open
+- **Status:** open
+- **Owner:** @0monish (GH-453 draft owner), with the KEL-96 and GH-452 contract owners.
+- **Impact:** T-1 and T-3 cannot ship an unapproved declaration or facts contract.
+- **Check:** Read the approved, pinned KEL-96 and GH-452 decision and record its accepted schema and cells.
+
+### B-2: Current private-lock implementation and OS proof are unverified here
+- **Status:** open
+- **Owner:** @0monish (GH-453 tracker), coordinating the existing native lock owner.
+- **Impact:** T-2 cannot claim stable custody, refusal or kernel release without current code and two-process evidence.
+- **Check:** Compare the owning source with the public correction and run the synchronized contention/release and substitution cases.
+
+### B-3: GH-524 release contract needs a separate joint amendment
+- **Status:** open
+- **Owner:** @0monish (GH-524 and GH-453 contract coordination).
+- **Impact:** Post-release `hasSingleInstanceLock()` and reacquisition remain unsupported; initial verdict alone cannot answer them.
+- **Check:** Read the jointly approved GH-524/current-state contract and its native negative controls.
+
+### U-1: Windows/Linux election and hostile same-user replacement remain outside this proof
+Obtain platform-specific lock identity, kernel lifetime and namespace-substitution acceptance from their owners before claiming support.
 
 Independent review must refute or fix concrete findings on the published revision. Remaining platform qualification is an
 acceptance gap, not evidence of a completed feature.
